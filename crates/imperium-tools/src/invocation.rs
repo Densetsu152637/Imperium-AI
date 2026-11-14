@@ -158,13 +158,15 @@ fn lenient_count<'de, D: serde::Deserializer<'de>>(
             .map_err(|_| D::Error::custom(format!("expected a number, got {text:?}")))?,
         other => return Err(D::Error::custom(format!("expected a number, got {other}"))),
     };
-    Ok(match number.as_u64() {
-        Some(count) => Some(usize::try_from(count).unwrap_or(usize::MAX)),
-        None => number
-            .as_f64()
-            .filter(|float| *float >= 0.0 && float.is_finite())
-            .map(|float| float as usize),
-    })
+    let count = match number.as_u64() {
+        Some(count) => usize::try_from(count).unwrap_or(usize::MAX),
+        None => match number.as_f64() {
+            Some(float) if float >= 0.0 && float.is_finite() => float as usize,
+            _ => return Ok(None),
+        },
+    };
+    // Zero is how a model says "no limit" (and "from the start" for an offset).
+    Ok((count > 0).then_some(count))
 }
 
 #[derive(Deserialize)]
@@ -207,7 +209,16 @@ fn parse<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T, ToolError> 
 /// came from unescaped backslashes that happen to form JSON escapes (`D:\new\tools` holds a
 /// newline and a tab); read every backslash in it as itself instead.
 fn parse_path_args(arguments: &str) -> Result<PathArgs, ToolError> {
-    let args: PathArgs = parse(arguments)?;
+    let args: PathArgs = parse(arguments).map_err(|error| match error {
+        ToolError::Invalid(message) if message.starts_with("duplicate field `path`") => {
+            ToolError::Invalid(
+                "the path is given twice (`path` and one of its other spellings such as \
+                 `file_path`); give it once, as `path`"
+                    .into(),
+            )
+        }
+        other => other,
+    })?;
     if !args.path.chars().any(char::is_control) {
         return Ok(args);
     }
@@ -339,6 +350,20 @@ impl Invocation {
         }
     }
 
+    /// The call's arguments as JSON with the names the schema gives (`path`, not `file_path`),
+    /// for hooks; `None` for a tool whose arguments need no normalising.
+    pub fn hook_arguments(&self) -> Option<String> {
+        match self {
+            Invocation::ReadFile {
+                path,
+                offset,
+                limit,
+            } => Some(json!({"path": path, "offset": offset, "limit": limit}).to_string()),
+            Invocation::ListDir { path } => Some(json!({"path": path}).to_string()),
+            _ => None,
+        }
+    }
+
     /// The path a file tool names, for rule patterns; `None` for commands and processes.
     pub fn path(&self) -> Option<&str> {
         match self {
@@ -460,7 +485,7 @@ pub fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "read_file".into(),
-            description: "Read a UTF-8 text file. Lines are numbered; use offset (1-based line) and limit to page through large files.".into(),
+            description: "Read a text file (UTF-8, or UTF-16 with a byte order mark). Lines are numbered; use offset (1-based line) and limit to page through large files.".into(),
             parameters: json!({"type": "object", "properties": {
                 "path": path, "offset": {"type": "integer"}, "limit": {"type": "integer"}
             }, "required": ["path"]}),
@@ -622,6 +647,32 @@ mod tests {
             Invocation::parse("read_file", r#"{"path":"a.rs","limit":"many"}"#),
             Err(ToolError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn zero_means_not_given_and_a_doubled_path_is_a_clear_error() {
+        assert!(matches!(
+            Invocation::parse("read_file", r#"{"path":"a","offset":0,"limit":0}"#).unwrap(),
+            Invocation::ReadFile {
+                offset: None,
+                limit: None,
+                ..
+            }
+        ));
+        let Err(ToolError::Invalid(message)) =
+            Invocation::parse("read_file", r#"{"path":"a","file_path":"b"}"#)
+        else {
+            panic!("expected an invalid-arguments error");
+        };
+        assert!(message.contains("given twice"), "{message}");
+        let hooked = Invocation::parse("read_file", r#"{"file_path":"a.rs","limit":"2"}"#)
+            .unwrap()
+            .hook_arguments()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&hooked).unwrap(),
+            json!({"path": "a.rs", "offset": null, "limit": 2})
+        );
     }
 
     #[test]

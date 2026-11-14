@@ -414,7 +414,7 @@ and `environments.agent_update` (protocol 0.28)
     remembered per user, the tour works with the keyboard and screen readers, and it needs no
     network ([07](07-desktop-ui.md), [14](14-projects-and-automation.md#home-implemented),
     [17](17-memory.md)).
-41. **read_file fix.** The `read_file` tool does not work in use. Reproduce the failure first,
+41. **read_file fix** (implemented). The `read_file` tool does not work in use. Reproduce the failure first,
     find its cause in the tool's path handling or its result, and fix it. Add a test that reads a
     real file through the same path the app uses ([05](05-tools-and-isolation.md)).
 42. **Claude harness for imperium-core.** A harness that lets Claude Code drive the imperium-core

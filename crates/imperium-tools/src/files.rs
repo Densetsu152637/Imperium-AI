@@ -2,7 +2,8 @@ use std::path::Path;
 
 use crate::{ToolError, Workspace, remote_files};
 
-/// Largest text returned to the model from one read, in characters.
+/// Largest text returned to the model from one read, in characters (the line numbers and
+/// notes count; a longer line is cut where this ends).
 const MAX_READ_CHARS: usize = 100_000;
 
 pub async fn read_file(
@@ -15,26 +16,46 @@ pub async fn read_file(
         remote_files::read_bytes(workspace, path).await?
     } else {
         let full = workspace.resolve(path)?;
+        if tokio::fs::metadata(&full)
+            .await
+            .is_ok_and(|meta| meta.is_dir())
+        {
+            return Err(ToolError::Invalid(format!(
+                "{path} is a directory; use list_dir to see what is in it"
+            )));
+        }
         tokio::fs::read(&full)
             .await
             .map_err(|error| ToolError::Io(format!("{path}: {error}")))?
     };
-    let text = readable_text(bytes, path)?;
+    let (text, note) = readable_text(bytes, path)?;
     let start = offset.unwrap_or(1).max(1) - 1;
-    let lines: Vec<&str> = text
+    let lines = text
         .lines()
         .skip(start)
         .take(limit.unwrap_or(usize::MAX))
-        .collect();
+        .enumerate();
     let mut out = String::new();
-    for (index, line) in lines.iter().enumerate() {
-        out.push_str(&format!("{:>6}\t{line}\n", start + index + 1));
-        if out.len() > MAX_READ_CHARS {
-            out.push_str("[truncated: read a smaller range with offset and limit]\n");
+    if let Some(note) = note {
+        out.push_str(&format!("[note: {note}]\n"));
+    }
+    let mut chars = out.chars().count();
+    let mut any = false;
+    for (index, line) in lines {
+        any = true;
+        let numbered = format!("{:>6}\t{line}\n", start + index + 1);
+        let length = numbered.chars().count();
+        if chars + length > MAX_READ_CHARS {
+            // A line past the budget is cut where the budget ends, so one huge line (a minified
+            // file) still shows its start.
+            out.extend(numbered.chars().take(MAX_READ_CHARS - chars));
+            out.push_str("\n[truncated: read a smaller range with offset and limit]\n");
             break;
         }
+        out.push_str(&numbered);
+        chars += length;
     }
-    if out.is_empty() {
+    if !any {
         out.push_str("[no lines in that range]");
     }
     Ok(out)
@@ -43,11 +64,14 @@ pub async fn read_file(
 /// The text of a file's bytes for reading: UTF-8, or UTF-16 when it starts with a byte order
 /// mark (what PowerShell's `>` and many Windows tools write). Editing keeps to UTF-8, so a
 /// UTF-16 file is never rewritten in another encoding.
-fn readable_text(bytes: Vec<u8>, shown: &str) -> Result<String, ToolError> {
+///
+/// A file that is not valid in its encoding is still read when it is text (no NUL bytes in a
+/// UTF-8 file): the bad bytes show as U+FFFD and the second value says so for a note to the
+/// model. A file with NUL bytes and no byte order mark is binary and is refused.
+fn readable_text(bytes: Vec<u8>, shown: &str) -> Result<(String, Option<&'static str>), ToolError> {
     let utf16 = |rest: &[u8], big_endian: bool| {
-        let units: Vec<u16> = rest
-            .as_chunks::<2>()
-            .0
+        let (pairs, dropped) = rest.as_chunks::<2>();
+        let units: Vec<u16> = pairs
             .iter()
             .map(|pair| {
                 if big_endian {
@@ -57,14 +81,32 @@ fn readable_text(bytes: Vec<u8>, shown: &str) -> Result<String, ToolError> {
                 }
             })
             .collect();
-        String::from_utf16(&units).map_err(|_| ToolError::Invalid(format!("{shown} is not text")))
+        match String::from_utf16(&units) {
+            Ok(text) if dropped.is_empty() => (text, None),
+            Ok(text) => (
+                text,
+                Some("the file ends in a lone byte, which is left out"),
+            ),
+            Err(_) => (
+                String::from_utf16_lossy(&units),
+                Some("some of the file is not valid UTF-16; it shows as U+FFFD"),
+            ),
+        }
     };
-    match bytes.as_slice() {
+    Ok(match bytes.as_slice() {
         [0xFF, 0xFE, rest @ ..] => utf16(rest, false),
         [0xFE, 0xFF, rest @ ..] => utf16(rest, true),
-        _ => String::from_utf8(bytes)
-            .map_err(|_| ToolError::Invalid(format!("{shown} is not UTF-8 text"))),
-    }
+        _ => match String::from_utf8(bytes) {
+            Ok(text) => (text, None),
+            Err(error) if error.as_bytes().contains(&0) => {
+                return Err(ToolError::Invalid(format!("{shown} is a binary file")));
+            }
+            Err(error) => (
+                String::from_utf8_lossy(error.as_bytes()).into_owned(),
+                Some("the file is not valid UTF-8; invalid bytes show as U+FFFD"),
+            ),
+        },
+    })
 }
 
 pub async fn write_file(
@@ -183,6 +225,66 @@ mod tests {
             read_file(&workspace, "bin.dat", None, None).await,
             Err(ToolError::Invalid(_))
         ));
+
+        // Big endian, and an odd byte count that is said to be dropped.
+        let mut big = vec![0xFE, 0xFF];
+        big.extend("hi\n".encode_utf16().flat_map(u16::to_be_bytes));
+        std::fs::write(dir.path().join("be.txt"), &big).unwrap();
+        let read = read_file(&workspace, "be.txt", None, None).await.unwrap();
+        assert_eq!(read, "     1\thi\n");
+        big.push(0x41);
+        std::fs::write(dir.path().join("odd.txt"), &big).unwrap();
+        let read = read_file(&workspace, "odd.txt", None, None).await.unwrap();
+        assert!(
+            read.starts_with("[note: the file ends in a lone byte"),
+            "{read}"
+        );
+        assert!(read.contains("     1\thi\n"), "{read}");
+    }
+
+    #[tokio::test]
+    async fn a_latin1_file_reads_lossily_with_a_note_and_a_folder_points_to_list_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        std::fs::write(dir.path().join("old.txt"), b"caf\xE9\n").unwrap();
+        let read = read_file(&workspace, "old.txt", None, None).await.unwrap();
+        assert!(
+            read.starts_with("[note: the file is not valid UTF-8"),
+            "{read}"
+        );
+        assert!(read.contains("caf\u{fffd}"), "{read}");
+
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        let Err(ToolError::Invalid(message)) = read_file(&workspace, "src", None, None).await
+        else {
+            panic!("a directory is not a file");
+        };
+        assert!(
+            message.contains("is a directory; use list_dir"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_line_or_a_long_file_is_cut_at_the_character_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        // One minified line far past the budget: its start is shown, cut by characters.
+        std::fs::write(dir.path().join("min.js"), "\u{e9}".repeat(300_000)).unwrap();
+        let read = read_file(&workspace, "min.js", None, None).await.unwrap();
+        assert!(read.starts_with("     1\t\u{e9}"));
+        assert!(read.contains("[truncated:"));
+        assert!(read.chars().count() < MAX_READ_CHARS + 100);
+        // Many short lines stop at the budget too.
+        let lines = "y".repeat(99) + "\n";
+        std::fs::write(dir.path().join("many.txt"), lines.repeat(2000)).unwrap();
+        let read = read_file(&workspace, "many.txt", None, None).await.unwrap();
+        assert!(read.contains("[truncated:"));
+        assert!(read.chars().count() < MAX_READ_CHARS + 100);
+        let small = read_file(&workspace, "many.txt", Some(1), Some(2))
+            .await
+            .unwrap();
+        assert!(!small.contains("[truncated:"));
     }
 
     #[tokio::test]
