@@ -71,7 +71,8 @@ import {
 } from "./ModelSelect";
 import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
-import { canStop, isStopShortcut, isStopped } from "../stop";
+import { triggers } from "../shortcuts";
+import { canStop, isStopped } from "../stop";
 import { editStillValid, queueActions, queueLabel, steeredLabel, type QueueChange } from "../queue";
 import { ModelName } from "../components/ModelName";
 import { startedByNote } from "../agents";
@@ -244,10 +245,10 @@ export function SessionPanel({
         name: (id) => modelName(aliases, id),
       });
   const wait = stopped && described?.action !== "budget" ? null : described;
-  // Ctrl+. (Cmd+. on macOS) stops a running session or resumes a stopped one.
+  // The stop shortcut (Ctrl+. by default; Settings → Keyboard) stops a running session or resumes a stopped one.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!isStopShortcut(event) || archived) return;
+      if (!triggers(event, settings.shortcuts, "session.stop") || archived) return;
       if (stopped || stoppable) {
         event.preventDefault();
         onStop(!stopped);
@@ -255,7 +256,7 @@ export function SessionPanel({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stopped, stoppable, archived, onStop]);
+  }, [stopped, stoppable, archived, onStop, settings.shortcuts]);
 
   return (
     <div className="session">

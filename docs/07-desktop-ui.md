@@ -589,7 +589,7 @@ or as letters in order. With nothing typed, the last few commands run lead under
 while typing, recently run commands are lifted above equal matches. The last 20 are kept in the
 layout document. Arrow keys and Page Up/Down move, Enter runs, Tab and Shift+Tab jump between
 groups, Escape (or a click outside) closes, and the mouse works too. Commands with a shortcut
-show it (Open Settings: Ctrl+,).
+show their current binding (Open Settings: Ctrl+, unless rebound).
 
 **Registry:** `src/commands/registry.ts` holds named command sources; a feature registers one
 with `useRegisterCommands(name, build)`, and the palette calls each source when it opens, so
@@ -598,8 +598,33 @@ commands always run the feature's current handlers. The app's own commands
 buttons. Ranking and grouping are pure functions in `commands/rank.ts`, tested in
 `test/rank.test.ts`. A panel window's palette lists the same commands but sends the chosen one's
 id to the main window (a `command` panel-window event), which runs it, records it as recent, and
-comes forward; theme changes leave the panel window in front. The shortcut is listed under
-Settings → Keyboard; shortcuts are not rebindable yet.
+comes forward; theme changes leave the panel window in front. The shortcuts are listed, and
+rebindable, under Settings → Keyboard ([below](#rebindable-shortcuts-implemented)).
+
+## Rebindable shortcuts (implemented)
+
+Settings → Keyboard lists each shortcut with its binding. **Change** waits for the next key
+combination; **Reset** returns one to its default. The rebindable ones are the command palette
+(Ctrl+K), Settings (Ctrl+,), and stop or resume the session (Ctrl+.); on macOS Cmd stands for
+Ctrl, and a chord is stored as "Mod+Shift+K" so a binding means the same everywhere. Sending
+(Enter, Ctrl+Enter), New line, Esc and the palette's own keys are fixed, and the push-to-talk
+key keeps its own setting under Chat.
+
+A binding must hold Ctrl (Cmd) or Alt unless it is a function key, so it cannot fire while
+typing; Escape cannot be bound. A combination another action holds, or a fixed use (sending, the
+push-to-talk key), is refused with the holder named, so no two shortcuts ever share a key. Only
+the bindings the user changed are saved (`shortcuts` in the app settings document), so a later
+version's new default reaches everyone who has not rebound that action; on load, saved bindings
+for actions that no longer exist, that do not parse, or that now clash are dropped back to the
+defaults. The palette shows each command's current binding, and the Settings button's tooltip
+follows it.
+
+**Registry:** `src/shortcuts.ts` declares the actions (id, label, description, default) and holds
+the pure logic (parsing, matching an event, conflict detection, sanitising what was saved);
+`useSettings().shortcuts` is read by the handlers in `App.tsx`, `commands/CommandPalette.tsx` and
+`panels/SessionPanel.tsx`. A command that has a shortcut names its action (`shortcutAction`) rather
+than a fixed key. Tested in `test/shortcuts.test.ts`. Adding a rebindable shortcut is a new entry in
+the registry and a handler that asks `triggers(event, settings.shortcuts, id)`.
 
 ## New-user tour (implemented)
 
@@ -679,7 +704,7 @@ every setting:
   [push-to-talk](#attachments-and-voice-input-implemented) key),
   Notifications (sounds, a title badge, and system notifications; see
   [notifications](#notifications-implemented)), Panels (show or
-  hide each panel, reset the layout), Keyboard (the shortcuts, the command palette's among them), Daemon (start, stop, restart, log, keep
+  hide each panel, reset the layout), Keyboard (the shortcuts, rebindable; see [rebindable shortcuts](#rebindable-shortcuts-implemented)), Daemon (start, stop, restart, log, keep
   running), Updates (installed version with **Check for updates** and **Check and install**,
   channel, how often to check, and checking when the computer starts; see
   [desktop updates](11-ci-cd.md#desktop-updates)), and Connectors (opens the Connectors

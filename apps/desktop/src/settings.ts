@@ -8,6 +8,7 @@ import { createContext, useContext } from "react";
 import { toggleMark, type ModelMark, type ModelMarks } from "./modelPrefs";
 import { rememberTheme } from "./boot";
 import { getDoc, setDoc, takeLegacy } from "./store";
+import { sanitizeOverrides, type ShortcutOverrides } from "./shortcuts";
 import { migrateTour, type TourState } from "./tourSteps";
 import type { PttKey } from "./voice";
 
@@ -75,6 +76,8 @@ export type AppSettings = {
   modelMarks: ModelMarks;
   // The first-run tour: how it last ended, null until it has run (tourSteps.ts).
   tour: TourState;
+  // Keyboard shortcuts the user rebound, by action; the rest use their defaults (shortcuts.ts).
+  shortcuts: ShortcutOverrides;
 };
 
 /** The settings each display control used to be called. */
@@ -113,6 +116,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enabledMods: {},
   modelMarks: {},
   tour: null,
+  shortcuts: {},
 };
 
 /** The saved document: the settings plus a version for future migrations. */
@@ -137,8 +141,15 @@ export function loadSettings(): AppSettings {
       setDoc("settings", { ...saved, version: VERSION });
     }
   }
-  return { ...DEFAULT_SETTINGS, ...saved };
+  const merged = { ...DEFAULT_SETTINGS, ...saved };
+  // A document from before shortcuts could be rebound has none; one with stale or clashing
+  // bindings (an action removed, a default another action now holds) is cleaned.
+  return { ...merged, shortcuts: sanitizeOverrides(saved.shortcuts, reservedChords(merged)) };
 }
+
+/** The chords no action may take besides the fixed ones: the push-to-talk key. */
+export const reservedChords = (settings: Pick<AppSettings, "pushToTalkKey">): string[] =>
+  settings.pushToTalkKey === "off" ? [] : [settings.pushToTalkKey.replace("Ctrl+", "Mod+")];
 
 export function saveSettings(settings: AppSettings): void {
   // Keep fields this version does not know, so a downgrade then upgrade loses nothing.
