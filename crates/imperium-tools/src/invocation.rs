@@ -125,11 +125,46 @@ struct ProcessArgs {
 
 #[derive(Deserialize)]
 struct PathArgs {
+    /// Models name the path argument in several ways whatever the schema says.
+    #[serde(
+        alias = "file_path",
+        alias = "filepath",
+        alias = "file_name",
+        alias = "filename",
+        alias = "file"
+    )]
     path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_count")]
     offset: Option<usize>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_count")]
     limit: Option<usize>,
+}
+
+/// A line count or position as models write it: an integer, a whole number written as a float
+/// (`10.0`), or a number in quotes (`"10"`); `null`, an empty string, or a negative number
+/// means it was not given.
+fn lenient_count<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error> {
+    use serde::de::Error;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let number = match &value {
+        serde_json::Value::Null => return Ok(None),
+        serde_json::Value::Number(number) => number.clone(),
+        serde_json::Value::String(text) if text.trim().is_empty() => return Ok(None),
+        serde_json::Value::String(text) => text
+            .trim()
+            .parse::<serde_json::Number>()
+            .map_err(|_| D::Error::custom(format!("expected a number, got {text:?}")))?,
+        other => return Err(D::Error::custom(format!("expected a number, got {other}"))),
+    };
+    Ok(match number.as_u64() {
+        Some(count) => Some(usize::try_from(count).unwrap_or(usize::MAX)),
+        None => number
+            .as_f64()
+            .filter(|float| *float >= 0.0 && float.is_finite())
+            .map(|float| float as usize),
+    })
 }
 
 #[derive(Deserialize)]
@@ -559,6 +594,34 @@ mod tests {
             Invocation::ReadFile { path, .. } | Invocation::ListDir { path } => path,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn read_file_accepts_the_argument_spellings_models_use() {
+        let read = |arguments: &str| match Invocation::parse("read_file", arguments).unwrap() {
+            Invocation::ReadFile {
+                path,
+                offset,
+                limit,
+            } => (path, offset, limit),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            read(r#"{"path":"a.rs","offset":"3","limit":10.0}"#),
+            ("a.rs".into(), Some(3), Some(10))
+        );
+        assert_eq!(
+            read(r#"{"file_path":"a.rs","offset":null,"limit":""}"#),
+            ("a.rs".into(), None, None)
+        );
+        assert_eq!(
+            read(r#"{"filename":"a.rs","offset":-1}"#),
+            ("a.rs".into(), None, None)
+        );
+        assert!(matches!(
+            Invocation::parse("read_file", r#"{"path":"a.rs","limit":"many"}"#),
+            Err(ToolError::Invalid(_))
+        ));
     }
 
     #[test]
