@@ -395,6 +395,14 @@ Several hooks rewrite in order, each seeing the last one's result. The rules:
   config folder by hand (no install record) counts as the user's, as its hooks already run
   commands as the user.
 - A hook that fails or times out leaves the call as it was.
+- **Where a rewriting plugin may live.** `<config>/plugins` and the user's own
+  `extensions.plugin_dirs`. An environment's configuration can add plugin folders too, but a
+  plugin found only there may block and never rewrite. A `plugin_dirs` entry of the user's own
+  **inside a repository a writer agent can modify gives that agent a rewriting plugin**: put
+  those folders outside your projects. The safety floor makes a file tool's write into
+  `<config>/plugins`, those folders and `<config>/mods` ask first (the folders are guarded by
+  their resolved path as well as the one given, so a link or junction does not escape it);
+  commands are read, not path-checked, so this is a guard against mistakes, not a boundary.
 
 ### Trusted main-context mods (trust implemented, loader not built)
 

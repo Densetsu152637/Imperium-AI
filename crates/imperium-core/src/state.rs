@@ -158,6 +158,20 @@ struct Placement {
     started_by: Option<imperium_protocol::initiative::StartedBy>,
 }
 
+/// Asks the safety floor to guard the folders whose files the daemon runs or vouches for: the
+/// installed mods (an approval vouches for their files) and the plugin folders (the user's own
+/// can carry hooks that rewrite calls), `<config>/plugins` and `extensions.plugin_dirs` of the
+/// user's settings. A writer agent that can reach one of those folders could otherwise plant a
+/// plugin, so a write there is always asked about.
+fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
+    use imperium_tools::permissions::protect_dir;
+    protect_dir(&paths.config_dir().join("mods"));
+    protect_dir(&paths.config_dir().join("plugins"));
+    for dir in &settings.extensions.plugin_dirs {
+        protect_dir(dir);
+    }
+}
+
 /// State shared by every connection: configuration and the running sessions.
 #[derive(Debug)]
 pub struct DaemonState {
@@ -282,9 +296,7 @@ impl DaemonState {
         local: Option<LocalRuntime>,
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
-        // Writing into the installed mods is something the safety floor always asks about: their
-        // files are what an approval vouches for.
-        imperium_tools::permissions::protect_dir(&paths.config_dir().join("mods"));
+        protect_extension_dirs(&paths, &settings);
         let devices = Devices::load(paths.data_dir().join("devices.json"));
         let monitor = Arc::new(LoadMonitor::new(settings.load.clone()));
         let environments = Environments::load(paths.data_dir().join("environments.json"));
@@ -963,6 +975,7 @@ impl DaemonState {
 
     /// Replaces the settings snapshot, such as after the app saved model settings.
     pub(crate) fn replace_settings(&self, settings: Settings) {
+        protect_extension_dirs(&self.paths, &settings);
         *self
             .settings
             .write()

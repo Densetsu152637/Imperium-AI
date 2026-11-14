@@ -145,8 +145,8 @@ pub(crate) fn apply_approvals(state: &DaemonState, listing: &mut ModListResult) 
         // One read of the folder `mods/<id>` gives both the hash and what the listing must
         // match: the listed entry belongs to that folder (not another folder that claims the
         // id) and has not changed since the list read it.
-        let intact = snapshot(&mods_dir.join(&info.id)).is_ok_and(|files| {
-            hash_files(&files).eq_ignore_ascii_case(&record.sha256) && matches_listing(&files, info)
+        let intact = digest_mod(&mods_dir.join(&info.id)).is_ok_and(|digest| {
+            digest.hash.eq_ignore_ascii_case(&record.sha256) && matches_listing(&digest.kept, info)
         });
         if !intact {
             info.permissions.clear();
@@ -455,42 +455,105 @@ pub(crate) async fn install(
 /// its length, and its bytes, in path order. Leaves out `.git` and the source file an install
 /// writes, so a copy hashes the same as the source it came from.
 pub(crate) fn tree_sha256(dir: &Path) -> Result<String, String> {
-    Ok(hash_files(&snapshot(dir)?))
+    Ok(digest_tree(dir, &[])?.hash)
 }
 
-/// A folder's files (path relative to it with `/`, and bytes), in path order, each read once.
+/// A folder's hash, and the bytes of the files that were asked to be kept (path relative to
+/// the folder with `/`, and bytes).
+struct TreeDigest {
+    hash: String,
+    kept: Files,
+}
+
 type Files = Vec<(String, Vec<u8>)>;
 
-fn snapshot(dir: &Path) -> Result<Files, String> {
+/// [`tree_sha256`] that also keeps the bytes of `keep`'s files. Each file is read once, in
+/// chunks, so a big mod is never held in memory; a file whose length changed while it was read
+/// is an error.
+fn digest_tree(dir: &Path, keep: &[String]) -> Result<TreeDigest, String> {
+    use std::io::Read;
+
     let mut paths = Vec::new();
     collect(dir, "", &mut paths)?;
     paths.sort();
-    paths
-        .into_iter()
-        .map(|relative| {
-            let bytes = std::fs::read(dir.join(&relative))
-                .map_err(|error| format!("{relative}: {error}"))?;
-            Ok((relative, bytes))
-        })
-        .collect()
-}
-
-fn hash_files(files: &Files) -> String {
     let mut digest = Sha256::new();
-    for (relative, bytes) in files {
+    let mut kept = Vec::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    for relative in paths {
+        let fail = |error: std::io::Error| format!("{relative}: {error}");
+        let mut file = std::fs::File::open(dir.join(&relative)).map_err(fail)?;
+        let length = file
+            .metadata()
+            .map_err(|error| format!("{relative}: {error}"))?
+            .len();
         digest.update(relative.as_bytes());
         digest.update([0u8]);
-        digest.update(u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes());
-        digest.update(bytes);
+        digest.update(length.to_le_bytes());
+        let keeping = keep.contains(&relative);
+        let mut bytes = Vec::new();
+        let mut seen = 0u64;
+        loop {
+            let count = file
+                .read(&mut buffer)
+                .map_err(|error| format!("{relative}: {error}"))?;
+            if count == 0 {
+                break;
+            }
+            seen += u64::try_from(count).unwrap_or(u64::MAX);
+            digest.update(&buffer[..count]);
+            if keeping {
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+        }
+        if seen != length {
+            return Err(format!("{relative} changed while it was read"));
+        }
+        if keeping {
+            kept.push((relative, bytes));
+        }
     }
-    digest
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    Ok(TreeDigest {
+        hash: digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+        kept,
+    })
 }
 
-/// Whether the snapshot's `mod.json` has the id the listing gave and its entry file holds the
+/// The hash of a mod's folder with its `mod.json` and entry file's bytes, from one pass: the
+/// manifest is read first to learn the entry, and must be the same bytes when the pass reaches
+/// it.
+fn digest_mod(dir: &Path) -> Result<TreeDigest, String> {
+    let manifest =
+        std::fs::read(dir.join("mod.json")).map_err(|error| format!("mod.json: {error}"))?;
+    let entry = manifest_entry(&manifest).ok_or("mod.json is not a manifest")?;
+    let digest = digest_tree(dir, &["mod.json".to_string(), entry])?;
+    let same = digest
+        .kept
+        .iter()
+        .any(|(name, bytes)| name == "mod.json" && *bytes == manifest);
+    if same {
+        Ok(digest)
+    } else {
+        Err("mod.json changed while it was read".into())
+    }
+}
+
+/// The entry file named by a manifest (`index.js` when it names none), as a relative path.
+fn manifest_entry(manifest: &[u8]) -> Option<String> {
+    let manifest: serde_json::Value = serde_json::from_slice(manifest).ok()?;
+    Some(
+        manifest
+            .get("entry")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("index.js")
+            .replace('\\', "/"),
+    )
+}
+
+/// Whether the kept `mod.json` has the id the listing gave and the kept entry file holds the
 /// source the listing carries.
 fn matches_listing(files: &Files, info: &imperium_protocol::methods::ModInfo) -> bool {
     let file = |name: &str| {
@@ -499,22 +562,21 @@ fn matches_listing(files: &Files, info: &imperium_protocol::methods::ModInfo) ->
             .find(|(relative, _)| relative == name)
             .map(|(_, bytes)| bytes)
     };
-    let Some(manifest) =
-        file("mod.json").and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
-    else {
+    let Some(manifest) = file("mod.json") else {
         return false;
     };
-    if manifest.get("id").and_then(serde_json::Value::as_str) != Some(info.id.as_str()) {
+    let Some(entry) = manifest_entry(manifest) else {
         return false;
-    }
-    let entry = manifest
-        .get("entry")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("index.js")
-        .replace('\\', "/");
-    file(&entry)
-        .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
-        .is_some_and(|source| source == info.source)
+    };
+    let id_matches = serde_json::from_slice::<serde_json::Value>(manifest)
+        .ok()
+        .is_some_and(|manifest| {
+            manifest.get("id").and_then(serde_json::Value::as_str) == Some(info.id.as_str())
+        });
+    id_matches
+        && file(&entry)
+            .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
+            .is_some_and(|source| source == info.source)
 }
 
 fn collect(root: &Path, prefix: &str, files: &mut Vec<String>) -> Result<(), String> {
