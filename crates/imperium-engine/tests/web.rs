@@ -416,6 +416,7 @@ async fn agents_use_tabs_and_save_downloads_after_approval() {
     };
     let dir = tempfile::tempdir().unwrap();
     let session = Session::spawn(SessionConfig {
+        attachments: Default::default(),
         id: "tabs".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
         model: Some(ResolvedModel {
