@@ -588,6 +588,13 @@ impl EnvironmentConfig {
                 "mcp.servers.{name}: allow was ignored; its tools ask like any others"
             ));
         }
+        if server.sampling {
+            server.sampling = false;
+            self.refuse(format!(
+                "mcp.servers.{name}: sampling was ignored; only your own config lets a server \
+                 use your models"
+            ));
+        }
         server.catalog = None;
         self.mcp_servers.insert(name, server);
     }

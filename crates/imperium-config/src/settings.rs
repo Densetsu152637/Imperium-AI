@@ -1157,6 +1157,11 @@ pub struct McpServerSettings {
     pub enabled: bool,
     #[serde(default)]
     pub timeout_s: Option<u64>,
+    /// Lets the server ask the session's model to write replies (MCP sampling); each request
+    /// still waits for the user's approval. Set in the user's own config only: a repository's
+    /// servers never get it, and the connector forms leave it as it is.
+    #[serde(default)]
+    pub sampling: bool,
     /// The connector catalogue entry it was added from, if any.
     #[serde(default)]
     pub catalog: Option<String>,
@@ -1175,6 +1180,7 @@ impl Default for McpServerSettings {
             allow: Vec::new(),
             enabled: true,
             timeout_s: None,
+            sampling: false,
             catalog: None,
         }
     }

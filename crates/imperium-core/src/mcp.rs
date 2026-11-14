@@ -113,6 +113,7 @@ pub(crate) fn configured(
         timeout: server
             .timeout_s
             .map_or(DEFAULT_TIMEOUT, Duration::from_secs),
+        sampling: server.sampling,
     })
 }
 

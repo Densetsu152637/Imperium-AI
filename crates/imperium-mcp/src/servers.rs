@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use imperium_api::ToolSpec;
+use imperium_api::{Sampler, ToolSpec};
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 
-use crate::client::{Client, McpError, PROTOCOL_VERSION};
+use crate::client::{Client, McpError, PROTOCOL_VERSION, Sampling};
+use crate::extras::{self, ToolKind};
 
 /// How to reach a server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,9 @@ pub struct ServerSpec {
     /// Tools that run without asking (by MCP tool name, or `*` for all).
     pub allow: Vec<String>,
     pub timeout: Duration,
+    /// Whether the server may ask the session's model to write replies (sampling). Each
+    /// request still waits for the user's approval; off unless the user's own config turns it on.
+    pub sampling: bool,
 }
 
 /// A tool offered by a connected server.
@@ -48,9 +52,12 @@ pub struct McpTool {
     pub input_schema: Value,
     /// Runs without the user's approval (from the server's `allow` list).
     pub allowed: bool,
+    /// One of the server's own tools, or an extra tool for its resources or prompts.
+    pub kind: ToolKind,
 }
 
 struct Server {
+    name: String,
     client: Client,
     tools: Vec<McpTool>,
     /// The server process for stdio servers; dropping it stops the server.
@@ -121,7 +128,12 @@ impl McpServers {
 
     /// Calls a tool with JSON `arguments` and returns its content as text; a tool-reported
     /// error is returned as `Err`.
-    pub async fn call(&self, qualified: &str, arguments: &str) -> Result<String, String> {
+    pub async fn call(
+        &self,
+        qualified: &str,
+        arguments: &str,
+        sampler: Option<&dyn Sampler>,
+    ) -> Result<String, String> {
         let (server, tool) = self
             .servers
             .iter()
@@ -139,19 +151,104 @@ impl McpServers {
             serde_json::from_str(arguments)
                 .map_err(|error| format!("invalid arguments: {error}"))?
         };
-        let result = server
-            .client
-            .request(
-                "tools/call",
-                json!({"name": tool.name, "arguments": arguments}),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        let text = content_text(&result);
-        if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            Err(text)
-        } else {
-            Ok(text)
+        let sampling = sampler.map(|sampler| Sampling {
+            sampler,
+            server: &server.name,
+        });
+        let ask = |method: &'static str, params: Value| {
+            server.client.request_with(method, params, sampling)
+        };
+        let fail = |error: McpError| error.to_string();
+        let page = |arguments: &Value| match arguments.get("cursor").and_then(Value::as_str) {
+            Some(cursor) => json!({"cursor": cursor}),
+            None => json!({}),
+        };
+        match tool.kind {
+            ToolKind::Remote => {
+                let result = ask(
+                    "tools/call",
+                    json!({"name": tool.name, "arguments": arguments}),
+                )
+                .await
+                .map_err(fail)?;
+                let text = content_text(&result);
+                if result.get("isError").and_then(Value::as_bool) == Some(true) {
+                    Err(text)
+                } else {
+                    Ok(text)
+                }
+            }
+            ToolKind::ResourcesList => {
+                let params = page(&arguments);
+                let first = params.get("cursor").is_none();
+                let listed = ask("resources/list", params).await.map_err(fail)?;
+                // Templates come with the first page; a server without them is not an error.
+                let templates = if first {
+                    ask("resources/templates/list", json!({})).await.ok()
+                } else {
+                    None
+                };
+                Ok(extras::frame(
+                    "listing",
+                    &server.name,
+                    ("of", "resources"),
+                    &extras::resources_listing(&listed, templates.as_ref()),
+                ))
+            }
+            ToolKind::ResourcesRead => {
+                let uri = arguments
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .filter(|uri| !uri.is_empty())
+                    .ok_or("uri is required")?;
+                let read = ask("resources/read", json!({"uri": uri}))
+                    .await
+                    .map_err(fail)?;
+                Ok(extras::frame(
+                    "resource",
+                    &server.name,
+                    ("uri", uri),
+                    &extras::resource_text(&read),
+                ))
+            }
+            ToolKind::PromptsList => {
+                let listed = ask("prompts/list", page(&arguments)).await.map_err(fail)?;
+                Ok(extras::frame(
+                    "listing",
+                    &server.name,
+                    ("of", "prompts"),
+                    &extras::prompts_listing(&listed),
+                ))
+            }
+            ToolKind::PromptsGet => {
+                let name = arguments
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .ok_or("name is required")?;
+                // Prompt arguments are text; other JSON values are sent as their JSON.
+                let given: serde_json::Map<String, Value> = arguments
+                    .get("arguments")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flatten()
+                    .map(|(key, value)| {
+                        let text = value
+                            .as_str()
+                            .map_or_else(|| value.to_string(), str::to_string);
+                        (key.clone(), Value::String(text))
+                    })
+                    .collect();
+                let got = ask("prompts/get", json!({"name": name, "arguments": given}))
+                    .await
+                    .map_err(fail)?;
+                Ok(extras::frame(
+                    "prompt",
+                    &server.name,
+                    ("name", name),
+                    &extras::prompt_text(&got),
+                ))
+            }
         }
     }
 }
@@ -191,10 +288,14 @@ async fn start(spec: ServerSpec) -> Result<Server, String> {
             None,
         ),
     };
+    if spec.sampling {
+        client.allow_sampling();
+    }
     let tools = initialize(&client, &spec)
         .await
         .map_err(|error| error.to_string())?;
     Ok(Server {
+        name: spec.name,
         client,
         tools,
         _child: child,
@@ -207,16 +308,16 @@ async fn initialize(client: &Client, spec: &ServerSpec) -> Result<Vec<McpTool>, 
             "initialize",
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
+                "capabilities": if spec.sampling { json!({"sampling": {}}) } else { json!({}) },
                 "clientInfo": {"name": "imperium", "version": env!("CARGO_PKG_VERSION")},
             }),
         )
         .await?;
-    if init.get("capabilities").is_none() {
+    let Some(capabilities) = init.get("capabilities") else {
         return Err(McpError::Protocol(
             "initialize returned no capabilities".into(),
         ));
-    }
+    };
     client
         .notify("notifications/initialized", json!({}))
         .await?;
@@ -253,6 +354,7 @@ async fn initialize(client: &Client, spec: &ServerSpec) -> Result<Vec<McpTool>, 
                     .allow
                     .iter()
                     .any(|allowed| allowed == "*" || allowed == name),
+                kind: ToolKind::Remote,
             });
         }
         cursor = page
@@ -260,9 +362,47 @@ async fn initialize(client: &Client, spec: &ServerSpec) -> Result<Vec<McpTool>, 
             .and_then(Value::as_str)
             .map(str::to_string);
         if cursor.is_none() {
-            return Ok(tools);
+            break;
         }
     }
+    // A server that offers resources or prompts gets tools to list and read them. They are
+    // named like its own tools, so the agent's MCP allowlist, the local-files lock, the
+    // permission rules, and the server's `allow` list govern them the same way.
+    let extra = [
+        (
+            "resources",
+            [ToolKind::ResourcesList, ToolKind::ResourcesRead],
+        ),
+        ("prompts", [ToolKind::PromptsList, ToolKind::PromptsGet]),
+    ];
+    for (capability, kinds) in extra {
+        if capabilities.get(capability).is_none() {
+            continue;
+        }
+        for kind in kinds {
+            let Some(name) = kind.tool_name() else {
+                continue;
+            };
+            let qualified = qualified_name(&spec.name, name);
+            // A tool of the server's own with the same name wins.
+            if tools.iter().any(|tool| tool.qualified == qualified) {
+                continue;
+            }
+            tools.push(McpTool {
+                server: spec.name.clone(),
+                name: name.to_string(),
+                qualified,
+                description: kind.description().to_string(),
+                input_schema: kind.schema(),
+                allowed: spec
+                    .allow
+                    .iter()
+                    .any(|allowed| allowed == "*" || allowed == name),
+                kind,
+            });
+        }
+    }
+    Ok(tools)
 }
 
 /// `mcp__<server>__<tool>`, with characters model APIs reject replaced and the length capped

@@ -281,6 +281,7 @@ mod tests {
                 },
                 allow: Vec::new(),
                 timeout: Duration::from_secs(5),
+                sampling: false,
             }],
             eager,
         }

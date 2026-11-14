@@ -118,6 +118,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
                 },
                 allow: vec!["lookup".into()],
                 timeout: Duration::from_secs(5),
+                sampling: false,
             },
             ServerSpec {
                 name: "missing".into(),
@@ -129,6 +130,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
                 },
                 allow: Vec::new(),
                 timeout: Duration::from_secs(5),
+                sampling: false,
             },
         ]))],
         notices: vec!["hello from the daemon".into()],

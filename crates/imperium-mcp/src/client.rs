@@ -1,18 +1,28 @@
 //! A JSON-RPC connection to one MCP server over stdio (newline-delimited messages) or
 //! streamable HTTP (POSTed messages answered with JSON or an SSE stream).
+//!
+//! Requests the server makes of the client are pings (always answered) and, only where the
+//! client was told to allow it and a request of its own is in flight, sampling; everything else
+//! is refused. Sampling is answered inside the request that is waiting, by the [`Sampling`]
+//! that request was given.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::time::Instant;
+
+pub use crate::sampling::Sampling;
 
 /// The MCP revision this client speaks.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
+
+const SAMPLING_METHOD: &str = "sampling/createMessage";
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum McpError {
@@ -29,6 +39,47 @@ pub enum McpError {
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, McpError>>>>>;
+
+/// A request the server made of the client.
+struct ServerRequest {
+    id: Value,
+    method: String,
+    params: Value,
+}
+
+/// What the server asked while this client's own requests are in flight.
+#[derive(Default)]
+struct Inbound {
+    /// Sampling requests read from a stream, waiting for a request of ours to answer them.
+    queue: Mutex<VecDeque<ServerRequest>>,
+    wake: Notify,
+    /// Requests of ours waiting for an answer.
+    in_flight: AtomicUsize,
+    /// Whether the server may sample at all.
+    sampling: AtomicBool,
+}
+
+impl Inbound {
+    fn pop(&self) -> Option<ServerRequest> {
+        lock(&self.queue).pop_front()
+    }
+}
+
+/// Counts one request of ours as waiting for its answer.
+struct InFlight<'a>(&'a Inbound);
+
+impl<'a> InFlight<'a> {
+    fn new(inbound: &'a Inbound) -> Self {
+        inbound.in_flight.fetch_add(1, Ordering::SeqCst);
+        InFlight(inbound)
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 enum Transport {
     /// Messages to write; a background task owns the writer.
@@ -49,6 +100,7 @@ struct Http {
 
 pub struct Client {
     transport: Transport,
+    inbound: Arc<Inbound>,
     next_id: AtomicU64,
     timeout: Duration,
 }
@@ -78,6 +130,7 @@ impl Client {
         timeout: Duration,
     ) -> Self {
         let pending: Pending = Arc::default();
+        let inbound: Arc<Inbound> = Arc::default();
         let (outgoing, mut queue) = mpsc::unbounded_channel::<String>();
         tokio::spawn(async move {
             let mut writer = writer;
@@ -91,6 +144,7 @@ impl Client {
         });
         let replies = outgoing.clone();
         let reading = Arc::clone(&pending);
+        let incoming = Arc::clone(&inbound);
         tokio::spawn(async move {
             let mut lines = BufReader::new(reader).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -98,7 +152,7 @@ impl Client {
                     tracing::debug!(%line, "ignoring non-JSON output from an MCP server");
                     continue;
                 };
-                dispatch(message, &reading, &replies);
+                dispatch(message, &reading, &replies, &incoming);
             }
             // The server is gone: fail everything still waiting.
             for (_, waiter) in lock(&reading).drain() {
@@ -107,6 +161,7 @@ impl Client {
         });
         Client {
             transport: Transport::Stream { outgoing, pending },
+            inbound,
             next_id: AtomicU64::new(1),
             timeout,
         }
@@ -121,35 +176,68 @@ impl Client {
                 headers,
                 session: Mutex::new(None),
             }),
+            inbound: Arc::default(),
             next_id: AtomicU64::new(1),
             timeout,
         }
     }
 
-    /// Sends a request and waits for its result.
+    /// Lets the server send sampling requests, which are answered only inside a request made
+    /// with [`Client::request_with`] and a [`Sampling`]. Off until this is called.
+    pub fn allow_sampling(&self) {
+        self.inbound.sampling.store(true, Ordering::SeqCst);
+    }
+
+    /// Sends a request and waits for its result. Sampling requests the server makes meanwhile
+    /// are refused.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        self.request_with(method, params, None).await
+    }
+
+    /// Like [`Client::request`], answering the server's sampling requests with `sampling` while
+    /// it waits. Time spent answering (the user deciding, a model writing) does not count
+    /// toward the timeout.
+    pub async fn request_with(
+        &self,
+        method: &str,
+        params: Value,
+        sampling: Option<Sampling<'_>>,
+    ) -> Result<Value, McpError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let seconds = self.timeout.as_secs();
-        let answer = async {
-            match &self.transport {
-                Transport::Stream { outgoing, pending } => {
-                    let (sender, receiver) = oneshot::channel();
-                    lock(pending).insert(id, sender);
-                    if outgoing.send(message.to_string()).is_err() {
-                        lock(pending).remove(&id);
-                        return Err(McpError::Closed);
-                    }
-                    let result = receiver.await.unwrap_or(Err(McpError::Closed));
+        let _waiting = InFlight::new(&self.inbound);
+        match &self.transport {
+            Transport::Stream { outgoing, pending } => {
+                let (sender, mut receiver) = oneshot::channel();
+                lock(pending).insert(id, sender);
+                if outgoing.send(message.to_string()).is_err() {
                     lock(pending).remove(&id);
-                    result
+                    return Err(McpError::Closed);
                 }
-                Transport::Http(http) => http.post(&message, Some(id)).await,
+                let mut deadline = Instant::now() + self.timeout;
+                let result = loop {
+                    tokio::select! {
+                        result = &mut receiver => break result.unwrap_or(Err(McpError::Closed)),
+                        () = self.inbound.wake.notified() => {
+                            while let Some(request) = self.inbound.pop() {
+                                self.serve(request, sampling).await;
+                            }
+                            deadline = Instant::now() + self.timeout;
+                        }
+                        () = tokio::time::sleep_until(deadline) => {
+                            break Err(McpError::Timeout(seconds));
+                        }
+                    }
+                };
+                lock(pending).remove(&id);
+                result
             }
-        };
-        tokio::time::timeout(self.timeout, answer)
-            .await
-            .unwrap_or(Err(McpError::Timeout(seconds)))
+            Transport::Http(http) => {
+                http.post(&message, Some(id), &self.inbound, sampling, self.timeout)
+                    .await
+            }
+        }
     }
 
     /// Sends a notification (no answer expected).
@@ -159,13 +247,39 @@ impl Client {
             Transport::Stream { outgoing, .. } => outgoing
                 .send(message.to_string())
                 .map_err(|_| McpError::Closed),
-            Transport::Http(http) => http.post(&message, None).await.map(|_| ()),
+            Transport::Http(http) => http
+                .post(&message, None, &self.inbound, None, self.timeout)
+                .await
+                .map(|_| ()),
+        }
+    }
+
+    /// Answers a sampling request that was read from a stream.
+    async fn serve(&self, request: ServerRequest, sampling: Option<Sampling<'_>>) {
+        let outcome = match (request.method.as_str(), sampling) {
+            (SAMPLING_METHOD, Some(sampling)) => {
+                crate::sampling::create_message(sampling, &request.params).await
+            }
+            (method, _) => Err((
+                -32601,
+                format!("{method} is not available outside a tool call"),
+            )),
+        };
+        let reply = reply_message(&request.id, outcome);
+        match &self.transport {
+            Transport::Stream { outgoing, .. } => {
+                let _ = outgoing.send(reply.to_string());
+            }
+            Transport::Http(http) => {
+                let _ = http.send(&reply).await;
+            }
         }
     }
 }
 
 impl Http {
-    async fn post(&self, message: &Value, id: Option<u64>) -> Result<Value, McpError> {
+    /// POSTs one message and checks the status.
+    async fn send(&self, message: &Value) -> Result<reqwest::Response, McpError> {
         let mut request = self
             .http
             .post(&self.url)
@@ -190,6 +304,24 @@ impl Http {
             let body = response.text().await.unwrap_or_default();
             return Err(McpError::Transport(format!("HTTP {status}: {body}")));
         }
+        Ok(response)
+    }
+
+    async fn post(
+        &self,
+        message: &Value,
+        id: Option<u64>,
+        inbound: &Inbound,
+        sampling: Option<Sampling<'_>>,
+        limit: Duration,
+    ) -> Result<Value, McpError> {
+        let seconds = limit.as_secs();
+        let timed_out = || McpError::Timeout(seconds);
+        let transport = |error: reqwest::Error| McpError::Transport(error.to_string());
+        let mut deadline = Instant::now() + limit;
+        let response = tokio::time::timeout_at(deadline, self.send(message))
+            .await
+            .map_err(|_| timed_out())??;
         let Some(id) = id else {
             return Ok(Value::Null);
         };
@@ -199,13 +331,22 @@ impl Http {
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.starts_with("text/event-stream"));
         if !is_stream {
-            let message: Value = response.json().await.map_err(transport)?;
+            let message: Value = tokio::time::timeout_at(deadline, response.json())
+                .await
+                .map_err(|_| timed_out())?
+                .map_err(transport)?;
             return result_of(&message, id);
         }
-        // An SSE stream may carry server notifications before the response.
+        // An SSE stream may carry server notifications and requests before the response.
         let mut body = response.bytes_stream();
         let mut buffer = String::new();
-        while let Some(chunk) = body.next().await {
+        loop {
+            let next = tokio::time::timeout_at(deadline, body.next())
+                .await
+                .map_err(|_| timed_out())?;
+            let Some(chunk) = next else {
+                return Err(McpError::Closed);
+            };
             buffer.push_str(&String::from_utf8_lossy(&chunk.map_err(transport)?));
             while let Some(end) = buffer.find("\n\n") {
                 let event: String = buffer.drain(..end + 2).collect();
@@ -215,23 +356,81 @@ impl Http {
                     .map(str::trim_start)
                     .collect::<Vec<_>>()
                     .join("\n");
-                if let Ok(message) = serde_json::from_str::<Value>(&data)
-                    && message.get("id").and_then(Value::as_u64) == Some(id)
-                {
+                let Ok(message) = serde_json::from_str::<Value>(&data) else {
+                    continue;
+                };
+                if message.get("method").is_some() {
+                    // A request or notification from the server.
+                    if let Some(request_id) = message.get("id") {
+                        let reply = answer(request_id, &message, inbound, sampling).await;
+                        let _ = self.send(&reply).await;
+                        deadline = Instant::now() + limit;
+                    }
+                } else if message.get("id").and_then(Value::as_u64) == Some(id) {
                     return result_of(&message, id);
                 }
             }
         }
-        Err(McpError::Closed)
+    }
+}
+
+/// Answers a request the server sent in an SSE stream.
+async fn answer(
+    id: &Value,
+    message: &Value,
+    inbound: &Inbound,
+    sampling: Option<Sampling<'_>>,
+) -> Value {
+    let method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let outcome = match method {
+        "ping" => Ok(json!({})),
+        SAMPLING_METHOD if inbound.sampling.load(Ordering::SeqCst) => match sampling {
+            Some(sampling) => {
+                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                crate::sampling::create_message(sampling, &params).await
+            }
+            None => Err((-32601, format!("{method} is not available here"))),
+        },
+        _ => Err((-32601, format!("{method} is not supported by this client"))),
+    };
+    reply_message(id, outcome)
+}
+
+fn reply_message(id: &Value, outcome: Result<Value, (i64, String)>) -> Value {
+    match outcome {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err((code, message)) => {
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+        }
     }
 }
 
 /// Routes one message read from a stream: responses to their waiters, server requests to a
-/// reply.
-fn dispatch(message: Value, pending: &Pending, replies: &mpsc::UnboundedSender<String>) {
+/// reply (sampling to the request that will answer it).
+fn dispatch(
+    message: Value,
+    pending: &Pending,
+    replies: &mpsc::UnboundedSender<String>,
+    inbound: &Inbound,
+) {
     let id = message.get("id").cloned();
     match (message.get("method").and_then(Value::as_str), id) {
         (Some(method), Some(id)) => {
+            if method == SAMPLING_METHOD
+                && inbound.sampling.load(Ordering::SeqCst)
+                && inbound.in_flight.load(Ordering::SeqCst) > 0
+            {
+                lock(&inbound.queue).push_back(ServerRequest {
+                    id,
+                    method: method.to_string(),
+                    params: message.get("params").cloned().unwrap_or(Value::Null),
+                });
+                inbound.wake.notify_one();
+                return;
+            }
             let reply = if method == "ping" {
                 json!({"jsonrpc": "2.0", "id": id, "result": {}})
             } else {

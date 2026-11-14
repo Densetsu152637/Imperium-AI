@@ -256,6 +256,8 @@ fn from_wire(config: &McpServerConfig) -> Result<McpServerSettings, ErrorObject>
         allow: config.allow.clone(),
         enabled: config.enabled,
         timeout_s: config.timeout_s,
+        // Not a connector form field: `save` keeps what the config file says.
+        sampling: false,
         catalog: blank(&config.catalog),
     })
 }
@@ -271,13 +273,16 @@ pub fn save(state: &DaemonState, params: McpSaveParams) -> Result<McpSaveResult,
             imperium_config::MAX_SERVER_NAME
         )));
     }
-    let server = from_wire(&params.config)?;
-    if params.create && current(state)?.mcp.servers.contains_key(&params.name) {
+    let mut server = from_wire(&params.config)?;
+    let existing = current(state)?.mcp.servers.get(&params.name).cloned();
+    if params.create && existing.is_some() {
         return Err(invalid(format!(
             "a connector named {} already exists",
             params.name
         )));
     }
+    // Sampling is set in the config file only; saving from the form keeps it.
+    server.sampling = existing.is_some_and(|existing| existing.sampling);
     // Secrets are stored first, so the saved server never refers to a secret that was refused.
     let mut secrets = Vec::new();
     for (name, value) in &params.secrets {

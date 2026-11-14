@@ -244,8 +244,45 @@ streamable-HTTP endpoints (JSON or SSE responses, `Mcp-Session-Id` kept), using 
 tool (or `"*"`), or the user allowed it for the session; the result's text, resource text, and
 descriptions of other content are returned to the model, and a tool-reported error fails the
 call. Servers that fail to start are reported as session notices; the session carries on
-without them. Server pings are answered; other server requests (sampling, roots,
-elicitation) are refused for now.
+without them. Server pings are answered; roots and elicitation requests are refused, and
+sampling is refused unless enabled (below).
+
+### Resources, prompts, and sampling (implemented)
+
+A server that declares the `resources` capability gets two more tools beside its own,
+`mcp__<server>__resources_list` (resources and resource templates, one page per call with a
+`cursor`) and `mcp__<server>__resources_read` (by `uri`, including a URI filled in from a
+template). One that declares `prompts` gets `mcp__<server>__prompts_list` and
+`mcp__<server>__prompts_get` (a prompt's name and its arguments, returned as its messages for the
+agent to use). A server's own tool of the same name wins. These are ordinary MCP tools of that
+server: they ask for approval unless the server's `allow` list names them (or `"*"`), the
+permission rules match them as `mcp__<server>__*`, an agent's MCP-server allowlist removes them
+with the server, and the **local files only** lock hides them with every other MCP tool.
+Everything they return is framed as data: a notice that it is untrusted content from the server,
+then the text inside `<mcp-resource>`, `<mcp-prompt>` or `<mcp-listing>` tags (a closing tag
+inside the content is neutralised), cut at 60,000 characters. Binary resource content is
+described by size and type, not decoded.
+
+**Sampling** (a server asking the session's model for a reply, `sampling/createMessage`) is off
+unless the user's own config sets `sampling = true` on that server; a repository's `.mcp.json`
+or environment config can never turn it on, and the connector forms keep the value that is in
+the file. The client then declares the `sampling` capability, and a request is answered only
+while one of the agent's own calls to that server is waiting (usually the tool call that made
+the server ask); at any other time it is refused. Each request waits for the user's approval,
+shown as a permission request for `mcp_sampling` with the server, the model, the token limit and
+the start of the last message. It is never pre-approved and "allow for the session" does not
+apply to it, in every permission mode. After approval the session's current model writes the
+reply, with no tools and a system note that the server's messages are untrusted data; the call
+passes through the usage budgets and is counted like any other. The reply is bounded: text
+only, at most 100,000 characters of prompt, and at most 4,096 generated tokens (1,024 when the
+server names none); the server's model preferences and `includeContext` are ignored, and the
+reply names the model that wrote it. Declining returns the MCP error `-1` to the server. The
+time spent waiting for the user or the model does not count toward the server's timeout.
+
+*Not built:* inserting an MCP prompt into the desktop or CLI composer as a slash command (it
+needs a daemon method and a protocol minor; today only the agent can use prompts), resource
+subscriptions and list-changed notifications, image or audio sampling, and OAuth for remote
+servers.
 
 Servers come from `[mcp.servers.<name>]` in the user configuration (a `command` with `args`
 and `env`, or a `url` with `headers` and an optional `bearer_token = { secret = "<name>" }`),

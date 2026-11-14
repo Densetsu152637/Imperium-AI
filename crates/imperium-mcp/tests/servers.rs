@@ -157,6 +157,7 @@ async fn http_servers_list_tools_across_pages_and_call_them() {
         },
         allow: vec!["echo".into()],
         timeout: Duration::from_secs(5),
+        sampling: false,
     };
     let broken = ServerSpec {
         name: "broken".into(),
@@ -168,6 +169,7 @@ async fn http_servers_list_tools_across_pages_and_call_them() {
         },
         allow: Vec::new(),
         timeout: Duration::from_secs(5),
+        sampling: false,
     };
     let (servers, failed) = McpServers::connect(vec![spec, broken]).await;
     assert_eq!(failed.len(), 1);
@@ -185,12 +187,14 @@ async fn http_servers_list_tools_across_pages_and_call_them() {
         json!({"type": "object"})
     );
     assert_eq!(
-        servers.call("mcp__fake__echo", r#"{"text":"hi"}"#).await,
+        servers
+            .call("mcp__fake__echo", r#"{"text":"hi"}"#, None)
+            .await,
         Ok("hi".to_string())
     );
     assert_eq!(
-        servers.call("mcp__fake__fail", "").await,
+        servers.call("mcp__fake__fail", "", None).await,
         Err("it broke".to_string())
     );
-    assert!(servers.call("mcp__fake__nope", "{}").await.is_err());
+    assert!(servers.call("mcp__fake__nope", "{}", None).await.is_err());
 }
