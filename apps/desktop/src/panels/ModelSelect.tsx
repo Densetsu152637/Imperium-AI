@@ -370,11 +370,6 @@ export function PermissionModeSelect({
         disabled={disabled || pending !== null}
         onChange={choose}
       />
-      {!reasons && (
-        <span id={hintId} className="visually-hidden">
-          {hint}
-        </span>
-      )}
       {error && (
         <span className="model-status error" role="alert" title={error}>
           {error}
@@ -443,6 +438,11 @@ export function EffortSelect({
         disabled={disabled || pending !== null}
         onChange={choose}
       />
+      {!reasons && (
+        <span id={hintId} className="visually-hidden">
+          {hint}
+        </span>
+      )}
       {error && (
         <span className="model-status error" role="alert" title={error}>
           {error}
