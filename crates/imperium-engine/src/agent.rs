@@ -1755,11 +1755,13 @@ impl Agent {
                 let floored = safety_floor(CallKind::Execute, &target);
                 ("run_command", target, CallKind::Execute, floored)
             }
+            // A call approved afresh each time is treated like the safety floor: it asks in every
+            // mode, whatever allow rules, session approvals or pre-approval say.
             None => (
                 name,
                 Target::Other,
                 CallKind::Other { asks: check.ask },
-                false,
+                provider.always_asks(name),
             ),
         };
         let rule = self.rule_for(rule_tool, &target);
@@ -1786,7 +1788,7 @@ impl Agent {
                 .approve_with(
                     rule_tool,
                     &summary,
-                    suggest(rule_tool, &target),
+                    suggest(rule_tool, &target).filter(|_| !(floored && check.command.is_none())),
                     sticky,
                     floored,
                 )
@@ -4911,10 +4913,22 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
             url,
             title,
             screenshot,
+            tab,
+            tabs,
         } => SessionEvent::BrowserView {
             url,
             title,
             screenshot,
+            tab: Some(tab),
+            tabs: tabs
+                .into_iter()
+                .map(|tab| imperium_protocol::methods::BrowserTab {
+                    id: tab.id,
+                    url: tab.url,
+                    title: tab.title,
+                    active: tab.active,
+                })
+                .collect(),
         },
         ToolEvent::PreviewChanged { url, command } => SessionEvent::PreviewChanged { url, command },
         _ => return None,

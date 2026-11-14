@@ -82,7 +82,7 @@ async fn takeover_needs_a_session_with_a_browser() {
 /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
 #[tokio::test]
 async fn the_user_takes_the_browser_over_drives_it_and_gives_it_back() {
-    if imperium_web::browser::find_browser().is_none() {
+    if imperium_web::browser::browser_for_tests().is_none() {
         eprintln!("no Chrome, Chromium, or Edge found; skipping");
         return;
     }
@@ -135,6 +135,40 @@ async fn the_user_takes_the_browser_over_drives_it_and_gives_it_back() {
         .unwrap();
     let done: BrowserActResult = serde_json::from_value(done).unwrap();
     assert_eq!(done.view.title, "Driven");
+    assert_eq!(done.view.tab.as_deref(), Some("1"));
+    assert_eq!(done.view.tabs.len(), 1);
+
+    // Tabs: the user opens one, switches back, and closes it again.
+    let mut act_on = async |action: serde_json::Value| {
+        let params = json!({"session_id": id, "action": action});
+        call(&mut connection, "session.browser_act", params).await
+    };
+    let opened = act_on(json!({"type": "new_tab", "url": page}))
+        .await
+        .unwrap();
+    let opened: BrowserActResult = serde_json::from_value(opened).unwrap();
+    assert_eq!(opened.view.tab.as_deref(), Some("2"));
+    assert_eq!(opened.view.tabs.len(), 2);
+    assert!(opened.view.tabs[1].active && !opened.view.tabs[0].active);
+    let back = act_on(json!({"type": "switch_tab", "tab": "1"}))
+        .await
+        .unwrap();
+    let back: BrowserActResult = serde_json::from_value(back).unwrap();
+    assert_eq!(back.view.tab.as_deref(), Some("1"));
+    assert_eq!(
+        act_on(json!({"type": "switch_tab", "tab": "9"})).await,
+        Err(codes::INVALID_PARAMS)
+    );
+    let closed = act_on(json!({"type": "close_tab", "tab": "2"}))
+        .await
+        .unwrap();
+    let closed: BrowserActResult = serde_json::from_value(closed).unwrap();
+    assert_eq!(closed.view.tabs.len(), 1);
+    assert_eq!(
+        act_on(json!({"type": "close_tab", "tab": "1"})).await,
+        Err(codes::INVALID_PARAMS),
+        "the last tab stays"
+    );
 
     let given = call(
         &mut connection,

@@ -21,7 +21,7 @@ import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
 import { taskTitle } from "./agentView";
 import { modelAliases, modelName } from "./modelNames";
-import { applyPreviewEvent, type BrowserDriver } from "./preview";
+import { applyBrowserView, applyPreviewEvent, type BrowserDriver, type BrowserMirror } from "./preview";
 import { applySent, applyWait, type Sent, type Waits } from "./waits";
 
 export { taskTitle };
@@ -157,6 +157,8 @@ export type SessionState = {
   queue: QueuedMessage[];
   /** The agent's browser after its latest action. */
   browser: { url: string; title: string; screenshot: string } | null;
+  /** The browser's open tabs and the latest page of each (the Browser panel's tab strip). */
+  browserTabs: BrowserMirror | null;
   /** Who drives that browser: the agent, or the user who took it over (preview.ts). */
   driver: BrowserDriver;
   /** The page the Preview panel shows, as an agent opened it. */
@@ -195,6 +197,7 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   busy: false,
   queue: [],
   browser: null,
+  browserTabs: null,
   driver: "agent",
   preview: null,
   status: summary.status,
@@ -435,7 +438,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     );
   }
 
-  let { summary, tasks, plan, calls, turnCallsFrom, breakdowns, busy, queue, browser, status, statusDetail, pause } = state;
+  let { summary, tasks, plan, calls, turnCallsFrom, breakdowns, busy, queue, browser, browserTabs, status, statusDetail, pause } = state;
   if (event.type === "model_changed" && agentId === ROOT) summary = { ...summary, model: event.to };
   if (event.type === "status_changed") {
     status = event.status;
@@ -445,6 +448,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
   if (event.type === "resumed") pause = null;
   if (event.type === "browser_view") {
     browser = { url: event.url, title: event.title, screenshot: event.screenshot };
+    browserTabs = applyBrowserView(browserTabs, event);
   }
   const { driver, preview } = applyPreviewEvent({ driver: state.driver ?? "agent", preview: state.preview ?? null }, event);
   if (event.type === "model_call_completed") {
@@ -566,6 +570,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     busy,
     queue,
     browser,
+    browserTabs,
     driver,
     preview,
     status,

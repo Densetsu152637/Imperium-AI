@@ -656,3 +656,50 @@ async fn a_model_that_is_off_cannot_be_picked_for_a_session_switch_or_comparison
         "{refused}"
     );
 }
+
+#[tokio::test]
+async fn an_off_model_cannot_be_written_as_the_default_by_spec_or_row_id() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    call(
+        &mut socket,
+        "models.set_config",
+        json!({"disabled": ["llamacpp:tiny", "cloud:coder-1"]}),
+    )
+    .await
+    .unwrap();
+    // `config.set` and `models.use` (the onboarding save) both refuse, naming it by spec or by
+    // the model table row's id.
+    for name in ["llamacpp:tiny", "cloud:coder-1", "coder"] {
+        let refused = call(
+            &mut socket,
+            "config.set",
+            json!({"key": "models.default", "value": name}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused["message"].as_str().unwrap().contains("turned off"),
+            "{name}: {refused}"
+        );
+        let refused = call(&mut socket, "models.use", json!({"model": name}))
+            .await
+            .unwrap_err();
+        assert!(
+            refused["message"].as_str().unwrap().contains("turned off"),
+            "{name}: {refused}"
+        );
+    }
+    assert_eq!(daemon.settings().models.default, None);
+    // On again, it is accepted.
+    call(&mut socket, "models.set_config", json!({"disabled": []}))
+        .await
+        .unwrap();
+    call(
+        &mut socket,
+        "config.set",
+        json!({"key": "models.default", "value": "coder"}),
+    )
+    .await
+    .unwrap();
+}

@@ -957,6 +957,31 @@ disabled = {off:?}"
             );
             assert!(resumed.is_ok(), "a resumed session keeps its model");
 
+            // No model named and the default off: the session waits for one when it may (also a
+            // resumed one whose journal has no model), and is refused when it may not.
+            let waiting = |resume: Option<&str>, may_wait: bool| {
+                state.create_session_with(
+                    path,
+                    None,
+                    crate::state::SessionOptions {
+                        resume_id: resume.map(str::to_string),
+                        may_wait_for_model: may_wait,
+                        ..crate::state::SessionOptions::default()
+                    },
+                )
+            };
+            assert!(matches!(waiting(None, true), Ok((session, _)) if session.model().is_none()));
+            assert!(matches!(
+                waiting(Some("s-null"), true),
+                Ok((session, _)) if session.model().is_none()
+            ));
+            assert!(matches!(
+                waiting(None, false),
+                Err(crate::state::CreateError::Model(
+                    imperium_engine::ModelError::Disabled(_)
+                ))
+            ));
+
             // Switched back on, they are offered again.
             let on = daemon(home.path()).await;
             let ids: Vec<String> = on

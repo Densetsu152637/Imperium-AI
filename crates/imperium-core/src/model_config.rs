@@ -340,13 +340,8 @@ fn refuse_disabled_default(current: &Settings, candidate: &Settings) -> Result<(
     let Some(default) = candidate.models.default.as_deref() else {
         return Ok(());
     };
-    // `models.default` is a spec; a model table id is accepted by hand, so map it to its spec.
-    let spec = candidate
-        .models
-        .catalog
-        .iter()
-        .find(|entry| entry.id == default)
-        .map_or(default, |entry| entry.spec.as_str());
+    // `models.default` may be a model table id as well as a spec.
+    let spec = candidate.models.spec_of(default);
     if candidate.models.is_disabled(spec) && !current.models.is_disabled(spec) {
         return Err(format!(
             "{spec} is the default model for new sessions, so it cannot be turned off. Choose \

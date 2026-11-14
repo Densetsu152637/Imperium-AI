@@ -198,6 +198,8 @@ pub static SETTINGS: &[SettingDef] = &[
     def("web.browser", "Browser tools", Bool, "Offer browser tools (Chrome, Chromium, or Edge over CDP)."),
     def("web.browser_path", "Browser path", PathKind, "The browser to drive; found automatically when empty."),
     def("web.headless", "Headless browser", Bool, "Run the browser without a window."),
+    def("web.download_dir", "Downloads folder", PathKind, "Where browser_download saves files, an absolute folder. Empty means a downloads folder in the session's scratch folder."),
+    def("web.download_max_mb", "Largest download (MB)", Integer, "The largest file browser_download saves; 0 turns downloads off. Browsers never download on their own."),
     choice("media.image.backend", "Image backend", &["openai", "comfyui"], "Image generation through an images API endpoint or ComfyUI."),
     def("media.image.endpoint", "Image endpoint", STRING, "The [endpoints] entry for the openai backend."),
     def("media.image.model", "Image model", STRING, "Model for the openai backend."),

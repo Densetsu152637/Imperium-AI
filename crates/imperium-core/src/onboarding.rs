@@ -74,12 +74,7 @@ pub(crate) fn refuse_disabled_default(
         return Ok(());
     };
     let settings = state.settings();
-    let spec = settings
-        .models
-        .catalog
-        .iter()
-        .find(|entry| entry.id == named)
-        .map_or(named, |entry| entry.spec.as_str());
+    let spec = settings.models.spec_of(named);
     if settings.models.is_disabled(spec) {
         return Err(invalid(format!(
             "{spec} is turned off; turn it on in Settings → Models before making it the default"

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
     BrowserActParams, BrowserActResult, BrowserControlParams, BrowserControlResult, BrowserPage,
+    BrowserTab,
 };
 use imperium_protocol::session::SessionEvent;
 use imperium_web::BrowserSetup;
@@ -19,6 +20,17 @@ fn page(view: View) -> BrowserPage {
         url: view.url,
         title: view.title,
         screenshot: view.screenshot,
+        tab: Some(view.tab),
+        tabs: view
+            .tabs
+            .into_iter()
+            .map(|tab| BrowserTab {
+                id: tab.id,
+                url: tab.url,
+                title: tab.title,
+                active: tab.active,
+            })
+            .collect(),
     }
 }
 
@@ -27,6 +39,8 @@ fn view_event(page: &BrowserPage) -> SessionEvent {
         url: page.url.clone(),
         title: page.title.clone(),
         screenshot: page.screenshot.clone(),
+        tab: page.tab.clone(),
+        tabs: page.tabs.clone(),
     }
 }
 

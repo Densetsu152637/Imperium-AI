@@ -1045,7 +1045,11 @@ impl DaemonState {
     }
 
     /// Web tools from `[web]`; a provider whose key is missing is left out with a warning.
-    fn web_tools(&self) -> Option<WebTools> {
+    /// `downloads` is the folder `browser_download` saves into unless `web.download_dir` names
+    /// one, or `None` where the session cannot take downloads (a remote or read-only one).
+    /// The folder is judged as a write by the session's workspace only when it is the default
+    /// one (a folder the user named in `web.download_dir` is theirs to choose).
+    fn web_tools(&self, downloads: Option<(PathBuf, Workspace)>) -> Option<WebTools> {
         let web = &self.settings().web;
         if !web.enabled {
             return None;
@@ -1089,6 +1093,19 @@ impl DaemonState {
                 },
             ),
             allow_domains: web.allow_domains.clone(),
+            downloads: downloads.filter(|_| web.download_max_mb > 0).map(
+                |(default_dir, workspace)| {
+                    let chosen = web
+                        .download_dir
+                        .clone()
+                        .filter(|dir| !dir.as_os_str().is_empty());
+                    imperium_web::Downloads {
+                        workspace: chosen.is_none().then_some(workspace),
+                        dir: chosen.unwrap_or(default_dir),
+                        max_bytes: web.download_max_mb.saturating_mul(1024 * 1024),
+                    }
+                },
+            ),
             browser,
         })
     }
@@ -1759,7 +1776,9 @@ impl DaemonState {
         // A model table id or a spec, as the model pickers offer them.
         // A resumed session keeps the model it was journalled with even if the user has since
         // switched it off; a new session is refused one.
-        let resolved = if options.resume_id.is_some() {
+        // (One that never had a model, resumed, is refused an off default like a new one: it
+        // waits for a model instead.)
+        let resolved = if options.resume_id.is_some() && model.is_some() {
             self.resolve_model(model)
         } else {
             self.resolve_usable_model(model)
@@ -1767,6 +1786,9 @@ impl DaemonState {
         let model = match resolved {
             Ok(model) => Some(model),
             Err(ModelError::NoDefault) if options.may_wait_for_model => None,
+            // No model named and the default is off: the session waits for a model as it does
+            // with no default.
+            Err(ModelError::Disabled(_)) if model.is_none() && options.may_wait_for_model => None,
             Err(error) => return Err(error.into()),
         };
         let catalog = self.session_catalog();
@@ -1880,7 +1902,18 @@ impl DaemonState {
         if let Some(media) = self.media() {
             tools.push(Arc::new(MediaTools::new(media)));
         }
-        if let Some(web) = self.web_tools() {
+        // Files a page offers are saved in the session's scratch folder (which its agents may
+        // read), or its working folder when it has none; never on a remote machine's behalf.
+        let downloads = (!remote && !options.read_only).then(|| {
+            (
+                workspace
+                    .scratch()
+                    .unwrap_or_else(|| workspace.root())
+                    .join("downloads"),
+                workspace.clone(),
+            )
+        });
+        if let Some(web) = self.web_tools(downloads) {
             if let Some(browser) = &web.browser {
                 self.browsers
                     .lock()
@@ -2145,7 +2178,7 @@ impl DaemonState {
                 ));
             }
             // The model is checked first, so a refusal leaves no folder behind.
-            let resolved = if options.resume_id.is_some() {
+            let resolved = if options.resume_id.is_some() && model.is_some() {
                 self.resolve_model(model)
             } else {
                 self.resolve_usable_model(model)
@@ -2153,6 +2186,7 @@ impl DaemonState {
             match resolved {
                 Ok(_) => {}
                 Err(ModelError::NoDefault) if options.may_wait_for_model => {}
+                Err(ModelError::Disabled(_)) if model.is_none() && options.may_wait_for_model => {}
                 Err(error) => return Err(error.into()),
             }
             _home_lock = self
@@ -2702,14 +2736,7 @@ impl DaemonState {
     /// `<endpoint>:<model>` spec, or `None` for `models.default`.
     pub fn resolve_model(&self, requested: Option<&str>) -> Result<ResolvedModel, ModelError> {
         let settings = self.settings();
-        let spec = requested.map(|requested| {
-            settings
-                .models
-                .catalog
-                .iter()
-                .find(|entry| entry.id == requested)
-                .map_or(requested, |entry| entry.spec.as_str())
-        });
+        let spec = requested.map(|requested| settings.models.spec_of(requested));
         resolve_model(&settings, spec, |name| self.secrets.load(name))
     }
 
@@ -3127,6 +3154,36 @@ pub fn answer_with_recommendations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downloads_follow_the_settings() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(folder.path()).unwrap();
+        let site = || Some((folder.path().join("downloads"), workspace.clone()));
+        // The defaults: the session's own folder, 25 MB, judged by the workspace.
+        let state = state_with(home.path(), "");
+        let downloads = state.web_tools(site()).unwrap().downloads.unwrap();
+        assert_eq!(downloads.dir, folder.path().join("downloads"));
+        assert_eq!(downloads.max_bytes, 25 * 1024 * 1024);
+        assert!(downloads.workspace.is_some());
+        // No folder for the session (remote, read-only): no tool.
+        assert!(state.web_tools(None).unwrap().downloads.is_none());
+        // 0 MB turns downloads off.
+        let off = state_with(home.path(), "[web]\ndownload_max_mb = 0\n");
+        assert!(off.web_tools(site()).unwrap().downloads.is_none());
+        // A folder the user chose replaces the default and is not judged by the workspace.
+        let chosen = folder.path().join("mine");
+        let toml = format!(
+            "[web]\ndownload_dir = {:?}\ndownload_max_mb = 3\n",
+            chosen.display().to_string()
+        );
+        let own = state_with(home.path(), &toml);
+        let downloads = own.web_tools(site()).unwrap().downloads.unwrap();
+        assert_eq!(downloads.dir, chosen);
+        assert_eq!(downloads.max_bytes, 3 * 1024 * 1024);
+        assert!(downloads.workspace.is_none());
+    }
 
     fn state_with(home: &Path, extra: &str) -> Arc<DaemonState> {
         let settings = imperium_config::Config::from_layers([

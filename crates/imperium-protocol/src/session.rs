@@ -207,11 +207,19 @@ pub enum SessionEvent {
         tools: Vec<String>,
     },
     /// The agent's browser after an action: page, title, and a JPEG screenshot (base64), so
-    /// clients can mirror it.
+    /// clients can mirror it. `tab` is the tab the page belongs to and `tabs` lists every open
+    /// tab, so a client keeps one mirror per tab; both are absent from a daemon older than
+    /// protocol 0.35.
     BrowserView {
         url: String,
         title: String,
         screenshot: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        tab: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(as = "Option<Vec<crate::methods::BrowserTab>>", optional)]
+        tabs: Vec<crate::methods::BrowserTab>,
     },
     /// Who drives the session's browser changed: the user took it over (`user` true; the
     /// agent's browser tools are refused meanwhile) or gave it back.
