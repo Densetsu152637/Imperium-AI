@@ -183,13 +183,25 @@ impl Client {
     }
 
     pub async fn call<M: Method>(&mut self, params: M::Params) -> Result<M::Result, ClientError> {
+        let params = serde_json::to_value(params).map_err(protocol_error)?;
+        let value = self.call_value(M::NAME, params).await?;
+        serde_json::from_value(value).map_err(protocol_error)
+    }
+
+    /// Calls a method by name with untyped parameters and returns its untyped result, for
+    /// clients that pass a method's JSON through, such as the MCP harness.
+    pub async fn call_value(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, ClientError> {
         let id = RequestId::Number(self.next_id);
         self.next_id += 1;
         let request = Request {
             jsonrpc: JsonRpcVersion,
             id: id.clone(),
-            method: M::NAME.to_string(),
-            params: Some(serde_json::to_value(params).map_err(protocol_error)?),
+            method: method.to_string(),
+            params: Some(params),
         };
         let text = serde_json::to_string(&request).map_err(protocol_error)?;
         self.socket
@@ -205,7 +217,7 @@ impl Client {
             )));
         }
         match response.outcome {
-            Outcome::Result(value) => serde_json::from_value(value).map_err(protocol_error),
+            Outcome::Result(value) => Ok(value),
             Outcome::Error(error) => Err(ClientError::Rpc(error)),
         }
     }
