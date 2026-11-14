@@ -632,8 +632,9 @@ and approvals, memory, and Settings. Each step is a small card beside a highligh
   container scrolls or the layout changes, and a step whose element goes away is dropped.
 - **Never in the way.** While another dialog is open (the palette, Settings, a confirmation) the
   tour hides and leaves keys to that dialog, then returns. If an approval arrives, the tour
-  hides the same way until none is waiting, then carries on from the same step, so the approval is
-  never covered and a first-run user does not lose the tour.
+  that started by itself hides the same way until none is waiting, then carries on from the same
+  step, so the approval is never covered and a first-run user does not lose the tour. A tour the
+  user asked for (the palette, Settings → About) is not hidden by an approval.
 
 Sequencing, skipping missing targets, the persisted outcome, and card placement are pure functions
 tested in `test/tourSteps.test.ts`.

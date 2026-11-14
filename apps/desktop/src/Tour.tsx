@@ -145,7 +145,9 @@ export function Tour({
   const first = useRef(true);
   useEffect(() => {
     if (paused) return;
-    if (!card.current?.contains(document.activeElement)) card.current?.focus();
+    // (A disabled button, such as Back on the first step, no longer holds focus.)
+    const active = document.activeElement;
+    if (!card.current?.contains(active) || active?.matches(":disabled")) card.current?.focus();
   }, [step?.id, paused]);
   useEffect(() => {
     if (first.current) {

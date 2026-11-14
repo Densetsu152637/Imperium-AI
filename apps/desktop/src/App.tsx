@@ -236,6 +236,8 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   /** The first-run tour is showing. */
   const [touring, setTouring] = useState(false);
+  /** The tour started by itself (not asked for), so it steps aside for a pending approval. */
+  const [tourAuto, setTourAuto] = useState(false);
   /** The Settings section the command palette asked for. */
   const [settingsRequest, setSettingsRequest] = useState<{ section: string } | null>(null);
   const [modelDialog, setModelDialog] = useState<ModelDialogTarget | null>(null);
@@ -1034,6 +1036,7 @@ export function App() {
   const startTour = () => {
     setShowSettings(false);
     setShowConnectors(false);
+    setTourAuto(false);
     setTouring(true);
   };
   const endTour = (outcome: TourOutcome) => {
@@ -1066,6 +1069,7 @@ export function App() {
       );
       if (ready) {
         window.clearInterval(timer);
+        setTourAuto(true);
         setTouring(true);
       }
     }, 500);
@@ -1653,7 +1657,7 @@ export function App() {
         />
       )}
       <CommandPalette detached={false} />
-      {touring && <Tour hold={approvalsWaiting} onEnd={endTour} />}
+      {touring && <Tour hold={approvalsWaiting && tourAuto}onEnd={endTour} />}
       {modelDialog && (
         <ModelConfigDialog client={client} target={modelDialog} onClose={() => setModelDialog(null)} onSaved={refreshModels} />
       )}
