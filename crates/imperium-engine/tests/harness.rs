@@ -346,10 +346,16 @@ async fn a_resumed_session_has_the_state_it_had() {
             .to_string(),
         "Noted.".to_string(),
     ];
-    let endpoint = endpoint(script, Rewrite::Reply("{}".into()), Arc::clone(&seen)).await;
+    // After the restart the rewrite names another file, which changes the state, so the turn
+    // carries a block: it holds the goal and file from before the restart only if they were
+    // read back from the conversation.
+    let rewrite =
+        r#"{"prompt":"and what about b.rs?","state":{"entities":[{"kind":"file","name":"b.rs"}]}}"#;
+    let endpoint = endpoint(script, Rewrite::Reply(rewrite.into()), Arc::clone(&seen)).await;
     let dir = tempfile::tempdir().unwrap();
     let settings = HarnessSettings {
         state: HarnessMode::On,
+        dereference: HarnessMode::On,
         ..Default::default()
     };
     let first = start(endpoint.clone(), dir.path(), settings.clone());
@@ -372,6 +378,7 @@ async fn a_resumed_session_has_the_state_it_had() {
     );
     assert!(first_after_resume.contains("tune the timeout"));
     assert!(first_after_resume.contains("src/main.rs"));
+    assert!(first_after_resume.contains("b.rs"));
 }
 
 #[tokio::test]
