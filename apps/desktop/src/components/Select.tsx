@@ -27,6 +27,10 @@ type Props = {
   "aria-label"?: string;
   id?: string;
   disabled?: boolean;
+  /** Unavailable but still focusable and announced (aria-disabled): activating it does nothing. */
+  inert?: boolean;
+  /** The id of an element that says why (aria-describedby). */
+  "aria-describedby"?: string;
   /** Shown when `value` matches no option. */
   placeholder?: string;
   className?: string;
@@ -35,7 +39,7 @@ type Props = {
 /** How long typed characters keep adding to the same search. */
 const TYPEAHEAD_MS = 600;
 
-export function Select({ value, options, onChange, disabled, placeholder = "Choose…", className, id, ...rest }: Props) {
+export function Select({ value, options, onChange, disabled, inert, placeholder = "Choose…", className, id, ...rest }: Props) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [position, setPosition] = useState<{ left: number; top: number; width: number; maxHeight: number; above: boolean } | null>(null);
@@ -79,7 +83,7 @@ export function Select({ value, options, onChange, disabled, placeholder = "Choo
   }, []);
 
   const show = (index = selectedIndex >= 0 ? selectedIndex : move(-1, 1)) => {
-    if (disabled || options.length === 0) return;
+    if (disabled || inert || options.length === 0) return;
     place();
     setActive(index);
     setOpen(true);
@@ -142,7 +146,7 @@ export function Select({ value, options, onChange, disabled, placeholder = "Choo
   };
 
   const onButtonKey = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (disabled) return;
+    if (disabled || inert) return;
     switch (event.key) {
       case "ArrowDown":
       case "ArrowUp":
@@ -231,6 +235,8 @@ export function Select({ value, options, onChange, disabled, placeholder = "Choo
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         aria-label={rest["aria-label"]}
+        aria-describedby={rest["aria-describedby"]}
+        aria-disabled={inert || undefined}
         disabled={disabled}
         onClick={() => (open ? close() : show())}
         onKeyDown={onButtonKey}
