@@ -111,13 +111,24 @@ impl Agent {
         );
         let mut deadline = Instant::now() + per_call * 2;
         let mut unavailable = false;
-        let images: usize = pending.iter().map(|one| one.images.len()).sum();
-        self.emit(SessionEvent::Notice {
-            message: format!(
-                "describing {images} image{}\u{2026}",
-                if images == 1 { "" } else { "s" }
-            ),
-        });
+        // Only images that will be described count: a description already cached for this
+        // model and file is reused without a call.
+        let images: usize = {
+            let cache = lock(&self.shared.descriptions);
+            pending
+                .iter()
+                .filter(|one| !cache.contains_key(&format!("{}\n{}", model.spec, one.hash)))
+                .map(|one| one.images.len())
+                .sum()
+        };
+        if images > 0 {
+            self.emit(SessionEvent::Notice {
+                message: format!(
+                    "describing {images} image{}\u{2026}",
+                    if images == 1 { "" } else { "s" }
+                ),
+            });
+        }
         for one in pending {
             // A stopped session waits here, holding nothing (a call takes its own slot, and
             // the turn keeps the presence it already has), and the time it waited is not

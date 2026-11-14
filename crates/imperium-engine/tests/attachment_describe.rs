@@ -749,4 +749,20 @@ async fn descriptions_are_cached_by_content_and_by_describing_model() {
     // Each row described the file once: the file is not shared across describers.
     assert_eq!(first_log.lock().unwrap().len(), 1);
     assert_eq!(second_log.lock().unwrap().len(), 1);
+
+    // The same file again in one session is a cache hit: no call, and no "describing" notice.
+    let session = start(
+        dir.path(),
+        &main,
+        catalog,
+        AttachmentSettings {
+            describe_with: Some("first".into()),
+            ..Default::default()
+        },
+    );
+    let mut events = session.subscribe();
+    let fresh = turn(&session, &mut events, same.clone()).await;
+    assert!(fresh.iter().any(|n| n.contains("describing")), "{fresh:?}");
+    let again = turn(&session, &mut events, same).await;
+    assert!(!again.iter().any(|n| n.contains("describing")), "{again:?}");
 }

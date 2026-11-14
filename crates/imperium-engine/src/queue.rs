@@ -340,7 +340,7 @@ fn id_number(id: &str) -> u64 {
 pub(crate) fn steering_text(text: &str) -> String {
     format!(
         "{STEERING_OPEN}
-A message sent while you were working on this turn. Take it into account          and carry on from where you are; nothing was cancelled.
+A message sent while you were working on this turn. Take it into account and carry on from where you are; nothing was cancelled.
 
 {text}
 </steering>"
@@ -371,6 +371,15 @@ mod tests {
             steer,
             attachments: Vec::new(),
         }
+    }
+
+    #[test]
+    fn steering_text_wraps_the_message_with_its_exact_wording() {
+        assert_eq!(
+            steering_text("use tabs"),
+            "<steering>\nA message sent while you were working on this turn. Take it into account \
+             and carry on from where you are; nothing was cancelled.\n\nuse tabs\n</steering>"
+        );
     }
 
     #[test]
