@@ -15,6 +15,7 @@ import type { DaemonClient } from "../daemon/client";
 import { houseModelSuggestion } from "../houseModels";
 import { useChangeSettings, useSettings } from "../settings";
 import { HouseModelCard } from "./HouseModelCard";
+import { modelIsOff } from "../modelAvailability";
 import { asSpec, modelOptions } from "./ModelSelect";
 import { ModelSetup } from "./ModelSetup";
 
@@ -114,7 +115,10 @@ export function NewSessionPanel({
   const narrowable = environment !== null && environment.folders.length > 0;
   const narrowed = narrowable && (subfolder.trim() !== "" || readOnly);
   // The daemon's live default wins: it changes at once when a model is made the default.
-  const defaultSpec = asSpec(models, defaultModel !== undefined ? defaultModel : defaults.model);
+  const configuredDefault = asSpec(models, defaultModel !== undefined ? defaultModel : defaults.model);
+  // A default that is switched off ("Use this model") counts as none: a session cannot start on it.
+  const defaultIsOff = configuredDefault !== null && modelIsOff(configuredDefault, models, localModels);
+  const defaultSpec = defaultIsOff ? null : configuredDefault;
   const usable = models.some((row) => row.endpoint_configured) || localModels.some((row) => !row.problem);
   const needsSetup = client !== null && !defaultSpec && !usable;
   const houseModels = needsSetup
@@ -251,6 +255,11 @@ export function NewSessionPanel({
             onChange={setChosenModel}
             options={options}
           />
+          {defaultIsOff && (
+            <small className="muted" role="note">
+              Your default model is off; pick one.
+            </small>
+          )}
         </span>
         {narrowable && (
           <>

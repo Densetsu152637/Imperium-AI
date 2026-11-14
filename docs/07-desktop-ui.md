@@ -1475,7 +1475,7 @@ local list is off too, with its switch locked and a note saying so (see
 [disabled models](04-models-and-routing.md#disabled-models-implemented)). The daemon refuses to
 switch off the default model, so switching it off shows a *choose a model* list of the other models
 that are on: *Apply* or *Save* then makes that one the default (`models.use`) and switches the old
-one off; with no choice made, saving shows "choose another default model before switching it off".
+one off; with no choice made, saving shows "choose another default model before switching it off". If that save fails after the default was changed, the message says the default was already changed. A default that is off counts as none in the new-session chooser, with a *Your default model is off; pick one* note.
 
 *Apply* (or Ctrl+S) saves without closing: the dialog shows "Saved" for a moment and the values now
 in effect (such as a cut pool or the layers on the GPU), and closing it afterwards keeps what was

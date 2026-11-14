@@ -8,6 +8,7 @@ import {
   defaultTurnedOff,
   disabledToSave,
   listedAfter,
+  modelIsOff,
   NO_SWITCHES,
   offSpecs,
   replacementDefaults,
@@ -71,4 +72,26 @@ test("the replacement defaults are the usable models that stay on", () => {
   ];
   const off = offSpecs(input, { local: { "vllm:big": false }, rows: {} });
   assert.deepEqual(replacementDefaults(specs, off, "llamacpp:new"), ["cloud:coder-1"]);
+});
+
+test("a default named by its table id is found too", () => {
+  const byId = { ...input, defaultModel: "coder" };
+  assert.equal(defaultTurnedOff(byId, { local: {}, rows: { coder: false } }), "cloud:coder-1");
+});
+
+test("the lists the daemon sends say which model is off", () => {
+  const rows = [
+    { spec: "cloud:a", enabled: false },
+    { spec: "cloud:twin", enabled: false },
+    { spec: "cloud:twin", enabled: true },
+  ];
+  const local = [
+    { runtime: "llamacpp", id: "old", enabled: false },
+    { runtime: "llamacpp", id: "new", enabled: true },
+  ];
+  assert.equal(modelIsOff("cloud:a", rows, local), true);
+  assert.equal(modelIsOff("cloud:twin", rows, local), false);
+  assert.equal(modelIsOff("llamacpp:old", rows, local), true);
+  assert.equal(modelIsOff("llamacpp:new", rows, local), false);
+  assert.equal(modelIsOff("cloud:unknown", rows, local), false);
 });

@@ -149,7 +149,8 @@ impl DaemonState {
         if id.is_empty() {
             return None;
         }
-        let model = match self.resolve_model(Some(&id)) {
+        // A model switched off in Settings → Models is not called, for embeddings either.
+        let model = match self.resolve_usable_model(Some(&id)) {
             Ok(model) => model,
             Err(error) => {
                 tracing::warn!(model = %id, %error, "embedding model unavailable; session search uses keywords only");

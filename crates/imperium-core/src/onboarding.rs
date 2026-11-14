@@ -57,10 +57,35 @@ fn save(
     value: &Value,
     apply: impl FnOnce(&mut Settings, &Settings),
 ) -> Result<(), ErrorObject> {
+    refuse_disabled_default(state, key, value)?;
     imperium_config::set_user_setting(state.paths(), key, value, std::env::vars())
         .map_err(set_error)?;
     tracing::info!(%key, "the app changed a setting in the user config");
     apply_saved(state, apply)
+}
+
+/// Refuses writing a model that is switched off to `models.default` (by spec or table id).
+pub(crate) fn refuse_disabled_default(
+    state: &DaemonState,
+    key: &str,
+    value: &Value,
+) -> Result<(), ErrorObject> {
+    let (true, Some(named)) = (key == "models.default", value.as_str()) else {
+        return Ok(());
+    };
+    let settings = state.settings();
+    let spec = settings
+        .models
+        .catalog
+        .iter()
+        .find(|entry| entry.id == named)
+        .map_or(named, |entry| entry.spec.as_str());
+    if settings.models.is_disabled(spec) {
+        return Err(invalid(format!(
+            "{spec} is turned off; turn it on in Settings → Models before making it the default"
+        )));
+    }
+    Ok(())
 }
 
 fn set_error(error: SetError) -> ErrorObject {

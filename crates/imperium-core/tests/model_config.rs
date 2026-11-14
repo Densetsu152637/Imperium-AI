@@ -595,3 +595,64 @@ async fn models_are_switched_off_and_the_default_model_cannot_be() {
         "{refused}"
     );
 }
+
+#[tokio::test]
+async fn a_model_that_is_off_cannot_be_picked_for_a_session_switch_or_comparison() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    let paths = Paths::under(home.path());
+
+    // A dry run checks the list and writes nothing.
+    let dry = call(
+        &mut socket,
+        "models.set_config",
+        json!({"disabled": ["llamacpp:tiny"], "dry_run": true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(dry["local"][0]["enabled"], false);
+    assert!(!paths.app_models_file().exists(), "a dry run saves nothing");
+    assert!(daemon.settings().models.disabled.is_empty());
+
+    // A session on a model that is on, then the other model is switched off.
+    let created = call(
+        &mut socket,
+        "session.create",
+        json!({"model": "cloud:coder-1", "project_dir": project.path().display().to_string()}),
+    )
+    .await
+    .unwrap();
+    let session_id = created["session_id"].as_str().unwrap().to_string();
+    call(
+        &mut socket,
+        "models.set_config",
+        json!({"disabled": ["llamacpp:tiny"]}),
+    )
+    .await
+    .unwrap();
+
+    let refused = call(
+        &mut socket,
+        "session.control",
+        json!({"session_id": session_id, "action": "set_model", "model": "llamacpp:tiny"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused["message"].as_str().unwrap().contains("turned off"),
+        "{refused}"
+    );
+    let refused = call(
+        &mut socket,
+        "session.compare",
+        json!({"session_id": session_id, "message": "hi",
+               "models": ["llamacpp:tiny", "cloud:coder-1"]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused["message"].as_str().unwrap().contains("turned off"),
+        "{refused}"
+    );
+}

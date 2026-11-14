@@ -9,7 +9,7 @@
 // are its navigation, local ones and model-table rows in two groups.
 
 import { Boxes, Cpu, Info, Search } from "lucide-react";
-import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import type {
   LocalModelConfig,
   ModelConfigResult,
@@ -247,10 +247,12 @@ export function ModelConfigDialog({
       return;
     }
     setSaving(true);
+    let switchedDefault: string | null = null;
     try {
       // The new default first: the daemon refuses to switch the old one off while it is the default.
       if (defaultOff !== null && newDefault !== "") {
         await client.call("models.use", { model: newDefault });
+        switchedDefault = newDefault;
       }
       const result = await client.call<ModelConfigResult>("models.set_config", params);
       onSaved();
@@ -265,7 +267,13 @@ export function ModelConfigDialog({
       setNewDefault("");
       setApplied(true);
     } catch (e) {
-      setError(message(e));
+      // The default was changed by the first call even though the rest failed.
+      if (switchedDefault !== null) {
+        onSaved();
+        setError(`${message(e)} (your default model was already changed to ${switchedDefault})`);
+      } else {
+        setError(message(e));
+      }
     } finally {
       setSaving(false);
     }
@@ -459,7 +467,7 @@ export function ModelConfigDialog({
           cacheTypes={config.cache_types}
           preview={preview}
           previewError={previewError}
-          updating={preview === null && previewError === null && selectedLocalDraft !== undefined && changed(selectedLocal.id, "local")}
+          updating={preview === null && selectedLocalDraft !== undefined && changed(selectedLocal.id, "local")}
           on={!off.has(localSpecOf(selectedLocal))}
           onSwitch={(on) => switchLocal(selectedLocal, on)}
           defaultChoice={defaultChoice(localSpecOf(selectedLocal))}
@@ -494,30 +502,48 @@ export function ModelConfigDialog({
  */
 function InfoTip({ label, children }: { label: string; children: ReactNode }) {
   const id = useId();
-  const [open, setOpen] = useState(false);
-  const focused = useRef(false);
+  // Open while hovered or keyboard-focused, or when a click pinned it; Esc dismisses it until the
+  // pointer or focus comes back.
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const open = !dismissed && (hover || focus || pinned);
   return (
-    <span className="info-tip" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(focused.current)}>
+    <span
+      className="info-tip"
+      onMouseEnter={() => {
+        setHover(true);
+        setDismissed(false);
+      }}
+      onMouseLeave={() => setHover(false)}
+    >
       <button
         type="button"
         className="info-tip-button"
         aria-label={`What ${label} affects`}
         aria-describedby={id}
         aria-expanded={open}
-        onClick={() => setOpen(true)}
-        onFocus={() => {
-          focused.current = true;
-          setOpen(true);
+        onClick={() => {
+          setDismissed(false);
+          setPinned((was) => !was);
+        }}
+        onFocus={(event) => {
+          // Keyboard focus opens it; a mouse click is handled by its click.
+          if (event.currentTarget.matches(":focus-visible")) {
+            setFocus(true);
+            setDismissed(false);
+          }
         }}
         onBlur={() => {
-          focused.current = false;
-          setOpen(false);
+          setFocus(false);
+          setPinned(false);
         }}
         onKeyDown={(event) => {
           if (event.key === "Escape" && open) {
             // Closes the popover only: the dialog's own Esc handler sees the prevented event.
             event.preventDefault();
-            setOpen(false);
+            setDismissed(true);
           }
         }}
       >
@@ -595,12 +621,27 @@ function SettingRow({
 }
 
 /** The estimated memory of a model as a table: "≈ estimate", updating as the settings change. */
-function MemoryTable({ estimate, updating, remoteNote }: { estimate: MemoryEstimate; updating: boolean; remoteNote?: string }) {
+function MemoryTable({
+  estimate,
+  updating,
+  failed = false,
+  remoteNote,
+}: {
+  estimate: MemoryEstimate;
+  updating: boolean;
+  /** The last dry run failed: the figures are those before the edit. */
+  failed?: boolean;
+  remoteNote?: string;
+}) {
   const caption = (
     <caption>
       <span className="model-table-title">
         Estimated memory <span className="badge estimate">≈ estimate</span>
-        {updating && <span className="muted model-estimate-updating"> updating…</span>}
+        {failed ? (
+          <span className="muted model-estimate-updating"> out of date: fix the settings below</span>
+        ) : (
+          updating && <span className="muted model-estimate-updating"> updating…</span>
+        )}
       </span>
       <small className="muted">
         {estimate.kind === "remote"
@@ -634,7 +675,7 @@ function MemoryTable({ estimate, updating, remoteNote }: { estimate: MemoryEstim
     );
   }
   return (
-    <table className={`model-table model-memory${updating ? " updating" : ""}`}>
+    <table className={`model-table model-memory${updating || failed ? " updating" : ""}`}>
       {caption}
       <tbody>
         {ESTIMATE_ROWS.map((row) => (
@@ -648,7 +689,7 @@ function MemoryTable({ estimate, updating, remoteNote }: { estimate: MemoryEstim
               </span>
             </th>
             <td className="model-setting-value">
-              <output>{estimateValue(estimate, row.key)}</output>
+              <output aria-live="off">{estimateValue(estimate, row.key)}</output>
             </td>
             <td className="model-setting-reset" />
           </tr>
@@ -901,7 +942,7 @@ function LocalForm({
           <span className="warning">The weights do not fit on the GPU: some layers run on the CPU, which is much slower.</span>
         )}
       </div>
-      <MemoryTable estimate={localEstimate(estimate)} updating={updating} />
+      <MemoryTable estimate={localEstimate(estimate)} updating={updating} failed={previewError !== null} />
       {groupedSettings(LOCAL_GROUPS, LOCAL_SETTINGS).map(({ group, settings }) => (
         <GroupTable key={group.id} group={group}>
           {settings.map((setting) => (

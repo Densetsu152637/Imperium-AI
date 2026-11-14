@@ -63,8 +63,9 @@ export function disabledToSave(disabled: readonly string[], switches: Switches):
 
 /** The default model, when the switches would turn it off (the daemon refuses that). */
 export function defaultTurnedOff(input: AvailabilityInput, switches: Switches): string | null {
-  const spec = input.defaultModel;
-  if (spec === null) return null;
+  if (input.defaultModel === null) return null;
+  // `models.default` may name a table row by its id.
+  const spec = input.rows.find((row) => row.id === input.defaultModel)?.spec ?? input.defaultModel;
   const before = offSpecs(input);
   const after = offSpecs(input, switches);
   return after.has(spec) && !before.has(spec) ? spec : null;
@@ -79,4 +80,19 @@ export function replacementDefaults(
   return specs
     .filter((entry) => entry.usable && entry.spec !== except && !off.has(entry.spec))
     .map((entry) => entry.spec);
+}
+
+/**
+ * Whether the model `spec` is off in the lists the daemon sent (`models.list`, `models.local`,
+ * each carrying `enabled`): a local model that is off, or a spec the model table names whose
+ * every row is off. A model neither list knows is not off.
+ */
+export function modelIsOff(
+  spec: string,
+  rows: readonly { spec: string; enabled: boolean }[],
+  local: readonly { runtime: string; id: string; enabled: boolean }[],
+): boolean {
+  if (local.some((model) => `${model.runtime}:${model.id}` === spec && !model.enabled)) return true;
+  const named = rows.filter((row) => row.spec === spec);
+  return named.length > 0 && named.every((row) => !row.enabled);
 }

@@ -933,6 +933,30 @@ disabled = {off:?}"
             assert!(state.resolve_usable_model(None).is_err());
             assert!(state.resolve_usable_model(Some("llamacpp:mid")).is_ok());
 
+            // A new session is refused a model that is off; a resumed one keeps its own.
+            let project = tempfile::tempdir().unwrap();
+            let path = project.path().to_str().unwrap();
+            let new = state.create_session_with(
+                path,
+                Some("cloud:scholar-1"),
+                crate::state::SessionOptions::default(),
+            );
+            assert!(matches!(
+                new,
+                Err(crate::state::CreateError::Model(
+                    imperium_engine::ModelError::Disabled(_)
+                ))
+            ));
+            let resumed = state.create_session_with(
+                path,
+                Some("cloud:scholar-1"),
+                crate::state::SessionOptions {
+                    resume_id: Some("s-resumed".into()),
+                    ..crate::state::SessionOptions::default()
+                },
+            );
+            assert!(resumed.is_ok(), "a resumed session keeps its model");
+
             // Switched back on, they are offered again.
             let on = daemon(home.path()).await;
             let ids: Vec<String> = on

@@ -349,7 +349,8 @@ fn refuse_disabled_default(current: &Settings, candidate: &Settings) -> Result<(
         .map_or(default, |entry| entry.spec.as_str());
     if candidate.models.is_disabled(spec) && !current.models.is_disabled(spec) {
         return Err(format!(
-            "{spec} is the default model for new sessions, so it cannot be turned off. Choose              another default model first, then turn this one off"
+            "{spec} is the default model for new sessions, so it cannot be turned off. Choose \
+             another default model first, then turn this one off"
         ));
     }
     Ok(())

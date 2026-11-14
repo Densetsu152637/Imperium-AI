@@ -386,12 +386,18 @@ pub fn start(state: Arc<DaemonState>, params: ModelBenchParams) -> Result<BenchR
             if let Some(problem) = &row.problem {
                 return Err(invalid(format!("{} cannot run here: {problem}", row.id)));
             }
+            if !row.enabled {
+                return Err(invalid(format!(
+                    "{} is turned off (\"Use this model\" in Settings → Models)",
+                    row.id
+                )));
+            }
             vec![row.id.clone()]
         }
         _ => listing
             .models
             .iter()
-            .filter(|row| row.problem.is_none())
+            .filter(|row| row.problem.is_none() && row.enabled)
             .map(|row| row.id.clone())
             .collect(),
     };

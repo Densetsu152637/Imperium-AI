@@ -1757,7 +1757,14 @@ impl DaemonState {
         };
         let project_dir_path = local_project.as_path();
         // A model table id or a spec, as the model pickers offer them.
-        let model = match self.resolve_usable_model(model) {
+        // A resumed session keeps the model it was journalled with even if the user has since
+        // switched it off; a new session is refused one.
+        let resolved = if options.resume_id.is_some() {
+            self.resolve_model(model)
+        } else {
+            self.resolve_usable_model(model)
+        };
+        let model = match resolved {
             Ok(model) => Some(model),
             Err(ModelError::NoDefault) if options.may_wait_for_model => None,
             Err(error) => return Err(error.into()),
@@ -2138,7 +2145,12 @@ impl DaemonState {
                 ));
             }
             // The model is checked first, so a refusal leaves no folder behind.
-            match self.resolve_usable_model(model) {
+            let resolved = if options.resume_id.is_some() {
+                self.resolve_model(model)
+            } else {
+                self.resolve_usable_model(model)
+            };
+            match resolved {
                 Ok(_) => {}
                 Err(ModelError::NoDefault) if options.may_wait_for_model => {}
                 Err(error) => return Err(error.into()),

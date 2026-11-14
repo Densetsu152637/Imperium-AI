@@ -94,3 +94,8 @@ test("a hosted row runs remotely; a row that names a local model shows that mode
   // A local row whose model was not found has nothing to estimate here.
   assert.deepEqual(rowEstimate({ spec: "llamacpp:gone", location: "local" }, [model()]), { kind: "remote" });
 });
+
+test("weights of an unknown size are not shown as zero", () => {
+  const estimate = localEstimate(model({ weights_bytes: 0 }));
+  assert.equal(estimateValue(estimate, "weights"), "unknown");
+});

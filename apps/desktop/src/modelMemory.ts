@@ -118,7 +118,7 @@ export function estimateValue(estimate: MemoryEstimate, key: "vram" | "ram" | "t
     case "total":
       return approx(estimate.totalBytes);
     case "weights":
-      return approx(estimate.weightsBytes);
+      return estimate.weightsBytes > 0 ? approx(estimate.weightsBytes) : "unknown";
     case "kv":
       return approx(estimate.kvBytes);
     case "placement":

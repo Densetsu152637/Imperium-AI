@@ -60,6 +60,7 @@ pub fn set(state: &DaemonState, params: ConfigSetParams) -> Result<ConfigSetResu
     } else {
         &params.value
     };
+    crate::onboarding::refuse_disabled_default(state, &params.key, value)?;
     let updated =
         imperium_config::set_user_setting(state.paths(), &params.key, value, std::env::vars())
             .map_err(|error| {
