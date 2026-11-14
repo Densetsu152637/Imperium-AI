@@ -254,7 +254,7 @@ impl ToolProvider for PluginTools {
             let servers = self
                 .servers_for(name)
                 .ok_or_else(|| format!("unknown MCP tool {name}"))?;
-            servers.call(name, arguments).await
+            servers.call(name, arguments, None).await
         })
     }
 }
