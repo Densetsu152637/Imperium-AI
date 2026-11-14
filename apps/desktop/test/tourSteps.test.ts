@@ -1,4 +1,4 @@
-// The first-run tour's steps and persistence (src/tour.ts). Run with `pnpm test` (node's test runner).
+// The first-run tour's steps and persistence (src/tourSteps.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -14,8 +14,9 @@ import {
   settleStep,
   shouldAutoStart,
   TOUR_STEPS,
+  type TourState,
   type TourStep,
-} from "../src/tour.ts";
+} from "../src/tourSteps.ts";
 
 const steps: TourStep[] = [
   { id: "a", title: "A", body: "a" },
@@ -70,12 +71,12 @@ test("a step that loses its target mid-tour moves to the next available one", ()
 test("the tour starts by itself only until it has run", () => {
   assert.equal(shouldAutoStart({ tour: null }), true);
   assert.equal(shouldAutoStart({ tour: undefined as never }), true);
-  assert.equal(shouldAutoStart(recordOutcome({ tour: null }, "finished")), false);
-  assert.equal(shouldAutoStart(recordOutcome({ tour: null }, "skipped")), false);
+  assert.equal(shouldAutoStart(recordOutcome<{ tour: TourState }>({ tour: null }, "finished")), false);
+  assert.equal(shouldAutoStart(recordOutcome<{ tour: TourState }>({ tour: null }, "skipped")), false);
 });
 
 test("auto-start waits for a connected main window with the interface up and no dialog open", () => {
-  const fresh = { tour: null };
+  const fresh: { tour: TourState } = { tour: null };
   const ready = { mainWindow: true, connected: true, uiReady: true, modalOpen: false };
   assert.equal(autoStartReady(fresh, ready), true);
   assert.equal(autoStartReady(fresh, { ...ready, connected: false }), false);
@@ -98,7 +99,7 @@ test("a settings document from before the tour marks an existing install, which 
 
 test("finishing and skipping are remembered with their outcome, and keep other settings", () => {
   const now = new Date("2026-01-02T03:04:05.000Z");
-  const before = { tour: null, theme: "dark" };
+  const before: { tour: TourState; theme: string } = { tour: null, theme: "dark" };
   const finished = recordOutcome(before, "finished", now);
   assert.deepEqual(finished.tour, { outcome: "finished", at: "2026-01-02T03:04:05.000Z" });
   assert.equal(finished.theme, "dark");

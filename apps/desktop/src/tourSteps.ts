@@ -1,4 +1,4 @@
-// The first-run tour's data and logic, free of React and the DOM so it can be tested (test/tour.test.ts).
+// The first-run tour's data and logic, free of React and the DOM so it can be tested (test/tourSteps.test.ts).
 // Steps are declarative: add an entry to TOUR_STEPS and it appears in the tour. A step with a
 // `target` (a CSS selector) points at that element and is skipped while the element is not on
 // screen (no session open yet, a panel closed, a detached window); a step without one is shown

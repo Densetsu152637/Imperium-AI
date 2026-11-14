@@ -1,4 +1,4 @@
-// The first-run tour: a card that walks through TOUR_STEPS (tour.ts), pointing at each step's
+// The first-run tour: a card that walks through TOUR_STEPS (tourSteps.ts), pointing at each step's
 // element with a highlight. It is a modal dialog: focus moves to the card and stays inside it,
 // Right Arrow (or Enter on the focused card) goes on, Left Arrow goes back, Esc skips, and each
 // step after the first is announced to screen readers. Steps whose element is not on screen are
@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { cardPosition, nextStep, previousStep, settleStep, TOUR_STEPS, type Box, type TourOutcome, type TourStep } from "./tour";
+import { cardPosition, nextStep, previousStep, settleStep, TOUR_STEPS, type Box, type TourOutcome, type TourStep } from "./tourSteps";
 
 const exists = (selector: string): boolean => {
   try {

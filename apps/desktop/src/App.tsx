@@ -119,7 +119,7 @@ import { appCommands } from "./commands/appCommands";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
 import { splashDone } from "./boot";
 import { Tour } from "./Tour";
-import { autoStartReady, recordOutcome, shouldAutoStart, type TourOutcome } from "./tour";
+import { autoStartReady, recordOutcome, shouldAutoStart, type TourOutcome } from "./tourSteps";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
 import { ConnectorsWindow } from "./ConnectorsWindow";
 import { EnvironmentWindow } from "./EnvironmentWindow";

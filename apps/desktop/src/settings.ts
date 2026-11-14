@@ -8,7 +8,7 @@ import { createContext, useContext } from "react";
 import { toggleMark, type ModelMark, type ModelMarks } from "./modelPrefs";
 import { rememberTheme } from "./boot";
 import { getDoc, setDoc, takeLegacy } from "./store";
-import { migrateTour, type TourState } from "./tour";
+import { migrateTour, type TourState } from "./tourSteps";
 import type { PttKey } from "./voice";
 
 export type Density = "compact" | "comfortable" | "spacious";
@@ -73,7 +73,7 @@ export type AppSettings = {
   enabledMods: Record<string, boolean>;
   // Models: favourites and hidden ones, by spec (modelPrefs.ts).
   modelMarks: ModelMarks;
-  // The first-run tour: how it last ended, null until it has run (tour.ts).
+  // The first-run tour: how it last ended, null until it has run (tourSteps.ts).
   tour: TourState;
 };
 

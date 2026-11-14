@@ -623,8 +623,8 @@ and approvals, memory, and Settings. Each step is a small card beside a highligh
   text, in a polite live region. Focus returns to where
   it was when the tour closes. It uses no animation.
 - **No network and no library.** The tour is `src/Tour.tsx` (the card and highlight, on the
-  app's theme tokens) over `src/tour.ts` (the steps and pure logic); it adds no dependency.
-- **Declarative steps.** `TOUR_STEPS` in `tour.ts` is a list of `{ id, title, body, target? }`,
+  app's theme tokens) over `src/tourSteps.ts` (the steps and pure logic); it adds no dependency.
+- **Declarative steps.** `TOUR_STEPS` in `tourSteps.ts` is a list of `{ id, title, body, target? }`,
   where `target` is a CSS selector (panels have `data-panel`, and the title bar's Edit layout and
   Settings buttons `data-tour`). A step whose target is not on screen (no session open for the
   composer, a closed or detached panel) is skipped, in both directions, and the step counter counts
@@ -635,7 +635,7 @@ and approvals, memory, and Settings. Each step is a small card beside a highligh
   as skipped so the approval is never covered.
 
 Sequencing, skipping missing targets, the persisted outcome, and card placement are pure functions
-tested in `test/tour.test.ts`.
+tested in `test/tourSteps.test.ts`.
 
 ## Accessibility
 
