@@ -32,7 +32,7 @@ export const HOUSE_CATALOGUE_RAW: unknown = [
   {
     id: "consul",
     name: "Consul",
-    role: "Emperor's partner: a larger model for the work that needs more depth than the planner.",
+    role: "Emperor's critic and reviewer: checks Emperor's plans and delegated work and can reject them. Built on a larger (about 9B) base than Emperor (about 4B).",
     approx_bytes: 5.5 * GB,
     source: null,
   },

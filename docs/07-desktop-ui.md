@@ -1388,8 +1388,10 @@ drawn. Session totals and recent outputs follow.
 
 While the user has no model at all (no configured hosted endpoint, no local model found in the
 model folders, no default), the new-session view shows a card above the model setup suggesting
-Emperor and Consul, Imperium's own fine-tuned open-weight models, each with a role blurb and an
-approximate size. The catalogue is `apps/desktop/src/houseModels.ts`; an entry with no download
+Emperor (the root agent and planner, on a base of about 4B) and Consul (its critic and reviewer,
+which checks Emperor's plans and delegated work and can reject them, on a base of about 9B),
+Imperium's own fine-tuned open-weight models, each with a role blurb and an approximate size
+(placeholders until the models are published). The catalogue is `apps/desktop/src/houseModels.ts`; an entry with no download
 source (both, today) reads *not yet available — still in training* and has no button. An entry
 with a Hugging Face source gets a *Download* button that runs the same `models.hf_files` and
 `models.download` calls as the Local models panel's form. The × dismisses the card for good (the

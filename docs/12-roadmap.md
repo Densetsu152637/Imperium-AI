@@ -480,7 +480,8 @@ and `environments.agent_update` (protocol 0.28)
     rewrite, and showing the state in the desktop.
 44. **House models on first run** (implemented, first version). When the user has no model at all
     (no hosted endpoint, no local model, no default), the new-session view suggests Emperor and
-    Consul, Imperium's own fine-tuned open-weight models, above the model setup. A small
+    Consul, Imperium's own fine-tuned open-weight models (Emperor plans, on a base of about 4B;
+    Consul is its critic and reviewer, on about 9B), above the model setup. A small
     catalogue (`houseModels.ts`) gives each model a name, a role blurb, an approximate size and
     an optional Hugging Face source. Neither model has a source yet, so the card says *not yet
     available — still in training* and offers no download button; once a source is set, the
