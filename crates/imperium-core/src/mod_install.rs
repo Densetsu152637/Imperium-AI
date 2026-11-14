@@ -50,6 +50,10 @@ pub(crate) struct Approval {
     /// Approved by answering a prompt at a terminal. Otherwise the mod stays off until the user
     /// turns it on in the desktop app.
     pub interactive: bool,
+    /// The user confirmed, at a terminal, that this exact content may run in the app's own
+    /// window. Set only for a mod whose manifest asks for it; not carried to an update.
+    #[serde(default)]
+    pub trusted: bool,
     pub approved_at_unix_ms: u64,
 }
 
@@ -123,6 +127,7 @@ pub(crate) fn apply_approvals(state: &DaemonState, listing: &mut ModListResult) 
             info.permissions.clear();
             info.modified = true;
             info.opt_in = true;
+            info.trusted = false;
         }
         return;
     };
@@ -144,6 +149,8 @@ pub(crate) fn apply_approvals(state: &DaemonState, listing: &mut ModListResult) 
             info.modified = true;
         }
         info.opt_in = !record.interactive || !intact;
+        // Trust is for the content that was confirmed, and only for a mod that asks for it.
+        info.trusted = info.main_context && record.trusted && intact;
     }
 }
 
@@ -221,11 +228,13 @@ fn installed(state: &DaemonState, id: &str) -> Option<ModInstalled> {
             version: record.version,
             permissions: record.permissions,
             sha256: Some(record.sha256),
+            trusted: record.trusted,
         },
         None => ModInstalled {
             version: info.version,
             permissions: info.permissions,
             sha256: None,
+            trusted: false,
         },
     })
 }
@@ -256,6 +265,7 @@ pub(crate) async fn inspect(
         version: staged.info.version,
         permissions: staged.info.permissions,
         panels: staged.info.panels,
+        main_context: staged.info.main_context,
         sha256: staged.sha256,
         location: staged.source.location,
         revision: staged.source.revision,
@@ -316,6 +326,12 @@ pub(crate) async fn install(
         return Err(format!(
             "the mod requests {extra}, which was not approved; nothing was installed"
         ));
+    }
+    if params.trusted && !staged.info.main_context {
+        return Err(
+            "the mod does not ask to run in the app's own window, so it cannot be trusted to"
+                .into(),
+        );
     }
     let id = staged.info.id.clone();
     let mods_dir = ExtensionKind::Mod.dir(&config_dir);
@@ -388,6 +404,8 @@ pub(crate) async fn install(
             permissions: staged.info.permissions.clone(),
             source: staged.source.clone(),
             interactive,
+            // Only what was confirmed for this content: an update never inherits it.
+            trusted: params.trusted,
             approved_at_unix_ms: unix_ms(),
         }),
     )?;
@@ -528,6 +546,7 @@ mod tests {
             permissions: preview.permissions.clone(),
             replace,
             interactive: true,
+            trusted: false,
         }
     }
 
@@ -944,6 +963,98 @@ mod tests {
         let listing = listed(&state);
         assert!(!listing.mods[0].modified);
         assert_eq!(listing.mods[0].permissions, vec!["storage"]);
+    }
+
+    fn write_main_context_mod(dir: &Path, version: &str, body: &str) {
+        write_mod(dir, version, &["storage"], body);
+        std::fs::write(
+            dir.join("mod.json"),
+            serde_json::json!({
+                "id": "demo", "name": "Demo", "version": version,
+                "permissions": ["storage"], "main_context": true,
+                "contributes": {"panels": [{"id": "p", "title": "Demo"}]},
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn trust_is_for_a_mod_that_asks_for_this_content_and_this_confirmation() {
+        let home = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let state = state(home.path());
+
+        // A mod that does not ask for the main window cannot be trusted with it.
+        write_mod(source.path(), "1.0.0", &["storage"], "export default 1;");
+        let plain = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        assert!(!plain.main_context);
+        let mut asked = install_params(&plain, source.path(), false);
+        asked.trusted = true;
+        let error = install(&state, asked).await.unwrap_err();
+        assert!(error.contains("does not ask"), "{error}");
+        assert!(!state.mods_dir().join("demo").exists());
+
+        // One that asks is sandboxed unless the user confirmed.
+        write_main_context_mod(source.path(), "1.0.0", "export default 1;");
+        let preview = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        assert!(preview.main_context);
+        install(&state, install_params(&preview, source.path(), false))
+            .await
+            .unwrap();
+        let listing = listed(&state);
+        assert!(listing.mods[0].main_context);
+        assert!(!listing.mods[0].trusted);
+        std::fs::remove_dir_all(state.mods_dir().join("demo")).unwrap();
+        set_approval(&state, "demo", None).unwrap();
+
+        // Trusted at install: for this content only.
+        let mut yes = install_params(&preview, source.path(), false);
+        yes.trusted = true;
+        install(&state, yes).await.unwrap();
+        assert!(listed(&state).mods[0].trusted);
+        assert!(approval(&state, "demo").unwrap().trusted);
+
+        // Edited since: not trusted, and no permissions.
+        let folder = state.mods_dir().join("demo");
+        std::fs::write(folder.join("index.js"), "export default 'evil';").unwrap();
+        let listing = listed(&state);
+        assert!(listing.mods[0].modified);
+        assert!(!listing.mods[0].trusted);
+        std::fs::write(folder.join("index.js"), "export default 1;").unwrap();
+        assert!(listed(&state).mods[0].trusted);
+
+        // An update asks again: without the confirmation it is sandboxed, with it it is trusted.
+        write_main_context_mod(source.path(), "1.1.0", "export default 2;");
+        let update = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        assert!(update.installed.as_ref().unwrap().trusted);
+        install(&state, install_params(&update, source.path(), true))
+            .await
+            .unwrap();
+        assert!(!listed(&state).mods[0].trusted);
+        write_main_context_mod(source.path(), "1.2.0", "export default 3;");
+        let again = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        let mut confirmed = install_params(&again, source.path(), true);
+        confirmed.trusted = true;
+        install(&state, confirmed).await.unwrap();
+        assert!(listed(&state).mods[0].trusted);
+
+        // A forged approval in the folder, or a manifest that newly asks, grants nothing.
+        std::fs::write(
+            folder.join(".imperium-approval.json"),
+            r#"{"trusted": true}"#,
+        )
+        .unwrap();
+        assert!(listed(&state).mods[0].modified);
+        assert!(!listed(&state).mods[0].trusted);
     }
 
     #[tokio::test]

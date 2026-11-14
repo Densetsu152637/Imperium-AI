@@ -152,8 +152,8 @@ Hook events: `session.start`, `session.end`, `prompt.submit`, `turn.start`, `tur
 `model.before`, `model.after`, `compact.before`, `notification`.
 
 - A hook is a command (any executable receiving JSON on stdin) or an HTTP endpoint.
-- `tool.before` and `prompt.submit` hooks can allow or deny (rewriting is later work, below);
-  others observe.
+- `tool.before` and `prompt.submit` hooks can allow, deny, or rewrite
+  ([below](#rewriting-hooks-implemented)); others observe.
 - Hooks run with timeouts and inside the session's isolation tier.
 
 **Implemented:** hooks for `session.start`, `session.end`, `prompt.submit`, `turn.start`,
@@ -168,8 +168,8 @@ printing `{"decision": "block", "reason": "..."}`; a blocked tool call tells the
 and a blocked message is reported to the user. Other failures are logged and do not block.
 Matchers name tools, `|`-separated, and accept Claude Code's names (`Bash`, `Edit|Write`,
 `Read`); Claude Code event names (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`,
-`SessionStart`, `SessionEnd`, `SubagentStop`, `Stop`) map to the events above. Rewriting and
-the events not listed are later work.
+`SessionStart`, `SessionEnd`, `SubagentStop`, `Stop`) map to the events above. The events not
+listed are later work.
 
 ```toml
 [[hooks]]
@@ -363,24 +363,65 @@ the safety floor, and the user's approval at install does not change either. A m
 way is on at once when the user approved it at a terminal prompt, like any installed mod; one
 approved with `--yes`, or installed by an agent, stays opt-in in Settings → Mods.
 
-### Later stages: rewriting hooks and trusted mods
+### Rewriting hooks (implemented)
 
-These two widen trust, so they are designed here and not built yet.
+A `tool.before` hook may answer with `{"updated_input": {...}}` (an object: the tool's new
+arguments, under the schema's names, as the hook received them in `tool_input`), and a
+`prompt.submit` hook with `{"updated_prompt": "..."}`; a command prints it as JSON on stdout
+(exit 0), an HTTP hook returns it as its answer. A block always wins and drops every rewrite.
+Several hooks rewrite in order, each seeing the last one's result. The rules:
 
-- **Rewriting hooks.** A `tool.before` hook could answer `{"decision": "allow", "updated_input":
-  {...}}` to replace a call's arguments (and a `prompt.submit` hook the prompt). Rules: the
-  rewritten call is checked **again** by the tool's own validation, the user's permission rules,
-  the agent's permission profile and the safety floor, exactly as if the model had made it, so a
-  rewrite can narrow or change a call but never gets it past a check; rewriting is off for
-  hooks from plugins an agent installed; the original and rewritten arguments are both shown in
-  the tool's notice; several hooks rewrite in order, each seeing the last output, and a hook that
-  fails leaves the call as it was.
-- **Trusted main-context mods.** A mod could ask to run in the app's own webview. Rules: only
-  from a mod the user installed from the CLI or the app (never an agent's install), only after an
-  install prompt that says so in plain words and names the content hash; the approval is bound to
-  that hash, so any update asks again; it is revocable per mod in Settings → Mods; and it is
-  not offered at all for a mod a plugin or agent brought. Until that is built, every mod stays in
-  its sandboxed frame.
+- **The rewritten call is a new call.** It runs again from the start through everything the
+  model's own call goes through: an initiative review's tool limits, the agent's permission
+  profile and local-files-only lock, the tool's own validation (a rewrite that does not parse
+  fails as the model's would), the user's permission rules, the safety floor and its path rules,
+  and approval. A pre-approval or "always allow" the original had does not carry over to a call
+  the floor covers. So a rewrite can change or narrow a call and never gets one past a check.
+- **The same tool.** `updated_input` replaces the arguments only; a hook cannot turn a call into
+  another tool's (that would be a new call, and is not offered). A tool that is not a built-in
+  or MCP tool (the agent's own delegation and planning tools) runs no `tool.before` hooks.
+- **One round.** Hooks run again on the rewritten call but cannot rewrite it a second time (they
+  can still block it), so hooks cannot loop.
+- **Seen.** The transcript gets a notice with the arguments before and after, the approval and
+  the tool's start line say `rewritten by a hook; the model asked with ...`, and the model is
+  told its call was rewritten. A prompt rewrite is shown the same way (before and after) and the
+  rewritten text is what the model reads.
+- **Trust.** Only hooks from the user's own configuration may rewrite. A plugin an agent
+  installed may still block, but its rewrites are ignored (and logged); so are rewrites from an
+  event that is not `tool.before` or `prompt.submit`, an `updated_input` that is not an object,
+  and one over 1 MiB. A repository's hooks never run ([stage 1](#hooks)). A plugin put in the
+  config folder by hand (no install record) counts as the user's, as its hooks already run
+  commands as the user.
+- A hook that fails or times out leaves the call as it was.
+
+### Trusted main-context mods (trust implemented, loader not built)
+
+A mod may ask, in its `mod.json`, to run in the app's own window instead of a sandboxed frame
+(`"main_context": true`), for speed or to extend the app itself. That is the one thing a
+sandbox exists to stop, so it is never granted by the manifest or by an agent:
+
+- Only `imperium mods install` or `update`, run by the user at a terminal, can grant it. When
+  the mod asks, the install prints the warning below, naming the content hash, and the user must
+  **type** `trust <id>`; `--yes`, a missing terminal, or any other answer installs the mod in
+  its sandbox. It is separate from the permission prompt and cannot be set by a flag.
+- The confirmation is bound to the content hash and is kept in the daemon's approvals
+  ([above](#installing-and-updating-mods-implemented)), not the mod's folder. A new version
+  (`mods update`) asks again and is sandboxed unless the user types it again; a modified mod
+  loses it (it is `modified`, with no permissions, and off); a mod an agent or a plugin brought,
+  or one without an approval record, is never trusted. `mods.list` reports `main_context` (what
+  the manifest asks) and `trusted` (what the user confirmed for these files).
+- It is revocable: turning the mod off in Settings → Mods stops it, and installing it afresh
+  without confirming returns it to the sandbox. The app's gate is `mayRunInMainContext`
+  (`apps/desktop/src/modTrust.ts`): asked, trusted, intact, and on.
+- The warning says, in plain words: it runs inside the app's own window, where it can read and
+  change everything the app can, including the daemon connection and its token, and act as
+  the user; trust it only after reading its code; the confirmation is for exactly this content;
+  a new version asks again.
+- **Not built:** the desktop loader that actually runs a trusted mod in the app's own window.
+  The app's content security policy allows no inline or blob scripts, so loading needs a policy
+  change and a way to serve the mod's module to the main window, which can only be checked in a
+  running app. Until then every mod, trusted or not, stays in its sandboxed frame, and `trusted`
+  has no effect beyond being recorded and shown.
 
 Contribution points: new panels, modules placeable inside any panel
 ([layout](07-desktop-ui.md#modules-inside-panels)), extensions to any panel's slots, panel wrappers and

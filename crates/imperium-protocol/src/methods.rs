@@ -2878,6 +2878,12 @@ pub struct ModInfo {
     /// Its files no longer match what the user approved, so it has no permissions.
     #[serde(default)]
     pub modified: bool,
+    /// The manifest asks to run in the app's own window instead of a sandboxed frame.
+    #[serde(default)]
+    pub main_context: bool,
+    /// The user trusted it at install, for this exact content, so it may run in the app's own window.
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -2925,6 +2931,9 @@ pub struct ModPreview {
     /// What the mod's manifest requests.
     pub permissions: Vec<String>,
     pub panels: Vec<ModPanel>,
+    /// The manifest asks to run in the app's own window (a trusted mod).
+    #[serde(default)]
+    pub main_context: bool,
     /// SHA-256 of the mod's files (paths and contents, in order; not `.git` or Imperium's own
     /// bookkeeping files), as hex. `mods.install` installs only content with this hash.
     pub sha256: String,
@@ -2952,6 +2961,9 @@ pub struct ModInstalled {
     /// The hash recorded at install, when there is one.
     #[serde(default)]
     pub sha256: Option<String>,
+    /// The user trusted this version to run in the app's own window.
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 /// `mods.install`: installs or updates a mod in `<config>/mods/<id>` from the source
@@ -2985,6 +2997,11 @@ pub struct ModInstallParams {
     /// turns it on in the desktop app.
     #[serde(default)]
     pub interactive: bool,
+    /// The user typed the confirmation at a terminal that lets this mod, which asks for it,
+    /// run in the app's own window. Refused for a mod that does not ask. Never carried over to
+    /// an update: each new content hash asks again.
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
