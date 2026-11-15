@@ -231,6 +231,9 @@ pub struct Agent {
     /// Whether the latest tool call succeeded (only successful file calls load instruction
     /// files).
     last_tool_ok: std::sync::atomic::AtomicBool,
+    /// Set while a call from the MCP bridge runs: this agent's permission requests then say so
+    /// in their summary, so clients that must not answer them (the harness) can tell.
+    bridged: std::sync::atomic::AtomicBool,
     /// Set by a `tool.before` hook that rewrote the call in flight: the new arguments, for
     /// `run_tool` to check as a new call.
     pending_rewrite: Mutex<Option<String>>,
@@ -446,6 +449,7 @@ impl Agent {
             compact_skip_noticed: false,
             instructions: None,
             last_tool_ok: std::sync::atomic::AtomicBool::new(false),
+            bridged: std::sync::atomic::AtomicBool::new(false),
             pending_rewrite: Mutex::new(None),
             rewritten_from: Mutex::new(None),
             ran_rewritten: Mutex::new(None),
@@ -1796,6 +1800,13 @@ impl Agent {
             return true;
         }
         let (request_id, answer) = self.shared.broker.request();
+        // A bridged call's request is marked: it is the user's to answer, not the harness's.
+        let summary = if self.bridged.load(Ordering::SeqCst) {
+            format!("{}{summary}", crate::bridge::SUMMARY_PREFIX)
+        } else {
+            summary.to_string()
+        };
+        let summary = summary.as_str();
         self.emit(SessionEvent::PermissionRequested {
             request_id,
             tool: tool.to_string(),
@@ -2267,8 +2278,16 @@ impl Agent {
             Err(error) => return (false, format!("error: {error}")),
         };
         self.last_tool_ok.store(false, Ordering::SeqCst);
+        self.bridged.store(true, Ordering::SeqCst);
         let output = self.run_tool(&call).await;
+        self.bridged.store(false, Ordering::SeqCst);
         (self.last_tool_ok.load(Ordering::SeqCst), output)
+    }
+
+    /// Ends the marking of permission requests as bridged (a bridged call that was cut short
+    /// leaves it set).
+    pub(crate) fn end_bridged(&self) {
+        self.bridged.store(false, Ordering::SeqCst);
     }
 
     async fn run_tool_once(&mut self, call: &ToolCall) -> String {

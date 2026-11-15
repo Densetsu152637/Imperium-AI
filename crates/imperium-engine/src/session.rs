@@ -167,6 +167,8 @@ pub enum BridgeError {
     NotBridged(String),
     #[error("the session has stopped")]
     Closed,
+    #[error("too many bridged calls are waiting; try again when they finish")]
+    TooMany,
 }
 
 /// Handle to a running session. Its root agent and every subagent are separate tasks on the
@@ -776,7 +778,7 @@ impl Session {
         allow_write: bool,
     ) -> Result<String, BridgeError> {
         crate::bridge::check(name, allow_write).map_err(BridgeError::NotBridged)?;
-        let id = self.bridge.begin();
+        let id = self.bridge.begin().ok_or(BridgeError::TooMany)?;
         let sent = self.commands.send(Command::RunTool(BridgedRun {
             id: id.clone(),
             name: name.to_string(),
@@ -1280,6 +1282,7 @@ async fn run_bridged_calls(
 ) -> bool {
     let mut waiting = std::collections::VecDeque::from([first]);
     let mut open = true;
+    let mut stop = shared.controls.stop_signal();
     while let Some(run) = waiting.pop_front() {
         if shared.controls.is_stopped() {
             bridge.finish(
@@ -1295,6 +1298,17 @@ async fn run_bridged_calls(
             loop {
                 tokio::select! {
                     done = &mut work => break done,
+                    // The user stopped the session: a call waiting for an answer is refused and
+                    // the call ends here.
+                    _ = stop.changed() => {
+                        if *stop.borrow_and_update() {
+                            shared.broker.deny_all();
+                            break (
+                                false,
+                                "error: the session was stopped while this call ran".to_string(),
+                            );
+                        }
+                    }
                     command = commands.recv(), if open => match command {
                         Some(Command::Respond { request_id, decision }) => {
                             shared.broker.resolve(request_id, decision);
@@ -1303,7 +1317,17 @@ async fn run_bridged_calls(
                             shared.questions.resolve(request_id, answers);
                         }
                         Some(Command::Message(message)) => shared.inboxes.queue_for_root(message),
-                        Some(Command::RunTool(next)) => waiting.push_back(next),
+                        Some(Command::RunTool(next)) => {
+                            if waiting.len() < crate::bridge::MAX_PENDING {
+                                waiting.push_back(next);
+                            } else {
+                                bridge.finish(
+                                    &next.id,
+                                    false,
+                                    "error: too many bridged calls are waiting".into(),
+                                );
+                            }
+                        }
                         Some(Command::SetModel { reply, .. } | Command::Compact { reply }) => {
                             let _ = reply.send(Err(SwitchError::Busy));
                         }
@@ -1317,6 +1341,7 @@ async fn run_bridged_calls(
                 }
             }
         };
+        root.end_bridged();
         bridge.finish(&run.id, ok, output);
     }
     open

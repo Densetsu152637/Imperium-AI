@@ -1768,10 +1768,10 @@ fn incompatible(client: ProtocolVersion) -> ErrorObject {
     }
 }
 
-/// Decodes a method's params (absent params mean `{}`), runs it, and encodes its result.
 /// The longest `session.tool_result` waits, in milliseconds.
 const TOOL_RESULT_WAIT_MS: u64 = 5_000;
 
+/// Decodes a method's params (absent params mean `{}`), runs it, and encodes its result.
 fn call<M: Method>(
     params: Option<Value>,
     run: impl FnOnce(M::Params) -> Result<M::Result, ErrorObject>,

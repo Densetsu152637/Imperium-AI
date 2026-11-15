@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -40,6 +40,16 @@ pub const WRITE_TOOLS: &[&str] = &[
     "command_stop",
     "memory_remember",
 ];
+
+/// What a bridged call's permission request summary starts with. The request is the user's to
+/// answer: the session harness (`imperium mcp-serve`) refuses to answer one, as it does an MCP
+/// sampling request. (Any client holding the daemon's token can still call `session.respond`.)
+pub const SUMMARY_PREFIX: &str = "[MCP bridge] ";
+
+/// Calls that may wait to run at once; more are refused.
+pub const MAX_PENDING: usize = 16;
+/// How long a finished result waits to be collected before it is dropped.
+const KEEP_FOR: Duration = Duration::from_secs(600);
 
 /// A tool the bridge can run.
 #[derive(Debug, Clone, PartialEq)]
@@ -130,16 +140,50 @@ const KEPT: usize = 64;
 #[derive(Debug, Default)]
 struct State {
     pending: HashSet<String>,
-    done: HashMap<String, BridgeOutcome>,
+    done: HashMap<String, (Instant, BridgeOutcome)>,
     order: VecDeque<String>,
 }
 
+impl State {
+    /// Drops results nobody collected in time.
+    fn prune(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<String> = self
+            .done
+            .iter()
+            .filter(|(_, (at, _))| now.duration_since(*at) > KEEP_FOR)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in expired {
+            self.done.remove(&id);
+            self.order.retain(|kept| *kept != id);
+        }
+    }
+}
+
 /// Bridged calls of one session: the ones running and the results waiting to be collected.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct BridgeResults {
+    /// Makes ids unique across restarts: the journal keeps call ids, and a restarted session
+    /// would otherwise reuse them.
+    epoch: u64,
     next: AtomicU64,
     state: Mutex<State>,
     changed: Notify,
+}
+
+impl Default for BridgeResults {
+    fn default() -> Self {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as u64);
+        BridgeResults {
+            epoch,
+            next: AtomicU64::new(0),
+            state: Mutex::default(),
+            changed: Notify::new(),
+        }
+    }
 }
 
 impl BridgeResults {
@@ -147,11 +191,17 @@ impl BridgeResults {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Registers a call and returns its id.
-    pub fn begin(&self) -> String {
-        let id = format!("b{}", self.next.fetch_add(1, Ordering::SeqCst) + 1);
-        self.state().pending.insert(id.clone());
-        id
+    /// Registers a call and returns its id, or `None` when too many calls already wait.
+    pub fn begin(&self) -> Option<String> {
+        let mut state = self.state();
+        state.prune();
+        if state.pending.len() >= MAX_PENDING {
+            return None;
+        }
+        let number = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+        let id = format!("b{:x}-{number}", self.epoch);
+        state.pending.insert(id.clone());
+        Some(id)
     }
 
     /// Forgets a call that never reached the session.
@@ -164,9 +214,11 @@ impl BridgeResults {
         {
             let mut state = self.state();
             state.pending.remove(id);
-            state
-                .done
-                .insert(id.to_string(), BridgeOutcome { ok, output });
+            state.prune();
+            state.done.insert(
+                id.to_string(),
+                (Instant::now(), BridgeOutcome { ok, output }),
+            );
             state.order.push_back(id.to_string());
             while state.order.len() > KEPT {
                 if let Some(oldest) = state.order.pop_front() {
@@ -179,7 +231,7 @@ impl BridgeResults {
 
     fn take(&self, id: &str) -> BridgeWait {
         let mut state = self.state();
-        if let Some(outcome) = state.done.remove(id) {
+        if let Some((_, outcome)) = state.done.remove(id) {
             state.order.retain(|kept| kept != id);
             return BridgeWait::Done(outcome);
         }
@@ -237,10 +289,21 @@ mod tests {
         assert_eq!(listed.len(), READ_TOOLS.len() + WRITE_TOOLS.len());
     }
 
+    #[test]
+    fn calls_that_wait_are_bounded_and_ids_are_distinct() {
+        let results = BridgeResults::default();
+        let ids: Vec<String> = (0..MAX_PENDING).map(|_| results.begin().unwrap()).collect();
+        assert!(results.begin().is_none());
+        let unique: HashSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), MAX_PENDING);
+        results.finish(&ids[0], true, String::new());
+        assert!(results.begin().is_some());
+    }
+
     #[tokio::test]
     async fn a_result_is_handed_over_once() {
         let results = BridgeResults::default();
-        let id = results.begin();
+        let id = results.begin().unwrap();
         assert_eq!(
             results.wait(&id, Duration::from_millis(10)).await,
             BridgeWait::Pending

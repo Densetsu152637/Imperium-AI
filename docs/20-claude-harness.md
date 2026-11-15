@@ -213,7 +213,7 @@ user (`ask_user`), starting sessions, and MCP and plugin tools are never bridged
   makes: the launcher's tool limits, the agent's permission profile and local-files-only lock,
   the tool's own validation, the permission rules and the safety floor, approval, hooks and the
   journal. There is no second permission path, and the call and its result are in the session's
-  events and transcript like any other. Calls run one at a time, in order; a call made while a
+  events and journal like any other (they are not part of the model conversation). Calls run one at a time, in order; a call made while a
   turn runs (only with `--session` on a busy session), or on a stopped session, ends at once
   with an error.
 - **No model, no budget.** The tools make no model call, so a bridge session spends no tokens
@@ -227,7 +227,11 @@ user (`ask_user`), starting sessions, and MCP and plugin tools are never bridged
   `default`, `accept_edits`; `full` runs them, `plan` refuses them) and the safety floor.
 - **Approvals are the user's.** A call that asks becomes a `permission_requested` event in the
   bridge session, which the user answers in the desktop app or the CLI. The MCP client has no
-  tool to answer it, and nothing here approves one. If nobody answers within the timeout (or
+  tool to answer it, and nothing here approves one. The request's summary starts with
+  `[MCP bridge]`, and the session harness (`mcp-serve` without `--tools`) refuses to answer a
+  request so marked, as it does an MCP sampling request. This is a guard against mistakes, not
+  a boundary: any other client holding the daemon's token can call `session.respond`, and the
+  token is the user's. If nobody answers within the timeout (or
   at once with `--approval-timeout-s 0`) the server denies the request and the call ends with
   the refusal and the reason.
 - **Results are untrusted data.** A tool's output comes back wrapped in
@@ -240,8 +244,27 @@ user (`ask_user`), starting sessions, and MCP and plugin tools are never bridged
   runs it (any spelling of the path, `.exe`, or a shell-style single argument), with the reason
   in the server's status. The bridge has no HTTP transport, so there is no loopback address to
   refuse. A bridged tool also cannot start a session or an agent.
+- **Grants are shared with the session.** A bridged call is judged like the session's own: a
+  tool the user allowed for the session (`allow_for_session`) or pre-approved runs without
+  asking, and an `allow_for_session` answered to a bridged request lasts for the session, so
+  the session's own model gets that tool allowed too. Use the session the server starts, which
+  has no model turns, to keep this contained; an ask that needs approving every time (the
+  safety floor, ask rules, `ask` mode) still asks.
+- **What `allow_write` is.** `session.run_tool` takes `allow_write` from the caller and the
+  daemon trusts it: it is a convenience that keeps the registration honest, not a barrier
+  against a client with the token. An agent whose shell can read the daemon's endpoint file
+  could call the method with it set. Writes still go through the permission rules and the
+  floor, and the read-only mount of the server's own session stops file writes whatever the
+  flag says.
+- **A server the daemon started never serves it.** Every stdio MCP server a session starts has
+  `IMPERIUM_MCP_CHILD` in its environment, and `imperium mcp-serve` (either mode) exits when it
+  is set, whatever the command line looked like; `--remote` is exempt, as it serves another
+  daemon. The check of the command line (`imperium ... mcp-serve`) stays as a fast path that
+  names the reason in the server's status.
 - **Which session.** The server owns its session, so several running clients each get their
-  own and there is nothing to name. `--session` binds the server to an existing one instead.
+  own and there is nothing to name. `--session` binds the server to an existing one instead: that session is not mounted read-only
+  (the server did not create it), so without `--allow-write` the read-only guarantee is the
+  daemon's refusal of write tools, and its grants and permission mode are the session's.
 
 ### Protocol 0.41
 

@@ -47,6 +47,9 @@ struct Cli {
     command: Command,
 }
 
+/// Set in the environment of every stdio MCP server a session starts (`imperium-mcp`).
+const MCP_CHILD_MARK: &str = "IMPERIUM_MCP_CHILD";
+
 static REMOTE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
 #[derive(Debug, Subcommand)]
@@ -975,6 +978,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_write,
             approval_timeout_s,
         } => {
+            // A server the daemon started for a session must not serve Imperium back to it. A
+            // remote daemon is another daemon, so `--remote` is not a loop.
+            if std::env::var_os(MCP_CHILD_MARK).is_some()
+                && REMOTE.get().and_then(Option::as_deref).is_none()
+            {
+                bail!(
+                    "imperium mcp-serve was started by an Imperium session as one of its MCP \
+                     servers: it is for outside agents, and serving this daemon to its own \
+                     sessions would loop"
+                );
+            }
             if tools {
                 mcp_serve_tools(BridgeOptions {
                     environment,

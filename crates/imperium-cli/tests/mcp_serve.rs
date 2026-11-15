@@ -1036,3 +1036,71 @@ async fn an_ask_nobody_answers_is_refused_and_a_user_can_allow_it() {
         "allowed"
     );
 }
+
+#[tokio::test]
+async fn the_harness_cannot_answer_a_bridged_request() {
+    let attended = bridged(true, Duration::from_secs(120)).await;
+    let Bridged {
+        harness: mut bridge,
+        project,
+        endpoint,
+        _data,
+    } = attended;
+    let mut harness = initialized(Harness::start(&endpoint).await).await;
+    let call = tokio::spawn(async move {
+        bridge_call(
+            &mut bridge,
+            "imperium_write_file",
+            json!({"path": "out.txt", "content": "sneaked"}),
+        )
+        .await
+    });
+    // Find the request the way a client of the daemon would.
+    let mut user = user_client(&endpoint).await;
+    let (session_id, request_id) = 'found: {
+        for _ in 0..400 {
+            let listed = user.call_value("session.list", json!({})).await.unwrap();
+            for session in listed["sessions"].as_array().unwrap() {
+                let id = session["session_id"].as_str().unwrap().to_string();
+                let subscribed = user
+                    .call_value("session.subscribe", json!({"session_id": id}))
+                    .await
+                    .unwrap();
+                let asked = subscribed["history"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .take_while(|event| event["event"]["type"] != "tool_finished")
+                    .find(|event| event["event"]["type"] == "permission_requested");
+                if let Some(asked) = asked {
+                    break 'found (id, asked["event"]["request_id"].clone());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the session never asked");
+    };
+    let (failed, value) = harness
+        .tool(
+            "respond_permission",
+            json!({"session_id": session_id, "request_id": request_id, "decision": "allow"}),
+        )
+        .await;
+    assert!(failed, "{value}");
+    assert!(
+        value["error"].as_str().unwrap().contains("tool bridge"),
+        "{value}"
+    );
+    assert!(!project.path().join("out.txt").exists());
+    // The user can still answer it.
+    user.call_value(
+        "session.respond",
+        json!({"session_id": session_id, "request_id": request_id, "decision": "deny"}),
+    )
+    .await
+    .unwrap();
+    let (failed, _) = call.await.unwrap();
+    assert!(failed);
+    assert!(!project.path().join("out.txt").exists());
+}

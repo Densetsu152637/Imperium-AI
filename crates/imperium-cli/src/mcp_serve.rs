@@ -907,6 +907,17 @@ async fn respond_permission(hub: &Hub, args: &Value) -> Result<Value, String> {
              and use its request_id"
         ));
     };
+    // A request of a bridged call (`imperium mcp-serve --tools`) is the user's too.
+    if asked["event"]["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.starts_with(crate::mcp_bridge::SUMMARY_PREFIX))
+    {
+        return Err(
+            "this request is a call from Imperium's MCP tool bridge: only the user can answer \
+             it, in the desktop app or the imperium CLI"
+                .into(),
+        );
+    }
     if asked["event"]["tool"] == "mcp_sampling" {
         return Err(
             "this request is an MCP server asking to use the user's model (sampling): only the \

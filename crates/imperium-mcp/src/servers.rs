@@ -308,6 +308,11 @@ impl McpServers {
     }
 }
 
+/// Set in the environment of every stdio server a session starts. `imperium mcp-serve` refuses
+/// to run when it is set (unless it serves a remote daemon), whatever the command line looked
+/// like. (The CLI keeps a copy of the name.)
+pub const CHILD_MARK: &str = "IMPERIUM_MCP_CHILD";
+
 /// Whether a stdio launch runs `imperium mcp-serve` (the harness or the tools bridge): the
 /// `imperium` binary, in any spelling of its path or `.exe`, and the `mcp-serve` word, in the
 /// arguments or inside a single shell-style argument such as `imperium mcp-serve --tools`.
@@ -354,6 +359,9 @@ async fn start(spec: ServerSpec, auth: Option<Arc<dyn TokenSource>>) -> Result<S
             process
                 .args(args)
                 .envs(env.iter().map(|(key, value)| (key, value)))
+                // Set after the configured variables, so they cannot clear it: a started
+                // `imperium mcp-serve` sees it and refuses to serve its own daemon.
+                .env(CHILD_MARK, "1")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())

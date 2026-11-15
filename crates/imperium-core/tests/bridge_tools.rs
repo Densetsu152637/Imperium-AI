@@ -11,24 +11,25 @@ use imperium_protocol::jsonrpc::{Outcome, Response, codes};
 use imperium_protocol::session::SessionEvent;
 use serde_json::{Value, json};
 
-fn daemon(home: &std::path::Path) -> Arc<DaemonState> {
-    // Nothing listens on this endpoint; no model call is made.
-    let config = r#"
+fn daemon(home: &std::path::Path, mode: &str, base_url: &str) -> Arc<DaemonState> {
+    let config = format!(
+        r#"
 [models]
 default = "a:m"
 
 [endpoints.a]
-base_url = "http://127.0.0.1:9/v1"
+base_url = "{base_url}"
 
 [permissions]
-mode = "ask"
+mode = "{mode}"
 
 [workflow]
 enabled = false
 
 [memory]
 enabled = false
-"#;
+"#
+    );
     let settings = imperium_config::Config::from_layers([
         imperium_config::Layer::defaults(),
         imperium_config::Layer::new(
@@ -39,6 +40,27 @@ enabled = false
     .settings()
     .unwrap();
     DaemonState::new(imperium_config::Paths::under(home), settings, None)
+}
+
+/// Nothing listens here; no model call is made.
+const NO_MODEL: &str = "http://127.0.0.1:9/v1";
+
+/// A model that answers after five seconds, so a turn stays running meanwhile.
+async fn slow_model() -> String {
+    let app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(|| async {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            (
+                [("content-type", "text/event-stream")],
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Done.\"}}]}\n\ndata: [DONE]\n\n",
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    url
 }
 
 async fn call(connection: &mut Connection, method: &str, params: Value) -> Result<Value, i32> {
@@ -110,7 +132,7 @@ async fn collect(
 #[tokio::test]
 async fn it_lists_the_tools_the_bridge_runs_read_tools_first() {
     let home = tempfile::tempdir().unwrap();
-    let state = daemon(home.path());
+    let state = daemon(home.path(), "ask", NO_MODEL);
     let mut connection = connect(&state);
     let listed = call(&mut connection, "session.tools", json!({}))
         .await
@@ -148,7 +170,7 @@ async fn reads_run_and_a_result_is_collected_once() {
         "first line\nsecond line\n",
     )
     .unwrap();
-    let state = daemon(home.path());
+    let state = daemon(home.path(), "ask", NO_MODEL);
     let (session, _events) = state
         .create_session(&project.path().display().to_string(), None)
         .unwrap();
@@ -200,7 +222,7 @@ async fn reads_run_and_a_result_is_collected_once() {
 async fn writes_need_the_flag_and_then_ask_the_user() {
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
-    let state = daemon(home.path());
+    let state = daemon(home.path(), "ask", NO_MODEL);
     let (session, mut events) = state
         .create_session(&project.path().display().to_string(), None)
         .unwrap();
@@ -299,4 +321,177 @@ async fn writes_need_the_flag_and_then_ask_the_user() {
         }
     }
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "from the bridge");
+}
+
+#[tokio::test]
+async fn an_agents_profile_refuses_bridged_calls_like_its_own() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("notes.txt"), "kept").unwrap();
+    let state = daemon(home.path(), "full", NO_MODEL);
+    let mut connection = connect(&state);
+    let env = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Work", "folders": [project.path()]}),
+    )
+    .await
+    .unwrap();
+    let agent = call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": env["id"], "name": "Locked",
+               "permissions": {"local_files_only": true}}),
+    )
+    .await
+    .unwrap();
+    let id = agent["session_id"].as_str().unwrap().to_string();
+
+    // Local files stay readable; the web and commands are refused (and no command runs, even
+    // in full mode with writes allowed).
+    let read = run(
+        &mut connection,
+        &id,
+        "read_file",
+        json!({"path": "notes.txt"}),
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(read["ok"], true, "{read}");
+    for (tool, arguments) in [
+        ("web_fetch", json!({"url": "http://127.0.0.1:9/"})),
+        ("run_command", json!({"command": "echo hi > ran.txt"})),
+    ] {
+        let refused = run(&mut connection, &id, tool, arguments, true)
+            .await
+            .unwrap();
+        assert_eq!(refused["ok"], false, "{tool}: {refused}");
+        // (Whether the web tools exist depends on the web settings; the commands' refusal is the
+        // profile's.)
+        if tool == "run_command" {
+            assert!(
+                refused["output"]
+                    .as_str()
+                    .unwrap()
+                    .contains("local files only"),
+                "{tool}: {refused}"
+            );
+        }
+    }
+    assert!(!project.path().join("ran.txt").exists());
+}
+
+#[tokio::test]
+async fn a_call_made_while_a_turn_runs_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), "ask", &slow_model().await);
+    let (session, _events) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    let id = session.id().to_string();
+    let mut connection = connect(&state);
+    session.send("work slowly".into()).unwrap();
+    let busy = run(
+        &mut connection,
+        &id,
+        "list_dir",
+        json!({"path": "."}),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(busy["ok"], false, "{busy}");
+    assert!(busy["output"].as_str().unwrap().contains("running a turn"));
+}
+
+#[tokio::test]
+async fn the_safety_floor_still_asks_in_full_mode() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join(".git")).unwrap();
+    let state = daemon(home.path(), "full", NO_MODEL);
+    let (session, mut events) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    let id = session.id().to_string();
+    let mut connection = connect(&state);
+    let target = project.path().join(".git").join("hook.txt");
+    let started = call(
+        &mut connection,
+        "session.run_tool",
+        json!({"session_id": id, "tool": "write_file", "allow_write": true,
+               "arguments": {"path": ".git/hook.txt", "content": "x"}}),
+    )
+    .await
+    .unwrap();
+    let call_id = started["call_id"].as_str().unwrap().to_string();
+    let (request_id, summary) = loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("the floor asks even in full mode")
+            .unwrap();
+        if let SessionEvent::PermissionRequested {
+            request_id,
+            summary,
+            ..
+        } = event.event
+        {
+            break (request_id, summary);
+        }
+    };
+    // The request says it comes from the bridge: the user's to answer.
+    assert!(summary.starts_with("[MCP bridge] "), "{summary}");
+    assert!(!target.exists());
+    call(
+        &mut connection,
+        "session.respond",
+        json!({"session_id": id, "request_id": request_id, "decision": "deny"}),
+    )
+    .await
+    .unwrap();
+    let result = collect(&mut connection, &id, &call_id).await.unwrap();
+    assert_eq!(result["ok"], false);
+    assert!(!target.exists());
+}
+
+#[tokio::test]
+async fn stopping_the_session_ends_a_call_waiting_for_an_answer() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), "ask", NO_MODEL);
+    let (session, mut events) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    let id = session.id().to_string();
+    let mut connection = connect(&state);
+    let started = call(
+        &mut connection,
+        "session.run_tool",
+        json!({"session_id": id, "tool": "write_file", "allow_write": true,
+               "arguments": {"path": "out.txt", "content": "x"}}),
+    )
+    .await
+    .unwrap();
+    let call_id = started["call_id"].as_str().unwrap().to_string();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("a permission request")
+            .unwrap();
+        if matches!(event.event, SessionEvent::PermissionRequested { .. }) {
+            break;
+        }
+    }
+    call(
+        &mut connection,
+        "session.control",
+        json!({"session_id": id, "action": "stop"}),
+    )
+    .await
+    .unwrap();
+    let result = collect(&mut connection, &id, &call_id).await.unwrap();
+    assert_eq!(result["ok"], false, "{result}");
+    assert!(!project.path().join("out.txt").exists());
 }
