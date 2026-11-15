@@ -144,7 +144,9 @@ pub(crate) async fn run_fork(shared: Arc<Shared>, request: ForkRequest) -> ForkR
     drop(agent);
     // A fork that did not save its slot under its last lease (it was cancelled or failed, or
     // ended on an error) saves it now, with its cells in place, if nobody has taken it.
+    // A session that has closed leaves no file behind.
     if !result.saved
+        && !shared.knowledge.closed()
         && let (Some(model), Some(local)) = (local_model, shared.local.as_deref())
     {
         local.save_kept(&model, &holder).await;
@@ -304,13 +306,18 @@ impl Agent {
             // goes on to tools, or a fork that is cancelled or fails, is saved after the fact,
             // best effort.
             if tool_calls.is_empty()
+                && !self.shared.knowledge.closed()
                 && let (Some(slot), Some(local), Some(fork)) = (
                     lease.as_ref().and_then(|lease| lease.slot),
                     self.local_models(),
                     &self.fork,
                 )
+                && local
+                    .save_leased(&self.model.model, &holder, slot)
+                    .await
+                    .is_ok()
             {
-                local.save_leased(&self.model.model, &holder, slot).await;
+                // Only a save that worked spares the after-the-fact one.
                 fork.saved.store(true, Ordering::SeqCst);
             }
             drop(lease);

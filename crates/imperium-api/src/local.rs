@@ -359,13 +359,14 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     /// Saves `holder`'s slot `slot` on `model` while the caller still holds its lease on it, so
     /// nobody queued for a slot can take it first; leaves the cells in place. For a fork's final
     /// call (see [`LocalModels::save_kept`] for the best-effort save after the lease is gone).
+    /// `Err` says why nothing was saved, so the caller can fall back.
     fn save_leased<'a>(
         &'a self,
         _model: &'a str,
         _holder: &'a str,
         _slot: u32,
-    ) -> SuspendFuture<'a> {
-        Box::pin(async {})
+    ) -> ResumeFuture<'a> {
+        Box::pin(async { Err("this runtime does not save slots".to_string()) })
     }
     /// Removes `holder`'s saved slots from the disk, for a knowledge agent that was retired or
     /// resumed (its prefix changed).

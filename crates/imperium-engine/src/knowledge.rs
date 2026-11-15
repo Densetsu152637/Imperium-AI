@@ -5,7 +5,7 @@
 //! The fork that answers is run by [`crate::agent::run_fork`].
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -119,6 +119,8 @@ pub(crate) struct Knowledge {
     pending: Mutex<HashMap<String, String>>,
     /// The presence of each knowledge agent kept on a local model, until it is retired.
     kept: Mutex<HashMap<String, LocalPresence>>,
+    /// The session has closed: nothing is kept or saved any more.
+    closed: AtomicBool,
 }
 
 impl Knowledge {
@@ -130,6 +132,7 @@ impl Knowledge {
             last_asked: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             kept: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
         }
     }
 
@@ -152,6 +155,11 @@ impl Knowledge {
                 .entry(id.to_string())
                 .or_insert_with(|| Arc::new(Lane::new(parallel))),
         )
+    }
+
+    /// Whether the session has closed.
+    pub fn closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
     }
 
     fn forget_lane(&self, id: &str) {
@@ -589,7 +597,7 @@ pub(crate) fn promote(
 /// Tells the local runtime that a knowledge agent on a local model is kept, so its slot is saved
 /// when the model is swapped out or unloaded; held until it is retired.
 fn keep_resident(shared: &Shared, agent_id: &str, model: &ResolvedModel) {
-    if !model.local {
+    if !model.local || shared.knowledge.closed() {
         return;
     }
     let Some(local) = shared.local.as_deref() else {
@@ -604,6 +612,7 @@ fn keep_resident(shared: &Shared, agent_id: &str, model: &ResolvedModel) {
 /// The session ended: its knowledge agents' saved slots and marks go from the runtime, which
 /// would otherwise keep them (and their files) until it is restarted.
 pub(crate) fn session_closed(shared: &Shared) {
+    shared.knowledge.closed.store(true, Ordering::SeqCst);
     for card in shared
         .agents
         .knowledge_cards()

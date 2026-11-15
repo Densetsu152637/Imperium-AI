@@ -3941,9 +3941,13 @@ impl LocalModels for Supervisor {
         })
     }
 
-    fn save_leased<'a>(&'a self, model: &'a str, holder: &'a str, slot: u32) -> SuspendFuture<'a> {
+    fn save_leased<'a>(&'a self, model: &'a str, holder: &'a str, slot: u32) -> ResumeFuture<'a> {
         Box::pin(async move {
-            self.save_leased_slot(model, holder, slot).await;
+            if self.save_leased_slot(model, holder, slot).await {
+                Ok(())
+            } else {
+                Err("the slot could not be saved".to_string())
+            }
         })
     }
 

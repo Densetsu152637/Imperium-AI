@@ -13,7 +13,7 @@ use imperium_api::{ToolCheck, ToolContext, ToolFuture, ToolProvider, ToolSpec};
 use imperium_engine::{
     AcquireFuture, Availability, BudgetGate, BudgetVerdict, CatalogModel, KnowledgeConfig,
     LocalLease, LocalModels, LocalPresence, LocalRequest, ModelAvailability, ResolvedModel,
-    Session, SessionConfig, SuspendFuture, ToolGroup,
+    ResumeFuture, Session, SessionConfig, SuspendFuture, ToolGroup,
 };
 use imperium_models::{Endpoint, Pricing};
 use imperium_protocol::session::{
@@ -1543,6 +1543,8 @@ struct Local {
     fits: AtomicBool,
     /// The saved-slot cache, in bytes.
     cache: AtomicU64,
+    /// `save_leased` fails.
+    fail_lease_saves: AtomicBool,
 }
 
 /// Records when it is dropped: the agent is no longer kept.
@@ -1564,6 +1566,7 @@ impl Local {
             log: Arc::default(),
             fits: AtomicBool::new(fits),
             cache: AtomicU64::new(1 << 40),
+            fail_lease_saves: AtomicBool::new(false),
         })
     }
 
@@ -1616,8 +1619,15 @@ impl LocalModels for Local {
         Box::pin(async move { self.note(format!("save_kept {holder}")) })
     }
 
-    fn save_leased<'a>(&'a self, _model: &'a str, holder: &'a str, slot: u32) -> SuspendFuture<'a> {
-        Box::pin(async move { self.note(format!("save_leased {holder} {slot}")) })
+    fn save_leased<'a>(&'a self, _model: &'a str, holder: &'a str, slot: u32) -> ResumeFuture<'a> {
+        Box::pin(async move {
+            self.note(format!("save_leased {holder} {slot}"));
+            if self.fail_lease_saves.load(Ordering::SeqCst) {
+                Err("no".to_string())
+            } else {
+                Ok(())
+            }
+        })
     }
 
     fn drop_saved(&self, holder: &str) {
@@ -1810,4 +1820,37 @@ async fn a_hosted_estimate_prices_the_whole_prefix_once_the_provider_cache_has_e
     let cold = card(&session, "t1").unwrap().est_question_cost.unwrap();
     assert_eq!(cold.tokens, context + 800);
     assert!(cold.cost_usd.unwrap() > warm_cost.cost_usd.unwrap());
+}
+
+#[tokio::test]
+async fn a_failed_lease_save_falls_back_and_a_closed_session_saves_nothing() {
+    let lab = Arc::new(Lab::default());
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let runtime = Local::new(&url, true);
+    let session = start(&url, dir.path(), local_options(&runtime));
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research the alpha module").await;
+
+    // The save under the final lease failed: the after-the-fact save still runs.
+    runtime.fail_lease_saves.store(true, Ordering::SeqCst);
+    say(&session, &mut events, &ask("t1", "plain")).await;
+    assert_eq!(runtime.count("save_leased s/t1 0"), 1);
+    assert_eq!(runtime.count("save_kept s/t1"), 1);
+
+    // After the session closed, a fork finishing leaves no file and no mark.
+    let saved = runtime.count("save_kept s/t1") + runtime.count("save_leased s/t1 0");
+    drop(events);
+    drop(session);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        runtime.count("unkeep s/t1"),
+        1,
+        "its mark went with the session"
+    );
+    assert_eq!(
+        runtime.count("save_kept s/t1") + runtime.count("save_leased s/t1 0"),
+        saved
+    );
 }

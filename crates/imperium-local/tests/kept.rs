@@ -504,7 +504,10 @@ async fn a_fork_saves_its_slot_under_its_last_lease_before_a_queued_call_takes_i
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Saved while the lease is still held: the queued call cannot have the slot yet.
-    supervisor.save_leased("emperor", HOLDER, slot).await;
+    supervisor
+        .save_leased("emperor", HOLDER, slot)
+        .await
+        .unwrap();
     assert_eq!(log.count("save"), 1);
     drop(fork);
     // It takes the slot the moment it is released, and writes over the prefix.
