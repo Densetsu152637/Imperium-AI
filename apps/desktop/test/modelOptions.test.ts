@@ -58,6 +58,14 @@ test("a table id names only a table row, never a local model", () => {
   assert.equal(modelOptions([], [local("gemma", false)], "gemma", undefined, true)[0].label, "gemma");
 });
 
+test("a name is a spec first: the row with that spec wins over one whose id is the same text", () => {
+  const models = [row("openai:x", "a:b", true), row("y", "openai:x", false)];
+  const options = modelOptions(models, [], "openai:x", undefined, true);
+  assert.equal(options[0].value, "openai:x");
+  assert.equal(options[0].label, "y (off)");
+  assert.equal(options[0].dimmed, true);
+});
+
 test("the session's model is found by its table id too", () => {
   const models = [row("old", "cloud:old-1", false, "Old one")];
   const options = modelOptions(models, [], "old", undefined, true);
