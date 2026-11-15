@@ -1315,8 +1315,10 @@ supervised child process and sends the recording to its OpenAI-compatible
   plus a quarter and 256 MiB) is planned against the room left beside the loaded models: on
   the GPU when it fits there and `voice.local.gpu` is `auto`, else on the CPU (`--no-gpu`) in
   RAM, else the recording fails saying how much memory is missing. While it runs, its memory is
-  taken from the budget the residency controller plans language-model loads against (and counted
-  with the loaded models when the budget follows the machine), so models are planned around it.
+  taken from the budget the residency controller plans language-model loads against, and added
+  back into the controller's readings of free memory so it is taken off once, not twice. Loading
+  a model while the server starts is serialised: the server looks at the room only after any
+  model load in flight has finished.
   It never makes a language model leave. When a language model cannot load only because of the
   memory it holds, the server stops as soon as no transcription is running and the model loads;
   the next recording starts it again, on the CPU if the GPU is taken.

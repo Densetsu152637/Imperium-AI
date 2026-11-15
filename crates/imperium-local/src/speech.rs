@@ -37,8 +37,8 @@ const MIB: u64 = 1024 * 1024;
 pub const WATCH: Duration = Duration::from_secs(5);
 /// How often the readiness of a starting server is checked.
 const POLL: Duration = Duration::from_millis(200);
-/// How long a call may take to be transcribed.
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// After stopping for a language model, the server does not take the GPU again for this long.
+const GPU_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// The path whisper-server serves transcriptions on, so the server speaks the same route as an
 /// OpenAI-compatible endpoint and `imperium-media` needs no special case.
@@ -129,6 +129,9 @@ pub fn place(
 pub trait Room: Send + Sync + fmt::Debug {
     /// The memory left beside the loaded models.
     fn room(&self) -> Budget;
+    /// Completes once no language model is being loaded or swapped, so the room read next is
+    /// not about to shrink.
+    fn settled(&self) -> StopFuture<'_>;
     /// Holds `vram_bytes` and `ram_bytes` beside the models from now on, replacing what was
     /// held; `(0, 0)` gives it back.
     fn reserve(&self, vram_bytes: u64, ram_bytes: u64);
@@ -150,8 +153,27 @@ impl Room for Supervisor {
         }
     }
 
+    fn settled(&self) -> StopFuture<'_> {
+        Box::pin(Supervisor::settled(self))
+    }
+
     fn reserve(&self, vram_bytes: u64, ram_bytes: u64) {
         self.set_side_load(vram_bytes, ram_bytes);
+    }
+}
+
+/// Gives the reservation back when dropped while armed: a start or stop that is cancelled
+/// half way must not leave memory held for a server that is not there.
+struct Hold<'a> {
+    server: &'a SpeechServer,
+    armed: bool,
+}
+
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.server.reserve(0, 0);
+        }
     }
 }
 
@@ -265,6 +287,12 @@ impl ProcessSpeechLauncher {
         )
         .await;
         match ready {
+            Ok(Ok(())) if matches!(child.try_wait(), Ok(Some(_))) => {
+                Err(SpeechError::Start(format!(
+                    "whisper-server exited right after it started; see {}",
+                    spec.log.display()
+                )))
+            }
             Ok(Ok(())) => Ok(Box::new(ProcessSpeech {
                 pid: child.id(),
                 child: Mutex::new(Some(child)),
@@ -412,6 +440,8 @@ pub struct SpeechServer {
     gate: tokio::sync::Mutex<()>,
     /// A task is waiting to stop the server for a language model.
     yielding: AtomicBool,
+    /// No GPU placement until then: the server just left it for a language model.
+    no_gpu_until: Mutex<Option<Instant>>,
     me: Weak<SpeechServer>,
 }
 
@@ -470,6 +500,7 @@ impl SpeechServer {
             state: Mutex::new(State::default()),
             gate: tokio::sync::Mutex::new(()),
             yielding: AtomicBool::new(false),
+            no_gpu_until: Mutex::new(None),
             me: Weak::clone(me),
         })
     }
@@ -571,10 +602,24 @@ impl SpeechServer {
                 ))
             })?
             .len();
-        let room = self.room().map(|room| room.room());
-        let placement = place(footprint(model_bytes), room, config.gpu)?;
-        // Held before the model loads, so a language model planned meanwhile sees it.
+        let room = self.room();
+        if let Some(room) = &room {
+            // A model mid-load has not taken its memory yet: look after it has.
+            room.settled().await;
+        }
+        let cooling = lock(&self.no_gpu_until).is_some_and(|until| Instant::now() < until);
+        let placement = place(
+            footprint(model_bytes),
+            room.map(|room| room.room()),
+            config.gpu && !cooling,
+        )?;
+        // Held before the model loads, so a language model planned meanwhile sees it; given
+        // back if this start fails or is cancelled.
         self.reserve(placement.vram_bytes, placement.ram_bytes);
+        let mut hold = Hold {
+            server: self,
+            armed: true,
+        };
         let spec = SpeechLaunch {
             binary: config.binary.clone(),
             model: config.model.clone(),
@@ -589,7 +634,6 @@ impl SpeechServer {
         let process: Arc<dyn SpeechProcess> = match self.launcher.launch(&spec).await {
             Ok(process) => Arc::from(process),
             Err(error) => {
-                self.reserve(0, 0);
                 lock(&self.state).last_stop = Some(error.to_string());
                 return Err(error);
             }
@@ -625,6 +669,7 @@ impl SpeechServer {
             ram_mib = placement.ram_bytes / MIB,
             "local speech-to-text started"
         );
+        hold.armed = false;
         self.watch(generation);
         Ok(lease)
     }
@@ -642,10 +687,20 @@ impl SpeechServer {
         let Some(running) = running else {
             return;
         };
+        // Its memory is held until the process is gone (or the stop is cancelled, which drops
+        // the child and kills it).
+        let _hold = Hold {
+            server: self,
+            armed: true,
+        };
         running.process.stop().await;
-        // Its memory is held until the process is gone.
-        self.reserve(0, 0);
         tracing::info!(reason = why, "local speech-to-text stopped");
+    }
+
+    /// Stops the server for good, in use or not: the daemon is shutting down.
+    pub async fn shutdown(&self) {
+        let _gate = self.gate.lock().await;
+        self.stop_running("the daemon stopped").await;
     }
 
     /// Stops the server now if nothing is using it; returns whether it stopped.
@@ -765,6 +820,9 @@ impl SideLoad for SpeechServer {
                         .stop_if_unused("it made room for a language model")
                         .await;
                 if done {
+                    if !server.status().running {
+                        *lock(&server.no_gpu_until) = Some(Instant::now() + GPU_COOLDOWN);
+                    }
                     server.yielding.store(false, Ordering::SeqCst);
                     return;
                 }
@@ -788,11 +846,11 @@ impl SpeechServer {
     }
 }
 
-/// The `whisper-server` to run: `configured` when set, else the one found on `PATH`, else the
-/// bare name (the start then explains that it was not found).
-pub fn find_binary(configured: Option<&Path>) -> PathBuf {
+/// The `whisper-server` to run: `configured` when set, else the one found on `PATH`. A bare
+/// name is never returned, so a program in the current folder is not run by accident.
+pub fn find_binary(configured: Option<&Path>) -> Result<PathBuf, SpeechError> {
     if let Some(path) = configured.filter(|path| !path.as_os_str().is_empty()) {
-        return path.to_path_buf();
+        return Ok(path.to_path_buf());
     }
     let names: &[&str] = if cfg!(windows) {
         &["whisper-server.exe", "whisper-server"]
@@ -804,12 +862,16 @@ pub fn find_binary(configured: Option<&Path>) -> PathBuf {
             for name in names {
                 let candidate = dir.join(name);
                 if candidate.is_file() {
-                    return candidate;
+                    return Ok(candidate);
                 }
             }
         }
     }
-    PathBuf::from("whisper-server")
+    Err(SpeechError::Setup(
+        "whisper-server was not found on PATH; set voice.local.binary to a whisper.cpp \
+         whisper-server"
+            .into(),
+    ))
 }
 
 #[cfg(test)]
@@ -933,7 +995,7 @@ mod tests {
     #[test]
     fn a_configured_binary_is_used_as_given() {
         assert_eq!(
-            find_binary(Some(Path::new("/opt/whisper/whisper-server"))),
+            find_binary(Some(Path::new("/opt/whisper/whisper-server"))).unwrap(),
             PathBuf::from("/opt/whisper/whisper-server")
         );
     }

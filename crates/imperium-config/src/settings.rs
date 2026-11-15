@@ -383,6 +383,17 @@ impl Settings {
         if self.voice.local.language.trim().is_empty() {
             return Err("voice.local.language must be a language code or auto".into());
         }
+        for arg in &self.voice.local.extra_args {
+            let name = arg.split('=').next().unwrap_or_default();
+            if matches!(
+                name,
+                "--inference-path" | "--host" | "--port" | "-m" | "--model"
+            ) {
+                return Err(format!(
+                    "voice.local.extra_args may not set {name}: the daemon chooses the model,                      address and route itself (use voice.local.model)"
+                ));
+            }
+        }
         if self.voice.local.start_timeout_s == 0 {
             return Err("voice.local.start_timeout_s must be at least 1".into());
         }

@@ -1356,6 +1356,11 @@ impl Supervisor {
         self.changed.notify_waiters();
     }
 
+    /// Completes once no model is being loaded or swapped out.
+    pub async fn settled(&self) {
+        drop(self.swapping.lock().await);
+    }
+
     /// What [`Supervisor::set_side_load`] holds now: `(vram, ram)` bytes.
     pub fn side_load(&self) -> (u64, u64) {
         let side = lock(&self.side);

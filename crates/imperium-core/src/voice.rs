@@ -53,7 +53,10 @@ pub(crate) async fn transcribe(
     {
         Ok(text) => Ok(text),
         Err(error) => {
-            lease.failed();
+            // A refused request (4xx) is the recording's fault, not the server's.
+            if !error.to_string().contains("client error") {
+                lease.failed();
+            }
             Err(ErrorObject::new(
                 codes::INTERNAL_ERROR,
                 format!(
@@ -75,7 +78,7 @@ async fn server(state: &Arc<DaemonState>) -> Result<Arc<SpeechServer>, ErrorObje
     let local = &settings.voice.local;
     let model = model_path(state, local).await?;
     let config = SpeechConfig {
-        binary: find_binary(local.binary.as_deref()),
+        binary: find_binary(local.binary.as_deref()).map_err(speech_error)?,
         model,
         gpu: local.gpu != "off",
         threads: local.threads,

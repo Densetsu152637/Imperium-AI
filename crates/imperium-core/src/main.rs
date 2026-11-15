@@ -152,6 +152,7 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!("shutting down");
     // Background commands must not outlive the daemon.
     daemon.stop_background_processes(BACKGROUND_STOP_WAIT).await;
+    daemon.stop_speech().await;
     stop.send(true).ok();
     // Open WebSocket connections can hold graceful shutdown; stop waiting after a grace period.
     // The local socket's file is removed when its server ends.

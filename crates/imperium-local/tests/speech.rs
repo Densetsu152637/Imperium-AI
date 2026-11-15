@@ -4,7 +4,7 @@
 //! starts a real server, reads a GPU, or downloads a model.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -35,6 +35,8 @@ struct Log {
     /// `(gpu, language)` of each launch.
     launches: Mutex<Vec<(bool, String)>>,
     stops: AtomicU32,
+    /// Extra milliseconds a launch takes.
+    delay_ms: AtomicU64,
     /// Launches that fail before the next one succeeds, with this message.
     failure: Mutex<Option<SpeechError>>,
     /// The latest server has exited on its own.
@@ -94,7 +96,8 @@ impl SpeechLauncher for FakeSpeechLauncher {
     fn launch<'a>(&'a self, spec: &'a SpeechLaunch) -> LaunchFuture<'a> {
         Box::pin(async move {
             lock(&self.log.launches).push((spec.gpu, spec.language.clone()));
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            let delay = self.log.delay_ms.load(Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(10 + delay)).await;
             if let Some(error) = lock(&self.log.failure).clone() {
                 return Err(error);
             }
@@ -507,4 +510,29 @@ async fn without_a_holder_that_gives_way_a_model_does_not_fit() {
         stubborn.0.load(Ordering::SeqCst) >= 1,
         "it was asked to leave"
     );
+}
+
+#[tokio::test]
+async fn a_cancelled_start_gives_its_memory_back() {
+    let supervisor = supervisor(10, 16, Vec::new());
+    let (server, log, _dir) = server(1000, 60_000);
+    server.attach(&supervisor);
+    log.delay_ms.store(60_000, Ordering::SeqCst);
+    let starting = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move { server.acquire().await.map(drop) })
+    };
+    until("the memory to be held", || supervisor.side_load().0 > 0).await;
+    starting.abort();
+    let _ = starting.await;
+    assert_eq!(
+        supervisor.side_load(),
+        (0, 0),
+        "nothing is held for no server"
+    );
+    assert!(!server.status().running);
+    // The next recording starts normally.
+    log.delay_ms.store(0, Ordering::SeqCst);
+    drop(server.acquire().await.unwrap());
+    assert!(server.status().running);
 }

@@ -1533,6 +1533,13 @@ impl DaemonState {
         self.speech.set(server).is_ok()
     }
 
+    /// Stops the local whisper, if one is running: the daemon is shutting down.
+    pub async fn stop_speech(&self) {
+        if let Some(server) = self.speech.get() {
+            server.shutdown().await;
+        }
+    }
+
     pub(crate) fn speech_slot(&self) -> &OnceLock<Arc<imperium_local::speech::SpeechServer>> {
         &self.speech
     }
