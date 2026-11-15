@@ -19,8 +19,11 @@ use crate::tabs::{self, Listed, TabRec};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// From starting the browser to having a page to drive; cold starts on CI runners are slow.
-const START_TIMEOUT: Duration = Duration::from_secs(30);
+/// From starting the browser to having a page to drive. The wait polls the debugger and ends
+/// as soon as a page is listed (or the browser exits), so this is only a ceiling. A browser's
+/// first start on a CI runner is cold (profile, disk cache, component registration) and took
+/// more than 30 seconds once on Ubuntu, where the warm-up alone is allowed 90.
+const START_TIMEOUT: Duration = Duration::from_secs(90);
 /// Longest one request to the browser's debugger may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
