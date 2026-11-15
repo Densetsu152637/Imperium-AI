@@ -3679,6 +3679,21 @@ impl Agent {
         if !is_attended(&self.shared) {
             return Err("sampling needs a person watching the session".into());
         }
+        // A request that could cost more than the budgets leave is not even put to the user.
+        let ceiling = crate::sampling_summary::cost_ceiling(self.model.pricing.as_ref(), &request);
+        let remaining = self
+            .shared
+            .budget_gate
+            .as_ref()
+            .and_then(|gate| gate.remaining_usd(&self.model.spec));
+        if let (Some(ceiling), Some(remaining)) = (ceiling, remaining)
+            && ceiling > remaining
+        {
+            return Err(format!(
+                "this request could cost up to about ${ceiling:.4}, more than the ${remaining:.4} \
+                 a budget has left, so it was refused; ask for fewer tokens or raise the budget"
+            ));
+        }
         let summary = crate::sampling_summary::summary(
             &self.model.spec,
             self.model.pricing.as_ref(),

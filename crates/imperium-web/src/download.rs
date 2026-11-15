@@ -217,11 +217,27 @@ fn is_link(meta: &std::fs::Metadata) -> bool {
     meta.file_type().is_symlink()
 }
 
-/// Makes `dir` if needed and returns its canonical path, refusing a folder that is itself a link
-/// or that resolves anywhere but where its own name puts it inside its parent: a downloads
-/// folder swapped for a link to somewhere else (the home folder, a startup folder) must not
-/// receive files.
-async fn secure_dir(dir: &Path) -> Result<PathBuf, WebError> {
+/// A downloads folder that passed [`secure_dir`]: its canonical path and its identity on disk
+/// (device and inode, or volume and file index), which a swapped folder does not share.
+struct Secured {
+    path: PathBuf,
+    id: same_file::Handle,
+}
+
+/// The identity of the file or folder at `path`, read off the async threads.
+async fn identity(path: &Path) -> std::io::Result<same_file::Handle> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || same_file::Handle::from_path(path))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+/// Makes `dir` if needed and returns it canonical with its identity, refusing a folder that is
+/// itself a link, that resolves anywhere but into its own parent, or that is not the folder its
+/// canonical path names: a downloads folder swapped for a link to somewhere else (the home
+/// folder, a startup folder) must not receive files. Names are never compared as text, so case
+/// and 8.3 short names need no special handling: both sides are resolved by the file system.
+async fn secure_dir(dir: &Path) -> Result<Secured, WebError> {
     let fail = |message: String| WebError::Http(message);
     tokio::fs::create_dir_all(dir)
         .await
@@ -236,25 +252,48 @@ async fn secure_dir(dir: &Path) -> Result<PathBuf, WebError> {
                 .into(),
         ));
     }
-    let canonical = tokio::fs::canonicalize(dir)
-        .await
-        .map_err(|error| fail(format!("could not resolve the downloads folder: {error}")))?;
+    let resolve =
+        |error: std::io::Error| fail(format!("could not resolve the downloads folder: {error}"));
+    let canonical = tokio::fs::canonicalize(dir).await.map_err(resolve)?;
     let parent = match dir.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    let expected = tokio::fs::canonicalize(&parent)
-        .await
-        .map_err(|error| fail(format!("could not resolve the downloads folder: {error}")))?
-        .join(dir.file_name().unwrap_or_default());
-    if canonical != expected {
+    let expected_parent = tokio::fs::canonicalize(&parent).await.map_err(resolve)?;
+    let id = identity(&canonical).await.map_err(resolve)?;
+    let given = identity(dir).await.map_err(resolve)?;
+    if canonical.parent() != Some(expected_parent.as_path()) || id != given {
         return Err(fail(
             "the downloads folder resolves to another place than where it is, so nothing is \
              saved in it"
                 .into(),
         ));
     }
-    Ok(canonical)
+    Ok(Secured {
+        path: canonical,
+        id,
+    })
+}
+
+/// Refuses to go on when the folder `written` is in no longer is `secured` (its canonical path
+/// and its identity): the folder was swapped after the check. This narrows the window in which a
+/// swap can redirect a file; it does not close it, since the folder can still change between
+/// this check and the next operation.
+async fn still_secured(secured: &Secured, written: &Path) -> Result<(), WebError> {
+    let moved = || {
+        WebError::Http(
+            "the downloads folder changed while the file was being saved, so it was not kept"
+                .into(),
+        )
+    };
+    let parent = written.parent().ok_or_else(moved)?;
+    let now = tokio::fs::canonicalize(parent).await.map_err(|_| moved())?;
+    let id = identity(&now).await.map_err(|_| moved())?;
+    if now == secured.path && id == secured.id {
+        Ok(())
+    } else {
+        Err(moved())
+    }
 }
 
 /// Removes the files of an unfinished download when dropped, which includes the download being
@@ -271,29 +310,30 @@ impl Drop for Partial {
     }
 }
 
-/// Marks a saved file as coming from the web where the platform has a way to: the
-/// `Zone.Identifier` stream on Windows (zone 3, the internet), the quarantine attribute on
-/// macOS. Returns a note when it could not.
-fn mark_from_web(path: &Path, source: &str) -> Option<String> {
-    mark_platform(path, source)
+/// Marks a file as coming from the web where the platform has a way to: the `Zone.Identifier`
+/// stream on Windows (zone 3, the internet), the quarantine attribute on macOS. The mark is made
+/// on the `.part` file, so it travels with the rename and the finished file never exists
+/// unmarked. Returns why it could not.
+async fn mark_from_web(path: &Path, source: &str) -> Result<(), String> {
+    let (path, source) = (path.to_path_buf(), source.to_string());
+    tokio::task::spawn_blocking(move || mark_platform(&path, &source))
+        .await
+        .map_err(|error| {
+            format!("it could not be marked as downloaded from the internet ({error})")
+        })?
 }
 
 #[cfg(windows)]
-fn mark_platform(path: &Path, source: &str) -> Option<String> {
+fn mark_platform(path: &Path, source: &str) -> Result<(), String> {
     let stream = format!("{}:Zone.Identifier", path.display());
-    let text = format!(
-        "[ZoneTransfer]
-ZoneId=3
-HostUrl={source}
-"
-    );
-    std::fs::write(stream, text)
-        .err()
-        .map(|error| format!("it could not be marked as downloaded from the internet ({error})"))
+    let text = format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={source}\r\n");
+    std::fs::write(stream, text).map_err(|error| {
+        format!("it could not be marked as downloaded from the internet ({error})")
+    })
 }
 
 #[cfg(target_os = "macos")]
-fn mark_platform(path: &Path, _source: &str) -> Option<String> {
+fn mark_platform(path: &Path, _source: &str) -> Result<(), String> {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
@@ -305,14 +345,14 @@ fn mark_platform(path: &Path, _source: &str) -> Option<String> {
         .stderr(std::process::Stdio::null())
         .status();
     match status {
-        Ok(status) if status.success() => None,
-        _ => Some("it could not be marked as downloaded from the internet".into()),
+        Ok(status) if status.success() => Ok(()),
+        _ => Err("it could not be marked as downloaded from the internet".into()),
     }
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn mark_platform(_path: &Path, _source: &str) -> Option<String> {
-    None
+fn mark_platform(_path: &Path, _source: &str) -> Result<(), String> {
+    Ok(())
 }
 
 impl Web {
@@ -356,6 +396,27 @@ impl Web {
         follow: &(dyn Fn(&Url) -> bool + Sync),
         refuse: &(dyn Fn(&Path) -> Option<String> + Sync),
         deadline: Duration,
+    ) -> Result<Downloaded, WebError> {
+        let all = self.download_unbounded(url, dir, name_hint, max_bytes, follow, refuse);
+        match tokio::time::timeout(deadline, all).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(WebError::Http(format!(
+                "the download took longer than {} seconds and was stopped",
+                deadline.as_secs()
+            ))),
+        }
+    }
+
+    /// The whole download, from the request through the redirects and headers to the rename;
+    /// [`Self::download_within`] bounds all of it.
+    async fn download_unbounded(
+        &self,
+        url: &str,
+        dir: &Path,
+        name_hint: Option<&str>,
+        max_bytes: u64,
+        follow: &(dyn Fn(&Url) -> bool + Sync),
+        refuse: &(dyn Fn(&Path) -> Option<String> + Sync),
     ) -> Result<Downloaded, WebError> {
         let parsed = Url::parse(url)
             .ok()
@@ -415,7 +476,8 @@ impl Web {
                     .to_string(),
             );
         }
-        let dir = secure_dir(dir).await?;
+        let secured = secure_dir(dir).await?;
+        let dir = secured.path.clone();
         if let Some(why) = refuse(&dir.join(&name)) {
             return Err(WebError::Http(why));
         }
@@ -462,23 +524,48 @@ impl Web {
                 .await
                 .map_err(|error| WebError::Http(format!("could not write the file: {error}")))
         };
-        match tokio::time::timeout(deadline, transfer).await {
-            Ok(outcome) => outcome?,
-            Err(_) => {
-                return Err(WebError::Http(format!(
-                    "the download took longer than {} seconds and was stopped",
-                    deadline.as_secs()
-                )));
-            }
-        }
+        transfer.await?;
         drop(file);
+        // The folder was checked before the file was made; check again that it still is that
+        // folder before anything more is done to the part file, and again once it is in place.
+        still_secured(&secured, &part).await?;
+        // The mark goes on the part file so the finished file is never there without it. On
+        // Windows a file that cannot be marked (a folder on FAT, exFAT or some network shares
+        // cannot hold the stream) is not kept; elsewhere it is saved with a note.
+        if let Err(why) = mark_from_web(&part, final_url.as_str()).await {
+            if cfg!(windows) {
+                return Err(WebError::Http(format!("the file was not kept: {why}")));
+            }
+            notes.push(why);
+        }
+        still_secured(&secured, &part).await?;
+        // The part file's identity, taken just before it is moved, so that what is found at the
+        // destination afterwards can be told from something else.
+        let part_id = identity(&part).await.ok();
         tokio::fs::rename(&part, &path)
             .await
             .map_err(|error| WebError::Http(format!("could not finish the file: {error}")))?;
-        guard.paths.clear();
-        if let Some(note) = mark_from_web(&path, final_url.as_str()) {
-            notes.push(note);
+        if let Err(error) = still_secured(&secured, &path).await {
+            // It landed where it should not have: take it back, but only if what is there is
+            // the file just moved; anything else is not ours to delete.
+            let ours = match (&part_id, identity(&path).await) {
+                (Some(before), Ok(now)) => *before == now,
+                _ => false,
+            };
+            // The guard must not remove it either: that is decided here.
+            guard.paths.clear();
+            return Err(if ours {
+                let _ = tokio::fs::remove_file(&path).await;
+                error
+            } else {
+                WebError::Http(format!(
+                    "{error}; the file at {} was left in place because it could not be \
+                     confirmed to be the one just saved",
+                    path.display()
+                ))
+            });
         }
+        guard.paths.clear();
         if path.file_name().and_then(|file| file.to_str()) != Some(name.as_str()) {
             notes.push("a file with that name already existed, so this one has another".into());
         }
@@ -1022,6 +1109,75 @@ mod tests {
             .to_string();
         assert!(error.contains("took longer"), "{error}");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_deadline_covers_a_server_slow_to_answer() {
+        let base = serve(Router::new().route(
+            "/late.bin",
+            get(|| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                "x"
+            }),
+        ))
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let error = web()
+            .download_within(
+                &format!("{base}/late.bin"),
+                dir.path(),
+                None,
+                10_000,
+                &|_| true,
+                &|_| None,
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("took longer"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_folder_named_in_another_case_is_accepted_on_windows() {
+        let root = tempfile::tempdir().unwrap();
+        let long = root.path().join("a long downloads folder");
+        std::fs::create_dir(&long).unwrap();
+        let shout = root.path().join("A LONG DOWNLOADS FOLDER");
+        let secured = secure_dir(&shout).await.unwrap();
+        assert_eq!(secured.path, long.canonicalize().unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_folder_is_checked_again_before_the_file_is_put_in_place() {
+        let root = tempfile::tempdir().unwrap();
+        let secured = secure_dir(&root.path().join("downloads")).await.unwrap();
+        let part = secured.path.join("f.txt.part");
+        assert!(still_secured(&secured, &part).await.is_ok());
+        // Another folder than the secured one is refused, as is one that has gone.
+        let other = secure_dir(&root.path().join("other")).await.unwrap();
+        let error = still_secured(&secured, &other.path.join("f.txt.part"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("changed while"), "{error}");
+        std::fs::remove_dir(&secured.path).unwrap();
+        assert!(still_secured(&secured, &part).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_folder_has_the_identity_of_the_place_it_names() {
+        let root = tempfile::tempdir().unwrap();
+        let first = secure_dir(&root.path().join("a")).await.unwrap();
+        let second = secure_dir(&root.path().join("b")).await.unwrap();
+        assert!(first.id != second.id);
+        let again = secure_dir(&root.path().join("a")).await.unwrap();
+        assert!(first.id == again.id);
+        assert_eq!(first.path, again.path);
     }
 
     #[tokio::test]

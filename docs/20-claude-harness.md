@@ -59,7 +59,12 @@ return the position from before the message, so `wait_for_turn` with that `since
 the turn the message starts; a turn that was already ending when the message was sent is not
 mistaken for it. A steering message (`steer`) joins the running turn, so its cursor is that
 turn's start. The turn can end between the history read and the send; the message then starts a
-new turn instead of joining one, so check the session's status after a steering send. A wait
+new turn instead of joining one. After a steering send, `send_message` polls the history
+for up to half a second for what became of the message, by the id `session.send` returned: a
+`steered` or `message_queued` event with that id means it joined; a new root turn that began
+after the send with no such event means the turn had ended, and the cursor returned is that new
+turn's start, with a `note` saying so. If neither appears in that time the result is as before,
+so a miss can still go unnoticed; a message that did join is never reported as missed. A wait
 that returns without the turn having ended (`timeout`, `permission_required`,
 `questions_asked`) gives the cursor to wait from again: the start of the turn it saw. Pass it as `since` and the wait finishes that turn. A finished turn's report
 gives the position just after the event that ended the turn, the cursor for the wait on what
