@@ -2682,6 +2682,9 @@ impl DaemonState {
     /// turned off. Packs that cannot be read are reported in `notices`.
     fn context(&self, project_dir: &Path, notices: &mut Vec<String>) -> Option<Arc<ContextIndex>> {
         let settings = self.settings();
+        if !settings.workflow.enabled {
+            return None;
+        }
         let resolved = packs::resolve(&self.pack_inputs(&settings.workflow), project_dir);
         notices.extend(resolved.notices);
         resolved.index
