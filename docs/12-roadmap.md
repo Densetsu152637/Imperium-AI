@@ -357,7 +357,19 @@ and `environments.agent_update` (protocol 0.28)
     the user's own config enables it for a server, then asks the user for every request and runs
     through the budgets
     ([05](05-tools-and-isolation.md#resources-prompts-and-sampling-implemented)), with no
-    protocol change. *Remaining:* pack update diffs, the policy crate, OAuth for remote servers,
+    protocol change.
+    *Stage 2 (OAuth for remote servers) is implemented* (protocol 0.38: `mcp.login`,
+    `mcp.logout`, `sign_in` on server status): discovery (protected resource and authorization
+    server metadata), dynamic client registration, the authorization code flow with PKCE `S256`
+    and the `resource` indicator through a `127.0.0.1` loopback redirect with a random port and a
+    checked `state`, tokens in the keychain bound to the server's URL, refresh with rotation,
+    401 handling, revocation on sign-out, and redirects that never carry a token to another
+    origin. The user opens the address in their own browser (the app opens it, or
+    `imperium mcp login <server>` prints it); sessions never start a sign-in and report
+    "needs sign-in". Tests run a fake authorization server and a fake MCP server on loopback
+    ([05](05-tools-and-isolation.md#oauth-for-remote-servers-implemented)). *Not built in
+    stage 2:* pre-registered client ids, step-up authorization after a 403, signing in to
+    servers a plugin or `.mcp.json` declares. *Remaining:* pack update diffs, the policy crate,
     the full server bridge (`imperium mcp-serve` already bridges sessions,
     [20](20-claude-harness.md); exposing Imperium's own tools is not built), and inserting MCP
     prompts as slash commands in the desktop and CLI.

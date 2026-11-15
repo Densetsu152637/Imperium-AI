@@ -1,11 +1,14 @@
 //! Which MCP servers a session starts: `[mcp.servers]` from the user's configuration, plus the
 //! project's `.mcp.json` when the project is in `mcp.trusted_projects`.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
-use imperium_config::{McpServerSettings, SecretError, SecretName, Settings};
-use imperium_mcp::{Launch, ServerSpec, mcp_json};
+use imperium_config::{McpServerSettings, SecretError, SecretName, SecretStore, Settings};
+use imperium_mcp::oauth::{CredentialStore, OAuthSource};
+use imperium_mcp::{Launch, ServerSpec, TokenSource, mcp_json};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -56,6 +59,70 @@ pub fn session_servers(
         Err(error) => notices.push(format!("{} is invalid: {error}", file.display())),
     }
     (specs, notices)
+}
+
+/// OAuth sign-in state in the secret store (the OS keychain): one set of entries per server,
+/// named `mcp.<server>.oauth.*`. Only the daemon's own code reads them; config never refers to
+/// them, and they are never written to a file.
+#[derive(Debug)]
+pub struct KeychainCredentials(pub Arc<dyn SecretStore>);
+
+impl KeychainCredentials {
+    fn name(key: &str) -> Result<SecretName, String> {
+        key.parse::<SecretName>().map_err(|error| error.to_string())
+    }
+}
+
+impl CredentialStore for KeychainCredentials {
+    fn load(&self, key: &str) -> Result<Option<String>, String> {
+        self.0
+            .load(&Self::name(key)?)
+            .map_err(|error| error.to_string())
+    }
+
+    fn store(&self, key: &str, value: &str) -> Result<(), String> {
+        self.0
+            .store(&Self::name(key)?, value)
+            .map_err(|error| error.to_string())
+    }
+
+    fn delete(&self, key: &str) -> Result<bool, String> {
+        self.0
+            .delete(&Self::name(key)?)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Whether a remote server takes an OAuth sign-in: an HTTP server with no `Authorization` header
+/// of its own (a configured bearer token is one) and a name the keychain entries can carry.
+pub fn takes_sign_in(name: &str, launch: &Launch) -> bool {
+    match launch {
+        Launch::Http { headers, .. } => {
+            imperium_config::valid_server_name(name)
+                && !headers
+                    .iter()
+                    .any(|(header, _)| header.eq_ignore_ascii_case("authorization"))
+        }
+        Launch::Stdio { .. } => false,
+    }
+}
+
+/// The OAuth token sources for the servers a session starts, by server name. A server nobody
+/// signed in to simply has no token to offer; starting a session never starts a sign-in.
+pub fn oauth_sources(
+    specs: &[ServerSpec],
+    secrets: &Arc<dyn SecretStore>,
+) -> HashMap<String, Arc<dyn TokenSource>> {
+    let store: Arc<dyn CredentialStore> = Arc::new(KeychainCredentials(Arc::clone(secrets)));
+    specs
+        .iter()
+        .filter(|spec| takes_sign_in(&spec.name, &spec.launch))
+        .map(|spec| {
+            let source: Arc<dyn TokenSource> =
+                Arc::new(OAuthSource::new(&spec.name, Arc::clone(&store)));
+            (spec.name.clone(), source)
+        })
+        .collect()
 }
 
 /// How to start one `[mcp.servers.<name>]` entry, with its secrets read; the reason when it

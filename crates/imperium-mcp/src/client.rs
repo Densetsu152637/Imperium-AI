@@ -7,6 +7,8 @@
 //! that request was given.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -36,6 +38,21 @@ pub enum McpError {
     Transport(String),
     #[error("unexpected response: {0}")]
     Protocol(String),
+    /// The server answered 401: it wants a sign-in (the `WWW-Authenticate` challenge is kept).
+    #[error("needs sign-in: the server refused the request as unauthorised")]
+    AuthRequired(String),
+}
+
+/// A boxed future that yields an access token, if there is one.
+pub type TokenFuture<'a> = Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>>;
+
+/// Where an HTTP server's OAuth access token comes from. The client asks for a token before
+/// every request, naming the URL it is about to send to, so a source can refuse (return `None`)
+/// for any URL other than the one its token was issued for.
+pub trait TokenSource: Send + Sync + std::fmt::Debug {
+    /// The access token to send to `url`, refreshed when it has expired or when `refresh` is
+    /// set (the server just rejected the last one). `None` when signed out.
+    fn token<'a>(&'a self, url: &'a str, refresh: bool) -> TokenFuture<'a>;
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, McpError>>>>>;
@@ -112,6 +129,24 @@ struct Http {
     headers: Vec<(String, String)>,
     /// `Mcp-Session-Id` assigned by the server at initialisation.
     session: Mutex<Option<String>>,
+    /// OAuth access tokens for this server, when it is one the user signs in to.
+    auth: Option<Arc<dyn TokenSource>>,
+}
+
+/// Redirects are followed only within the origin they came from, so neither a configured header
+/// nor an access token is ever replayed to another origin.
+fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let same_origin = attempt
+            .previous()
+            .last()
+            .is_some_and(|from| from.origin() == attempt.url().origin());
+        if same_origin && attempt.previous().len() < 5 {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
 }
 
 pub struct Client {
@@ -185,12 +220,27 @@ impl Client {
 
     /// A client for a streamable-HTTP server at `url`.
     pub fn over_http(url: String, headers: Vec<(String, String)>, timeout: Duration) -> Self {
+        Client::over_http_with(url, headers, timeout, None)
+    }
+
+    /// Like [`Client::over_http`], sending the access token `auth` gives for `url` (OAuth).
+    pub fn over_http_with(
+        url: String,
+        headers: Vec<(String, String)>,
+        timeout: Duration,
+        auth: Option<Arc<dyn TokenSource>>,
+    ) -> Self {
+        let http = reqwest::Client::builder()
+            .redirect(same_origin_redirects())
+            .build()
+            .expect("an HTTP client with a redirect policy builds");
         Client {
             transport: Transport::Http(Http {
-                http: reqwest::Client::new(),
+                http,
                 url,
                 headers,
                 session: Mutex::new(None),
+                auth,
             }),
             inbound: Arc::default(),
             next_id: AtomicU64::new(1),
@@ -326,31 +376,61 @@ impl Drop for Refusal<'_> {
 impl Http {
     /// POSTs one message and checks the status.
     async fn send(&self, message: &Value) -> Result<reqwest::Response, McpError> {
-        let mut request = self
-            .http
-            .post(&self.url)
-            .header("accept", "application/json, text/event-stream")
-            .header("mcp-protocol-version", PROTOCOL_VERSION)
-            .json(message);
-        for (name, value) in &self.headers {
-            request = request.header(name, value);
-        }
-        if let Some(id) = lock(&self.session).clone() {
-            request = request.header("mcp-session-id", id);
-        }
         let transport = |error: reqwest::Error| McpError::Transport(error.to_string());
-        let response = request.send().await.map_err(transport)?;
-        if let Some(id) = response.headers().get("mcp-session-id")
-            && let Ok(id) = id.to_str()
-        {
-            *lock(&self.session) = Some(id.to_string());
+        let mut force = false;
+        loop {
+            let token = match &self.auth {
+                Some(auth) => auth.token(&self.url, force).await,
+                None => None,
+            };
+            let mut request = self
+                .http
+                .post(&self.url)
+                .header("accept", "application/json, text/event-stream")
+                .header("mcp-protocol-version", PROTOCOL_VERSION)
+                .json(message);
+            for (name, value) in &self.headers {
+                request = request.header(name, value);
+            }
+            if let Some(id) = lock(&self.session).clone() {
+                request = request.header("mcp-session-id", id);
+            }
+            if let Some(token) = &token {
+                let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                    .map_err(|_| {
+                        McpError::Transport("the access token is not a valid header value".into())
+                    })?;
+                value.set_sensitive(true);
+                request = request.header("authorization", value);
+            }
+            let response = request.send().await.map_err(transport)?;
+            if let Some(id) = response.headers().get("mcp-session-id")
+                && let Ok(id) = id.to_str()
+            {
+                *lock(&self.session) = Some(id.to_string());
+            }
+            let status = response.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                // A token the server just refused is refreshed once before giving up.
+                if token.is_some() && !force {
+                    force = true;
+                    continue;
+                }
+                let challenge = response
+                    .headers()
+                    .get_all("www-authenticate")
+                    .iter()
+                    .filter_map(|value| value.to_str().ok())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(McpError::AuthRequired(challenge));
+            }
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(McpError::Transport(format!("HTTP {status}: {body}")));
+            }
+            return Ok(response);
         }
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(McpError::Transport(format!("HTTP {status}: {body}")));
-        }
-        Ok(response)
     }
 
     async fn post(
