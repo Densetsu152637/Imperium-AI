@@ -47,9 +47,10 @@ pub trait RuntimeHooks: Send + Sync + fmt::Debug {
 pub struct ProcessLauncher {
     /// Runtime id and its executable.
     programs: Mutex<Vec<(String, PathBuf)>>,
-    /// `docker` and the image vLLM models run in, when the managed environment is Docker's
+    /// `docker`, the image vLLM models run in and the scope their containers are labelled with
+    /// ([`crate::vllm_env::scope`]), when the managed environment is Docker's
     /// ([`crate::vllm_env`]); each model then gets a container of its own.
-    docker_vllm: Mutex<Option<(PathBuf, String)>>,
+    docker_vllm: Mutex<Option<(PathBuf, String, String)>>,
     /// Asked before and after a llama.cpp model loads.
     hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     logs: PathBuf,
@@ -78,24 +79,35 @@ impl ProcessLauncher {
         self
     }
 
-    /// Runs vLLM models in containers of `image`, started by `docker`.
-    pub fn with_docker_vllm(self, docker: PathBuf, image: String) -> Self {
-        // Containers a killed daemon left behind are removed, off the start's path.
-        let sweeper = docker.clone();
-        std::thread::spawn(move || {
-            let system = sysinfo::System::new_all();
-            let removed =
-                crate::vllm_env::sweep_stale_containers(&sweeper, std::process::id(), &|pid| {
-                    system.process(sysinfo::Pid::from_u32(pid)).is_some()
-                });
-            if !removed.is_empty() {
-                tracing::info!(containers = ?removed, "removed vLLM containers a previous daemon left");
-            }
+    /// Runs vLLM models in containers of `image`, started by `docker`, labelled with the scope of
+    /// `data_dir`. Once per daemon, containers an earlier daemon of this host and data folder
+    /// left behind are removed, off the start's path ([`crate::vllm_env::sweep_stale_containers`]).
+    pub fn with_docker_vllm(self, docker: PathBuf, image: String, data_dir: &Path) -> Self {
+        static SWEEP: std::sync::Once = std::sync::Once::new();
+        let scope = crate::vllm_env::scope(data_dir);
+        let sweeper = (docker.clone(), scope.clone());
+        SWEEP.call_once(|| {
+            std::thread::spawn(move || {
+                let (docker, scope) = sweeper;
+                let remote = std::env::var_os("DOCKER_HOST").is_some_and(|host| !host.is_empty());
+                let system = sysinfo::System::new_all();
+                let removed = crate::vllm_env::sweep_stale_containers(
+                    &docker,
+                    &scope,
+                    std::process::id(),
+                    &|pid| system.process(sysinfo::Pid::from_u32(pid)).is_some(),
+                    remote,
+                    crate::vllm_env::SWEEP_TIMEOUT,
+                );
+                if !removed.is_empty() {
+                    tracing::info!(containers = ?removed, "removed vLLM containers a previous daemon left");
+                }
+            });
         });
         *self
             .docker_vllm
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some((docker, image));
+            .unwrap_or_else(PoisonError::into_inner) = Some((docker, image, scope));
         self
     }
 
@@ -160,9 +172,10 @@ impl ProcessLauncher {
         let port = free_port()?;
         // A container is named so it can be removed; its client process is what is supervised.
         let (program, args, container) = match docker {
-            Some((docker, image)) => {
+            Some((docker, image, scope)) => {
                 let name = crate::vllm_env::fresh_container_name(port);
-                let args = crate::vllm_env::docker_run_args(&image, &name, port, &spec.args())?;
+                let args =
+                    crate::vllm_env::docker_run_args(&image, &name, port, &scope, &spec.args())?;
                 (docker.clone(), args, Some((docker, name)))
             }
             None => {

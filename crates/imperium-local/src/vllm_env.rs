@@ -27,6 +27,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use imperium_config::VllmSettings;
+
+use crate::gpu::{Tool, run_tool_for};
 use serde::{Deserialize, Serialize};
 
 /// The command name used when the user has not chosen one.
@@ -813,9 +815,11 @@ pub fn docker_run_args(
     image: &str,
     name: &str,
     port: u16,
+    scope: &str,
     serve_args: &[String],
 ) -> Result<Vec<String>, String> {
     valid_image(image)?;
+    valid_scope(scope)?;
     let [serve, folder, rest @ ..] = serve_args else {
         return Err("no model folder to serve".into());
     };
@@ -845,6 +849,10 @@ pub fn docker_run_args(
         "VLLM_NO_USAGE_STATS=1",
         "-e",
         "DO_NOT_TRACK=1",
+        "--label",
+        &format!("{SCOPE_LABEL}={scope}"),
+        "--label",
+        &format!("{PID_LABEL}={}", std::process::id()),
         "-p",
     ]
     .map(String::from)
@@ -898,34 +906,87 @@ fn container_owner(name: &str) -> Option<u32> {
         .ok()
 }
 
-/// Removes the containers a daemon that was killed left behind: those named like ours whose
-/// owner process (`is_alive`) is gone and is not `own_pid`. Returns the names removed. Failures
-/// (no Docker, no permission) remove nothing.
+/// The label naming the host and data folder a container belongs to.
+pub const SCOPE_LABEL: &str = "imperium.scope";
+/// The label naming the daemon (process id) that started a container.
+pub const PID_LABEL: &str = "imperium.pid";
+/// Longest each Docker call of the sweep may take.
+pub const SWEEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What a container belongs to: this host and this data folder (a short hash of its path), so a
+/// sweep never touches another user's, another data folder's or another machine's containers.
+pub fn scope(data_dir: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let host: String = sysinfo::System::host_name()
+        .unwrap_or_else(|| "unknown".into())
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(63)
+        .collect();
+    let digest = Sha256::digest(data_dir.to_string_lossy().as_bytes());
+    let hash: String = digest
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{host}:{hash}")
+}
+
+/// A scope as [`scope`] makes it: it goes into a command line and a filter.
+fn valid_scope(scope: &str) -> Result<(), String> {
+    let ok = !scope.is_empty()
+        && scope.len() <= 100
+        && scope
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-_:".contains(c));
+    ok.then_some(())
+        .ok_or_else(|| format!("{scope:?} is not a container scope"))
+}
+
+/// Removes the containers a daemon that was killed left behind. Only containers labelled with
+/// this host and data folder's `scope` are listed, and of those only the ones whose owner process
+/// (`is_alive`) is gone and is not `own_pid`; a pid is only meaningful on the host that made it,
+/// which the scope guarantees as long as the daemon and Docker share one pid namespace (a Docker
+/// reached through `DOCKER_HOST` may not, so with `remote` set nothing is swept). Each Docker call
+/// is killed after `timeout`. Returns the names removed. Failures (no Docker, no permission, a
+/// timeout) remove nothing.
 pub fn sweep_stale_containers(
     docker: &Path,
+    scope: &str,
     own_pid: u32,
     is_alive: &dyn Fn(u32) -> bool,
+    remote: bool,
+    timeout: Duration,
 ) -> Vec<String> {
-    let listed = Command::new(docker)
-        .args([
-            "ps",
-            "-a",
-            "--filter",
-            &format!("name=^{CONTAINER_PREFIX}"),
-            "--format",
-            "{{.Names}}",
-        ])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output();
-    let Ok(listed) = listed else {
-        return Vec::new();
-    };
-    if !listed.status.success() {
+    if remote || valid_scope(scope).is_err() {
         return Vec::new();
     }
+    let Some(docker) = docker.to_str() else {
+        return Vec::new();
+    };
+    let label = format!("label={SCOPE_LABEL}={scope}");
+    let name = format!("name=^{CONTAINER_PREFIX}");
+    let listing = [
+        "ps",
+        "-a",
+        "--filter",
+        label.as_str(),
+        "--filter",
+        name.as_str(),
+        "--format",
+        "{{.Names}}",
+    ];
+    let Tool::Ran(listed) = run_tool_for(docker, &listing, timeout) else {
+        return Vec::new();
+    };
     let mut removed = Vec::new();
-    for name in String::from_utf8_lossy(&listed.stdout).lines().take(256) {
+    for name in listed.lines().take(256) {
         let name = name.trim();
         let Some(owner) = container_owner(name) else {
             continue;
@@ -933,13 +994,10 @@ pub fn sweep_stale_containers(
         if owner == own_pid || is_alive(owner) {
             continue;
         }
-        let status = Command::new(docker)
-            .args(["rm", "-f", name])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if status.is_ok_and(|status| status.success()) {
+        if matches!(
+            run_tool_for(docker, &["rm", "-f", name], timeout),
+            Tool::Ran(_)
+        ) {
             removed.push(name.to_string());
         }
     }
@@ -1275,16 +1333,16 @@ mod tests {
             "vllm/vllm-openai:v0.11.0",
             &container_name(77, 3, 8123),
             8123,
+            "host-1:0123456789ab",
             &serve,
         )
         .unwrap();
         let text = args.join(" ");
-        assert!(
-            text.starts_with(
-                "run --rm --pull=never --name imperium-vllm-77-3-8123 --gpus all --ipc=host --security-opt no-new-privileges -e VLLM_NO_USAGE_STATS=1 -e DO_NOT_TRACK=1 -p 127.0.0.1:8123:8123 "
-            ),
-            "{text}"
+        let expected = format!(
+            "run --rm --pull=never --name imperium-vllm-77-3-8123 --gpus all --ipc=host --security-opt no-new-privileges -e VLLM_NO_USAGE_STATS=1 -e DO_NOT_TRACK=1 --label imperium.scope=host-1:0123456789ab --label imperium.pid={} -p 127.0.0.1:8123:8123 ",
+            std::process::id()
         );
+        assert!(text.starts_with(&expected), "{text}");
         assert!(
             text.contains(
                 "--mount type=bind,source=/home/u/models/Qwen3-8B,target=/models/model,readonly"
@@ -1298,10 +1356,12 @@ mod tests {
             "the host inside is opened: {text}"
         );
         // Refusals.
-        assert!(docker_run_args("--privileged", "n", 1, &serve).is_err());
-        assert!(docker_run_args("img", "n", 1, &[]).is_err());
+        assert!(docker_run_args("--privileged", "n", 1, "s", &serve).is_err());
+        assert!(docker_run_args("img", "n", 1, "s", &[]).is_err());
+        assert!(docker_run_args("img", "n", 1, "bad scope", &serve).is_err());
+        assert!(docker_run_args("img", "n", 1, "", &serve).is_err());
         let comma: Vec<String> = ["serve", "/a,b"].map(String::from).to_vec();
-        assert!(docker_run_args("img", "n", 1, &comma).is_err());
+        assert!(docker_run_args("img", "n", 1, "s", &comma).is_err());
     }
 
     #[cfg(unix)]
@@ -1494,14 +1554,15 @@ mod tests {
         assert_eq!(container_owner("other"), None);
     }
 
-    /// A `docker` that lists the given names for `ps` and appends the arguments of any other call
-    /// to `log`.
+    /// A `docker` that appends the arguments of every call to `log` and lists the given names for
+    /// `ps`; with `hang` it then sleeps for a long time instead.
     #[cfg(unix)]
-    pub(crate) fn fake_docker(dir: &Path, names: &[&str], log: &Path) -> PathBuf {
+    fn fake_docker(dir: &Path, names: &[&str], log: &Path, hang: bool) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let listing: String = names.iter().map(|name| format!("echo {name}\n")).collect();
+        let hang = if hang { "exec sleep 30\n" } else { "" };
         let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = ps ]; then\n{listing}exit 0\nfi\necho \"$@\" >> {}\n",
+            "#!/bin/sh\necho \"$@\" >> {}\n{hang}if [ \"$1\" = ps ]; then\n{listing}fi\nexit 0\n",
             log.display()
         );
         let path = dir.join("docker");
@@ -1525,16 +1586,107 @@ mod tests {
                 "unrelated",
             ],
             &log,
+            false,
         );
         // 555 is this process, 4242 is another daemon that is still running.
-        let removed = sweep_stale_containers(&docker, 555, &|pid| pid == 4242);
+        let removed = sweep_stale_containers(
+            &docker,
+            SCOPE,
+            555,
+            &|pid| pid == 4242,
+            false,
+            Duration::from_secs(10),
+        );
         assert_eq!(removed, vec!["imperium-vllm-999999999-0-8000".to_string()]);
+        // Only this host and data folder's containers are listed, then the dead one removed.
+        let calls: Vec<String> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
         assert_eq!(
-            std::fs::read_to_string(&log).unwrap().trim(),
-            "rm -f imperium-vllm-999999999-0-8000"
+            calls,
+            vec![
+                format!(
+                    "ps -a --filter label=imperium.scope={SCOPE} --filter name=^imperium-vllm- --format {{{{.Names}}}}"
+                ),
+                "rm -f imperium-vllm-999999999-0-8000".to_string(),
+            ]
         );
         // No Docker, nothing swept.
-        assert!(sweep_stale_containers(&dir.path().join("none"), 1, &|_| false).is_empty());
+        assert!(
+            sweep_stale_containers(
+                &dir.path().join("none"),
+                SCOPE,
+                1,
+                &|_| false,
+                false,
+                Duration::from_secs(10)
+            )
+            .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    const SCOPE: &str = "host-1:0123456789ab";
+
+    #[cfg(unix)]
+    #[test]
+    fn a_docker_host_means_nothing_is_swept_and_docker_is_not_called() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let docker = fake_docker(dir.path(), &["imperium-vllm-999999999-0-8000"], &log, false);
+        let removed = sweep_stale_containers(
+            &docker,
+            SCOPE,
+            555,
+            &|_| false,
+            true,
+            Duration::from_secs(10),
+        );
+        assert!(removed.is_empty());
+        assert!(!log.exists(), "docker was not run");
+        // A scope that is not ours to filter by is refused too.
+        assert!(
+            sweep_stale_containers(&docker, "", 555, &|_| false, false, Duration::from_secs(10))
+                .is_empty()
+        );
+        assert!(!log.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_docker_is_given_up_on_after_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let docker = fake_docker(dir.path(), &["imperium-vllm-999999999-0-8000"], &log, true);
+        let started = Instant::now();
+        let removed = sweep_stale_containers(
+            &docker,
+            SCOPE,
+            555,
+            &|_| false,
+            false,
+            Duration::from_millis(300),
+        );
+        assert!(removed.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_scope_names_this_host_and_data_folder_in_command_line_safe_characters() {
+        let a = scope(Path::new("/home/a/.local/share/imperium"));
+        let b = scope(Path::new("/home/b/.local/share/imperium"));
+        assert_ne!(a, b, "another data folder is another scope");
+        assert_eq!(a, scope(Path::new("/home/a/.local/share/imperium")));
+        assert!(valid_scope(&a).is_ok(), "{a}");
+        let (host, hash) = a.rsplit_once(':').unwrap();
+        assert!(!host.is_empty());
+        assert_eq!(hash.len(), 12);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        for bad in ["", "a b", "a;b", "a=b", "x\ny"] {
+            assert!(valid_scope(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[cfg(unix)]

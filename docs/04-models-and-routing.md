@@ -951,9 +951,14 @@ and passing it to `Supervisor::with_backends`.
     container; `--cap-drop=ALL` is not used because it is not known to work with the NVIDIA
     runtime and vLLM. For AMD or Intel GPUs set `runtime.vllm.docker_image` to a build for them.
     The container's name holds the daemon's pid, a counter and the port. It is removed when the
-    model stops, when a start fails or is cancelled, and when the daemon drops the server; a
-    container a killed daemon left behind (its owner pid no longer running) is removed when the
-    next daemon starts. The server's pid in the resource monitor is the `docker run` client's,
+    model stops, when a start fails or is cancelled, and when the daemon drops the server. Each
+    container carries two labels, `imperium.scope=<host name>:<hash of the data folder>` and
+    `imperium.pid=<daemon pid>`. A container a killed daemon left behind is removed by a sweep that
+    runs once when the first daemon of the process starts, in the background: it lists only
+    containers with this host's and data folder's scope label and name prefix, and removes those
+    whose pid no longer runs (never this daemon's own). It assumes Docker and the daemon share a
+    host and a pid namespace, so with `DOCKER_HOST` set (a remote or differently namespaced
+    Docker) it does nothing, and each of its Docker calls is killed after 10 s. The server's pid in the resource monitor is the `docker run` client's,
     so its CPU, RAM and GPU figures are the client's, not the container's.
   - The version and image are pinned in `runtimes/vllm.env` and overridden by
     `runtime.vllm.version` and `runtime.vllm.docker_image` (or `--version`); both are checked

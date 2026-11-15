@@ -135,7 +135,7 @@ impl LocalRuntime {
                 launcher = launcher.with_program(imperium_local::backend::VLLM, program);
             }
             imperium_local::vllm_env::Launch::Docker { docker, image } => {
-                launcher = launcher.with_docker_vllm(docker, image);
+                launcher = launcher.with_docker_vllm(docker, image, paths.data_dir());
             }
         }
         let launcher = Arc::new(launcher);
