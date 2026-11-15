@@ -958,8 +958,12 @@ class registry key's `HardwareInformation.qwMemorySize` for the real size (`Adap
 saturates below 4 GiB), once per daemon, and the language-independent
 `Win32_PerfFormattedData_GPUPerformanceCounters_*` WMI classes for memory in use. Cost: a machine
 with no AMD or Intel PCI display adapter (NVIDIA-only, say) spawns PowerShell once and never
-again for the GPU list; with one, the counters run at most every 5 s while the GPU list is read
-(the 30 s budget refresh) or the resource monitor wants a process's GPU memory. A run that
+again for the GPU list; on such a machine the counters run (at most every 5 s) only while the
+resource monitor or a benchmark is active and wants a process's GPU memory. With an AMD or Intel
+adapter they also run when the GPU list is read (the 30 s budget refresh). The WMI class and
+property names the counters come from are not yet verified on hardware; when both come back empty
+the script falls back to `Get-Counter` (English counter names), and an empty result on a real
+machine with a GPU means the names need correcting. A run that
 fails or prints something unreadable is retried after 30 s, doubling up to 15 min. Accuracy
 limits: the counters are named by adapter LUID, so the memory in use is filled in only when the
 machine has a single PCI display adapter and it is not above the adapter's size, and otherwise

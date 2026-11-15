@@ -13,7 +13,10 @@
 //! - [`COUNTER_SCRIPT`]: the `Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory` and
 //!   `..._GPUProcessMemory` WMI classes (the counters behind Task Manager's GPU columns), whose
 //!   class and property names do not depend on the language of Windows the way `Get-Counter`
-//!   paths do. Run at most every [`MIN_INTERVAL`].
+//!   paths do. Those names are written from documentation and not yet verified on hardware: when
+//!   both lists come back empty the script falls back to `Get-Counter` (English counter names
+//!   only) and prints whichever returned data in the same shape. An empty result on a real
+//!   machine with a GPU means the WMI names need correcting. Run at most every [`MIN_INTERVAL`].
 //!
 //! Cost: a machine with no AMD or Intel PCI display adapter (NVIDIA-only, or none) runs the
 //! adapter script once and never spawns PowerShell for the GPU list again. With one, the counter
@@ -79,6 +82,10 @@ ConvertTo-Json -Compress -Depth 4 -InputObject @{adapters=$a;memory=$m}";
 pub const COUNTER_SCRIPT: &str = "$ErrorActionPreference='SilentlyContinue'; \
 $a=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage); \
 $p=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory | Select-Object Name,DedicatedUsage); \
+if ($a.Count -eq 0 -and $p.Count -eq 0) { \
+$s=@((Get-Counter -Counter '\\GPU Adapter Memory(*)\\Dedicated Usage','\\GPU Process Memory(*)\\Dedicated Usage').CounterSamples); \
+$a=@($s | Where-Object { $_.Path -like '*gpu adapter memory(*' } | ForEach-Object { [pscustomobject]@{Name=$_.InstanceName;DedicatedUsage=[uint64]$_.CookedValue} }); \
+$p=@($s | Where-Object { $_.Path -like '*gpu process memory(*' } | ForEach-Object { [pscustomobject]@{Name=$_.InstanceName;DedicatedUsage=[uint64]$_.CookedValue} }) }; \
 ConvertTo-Json -Compress -Depth 3 -InputObject @{adapter_memory=$a;process_memory=$p}";
 
 /// The AMD and Intel adapters, as the adapter script says.
@@ -698,6 +705,25 @@ mod tests {
         assert_eq!(adapters.gpus.len(), 1);
         assert_eq!(adapters.gpus[0].vram_total_bytes, 2 * GIB);
         assert_eq!(counters, Counters::default());
+    }
+
+    #[test]
+    fn the_counter_script_falls_back_to_get_counter_in_the_same_shape() {
+        assert!(COUNTER_SCRIPT.contains("GPUAdapterMemory"));
+        assert!(COUNTER_SCRIPT.contains("GPUProcessMemory"));
+        // Only when both WMI lists are empty.
+        let fallback = COUNTER_SCRIPT.find("Get-Counter").expect("fallback");
+        let guard = COUNTER_SCRIPT
+            .find("$a.Count -eq 0 -and $p.Count -eq 0")
+            .expect("guard");
+        assert!(guard < fallback);
+        // What the fallback prints (instance names from Get-Counter are lower case) parses the
+        // same as the WMI output.
+        let json = r#"{"adapter_memory":[{"Name":"luid_0x00000000_0x0000d2b3_phys_0","DedicatedUsage":2147483648}],
+            "process_memory":[{"Name":"pid_4120_luid_0x00000000_0x0000d2b3_phys_0","DedicatedUsage":1610612736}]}"#;
+        let counters = parse_counters(json).expect("counters");
+        assert_eq!(counters.adapters, vec![2 * GIB]);
+        assert_eq!(counters.processes, vec![(4120, 1_610_612_736)]);
     }
 
     #[test]
