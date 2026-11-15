@@ -1,9 +1,9 @@
-// Tool-call rows in the transcript (src/toolCalls.ts). Run with `pnpm test` (node's test runner).
+// Tool-call rows in the transcript (src/sessions/toolCalls.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { ToolEntry } from "../src/sessions.ts";
+import type { ToolEntry } from "../src/sessions/sessions.ts";
 import {
   clipText,
   describeToolRun,
@@ -12,7 +12,7 @@ import {
   itemForEntry,
   prettyArguments,
   toolRunState,
-} from "../src/toolCalls.ts";
+} from "../src/sessions/toolCalls.ts";
 
 function call(tool: string, ok: boolean | null = true, summary = ""): ToolEntry {
   return { kind: "tool", callId: `${tool}-${summary}`, tool, summary, arguments: "", ok, output: "", durationMs: null };

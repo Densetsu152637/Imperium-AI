@@ -3,6 +3,8 @@
 //! agent loop reaches it through the [`ChatClient`] trait, built by endpoint kind from
 //! [`ChatClients`], so clients for other APIs can be added.
 
+#![warn(unreachable_pub)]
+
 mod chat;
 mod client;
 pub mod llamacpp;
@@ -13,5 +15,4 @@ pub use client::{
     ChatClient, ChatClientBuilder, ChatClients, ChatFuture, DEFAULT_KIND, LlamaCpp,
     OpenAiCompatible, TokenFuture, Tokenizer,
 };
-pub use imperium_api::{ChatMessage, Effort, FunctionCall, Pricing, ToolCall, ToolSpec, Usage};
 pub use sse::DataLines;

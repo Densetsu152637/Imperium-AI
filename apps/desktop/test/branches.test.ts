@@ -1,4 +1,4 @@
-// Branched sessions and model comparisons (src/branches.ts). Run with `pnpm test` (node's test runner).
+// Branched sessions and model comparisons (src/sessions/branches.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -15,7 +15,7 @@ import {
   standouts,
   togglePicked,
   type RunSource,
-} from "../src/branches.ts";
+} from "../src/sessions/branches.ts";
 
 function summary(id: string, extra: Partial<SessionSummary> = {}): SessionSummary {
   return {

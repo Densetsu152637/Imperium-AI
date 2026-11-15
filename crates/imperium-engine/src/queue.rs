@@ -19,20 +19,58 @@ use tokio::sync::watch;
 use crate::breakdown::PART_SEPARATOR;
 use crate::session::{Emitter, lock};
 
+#[cfg(test)]
+mod wording {
+    use super::QueueError;
+
+    #[test]
+    fn an_unknown_agent_is_reported_with_the_shared_wording() {
+        let text = QueueError::UnknownAgent("t1".into()).to_string();
+        assert_eq!(
+            text,
+            format!(
+                "{} \"t1\" in this session",
+                imperium_protocol::errors::NO_RUNNING_AGENT
+            )
+        );
+    }
+}
+
 /// Why a message could not be queued, edited, or removed.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueError {
-    #[error("the session has stopped")]
     Closed,
-    #[error("no running agent {0:?} in this session")]
     UnknownAgent(String),
-    #[error("no queued message {0:?}; it may have been delivered already")]
     UnknownMessage(String),
-    #[error("the message is empty")]
     Empty,
-    #[error("message {0:?} is steering the running turn and can no longer be edited")]
     Steering(String),
 }
+
+// By hand, not derived: the unknown-agent wording is shared with clients that match on it
+// (`imperium_protocol::errors::NO_RUNNING_AGENT`), and an attribute cannot name a constant.
+impl std::fmt::Display for QueueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueueError::Closed => write!(f, "the session has stopped"),
+            QueueError::UnknownAgent(id) => write!(
+                f,
+                "{} {id:?} in this session",
+                imperium_protocol::errors::NO_RUNNING_AGENT
+            ),
+            QueueError::UnknownMessage(id) => write!(
+                f,
+                "no queued message {id:?}; it may have been delivered already"
+            ),
+            QueueError::Empty => write!(f, "the message is empty"),
+            QueueError::Steering(id) => write!(
+                f,
+                "message {id:?} is steering the running turn and can no longer be edited"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for QueueError {}
 
 /// One agent's waiting messages.
 #[derive(Debug)]
@@ -76,7 +114,7 @@ impl Inbox {
 
     /// Takes the next message to run as a turn: a steering message that missed the turn it
     /// was meant for comes first, then the oldest; the others keep their order.
-    pub fn pop(&self) -> Option<QueuedMessage> {
+    pub(crate) fn pop(&self) -> Option<QueuedMessage> {
         let mut state = lock(&self.state);
         let message = take_next(&mut state.messages)?;
         self.changed(&state);
@@ -85,7 +123,7 @@ impl Inbox {
 
     /// Like [`pop`](Self::pop), but when nothing waits the inbox closes, so a message cannot
     /// slip in after the agent's last look.
-    pub fn pop_or_close(&self) -> Option<QueuedMessage> {
+    pub(crate) fn pop_or_close(&self) -> Option<QueuedMessage> {
         let mut state = lock(&self.state);
         match take_next(&mut state.messages) {
             Some(message) => {
@@ -100,7 +138,7 @@ impl Inbox {
     }
 
     /// Closes the inbox and takes whatever still waits in it (a subagent that paused).
-    pub fn close_and_drain(&self) -> Vec<QueuedMessage> {
+    pub(crate) fn close_and_drain(&self) -> Vec<QueuedMessage> {
         let mut state = lock(&self.state);
         state.closed = true;
         if state.messages.is_empty() {
@@ -113,7 +151,7 @@ impl Inbox {
 
     /// Takes every steering message, in order, for the running turn. The agent announces
     /// each with `steered` once it has added them to its conversation.
-    pub fn take_steering(&self) -> Vec<QueuedMessage> {
+    pub(crate) fn take_steering(&self) -> Vec<QueuedMessage> {
         let mut state = lock(&self.state);
         if !state.messages.iter().any(|message| message.steer) {
             return Vec::new();
@@ -146,7 +184,7 @@ impl Inbox {
     }
 
     /// Follows steering messages as they arrive: the value changes with each one.
-    pub fn steering_signal(&self) -> watch::Receiver<u64> {
+    pub(crate) fn steering_signal(&self) -> watch::Receiver<u64> {
         self.steering.subscribe()
     }
 
@@ -154,14 +192,14 @@ impl Inbox {
         self.steering.send_modify(|count| *count += 1);
     }
 
-    pub fn has_steering(&self) -> bool {
+    pub(crate) fn has_steering(&self) -> bool {
         lock(&self.state)
             .messages
             .iter()
             .any(|message| message.steer)
     }
 
-    pub fn list(&self) -> Vec<QueuedMessage> {
+    pub(crate) fn list(&self) -> Vec<QueuedMessage> {
         lock(&self.state).messages.iter().cloned().collect()
     }
 
@@ -213,7 +251,7 @@ pub(crate) struct Inboxes {
 
 impl Inboxes {
     /// The inboxes for a session, with the root agent's queue as `history` left it.
-    pub fn new(emitter: Arc<Emitter>, history: &[AgentEvent]) -> Self {
+    pub(crate) fn new(emitter: Arc<Emitter>, history: &[AgentEvent]) -> Self {
         let mut last_id = 0;
         let mut root_queue = None;
         for event in history {
@@ -238,12 +276,12 @@ impl Inboxes {
     }
 
     /// A fresh message id, `q1`, `q2`, ...
-    pub fn next_id(&self) -> String {
+    pub(crate) fn next_id(&self) -> String {
         format!("q{}", self.next_id.fetch_add(1, Ordering::Relaxed) + 1)
     }
 
     /// The agent's inbox, created when it has none.
-    pub fn open(&self, agent_id: &str) -> Arc<Inbox> {
+    pub(crate) fn open(&self, agent_id: &str) -> Arc<Inbox> {
         Arc::clone(
             lock(&self.agents)
                 .entry(agent_id.to_string())
@@ -259,7 +297,7 @@ impl Inboxes {
     }
 
     /// Forgets an agent that finished for good.
-    pub fn close(&self, agent_id: &str) {
+    pub(crate) fn close(&self, agent_id: &str) {
         lock(&self.agents).remove(agent_id);
     }
 
@@ -272,7 +310,7 @@ impl Inboxes {
 
     /// Queues `text` (and its attachments) for a running subagent, or as steering for its
     /// running turn.
-    pub fn send(
+    pub(crate) fn send(
         &self,
         agent_id: &str,
         id: String,
@@ -294,27 +332,27 @@ impl Inboxes {
     }
 
     /// Adds a message to the root agent's queue (it is busy).
-    pub fn queue_for_root(&self, message: QueuedMessage) {
+    pub(crate) fn queue_for_root(&self, message: QueuedMessage) {
         // The root's inbox never closes.
         let _ = self.open(ROOT_AGENT).push(message);
     }
 
-    pub fn list(&self, agent_id: &str) -> Result<Vec<QueuedMessage>, QueueError> {
+    pub(crate) fn list(&self, agent_id: &str) -> Result<Vec<QueuedMessage>, QueueError> {
         Ok(self.get(agent_id)?.list())
     }
 
-    pub fn edit(&self, agent_id: &str, id: &str, text: String) -> Result<(), QueueError> {
+    pub(crate) fn edit(&self, agent_id: &str, id: &str, text: String) -> Result<(), QueueError> {
         if text.trim().is_empty() {
             return Err(QueueError::Empty);
         }
         self.get(agent_id)?.edit(id, text)
     }
 
-    pub fn remove(&self, agent_id: &str, id: &str) -> Result<(), QueueError> {
+    pub(crate) fn remove(&self, agent_id: &str, id: &str) -> Result<(), QueueError> {
         self.get(agent_id)?.remove(id)
     }
 
-    pub fn steer(&self, agent_id: &str, id: &str) -> Result<(), QueueError> {
+    pub(crate) fn steer(&self, agent_id: &str, id: &str) -> Result<(), QueueError> {
         self.get(agent_id)?.steer(id)
     }
 }
@@ -351,10 +389,10 @@ const STEERING_OPEN: &str = "<steering>";
 
 /// Whether `message` is a steering message added mid-turn (see [`steering_text`]); attachment
 /// text may come before the wrapper.
-pub(crate) fn is_steering_message(message: &imperium_models::ChatMessage) -> bool {
+pub(crate) fn is_steering_message(message: &imperium_api::ChatMessage) -> bool {
     matches!(
         message,
-        imperium_models::ChatMessage::User { content, .. }
+        imperium_api::ChatMessage::User { content, .. }
             if content.starts_with(STEERING_OPEN)
                 || content.contains(&format!("{PART_SEPARATOR}{STEERING_OPEN}"))
     )

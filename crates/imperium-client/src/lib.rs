@@ -1,6 +1,8 @@
 //! A client for the daemon protocol: connect with an endpoint's token, handshake, and make
 //! typed calls. Used by the `imperium` CLI and the desktop app's native side.
 
+#![warn(unreachable_pub)]
+
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};

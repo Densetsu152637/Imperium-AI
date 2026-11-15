@@ -1,10 +1,10 @@
-// Which events notify, and how (src/attention.ts). Run with `pnpm test` (node's test runner).
+// Which events notify, and how (src/shared/attention.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { deliveryFor, downloadNotice, sessionNotice, updateNotice, type Attention } from "../src/attention.ts";
-import type { AppSettings } from "../src/settings.ts";
+import { deliveryFor, downloadNotice, sessionNotice, updateNotice, type Attention } from "../src/shared/attention.ts";
+import type { AppSettings } from "../src/settings/settings.ts";
 
 // The notification fields of DEFAULT_SETTINGS (settings.ts imports React, so is not loaded here).
 const defaults = {

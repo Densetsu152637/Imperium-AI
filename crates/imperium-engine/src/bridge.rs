@@ -174,9 +174,7 @@ pub struct BridgeResults {
 
 impl Default for BridgeResults {
     fn default() -> Self {
-        let epoch = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis() as u64);
+        let epoch = imperium_api::time::unix_ms();
         BridgeResults {
             epoch,
             next: AtomicU64::new(0),

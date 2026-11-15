@@ -2,9 +2,10 @@
 //! pet in the same state. State changes go to clients as `pet.state` notifications. Pets see
 //! agent status only, never transcript content, and never call a model.
 
+use imperium_api::time::unix_ms;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use imperium_pets::{Arbiter, Pet, PetEvent, Shown, discover};
 use imperium_protocol::methods::{PET_STATE, PetInfo, PetStateInfo};
@@ -118,7 +119,7 @@ impl PetEngine {
 
 /// Every loadable pet and the problems found, from the folders pets may be installed in. This
 /// works whether or not the daemon's own pet is on, so clients (and mods) can list pets anyway.
-pub fn discover_installed(daemon: &DaemonState) -> (Vec<Pet>, Vec<String>) {
+pub(crate) fn discover_installed(daemon: &DaemonState) -> (Vec<Pet>, Vec<String>) {
     let mut folders: Vec<PathBuf> = daemon.settings().pets.folders.clone();
     folders.push(daemon.config_dir().join("pets"));
     // Pets made for the Claude Code plugin, and the pets bundled with Imperium.
@@ -135,7 +136,7 @@ pub fn discover_installed(daemon: &DaemonState) -> (Vec<Pet>, Vec<String>) {
 }
 
 /// A pet as `pet.list` describes it, with its raw `pet.json` (empty if it cannot be read now).
-pub fn pet_info(pet: &Pet) -> PetInfo {
+pub(crate) fn pet_info(pet: &Pet) -> PetInfo {
     PetInfo {
         id: pet.id.clone(),
         display_name: pet.display_name.clone(),
@@ -152,13 +153,13 @@ pub fn pet_info(pet: &Pet) -> PetInfo {
 /// The strip PNG of a pet in `pets` for an animation it draws. `Pet::strip` keeps the path
 /// inside the pet's own `strips/` folder, and ids or animations that are not known names find
 /// nothing.
-pub fn strip_of(pets: &[Pet], pet_id: &str, animation: &str) -> Option<Vec<u8>> {
+pub(crate) fn strip_of(pets: &[Pet], pet_id: &str, animation: &str) -> Option<Vec<u8>> {
     let pet = pets.iter().find(|pet| pet.id == pet_id)?;
     std::fs::read(pet.strip(animation)?).ok()
 }
 
 /// How agent activity maps onto the pet (docs/16-pets.md#event-mapping).
-pub fn pet_events(event: &SessionEvent) -> Vec<PetEvent> {
+pub(crate) fn pet_events(event: &SessionEvent) -> Vec<PetEvent> {
     let once = |name: &str| PetEvent::Once(name.into());
     let state = |name: &str| PetEvent::Loop(name.into());
     match event {
@@ -178,14 +179,6 @@ pub fn pet_events(event: &SessionEvent) -> Vec<PetEvent> {
         SessionEvent::MemorySaved { .. } => vec![once("eating")],
         _ => Vec::new(),
     }
-}
-
-fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 fn info(pet_id: &str, shown: &Shown, started: Instant, epoch: u64) -> PetStateInfo {

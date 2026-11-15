@@ -13,7 +13,7 @@ import type {
   ModelBenchResultsResult,
 } from "@imperium/protocol";
 
-import { activeRun, gibibytes, history, latestHere, mergeRun, millis, seconds, tokensPerSecond } from "../bench";
+import { activeRun, gibibytes, history, latestHere, mergeRun, millis, seconds, tokensPerSecond } from "../models/bench";
 import type { DaemonClient } from "../daemon/client";
 import { Row, RowNote } from "./SettingsRow";
 

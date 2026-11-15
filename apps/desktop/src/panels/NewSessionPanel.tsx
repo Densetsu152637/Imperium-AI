@@ -12,10 +12,11 @@ import type { ConfigDescribeResult, EnvironmentInfo, LocalModelRow, ModelRow } f
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import type { DaemonClient } from "../daemon/client";
-import { houseModelSuggestion } from "../houseModels";
-import { useChangeSettings, useSettings } from "../settings";
+import { environmentById } from "../environments/byId";
+import { houseModelSuggestion } from "../models/houseModels";
+import { useChangeSettings, useSettings } from "../settings/settings";
 import { HouseModelCard } from "./HouseModelCard";
-import { modelIsOff } from "../modelAvailability";
+import { modelIsOff } from "../models/modelAvailability";
 import { asSpec, modelOptions } from "./ModelSelect";
 import { ModelSetup } from "./ModelSetup";
 
@@ -105,7 +106,7 @@ export function NewSessionPanel({
   // The selected environment, else Home (built in, so there is always a choice made), else a
   // pinned one, else the first.
   const environment =
-    environments.find((env) => env.id === environmentId) ??
+    environmentById(environments, environmentId) ??
     environments.find((env) => env.builtin) ??
     environments.find((env) => env.pinned) ??
     environments[0] ??

@@ -35,7 +35,8 @@ use crate::journal::Journal;
 use crate::queue::{Inboxes, QueueError};
 use crate::quiet::{Background, RunNow};
 use crate::status::Controls;
-use crate::{CatalogModel, LocalModels, ResolvedModel, SessionLauncher};
+use crate::{CatalogModel, ResolvedModel, SessionLauncher};
+use imperium_api::LocalModels;
 
 /// Chunk subagents of `delegate_chunks` that run at once in a session; the rest wait.
 const MAX_PARALLEL_CHUNKS: usize = 4;
@@ -221,7 +222,7 @@ impl SessionEffort {
         SessionEffort(Arc::new(Mutex::new(effort)))
     }
 
-    pub fn get(&self) -> Effort {
+    pub(crate) fn get(&self) -> Effort {
         *lock(&self.0)
     }
 
@@ -876,7 +877,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    pub fn next_task_id(&self) -> String {
+    pub(crate) fn next_task_id(&self) -> String {
         format!("t{}", self.next_task.fetch_add(1, Ordering::Relaxed) + 1)
     }
 }
@@ -1054,7 +1055,7 @@ async fn run(
                         .into(),
                     usage: Default::default(),
                     cost_usd: None,
-                    at_ms: Some(crate::agents::now_ms()),
+                    at_ms: Some(imperium_api::time::unix_ms()),
                 },
             );
         }
@@ -1439,12 +1440,12 @@ pub(crate) struct Emitter {
 
 impl Emitter {
     /// How many events the session has recorded.
-    pub fn event_count(&self) -> usize {
+    pub(crate) fn event_count(&self) -> usize {
         self.history.lock().len()
     }
 
     /// Records and broadcasts an event, followed by a status change it causes.
-    pub fn emit(&self, agent_id: &str, event: SessionEvent) {
+    pub(crate) fn emit(&self, agent_id: &str, event: SessionEvent) {
         let event = AgentEvent {
             agent_id: agent_id.to_string(),
             event,
@@ -1457,7 +1458,7 @@ impl Emitter {
     }
 
     /// Records and broadcasts an event without updating the status from it.
-    pub fn emit_raw(&self, agent_id: &str, event: SessionEvent) {
+    pub(crate) fn emit_raw(&self, agent_id: &str, event: SessionEvent) {
         self.record(AgentEvent {
             agent_id: agent_id.to_string(),
             event,
@@ -1488,7 +1489,7 @@ pub(crate) struct PermissionBroker {
 
 impl PermissionBroker {
     /// Registers a request; the receiver resolves with the user's answer.
-    pub fn request(&self) -> (u64, oneshot::Receiver<PermissionDecision>) {
+    pub(crate) fn request(&self) -> (u64, oneshot::Receiver<PermissionDecision>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let (answer, receiver) = oneshot::channel();
         let mut pending = lock(&self.pending);
@@ -1527,7 +1528,7 @@ pub(crate) struct QuestionBroker {
 impl QuestionBroker {
     /// Registers a batch; the receiver resolves with the answers, or errors when nobody can
     /// answer any more.
-    pub fn request(&self) -> (u64, oneshot::Receiver<Vec<String>>) {
+    pub(crate) fn request(&self) -> (u64, oneshot::Receiver<Vec<String>>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let (answer, receiver) = oneshot::channel();
         let mut pending = lock(&self.pending);
@@ -1544,7 +1545,7 @@ impl QuestionBroker {
     }
 
     /// Forgets a batch nobody answered in time.
-    pub fn cancel(&self, id: u64) {
+    pub(crate) fn cancel(&self, id: u64) {
         lock(&self.pending).remove(&id);
     }
 
@@ -1757,7 +1758,7 @@ fn save_messages(
     shared: &Shared,
     journal: &std::path::Path,
     path: &std::path::Path,
-    messages: &[imperium_models::ChatMessage],
+    messages: &[imperium_api::ChatMessage],
     compacted: bool,
 ) {
     shared.agents.save_conversation(ROOT_AGENT, messages);

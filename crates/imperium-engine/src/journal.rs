@@ -1,26 +1,25 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use imperium_protocol::session::AgentEvent;
 use serde::{Deserialize, Serialize};
 
 /// Append-only JSON Lines record of a session: one object per event, with a timestamp.
 #[derive(Debug)]
-pub struct Journal {
+pub(crate) struct Journal {
     file: File,
 }
 
 #[derive(Serialize)]
 struct Line<'a> {
-    at_ms: u128,
+    at_ms: u64,
     #[serde(flatten)]
     event: &'a AgentEvent,
 }
 
 impl Journal {
-    pub fn open(path: &Path) -> std::io::Result<Self> {
+    pub(crate) fn open(path: &Path) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -28,10 +27,8 @@ impl Journal {
         Ok(Journal { file })
     }
 
-    pub fn record(&mut self, event: &AgentEvent) -> std::io::Result<()> {
-        let at_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_millis());
+    pub(crate) fn record(&mut self, event: &AgentEvent) -> std::io::Result<()> {
+        let at_ms = imperium_api::time::unix_ms();
         let mut line = serde_json::to_vec(&Line { at_ms, event })?;
         line.push(b'\n');
         self.file.write_all(&line)
@@ -48,7 +45,7 @@ pub fn read_events(path: &Path) -> Vec<AgentEvent> {
 
 /// [`read_events`] with the time each event was recorded, in milliseconds since the Unix epoch
 /// (0 for a line without one).
-pub fn read_timed_events(path: &Path) -> Vec<(u64, AgentEvent)> {
+pub(crate) fn read_timed_events(path: &Path) -> Vec<(u64, AgentEvent)> {
     #[derive(Deserialize)]
     struct Stored {
         #[serde(default)]

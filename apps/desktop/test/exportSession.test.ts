@@ -1,9 +1,9 @@
-// Session export in the app (src/exportSession.ts): the call and the media types.
+// Session export in the app (src/sessions/exportSession.ts): the call and the media types.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { exportMediaType, requestExport } from "../src/exportSession.ts";
+import { exportMediaType, requestExport } from "../src/sessions/exportSession.ts";
 
 test("requestExport calls session.export with the format and only the options given", async () => {
   const calls: [string, unknown][] = [];

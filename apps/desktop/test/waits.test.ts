@@ -1,4 +1,4 @@
-// What an agent waits on before its first output (src/waits.ts). Run with `pnpm test` (node's test runner).
+// What an agent waits on before its first output (src/sessions/waits.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -17,7 +17,7 @@ import {
   type Residency,
   type Sent,
   type Waits,
-} from "../src/waits.ts";
+} from "../src/sessions/waits.ts";
 
 const on = (agent_id: string, event: SessionEvent): AgentEvent => ({ agent_id, event });
 const run = (events: AgentEvent[], start: Waits = {}): Waits =>

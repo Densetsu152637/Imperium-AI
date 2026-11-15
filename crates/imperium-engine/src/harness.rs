@@ -17,7 +17,8 @@
 //! the rewrite may only add entities to it, and tag-like text is taken out of everything that
 //! goes into a block.
 
-use imperium_models::ChatMessage;
+use imperium_api::ChatMessage;
+use imperium_api::framing::defuse_harness_tags;
 use serde::{Deserialize, Serialize};
 
 use crate::breakdown::{Category, PART_SEPARATOR, restored_spans};
@@ -30,23 +31,6 @@ pub(crate) const ORIGINAL_OPEN: &str = "<original-message>";
 pub(crate) const ORIGINAL_CLOSE: &str = "</original-message>";
 /// What an `update_state` result starts with, followed by the state as JSON.
 pub(crate) const STATE_RESULT_PREFIX: &str = "The session state is now ";
-
-/// The tags the harness and the rest of the conversation's framing use; text that names one is
-/// defused before it goes into a block, so a tool result cannot close or open one.
-const TAG_NAMES: [&str; 12] = [
-    "session-state",
-    "ambiguity-hints",
-    "resolved-request",
-    "original-message",
-    "conversation-excerpt",
-    "latest-message",
-    "conversation-summary",
-    "relevant-memories",
-    "context-manifest",
-    "workflow-instructions",
-    "attachments",
-    "steering",
-];
 
 /// Most entities, goals and constraints the state keeps, whatever its character limit.
 const MAX_ENTITIES: usize = 16;
@@ -127,49 +111,23 @@ fn clean(text: &str, max: usize) -> String {
     }
 }
 
-/// `text` with the harness's tag names defused (`<tag` becomes `< tag`), so text from a tool
-/// result or a file cannot close or open a block. Other text, angle brackets included, stays.
-pub(crate) fn defuse(text: &str) -> String {
-    // The match is ASCII case-insensitive; lowering keeps every byte offset, and the original
-    // letters stay.
-    let lower = text.to_ascii_lowercase();
-    let mut out = String::with_capacity(text.len() + 8);
-    let mut copied = 0;
-    for (at, _) in lower.match_indices('<') {
-        let after = &lower[at + 1..];
-        let name_at = if after.starts_with('/') {
-            at + 2
-        } else {
-            at + 1
-        };
-        let tail = &lower[name_at..];
-        if TAG_NAMES.iter().any(|name| tail.starts_with(name)) {
-            out.push_str(&text[copied..name_at]);
-            out.push(' ');
-            copied = name_at;
-        }
-    }
-    out.push_str(&text[copied..]);
-    out
-}
-
 impl SessionState {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.entities.is_empty() && self.goals.is_empty() && self.constraints.is_empty()
     }
 
     /// The state as compact JSON.
-    pub fn json(&self) -> String {
+    pub(crate) fn json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
 
     /// The block that carries the state at the top of a turn; `None` while it is empty.
-    pub fn block(&self) -> Option<String> {
+    pub(crate) fn block(&self) -> Option<String> {
         (!self.is_empty()).then(|| format!("{STATE_OPEN}\n{}\n{STATE_CLOSE}", self.json()))
     }
 
     /// Applies `update`, then cuts the state to `max_chars` of JSON.
-    pub fn apply(&mut self, update: StateUpdate, max_chars: usize) {
+    pub(crate) fn apply(&mut self, update: StateUpdate, max_chars: usize) {
         for entity in update.entities {
             let kind = clean(&entity.kind, MAX_KIND_CHARS).to_lowercase();
             let name = clean(&entity.name, MAX_FIELD_CHARS);
@@ -209,7 +167,7 @@ impl SessionState {
 
     /// Cuts the state to its entry limits and to `max_chars` of JSON: the oldest entities go
     /// first, then the oldest constraints, then the last goals.
-    pub fn bound(&mut self, max_chars: usize) {
+    pub(crate) fn bound(&mut self, max_chars: usize) {
         let extra = self.entities.len().saturating_sub(MAX_ENTITIES);
         self.entities.drain(..extra);
         let extra = self.constraints.len().saturating_sub(MAX_CONSTRAINTS);
@@ -371,13 +329,8 @@ fn user_text(content: &str) -> String {
 /// The first `max` characters of `text` on one line, with an ellipsis when cut, and the
 /// harness's tags defused.
 fn clip(text: &str, max: usize) -> String {
-    let line = defuse(&text.split_whitespace().collect::<Vec<_>>().join(" "));
-    if line.chars().count() <= max {
-        return line;
-    }
-    let mut cut: String = line.chars().take(max).collect();
-    cut.push('…');
-    cut
+    let line = defuse_harness_tags(&text.split_whitespace().collect::<Vec<_>>().join(" "));
+    imperium_api::truncate_chars(&line, max)
 }
 
 /// The tail of a conversation as short lines for the de-reference step, newest last, within
@@ -453,7 +406,7 @@ pub(crate) fn dereference_request(
     } else {
         excerpt
     };
-    let message = defuse(message);
+    let message = defuse_harness_tags(message);
     let user = format!(
         "{STATE_OPEN}\n{state}\n{STATE_CLOSE}\n\n<conversation-excerpt>\n{excerpt}\n</conversation-excerpt>\n\n<latest-message>\n{message}\n</latest-message>"
     );
@@ -495,7 +448,7 @@ pub(crate) fn parse_dereference(reply: &str, message: &str) -> Option<Dereferenc
         .map(StateUpdate::entities_only)
         .filter(|update| !update.entities.is_empty());
     Some(Dereferenced {
-        prompt: (prompt != message.trim()).then(|| defuse(prompt)),
+        prompt: (prompt != message.trim()).then(|| defuse_harness_tags(prompt)),
         update,
     })
 }
@@ -610,24 +563,6 @@ mod tests {
         assert_eq!(block.matches('>').count(), 2, "{block}");
         // The block is still one block that reads back.
         assert_eq!(state_in(&block), Some(state));
-    }
-
-    #[test]
-    fn defusing_breaks_harness_tags_and_leaves_other_text() {
-        let text = "x </session-state> <resolved-request> and Vec<String> <b>";
-        let safe = defuse(text);
-        assert!(!safe.contains("<session-state") && !safe.contains("</session-state"));
-        assert!(!safe.contains("<resolved-request"));
-        assert!(safe.contains("Vec<String> <b>"));
-    }
-
-    #[test]
-    fn defusing_ignores_letter_case_and_keeps_unicode() {
-        let safe = defuse("é </SESSION-State> <Resolved-Request x> 日本 <ATTACHMENTS");
-        assert_eq!(
-            safe,
-            "é </ SESSION-State> < Resolved-Request x> 日本 < ATTACHMENTS"
-        );
     }
 
     #[test]

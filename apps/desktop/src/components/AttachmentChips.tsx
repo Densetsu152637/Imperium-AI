@@ -5,7 +5,7 @@ import { File, FileText, Image as ImageIcon, LoaderCircle, TriangleAlert, X } fr
 
 import type { Attachment } from "@imperium/protocol";
 
-import { deliveryLabel, formatBytes, type Chip } from "../attachments";
+import { deliveryLabel, formatBytes, type Chip } from "../sessions/attachments";
 
 function KindIcon({ kind }: { kind: Attachment["kind"] | undefined }) {
   if (kind === "image") return <ImageIcon aria-hidden="true" />;

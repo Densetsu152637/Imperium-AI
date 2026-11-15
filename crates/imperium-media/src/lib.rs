@@ -3,13 +3,15 @@
 //! OpenAI-compatible transcription API (LocalAI, whisper.cpp front-ends, or hosted services).
 //! Results are files in the project's `media/` folder with a provenance file beside each.
 
+#![warn(unreachable_pub)]
+
 pub mod attachments;
 pub mod image;
 mod tools;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use imperium_api::ToolSpec;
 use serde_json::{Value, json};
@@ -55,14 +57,31 @@ pub enum MediaError {
     NotConfigured(&'static str),
     #[error("{0}")]
     Service(String),
+    /// The service answered with an HTTP error status.
+    #[error("{message}")]
+    Status { status: u16, message: String },
     #[error("{0}: {1}")]
     Io(String, std::io::Error),
     #[error("{0} must be a path inside the project")]
     Outside(String),
 }
 
+impl MediaError {
+    /// Whether the service refused the request (a 4xx status): the request was at fault, not
+    /// the service.
+    pub fn is_client_error(&self) -> bool {
+        matches!(self, MediaError::Status { status, .. } if (400..500).contains(status))
+    }
+}
+
 fn service_error(error: reqwest::Error) -> MediaError {
-    MediaError::Service(error.to_string())
+    match error.status() {
+        Some(status) => MediaError::Status {
+            status: status.as_u16(),
+            message: error.to_string(),
+        },
+        None => MediaError::Service(error.to_string()),
+    }
 }
 
 impl Media {
@@ -266,9 +285,7 @@ fn save(
         .take(6)
         .collect::<Vec<_>>()
         .join("-");
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis());
+    let stamp = imperium_api::time::unix_ms();
     let dir = root.join("media");
     std::fs::create_dir_all(&dir)
         .map_err(|error| MediaError::Io(dir.display().to_string(), error))?;
@@ -280,7 +297,7 @@ fn save(
     std::fs::write(&path, bytes)
         .map_err(|error| MediaError::Io(path.display().to_string(), error))?;
     let mut provenance = provenance;
-    provenance["created_unix_ms"] = json!(stamp as u64);
+    provenance["created_unix_ms"] = json!(stamp);
     provenance["bytes"] = json!(bytes.len());
     let meta = dir.join(format!("{file_name}.json"));
     std::fs::write(

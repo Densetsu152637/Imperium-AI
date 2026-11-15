@@ -6,10 +6,11 @@
 //! `prompt.submit` hook may be a security check, so every hook is active from the start (they
 //! cost no context and run nothing until their event).
 
+#![warn(unreachable_pub)]
+
 pub mod activation;
 pub mod commands;
 pub mod hooks;
-pub use imperium_api::markdown;
 pub mod plugins;
 pub mod skills;
 

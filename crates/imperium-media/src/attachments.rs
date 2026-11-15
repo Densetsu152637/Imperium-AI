@@ -9,6 +9,7 @@
 //! as an image part for a vision model, and anything else is a path the agent reads with its
 //! tools.
 
+use imperium_api::encoding::hex;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -557,10 +558,6 @@ fn undescribed_one(attachment: &Attachment, reads: &mut PdfReads) -> Result<Unde
         hash: hex(&Sha256::digest(&bytes)),
         images,
     })
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The text an image description is framed in, so the model reads it as data about the image

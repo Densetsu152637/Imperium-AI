@@ -4,8 +4,8 @@
 
 import { useState } from "react";
 
-import type { ToolEntry } from "../sessions";
-import { describeToolRun, toolRunState } from "../toolCalls";
+import type { ToolEntry } from "../sessions/sessions";
+import { describeToolRun, toolRunState } from "../sessions/toolCalls";
 import { ToolCall } from "./ToolCall";
 import { ToolState } from "./ToolState";
 

@@ -19,9 +19,10 @@ use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_extensions::Sources;
 use imperium_mcp::{Launch, McpTools, ServerSpec};
 use imperium_models::Endpoint;
+use imperium_policy::permissions::{Permissions, SharedRules};
+use imperium_policy::{AgentProfile, Allowlist, ProfileRules};
 use imperium_protocol::session::{ROOT_AGENT, SessionEvent};
-use imperium_tools::permissions::{Permissions, SharedRules};
-use imperium_tools::{AgentProfile, Allowlist, ProfileRules, Workspace};
+use imperium_tools::Workspace;
 use serde_json::{Value, json};
 
 const PLUGIN_LOOKUP: &str = "mcp__words_dict__lookup";

@@ -1,18 +1,20 @@
 // A subagent opened in the main panel: its title, how long it has run, and how a message typed
-// to it is delivered (src/agentView.ts). Run with `pnpm test` (node's test runner).
+// to it is delivered (src/sessions/agentView.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
   agentComposerHint,
   agentDelivery,
   finishedMeanwhile,
+  NO_RUNNING_AGENT,
   followUpText,
   formatElapsed,
   taskElapsed,
   taskTitle,
-} from "../src/agentView.ts";
+} from "../src/sessions/agentView.ts";
 
 test("a subagent is named by its title, else by the first line of its brief", () => {
   assert.equal(taskTitle("Fix login redirect test", "anything"), "Fix login redirect test");
@@ -63,4 +65,13 @@ test("the composer says what sending does for the subagent", () => {
   assert.match(agentComposerHint("Audit auth", "running", true), /^Enter queues for Audit auth/);
   assert.match(agentComposerHint("Audit auth", "paused", false), /resume it \(Ctrl\+Enter\)/);
   assert.match(agentComposerHint("Audit auth", "finished", true), /follow-up/);
+});
+
+test("the not-running wording is the one the daemon sends", () => {
+  assert.equal(NO_RUNNING_AGENT, "no running agent");
+  const daemon = readFileSync(
+    new URL("../../../crates/imperium-protocol/src/errors.rs", import.meta.url),
+    "utf8",
+  );
+  assert.ok(daemon.includes(`NO_RUNNING_AGENT: &str = "${NO_RUNNING_AGENT}";`));
 });

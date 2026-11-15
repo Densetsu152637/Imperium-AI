@@ -25,11 +25,11 @@ import {
   removeChip,
   thumbnail,
   type Chip,
-} from "../attachments";
+} from "../sessions/attachments";
 import { ComposerChips } from "../components/AttachmentChips";
 import type { DaemonClient } from "../daemon/client";
 import { insideTauri } from "../daemon/connection";
-import { useSettings } from "../settings";
+import { useSettings } from "../settings/settings";
 import {
   Recorder,
   formatElapsed,
@@ -40,7 +40,7 @@ import {
   pttStep,
   type PttEvent,
   type PttState,
-} from "../voice";
+} from "../sessions/voice";
 
 /** The most a browser uploads in one `session.attach` (the daemon connection takes about 16 MiB per message). */
 const UPLOAD_LIMIT = 12 * 1024 * 1024;

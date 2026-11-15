@@ -156,7 +156,7 @@ async fn a_scheduled_event_wakes_the_project_agent_which_dispatches_and_hears_ba
 /// waiting for a quiet machine; it gets its brief when the machine turns quiet.
 #[tokio::test]
 async fn a_project_agents_session_waits_for_a_quiet_machine_and_is_a_background_session() {
-    use imperium_engine::Load;
+    use imperium_api::Load;
     use imperium_protocol::session::PauseCause;
 
     let home = tempfile::tempdir().unwrap();

@@ -220,8 +220,7 @@ fn write_managed(data_dir: &Path, managed: &Managed) -> Result<(), String> {
     let text = serde_json::to_string_pretty(managed).map_err(|error| error.to_string())?;
     // Written whole and renamed, so a reader never sees half of it.
     let temp = path.with_extension("json.tmp");
-    std::fs::write(&temp, text).map_err(|error| error.to_string())?;
-    std::fs::rename(&temp, &path).map_err(|error| error.to_string())
+    imperium_api::fs::replace_file(&path, &temp, text).map_err(|error| error.to_string())
 }
 
 /// What the daemon should start for `vllm`.

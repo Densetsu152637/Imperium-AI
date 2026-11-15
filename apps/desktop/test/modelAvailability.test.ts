@@ -1,4 +1,4 @@
-// "Use this model": which models are off and what the switches need (src/modelAvailability.ts).
+// "Use this model": which models are off and what the switches need (src/models/modelAvailability.ts).
 // Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
@@ -13,7 +13,7 @@ import {
   offSpecs,
   replacementDefaults,
   type AvailabilityInput,
-} from "../src/modelAvailability.ts";
+} from "../src/models/modelAvailability.ts";
 
 const input: AvailabilityInput = {
   disabled: ["llamacpp:old"],

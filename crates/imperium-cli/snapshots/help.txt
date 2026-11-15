@@ -1,0 +1,3714 @@
+===== imperium =====
+Command-line client for the Imperium daemon
+
+Usage: imperium [OPTIONS] <COMMAND>
+
+Commands:
+  ping        Check that imperium-core is running and measure a round trip
+  chat        Chat with an agent in an environment or a project folder
+  session     Manage sessions (also `sessions`)
+  config      Inspect configuration
+  mods        Install and update UI mods, asking you to approve the permissions they request
+  secret      Manage secrets in the OS keychain (an encrypted file where there is none)
+  models      Local models: the configured model folders, and downloads from Hugging Face
+  memory      Your global memories. (An environment's notes are its Memory.md.)
+  api         The OpenAI-compatible API other tools use your models through
+  phone       Paired phones
+  remote      Remote hosts over SSH
+  daemon      The daemon itself
+  env         Environments: named sets of folders sessions work in
+  workspaces  Environments' working folders: each one's `Memory.md` and its sessions' scratch folders
+  project     Project agents
+  approvals   Requests from unattended work (such as auto-fix pushes) waiting for a yes or no
+  schedule    Scheduled tasks the daemon runs
+  workflow    Workflow packs and context retrieval
+  pack        Policy pack updates: fetch a pack from a source you added, read what changed in plain words, and accept or reject it. Nothing is applied until you accept
+  runtime     Inference runtimes
+  mcp-serve   Serve the Claude harness: an MCP server on standard input and output that lets an external agent such as Claude Code start sessions, follow them and answer their permission requests through this daemon. Register it in `.mcp.json`. With `--tools` it serves Imperium's own tools instead (files, search, web, memory), each run in an Imperium session under the user's permission rules
+  mcp         Remote MCP servers that use OAuth: sign in and out
+  resources   CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version
+
+===== imperium ping =====
+Check that imperium-core is running and measure a round trip
+
+Usage: imperium ping [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium chat =====
+Chat with an agent in an environment or a project folder
+
+Usage: imperium chat [OPTIONS]
+
+Options:
+      --env <ENV>
+          Environment (name or id) the agent works in: all its folders are open to it. With neither this nor --project, the session starts in the built-in Home environment
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --project <PROJECT>
+          Project folder the agent works in (its environment, made if needed); `--project .` is the current directory
+
+      --model <MODEL>
+          Model as `<endpoint>:<model>` or a model table id; defaults to `models.default`
+
+      --context
+          After each turn, print one line on how full the model's context is (type /context for the full breakdown at any time)
+
+      --worktree [<BRANCH>]
+          Start on git worktrees: each folder in a git repository gets a new worktree on a new branch (`imperium/<session id>`, or the branch given)
+
+      --subfolder <FOLDER>
+          Narrow the session to one folder inside the environment's folders (absolute, or relative to its first folder): the only folder the agent can use
+
+      --read-only
+          Mount the session's folders read-only: the agent reads but never writes there, and commands run only under isolation.tier = os or container
+
+  -h, --help
+          Print help
+
+===== imperium session =====
+Manage sessions (also `sessions`)
+
+Usage: imperium session [OPTIONS] <COMMAND>
+
+Commands:
+  list       List running sessions (with --archived, the archived ones)
+  archive    Archive a session: it stops, keeps its history, and does not resume after a restart
+  unarchive  Resume an archived session
+  export     Export a session's transcript (messages, tool calls, subagents, files), also an archived session's: Markdown or JSON, to a file or standard output
+  delete     Stop and forget a session so it does not continue after a restart
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium session list =====
+List running sessions (with --archived, the archived ones)
+
+Usage: imperium session list [OPTIONS]
+
+Options:
+      --archived
+          Show archived sessions instead
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium session archive =====
+Archive a session: it stops, keeps its history, and does not resume after a restart
+
+Usage: imperium session archive [OPTIONS] <SESSION_ID>
+
+Arguments:
+  <SESSION_ID>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium session unarchive =====
+Resume an archived session
+
+Usage: imperium session unarchive [OPTIONS] <SESSION_ID>
+
+Arguments:
+  <SESSION_ID>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium session export =====
+Export a session's transcript (messages, tool calls, subagents, files), also an archived session's: Markdown or JSON, to a file or standard output
+
+Usage: imperium session export [OPTIONS] <SESSION_ID>
+
+Arguments:
+  <SESSION_ID>
+          
+
+Options:
+      --format <FORMAT>
+          `md` (default) or `json`
+          
+          [default: md]
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --no-subagents
+          Leave out each subagent's own log (their tasks and reports stay)
+
+  -o, --output <FILE>
+          Write to this file instead of standard output
+
+  -h, --help
+          Print help
+
+===== imperium session delete =====
+Stop and forget a session so it does not continue after a restart
+
+Usage: imperium session delete [OPTIONS] <SESSION_ID>
+
+Arguments:
+  <SESSION_ID>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --remove-worktrees
+          Also remove the session's git worktrees (their branches are kept)
+
+  -h, --help
+          Print help
+
+===== imperium session help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium session help [COMMAND]
+
+Commands:
+  list       List running sessions (with --archived, the archived ones)
+  archive    Archive a session: it stops, keeps its history, and does not resume after a restart
+  unarchive  Resume an archived session
+  export     Export a session's transcript (messages, tool calls, subagents, files), also an archived session's: Markdown or JSON, to a file or standard output
+  delete     Stop and forget a session so it does not continue after a restart
+  help       Print this message or the help of the given subcommand(s)
+
+===== imperium session help list =====
+List running sessions (with --archived, the archived ones)
+
+Usage: imperium session help list
+
+===== imperium session help archive =====
+Archive a session: it stops, keeps its history, and does not resume after a restart
+
+Usage: imperium session help archive
+
+===== imperium session help unarchive =====
+Resume an archived session
+
+Usage: imperium session help unarchive
+
+===== imperium session help export =====
+Export a session's transcript (messages, tool calls, subagents, files), also an archived session's: Markdown or JSON, to a file or standard output
+
+Usage: imperium session help export
+
+===== imperium session help delete =====
+Stop and forget a session so it does not continue after a restart
+
+Usage: imperium session help delete
+
+===== imperium session help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium session help help
+
+===== imperium config =====
+Inspect configuration
+
+Usage: imperium config [OPTIONS] <COMMAND>
+
+Commands:
+  explain  Show a setting's effective value and which layer set it
+  set      Set a setting in your config file, such as `imperium config set policy.personality luxion`. Keys are those in the desktop Settings window (docs/10-configuration.md). With a daemon running the change goes through it, so settings it applies at once take effect
+  unset    Remove a setting from your config file, so its default applies
+  changes  List the changes agents made to the app config (model cards, installed and removed mods, plugins, and skills), newest first
+  undo     Undo a change listed by `imperium config changes`
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium config explain =====
+Show a setting's effective value and which layer set it
+
+Usage: imperium config explain [OPTIONS] <KEY>
+
+Arguments:
+  <KEY>
+          Dotted key, for example `daemon.port`
+
+Options:
+      --project <PROJECT>
+          Include the project layers of this directory
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium config set =====
+Set a setting in your config file, such as `imperium config set policy.personality luxion`. Keys are those in the desktop Settings window (docs/10-configuration.md). With a daemon running the change goes through it, so settings it applies at once take effect
+
+Usage: imperium config set [OPTIONS] <KEY> <VALUE>...
+
+Arguments:
+  <KEY>
+          Dotted key, for example `policy.personality`
+
+  <VALUE>...
+          The value; several for a list setting
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium config unset =====
+Remove a setting from your config file, so its default applies
+
+Usage: imperium config unset [OPTIONS] <KEY>
+
+Arguments:
+  <KEY>
+          Dotted key, for example `policy.personality`
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium config changes =====
+List the changes agents made to the app config (model cards, installed and removed mods, plugins, and skills), newest first
+
+Usage: imperium config changes [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium config undo =====
+Undo a change listed by `imperium config changes`
+
+Usage: imperium config undo [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium config help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium config help [COMMAND]
+
+Commands:
+  explain  Show a setting's effective value and which layer set it
+  set      Set a setting in your config file, such as `imperium config set policy.personality luxion`. Keys are those in the desktop Settings window (docs/10-configuration.md). With a daemon running the change goes through it, so settings it applies at once take effect
+  unset    Remove a setting from your config file, so its default applies
+  changes  List the changes agents made to the app config (model cards, installed and removed mods, plugins, and skills), newest first
+  undo     Undo a change listed by `imperium config changes`
+  help     Print this message or the help of the given subcommand(s)
+
+===== imperium config help explain =====
+Show a setting's effective value and which layer set it
+
+Usage: imperium config help explain
+
+===== imperium config help set =====
+Set a setting in your config file, such as `imperium config set policy.personality luxion`. Keys are those in the desktop Settings window (docs/10-configuration.md). With a daemon running the change goes through it, so settings it applies at once take effect
+
+Usage: imperium config help set
+
+===== imperium config help unset =====
+Remove a setting from your config file, so its default applies
+
+Usage: imperium config help unset
+
+===== imperium config help changes =====
+List the changes agents made to the app config (model cards, installed and removed mods, plugins, and skills), newest first
+
+Usage: imperium config help changes
+
+===== imperium config help undo =====
+Undo a change listed by `imperium config changes`
+
+Usage: imperium config help undo
+
+===== imperium config help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium config help help
+
+===== imperium mods =====
+Install and update UI mods, asking you to approve the permissions they request
+
+Usage: imperium mods [OPTIONS] <COMMAND>
+
+Commands:
+  install  Install a mod from a git URL or a folder. Shows the permissions it requests and its content hash and asks before installing; nothing in the mod runs. Mods appear in the desktop app (Settings → Mods)
+  update   Update an installed mod from the source it was installed from. Shows how its requested permissions differ from what you approved, and asks again if it wants more
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium mods install =====
+Install a mod from a git URL or a folder. Shows the permissions it requests and its content hash and asks before installing; nothing in the mod runs. Mods appear in the desktop app (Settings → Mods)
+
+Usage: imperium mods install [OPTIONS] <SOURCE>
+
+Arguments:
+  <SOURCE>
+          A git URL (`https://`, `ssh://`, `git@host:path`, `file://`) or a folder
+
+Options:
+      --path <PATH>
+          The folder inside the source that holds the mod (its `mod.json`)
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --revision <REVISION>
+          A branch, tag, or commit (git only)
+
+      --sha256 <SHA256>
+          Install only if the mod's content has this SHA-256 (as shown by a previous run)
+
+  -y, --yes
+          Approve without asking (for scripts)
+
+  -h, --help
+          Print help
+
+===== imperium mods update =====
+Update an installed mod from the source it was installed from. Shows how its requested permissions differ from what you approved, and asks again if it wants more
+
+Usage: imperium mods update [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          The mod's id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --sha256 <SHA256>
+          Update only if the new content has this SHA-256 (as shown by a previous run)
+
+  -y, --yes
+          Approve new permissions without asking (for scripts)
+
+  -h, --help
+          Print help
+
+===== imperium mods help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium mods help [COMMAND]
+
+Commands:
+  install  Install a mod from a git URL or a folder. Shows the permissions it requests and its content hash and asks before installing; nothing in the mod runs. Mods appear in the desktop app (Settings → Mods)
+  update   Update an installed mod from the source it was installed from. Shows how its requested permissions differ from what you approved, and asks again if it wants more
+  help     Print this message or the help of the given subcommand(s)
+
+===== imperium mods help install =====
+Install a mod from a git URL or a folder. Shows the permissions it requests and its content hash and asks before installing; nothing in the mod runs. Mods appear in the desktop app (Settings → Mods)
+
+Usage: imperium mods help install
+
+===== imperium mods help update =====
+Update an installed mod from the source it was installed from. Shows how its requested permissions differ from what you approved, and asks again if it wants more
+
+Usage: imperium mods help update
+
+===== imperium mods help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium mods help help
+
+===== imperium secret =====
+Manage secrets in the OS keychain (an encrypted file where there is none)
+
+Usage: imperium secret [OPTIONS] <COMMAND>
+
+Commands:
+  set     Store a secret. The value is read from standard input, or prompted for without echo
+  delete  Remove a secret
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium secret set =====
+Store a secret. The value is read from standard input, or prompted for without echo
+
+Usage: imperium secret set [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium secret delete =====
+Remove a secret
+
+Usage: imperium secret delete [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium secret help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium secret help [COMMAND]
+
+Commands:
+  set     Store a secret. The value is read from standard input, or prompted for without echo
+  delete  Remove a secret
+  help    Print this message or the help of the given subcommand(s)
+
+===== imperium secret help set =====
+Store a secret. The value is read from standard input, or prompted for without echo
+
+Usage: imperium secret help set
+
+===== imperium secret help delete =====
+Remove a secret
+
+Usage: imperium secret help delete
+
+===== imperium secret help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium secret help help
+
+===== imperium models =====
+Local models: the configured model folders, and downloads from Hugging Face
+
+Usage: imperium models [OPTIONS] <COMMAND>
+
+Commands:
+  local    List GGUF models in models.folders, whether each fits in memory, and what is loaded
+  unload   Unload an idle local model now, freeing its memory
+  files    List the quantisations a Hugging Face repository offers, with sizes and whether each fits this machine
+  pull     Download a model from Hugging Face into models.download_dir, showing progress
+  cancel   Stop a download; pulling the same model again resumes it
+  folders  List, add, or remove model folders (models.folders); changes are scanned at once
+  use      Make a model the default for new sessions (models.default)
+  test     Load a model and send it one short prompt, showing the reply and its speed
+  bench    Benchmark local models: load time, time to first token, prompt and generation speed, peak memory. Loads each model like any call does, waiting while the machine is saturated; saves the numbers per model and machine. Ctrl+C cancels
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium models local =====
+List GGUF models in models.folders, whether each fits in memory, and what is loaded
+
+Usage: imperium models local [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium models unload =====
+Unload an idle local model now, freeing its memory
+
+Usage: imperium models unload [OPTIONS] <MODEL>
+
+Arguments:
+  <MODEL>
+          The local model id, as `imperium resources` lists it
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium models files =====
+List the quantisations a Hugging Face repository offers, with sizes and whether each fits this machine
+
+Usage: imperium models files [OPTIONS] <REPO>
+
+Arguments:
+  <REPO>
+          The repository, as owner/name
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --revision <REVISION>
+          A branch, tag, or commit
+
+  -h, --help
+          Print help
+
+===== imperium models pull =====
+Download a model from Hugging Face into models.download_dir, showing progress
+
+Usage: imperium models pull [OPTIONS] <REPO>
+
+Arguments:
+  <REPO>
+          The repository, as owner/name
+
+Options:
+      --quant <QUANT>
+          The GGUF quantisation, such as Q4_K_M (the default); any case
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --file <FILE>
+          A file by name or path instead of a quantisation; every part when it is split
+
+      --revision <REVISION>
+          A branch, tag, or commit
+          
+          [default: main]
+
+      --mmproj
+          Also download the multimodal projector (mmproj)
+
+  -h, --help
+          Print help
+
+===== imperium models cancel =====
+Stop a download; pulling the same model again resumes it
+
+Usage: imperium models cancel [OPTIONS] <JOB_ID>
+
+Arguments:
+  <JOB_ID>
+          The job id `pull` printed, such as dl-1
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium models folders =====
+List, add, or remove model folders (models.folders); changes are scanned at once
+
+Usage: imperium models folders [OPTIONS] [COMMAND]
+
+Commands:
+  list    List the model folders (the default)
+  add     Add a folder and scan it
+  remove  Stop scanning a folder; nothing in it is touched
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium models folders list =====
+List the model folders (the default)
+
+Usage: imperium models folders list [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium models folders add =====
+Add a folder and scan it
+
+Usage: imperium models folders add [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium models folders remove =====
+Stop scanning a folder; nothing in it is touched
+
+Usage: imperium models folders remove [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium models folders help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium models folders help [COMMAND]
+
+Commands:
+  list    List the model folders (the default)
+  add     Add a folder and scan it
+  remove  Stop scanning a folder; nothing in it is touched
+  help    Print this message or the help of the given subcommand(s)
+
+===== imperium models folders help list =====
+List the model folders (the default)
+
+Usage: imperium models folders help list
+
+===== imperium models folders help add =====
+Add a folder and scan it
+
+Usage: imperium models folders help add
+
+===== imperium models folders help remove =====
+Stop scanning a folder; nothing in it is touched
+
+Usage: imperium models folders help remove
+
+===== imperium models folders help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium models folders help help
+
+===== imperium models use =====
+Make a model the default for new sessions (models.default)
+
+Usage: imperium models use [OPTIONS] <MODEL>
+
+Arguments:
+  <MODEL>
+          A local model id (from `imperium models local`), a model-table id, or <endpoint>:<model>
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium models test =====
+Load a model and send it one short prompt, showing the reply and its speed
+
+Usage: imperium models test [OPTIONS] <MODEL>
+
+Arguments:
+  <MODEL>
+          As for `use`
+
+Options:
+      --prompt <PROMPT>
+          The prompt to send instead of a short greeting
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium models bench =====
+Benchmark local models: load time, time to first token, prompt and generation speed, peak memory. Loads each model like any call does, waiting while the machine is saturated; saves the numbers per model and machine. Ctrl+C cancels
+
+Usage: imperium models bench [OPTIONS] [MODEL]
+
+Arguments:
+  [MODEL]
+          A local model id (from `imperium models local`); every model that can run when left out
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --results
+          List the saved results instead of running a benchmark
+
+      --warm
+          Do not unload an idle loaded model first (its load time is then not measured)
+
+  -h, --help
+          Print help
+
+===== imperium models help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium models help [COMMAND]
+
+Commands:
+  local    List GGUF models in models.folders, whether each fits in memory, and what is loaded
+  unload   Unload an idle local model now, freeing its memory
+  files    List the quantisations a Hugging Face repository offers, with sizes and whether each fits this machine
+  pull     Download a model from Hugging Face into models.download_dir, showing progress
+  cancel   Stop a download; pulling the same model again resumes it
+  folders  List, add, or remove model folders (models.folders); changes are scanned at once
+  use      Make a model the default for new sessions (models.default)
+  test     Load a model and send it one short prompt, showing the reply and its speed
+  bench    Benchmark local models: load time, time to first token, prompt and generation speed, peak memory. Loads each model like any call does, waiting while the machine is saturated; saves the numbers per model and machine. Ctrl+C cancels
+  help     Print this message or the help of the given subcommand(s)
+
+===== imperium models help local =====
+List GGUF models in models.folders, whether each fits in memory, and what is loaded
+
+Usage: imperium models help local
+
+===== imperium models help unload =====
+Unload an idle local model now, freeing its memory
+
+Usage: imperium models help unload
+
+===== imperium models help files =====
+List the quantisations a Hugging Face repository offers, with sizes and whether each fits this machine
+
+Usage: imperium models help files
+
+===== imperium models help pull =====
+Download a model from Hugging Face into models.download_dir, showing progress
+
+Usage: imperium models help pull
+
+===== imperium models help cancel =====
+Stop a download; pulling the same model again resumes it
+
+Usage: imperium models help cancel
+
+===== imperium models help folders =====
+List, add, or remove model folders (models.folders); changes are scanned at once
+
+Usage: imperium models help folders [COMMAND]
+
+Commands:
+  list    List the model folders (the default)
+  add     Add a folder and scan it
+  remove  Stop scanning a folder; nothing in it is touched
+
+===== imperium models help folders list =====
+List the model folders (the default)
+
+Usage: imperium models help folders list
+
+===== imperium models help folders add =====
+Add a folder and scan it
+
+Usage: imperium models help folders add
+
+===== imperium models help folders remove =====
+Stop scanning a folder; nothing in it is touched
+
+Usage: imperium models help folders remove
+
+===== imperium models help use =====
+Make a model the default for new sessions (models.default)
+
+Usage: imperium models help use
+
+===== imperium models help test =====
+Load a model and send it one short prompt, showing the reply and its speed
+
+Usage: imperium models help test
+
+===== imperium models help bench =====
+Benchmark local models: load time, time to first token, prompt and generation speed, peak memory. Loads each model like any call does, waiting while the machine is saturated; saves the numbers per model and machine. Ctrl+C cancels
+
+Usage: imperium models help bench
+
+===== imperium models help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium models help help
+
+===== imperium memory =====
+Your global memories. (An environment's notes are its Memory.md.)
+
+Usage: imperium memory [OPTIONS] <COMMAND>
+
+Commands:
+  list    List your global memories
+  search  Find memories relevant to a query
+  show    Show one memory
+  forget  Delete a memory
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium memory list =====
+List your global memories
+
+Usage: imperium memory list [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium memory search =====
+Find memories relevant to a query
+
+Usage: imperium memory search [OPTIONS] <QUERY>
+
+Arguments:
+  <QUERY>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium memory show =====
+Show one memory
+
+Usage: imperium memory show [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium memory forget =====
+Delete a memory
+
+Usage: imperium memory forget [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --scope <SCOPE>
+          Only global is listed here; environment memory is the environment's Memory.md file
+
+  -h, --help
+          Print help
+
+===== imperium memory help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium memory help [COMMAND]
+
+Commands:
+  list    List your global memories
+  search  Find memories relevant to a query
+  show    Show one memory
+  forget  Delete a memory
+  help    Print this message or the help of the given subcommand(s)
+
+===== imperium memory help list =====
+List your global memories
+
+Usage: imperium memory help list
+
+===== imperium memory help search =====
+Find memories relevant to a query
+
+Usage: imperium memory help search
+
+===== imperium memory help show =====
+Show one memory
+
+Usage: imperium memory help show
+
+===== imperium memory help forget =====
+Delete a memory
+
+Usage: imperium memory help forget
+
+===== imperium memory help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium memory help help
+
+===== imperium api =====
+The OpenAI-compatible API other tools use your models through
+
+Usage: imperium api [OPTIONS] <COMMAND>
+
+Commands:
+  status   Show whether the API is on, where it listens, and the models it serves
+  enable   Turn the API on (the first time it also picks a port) and show how to use it
+  disable  Turn the API off
+  token    Show the API token, or make a new one that replaces it
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium api status =====
+Show whether the API is on, where it listens, and the models it serves
+
+Usage: imperium api status [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium api enable =====
+Turn the API on (the first time it also picks a port) and show how to use it
+
+Usage: imperium api enable [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium api disable =====
+Turn the API off
+
+Usage: imperium api disable [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium api token =====
+Show the API token, or make a new one that replaces it
+
+Usage: imperium api token [OPTIONS] [COMMAND]
+
+Commands:
+  rotate  Replace the token; the old one stops working at once
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium api token rotate =====
+Replace the token; the old one stops working at once
+
+Usage: imperium api token rotate [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium api token help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium api token help [COMMAND]
+
+Commands:
+  rotate  Replace the token; the old one stops working at once
+  help    Print this message or the help of the given subcommand(s)
+
+===== imperium api token help rotate =====
+Replace the token; the old one stops working at once
+
+Usage: imperium api token help rotate
+
+===== imperium api token help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium api token help help
+
+===== imperium api help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium api help [COMMAND]
+
+Commands:
+  status   Show whether the API is on, where it listens, and the models it serves
+  enable   Turn the API on (the first time it also picks a port) and show how to use it
+  disable  Turn the API off
+  token    Show the API token, or make a new one that replaces it
+  help     Print this message or the help of the given subcommand(s)
+
+===== imperium api help status =====
+Show whether the API is on, where it listens, and the models it serves
+
+Usage: imperium api help status
+
+===== imperium api help enable =====
+Turn the API on (the first time it also picks a port) and show how to use it
+
+Usage: imperium api help enable
+
+===== imperium api help disable =====
+Turn the API off
+
+Usage: imperium api help disable
+
+===== imperium api help token =====
+Show the API token, or make a new one that replaces it
+
+Usage: imperium api help token [COMMAND]
+
+Commands:
+  rotate  Replace the token; the old one stops working at once
+
+===== imperium api help token rotate =====
+Replace the token; the old one stops working at once
+
+Usage: imperium api help token rotate
+
+===== imperium api help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium api help help
+
+===== imperium phone =====
+Paired phones
+
+Usage: imperium phone [OPTIONS] <COMMAND>
+
+Commands:
+  pair     Show a one-time code for pairing a phone
+  devices  List paired phones
+  revoke   Unpair a phone
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium phone pair =====
+Show a one-time code for pairing a phone
+
+Usage: imperium phone pair [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium phone devices =====
+List paired phones
+
+Usage: imperium phone devices [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium phone revoke =====
+Unpair a phone
+
+Usage: imperium phone revoke [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium phone help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium phone help [COMMAND]
+
+Commands:
+  pair     Show a one-time code for pairing a phone
+  devices  List paired phones
+  revoke   Unpair a phone
+  help     Print this message or the help of the given subcommand(s)
+
+===== imperium phone help pair =====
+Show a one-time code for pairing a phone
+
+Usage: imperium phone help pair
+
+===== imperium phone help devices =====
+List paired phones
+
+Usage: imperium phone help devices
+
+===== imperium phone help revoke =====
+Unpair a phone
+
+Usage: imperium phone help revoke
+
+===== imperium phone help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium phone help help
+
+===== imperium remote =====
+Remote hosts over SSH
+
+Usage: imperium remote [OPTIONS] <COMMAND>
+
+Commands:
+  connect  Forward a host's imperium-core over SSH (starting it there if needed) until Ctrl+C
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium remote connect =====
+Forward a host's imperium-core over SSH (starting it there if needed) until Ctrl+C
+
+Usage: imperium remote connect [OPTIONS] <DESTINATION>
+
+Arguments:
+  <DESTINATION>
+          An SSH destination: user@host, or a Host from ~/.ssh/config
+
+Options:
+      --name <NAME>
+          Name used with --remote; defaults to the destination
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --local-port <LOCAL_PORT>
+          Local port for the forward; a free one by default
+
+      --socket
+          Forward the daemon's local socket (needs `daemon.socket` on the host and a Unix machine here) instead of its TCP port
+
+  -h, --help
+          Print help
+
+===== imperium remote help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium remote help [COMMAND]
+
+Commands:
+  connect  Forward a host's imperium-core over SSH (starting it there if needed) until Ctrl+C
+  help     Print this message or the help of the given subcommand(s)
+
+===== imperium remote help connect =====
+Forward a host's imperium-core over SSH (starting it there if needed) until Ctrl+C
+
+Usage: imperium remote help connect
+
+===== imperium remote help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium remote help help
+
+===== imperium daemon =====
+The daemon itself
+
+Usage: imperium daemon [OPTIONS] <COMMAND>
+
+Commands:
+  autostart  Start imperium-core when you log in (enable, disable, or status)
+  start      Start imperium-core in the background
+  stop       Stop the running imperium-core gracefully
+  endpoint   Print the running daemon's endpoint as JSON (used by `imperium remote connect`)
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium daemon autostart =====
+Start imperium-core when you log in (enable, disable, or status)
+
+Usage: imperium daemon autostart [OPTIONS] <ACTION>
+
+Arguments:
+  <ACTION>
+          [possible values: enable, disable, status]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium daemon start =====
+Start imperium-core in the background
+
+Usage: imperium daemon start [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium daemon stop =====
+Stop the running imperium-core gracefully
+
+Usage: imperium daemon stop [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium daemon endpoint =====
+Print the running daemon's endpoint as JSON (used by `imperium remote connect`)
+
+Usage: imperium daemon endpoint [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium daemon help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium daemon help [COMMAND]
+
+Commands:
+  autostart  Start imperium-core when you log in (enable, disable, or status)
+  start      Start imperium-core in the background
+  stop       Stop the running imperium-core gracefully
+  endpoint   Print the running daemon's endpoint as JSON (used by `imperium remote connect`)
+  help       Print this message or the help of the given subcommand(s)
+
+===== imperium daemon help autostart =====
+Start imperium-core when you log in (enable, disable, or status)
+
+Usage: imperium daemon help autostart
+
+===== imperium daemon help start =====
+Start imperium-core in the background
+
+Usage: imperium daemon help start
+
+===== imperium daemon help stop =====
+Stop the running imperium-core gracefully
+
+Usage: imperium daemon help stop
+
+===== imperium daemon help endpoint =====
+Print the running daemon's endpoint as JSON (used by `imperium remote connect`)
+
+Usage: imperium daemon help endpoint
+
+===== imperium daemon help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium daemon help help
+
+===== imperium env =====
+Environments: named sets of folders sessions work in
+
+Usage: imperium env [OPTIONS] <COMMAND>
+
+Commands:
+  list           List environments and their folders
+  create         Create an environment, optionally with folders (the first is the working directory)
+  add-folder     Add a folder to an environment
+  remove-folder  Remove a folder from an environment (the folder itself is untouched)
+  rename         Rename an environment
+  delete         Delete an environment (its folders are untouched)
+  set-runtime    Choose where an environment's tools run: local, docker, wsl, or ssh. For a remote runtime, its folders are paths inside it
+  test           Check that an environment's runtime can be reached
+  config         Show what the environment's own `.imperium/config.toml` changes for its sessions, and what it asked for that was refused (it can only narrow your settings)
+  agent          Manage an environment's persistent agents (none exist until added)
+  help           Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env list =====
+List environments and their folders
+
+Usage: imperium env list [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env create =====
+Create an environment, optionally with folders (the first is the working directory)
+
+Usage: imperium env create [OPTIONS] <NAME> [FOLDERS]...
+
+Arguments:
+  <NAME>
+          
+
+  [FOLDERS]...
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env add-folder =====
+Add a folder to an environment
+
+Usage: imperium env add-folder [OPTIONS] <ENV> <FOLDER>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <FOLDER>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env remove-folder =====
+Remove a folder from an environment (the folder itself is untouched)
+
+Usage: imperium env remove-folder [OPTIONS] <ENV> <FOLDER>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <FOLDER>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env rename =====
+Rename an environment
+
+Usage: imperium env rename [OPTIONS] <ENV> <NAME>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <NAME>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env delete =====
+Delete an environment (its folders are untouched)
+
+Usage: imperium env delete [OPTIONS] <ENV>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env set-runtime =====
+Choose where an environment's tools run: local, docker, wsl, or ssh. For a remote runtime, its folders are paths inside it
+
+Usage: imperium env set-runtime [OPTIONS] <ENV> <KIND>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <KIND>
+          `local`, `docker`, `wsl`, or `ssh`
+
+Options:
+      --image <IMAGE>
+          docker: the image (each command runs in a fresh container with the folders mounted)
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --container <CONTAINER>
+          docker: a running container to `docker exec` into instead
+
+      --distro <DISTRO>
+          wsl: the distribution
+
+      --host <HOST>
+          ssh: a host alias from your SSH config, or user@host[:port]
+
+  -h, --help
+          Print help
+
+===== imperium env test =====
+Check that an environment's runtime can be reached
+
+Usage: imperium env test [OPTIONS] <ENV>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env config =====
+Show what the environment's own `.imperium/config.toml` changes for its sessions, and what it asked for that was refused (it can only narrow your settings)
+
+Usage: imperium env config [OPTIONS] <ENV>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env agent =====
+Manage an environment's persistent agents (none exist until added)
+
+Usage: imperium env agent [OPTIONS] <COMMAND>
+
+Commands:
+  list         List the environment's persistent agents
+  add          Add a persistent agent; it starts at once
+  set          Rename an agent or change its role or permission profile
+  rm           Delete an agent (its session is archived)
+  initiative   Show where an agent's initiative stands
+  suggestions  List the agent's suggested work and its latest reminder of what is left
+  start        Start one of the agent's suggestions as a session
+  dismiss      Dismiss one of the agent's suggestions
+  review       Ask the agent to review its environment now (it needs initiative turned on)
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env agent list =====
+List the environment's persistent agents
+
+Usage: imperium env agent list [OPTIONS] <ENV>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env agent add =====
+Add a persistent agent; it starts at once
+
+Usage: imperium env agent add [OPTIONS] <ENV> <NAME>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <NAME>
+          The agent's name, unique in the environment
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --role <ROLE>
+          What the agent is for, added to its instructions
+
+      --initiative <INITIATIVE>
+          How much initiative it takes: off (the default), suggest, or act
+          
+          [possible values: off, suggest, act]
+
+      --mcp <all|none|NAMES>
+          MCP servers the agent may use: `all`, `none`, or a comma-separated list of server names
+
+      --plugins <all|none|NAMES>
+          Plugins the agent may activate and use: `all`, `none`, or a comma-separated list of plugin names
+
+      --local-only
+          Limit the agent to local files: no web, browser, search, MCP, plugin or command tools, and file tools kept to the environment's folders and the agent's scratch folder
+
+      --no-local-only
+          Lift the local-files-only limit
+
+  -h, --help
+          Print help
+
+===== imperium env agent set =====
+Rename an agent or change its role or permission profile
+
+Usage: imperium env agent set [OPTIONS] <ENV> <AGENT>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <AGENT>
+          The agent's name or id
+
+Options:
+      --name <NAME>
+          
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --role <ROLE>
+          
+
+      --initiative <INITIATIVE>
+          [possible values: off, suggest, act]
+
+      --mcp <all|none|NAMES>
+          MCP servers the agent may use: `all`, `none`, or a comma-separated list of server names
+
+      --plugins <all|none|NAMES>
+          Plugins the agent may activate and use: `all`, `none`, or a comma-separated list of plugin names
+
+      --local-only
+          Limit the agent to local files: no web, browser, search, MCP, plugin or command tools, and file tools kept to the environment's folders and the agent's scratch folder
+
+      --no-local-only
+          Lift the local-files-only limit
+
+  -h, --help
+          Print help
+
+===== imperium env agent rm =====
+Delete an agent (its session is archived)
+
+Usage: imperium env agent rm [OPTIONS] <ENV> <AGENT>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <AGENT>
+          The agent's name or id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env agent initiative =====
+Show where an agent's initiative stands
+
+Usage: imperium env agent initiative [OPTIONS] <ENV> <AGENT>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <AGENT>
+          The agent's name or id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env agent suggestions =====
+List the agent's suggested work and its latest reminder of what is left
+
+Usage: imperium env agent suggestions [OPTIONS] <ENV> <AGENT>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <AGENT>
+          The agent's name or id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env agent start =====
+Start one of the agent's suggestions as a session
+
+Usage: imperium env agent start [OPTIONS] <ENV> <AGENT> <SUGGESTION>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <AGENT>
+          The agent's name or id
+
+  <SUGGESTION>
+          The suggestion's id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env agent dismiss =====
+Dismiss one of the agent's suggestions
+
+Usage: imperium env agent dismiss [OPTIONS] <ENV> <AGENT> <SUGGESTION>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <AGENT>
+          The agent's name or id
+
+  <SUGGESTION>
+          The suggestion's id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env agent review =====
+Ask the agent to review its environment now (it needs initiative turned on)
+
+Usage: imperium env agent review [OPTIONS] <ENV> <AGENT>
+
+Arguments:
+  <ENV>
+          Environment name or id
+
+  <AGENT>
+          The agent's name or id
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium env agent help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium env agent help [COMMAND]
+
+Commands:
+  list         List the environment's persistent agents
+  add          Add a persistent agent; it starts at once
+  set          Rename an agent or change its role or permission profile
+  rm           Delete an agent (its session is archived)
+  initiative   Show where an agent's initiative stands
+  suggestions  List the agent's suggested work and its latest reminder of what is left
+  start        Start one of the agent's suggestions as a session
+  dismiss      Dismiss one of the agent's suggestions
+  review       Ask the agent to review its environment now (it needs initiative turned on)
+  help         Print this message or the help of the given subcommand(s)
+
+===== imperium env agent help list =====
+List the environment's persistent agents
+
+Usage: imperium env agent help list
+
+===== imperium env agent help add =====
+Add a persistent agent; it starts at once
+
+Usage: imperium env agent help add
+
+===== imperium env agent help set =====
+Rename an agent or change its role or permission profile
+
+Usage: imperium env agent help set
+
+===== imperium env agent help rm =====
+Delete an agent (its session is archived)
+
+Usage: imperium env agent help rm
+
+===== imperium env agent help initiative =====
+Show where an agent's initiative stands
+
+Usage: imperium env agent help initiative
+
+===== imperium env agent help suggestions =====
+List the agent's suggested work and its latest reminder of what is left
+
+Usage: imperium env agent help suggestions
+
+===== imperium env agent help start =====
+Start one of the agent's suggestions as a session
+
+Usage: imperium env agent help start
+
+===== imperium env agent help dismiss =====
+Dismiss one of the agent's suggestions
+
+Usage: imperium env agent help dismiss
+
+===== imperium env agent help review =====
+Ask the agent to review its environment now (it needs initiative turned on)
+
+Usage: imperium env agent help review
+
+===== imperium env agent help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium env agent help help
+
+===== imperium env help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium env help [COMMAND]
+
+Commands:
+  list           List environments and their folders
+  create         Create an environment, optionally with folders (the first is the working directory)
+  add-folder     Add a folder to an environment
+  remove-folder  Remove a folder from an environment (the folder itself is untouched)
+  rename         Rename an environment
+  delete         Delete an environment (its folders are untouched)
+  set-runtime    Choose where an environment's tools run: local, docker, wsl, or ssh. For a remote runtime, its folders are paths inside it
+  test           Check that an environment's runtime can be reached
+  config         Show what the environment's own `.imperium/config.toml` changes for its sessions, and what it asked for that was refused (it can only narrow your settings)
+  agent          Manage an environment's persistent agents (none exist until added)
+  help           Print this message or the help of the given subcommand(s)
+
+===== imperium env help list =====
+List environments and their folders
+
+Usage: imperium env help list
+
+===== imperium env help create =====
+Create an environment, optionally with folders (the first is the working directory)
+
+Usage: imperium env help create
+
+===== imperium env help add-folder =====
+Add a folder to an environment
+
+Usage: imperium env help add-folder
+
+===== imperium env help remove-folder =====
+Remove a folder from an environment (the folder itself is untouched)
+
+Usage: imperium env help remove-folder
+
+===== imperium env help rename =====
+Rename an environment
+
+Usage: imperium env help rename
+
+===== imperium env help delete =====
+Delete an environment (its folders are untouched)
+
+Usage: imperium env help delete
+
+===== imperium env help set-runtime =====
+Choose where an environment's tools run: local, docker, wsl, or ssh. For a remote runtime, its folders are paths inside it
+
+Usage: imperium env help set-runtime
+
+===== imperium env help test =====
+Check that an environment's runtime can be reached
+
+Usage: imperium env help test
+
+===== imperium env help config =====
+Show what the environment's own `.imperium/config.toml` changes for its sessions, and what it asked for that was refused (it can only narrow your settings)
+
+Usage: imperium env help config
+
+===== imperium env help agent =====
+Manage an environment's persistent agents (none exist until added)
+
+Usage: imperium env help agent [COMMAND]
+
+Commands:
+  list         List the environment's persistent agents
+  add          Add a persistent agent; it starts at once
+  set          Rename an agent or change its role or permission profile
+  rm           Delete an agent (its session is archived)
+  initiative   Show where an agent's initiative stands
+  suggestions  List the agent's suggested work and its latest reminder of what is left
+  start        Start one of the agent's suggestions as a session
+  dismiss      Dismiss one of the agent's suggestions
+  review       Ask the agent to review its environment now (it needs initiative turned on)
+
+===== imperium env help agent list =====
+List the environment's persistent agents
+
+Usage: imperium env help agent list
+
+===== imperium env help agent add =====
+Add a persistent agent; it starts at once
+
+Usage: imperium env help agent add
+
+===== imperium env help agent set =====
+Rename an agent or change its role or permission profile
+
+Usage: imperium env help agent set
+
+===== imperium env help agent rm =====
+Delete an agent (its session is archived)
+
+Usage: imperium env help agent rm
+
+===== imperium env help agent initiative =====
+Show where an agent's initiative stands
+
+Usage: imperium env help agent initiative
+
+===== imperium env help agent suggestions =====
+List the agent's suggested work and its latest reminder of what is left
+
+Usage: imperium env help agent suggestions
+
+===== imperium env help agent start =====
+Start one of the agent's suggestions as a session
+
+Usage: imperium env help agent start
+
+===== imperium env help agent dismiss =====
+Dismiss one of the agent's suggestions
+
+Usage: imperium env help agent dismiss
+
+===== imperium env help agent review =====
+Ask the agent to review its environment now (it needs initiative turned on)
+
+Usage: imperium env help agent review
+
+===== imperium env help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium env help help
+
+===== imperium workspaces =====
+Environments' working folders: each one's `Memory.md` and its sessions' scratch folders
+
+Usage: imperium workspaces [OPTIONS] <COMMAND>
+
+Commands:
+  where  Show where the working folders are, and each environment's
+  move   Move the working folders to another folder (it must be empty or new, and outside the current one) and make it `workspaces.root`. An empty path goes back to the default
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium workspaces where =====
+Show where the working folders are, and each environment's
+
+Usage: imperium workspaces where [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium workspaces move =====
+Move the working folders to another folder (it must be empty or new, and outside the current one) and make it `workspaces.root`. An empty path goes back to the default
+
+Usage: imperium workspaces move [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium workspaces help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium workspaces help [COMMAND]
+
+Commands:
+  where  Show where the working folders are, and each environment's
+  move   Move the working folders to another folder (it must be empty or new, and outside the current one) and make it `workspaces.root`. An empty path goes back to the default
+  help   Print this message or the help of the given subcommand(s)
+
+===== imperium workspaces help where =====
+Show where the working folders are, and each environment's
+
+Usage: imperium workspaces help where
+
+===== imperium workspaces help move =====
+Move the working folders to another folder (it must be empty or new, and outside the current one) and make it `workspaces.root`. An empty path goes back to the default
+
+Usage: imperium workspaces help move
+
+===== imperium workspaces help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium workspaces help help
+
+===== imperium project =====
+Project agents
+
+Usage: imperium project [OPTIONS] <COMMAND>
+
+Commands:
+  list  List projects with a running agent
+  tell  Send a message to a project's agent
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium project list =====
+List projects with a running agent
+
+Usage: imperium project list [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium project tell =====
+Send a message to a project's agent
+
+Usage: imperium project tell [OPTIONS] <TEXT>
+
+Arguments:
+  <TEXT>
+          
+
+Options:
+      --project <PROJECT>
+          Project folder; defaults to the current directory
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium project help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium project help [COMMAND]
+
+Commands:
+  list  List projects with a running agent
+  tell  Send a message to a project's agent
+  help  Print this message or the help of the given subcommand(s)
+
+===== imperium project help list =====
+List projects with a running agent
+
+Usage: imperium project help list
+
+===== imperium project help tell =====
+Send a message to a project's agent
+
+Usage: imperium project help tell
+
+===== imperium project help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium project help help
+
+===== imperium approvals =====
+Requests from unattended work (such as auto-fix pushes) waiting for a yes or no
+
+Usage: imperium approvals [OPTIONS] <COMMAND>
+
+Commands:
+  list     List pending requests
+  approve  Approve a request
+  deny     Decline a request
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium approvals list =====
+List pending requests
+
+Usage: imperium approvals list [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium approvals approve =====
+Approve a request
+
+Usage: imperium approvals approve [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium approvals deny =====
+Decline a request
+
+Usage: imperium approvals deny [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium approvals help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium approvals help [COMMAND]
+
+Commands:
+  list     List pending requests
+  approve  Approve a request
+  deny     Decline a request
+  help     Print this message or the help of the given subcommand(s)
+
+===== imperium approvals help list =====
+List pending requests
+
+Usage: imperium approvals help list
+
+===== imperium approvals help approve =====
+Approve a request
+
+Usage: imperium approvals help approve
+
+===== imperium approvals help deny =====
+Decline a request
+
+Usage: imperium approvals help deny
+
+===== imperium approvals help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium approvals help help
+
+===== imperium schedule =====
+Scheduled tasks the daemon runs
+
+Usage: imperium schedule [OPTIONS] <COMMAND>
+
+Commands:
+  list  List schedules with their next and last runs
+  run   Run a schedule now
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium schedule list =====
+List schedules with their next and last runs
+
+Usage: imperium schedule list [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium schedule run =====
+Run a schedule now
+
+Usage: imperium schedule run [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium schedule help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium schedule help [COMMAND]
+
+Commands:
+  list  List schedules with their next and last runs
+  run   Run a schedule now
+  help  Print this message or the help of the given subcommand(s)
+
+===== imperium schedule help list =====
+List schedules with their next and last runs
+
+Usage: imperium schedule help list
+
+===== imperium schedule help run =====
+Run a schedule now
+
+Usage: imperium schedule help run
+
+===== imperium schedule help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium schedule help help
+
+===== imperium workflow =====
+Workflow packs and context retrieval
+
+Usage: imperium workflow [OPTIONS] <COMMAND>
+
+Commands:
+  resolve  Show the load manifest an agent in a role would get for a task
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium workflow resolve =====
+Show the load manifest an agent in a role would get for a task
+
+Usage: imperium workflow resolve [OPTIONS] <TASK>
+
+Arguments:
+  <TASK>
+          The task or message
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --role <ROLE>
+          root, manager, leaf, or a role the pack's manifest defines
+          
+          [default: root]
+
+      --project <PROJECT>
+          Project folder; defaults to the current directory
+
+      --pack <PACKS>
+          Workflow folders to use instead of workflow.packs
+
+  -h, --help
+          Print help
+
+===== imperium workflow help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium workflow help [COMMAND]
+
+Commands:
+  resolve  Show the load manifest an agent in a role would get for a task
+  help     Print this message or the help of the given subcommand(s)
+
+===== imperium workflow help resolve =====
+Show the load manifest an agent in a role would get for a task
+
+Usage: imperium workflow help resolve
+
+===== imperium workflow help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium workflow help help
+
+===== imperium pack =====
+Policy pack updates: fetch a pack from a source you added, read what changed in plain words, and accept or reject it. Nothing is applied until you accept
+
+Usage: imperium pack [OPTIONS] <COMMAND>
+
+Commands:
+  list           Pack sources, the version pinned for each and any update waiting for a decision
+  add-source     Add an update source for a pack: a Git URL (`https://`, `ssh://`, `git@host:path` or `file://`) with no credentials in it. Sources are kept only in your config folder
+  remove-source  Remove a source together with its pin and any pending update
+  check          Fetch the source(s) and show what changed since the pinned version. Applies nothing
+  diff           Show the pending update again
+  accept         Pin the pending update. At a terminal you type the confirmation shown; otherwise pass `--hash` (at least 12 digits of the new hash, as shown by `check` and `diff`)
+  reject         Discard the pending update; the pinned version is unchanged
+  help           Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium pack list =====
+Pack sources, the version pinned for each and any update waiting for a decision
+
+Usage: imperium pack list [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium pack add-source =====
+Add an update source for a pack: a Git URL (`https://`, `ssh://`, `git@host:path` or `file://`) with no credentials in it. Sources are kept only in your config folder
+
+Usage: imperium pack add-source [OPTIONS] <NAME> <URL>
+
+Arguments:
+  <NAME>
+          A short name; it also prefixes the pack's references
+
+  <URL>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --revision <REVISION>
+          A branch or tag; defaults to the repository's default branch
+
+  -h, --help
+          Print help
+
+===== imperium pack remove-source =====
+Remove a source together with its pin and any pending update
+
+Usage: imperium pack remove-source [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium pack check =====
+Fetch the source(s) and show what changed since the pinned version. Applies nothing
+
+Usage: imperium pack check [OPTIONS] [NAME]
+
+Arguments:
+  [NAME]
+          A source name; every source when left out
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium pack diff =====
+Show the pending update again
+
+Usage: imperium pack diff [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --full
+          Also list every changed line
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium pack accept =====
+Pin the pending update. At a terminal you type the confirmation shown; otherwise pass `--hash` (at least 12 digits of the new hash, as shown by `check` and `diff`)
+
+Usage: imperium pack accept [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --hash <HASH>
+          
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --allow-loosening
+          Also accept changes marked as possibly loosening what agents must do
+
+  -h, --help
+          Print help
+
+===== imperium pack reject =====
+Discard the pending update; the pinned version is unchanged
+
+Usage: imperium pack reject [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium pack help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium pack help [COMMAND]
+
+Commands:
+  list           Pack sources, the version pinned for each and any update waiting for a decision
+  add-source     Add an update source for a pack: a Git URL (`https://`, `ssh://`, `git@host:path` or `file://`) with no credentials in it. Sources are kept only in your config folder
+  remove-source  Remove a source together with its pin and any pending update
+  check          Fetch the source(s) and show what changed since the pinned version. Applies nothing
+  diff           Show the pending update again
+  accept         Pin the pending update. At a terminal you type the confirmation shown; otherwise pass `--hash` (at least 12 digits of the new hash, as shown by `check` and `diff`)
+  reject         Discard the pending update; the pinned version is unchanged
+  help           Print this message or the help of the given subcommand(s)
+
+===== imperium pack help list =====
+Pack sources, the version pinned for each and any update waiting for a decision
+
+Usage: imperium pack help list
+
+===== imperium pack help add-source =====
+Add an update source for a pack: a Git URL (`https://`, `ssh://`, `git@host:path` or `file://`) with no credentials in it. Sources are kept only in your config folder
+
+Usage: imperium pack help add-source
+
+===== imperium pack help remove-source =====
+Remove a source together with its pin and any pending update
+
+Usage: imperium pack help remove-source
+
+===== imperium pack help check =====
+Fetch the source(s) and show what changed since the pinned version. Applies nothing
+
+Usage: imperium pack help check
+
+===== imperium pack help diff =====
+Show the pending update again
+
+Usage: imperium pack help diff
+
+===== imperium pack help accept =====
+Pin the pending update. At a terminal you type the confirmation shown; otherwise pass `--hash` (at least 12 digits of the new hash, as shown by `check` and `diff`)
+
+Usage: imperium pack help accept
+
+===== imperium pack help reject =====
+Discard the pending update; the pinned version is unchanged
+
+Usage: imperium pack help reject
+
+===== imperium pack help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium pack help help
+
+===== imperium runtime =====
+Inference runtimes
+
+Usage: imperium runtime [OPTIONS] <COMMAND>
+
+Commands:
+  install     Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
+  status      Show whether llama-server runs and sees the GPU, and what to do when it does not
+  candidates  List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
+  use         Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+  vllm        The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium runtime install =====
+Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
+
+Usage: imperium runtime install [OPTIONS]
+
+Options:
+      --pack <PACK>
+          Build to install, such as `windows-x64-vulkan`; defaults to the configured backend (`runtime.llamacpp.backend`), or the best that runs on this machine
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium runtime status =====
+Show whether llama-server runs and sees the GPU, and what to do when it does not
+
+Usage: imperium runtime status [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium runtime candidates =====
+List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
+
+Usage: imperium runtime candidates [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium runtime use =====
+Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+
+Usage: imperium runtime use [OPTIONS] [PATH]
+
+Arguments:
+  [PATH]
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium runtime vllm =====
+The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
+
+Usage: imperium runtime vllm [OPTIONS] <COMMAND>
+
+Commands:
+  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+  status  Show what is set up and which vLLM the daemon starts
+  remove  Remove the managed environment (its folder, or the Docker image)
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium runtime vllm setup =====
+Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+
+Usage: imperium runtime vllm setup [OPTIONS]
+
+Options:
+      --docker
+          Pull the Docker image instead of making a virtual environment
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --yes
+          Approve the download without asking
+
+      --version <VERSION>
+          A vLLM version other than the setting or the pinned one
+
+  -h, --help
+          Print help
+
+===== imperium runtime vllm status =====
+Show what is set up and which vLLM the daemon starts
+
+Usage: imperium runtime vllm status [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium runtime vllm remove =====
+Remove the managed environment (its folder, or the Docker image)
+
+Usage: imperium runtime vllm remove [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --yes
+          Approve without asking
+
+  -h, --help
+          Print help
+
+===== imperium runtime vllm help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium runtime vllm help [COMMAND]
+
+Commands:
+  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+  status  Show what is set up and which vLLM the daemon starts
+  remove  Remove the managed environment (its folder, or the Docker image)
+  help    Print this message or the help of the given subcommand(s)
+
+===== imperium runtime vllm help setup =====
+Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+
+Usage: imperium runtime vllm help setup
+
+===== imperium runtime vllm help status =====
+Show what is set up and which vLLM the daemon starts
+
+Usage: imperium runtime vllm help status
+
+===== imperium runtime vllm help remove =====
+Remove the managed environment (its folder, or the Docker image)
+
+Usage: imperium runtime vllm help remove
+
+===== imperium runtime vllm help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium runtime vllm help help
+
+===== imperium runtime help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium runtime help [COMMAND]
+
+Commands:
+  install     Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
+  status      Show whether llama-server runs and sees the GPU, and what to do when it does not
+  candidates  List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
+  use         Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+  vllm        The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
+  help        Print this message or the help of the given subcommand(s)
+
+===== imperium runtime help install =====
+Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
+
+Usage: imperium runtime help install
+
+===== imperium runtime help status =====
+Show whether llama-server runs and sees the GPU, and what to do when it does not
+
+Usage: imperium runtime help status
+
+===== imperium runtime help candidates =====
+List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
+
+Usage: imperium runtime help candidates
+
+===== imperium runtime help use =====
+Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+
+Usage: imperium runtime help use
+
+===== imperium runtime help vllm =====
+The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
+
+Usage: imperium runtime help vllm [COMMAND]
+
+Commands:
+  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+  status  Show what is set up and which vLLM the daemon starts
+  remove  Remove the managed environment (its folder, or the Docker image)
+
+===== imperium runtime help vllm setup =====
+Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+
+Usage: imperium runtime help vllm setup
+
+===== imperium runtime help vllm status =====
+Show what is set up and which vLLM the daemon starts
+
+Usage: imperium runtime help vllm status
+
+===== imperium runtime help vllm remove =====
+Remove the managed environment (its folder, or the Docker image)
+
+Usage: imperium runtime help vllm remove
+
+===== imperium runtime help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium runtime help help
+
+===== imperium mcp-serve =====
+Serve the Claude harness: an MCP server on standard input and output that lets an external agent such as Claude Code start sessions, follow them and answer their permission requests through this daemon. Register it in `.mcp.json`. With `--tools` it serves Imperium's own tools instead (files, search, web, memory), each run in an Imperium session under the user's permission rules
+
+Usage: imperium mcp-serve [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --tools
+          Serve Imperium's own tools to the caller instead of driving sessions
+
+      --environment <ENVIRONMENT>
+          With --tools: the environment (name or id) the tools work in; default Home
+
+      --project-dir <PROJECT_DIR>
+          With --tools: a folder to work in instead of an environment
+
+      --session <SESSION>
+          With --tools: run the calls in this existing session instead of starting one
+
+      --model <MODEL>
+          With --tools: the model of the session this starts (the tools never call it)
+
+      --allow-write
+          With --tools: also offer the tools that write files, run commands or save memory. Each still asks under the session's permission mode
+
+      --approval-timeout-s <APPROVAL_TIMEOUT_S>
+          With --tools: seconds a permission request waits for you before it is refused; 0 refuses at once (use it when nobody is watching)
+          
+          [default: 120]
+
+  -h, --help
+          Print help
+
+===== imperium mcp =====
+Remote MCP servers that use OAuth: sign in and out
+
+Usage: imperium mcp [OPTIONS] <COMMAND>
+
+Commands:
+  login   Sign in to a remote MCP server that uses OAuth. Prints an address to open in your own browser; the sign-in finishes when the browser returns to this machine
+  logout  Sign out of a remote MCP server: revoke its token where the server allows it, and forget the tokens kept in the keychain
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium mcp login =====
+Sign in to a remote MCP server that uses OAuth. Prints an address to open in your own browser; the sign-in finishes when the browser returns to this machine
+
+Usage: imperium mcp login [OPTIONS] <SERVER>
+
+Arguments:
+  <SERVER>
+          The server's name in your connectors
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium mcp logout =====
+Sign out of a remote MCP server: revoke its token where the server allows it, and forget the tokens kept in the keychain
+
+Usage: imperium mcp logout [OPTIONS] <SERVER>
+
+Arguments:
+  <SERVER>
+          The server's name in your connectors
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium mcp help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium mcp help [COMMAND]
+
+Commands:
+  login   Sign in to a remote MCP server that uses OAuth. Prints an address to open in your own browser; the sign-in finishes when the browser returns to this machine
+  logout  Sign out of a remote MCP server: revoke its token where the server allows it, and forget the tokens kept in the keychain
+  help    Print this message or the help of the given subcommand(s)
+
+===== imperium mcp help login =====
+Sign in to a remote MCP server that uses OAuth. Prints an address to open in your own browser; the sign-in finishes when the browser returns to this machine
+
+Usage: imperium mcp help login
+
+===== imperium mcp help logout =====
+Sign out of a remote MCP server: revoke its token where the server allows it, and forget the tokens kept in the keychain
+
+Usage: imperium mcp help logout
+
+===== imperium mcp help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium mcp help help
+
+===== imperium resources =====
+CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
+
+Usage: imperium resources [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --watch
+          Keep printing a fresh snapshot every two seconds until Ctrl+C
+
+  -h, --help
+          Print help
+
+===== imperium help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium help [COMMAND]
+
+Commands:
+  ping        Check that imperium-core is running and measure a round trip
+  chat        Chat with an agent in an environment or a project folder
+  session     Manage sessions (also `sessions`)
+  config      Inspect configuration
+  mods        Install and update UI mods, asking you to approve the permissions they request
+  secret      Manage secrets in the OS keychain (an encrypted file where there is none)
+  models      Local models: the configured model folders, and downloads from Hugging Face
+  memory      Your global memories. (An environment's notes are its Memory.md.)
+  api         The OpenAI-compatible API other tools use your models through
+  phone       Paired phones
+  remote      Remote hosts over SSH
+  daemon      The daemon itself
+  env         Environments: named sets of folders sessions work in
+  workspaces  Environments' working folders: each one's `Memory.md` and its sessions' scratch folders
+  project     Project agents
+  approvals   Requests from unattended work (such as auto-fix pushes) waiting for a yes or no
+  schedule    Scheduled tasks the daemon runs
+  workflow    Workflow packs and context retrieval
+  pack        Policy pack updates: fetch a pack from a source you added, read what changed in plain words, and accept or reject it. Nothing is applied until you accept
+  runtime     Inference runtimes
+  mcp-serve   Serve the Claude harness: an MCP server on standard input and output that lets an external agent such as Claude Code start sessions, follow them and answer their permission requests through this daemon. Register it in `.mcp.json`. With `--tools` it serves Imperium's own tools instead (files, search, web, memory), each run in an Imperium session under the user's permission rules
+  mcp         Remote MCP servers that use OAuth: sign in and out
+  resources   CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
+  help        Print this message or the help of the given subcommand(s)
+
+===== imperium help ping =====
+Check that imperium-core is running and measure a round trip
+
+Usage: imperium help ping
+
+===== imperium help chat =====
+Chat with an agent in an environment or a project folder
+
+Usage: imperium help chat
+
+===== imperium help session =====
+Manage sessions (also `sessions`)
+
+Usage: imperium help session [COMMAND]
+
+Commands:
+  list       List running sessions (with --archived, the archived ones)
+  archive    Archive a session: it stops, keeps its history, and does not resume after a restart
+  unarchive  Resume an archived session
+  export     Export a session's transcript (messages, tool calls, subagents, files), also an archived session's: Markdown or JSON, to a file or standard output
+  delete     Stop and forget a session so it does not continue after a restart
+
+===== imperium help session list =====
+List running sessions (with --archived, the archived ones)
+
+Usage: imperium help session list
+
+===== imperium help session archive =====
+Archive a session: it stops, keeps its history, and does not resume after a restart
+
+Usage: imperium help session archive
+
+===== imperium help session unarchive =====
+Resume an archived session
+
+Usage: imperium help session unarchive
+
+===== imperium help session export =====
+Export a session's transcript (messages, tool calls, subagents, files), also an archived session's: Markdown or JSON, to a file or standard output
+
+Usage: imperium help session export
+
+===== imperium help session delete =====
+Stop and forget a session so it does not continue after a restart
+
+Usage: imperium help session delete
+
+===== imperium help config =====
+Inspect configuration
+
+Usage: imperium help config [COMMAND]
+
+Commands:
+  explain  Show a setting's effective value and which layer set it
+  set      Set a setting in your config file, such as `imperium config set policy.personality luxion`. Keys are those in the desktop Settings window (docs/10-configuration.md). With a daemon running the change goes through it, so settings it applies at once take effect
+  unset    Remove a setting from your config file, so its default applies
+  changes  List the changes agents made to the app config (model cards, installed and removed mods, plugins, and skills), newest first
+  undo     Undo a change listed by `imperium config changes`
+
+===== imperium help config explain =====
+Show a setting's effective value and which layer set it
+
+Usage: imperium help config explain
+
+===== imperium help config set =====
+Set a setting in your config file, such as `imperium config set policy.personality luxion`. Keys are those in the desktop Settings window (docs/10-configuration.md). With a daemon running the change goes through it, so settings it applies at once take effect
+
+Usage: imperium help config set
+
+===== imperium help config unset =====
+Remove a setting from your config file, so its default applies
+
+Usage: imperium help config unset
+
+===== imperium help config changes =====
+List the changes agents made to the app config (model cards, installed and removed mods, plugins, and skills), newest first
+
+Usage: imperium help config changes
+
+===== imperium help config undo =====
+Undo a change listed by `imperium config changes`
+
+Usage: imperium help config undo
+
+===== imperium help mods =====
+Install and update UI mods, asking you to approve the permissions they request
+
+Usage: imperium help mods [COMMAND]
+
+Commands:
+  install  Install a mod from a git URL or a folder. Shows the permissions it requests and its content hash and asks before installing; nothing in the mod runs. Mods appear in the desktop app (Settings → Mods)
+  update   Update an installed mod from the source it was installed from. Shows how its requested permissions differ from what you approved, and asks again if it wants more
+
+===== imperium help mods install =====
+Install a mod from a git URL or a folder. Shows the permissions it requests and its content hash and asks before installing; nothing in the mod runs. Mods appear in the desktop app (Settings → Mods)
+
+Usage: imperium help mods install
+
+===== imperium help mods update =====
+Update an installed mod from the source it was installed from. Shows how its requested permissions differ from what you approved, and asks again if it wants more
+
+Usage: imperium help mods update
+
+===== imperium help secret =====
+Manage secrets in the OS keychain (an encrypted file where there is none)
+
+Usage: imperium help secret [COMMAND]
+
+Commands:
+  set     Store a secret. The value is read from standard input, or prompted for without echo
+  delete  Remove a secret
+
+===== imperium help secret set =====
+Store a secret. The value is read from standard input, or prompted for without echo
+
+Usage: imperium help secret set
+
+===== imperium help secret delete =====
+Remove a secret
+
+Usage: imperium help secret delete
+
+===== imperium help models =====
+Local models: the configured model folders, and downloads from Hugging Face
+
+Usage: imperium help models [COMMAND]
+
+Commands:
+  local    List GGUF models in models.folders, whether each fits in memory, and what is loaded
+  unload   Unload an idle local model now, freeing its memory
+  files    List the quantisations a Hugging Face repository offers, with sizes and whether each fits this machine
+  pull     Download a model from Hugging Face into models.download_dir, showing progress
+  cancel   Stop a download; pulling the same model again resumes it
+  folders  List, add, or remove model folders (models.folders); changes are scanned at once
+  use      Make a model the default for new sessions (models.default)
+  test     Load a model and send it one short prompt, showing the reply and its speed
+  bench    Benchmark local models: load time, time to first token, prompt and generation speed, peak memory. Loads each model like any call does, waiting while the machine is saturated; saves the numbers per model and machine. Ctrl+C cancels
+
+===== imperium help models local =====
+List GGUF models in models.folders, whether each fits in memory, and what is loaded
+
+Usage: imperium help models local
+
+===== imperium help models unload =====
+Unload an idle local model now, freeing its memory
+
+Usage: imperium help models unload
+
+===== imperium help models files =====
+List the quantisations a Hugging Face repository offers, with sizes and whether each fits this machine
+
+Usage: imperium help models files
+
+===== imperium help models pull =====
+Download a model from Hugging Face into models.download_dir, showing progress
+
+Usage: imperium help models pull
+
+===== imperium help models cancel =====
+Stop a download; pulling the same model again resumes it
+
+Usage: imperium help models cancel
+
+===== imperium help models folders =====
+List, add, or remove model folders (models.folders); changes are scanned at once
+
+Usage: imperium help models folders [COMMAND]
+
+Commands:
+  list    List the model folders (the default)
+  add     Add a folder and scan it
+  remove  Stop scanning a folder; nothing in it is touched
+
+===== imperium help models folders list =====
+List the model folders (the default)
+
+Usage: imperium help models folders list
+
+===== imperium help models folders add =====
+Add a folder and scan it
+
+Usage: imperium help models folders add
+
+===== imperium help models folders remove =====
+Stop scanning a folder; nothing in it is touched
+
+Usage: imperium help models folders remove
+
+===== imperium help models use =====
+Make a model the default for new sessions (models.default)
+
+Usage: imperium help models use
+
+===== imperium help models test =====
+Load a model and send it one short prompt, showing the reply and its speed
+
+Usage: imperium help models test
+
+===== imperium help models bench =====
+Benchmark local models: load time, time to first token, prompt and generation speed, peak memory. Loads each model like any call does, waiting while the machine is saturated; saves the numbers per model and machine. Ctrl+C cancels
+
+Usage: imperium help models bench
+
+===== imperium help memory =====
+Your global memories. (An environment's notes are its Memory.md.)
+
+Usage: imperium help memory [COMMAND]
+
+Commands:
+  list    List your global memories
+  search  Find memories relevant to a query
+  show    Show one memory
+  forget  Delete a memory
+
+===== imperium help memory list =====
+List your global memories
+
+Usage: imperium help memory list
+
+===== imperium help memory search =====
+Find memories relevant to a query
+
+Usage: imperium help memory search
+
+===== imperium help memory show =====
+Show one memory
+
+Usage: imperium help memory show
+
+===== imperium help memory forget =====
+Delete a memory
+
+Usage: imperium help memory forget
+
+===== imperium help api =====
+The OpenAI-compatible API other tools use your models through
+
+Usage: imperium help api [COMMAND]
+
+Commands:
+  status   Show whether the API is on, where it listens, and the models it serves
+  enable   Turn the API on (the first time it also picks a port) and show how to use it
+  disable  Turn the API off
+  token    Show the API token, or make a new one that replaces it
+
+===== imperium help api status =====
+Show whether the API is on, where it listens, and the models it serves
+
+Usage: imperium help api status
+
+===== imperium help api enable =====
+Turn the API on (the first time it also picks a port) and show how to use it
+
+Usage: imperium help api enable
+
+===== imperium help api disable =====
+Turn the API off
+
+Usage: imperium help api disable
+
+===== imperium help api token =====
+Show the API token, or make a new one that replaces it
+
+Usage: imperium help api token [COMMAND]
+
+Commands:
+  rotate  Replace the token; the old one stops working at once
+
+===== imperium help api token rotate =====
+Replace the token; the old one stops working at once
+
+Usage: imperium help api token rotate
+
+===== imperium help phone =====
+Paired phones
+
+Usage: imperium help phone [COMMAND]
+
+Commands:
+  pair     Show a one-time code for pairing a phone
+  devices  List paired phones
+  revoke   Unpair a phone
+
+===== imperium help phone pair =====
+Show a one-time code for pairing a phone
+
+Usage: imperium help phone pair
+
+===== imperium help phone devices =====
+List paired phones
+
+Usage: imperium help phone devices
+
+===== imperium help phone revoke =====
+Unpair a phone
+
+Usage: imperium help phone revoke
+
+===== imperium help remote =====
+Remote hosts over SSH
+
+Usage: imperium help remote [COMMAND]
+
+Commands:
+  connect  Forward a host's imperium-core over SSH (starting it there if needed) until Ctrl+C
+
+===== imperium help remote connect =====
+Forward a host's imperium-core over SSH (starting it there if needed) until Ctrl+C
+
+Usage: imperium help remote connect
+
+===== imperium help daemon =====
+The daemon itself
+
+Usage: imperium help daemon [COMMAND]
+
+Commands:
+  autostart  Start imperium-core when you log in (enable, disable, or status)
+  start      Start imperium-core in the background
+  stop       Stop the running imperium-core gracefully
+  endpoint   Print the running daemon's endpoint as JSON (used by `imperium remote connect`)
+
+===== imperium help daemon autostart =====
+Start imperium-core when you log in (enable, disable, or status)
+
+Usage: imperium help daemon autostart
+
+===== imperium help daemon start =====
+Start imperium-core in the background
+
+Usage: imperium help daemon start
+
+===== imperium help daemon stop =====
+Stop the running imperium-core gracefully
+
+Usage: imperium help daemon stop
+
+===== imperium help daemon endpoint =====
+Print the running daemon's endpoint as JSON (used by `imperium remote connect`)
+
+Usage: imperium help daemon endpoint
+
+===== imperium help env =====
+Environments: named sets of folders sessions work in
+
+Usage: imperium help env [COMMAND]
+
+Commands:
+  list           List environments and their folders
+  create         Create an environment, optionally with folders (the first is the working directory)
+  add-folder     Add a folder to an environment
+  remove-folder  Remove a folder from an environment (the folder itself is untouched)
+  rename         Rename an environment
+  delete         Delete an environment (its folders are untouched)
+  set-runtime    Choose where an environment's tools run: local, docker, wsl, or ssh. For a remote runtime, its folders are paths inside it
+  test           Check that an environment's runtime can be reached
+  config         Show what the environment's own `.imperium/config.toml` changes for its sessions, and what it asked for that was refused (it can only narrow your settings)
+  agent          Manage an environment's persistent agents (none exist until added)
+
+===== imperium help env list =====
+List environments and their folders
+
+Usage: imperium help env list
+
+===== imperium help env create =====
+Create an environment, optionally with folders (the first is the working directory)
+
+Usage: imperium help env create
+
+===== imperium help env add-folder =====
+Add a folder to an environment
+
+Usage: imperium help env add-folder
+
+===== imperium help env remove-folder =====
+Remove a folder from an environment (the folder itself is untouched)
+
+Usage: imperium help env remove-folder
+
+===== imperium help env rename =====
+Rename an environment
+
+Usage: imperium help env rename
+
+===== imperium help env delete =====
+Delete an environment (its folders are untouched)
+
+Usage: imperium help env delete
+
+===== imperium help env set-runtime =====
+Choose where an environment's tools run: local, docker, wsl, or ssh. For a remote runtime, its folders are paths inside it
+
+Usage: imperium help env set-runtime
+
+===== imperium help env test =====
+Check that an environment's runtime can be reached
+
+Usage: imperium help env test
+
+===== imperium help env config =====
+Show what the environment's own `.imperium/config.toml` changes for its sessions, and what it asked for that was refused (it can only narrow your settings)
+
+Usage: imperium help env config
+
+===== imperium help env agent =====
+Manage an environment's persistent agents (none exist until added)
+
+Usage: imperium help env agent [COMMAND]
+
+Commands:
+  list         List the environment's persistent agents
+  add          Add a persistent agent; it starts at once
+  set          Rename an agent or change its role or permission profile
+  rm           Delete an agent (its session is archived)
+  initiative   Show where an agent's initiative stands
+  suggestions  List the agent's suggested work and its latest reminder of what is left
+  start        Start one of the agent's suggestions as a session
+  dismiss      Dismiss one of the agent's suggestions
+  review       Ask the agent to review its environment now (it needs initiative turned on)
+
+===== imperium help env agent list =====
+List the environment's persistent agents
+
+Usage: imperium help env agent list
+
+===== imperium help env agent add =====
+Add a persistent agent; it starts at once
+
+Usage: imperium help env agent add
+
+===== imperium help env agent set =====
+Rename an agent or change its role or permission profile
+
+Usage: imperium help env agent set
+
+===== imperium help env agent rm =====
+Delete an agent (its session is archived)
+
+Usage: imperium help env agent rm
+
+===== imperium help env agent initiative =====
+Show where an agent's initiative stands
+
+Usage: imperium help env agent initiative
+
+===== imperium help env agent suggestions =====
+List the agent's suggested work and its latest reminder of what is left
+
+Usage: imperium help env agent suggestions
+
+===== imperium help env agent start =====
+Start one of the agent's suggestions as a session
+
+Usage: imperium help env agent start
+
+===== imperium help env agent dismiss =====
+Dismiss one of the agent's suggestions
+
+Usage: imperium help env agent dismiss
+
+===== imperium help env agent review =====
+Ask the agent to review its environment now (it needs initiative turned on)
+
+Usage: imperium help env agent review
+
+===== imperium help workspaces =====
+Environments' working folders: each one's `Memory.md` and its sessions' scratch folders
+
+Usage: imperium help workspaces [COMMAND]
+
+Commands:
+  where  Show where the working folders are, and each environment's
+  move   Move the working folders to another folder (it must be empty or new, and outside the current one) and make it `workspaces.root`. An empty path goes back to the default
+
+===== imperium help workspaces where =====
+Show where the working folders are, and each environment's
+
+Usage: imperium help workspaces where
+
+===== imperium help workspaces move =====
+Move the working folders to another folder (it must be empty or new, and outside the current one) and make it `workspaces.root`. An empty path goes back to the default
+
+Usage: imperium help workspaces move
+
+===== imperium help project =====
+Project agents
+
+Usage: imperium help project [COMMAND]
+
+Commands:
+  list  List projects with a running agent
+  tell  Send a message to a project's agent
+
+===== imperium help project list =====
+List projects with a running agent
+
+Usage: imperium help project list
+
+===== imperium help project tell =====
+Send a message to a project's agent
+
+Usage: imperium help project tell
+
+===== imperium help approvals =====
+Requests from unattended work (such as auto-fix pushes) waiting for a yes or no
+
+Usage: imperium help approvals [COMMAND]
+
+Commands:
+  list     List pending requests
+  approve  Approve a request
+  deny     Decline a request
+
+===== imperium help approvals list =====
+List pending requests
+
+Usage: imperium help approvals list
+
+===== imperium help approvals approve =====
+Approve a request
+
+Usage: imperium help approvals approve
+
+===== imperium help approvals deny =====
+Decline a request
+
+Usage: imperium help approvals deny
+
+===== imperium help schedule =====
+Scheduled tasks the daemon runs
+
+Usage: imperium help schedule [COMMAND]
+
+Commands:
+  list  List schedules with their next and last runs
+  run   Run a schedule now
+
+===== imperium help schedule list =====
+List schedules with their next and last runs
+
+Usage: imperium help schedule list
+
+===== imperium help schedule run =====
+Run a schedule now
+
+Usage: imperium help schedule run
+
+===== imperium help workflow =====
+Workflow packs and context retrieval
+
+Usage: imperium help workflow [COMMAND]
+
+Commands:
+  resolve  Show the load manifest an agent in a role would get for a task
+
+===== imperium help workflow resolve =====
+Show the load manifest an agent in a role would get for a task
+
+Usage: imperium help workflow resolve
+
+===== imperium help pack =====
+Policy pack updates: fetch a pack from a source you added, read what changed in plain words, and accept or reject it. Nothing is applied until you accept
+
+Usage: imperium help pack [COMMAND]
+
+Commands:
+  list           Pack sources, the version pinned for each and any update waiting for a decision
+  add-source     Add an update source for a pack: a Git URL (`https://`, `ssh://`, `git@host:path` or `file://`) with no credentials in it. Sources are kept only in your config folder
+  remove-source  Remove a source together with its pin and any pending update
+  check          Fetch the source(s) and show what changed since the pinned version. Applies nothing
+  diff           Show the pending update again
+  accept         Pin the pending update. At a terminal you type the confirmation shown; otherwise pass `--hash` (at least 12 digits of the new hash, as shown by `check` and `diff`)
+  reject         Discard the pending update; the pinned version is unchanged
+
+===== imperium help pack list =====
+Pack sources, the version pinned for each and any update waiting for a decision
+
+Usage: imperium help pack list
+
+===== imperium help pack add-source =====
+Add an update source for a pack: a Git URL (`https://`, `ssh://`, `git@host:path` or `file://`) with no credentials in it. Sources are kept only in your config folder
+
+Usage: imperium help pack add-source
+
+===== imperium help pack remove-source =====
+Remove a source together with its pin and any pending update
+
+Usage: imperium help pack remove-source
+
+===== imperium help pack check =====
+Fetch the source(s) and show what changed since the pinned version. Applies nothing
+
+Usage: imperium help pack check
+
+===== imperium help pack diff =====
+Show the pending update again
+
+Usage: imperium help pack diff
+
+===== imperium help pack accept =====
+Pin the pending update. At a terminal you type the confirmation shown; otherwise pass `--hash` (at least 12 digits of the new hash, as shown by `check` and `diff`)
+
+Usage: imperium help pack accept
+
+===== imperium help pack reject =====
+Discard the pending update; the pinned version is unchanged
+
+Usage: imperium help pack reject
+
+===== imperium help runtime =====
+Inference runtimes
+
+Usage: imperium help runtime [COMMAND]
+
+Commands:
+  install     Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
+  status      Show whether llama-server runs and sees the GPU, and what to do when it does not
+  candidates  List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
+  use         Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+  vllm        The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
+
+===== imperium help runtime install =====
+Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
+
+Usage: imperium help runtime install
+
+===== imperium help runtime status =====
+Show whether llama-server runs and sees the GPU, and what to do when it does not
+
+Usage: imperium help runtime status
+
+===== imperium help runtime candidates =====
+List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
+
+Usage: imperium help runtime candidates
+
+===== imperium help runtime use =====
+Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+
+Usage: imperium help runtime use
+
+===== imperium help runtime vllm =====
+The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
+
+Usage: imperium help runtime vllm [COMMAND]
+
+Commands:
+  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+  status  Show what is set up and which vLLM the daemon starts
+  remove  Remove the managed environment (its folder, or the Docker image)
+
+===== imperium help runtime vllm setup =====
+Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+
+Usage: imperium help runtime vllm setup
+
+===== imperium help runtime vllm status =====
+Show what is set up and which vLLM the daemon starts
+
+Usage: imperium help runtime vllm status
+
+===== imperium help runtime vllm remove =====
+Remove the managed environment (its folder, or the Docker image)
+
+Usage: imperium help runtime vllm remove
+
+===== imperium help mcp-serve =====
+Serve the Claude harness: an MCP server on standard input and output that lets an external agent such as Claude Code start sessions, follow them and answer their permission requests through this daemon. Register it in `.mcp.json`. With `--tools` it serves Imperium's own tools instead (files, search, web, memory), each run in an Imperium session under the user's permission rules
+
+Usage: imperium help mcp-serve
+
+===== imperium help mcp =====
+Remote MCP servers that use OAuth: sign in and out
+
+Usage: imperium help mcp [COMMAND]
+
+Commands:
+  login   Sign in to a remote MCP server that uses OAuth. Prints an address to open in your own browser; the sign-in finishes when the browser returns to this machine
+  logout  Sign out of a remote MCP server: revoke its token where the server allows it, and forget the tokens kept in the keychain
+
+===== imperium help mcp login =====
+Sign in to a remote MCP server that uses OAuth. Prints an address to open in your own browser; the sign-in finishes when the browser returns to this machine
+
+Usage: imperium help mcp login
+
+===== imperium help mcp logout =====
+Sign out of a remote MCP server: revoke its token where the server allows it, and forget the tokens kept in the keychain
+
+Usage: imperium help mcp logout
+
+===== imperium help resources =====
+CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
+
+Usage: imperium help resources
+
+===== imperium help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium help help

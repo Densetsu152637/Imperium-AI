@@ -1,4 +1,4 @@
-// The model configuration form's drafts and their validation (src/modelConfigDrafts.ts). Run
+// The model configuration form's drafts and their validation (src/models/modelConfigDrafts.ts). Run
 // with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import type { LocalModelConfig } from "@imperium/protocol";
 
-import { aliasValue, cardValue, EMPTY_LOCAL, EMPTY_TABLE, localDraft, localSettings, tableDraft, tableSettings } from "../src/modelConfigDrafts.ts";
+import { aliasValue, cardValue, EMPTY_LOCAL, EMPTY_TABLE, localDraft, localSettings, tableDraft, tableSettings } from "../src/models/modelConfigDrafts.ts";
 
 const effective = {
   context: 8192,

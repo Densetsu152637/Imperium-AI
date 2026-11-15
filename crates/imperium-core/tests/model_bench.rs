@@ -494,7 +494,7 @@ async fn the_numbers_follow_the_stream_not_the_whole_request() {
 
 #[tokio::test]
 async fn a_saturated_machine_makes_the_benchmark_wait_and_does_not_unload_the_model() {
-    use imperium_engine::Load;
+    use imperium_api::Load;
     let home = tempfile::tempdir().unwrap();
     // No interactive hold: the model would be unloaded to time its load, were the machine quiet.
     let mut fixture = fixture(home.path(), "[load]\ninteractive_hold_min = 0\n").await;

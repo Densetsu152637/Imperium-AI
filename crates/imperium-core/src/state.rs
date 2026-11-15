@@ -3,20 +3,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, Weak};
 use std::time::{Duration, Instant};
 
+use imperium_api::{LoadView, LocalModels, ToolProvider};
 use imperium_config::{
     Config, EnvironmentConfig, EnvironmentSettings, IsolationSettings, KeychainSecrets, Layer,
     ModelPlacement, Paths, SecretStore, Settings,
 };
 use imperium_engine::{
-    Background, CatalogModel, ChatClients, LoadView, LocalModels, ModelError, ResolvedModel,
-    Session, SessionConfig, SessionMemory, TaskRequest, ToolProvider, new_session_id,
-    resolve_model, route,
+    Background, CatalogModel, ChatClients, ModelError, ResolvedModel, Session, SessionConfig,
+    SessionMemory, TaskRequest, new_session_id, resolve_model, route,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_local::supervisor::SwapDirection;
 use imperium_mcp::McpTools;
 use imperium_media::{ImageConfig, ImageGenerators, Media, MediaTools, Service};
 use imperium_memory::Store;
+use imperium_policy::packs;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
     EnvironmentConfigResult, EnvironmentRuntime, LocalModelListResult, MODEL_RESIDENCY,
@@ -30,8 +31,7 @@ use imperium_tools::{ProcessRunner, Remote, Runner, Sandbox, Workspace};
 use imperium_web::{
     BrowserSetup, FetchOptions, PreviewTools, SearchConfig, SearchProviders, Web, WebTools,
 };
-use imperium_workflow::update::PackStore;
-use imperium_workflow::{ContextIndex, Pack, personality};
+use imperium_workflow::{ContextIndex, personality};
 use tokio::sync::broadcast;
 
 use crate::approvals::Approvals;
@@ -50,12 +50,16 @@ use crate::suggestions::{SuggestTool, Suggestions};
 mod agent_config;
 mod archive;
 mod branch;
+mod create;
+mod environments;
+mod extensions;
 mod memory_migration;
 mod model_awareness;
 mod session_search;
+mod sessions;
 mod titles;
 mod workspaces;
-pub use archive::ArchiveError;
+pub(crate) use archive::ArchiveError;
 pub(crate) use workspaces::ROOT_SETTING as WORKSPACES_ROOT_SETTING;
 
 /// Options for [`DaemonState::create_session_with`].
@@ -165,7 +169,7 @@ struct Placement {
 /// user's settings. A writer agent that can reach one of those folders could otherwise plant a
 /// plugin, so a write there is always asked about.
 fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
-    use imperium_tools::permissions::protect_dir;
+    use imperium_policy::permissions::protect_dir;
     protect_dir(&paths.config_dir().join("mods"));
     protect_dir(&paths.config_dir().join("plugins"));
     // Pinned policy packs: agents read their files as instructions, so a write is always asked.
@@ -412,26 +416,6 @@ impl DaemonState {
             );
         }
     }
-
-    /// Sessions with a turn running: the user's, and background ones.
-    pub(crate) fn working_sessions(&self) -> (u32, u32) {
-        let sessions = self
-            .sessions
-            .lock()
-            .expect("session map lock is never poisoned by a panic while held");
-        let mut counts = (0, 0);
-        for session in sessions.values() {
-            if session.status().0 == SessionStatus::Working {
-                if session.is_background() {
-                    counts.1 += 1;
-                } else {
-                    counts.0 += 1;
-                }
-            }
-        }
-        counts
-    }
-
     /// Slots in use and calls queued on the local models.
     pub(crate) fn local_activity(&self) -> imperium_local::supervisor::Activity {
         self.local
@@ -525,146 +509,6 @@ impl DaemonState {
     pub fn use_runner(&self, runner: Arc<dyn Runner>) {
         let _ = self.runner.set(runner);
     }
-
-    /// The workspace for a session in `project_dir` (plus `folders`) under `runtime`, with the
-    /// path grants and permission rules of `environment_id` and the global ones. A remote
-    /// runtime gets only the environment's grants, since the global ones are paths on this
-    /// machine.
-    fn workspace(
-        &self,
-        project_dir: &str,
-        folders: &[String],
-        runtime: &EnvironmentRuntime,
-        environment_id: Option<&str>,
-        isolation: &IsolationSettings,
-        fixed_rules: Vec<imperium_api::PermissionRule>,
-    ) -> Result<Workspace, CreateError> {
-        let env = environment_id.and_then(|id| self.environments.get(id));
-        let permissions = self
-            .permissions
-            .for_session(
-                env.as_ref()
-                    .map(|env| (env.id.as_str(), env.permissions.rules.as_slice())),
-            )
-            .with_fixed_rules(fixed_rules);
-        let mut grants: Vec<imperium_tools::permissions::PathGrant> = env
-            .iter()
-            .flat_map(|env| &env.permissions.grants)
-            .map(crate::permissions::grant_from_wire)
-            .collect();
-        Ok(self
-            .bare_workspace(project_dir, folders, runtime, isolation, &mut grants)?
-            .with_grants(&grants)
-            .with_permissions(permissions))
-    }
-
-    /// The workspace's folders and sandbox; adds the global grants to `grants` for a local one.
-    fn bare_workspace(
-        &self,
-        project_dir: &str,
-        folders: &[String],
-        runtime: &EnvironmentRuntime,
-        isolation: &IsolationSettings,
-        grants: &mut Vec<imperium_tools::permissions::PathGrant>,
-    ) -> Result<Workspace, CreateError> {
-        let remote = match runtime {
-            EnvironmentRuntime::Local
-            | EnvironmentRuntime::Docker {
-                container: None, ..
-            } => None,
-            EnvironmentRuntime::Docker {
-                container: Some(container),
-                ..
-            } => Some(Remote::Docker {
-                container: container.clone(),
-            }),
-            EnvironmentRuntime::Wsl { distro } => Some(Remote::Wsl {
-                distro: distro.clone(),
-            }),
-            EnvironmentRuntime::Ssh { host } => Some(Remote::Ssh { host: host.clone() }),
-        };
-        if let Some(remote) = remote {
-            let all: Vec<String> = std::iter::once(project_dir.to_string())
-                .chain(folders.iter().cloned())
-                .collect();
-            return Workspace::remote(remote, &all, self.runner())
-                .map_err(|error| CreateError::Runtime(error.to_string()));
-        }
-        // A Docker image without a container: each command runs in a fresh container with the
-        // folders mounted, as the container isolation tier does.
-        let sandbox = match runtime {
-            EnvironmentRuntime::Docker { image, .. } => Sandbox::Container {
-                runtime: "docker".into(),
-                image: image.clone(),
-                network: isolation.network,
-            },
-            _ => sandbox_for(isolation),
-        };
-        grants.extend(self.permissions.global_grants());
-        Ok(Workspace::new(Path::new(project_dir))
-            .map_err(|error| CreateError::Project(project_dir.to_string(), error))?
-            .with_folders(folders)
-            .map_err(|error| CreateError::Project(folders.join(", "), error))?
-            .with_sandbox(sandbox))
-    }
-
-    /// The profile of the persistent agent `agent_id` of `environment_id`, as the agent has it
-    /// now, and the profile as the protocol carries it. An agent that is gone keeps the profile
-    /// its running sessions hold; after a restart the one recorded with the session, and with
-    /// no record the strictest profile there is: a session never gets looser than its agent.
-    fn agent_profile(
-        &self,
-        environment_id: Option<&str>,
-        agent_id: &str,
-        recorded: Option<&imperium_protocol::agents::AgentPermissions>,
-    ) -> (
-        imperium_tools::AgentProfile,
-        imperium_protocol::agents::AgentPermissions,
-    ) {
-        let live = environment_id
-            .and_then(|id| self.environments.get(id))
-            .and_then(|env| env.agents.into_iter().find(|agent| agent.id == agent_id))
-            .map(|agent| agent.permissions);
-        let permissions = match live {
-            Some(permissions) => permissions,
-            None => match self.permissions.known_agent(agent_id) {
-                Some(known) => return known,
-                None => recorded
-                    .cloned()
-                    .unwrap_or_else(crate::permissions::strictest_agent_permissions),
-            },
-        };
-        (
-            self.permissions.agent_profile(agent_id, &permissions),
-            permissions,
-        )
-    }
-
-    /// Records an agent's changed profile with the sessions it binds, so a session of an agent
-    /// deleted later is not looser than the agent was.
-    pub(crate) fn agent_permissions_changed(
-        &self,
-        agent_id: &str,
-        permissions: &imperium_protocol::agents::AgentPermissions,
-    ) {
-        let bound: Vec<String> = self
-            .placements
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter(|(_, placement)| placement.agent_id.as_deref() == Some(agent_id))
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in bound {
-            self.update_meta(&id, |meta| {
-                meta.insert(
-                    "agent_permissions".into(),
-                    serde_json::to_value(permissions).unwrap_or_default(),
-                );
-            });
-        }
-    }
-
     /// What connector tests last learned about each MCP server.
     pub fn connector_status(&self) -> &crate::connectors::StatusCache {
         &self.connectors
@@ -792,11 +636,6 @@ impl DaemonState {
     pub fn config_dir(&self) -> &Path {
         self.paths.config_dir()
     }
-
-    pub fn project_agents(&self) -> &ProjectAgents {
-        &self.project_agents
-    }
-
     /// What persistent agents suggested and started on their own initiative.
     pub fn initiative(&self) -> &crate::initiative::InitiativeBook {
         &self.initiative
@@ -822,125 +661,6 @@ impl DaemonState {
     ) -> Result<crate::initiative::Outcome, String> {
         crate::initiative::run_review(self, agent_id, crate::initiative::Trigger::User).await
     }
-
-    /// Whether a session of the user's own (not background, not a persistent agent) in the
-    /// environment has a turn running, waits on the user, or had activity within `idle`.
-    pub(crate) fn environment_user_active(&self, environment_id: &str, idle: Duration) -> bool {
-        for session in self.sessions() {
-            let placement = self
-                .placements
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(session.id())
-                .cloned()
-                .unwrap_or_default();
-            if placement.environment_id.as_deref() != Some(environment_id) {
-                continue;
-            }
-            // Talking to one of the environment's persistent agents is being active in it.
-            if placement.persistent {
-                let talked = self
-                    .project_agents
-                    .environment_agents()
-                    .into_iter()
-                    .find(|(_, _, session_id)| session_id == session.id())
-                    .is_some_and(|(_, agent_id, _)| {
-                        self.initiative.chatted_within(&agent_id, idle_ms(idle))
-                    });
-                if talked {
-                    return true;
-                }
-                continue;
-            }
-            if session.is_background() {
-                continue;
-            }
-            if matches!(
-                session.status().0,
-                SessionStatus::Working | SessionStatus::NeedsAttention
-            ) {
-                return true;
-            }
-            let recent = self
-                .session_activity_ms(session.id())
-                .is_some_and(|at| crate::initiative::now_ms().saturating_sub(at) < idle_ms(idle));
-            if recent {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// When a session's journal was last written, in milliseconds since the Unix epoch.
-    pub(crate) fn session_activity_ms(&self, id: &str) -> Option<u64> {
-        let modified = std::fs::metadata(self.journal_path(id))
-            .ok()?
-            .modified()
-            .ok()?;
-        let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
-        u64::try_from(since.as_millis()).ok()
-    }
-
-    /// Starts the agents of projects with `agent = true`, and the persistent agents of
-    /// environments that have been given any.
-    pub fn start_project_agents(self: &Arc<Self>) {
-        crate::project_agent::start(self);
-        crate::project_agent::start_environment_agents(self);
-    }
-
-    /// Starts an environment's persistent agents that are not running and stops the ones that
-    /// were deleted.
-    pub fn sync_environment_agent(self: &Arc<Self>, environment_id: &str) {
-        crate::project_agent::sync_environment_agent(self, environment_id);
-    }
-
-    /// Wakes a project's agent with a message; false when the project has no agent.
-    pub fn tell_project_agent(&self, project: &Path, text: String) -> bool {
-        self.project_agents
-            .get(project)
-            .is_some_and(|agent| agent.send(text).is_ok())
-    }
-
-    /// Wakes the agents of environment `environment_id` with a message: the one persistent agent
-    /// `to_agent` names (by name or id, ignoring case), else all of them and the project agent
-    /// attached to the environment (`[[projects]]` `environment`). Returns how many got it.
-    pub fn tell_environment_agents(
-        &self,
-        environment_id: &str,
-        to_agent: Option<&str>,
-        text: &str,
-    ) -> usize {
-        let Some(env) = self.environments.get(environment_id) else {
-            return 0;
-        };
-        let wanted: Vec<String> = env
-            .agents
-            .iter()
-            .filter(|agent| {
-                to_agent.is_none_or(|name| {
-                    agent.id == name
-                        || agent.name.trim().to_lowercase() == name.trim().to_lowercase()
-                })
-            })
-            .map(|agent| agent.id.clone())
-            .collect();
-        let mut delivered = 0;
-        for (agent_id, session) in self.project_agents.agents_of(environment_id) {
-            if wanted.contains(&agent_id) && session.send(text.to_string()).is_ok() {
-                delivered += 1;
-            }
-        }
-        if to_agent.is_none()
-            && self
-                .project_agents
-                .get(&crate::project_agent::environment_key(environment_id))
-                .is_some_and(|agent| agent.send(text.to_string()).is_ok())
-        {
-            delivered += 1;
-        }
-        delivered
-    }
-
     pub fn approvals(&self) -> &Approvals {
         &self.approvals
     }
@@ -1008,401 +728,6 @@ impl DaemonState {
     pub fn announcements(&self) -> broadcast::Receiver<Notification> {
         self.announcements.subscribe()
     }
-
-    /// Media backends from `[media]`, using `[endpoints]` for URLs and keys.
-    fn media(&self) -> Option<Arc<Media>> {
-        let all = self.settings();
-        let settings = &all.media;
-        let service = |endpoint: &str, model: &str| -> Option<Service> {
-            let endpoint_settings = all.endpoints.get(endpoint)?;
-            let api_key = endpoint_settings
-                .api_key
-                .as_ref()
-                .and_then(|reference| self.secrets.load(&reference.secret).ok().flatten());
-            Some(Service {
-                base_url: endpoint_settings.base_url.trim_end_matches('/').to_string(),
-                api_key,
-                model: model.to_string(),
-            })
-        };
-        let image = settings.image.as_ref().and_then(|image| {
-            let config = ImageConfig {
-                comfyui_url: image.comfyui_url.as_deref(),
-                workflow: image.workflow.as_deref(),
-                service: &|| service(image.endpoint.as_deref()?, &image.model),
-            };
-            ImageGenerators::default().build(&image.backend, &config)
-        });
-        let speech = settings.speech.as_ref().and_then(|speech| {
-            Some((
-                service(&speech.endpoint, &speech.model)?,
-                speech.voice.clone().unwrap_or_else(|| "alloy".into()),
-            ))
-        });
-        let transcription = settings
-            .transcription
-            .as_ref()
-            .and_then(|transcription| service(&transcription.endpoint, &transcription.model));
-        let media = Media {
-            image,
-            speech,
-            transcription,
-        };
-        (!media.is_empty()).then(|| Arc::new(media))
-    }
-
-    /// Web tools from `[web]`; a provider whose key is missing is left out with a warning.
-    /// `downloads` is the folder `browser_download` saves into unless `web.download_dir` names
-    /// one, or `None` where the session cannot take downloads (a remote or read-only one).
-    /// The folder is judged as a write by the session's workspace only when it is the default
-    /// one (a folder the user named in `web.download_dir` is theirs to choose).
-    fn web_tools(&self, downloads: Option<(PathBuf, Workspace)>) -> Option<WebTools> {
-        let web = &self.settings().web;
-        if !web.enabled {
-            return None;
-        }
-        let key = || {
-            let name = &web.api_key.as_ref()?.secret;
-            self.secrets.load(name).ok().flatten()
-        };
-        let config = SearchConfig {
-            searxng_url: &web.searxng_url,
-            api_key: &key,
-        };
-        let provider = SearchProviders::default().build(&web.search, &config);
-        if web.search != "none" && provider.is_none() {
-            tracing::warn!(provider = %web.search, "web search is not configured completely (URL or key missing)");
-        }
-        let browser = web
-            .browser
-            .then(|| {
-                web.browser_path
-                    .clone()
-                    .or_else(imperium_web::browser::find_browser)
-            })
-            .flatten()
-            .map(|program| BrowserSetup {
-                program,
-                profile_dir: self.paths.data_dir().join("browser"),
-                headless: web.headless,
-                instance: Arc::default(),
-                takeover: Arc::default(),
-            });
-        Some(WebTools {
-            web: Web::with_options(
-                provider,
-                FetchOptions {
-                    cache_dir: Some(self.paths.cache_dir().join("web")),
-                    cache_ttl: Duration::from_secs(web.cache_ttl_s),
-                    cache_max_bytes: web.cache_max_mb.saturating_mul(1024 * 1024),
-                    respect_robots: web.robots == "respect",
-                    robots_fail_closed: web.robots_unreachable == "deny",
-                },
-            ),
-            allow_domains: web.allow_domains.clone(),
-            downloads: downloads.filter(|_| web.download_max_mb > 0).map(
-                |(default_dir, workspace)| {
-                    let chosen = web
-                        .download_dir
-                        .clone()
-                        .filter(|dir| !dir.as_os_str().is_empty());
-                    imperium_web::Downloads {
-                        workspace: chosen.is_none().then_some(workspace),
-                        dir: chosen.unwrap_or(default_dir),
-                        max_bytes: web.download_max_mb.saturating_mul(1024 * 1024),
-                    }
-                },
-            ),
-            browser,
-        })
-    }
-
-    /// The permission mode an unattended session (a background one, or one with pre-approved
-    /// tools) starts in with `settings` (an environment's narrowed ones): `default`, never the
-    /// user's own `permissions.mode` (plan would stall it), but a stricter mode the
-    /// environment's own file asked for.
-    pub(crate) fn unattended_mode(&self, settings: &Settings) -> imperium_api::PermissionMode {
-        let strictness = |mode: imperium_api::PermissionMode| {
-            imperium_api::PermissionMode::ALL
-                .iter()
-                .position(|known| *known == mode)
-        };
-        let default = imperium_api::PermissionMode::Default;
-        let narrowed = settings.permissions.mode != self.settings().permissions.mode;
-        if narrowed && strictness(settings.permissions.mode) < strictness(default) {
-            settings.permissions.mode
-        } else {
-            default
-        }
-    }
-
-    /// What environment `environment_id`'s own configuration files change, for
-    /// `environments.config`.
-    pub fn environment_config(&self, environment_id: &str) -> EnvironmentConfigResult {
-        let folder = self
-            .environments
-            .get(environment_id)
-            .filter(|env| !env.runtime.is_remote())
-            .and_then(|env| env.folders.first().cloned());
-        let trusted = folder
-            .as_deref()
-            .is_some_and(|folder| self.settings().mcp.trusts(Path::new(folder)));
-        let settings = self.environment_settings(Some(environment_id));
-        EnvironmentConfigResult {
-            folder,
-            files: settings
-                .files
-                .iter()
-                .map(|file| file.display().to_string())
-                .collect(),
-            trusted,
-            applied: settings.applied,
-            refused: settings.refused,
-        }
-    }
-
-    /// The settings a new session in `environment_id` starts with: the user's, narrowed by the
-    /// environment's own `.imperium/config.toml` in its first folder, which can only narrow
-    /// them ([`EnvironmentConfig`]). Sessions outside an environment, on a remote runtime, or
-    /// in an environment without a folder have no such files.
-    pub fn environment_settings(&self, environment_id: Option<&str>) -> EnvironmentSettings {
-        let base = self.settings();
-        let folder = environment_id
-            .and_then(|id| self.environments.get(id))
-            .filter(|env| !env.runtime.is_remote())
-            .and_then(|env| env.folders.first().cloned().map(|folder| (env.id, folder)));
-        match folder {
-            Some((id, folder)) => EnvironmentConfig::load(Path::new(&folder), &id).apply(&base),
-            None => EnvironmentSettings::unchanged((*base).clone()),
-        }
-    }
-
-    /// Re-opens sessions active within `agents.resume_days`, from their journals and saved
-    /// conversations. Returns how many continued.
-    pub fn resume_sessions(&self) -> usize {
-        let dir = self.paths.data_dir().join("sessions");
-        let cutoff = std::time::SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(
-                self.settings().agents.resume_days * 86_400,
-            ))
-            .unwrap_or(std::time::UNIX_EPOCH);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return 0;
-        };
-        let mut resumed = 0;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(id) = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.strip_suffix(".meta.json"))
-                .map(str::to_string)
-            else {
-                continue;
-            };
-            let journal = dir.join(format!("{id}.jsonl"));
-            let recent = std::fs::metadata(&journal)
-                .and_then(|meta| meta.modified())
-                .is_ok_and(|modified| modified >= cutoff);
-            let meta: Option<serde_json::Value> = std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|text| serde_json::from_str(&text).ok());
-            // Archived sessions stay listed, however old, but do not run.
-            if let Some(meta) = meta.as_ref().filter(|meta| meta["archived"] == true) {
-                self.remember_archived(&id, meta, &journal);
-                continue;
-            }
-            let (Some(meta), true) = (meta, recent) else {
-                continue;
-            };
-            match self.resume_from_meta(&id, &meta, &journal, false) {
-                Ok(_) => resumed += 1,
-                Err(error) => tracing::warn!(session = %id, %error, "could not resume the session"),
-            }
-        }
-        resumed
-    }
-
-    /// Continues one recorded session from its meta file and journal.
-    fn resume_from_meta(
-        &self,
-        id: &str,
-        meta: &serde_json::Value,
-        journal: &Path,
-        worktree: bool,
-    ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
-        let id = id.to_string();
-        {
-            let journal = journal.to_path_buf();
-            let project = meta["project_dir"].as_str().unwrap_or_default();
-            // A model the session switched to is in its journal; else the one it started with.
-            let switched = imperium_engine::journalled_model(&journal);
-            let model = switched.as_deref().or(meta["model"].as_str());
-            let options = SessionOptions {
-                resume_id: Some(id.clone()),
-                background: meta["background"].as_bool().unwrap_or(false),
-                // Stays unattended after a restart even when its pre-approved tools are gone.
-                unattended: recorded_unattended(meta),
-                run_now: meta["run_now"].as_bool().unwrap_or(false),
-                // A branch asking for a worktree of its own gets a new one.
-                worktree,
-                id: worktree.then(|| id.clone()),
-                // A session that never had a model keeps waiting for one.
-                may_wait_for_model: model.is_none(),
-                worktrees: serde_json::from_value(meta["worktrees"].clone()).unwrap_or_default(),
-                // The effort the session was set to, else (older sessions) the default.
-                effort: meta["effort"]
-                    .as_str()
-                    .and_then(|effort| effort.parse().ok()),
-                permission_mode: meta["permission_mode"]
-                    .as_str()
-                    .and_then(|mode| mode.parse().ok()),
-                // A session an agent started stays under that agent's profile.
-                agent_id: meta["agent_id"].as_str().map(str::to_string),
-                agent_recorded: serde_json::from_value(meta["agent_permissions"].clone()).ok(),
-                subfolder: meta["subfolder"].as_str().map(str::to_string),
-                read_only: meta["read_only"].as_bool().unwrap_or(false),
-                ..SessionOptions::default()
-            };
-            let created = match meta["environment_id"].as_str() {
-                // Its environment as it is now, if it still exists.
-                Some(env) if self.environments.get(env).is_some() => {
-                    self.create_in_environment(env, model, options)
-                }
-                Some(_) => {
-                    let recorded: Vec<String> = meta["folders"]
-                        .as_array()
-                        .map(|folders| {
-                            folders
-                                .iter()
-                                .filter_map(|folder| folder.as_str().map(str::to_string))
-                                .skip(1)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let options = SessionOptions {
-                        folders: recorded,
-                        ..options
-                    };
-                    self.create_session_with(project, model, options)
-                }
-                // Sessions from before environments: their folder becomes one.
-                None => match self.environments.for_folder(project) {
-                    Ok(env) => self.create_in_environment(&env.id, model, options),
-                    Err(_) => self.create_session_with(project, model, options),
-                },
-            };
-            let (session, events) = created?;
-            // A brief still waiting for a quiet machine is sent once the project agents start
-            // ([`crate::project_agent::start`]).
-            if let Some(brief) = meta["deferred_brief"]["text"].as_str() {
-                lock_pending(&self.pending_briefs).push(PendingBrief {
-                    project: project.to_string(),
-                    session: Arc::clone(&session),
-                    events: session.subscribe(),
-                    brief: brief.to_string(),
-                    until_unix_ms: meta["deferred_brief"]["until_unix_ms"]
-                        .as_u64()
-                        .unwrap_or(0),
-                });
-            }
-            Ok((session, events))
-        }
-    }
-
-    /// Briefs restored by [`DaemonState::resume_sessions`] that have not been sent yet.
-    pub(crate) fn take_pending_briefs(&self) -> Vec<PendingBrief> {
-        std::mem::take(&mut *lock_pending(&self.pending_briefs))
-    }
-
-    /// Stops a background session giving way to the load for the rest of its life, after a
-    /// restart too.
-    pub fn release_run_now(&self, session: &Session) {
-        session.run_now().release();
-        self.update_meta(session.id(), |meta| {
-            meta.insert("run_now".into(), true.into());
-        });
-    }
-
-    /// Records the brief a session gets once the machine is quiet (and the time it gets it
-    /// anyway), so a restart does not lose it; `None` once it has been sent.
-    pub(crate) fn set_deferred_brief(&self, id: &str, brief: Option<(&str, u64)>) {
-        self.update_meta(id, |meta| match brief {
-            Some((text, until_unix_ms)) => {
-                meta.insert(
-                    "deferred_brief".into(),
-                    serde_json::json!({ "text": text, "until_unix_ms": until_unix_ms }),
-                );
-            }
-            None => {
-                meta.remove("deferred_brief");
-            }
-        });
-    }
-
-    /// Changes a remembered session's `.meta.json`; sessions that are not remembered have none.
-    fn update_meta(
-        &self,
-        id: &str,
-        change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
-    ) {
-        let path = self
-            .paths
-            .data_dir()
-            .join("sessions")
-            .join(format!("{id}.meta.json"));
-        let Some(serde_json::Value::Object(mut meta)) = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-        else {
-            return;
-        };
-        change(&mut meta);
-        if let Err(error) = std::fs::write(&path, serde_json::Value::Object(meta).to_string()) {
-            tracing::warn!(path = %path.display(), %error, "could not record the session");
-        }
-    }
-
-    /// The configured resume policy for usage limits.
-    fn resume_policy(&self) -> ResumePolicy {
-        let resume = &self.settings().resume;
-        ResumePolicy {
-            mode: resume.mode.clone(),
-            at_time: resume.at_time.clone(),
-            retry_every_minutes: resume.retry_every_minutes,
-            max_wait_hours: resume.max_wait_hours,
-        }
-    }
-
-    /// Links a session to a pull request it watches; the watcher marks it merged when the
-    /// pull request merges. `None` stops watching.
-    pub fn watch(&self, session: &Session, target: Option<(String, u64)>) {
-        let key = session.id().to_string();
-        match target {
-            Some((repo, number)) => {
-                session.set_watch(Some((SessionStatus::Watching, format!("{repo}#{number}"))));
-                lock_watches(&self.watches).insert(key, (repo, number));
-            }
-            None => {
-                session.set_watch(None);
-                lock_watches(&self.watches).remove(&key);
-            }
-        }
-    }
-
-    /// Pull requests sessions watch, by session id.
-    pub fn watched(&self) -> Vec<(String, String, u64)> {
-        lock_watches(&self.watches)
-            .iter()
-            .map(|(id, (repo, number))| (id.clone(), repo.clone(), *number))
-            .collect()
-    }
-
-    /// Where UI mods are installed.
-    pub fn mods_dir(&self) -> std::path::PathBuf {
-        self.paths.config_dir().join("mods")
-    }
-
     /// The local model runtime, when it is running.
     /// This state as an `Arc`, for work handed to another task; `None` while it is dropped.
     pub(crate) fn this(&self) -> Option<Arc<DaemonState>> {
@@ -1570,933 +895,6 @@ impl DaemonState {
     pub fn uptime_ms(&self) -> u64 {
         u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
-
-    /// Starts a session and returns it with a subscription that sees all of its events.
-    pub fn create_session(
-        &self,
-        project_dir: &str,
-        model: Option<&str>,
-    ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
-        self.create_session_with(project_dir, model, SessionOptions::default())
-    }
-
-    /// Runs `prompt` in a new session and waits for the root's turn to end:
-    /// `(ok, the reply or error, session id)`. Permission requests become approval requests.
-    pub async fn run_prompt(
-        self: &Arc<Self>,
-        project_dir: &str,
-        model: Option<&str>,
-        prompt: String,
-        options: SessionOptions,
-        timeout: std::time::Duration,
-    ) -> (bool, String, Option<String>) {
-        let created = self.create_session_with(project_dir, model, options);
-        self.run_created(created, prompt, timeout).await
-    }
-
-    /// Like [`DaemonState::run_prompt`], in an environment: all its folders, its permissions
-    /// and its own configuration file apply, as to a session started there by hand.
-    pub async fn run_prompt_in_environment(
-        self: &Arc<Self>,
-        environment_id: &str,
-        model: Option<&str>,
-        prompt: String,
-        options: SessionOptions,
-        timeout: std::time::Duration,
-    ) -> (bool, String, Option<String>) {
-        let created = self.create_in_environment(environment_id, model, options);
-        self.run_created(created, prompt, timeout).await
-    }
-
-    async fn run_created(
-        self: &Arc<Self>,
-        created: Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError>,
-        prompt: String,
-        timeout: std::time::Duration,
-    ) -> (bool, String, Option<String>) {
-        let (session, events) = match created {
-            Ok(created) => created,
-            Err(error) => return (false, error.to_string(), None),
-        };
-        let session_id = Some(session.id().to_string());
-        if let Err(stop) = crate::budgets::check(self, session.id(), false) {
-            return (false, stop.message, session_id);
-        }
-        if session.send(prompt).is_err() {
-            return (
-                false,
-                "the session closed before it started".into(),
-                session_id,
-            );
-        }
-        match self.wait_for_turn(&session, events, timeout).await {
-            Ok(reply) => (true, reply, session_id),
-            Err(message) => (false, message, session_id),
-        }
-    }
-
-    /// Waits for the root agent's turn to end, returning its reply. Permission requests from
-    /// any of the session's agents are queued as approval requests, since nobody may be
-    /// watching the session.
-    pub async fn wait_for_turn(
-        self: &Arc<Self>,
-        session: &Arc<Session>,
-        mut events: broadcast::Receiver<AgentEvent>,
-        timeout: std::time::Duration,
-    ) -> Result<String, String> {
-        let mut reply = String::new();
-        let outcome = tokio::time::timeout(timeout, async {
-            loop {
-                let event = match events.recv().await {
-                    Ok(event) => event,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err("the session ended".to_string());
-                    }
-                };
-                let root = event.agent_id == ROOT_AGENT;
-                match event.event {
-                    SessionEvent::PermissionRequested {
-                        request_id,
-                        tool,
-                        summary,
-                        ..
-                    } => self.bridge_permission(session, request_id, &tool, summary),
-                    SessionEvent::QuestionsAsked {
-                        request_id,
-                        questions,
-                    } => answer_with_recommendations(session, request_id, &questions),
-                    SessionEvent::TextDelta { text } if root => reply.push_str(&text),
-                    SessionEvent::TurnCompleted { .. } if root => return Ok(()),
-                    SessionEvent::TurnFailed { message } if root => return Err(message),
-                    _ => {}
-                }
-            }
-        })
-        .await;
-        match outcome {
-            Ok(Ok(())) => Ok(reply.trim().to_string()),
-            Ok(Err(message)) => Err(message),
-            Err(_) => Err(format!(
-                "timed out after {} s (an approval may be waiting)",
-                timeout.as_secs()
-            )),
-        }
-    }
-
-    /// Answers a session's permission request through the approval queue.
-    pub fn bridge_permission(
-        self: &Arc<Self>,
-        session: &Arc<Session>,
-        request_id: u64,
-        tool: &str,
-        summary: String,
-    ) {
-        let answer = self.approvals.request(
-            self,
-            "tool",
-            format!("{tool} in session {}: {summary}", session.id()),
-        );
-        let session = Arc::clone(session);
-        tokio::spawn(async move {
-            let decision = if answer.await.unwrap_or(false) {
-                PermissionDecision::Allow
-            } else {
-                PermissionDecision::Deny
-            };
-            let _ = session.respond(request_id, decision);
-        });
-    }
-
-    /// Starts a session with extra options: pre-approved tools, or a project agent's launcher
-    /// and instructions.
-    pub fn create_session_with(
-        &self,
-        project_dir: &str,
-        model: Option<&str>,
-        options: SessionOptions,
-    ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
-        // The user's settings, narrowed by the environment's own configuration files.
-        let env_config = self.environment_settings(options.environment_id.as_deref());
-        let settings = &env_config.settings;
-        let mut notices: Vec<String> = Vec::new();
-        let mut fixed_rules = Vec::new();
-        for rule in &env_config.permission_rules {
-            match imperium_tools::permissions::validate_rule(rule) {
-                Ok(()) => fixed_rules.push(rule.clone()),
-                Err(error) => notices.push(format!(
-                    "The environment's configuration has a permission rule that was ignored: \
-                     {error}"
-                )),
-            }
-        }
-        if !env_config.refused.is_empty() {
-            notices.push(format!(
-                "The environment's own configuration was only partly applied (it can only \
-                 narrow your settings): {}",
-                env_config.refused.join("; ")
-            ));
-        }
-        if let Some(id) = &options.environment_id {
-            self.budgets
-                .set_environment_limits(id, env_config.budgets.clone());
-        }
-        let mut workspace = self.workspace(
-            project_dir,
-            &options.folders,
-            &options.runtime,
-            options.environment_id.as_deref(),
-            &settings.isolation,
-            fixed_rules,
-        )?;
-        // A session bound to an agent is limited by the agent's profile, and fails closed.
-        let bound = options.agent_id.as_deref().map(|agent_id| {
-            self.agent_profile(
-                options.environment_id.as_deref(),
-                agent_id,
-                options.agent_recorded.as_ref(),
-            )
-        });
-        if let Some((profile, _)) = &bound {
-            workspace = workspace
-                .with_profile(profile.clone())
-                .with_protected_folders([self.paths.config_dir(), self.paths.data_dir()]);
-        }
-        if options.read_only {
-            workspace = workspace.with_read_only();
-        }
-        // An environment's sessions also get its repositories' worktrees, unless it turned them
-        // off. A session started on its own worktrees keeps to them, so its edits stay apart
-        // from the user's checkout.
-        if options.worktrees.is_empty()
-            && options
-                .environment_id
-                .as_deref()
-                .and_then(|id| self.environments.get(id))
-                .is_some_and(|env| env.project_worktrees)
-        {
-            workspace = workspace.with_project_worktrees();
-        }
-        let unattended = options.background || !options.pre_approved.is_empty();
-        let permission_mode = options.permission_mode.unwrap_or(if unattended {
-            self.unattended_mode(settings)
-        } else {
-            settings.permissions.mode
-        });
-        workspace.permissions().set_mode(permission_mode);
-        let mut placement = Placement {
-            environment_id: options.environment_id.clone(),
-            agent_id: options.agent_id.clone(),
-            folders: workspace.folders_display(),
-            persistent: options.persistent,
-            worktrees: options.worktrees.clone(),
-            pinned: false,
-            title: None,
-            title_by_user: false,
-            project_agent: options.launcher.is_some(),
-            branched_from: None,
-            comparison_id: None,
-            read_only: options.read_only,
-            started_by: options.started_by.clone(),
-        };
-        // A remote runtime's folders are not on this machine: project files (instructions,
-        // skills, project memory) are not read from them.
-        let remote = workspace.runtime().is_some();
-        let local_project = if remote {
-            self.paths.data_dir().join("runtimes").join("none")
-        } else {
-            PathBuf::from(project_dir)
-        };
-        let project_dir_path = local_project.as_path();
-        // A model table id or a spec, as the model pickers offer them.
-        // A resumed session keeps the model it was journalled with even if the user has since
-        // switched it off; a new session is refused one.
-        // (One that never had a model, resumed, is refused an off default like a new one: it
-        // waits for a model instead.)
-        let resolved = if options.resume_id.is_some() && model.is_some() {
-            self.resolve_model(model)
-        } else {
-            self.resolve_usable_model(model)
-        };
-        let model = match resolved {
-            Ok(model) => Some(model),
-            Err(ModelError::NoDefault) if options.may_wait_for_model => None,
-            // No model named and the default is off: the session waits for a model as it does
-            // with no default.
-            Err(ModelError::Disabled(_)) if model.is_none() && options.may_wait_for_model => None,
-            Err(error) => return Err(error.into()),
-        };
-        let catalog = self.session_catalog();
-        // Connectors added or changed in the app since the daemon started apply to new sessions.
-        let fresh = crate::connectors::saved_settings(&self.paths);
-        // The servers the environment's own file adds (it needs the user's trust for that) start
-        // beside the connectors, the user's of the same name winning.
-        let running = self.settings();
-        let mut mcp_settings = fresh.unwrap_or_else(|| (*running).clone());
-        for (name, server) in &settings.mcp.servers {
-            // Only what the environment's file added: a connector the user removed since the
-            // daemon started stays removed.
-            if !running.mcp.servers.contains_key(name) {
-                mcp_settings
-                    .mcp
-                    .servers
-                    .entry(name.clone())
-                    .or_insert_with(|| server.clone());
-            }
-        }
-        let (mut mcp, mcp_notices) =
-            crate::mcp::session_servers(&mcp_settings, project_dir_path, |name| {
-                self.secrets.load(name)
-            });
-        notices.extend(mcp_notices);
-        // Plugins' servers are not among `mcp`: they start when an agent activates the plugin.
-        let mut extensions = self.extensions(
-            project_dir_path,
-            settings,
-            bound.as_ref().map(|(profile, _)| profile),
-        );
-        // A profile also keeps servers from starting at all: a project's own `.mcp.json` names
-        // commands, and an agent that may write files must not get one run by starting a session.
-        if let Some((profile, _)) = &bound {
-            mcp.retain(|server| profile.allows_mcp(Some(&server.name)));
-            let profile = profile.clone();
-            extensions
-                .plugins
-                .set_filter(Arc::new(move |name| profile.allows_plugin(name)));
-        }
-        let context = self.context(project_dir_path, &mut notices);
-        let personality = self.personality(&settings.policy.personality, &mut notices);
-        notices.append(&mut extensions.notices);
-        let resume = options.resume_id.is_some();
-        let id = match options.resume_id.clone().or_else(|| options.id.clone()) {
-            Some(id) => id,
-            None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
-        };
-        let remember = options.launcher.is_none();
-        // Files attached from outside the session's folders are copied into its attachments
-        // folder, which its tools may read. A remote runtime cannot reach this machine's
-        // folders, so it gets no grant (attached text is inlined either way).
-        let workspace = if workspace.runtime().is_none() {
-            let store = crate::attachments::store_dir(self.paths.data_dir(), &id);
-            match std::fs::create_dir_all(&store) {
-                Ok(()) => workspace.with_grants(&[imperium_tools::permissions::PathGrant {
-                    path: store.display().to_string(),
-                    mode: imperium_tools::permissions::PathMode::Read,
-                }]),
-                Err(error) => {
-                    tracing::warn!(%error, "could not create the session's attachments folder");
-                    workspace
-                }
-            }
-        } else {
-            workspace
-        };
-        // Its own scratch folder, in its environment's working folder: made now (an unarchived
-        // session gets a new, empty one), deleted when the session is archived or deleted.
-        let local = workspace.runtime().is_none();
-        // Held until the session is in the maps, so a move of the working folders sees it.
-        let _workspaces = (!options.workspaces_locked).then(|| {
-            self.workspaces_lock
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-        });
-        let workspace = match (&placement.environment_id, remember && local) {
-            (Some(environment), true) => match self.session_scratch(environment, &id) {
-                Some(dir) => workspace.with_scratch(&dir),
-                None => workspace,
-            },
-            _ => workspace,
-        };
-        if resume {
-            // A resumed session keeps its pin and its title.
-            let meta = std::fs::read_to_string(self.meta_path(&id))
-                .ok()
-                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-                .unwrap_or_default();
-            placement.pinned = meta["pinned"].as_bool() == Some(true);
-            placement.title = meta["title"]
-                .as_str()
-                .filter(|title| !title.trim().is_empty())
-                .map(str::to_string);
-            placement.title_by_user =
-                placement.title.is_some() && meta["title_by_user"].as_bool() == Some(true);
-            placement.branched_from = serde_json::from_value(meta["branched_from"].clone()).ok();
-            placement.comparison_id = meta["comparison_id"].as_str().map(str::to_string);
-            placement.started_by = serde_json::from_value(meta["started_by"].clone()).ok();
-        }
-        // Older project memory of the environment's folder is in its Memory.md before the
-        // session reads it (a no-op once merged).
-        if let Some(environment) = &placement.environment_id {
-            self.migrate_environment_memory(environment);
-        }
-        // Tool providers in the order their tools are offered (MCP tools always come first).
-        let mut tools: Vec<Arc<dyn ToolProvider>> = Vec::new();
-        if !mcp.is_empty() {
-            let auths = crate::mcp::oauth_sources(&mcp, &self.secrets, self.connector_status());
-            tools.push(Arc::new(McpTools::new(mcp).with_auth(auths)));
-        }
-        if let Some(media) = self.media() {
-            tools.push(Arc::new(MediaTools::new(media)));
-        }
-        // Files a page offers are saved in the session's scratch folder (which its agents may
-        // read), or its working folder when it has none; never on a remote machine's behalf.
-        let downloads = (!remote && !options.read_only).then(|| {
-            (
-                workspace
-                    .scratch()
-                    .unwrap_or_else(|| workspace.root())
-                    .join("downloads"),
-                workspace.clone(),
-            )
-        });
-        if let Some(web) = self.web_tools(downloads) {
-            if let Some(browser) = &web.browser {
-                self.browsers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(id.clone(), browser.clone());
-            }
-            tools.push(Arc::new(web));
-        }
-        // A preview's dev server runs where the session's commands do, so only a session on
-        // this machine offers one; it stops when the session's tools are dropped. A read-only
-        // mount gets none, since a dev server writes to its folders.
-        if !remote && !options.read_only {
-            tools.push(Arc::new(PreviewTools::new(workspace.clone())));
-        }
-        if let Some(agent_id) = &options.initiative_agent {
-            tools.push(Arc::new(crate::initiative::InitiativeTools {
-                daemon: self.me.clone(),
-                agent_id: agent_id.clone(),
-            }));
-        }
-        if self.suggestions.enabled() {
-            tools.push(Arc::new(SuggestTool {
-                daemon: self.me.clone(),
-                session_id: id.clone(),
-            }));
-        }
-        if self.settings().memory.session_search {
-            tools.push(Arc::new(session_search::SessionSearchTool {
-                daemon: self.me.clone(),
-                session_id: id.clone(),
-            }));
-        }
-        let list_models = self.settings().models.list_models;
-        if list_models != imperium_config::ListModelsScope::Off {
-            tools.push(Arc::new(model_awareness::ListModelsTool {
-                daemon: self.me.clone(),
-                catalog: catalog.clone(),
-                subagents: list_models == imperium_config::ListModelsScope::All,
-            }));
-        }
-        // Every session may change the app config through the daemon, wherever it runs; the
-        // permission rules decide whether each change asks.
-        tools.push(Arc::new(agent_config::AgentConfigTools {
-            daemon: self.me.clone(),
-            session_id: id.clone(),
-        }));
-        let model_spec = model.as_ref().map(|model| model.spec.clone());
-        let effort = options.effort.unwrap_or(self.settings().models.effort);
-        let journal_path = self
-            .paths
-            .data_dir()
-            .join("sessions")
-            .join(format!("{id}.jsonl"));
-        // Writer subagents started with `access: "write"` get worktrees of their own (local
-        // folders only, and not for a read-only mount).
-        let workspace = if remote || options.read_only {
-            workspace
-        } else {
-            workspace.with_writer_trees(Arc::new(crate::writers::GitWriterTrees::new(
-                &id,
-                &journal_path,
-                self.worktree_dir(),
-            )))
-        };
-        // Remembered sessions on this machine checkpoint their repositories' files before each
-        // turn that changes them.
-        let checkpoints =
-            (remember && !remote && self.settings().sessions.checkpoints).then(|| {
-                Arc::new(crate::checkpoints::SessionCheckpoints::new(
-                    self.me.clone(),
-                    self.paths.data_dir(),
-                    &id,
-                    journal_path.clone(),
-                    workspace
-                        .roots()
-                        .into_iter()
-                        .map(Path::to_path_buf)
-                        .collect(),
-                ))
-            });
-        // Nobody reads the turns of a background session, one with pre-approved tools (auto-fix),
-        // or a project or persistent agent: the harness aids that talk to a person stay off.
-        let attended = session_attended(&options);
-        let session = Session::spawn(SessionConfig {
-            attended,
-            effort,
-            journal_path,
-            budget_gate: Some(Arc::new(crate::budgets::CallGate::new(
-                self.me.clone(),
-                id.clone(),
-            ))),
-            checkpoints: checkpoints.clone().map(|checkpoints| {
-                let hook: Arc<dyn imperium_engine::TurnCheckpoints> = checkpoints;
-                hook
-            }),
-            id: id.clone(),
-            workspace,
-            model,
-            catalog,
-            clients: ChatClients::default(),
-            routing: settings.routing.clone(),
-            local: self.local.get().map(|local| {
-                let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
-                supervisor
-            }),
-            tools,
-            notices,
-            extensions,
-            context,
-            enforce: self.settings().workflow.enforce,
-            pre_approved: options.pre_approved,
-            resume,
-            resume_policy: self.resume_policy(),
-            launcher: options.launcher,
-            instructions: match (options.instructions, env_config.instructions.as_deref()) {
-                (Some(own), Some(added)) => Some(format!("{own}\n\n{}", environment_text(added))),
-                (Some(own), None) => Some(own),
-                (None, Some(added)) => Some(environment_text(added)),
-                (None, None) => None,
-            },
-            personality,
-            background: options.background.then(|| Background {
-                load: self.load_view(),
-            }),
-            memory: self.settings().memory.enabled.then(|| SessionMemory {
-                // The global store only; an environment's Memory.md lives in its working folder,
-                // outside the project, so a read-only session may write it (under the policy).
-                store: Store::new(self.paths.data_dir()),
-                settings: self.settings().memory.clone(),
-                // Looked up on each use, so it follows the working folders when they move.
-                environment: placement
-                    .environment_id
-                    .clone()
-                    .filter(|environment| crate::workspaces::safe_id(environment))
-                    .map(|environment| {
-                        let me = self.me.clone();
-                        let fallback = self.workspaces_root();
-                        imperium_memory::environment::EnvironmentMemory::live(move || {
-                            let root = me
-                                .upgrade()
-                                .map_or_else(|| fallback.clone(), |state| state.workspaces_root());
-                            crate::workspaces::memory_file(&root, &environment).unwrap_or_default()
-                        })
-                    }),
-            }),
-            max_steps: self.settings().agents.max_steps,
-            auto_compact: options.auto_compact,
-            auto_compact_at: Some(self.settings().context.auto_compact_at),
-            harness: self.settings().harness.clone(),
-            attachments: self.settings().attachments.clone(),
-            keep_agent_state: remember && self.settings().sessions.agent_state_keep,
-            knowledge: imperium_engine::KnowledgeConfig {
-                settings: self.settings().knowledge.clone(),
-                models: Some(Arc::new(crate::knowledge::ModelSwitch::new(
-                    self.me.clone(),
-                ))),
-                cache_lifetime_s: settings
-                    .models
-                    .catalog
-                    .iter()
-                    .filter_map(|entry| {
-                        entry
-                            .cache_lifetime_s
-                            .map(|seconds| (entry.spec.clone(), u64::from(seconds)))
-                    })
-                    .collect(),
-            },
-        })
-        .map_err(|error| CreateError::Start(error.to_string()))?;
-        // Ordinary sessions are remembered so they continue after a restart; project agents
-        // start afresh with the daemon.
-        if remember {
-            let meta = serde_json::json!({
-                "project_dir": project_dir,
-                "model": model_spec,
-                "background": options.background,
-                "unattended": !attended,
-                "run_now": options.run_now,
-                "environment_id": placement.environment_id,
-                "folders": placement.folders,
-                "worktrees": placement.worktrees,
-                "pinned": placement.pinned,
-                "title": placement.title,
-                "title_by_user": placement.title_by_user,
-                "branched_from": placement.branched_from,
-                "comparison_id": placement.comparison_id,
-                "subfolder": options.subfolder,
-                "read_only": placement.read_only,
-                "started_by": placement.started_by,
-                "effort": effort.as_str(),
-                "permission_mode": permission_mode.as_str(),
-                "agent_id": options.agent_id,
-                "agent_permissions": bound.as_ref().map(|(_, permissions)| permissions),
-            });
-            let path = self.meta_path(&id);
-            if let Err(error) = std::fs::write(&path, meta.to_string()) {
-                tracing::warn!(path = %path.display(), %error, "could not record the session");
-            }
-        }
-        if options.run_now {
-            session.run_now().release();
-        }
-        let events = session.subscribe();
-        if let Some(pets) = self.pets() {
-            pets.watch(id.clone(), session.subscribe());
-        }
-        if let Some(me) = self.me.upgrade() {
-            crate::suggestions::watch(&me, id.clone(), session.subscribe());
-            if placement.title.is_none() {
-                titles::watch(&me, id.clone(), session.subscribe());
-            }
-            crate::resources::watch_session(&me, id.clone(), session.subscribe());
-            crate::budgets::watch_session(
-                &me,
-                id.clone(),
-                placement.environment_id.clone(),
-                session.subscribe(),
-            );
-        }
-        let session = Arc::new(session);
-        if let Some(checkpoints) = checkpoints {
-            self.checkpoints
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(id.clone(), checkpoints);
-        }
-        self.placements
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id.clone(), placement);
-        self.sessions
-            .lock()
-            .expect("session map lock is never poisoned by a panic while held")
-            .insert(id, Arc::clone(&session));
-        self.announce(SESSION_CREATED, self.summary(&session));
-        Ok((session, events))
-    }
-
-    /// Starts a session in an environment: its first folder is the working directory and every
-    /// folder is open to the session's tools.
-    pub fn create_in_environment(
-        &self,
-        environment_id: &str,
-        model: Option<&str>,
-        options: SessionOptions,
-    ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
-        let env = self
-            .environments
-            .get(environment_id)
-            .ok_or_else(|| EnvironmentError::NotFound(environment_id.to_string()))?;
-        let mut options = options;
-        if options.subfolder.is_some() && env.folders.is_empty() {
-            return Err(EnvironmentError::Invalid(format!(
-                "the environment {} has no folders to narrow a session to",
-                env.name
-            ))
-            .into());
-        }
-        if (options.subfolder.is_some() || options.read_only)
-            && (options.worktree || !options.worktrees.is_empty())
-        {
-            return Err(CreateError::Worktree(
-                "a session narrowed to a subfolder or mounted read-only cannot start on a \
-                 worktree"
-                    .into(),
-            ));
-        }
-        // Home with no project folders works in its session's own scratch folder. The folder
-        // is made under the working-folders lock, which the session keeps until it exists.
-        let _home_lock;
-        // The id of a new Home session whose folder this call made, to take it back if the
-        // session does not start.
-        let mut made_home_folder = None;
-        if env.folders.is_empty() && env.builtin && !options.workspaces_locked {
-            if options.worktree {
-                return Err(CreateError::Worktree(
-                    "Home has no project folders to start on a worktree".into(),
-                ));
-            }
-            // The model is checked first, so a refusal leaves no folder behind.
-            let resolved = if options.resume_id.is_some() && model.is_some() {
-                self.resolve_model(model)
-            } else {
-                self.resolve_usable_model(model)
-            };
-            match resolved {
-                Ok(_) => {}
-                Err(ModelError::NoDefault) if options.may_wait_for_model => {}
-                Err(ModelError::Disabled(_)) if model.is_none() && options.may_wait_for_model => {}
-                Err(error) => return Err(error.into()),
-            }
-            _home_lock = self
-                .workspaces_lock
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            options.workspaces_locked = true;
-            let id = match options.resume_id.clone().or_else(|| options.id.clone()) {
-                Some(id) => id,
-                None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
-            };
-            let dir = crate::workspaces::ensure_session_dir(&self.workspaces_root(), &env.id, &id)
-                .map_err(|error| {
-                    CreateError::Start(format!("could not make Home's working folder: {error}"))
-                })?;
-            if options.resume_id.is_none() {
-                made_home_folder = Some(id.clone());
-            }
-            options.id = Some(id);
-            options.home_dir = Some(dir.display().to_string());
-        }
-        if env.folders.is_empty() && options.home_dir.is_none() {
-            return Err(EnvironmentError::Invalid(format!(
-                "the environment {} has no folders yet; add one first",
-                env.name
-            ))
-            .into());
-        }
-        let mut folders = match options.home_dir.take() {
-            Some(dir) => vec![dir],
-            None => env.folders.clone(),
-        };
-        // Narrowed to a subfolder: it is the session's only folder, so the environment's other
-        // folders (and the rest of this one) are closed to its tools.
-        if let Some(sub) = options.subfolder.take() {
-            let narrowed = crate::environments::narrowed_folder(&env.runtime, &env.folders, &sub)?;
-            options.subfolder = Some(narrowed.clone());
-            folders = vec![narrowed];
-        }
-        if !options.worktrees.is_empty() {
-            // A resumed session goes back to its worktrees.
-            folders = crate::worktrees::apply(&folders, &options.worktrees);
-        } else if options.worktree {
-            if env.runtime.is_remote() {
-                return Err(CreateError::Worktree(
-                    "worktrees are made only for folders on this machine".into(),
-                ));
-            }
-            let id = match options.id.clone() {
-                Some(id) => id,
-                None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
-            };
-            let branch = options
-                .worktree_branch
-                .clone()
-                .filter(|branch| !branch.trim().is_empty())
-                .unwrap_or_else(|| format!("imperium/{}", &id[..id.len().min(8)]));
-            let dir = self.worktree_dir();
-            let (used, made) = crate::worktrees::create(&folders, branch.trim(), dir.as_deref())
-                .map_err(CreateError::Worktree)?;
-            folders = used;
-            options.worktrees = made;
-            options.id = Some(id);
-        }
-        let (first, rest) = folders.split_first().expect("checked above");
-        let options = SessionOptions {
-            environment_id: Some(env.id.clone()),
-            folders: rest.to_vec(),
-            runtime: env.runtime.clone(),
-            ..options
-        };
-        let created = self.create_session_with(first, model, options);
-        if created.is_err()
-            && let Some(id) = made_home_folder
-        {
-            self.remove_session_scratch(&env.id, &id);
-        }
-        created
-    }
-
-    /// Stops and forgets a session so it does not continue after a restart, removing its
-    /// worktrees when asked (their branches stay). A persistent agent's session is refused:
-    /// the agent is deleted in its environment instead.
-    pub fn delete_session(
-        &self,
-        id: &str,
-        remove_worktrees: bool,
-    ) -> Result<SessionDeleteResult, String> {
-        let _workspaces = self
-            .workspaces_lock
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let placement = self
-            .placements
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            // An archived session is deleted the same way, from its record.
-            .or_else(|| {
-                self.take_archived(id).map(|summary| Placement {
-                    environment_id: summary.environment_id,
-                    worktrees: summary.worktrees,
-                    ..Placement::default()
-                })
-            });
-        let Some(placement) = placement else {
-            return Err(format!("no session {id}"));
-        };
-        if placement.persistent {
-            return Err(
-                "this is a persistent agent of its environment; delete the agent in the environment".into(),
-            );
-        }
-        self.forget_session(id);
-        // Files copied into its attachments folder go with it.
-        let _ = std::fs::remove_dir_all(crate::attachments::store_dir(self.paths.data_dir(), id));
-        let sessions = self.paths.data_dir().join("sessions");
-        let _ = std::fs::remove_file(sessions.join(format!("{id}.meta.json")));
-        // So do its checkpoints: their refs in each repository and their records.
-        crate::checkpoints::forget(self.paths.data_dir(), id);
-        // So does its scratch folder.
-        if let Some(environment) = &placement.environment_id {
-            self.remove_session_scratch(environment, id);
-        }
-        // Its agents' kept state goes with it.
-        let agents = imperium_engine::agents_dir(&sessions.join(format!("{id}.jsonl")));
-        if agents.exists()
-            && let Err(error) = std::fs::remove_dir_all(&agents)
-        {
-            tracing::warn!(path = %agents.display(), %error, "could not delete the session's agent state");
-        }
-        let mut result = SessionDeleteResult::default();
-        // The worktrees of its writer subagents go first (they were made from the session's
-        // folders, which may be its own worktrees), on the same terms; branches stay.
-        let journal = sessions.join(format!("{id}.jsonl"));
-        let mut writer_failures = Vec::new();
-        if remove_worktrees {
-            let (removed, failed) = crate::writers::GitWriterTrees::remove_recorded(&journal);
-            result.removed_worktrees.extend(removed);
-            writer_failures.clone_from(&failed);
-            result.failed.extend(failed);
-        }
-        // The record goes, except for the writers whose worktrees could not be removed, which it
-        // keeps naming for cleaning up by hand.
-        crate::writers::GitWriterTrees::settle(&journal, remove_worktrees, &writer_failures);
-        if remove_worktrees && !placement.worktrees.is_empty() {
-            // A worktree another session also works in (a branch shares its source's) is
-            // theirs too, and may hold uncommitted work: it stays.
-            let others = self.worktree_paths_in_use();
-            let own: Vec<_> = placement
-                .worktrees
-                .iter()
-                .filter(|tree| !others.iter().any(|path| same_path(path, &tree.path)))
-                .cloned()
-                .collect();
-            if !own.is_empty() {
-                let (removed, failed) = crate::worktrees::remove(&own);
-                result.removed_worktrees.extend(removed);
-                result.failed.extend(failed);
-            }
-        }
-        self.announce(
-            imperium_protocol::methods::SESSION_DELETED,
-            SessionDeleteParams {
-                session_id: id.to_string(),
-                remove_worktrees,
-            },
-        );
-        Ok(result)
-    }
-
-    /// Where sessions put their worktrees (`sessions.worktree_dir`), read afresh so a change in
-    /// Settings applies to the next one; `None` puts them inside their repositories.
-    fn worktree_dir(&self) -> Option<PathBuf> {
-        let fresh = crate::connectors::saved_settings(&self.paths);
-        let current = self.settings();
-        fresh
-            .as_ref()
-            .unwrap_or(&*current)
-            .sessions
-            .worktree_dir
-            .clone()
-            .filter(|dir| !dir.as_os_str().is_empty())
-    }
-
-    /// Worktree folders that running and archived sessions work in.
-    fn worktree_paths_in_use(&self) -> Vec<String> {
-        let mut paths: Vec<String> = self
-            .placements
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .flat_map(|placement| placement.worktrees.iter().map(|tree| tree.path.clone()))
-            .collect();
-        paths.extend(
-            self.archived_sessions()
-                .into_iter()
-                .flat_map(|summary| summary.worktrees.into_iter().map(|tree| tree.path)),
-        );
-        // Sessions with a meta file on disk that are neither running nor archived (not resumed
-        // yet, or past `agents.resume_days`) still own their worktrees.
-        if let Ok(entries) = std::fs::read_dir(self.paths.data_dir().join("sessions")) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.ends_with(".meta.json"))
-                {
-                    continue;
-                }
-                let Some(meta) = std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-                else {
-                    continue;
-                };
-                if let Some(trees) = meta["worktrees"].as_array() {
-                    paths.extend(
-                        trees
-                            .iter()
-                            .filter_map(|tree| tree["path"].as_str().map(str::to_string)),
-                    );
-                }
-            }
-        }
-        paths
-    }
-
-    /// Test hook: `session.compare` fails after creating its `branches`th branch. Compiled only
-    /// for this crate's tests or with the `testing` feature.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn inject_compare_failure(&self, branches: usize) {
-        self.compare_fault
-            .store(branches, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    pub fn environments(&self) -> &Environments {
-        &self.environments
-    }
-
-    /// The environments, with which of them can start sessions on git worktrees.
-    pub fn environment_list(&self) -> imperium_protocol::methods::EnvironmentListResult {
-        let environments = self.environments.list();
-        let git = environments
-            .iter()
-            .filter(|env| env.runtime == imperium_protocol::methods::EnvironmentRuntime::Local)
-            .filter(|env| {
-                env.folders
-                    .iter()
-                    .any(|folder| crate::worktrees::in_repository(Path::new(folder)))
-            })
-            .map(|env| env.id.clone())
-            .collect();
-        imperium_protocol::methods::EnvironmentListResult { environments, git }
-    }
-
     /// The budgets and the usage they count.
     pub fn budgets(&self) -> &crate::budgets::BudgetBook {
         &self.budgets
@@ -2546,274 +944,6 @@ impl DaemonState {
     pub fn permissions(&self) -> &crate::permissions::PermissionStore {
         &self.permissions
     }
-
-    /// Applies environment `id`'s saved rules to its running sessions (its grants apply to
-    /// sessions started from now on) and tells every client.
-    pub fn environment_permissions_changed(&self, id: &str) {
-        if let Some(env) = self.environments.get(id) {
-            self.permissions.set_environment(id, &env.permissions.rules);
-        }
-        self.announce_environments();
-    }
-
-    /// Tells every client the environments changed.
-    pub fn announce_environments(&self) {
-        self.announce(
-            imperium_protocol::methods::ENVIRONMENTS_CHANGED,
-            self.environment_list(),
-        );
-    }
-
-    fn meta_path(&self, id: &str) -> PathBuf {
-        self.paths
-            .data_dir()
-            .join("sessions")
-            .join(format!("{id}.meta.json"))
-    }
-
-    /// Sets a session's reasoning effort from its agents' next model calls on, records it with
-    /// the session so it survives a restart, and tells every client.
-    pub fn set_effort(&self, session: &Session, effort: imperium_api::Effort) {
-        session.set_effort(effort);
-        // Sessions that are not remembered (project agents) have no meta file; their effort
-        // lasts until the daemon stops.
-        self.update_meta(session.id(), |meta| {
-            meta.insert("effort".into(), effort.as_str().into());
-        });
-        self.announce(
-            imperium_protocol::methods::SESSION_UPDATED,
-            self.summary(session),
-        );
-    }
-
-    /// Sets a session's permission mode from its agents' next calls on, records it with the
-    /// session so it survives a restart, and tells every client.
-    pub fn set_permission_mode(&self, session: &Session, mode: imperium_api::PermissionMode) {
-        session.set_permission_mode(mode);
-        self.update_meta(session.id(), |meta| {
-            meta.insert("permission_mode".into(), mode.as_str().into());
-        });
-        tracing::info!(session = %session.id(), mode = %mode, "the session's permission mode changed");
-        self.announce(
-            imperium_protocol::methods::SESSION_UPDATED,
-            self.summary(session),
-        );
-    }
-
-    /// Whether the model `spec` names (a model table id or `<endpoint>:<model>`) can reason:
-    /// the table row's `reasoning` setting or tags, else a local model's chat template (or
-    /// its `reasoning` setting), else whether its name is a known reasoning model.
-    pub fn model_reasons(&self, spec: &str) -> bool {
-        let settings = self.settings();
-        let row = settings
-            .models
-            .catalog
-            .iter()
-            .find(|entry| entry.spec == spec || entry.id == spec);
-        if let Some(set) = row.and_then(imperium_config::CatalogEntry::reasoning_setting) {
-            return set;
-        }
-        let spec = row.map_or(spec, |entry| entry.spec.as_str());
-        let (endpoint, model) = spec.split_once(':').unwrap_or(("", spec));
-        let local = endpoint == imperium_config::LLAMACPP_ENDPOINT
-            || endpoint == imperium_config::VLLM_ENDPOINT;
-        let runtime = self.local.get().filter(|_| local);
-        runtime
-            .and_then(|runtime| LocalModels::reasons(&*runtime.supervisor, model))
-            .unwrap_or_else(|| imperium_api::reasoning_by_name(model))
-    }
-
-    /// Pins or unpins a session, records it with the session so it survives a restart, and
-    /// tells every client.
-    pub fn set_pinned(&self, session: &Session, pinned: bool) -> std::io::Result<()> {
-        let path = self.meta_path(session.id());
-        // Sessions that are not remembered (project agents) have no meta file; their pin lasts
-        // until the daemon stops.
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            let mut meta: serde_json::Value =
-                serde_json::from_str(&text).map_err(std::io::Error::other)?;
-            meta["pinned"] = serde_json::Value::Bool(pinned);
-            std::fs::write(&path, meta.to_string())?;
-        }
-        self.placements
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(session.id().to_string())
-            .or_default()
-            .pinned = pinned;
-        self.announce(
-            imperium_protocol::methods::SESSION_UPDATED,
-            self.summary(session),
-        );
-        Ok(())
-    }
-
-    /// A session as lists show it, with its environment and folders.
-    pub fn summary(&self, session: &Session) -> SessionSummary {
-        let placement = self
-            .placements
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(session.id())
-            .cloned()
-            .unwrap_or_default();
-        SessionSummary {
-            environment_id: placement.environment_id,
-            folders: placement.folders,
-            persistent: placement.persistent,
-            worktrees: placement.worktrees,
-            pinned: placement.pinned,
-            branched_from: placement.branched_from,
-            comparison_id: placement.comparison_id,
-            read_only: placement.read_only,
-            started_by: placement.started_by,
-            created_at: created_at(&self.journal_path(session.id())),
-            title: placement
-                .title
-                .unwrap_or_else(|| titles::from_first_message(&session.title())),
-            reasoning: session
-                .model()
-                .is_some_and(|model| self.model_reasons(&model)),
-            ..summary(session)
-        }
-    }
-
-    /// Workflow packs and the project's instructions and documentation, unless the workflow is
-    /// turned off. Packs that cannot be read are reported in `notices`.
-    fn context(&self, project_dir: &Path, notices: &mut Vec<String>) -> Option<Arc<ContextIndex>> {
-        let workflow = &self.settings().workflow;
-        if !workflow.enabled {
-            return None;
-        }
-        // Versions the user accepted from a pack update source, whose files still match the
-        // hash they were pinned at (`imperium pack`). They are not trusted like listed folders:
-        // their `@` imports stay inside the pack.
-        let pinned = PackStore::new(self.paths.data_dir()).pinned();
-        notices.extend(pinned.notices);
-        let builtin =
-            (workflow.packs.is_empty() && pinned.packs.is_empty() && workflow.default_pack)
-                .then(bundled_pack)
-                .flatten();
-        let mut packs: Vec<Pack> = workflow
-            .packs
-            .iter()
-            .chain(builtin.as_ref())
-            .filter_map(|root| match Pack::load(root) {
-                // Folders the user configured are trusted; the bundled snapshot is not.
-                Ok(pack) if workflow.packs.contains(root) => Some(pack.trusted()),
-                Ok(pack) => Some(pack),
-                Err(error) => {
-                    notices.push(format!("workflow pack skipped: {error}"));
-                    None
-                }
-            })
-            .collect();
-        for found in pinned.packs {
-            // A reference is `<pack name>:<path>`, so a pinned pack may not take the name of
-            // another loaded pack or of the project's own files.
-            if found.name == "project" || packs.iter().any(|pack| pack.name == found.name) {
-                notices.push(format!(
-                    "pinned pack {} skipped: another pack already has that name",
-                    found.name
-                ));
-                continue;
-            }
-            match Pack::load(&found.dir) {
-                Ok(mut pack) => {
-                    pack.name = found.name;
-                    packs.push(pack);
-                }
-                Err(error) => notices.push(format!("pinned pack {} skipped: {error}", found.name)),
-            }
-        }
-        Some(Arc::new(ContextIndex::new(packs, project_dir)))
-    }
-
-    /// Where personalities are looked up: `<config>/personalities/`, the workflow folders,
-    /// then the bundled pack (with the default compiled in as the last resort).
-    pub(crate) fn personality_sources(&self) -> personality::Sources {
-        personality::Sources {
-            config_dir: Some(self.paths.config_dir().to_path_buf()),
-            packs: self.settings().workflow.packs.clone(),
-            confined: PackStore::new(self.paths.data_dir())
-                .pinned()
-                .packs
-                .into_iter()
-                .map(|found| (found.name, found.dir))
-                .collect(),
-            built_in: bundled_pack(),
-        }
-    }
-
-    /// The root agent's personality block for a new session, from `policy.personality` (`id`).
-    /// An id that is not found falls back to the default, with a notice in `notices`.
-    fn personality(&self, id: &str, notices: &mut Vec<String>) -> Option<String> {
-        let selection = self.personality_sources().select(id);
-        if let Some(warning) = selection.warning {
-            tracing::warn!("{warning}");
-            notices.push(warning);
-        }
-        selection
-            .personality
-            .map(|personality| personality.instructions())
-    }
-
-    /// Skills, hooks, slash commands, and plugins for a session in `project_dir`, with the
-    /// plugin folders and disabled plugins of `settings` (the environment's narrowed ones).
-    ///
-    /// A session bound to an agent whose profile is `profile`: plugins the profile refuses bring
-    /// no hooks, and under local files only the environment's own file cannot add plugin folders
-    /// or disable plugins (the daemon's settings decide those), since the agent may have written it.
-    fn extensions(
-        &self,
-        project_dir: &Path,
-        settings: &Settings,
-        profile: Option<&imperium_tools::AgentProfile>,
-    ) -> Extensions {
-        let settings = if profile.is_some_and(|profile| profile.local_files_only()) {
-            // Not the environment's narrowed settings.
-            std::borrow::Cow::Owned((*self.settings()).clone())
-        } else {
-            std::borrow::Cow::Borrowed(settings)
-        };
-        let mut extensions = imperium_extensions::load_with(
-            &Sources {
-                config_dir: self.paths.config_dir().to_path_buf(),
-                project_dir: project_dir.to_path_buf(),
-                plugin_dirs: settings.extensions.plugin_dirs.clone(),
-                // The user's own folders, never what an environment's configuration merged in.
-                user_plugin_dirs: self.settings().extensions.plugin_dirs.clone(),
-                disabled_plugins: settings.extensions.disabled_plugins.clone(),
-                hooks: self
-                    .settings()
-                    .hooks
-                    .iter()
-                    .map(|hook| ConfiguredHook {
-                        event: hook.event.clone(),
-                        matcher: hook.matcher.clone(),
-                        command: hook.command.clone(),
-                        url: hook.url.clone(),
-                        headers: hook.headers.clone(),
-                        timeout_s: hook.timeout_s,
-                    })
-                    .collect(),
-                server_timeout: Duration::from_secs(60),
-                lazy: self.settings().extensions.lazy,
-                eager: self.settings().extensions.eager.clone(),
-            },
-            &|plugin| profile.is_none_or(|profile| profile.allows_plugin(plugin)),
-        );
-        // HTTP hooks' `${secret:name}` headers read the keychain, nothing else.
-        let secrets = Arc::clone(&self.secrets);
-        extensions.hooks = std::mem::take(&mut extensions.hooks).with_secrets(
-            imperium_extensions::hooks::Secrets::new(move |name| {
-                let name: imperium_config::SecretName = name.parse().ok()?;
-                secrets.load(&name).ok().flatten()
-            }),
-        );
-        extensions
-    }
-
     /// Resolves a model a client asked a session to switch to: a model table id or an
     /// `<endpoint>:<model>` spec, or `None` for `models.default`.
     pub fn resolve_model(&self, requested: Option<&str>) -> Result<ResolvedModel, ModelError> {
@@ -2934,145 +1064,6 @@ impl DaemonState {
             prefer: self.settings().routing.prefer.as_str().into(),
             rules: u32::try_from(self.settings().routing.rules.len()).unwrap_or(u32::MAX),
         }
-    }
-
-    /// Kills every session's background commands and waits up to `timeout` for the kills, so
-    /// none outlives the daemon (called on shutdown).
-    pub async fn stop_background_processes(&self, timeout: Duration) {
-        let mut sessions = self.sessions();
-        sessions.extend(self.project_agents.sessions());
-        let mut stops = tokio::task::JoinSet::new();
-        for session in &sessions {
-            let processes = session.workspace().processes().clone();
-            stops.spawn(async move { processes.stop_all_and_wait(timeout).await });
-        }
-        let _ = tokio::time::timeout(timeout, stops.join_all()).await;
-    }
-
-    /// Every running session, ordered by id.
-    pub fn sessions(&self) -> Vec<Arc<Session>> {
-        let mut sessions: Vec<_> = self
-            .sessions
-            .lock()
-            .expect("session map lock is never poisoned by a panic while held")
-            .values()
-            .cloned()
-            .collect();
-        sessions.sort_by(|a, b| a.id().cmp(b.id()));
-        sessions
-    }
-
-    /// Stops tracking a session; once its other handles are gone it ends after its current
-    /// turn. Its journal stays, so it can be resumed later.
-    pub fn forget_session(&self, id: &str) {
-        let removed = self
-            .sessions
-            .lock()
-            .expect("session map lock is never poisoned by a panic while held")
-            .remove(id);
-        self.forget_browser(id);
-        // Its background commands end with it, even while something still holds the session.
-        if let Some(session) = removed {
-            session.stop_processes();
-        }
-        self.placements
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
-        self.checkpoints
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
-    }
-
-    /// A running session's checkpoints, when it records them.
-    pub(crate) fn checkpoints_of(
-        &self,
-        id: &str,
-    ) -> Option<Arc<crate::checkpoints::SessionCheckpoints>> {
-        self.checkpoints
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .cloned()
-    }
-
-    /// Starts a new session from session `id` as it was when its journal was `journal_bytes`
-    /// long, with `messages` (its saved root conversation then) as its conversation. Returns the
-    /// new session's id; the original is left as it is.
-    pub(crate) fn fork_session(
-        &self,
-        id: &str,
-        journal_bytes: u64,
-        messages: Option<Vec<u8>>,
-    ) -> Result<String, String> {
-        let sessions = self.paths.data_dir().join("sessions");
-        let mut meta: serde_json::Value = std::fs::read_to_string(self.meta_path(id))
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .ok_or("the session is not recorded, so it cannot be forked")?;
-        let journal = std::fs::read(sessions.join(format!("{id}.jsonl")))
-            .map_err(|error| format!("could not read the session's journal: {error}"))?;
-        let limit = usize::try_from(journal_bytes)
-            .unwrap_or(usize::MAX)
-            .min(journal.len());
-        // Whole lines only.
-        let cut = journal[..limit]
-            .iter()
-            .rposition(|byte| *byte == b'\n')
-            .map_or(0, |at| at + 1);
-        let new_id = new_session_id().map_err(|error| error.to_string())?;
-        let new_journal = sessions.join(format!("{new_id}.jsonl"));
-        std::fs::write(&new_journal, &journal[..cut]).map_err(|error| error.to_string())?;
-        if let Some(messages) = messages {
-            std::fs::write(imperium_engine::messages_path(&new_journal), messages)
-                .map_err(|error| error.to_string())?;
-        }
-        if let Some(fields) = meta.as_object_mut() {
-            let title = fields
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .filter(|title| !title.trim().is_empty())
-                .map(|title| format!("{title} (rewound)"));
-            if let Some(title) = title {
-                fields.insert("title".into(), title.into());
-            }
-            fields.insert("pinned".into(), false.into());
-            fields.insert("forked_from".into(), id.into());
-            fields.remove("deferred_brief");
-        }
-        std::fs::write(self.meta_path(&new_id), meta.to_string())
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = self.resume_from_meta(&new_id, &meta, &new_journal, false) {
-            let _ = std::fs::remove_file(self.meta_path(&new_id));
-            return Err(error.to_string());
-        }
-        Ok(new_id)
-    }
-
-    /// A running session's browser, which the user may take over.
-    pub fn browser_of(&self, id: &str) -> Option<BrowserSetup> {
-        self.browsers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .cloned()
-    }
-
-    /// Lets go of a session's browser handle, so the browser ends with the session.
-    pub(crate) fn forget_browser(&self, id: &str) {
-        self.browsers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
-    }
-
-    pub fn session(&self, id: &str) -> Option<Arc<Session>> {
-        self.sessions
-            .lock()
-            .expect("session map lock is never poisoned by a panic while held")
-            .get(id)
-            .cloned()
     }
 }
 
@@ -3221,7 +1212,7 @@ fn recorded_unattended(meta: &serde_json::Value) -> bool {
 
 /// Answers a batch of questions with the agent's own recommendations: an unattended session
 /// (a project agent, a scheduled task) has nobody to ask.
-pub fn answer_with_recommendations(
+pub(crate) fn answer_with_recommendations(
     session: &Session,
     request_id: u64,
     questions: &[imperium_protocol::session::Question],
@@ -3236,6 +1227,8 @@ pub fn answer_with_recommendations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imperium_workflow::Pack;
+    use imperium_workflow::update::PackStore;
 
     #[test]
     fn downloads_follow_the_settings() {
@@ -3348,6 +1341,245 @@ mod tests {
         let loaded = Pack::load(&pack).unwrap();
         assert!(loaded.roles.contains_key("root") && loaded.roles.contains_key("leaf"));
         assert!(!loaded.candidates.is_empty());
+    }
+
+    /// The packs `DaemonState::context` layers for a session, as names (a trailing `+` marks a
+    /// pack the user listed, which is trusted), and the notices it left. `None` when the
+    /// workflow is off.
+    fn layers(home: &Path, extra: &str) -> Option<(Vec<String>, Vec<String>)> {
+        let project = tempfile::tempdir().unwrap();
+        let state = state_with(home, extra);
+        let mut notices = Vec::new();
+        let index = state.context(project.path(), &mut notices)?;
+        let packs = index
+            .packs()
+            .iter()
+            .map(|pack| format!("{}{}", pack.name, if pack.trusted { "+" } else { "" }))
+            .collect();
+        Some((packs, notices))
+    }
+
+    /// A readable pack folder named `name` under `base`.
+    fn pack_folder(base: &Path, name: &str) -> PathBuf {
+        let dir = base.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENTS.md"), "# Index\n").unwrap();
+        dir
+    }
+
+    /// `[workflow]` settings listing `folders`.
+    fn listing(folders: &[&Path]) -> String {
+        let quoted: Vec<String> = folders
+            .iter()
+            .map(|folder| format!("{:?}", folder.display().to_string()))
+            .collect();
+        format!("[workflow]\npacks = [{}]\n", quoted.join(", "))
+    }
+
+    /// Pins a pack called `name` the way `imperium pack accept` does.
+    fn pin(home: &Path, name: &str) {
+        let store = PackStore::new(imperium_config::Paths::under(home).data_dir());
+        let snapshot =
+            imperium_workflow::update::Snapshot::from_files([("AGENTS.md", "# Pinned\n")]);
+        store
+            .stage(name, "https://example.com/pack.git", "abc123", &snapshot)
+            .unwrap();
+        store.accept(name, &snapshot.hash(), true).unwrap();
+    }
+
+    #[test]
+    fn the_workflow_switch_and_the_default_pack_decide_whether_a_session_has_packs() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(layers(home.path(), "[workflow]\nenabled = false\n"), None);
+        assert_eq!(
+            layers(home.path(), "[workflow]\ndefault_pack = false\n"),
+            Some((vec![], vec![]))
+        );
+        // The bundled pack is not trusted.
+        let bundled = Pack::load(&bundled_pack().unwrap()).unwrap().name;
+        assert_eq!(layers(home.path(), ""), Some((vec![bundled], vec![])));
+    }
+
+    #[test]
+    fn listed_packs_are_trusted_and_replace_the_bundled_one() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        let (one, two) = (
+            pack_folder(folders.path(), "one"),
+            pack_folder(folders.path(), "two"),
+        );
+        assert_eq!(
+            layers(home.path(), &listing(&[&one, &two])),
+            Some((vec!["one+".into(), "two+".into()], vec![]))
+        );
+    }
+
+    #[test]
+    fn a_listed_pack_that_cannot_be_read_is_skipped_with_a_notice() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        let good = pack_folder(folders.path(), "good");
+        let missing = folders.path().join("missing");
+        let (packs, notices) = layers(home.path(), &listing(&[&missing, &good])).unwrap();
+        assert_eq!(packs, vec!["good+".to_string()]);
+        assert_eq!(
+            notices,
+            vec![format!(
+                "workflow pack skipped: {} has no AGENTS.md",
+                missing.display()
+            )]
+        );
+    }
+
+    #[test]
+    fn pinned_packs_follow_the_listed_ones_and_are_not_trusted() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        pin(home.path(), "acw");
+        // A pinned pack stands in for the bundled one, with or without the default switch.
+        for extra in ["", "[workflow]\ndefault_pack = false\n"] {
+            assert_eq!(
+                layers(home.path(), extra),
+                Some((vec!["acw".into()], vec![])),
+                "{extra:?}"
+            );
+        }
+        let listed = pack_folder(folders.path(), "mine");
+        assert_eq!(
+            layers(home.path(), &listing(&[&listed])),
+            Some((vec!["mine+".into(), "acw".into()], vec![]))
+        );
+    }
+
+    #[test]
+    fn a_pinned_pack_cannot_take_the_name_of_a_listed_one() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        pin(home.path(), "acw");
+        let same = pack_folder(folders.path(), "acw");
+        assert_eq!(
+            layers(home.path(), &listing(&[&same])),
+            Some((
+                vec!["acw+".into()],
+                vec!["pinned pack acw skipped: another pack already has that name".into()]
+            ))
+        );
+    }
+
+    /// Writes pack `name` with `files` where `imperium pack` keeps pinned packs, and pins it
+    /// (without the checks `accept` makes, so a pack that cannot load can be pinned). Returns
+    /// its folder and hash.
+    fn pin_files(home: &Path, name: &str, files: &[(&str, &str)]) -> (PathBuf, String) {
+        let data = imperium_config::Paths::under(home).data_dir().to_path_buf();
+        let snapshot = imperium_workflow::update::Snapshot::from_files(files.iter().copied());
+        let hash = snapshot.hash();
+        let dir = data.join("packs").join(name).join(&hash);
+        snapshot.write(&dir).unwrap();
+        let pins = data.join("packs/pins.toml");
+        let mut text = std::fs::read_to_string(&pins).unwrap_or_default();
+        text.push_str(&format!(
+            "[packs.{name}]\nurl = \"https://example.com/p.git\"\nhash = \"{hash}\"\ncommit = \"abc\"\naccepted = 1\n"
+        ));
+        std::fs::create_dir_all(pins.parent().unwrap()).unwrap();
+        std::fs::write(&pins, text).unwrap();
+        (dir, hash)
+    }
+
+    /// The notice for a pinned pack whose files no longer match its hash.
+    fn changed_notice(name: &str, hash: &str) -> String {
+        format!(
+            "pack {name} skipped: the files of pack {name} no longer match the hash you \
+             accepted ({}); run imperium pack check to fetch it again",
+            &hash[..12]
+        )
+    }
+
+    #[test]
+    fn listed_packs_that_cannot_be_read_leave_no_pack_and_no_bundled_fallback() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        let missing = folders.path().join("missing");
+        assert_eq!(
+            layers(home.path(), &listing(&[&missing])),
+            Some((
+                vec![],
+                vec![format!(
+                    "workflow pack skipped: {} has no AGENTS.md",
+                    missing.display()
+                )]
+            ))
+        );
+    }
+
+    #[test]
+    fn a_pinned_pack_whose_files_changed_is_skipped_and_the_bundled_pack_takes_over() {
+        let home = tempfile::tempdir().unwrap();
+        let (dir, hash) = pin_files(home.path(), "acw", &[("AGENTS.md", "# Pinned\n")]);
+        std::fs::write(dir.join("AGENTS.md"), "# Changed\n").unwrap();
+        let bundled = Pack::load(&bundled_pack().unwrap()).unwrap().name;
+        assert_eq!(
+            layers(home.path(), ""),
+            Some((vec![bundled], vec![changed_notice("acw", &hash)]))
+        );
+    }
+
+    #[test]
+    fn a_pinned_pack_that_cannot_load_is_skipped_but_still_replaces_the_bundled_pack() {
+        let home = tempfile::tempdir().unwrap();
+        let (dir, _) = pin_files(home.path(), "acw", &[("README.md", "no entry file\n")]);
+        assert_eq!(
+            layers(home.path(), ""),
+            Some((
+                vec![],
+                vec![format!(
+                    "pinned pack acw skipped: {} has no AGENTS.md",
+                    dir.display()
+                )]
+            ))
+        );
+    }
+
+    #[test]
+    fn a_pin_named_project_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        pin_files(home.path(), "project", &[("AGENTS.md", "# Pinned\n")]);
+        let bundled = Pack::load(&bundled_pack().unwrap()).unwrap().name;
+        assert_eq!(
+            layers(home.path(), ""),
+            Some((
+                vec![bundled],
+                vec![
+                    "pack project skipped: \"project\" cannot name a pack source: use 1-40 \
+                     letters, digits, '-', '_' or '.', not starting with '.'"
+                        .into()
+                ]
+            ))
+        );
+    }
+
+    #[test]
+    fn notices_come_in_the_order_pinned_check_then_listed_then_pinned_load() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        pin_files(home.path(), "acw", &[("AGENTS.md", "# Pinned\n")]);
+        let (dir, hash) = pin_files(home.path(), "bad", &[("AGENTS.md", "# Pinned\n")]);
+        std::fs::write(dir.join("AGENTS.md"), "# Changed\n").unwrap();
+        let missing = folders.path().join("missing");
+        let same = pack_folder(folders.path(), "acw");
+        assert_eq!(
+            layers(home.path(), &listing(&[&missing, &same])),
+            Some((
+                vec!["acw+".into()],
+                vec![
+                    changed_notice("bad", &hash),
+                    format!(
+                        "workflow pack skipped: {} has no AGENTS.md",
+                        missing.display()
+                    ),
+                    "pinned pack acw skipped: another pack already has that name".into(),
+                ]
+            ))
+        );
     }
 }
 

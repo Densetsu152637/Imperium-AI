@@ -2,7 +2,7 @@
 
 import type { SessionStatus } from "@imperium/protocol";
 
-import { formatResumeTime, type SessionState } from "../sessions";
+import { formatResumeTime, type SessionState } from "../sessions/sessions";
 
 const STATUS: Record<SessionStatus, { mark: string; label: string }> = {
   idle: { mark: "○", label: "Idle" },

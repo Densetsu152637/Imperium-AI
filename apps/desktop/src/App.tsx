@@ -51,7 +51,7 @@ import type {
 } from "@imperium/protocol";
 
 import { DaemonClient, type DaemonConnection } from "./daemon/client";
-import { findDaemon, insideTauri, rememberDevConnection } from "./daemon/connection";
+import { findDaemon, rememberDevConnection } from "./daemon/connection";
 import { addColumn, reconcile, removeColumn, sameArrangement, visibleColumns, type Arrangement, type DropTarget } from "./layout/arrangement";
 import { Columns, type PanelSpec } from "./layout/Columns";
 import { PanelWindow } from "./layout/PanelWindow";
@@ -60,9 +60,9 @@ import { applyMove, panelMoves } from "./layout/moves";
 import { activeModules, canHost, dropPanel, sameModules, type Modules } from "./layout/placement";
 import { makePreset, missingMods, parsePreset, presetFileName, presetText, type LayoutPreset } from "./layout/presets";
 import { activeShape, clearOverride, DEFAULT_SHAPE, editShape, hasOverride, saveOverride, type Shapes } from "./layout/shapes";
-import { downloadNotice, initiativeNotice, sessionNotice, updateNotice } from "./attention";
-import { budgetNotice, budgetStop } from "./budgets";
-import { focusMainWindow, notify, onNoticeOpened } from "./notify";
+import { downloadNotice, initiativeNotice, sessionNotice, updateNotice } from "./shared/attention";
+import { budgetNotice, budgetStop } from "./models/budgets";
+import { focusMainWindow, notify, onNoticeOpened } from "./shared/notify";
 import {
   EnvironmentsPanel,
   SessionSortSelect,
@@ -71,17 +71,17 @@ import {
   type EnvironmentActions,
   type SessionSort,
 } from "./panels/NavigationPanels";
-import { exportSession, saveTextFile } from "./exportSession";
+import { exportSession, saveTextFile } from "./sessions/exportSession";
 import { SessionPanel } from "./panels/SessionPanel";
 import { ComparePanel } from "./panels/ComparePanel";
-import { branchRun, comparisonMembers, comparisonOpen } from "./branches";
+import { branchRun, comparisonMembers, comparisonOpen } from "./sessions/branches";
 import type { Effort, PermissionMode } from "./panels/ModelSelect";
 import { NewSessionPanel, type NewSessionOptions } from "./panels/NewSessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { ReviewPanel } from "./panels/ReviewPanel";
 import { AgentView } from "./panels/AgentView";
-import { agentDelivery, finishedMeanwhile, followUpText } from "./agentView";
-import { queueParams, type QueueChange } from "./queue";
+import { agentDelivery, finishedMeanwhile, followUpText } from "./sessions/agentView";
+import { queueParams, type QueueChange } from "./sessions/queue";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
 import { BrowserPanel } from "./panels/BrowserPanel";
@@ -91,8 +91,10 @@ import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { ResourcesPanel } from "./panels/ResourcesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
-import { cleanName } from "./agents";
-import { environmentIcon, projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./projectIcons";
+import { cleanName } from "./sessions/agents";
+import { environmentById } from "./environments/byId";
+import { useEnvironments } from "./environments/useEnvironments";
+import { projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./environments/projectIcons";
 import {
   applyEvent,
   DEFAULT_RESUME_POLICY,
@@ -104,7 +106,7 @@ import {
   snapshotSessions,
   updateSent,
   type SessionState,
-} from "./sessions";
+} from "./sessions/sessions";
 import {
   applySettings,
   ChangeSettingsContext,
@@ -115,42 +117,31 @@ import {
   SettingsContext,
   type AppSettings,
   type ChangeSettings,
-} from "./settings";
-import { PANELS_ICON, SETTINGS_SECTIONS, SettingsWindow, type LayoutNotice } from "./SettingsWindow";
+} from "./settings/settings";
+import { SettingsWindow } from "./settings/SettingsWindow";
+import type { LayoutNotice } from "./settings/LayoutRows";
+import { PANELS_ICON, SETTINGS_SECTIONS } from "./settings/sections";
 import { appCommands } from "./commands/appCommands";
 import { formatShortcut } from "./commands/registry";
-import { bindingFor, isCapturing, triggers } from "./shortcuts";
+import { bindingFor } from "./settings/shortcuts";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
-import { splashDone } from "./boot";
-import { Tour } from "./Tour";
-import { anyModalOpen, autoStartReady, recordOutcome, shouldAutoStart, type TourOutcome } from "./tourSteps";
-import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
-import { ConnectorsWindow } from "./ConnectorsWindow";
-import { EnvironmentWindow } from "./EnvironmentWindow";
-import { getDoc, setDoc, subscribeDoc } from "./store";
-import { type Daemon, useDaemon } from "./DaemonControl";
-import { ModelConfigDialog, type ModelDialogTarget } from "./ModelConfigDialog";
-import { setModelAliases } from "./modelNames";
-import { applyResidency, type Residency } from "./waits";
-import { hiddenSpecs } from "./modelPrefs";
-import { UpdateControl, useUpdates } from "./UpdateControl";
-
-/** How long the tour waits for the composer to appear before starting without it. */
-const TOUR_COMPOSER_WAIT_MS = 8000;
-
-type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
-
-/** Sessions and environments as last seen, shown until the daemon answers. */
-type Cache = { sessions: SessionSummary[]; environments?: EnvironmentInfo[]; savedAt: number };
-
-function cachedSessions(): Record<string, SessionState> {
-  const cache = getDoc<Cache>("cache");
-  return Object.fromEntries(
-    (cache?.sessions ?? []).map((summary, index) => [summary.session_id, newSession(summary, index)] as const),
-  );
-}
-
-const cachedEnvironments = (): EnvironmentInfo[] => getDoc<Cache>("cache")?.environments ?? [];
+import { splashDone } from "./shared/boot";
+import { Tour } from "./tour/Tour";
+import { useTour } from "./tour/useTour";
+import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./shared/panelWindows";
+import { ConnectorsWindow } from "./connectors/ConnectorsWindow";
+import { EnvironmentWindow } from "./environments/EnvironmentWindow";
+import { setDoc, subscribeDoc } from "./shared/store";
+import { useDaemon } from "./shared/DaemonControl";
+import { ModelConfigDialog } from "./models/ModelConfigDialog";
+import { setModelAliases } from "./models/modelNames";
+import { applyResidency, type Residency } from "./sessions/waits";
+import { hiddenSpecs } from "./models/modelPrefs";
+import { UpdateControl, useUpdates } from "./shared/UpdateControl";
+import type { Cache } from "./shared/cache";
+import { ConnectionBanner, type Status } from "./shared/ConnectionBanner";
+import { useSessionStore } from "./sessions/useSessionStore";
+import { useWindows } from "./shared/useWindows";
 
 let migrating: Promise<EnvironmentInfo[]> | null = null;
 
@@ -199,26 +190,36 @@ export function App() {
   // A detached window follows the main window's selection, so it always restores it.
   const restore = settings.restoreSession || isDetached;
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
-  const [sessions, setSessions] = useState<Record<string, SessionState>>(cachedSessions);
-  const [environments, setEnvironments] = useState<EnvironmentInfo[]>(cachedEnvironments);
-  // The environment new sessions start in, and whether the Sessions list shows only its sessions.
-  const [envId, setEnvId] = useState<string | null>(restore ? saved.environment : null);
-  /** The selected environment for state updates that run later, so a layout edit lands on the environment it was made in. */
-  const envIdRef = useRef(envId);
-  envIdRef.current = envId;
-  const [envView, setEnvView] = useState(restore && saved.projectView);
-  /** The environment window: which environment it edits (null id: a new one). */
-  const [envWindow, setEnvWindow] = useState<{ id: string | null; confirmDelete?: boolean } | null>(null);
+  const {
+    sessions,
+    setSessions,
+    sessionsRef,
+    selected,
+    setSelected,
+    setAgentView,
+    compareView,
+    setCompareView,
+    prefill,
+    setPrefill,
+    allSessions,
+    session,
+    openAgent,
+    viewedTask,
+  } = useSessionStore(restore ? saved.session : null);
+  const {
+    environments,
+    setEnvironments,
+    envId,
+    setEnvId,
+    envIdRef,
+    envView,
+    setEnvView,
+    gitEnvironments,
+    setGitEnvironments,
+    environment,
+    icons,
+  } = useEnvironments(restore ? saved.environment : null, restore && saved.projectView);
   const [sessionSort, setSessionSort] = useState<SessionSort>(saved.sessionSort);
-  /** Environments with a folder in a git repository: new sessions there may start on worktrees. */
-  const [gitEnvironments, setGitEnvironments] = useState<string[]>([]);
-  const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
-  /** A subagent whose log the main panel shows in place of its session's transcript. */
-  const [agentView, setAgentView] = useState<{ sessionId: string; agentId: string } | null>(null);
-  /** The comparison the main panel shows side by side in place of a session (`session.compare`). */
-  const [compareView, setCompareView] = useState<string | null>(null);
-  /** A message branched from, handed to the new session's composer to edit. */
-  const [prefill, setPrefill] = useState<{ sessionId: string; text: string; nonce: number } | null>(null);
   /** The global layout (which panels sit where, which are closed, which are modules) and the environments' own (shapes.ts). */
   const [shapes, setShapes] = useState<Shapes>({
     global: { arrangement: saved.arrangement, hidden: saved.hidden, modules: saved.modules },
@@ -233,19 +234,22 @@ export function App() {
   const setHidden = (update: (all: string[]) => string[]) =>
     setShapes((all) => editShape(all, envIdRef.current, { hidden: update(activeShape(all, envIdRef.current).hidden) }));
   const [detached, setDetached] = useState<Record<string, DetachedPanel>>(saved.detached);
-  /** The panel editor: panels are moved only while it is on. */
-  const [editingLayout, setEditingLayout] = useState(false);
   // Panels whose windows this session has opened, so each opens once.
   const opened = useRef(new Set<string>());
-  const [showSettings, setShowSettings] = useState(false);
-  /** The first-run tour is showing. */
-  const [touring, setTouring] = useState(false);
-  /** The tour started by itself (not asked for), so it steps aside for a pending approval. */
-  const [tourAuto, setTourAuto] = useState(false);
-  /** The Settings section the command palette asked for. */
-  const [settingsRequest, setSettingsRequest] = useState<{ section: string } | null>(null);
-  const [modelDialog, setModelDialog] = useState<ModelDialogTarget | null>(null);
-  const [showConnectors, setShowConnectors] = useState(false);
+  const {
+    envWindow,
+    setEnvWindow,
+    editingLayout,
+    setEditingLayout,
+    showSettings,
+    setShowSettings,
+    settingsRequest,
+    setSettingsRequest,
+    modelDialog,
+    setModelDialog,
+    showConnectors,
+    setShowConnectors,
+  } = useWindows(isDetached, settings.shortcuts);
   /** What the last preset export or import did, shown in Settings → Panels. */
   const [presetNotice, setPresetNotice] = useState<LayoutNotice | null>(null);
   /** A preset file that was read and is valid, waiting for the user to confirm replacing the layout. */
@@ -267,8 +271,6 @@ export function App() {
   // The latest settings and sessions, for the daemon's notification handler (set up once per connection).
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
-  const sessionsRef = useRef(sessions);
-  sessionsRef.current = sessions;
   // Downloads already announced, so repeated progress reports for a finished one stay quiet.
   const announcedDownloads = useRef(new Set<string>());
   // Icons chosen per folder before environments, carried over when folders become environments.
@@ -509,36 +511,12 @@ export function App() {
     });
   }, [isDetached, envId, selected, envView, shapes, detached, sessionSort]);
 
-  // Esc leaves the panel editor, unless a dialog is open (it closes that instead).
-  useEffect(() => {
-    if (!editingLayout) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented || anyModalOpen()) return;
-      setEditingLayout(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [editingLayout]);
-
   // Remember the sessions as last seen, for the next time the daemon is away.
   useEffect(() => {
     if (status.kind !== "connected" || isDetached) return;
     const summaries = Object.values(sessions).map((s) => s.summary);
     setDoc<Cache>("cache", { sessions: summaries, environments, savedAt: Date.now() });
   }, [sessions, environments, status.kind, isDetached]);
-
-  // The Settings shortcut (Ctrl+, by default; Cmd+, on macOS) opens it, as in most desktop apps.
-  useEffect(() => {
-    if (isDetached) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (!isCapturing() && triggers(event, settings.shortcuts, "settings.toggle")) {
-        event.preventDefault();
-        setShowSettings((open) => !open);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isDetached, settings.shortcuts]);
 
   useEffect(() => {
     void connect();
@@ -549,10 +527,6 @@ export function App() {
     };
   }, [connect]);
 
-  const allSessions = useMemo(() => Object.values(sessions), [sessions]);
-  const session = selected ? (sessions[selected] ?? null) : null;
-  const openAgent = session && agentView?.sessionId === selected ? agentView.agentId : null;
-  const viewedTask = openAgent ? (session?.tasks[openAgent] ?? null) : null;
   const client = status.kind === "connected" ? status.client : null;
 
   // The daemon keeps a copy of the hidden models (`models.hidden`), so agents' list_models
@@ -578,18 +552,6 @@ export function App() {
   const modHost = useMemo(
     () => ({ sessions: snapshotSessions(allSessions, environments), selected, client }),
     [allSessions, environments, selected, client],
-  );
-  const environment = environments.find((env) => env.id === envId) ?? null;
-  // The session header shows a session's icon by its folder: that of its environment.
-  const icons = useMemo<ProjectIcons>(
-    () => ({
-      iconFor: (path) => {
-        const env = environments.find((e) => e.folders[0] && sameFolder(e.folders[0], path));
-        return env ? environmentIcon(env) : environmentIcon({ id: path, icon: null, color: null });
-      },
-      setIcon: () => {},
-    }),
-    [environments],
   );
 
   const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -665,7 +627,7 @@ export function App() {
 
   /** Creates a session from the new-session composer and sends its first message; rejects with the daemon's reason. */
   const createSession = async ({ environmentId, model, worktree, subfolder, readOnly, text }: NewSessionOptions) => {
-    const env = environments.find((e) => e.id === environmentId);
+    const env = environmentById(environments, environmentId);
     if (!client || !env) throw new Error("Not connected to imperium-core.");
     const params: SessionCreateParams = {
       environment_id: env.id,
@@ -1059,50 +1021,6 @@ export function App() {
     setSettings(next);
     saveSettings(next);
   };
-  /** Starts the tour from its first step, closing the windows over the workspace first. */
-  const startTour = () => {
-    setShowSettings(false);
-    setShowConnectors(false);
-    setTourAuto(false);
-    setTouring(true);
-  };
-  const endTour = (outcome: TourOutcome) => {
-    setTouring(false);
-    changeSettings((current) => recordOutcome(current, outcome));
-  };
-  // A first run: the tour starts by itself, in the main window only, once connected and the
-  // interface is up (the composer showing, or after a few seconds any panel) with no dialog open.
-  const connectedNow = !!client;
-  // An approval waiting is never held up by the tour: it steps aside until none is pending
-  // (and does not start while one is), then carries on where it was.
-  const approvalsWaiting = approvals.length > 0;
-  const approvalsWaitingRef = useRef(approvalsWaiting);
-  approvalsWaitingRef.current = approvalsWaiting;
-  const tourPending = shouldAutoStart(settings) && !touring;
-  useEffect(() => {
-    if (isDetached || !tourPending || !connectedNow) return;
-    const since = Date.now();
-    const timer = window.setInterval(() => {
-      const composer = !!document.querySelector("form.composer");
-      const anyPanel = !!document.querySelector("[data-panel]");
-      const ready = autoStartReady(
-        { tour: null },
-        {
-          mainWindow: true,
-          connected: true,
-          uiReady: composer || (anyPanel && Date.now() - since > TOUR_COMPOSER_WAIT_MS),
-          modalOpen: approvalsWaitingRef.current || anyModalOpen(),
-        },
-      );
-      if (ready) {
-        window.clearInterval(timer);
-        setTourAuto(true);
-        setTouring(true);
-      }
-    }, 500);
-    return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tourPending, connectedNow]);
   // For panels that change a setting of their own (model favourites and hidden models).
   const changeSettings: ChangeSettings = (change) =>
     setSettings((current) => {
@@ -1110,6 +1028,19 @@ export function App() {
       saveSettings(next);
       return next;
     });
+  // An approval waiting is never held up by the tour (useTour).
+  const approvalsWaiting = approvals.length > 0;
+  const { touring, tourAuto, startTour, endTour } = useTour({
+    settings,
+    isDetached,
+    connected: !!client,
+    approvalsWaiting,
+    changeSettings,
+    closeWindows: () => {
+      setShowSettings(false);
+      setShowConnectors(false);
+    },
+  });
 
   // Approvals, finished and failed turns, and downloads notify from the daemon's notification
   // handler above; an update notifies once its build has downloaded.
@@ -1548,7 +1479,7 @@ export function App() {
     if (!sameArrangement(next, layoutColumns)) setArrangement(next);
   };
   const installedMods = (mods?.mods ?? []).map((mod) => mod.id);
-  const environmentName = environments.find((env) => env.id === envId)?.name ?? null;
+  const environmentName = environmentById(environments, envId)?.name ?? null;
   /** *Export layout preset*: the layout that applies here, as a JSON file through the save dialog. */
   const exportPreset = () => {
     const preset = makePreset(shape, projectLayout && environmentName ? `${environmentName} layout` : "Layout", installedMods);
@@ -1696,7 +1627,7 @@ export function App() {
       {envWindow && (envWindow.id === null || environments.some((env) => env.id === envWindow.id)) && (
         <EnvironmentWindow
           key={envWindow.id ?? "new"}
-          environment={envWindow.id ? (environments.find((env) => env.id === envWindow.id) ?? null) : null}
+          environment={environmentById(environments, envWindow.id)}
           client={client}
           confirmDelete={envWindow.confirmDelete}
           onSaved={(env) => {
@@ -1772,56 +1703,3 @@ const PANELS: { id: string; title: string }[] = [
   { id: "preview", title: "Preview" },
   { id: "browser", title: "Browser" },
 ];
-
-/** A slim bar above the workspace while the daemon is away: why, and how to reach it. */
-function ConnectionBanner({
-  status,
-  onConnect,
-  daemon,
-}: {
-  status: Status;
-  onConnect: (connection?: DaemonConnection) => void;
-  daemon: Daemon | null;
-}) {
-  const [url, setUrl] = useState("");
-  const [token, setToken] = useState("");
-  if (status.kind === "connecting") {
-    return (
-      <div className="connection-banner" data-state="connecting" role="status">
-        <span className="daemon-dot" aria-hidden="true" /> Connecting to imperium-core…
-      </div>
-    );
-  }
-  return (
-    <div className="connection-banner" data-state="offline" role="status">
-      <span className="daemon-dot" aria-hidden="true" />
-      <span className="connection-message">
-        <strong>imperium-core is not connected.</strong> {status.kind === "failed" ? status.message : ""} Showing what was
-        last known.
-      </span>
-      {daemon?.error && <span className="error">{daemon.error}</span>}
-      {daemon?.status.can_start && !daemon.status.running && (
-        <button className="primary" onClick={() => daemon.run("start")} disabled={daemon.busy !== null}>
-          {daemon.busy ? "Starting…" : "Start imperium-core"}
-        </button>
-      )}
-      {insideTauri() ? (
-        <button onClick={() => onConnect()}>Retry</button>
-      ) : (
-        <form
-          className="connection-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onConnect({ url: url.trim(), token: token.trim() });
-          }}
-        >
-          <input aria-label="Daemon URL" placeholder="ws://127.0.0.1:port/rpc" value={url} onChange={(e) => setUrl(e.target.value)} />
-          <input aria-label="Token" placeholder="token" type="password" value={token} onChange={(e) => setToken(e.target.value)} />
-          <button type="submit" className="primary">
-            Connect
-          </button>
-        </form>
-      )}
-    </div>
-  );
-}

@@ -43,7 +43,7 @@ impl SlotFiles {
     /// Uses `dir`, creating it and removing slot files a previous run left: they belong to
     /// servers that are gone and to agents this run no longer tracks. Fails when the folder
     /// cannot be created, so slots are not saved at all.
-    pub fn open(dir: PathBuf, capacity_bytes: u64) -> std::io::Result<Self> {
+    pub(crate) fn open(dir: PathBuf, capacity_bytes: u64) -> std::io::Result<Self> {
         std::fs::create_dir_all(&dir)?;
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
@@ -60,19 +60,19 @@ impl SlotFiles {
         })
     }
 
-    pub fn dir(&self) -> &Path {
+    pub(crate) fn dir(&self) -> &Path {
         &self.dir
     }
 
     /// The file `holder`'s slot on the model with `key` is saved to; only hex digits, a dash,
     /// and the extension, which llama.cpp accepts as a file name.
-    pub fn file_name(key: u64, holder: &str) -> String {
+    pub(crate) fn file_name(key: u64, holder: &str) -> String {
         format!("{key:016x}-{:016x}.{EXTENSION}", fnv1a(holder.as_bytes()))
     }
 
     /// Records a saved slot, replacing `holder`'s earlier one on the same model, and trims the
     /// folder to its capacity. `present` says whether a holder can still come back.
-    pub fn record(&mut self, saved: Saved, present: impl Fn(&str) -> bool) {
+    pub(crate) fn record(&mut self, saved: Saved, present: impl Fn(&str) -> bool) {
         self.saved
             .retain(|old| !(old.holder == saved.holder && old.key == saved.key));
         self.saved.push(saved);
@@ -81,7 +81,7 @@ impl SlotFiles {
 
     /// `holder`'s saved slot on the model with `key`, to restore it; it stays recorded until
     /// [`SlotFiles::forget`] removes it once read.
-    pub fn find(&self, holder: &str, key: u64) -> Option<Saved> {
+    pub(crate) fn find(&self, holder: &str, key: u64) -> Option<Saved> {
         self.saved
             .iter()
             .find(|saved| saved.holder == holder && saved.key == key)
@@ -89,12 +89,12 @@ impl SlotFiles {
     }
 
     /// The bytes the folder may hold.
-    pub fn capacity_bytes(&self) -> u64 {
+    pub(crate) fn capacity_bytes(&self) -> u64 {
         self.capacity_bytes
     }
 
     /// Removes every saved slot of `holder`, on any model, with its file.
-    pub fn forget_holder(&mut self, holder: &str) {
+    pub(crate) fn forget_holder(&mut self, holder: &str) {
         let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.saved)
             .into_iter()
             .partition(|saved| saved.holder == holder);
@@ -105,21 +105,21 @@ impl SlotFiles {
     }
 
     /// Whether a slot of `holder`'s is saved, on any model.
-    pub fn holds(&self, holder: &str) -> bool {
+    pub(crate) fn holds(&self, holder: &str) -> bool {
         self.saved.iter().any(|saved| saved.holder == holder)
     }
 
     /// Removes `holder`'s saved slot on the model with `key` from the index and its file from
     /// the folder, whether or not it was recorded: a save that failed or was cut short may have
     /// left a partial file behind.
-    pub fn forget(&mut self, holder: &str, key: u64) {
+    pub(crate) fn forget(&mut self, holder: &str, key: u64) {
         self.saved
             .retain(|saved| !(saved.holder == holder && saved.key == key));
         remove(&self.dir.join(Self::file_name(key, holder)));
     }
 
     /// The slots saved from the model with `key`, to give their agents back on reload.
-    pub fn saved_for(&self, key: u64) -> impl Iterator<Item = &Saved> {
+    pub(crate) fn saved_for(&self, key: u64) -> impl Iterator<Item = &Saved> {
         self.saved.iter().filter(move |saved| saved.key == key)
     }
 

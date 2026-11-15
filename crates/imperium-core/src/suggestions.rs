@@ -25,7 +25,7 @@ use tokio::sync::broadcast;
 use crate::DaemonState;
 
 /// The setting suggestions follow, and that "don't ask again" turns off.
-pub const SETTING: &str = "models.suggest_downloads";
+pub(crate) const SETTING: &str = "models.suggest_downloads";
 const REVISION: &str = "main";
 
 /// Suggestion state for every session: what was asked, and offers waiting for an answer.
@@ -53,7 +53,7 @@ struct Offer {
 
 /// What became of a request to suggest a model.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Outcome {
+pub(crate) enum Outcome {
     /// The `model_suggestion` event sent to the session.
     Offered(SessionEvent),
     /// `models.suggest_downloads` is off.
@@ -115,7 +115,7 @@ impl Suggestions {
 
 /// Watches a session's root agent for the moments it needs a model: each turn's start (with the
 /// user's message) and each model call's prompt size.
-pub fn watch(
+pub(crate) fn watch(
     state: &Arc<DaemonState>,
     session_id: String,
     mut events: broadcast::Receiver<AgentEvent>,
@@ -197,7 +197,11 @@ fn need_now(
 /// Offers a model for `detected` to the session, unless suggestions are off or the session was
 /// already asked about that need: lists the matching candidates on the Hub, picks the
 /// quantisation that fits best, and sends a `model_suggestion` event.
-pub async fn offer(state: &Arc<DaemonState>, session_id: &str, detected: Detected) -> Outcome {
+pub(crate) async fn offer(
+    state: &Arc<DaemonState>,
+    session_id: &str,
+    detected: Detected,
+) -> Outcome {
     let suggestions = state.suggestions();
     if !suggestions.enabled() {
         return Outcome::Off;
@@ -296,7 +300,7 @@ fn update(
 }
 
 /// `session.suggestion_respond`.
-pub async fn respond(
+pub(crate) async fn respond(
     state: Arc<DaemonState>,
     params: SuggestionRespondParams,
 ) -> Result<SuggestionRespondResult, ErrorObject> {
@@ -433,7 +437,7 @@ async fn follow(
 
 /// The `suggest_local_model` tool: lets an agent propose a local model for its task.
 #[derive(Debug)]
-pub struct SuggestTool {
+pub(crate) struct SuggestTool {
     pub daemon: Weak<DaemonState>,
     pub session_id: String,
 }

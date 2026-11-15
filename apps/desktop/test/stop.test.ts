@@ -1,9 +1,9 @@
-// Stopping and resuming a session (src/stop.ts). Run with `pnpm test` (node's test runner).
+// Stopping and resuming a session (src/sessions/stop.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { canStop, isStopped, shownTaskStatus } from "../src/stop.ts";
+import { canStop, isStopped, shownTaskStatus } from "../src/sessions/stop.ts";
 
 test("a stopped session is paused with the detail stopped, unlike a usage-limit wait", () => {
   assert.equal(isStopped({ status: "paused", statusDetail: "stopped" }), true);

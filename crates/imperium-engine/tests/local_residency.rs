@@ -10,10 +10,8 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use imperium_engine::{
-    AcquireFuture, Availability, LocalLease, LocalModels, LocalRequest, ResolvedModel, Session,
-    SessionConfig,
-};
+use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels, LocalRequest};
+use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{AgentEvent, SendMode, SessionEvent};
 use imperium_tools::Workspace;
@@ -44,11 +42,7 @@ impl LocalModels for Runtime {
         self.calls.saved.lock().unwrap().contains(holder)
     }
 
-    fn suspend<'a>(
-        &'a self,
-        _model: &'a str,
-        holder: &'a str,
-    ) -> imperium_engine::SuspendFuture<'a> {
+    fn suspend<'a>(&'a self, _model: &'a str, holder: &'a str) -> imperium_api::SuspendFuture<'a> {
         Box::pin(async move {
             self.calls
                 .log

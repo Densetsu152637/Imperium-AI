@@ -2,7 +2,7 @@
 // environment and session. Kept in the local `layout` document (store.ts), so
 // the window reopens the same way after a restart, an update, or a reinstall.
 
-import { getDoc, setDoc, subscribeDoc } from "../store";
+import { getDoc, setDoc, subscribeDoc } from "../shared/store";
 import type { Arrangement } from "./arrangement";
 import type { Modules } from "./placement.ts";
 import { readModules, sanitizeOverrides, type Overrides } from "./shapes.ts";

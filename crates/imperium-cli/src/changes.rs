@@ -79,17 +79,9 @@ fn one_line(card: Option<&str>) -> String {
     match card {
         Some(card) => {
             let flat = card.split_whitespace().collect::<Vec<_>>().join(" ");
-            truncate(&flat, 100)
+            imperium_api::truncate_chars(&flat, 100)
         }
         None => "(none)".into(),
-    }
-}
-
-fn truncate(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        text.to_string()
-    } else {
-        format!("{}…", text.chars().take(limit).collect::<String>())
     }
 }
 

@@ -4,14 +4,16 @@
 //! answer is framed, and the question's life from `ask_agent` to its `question_answered` event.
 //! The fork that answers is run by [`crate::agent::run_fork`].
 
+use imperium_api::framing::escape_wrapper_tag;
+use imperium_api::time::unix_ms;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use imperium_api::{ChatMessage, Usage};
 use imperium_api::{LocalPresence, truncate_chars};
 use imperium_config::KnowledgeSettings;
-use imperium_models::{ChatMessage, Usage};
 use imperium_protocol::session::{
     AgentStatus, KnowledgeCard, KnowledgeSource, KnowledgeSourceKind, KnowledgeStatus,
     KnowledgeUntrusted, QuestionCost, QuestionOutcome, ROOT_AGENT, SessionEvent, TokenUsage,
@@ -21,7 +23,7 @@ use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
 
 use crate::ResolvedModel;
-use crate::agents::{AgentKind, Frozen, now_ms};
+use crate::agents::{AgentKind, Frozen};
 use crate::breakdown::estimate_tokens;
 use crate::session::{Shared, lock};
 
@@ -124,7 +126,7 @@ pub(crate) struct Knowledge {
 }
 
 impl Knowledge {
-    pub fn new(config: KnowledgeConfig) -> Self {
+    pub(crate) fn new(config: KnowledgeConfig) -> Self {
         Knowledge {
             config,
             lanes: Mutex::new(HashMap::new()),
@@ -136,11 +138,11 @@ impl Knowledge {
         }
     }
 
-    pub fn settings(&self) -> &KnowledgeSettings {
+    pub(crate) fn settings(&self) -> &KnowledgeSettings {
         &self.config.settings
     }
 
-    pub fn enabled(&self) -> bool {
+    pub(crate) fn enabled(&self) -> bool {
         self.config.settings.enabled
     }
 
@@ -158,7 +160,7 @@ impl Knowledge {
     }
 
     /// Whether the session has closed.
-    pub fn closed(&self) -> bool {
+    pub(crate) fn closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
     }
 
@@ -170,7 +172,7 @@ impl Knowledge {
     }
 
     /// Notes that the subagent `task` is kept as knowledge under `topic` when it succeeds.
-    pub fn expect(&self, task: &str, topic: String) {
+    pub(crate) fn expect(&self, task: &str, topic: String) {
         lock(&self.pending).insert(task.to_string(), topic);
     }
 
@@ -707,7 +709,7 @@ pub(crate) fn refresh_estimate(shared: &Shared, card: &mut KnowledgeCard) {
     let expired = !model.local
         && lock(&shared.knowledge.last_asked)
             .get(&card.agent_id)
-            .is_some_and(|at| now_ms().saturating_sub(*at) >= lifetime_ms);
+            .is_some_and(|at| unix_ms().saturating_sub(*at) >= lifetime_ms);
     card.est_question_cost =
         question_cost(card.context_tokens, card.last_cached_ratio, &model, expired);
 }
@@ -1031,34 +1033,6 @@ pub(crate) fn resolve_target(shared: &Arc<Shared>, name: &str) -> Result<Knowled
 
 // ---- framing ----
 
-/// `text` with `<tag` and `</tag` made harmless, so it cannot close or open the wrapper.
-/// The match is case-insensitive.
-pub(crate) fn escape_tag(text: &str, tag: &str) -> String {
-    let lower = text.to_ascii_lowercase();
-    let tag = tag.to_ascii_lowercase();
-    let open = format!("<{tag}");
-    let close = format!("</{tag}");
-    let mut out = String::with_capacity(text.len());
-    let mut at = 0;
-    while at < text.len() {
-        if lower[at..].starts_with(&close) {
-            out.push_str("<\\/");
-            out.push_str(&text[at + 2..at + close.len()]);
-            at += close.len();
-        } else if lower[at..].starts_with(&open) {
-            out.push_str("<\\");
-            out.push_str(&text[at + 1..at + open.len()]);
-            at += open.len();
-        } else if let Some(character) = text[at..].chars().next() {
-            out.push(character);
-            at += character.len_utf8();
-        } else {
-            break;
-        }
-    }
-    out
-}
-
 /// The share of the file sources marked stale.
 fn stale_share(sources: &[KnowledgeSource]) -> f64 {
     let files = sources
@@ -1108,7 +1082,7 @@ pub(crate) fn question_message(
     text.push_str(&format!(
         "\n\n<question from=\"{}\">\n{}\n</question>",
         attribute(from),
-        escape_tag(question, "question")
+        escape_wrapper_tag(question, "question")
     ));
     text
 }
@@ -1164,7 +1138,7 @@ fn frame_answer(
         "<agent-answer from=\"{}\" topic=\"{}\" untrusted-web=\"{web}\" untrusted-tools=\"{tools}\">\n{}\n</agent-answer>",
         attribute(&card.agent_id),
         attribute(&card.topic),
-        escape_tag(answer, "agent-answer")
+        escape_wrapper_tag(answer, "agent-answer")
     ));
     text
 }
@@ -1232,7 +1206,7 @@ pub(crate) struct Question {
 
 impl Question {
     /// Stops the question at its next safe point; its handle then resolves.
-    pub fn stop(&self, why: Stop) {
+    pub(crate) fn stop(&self, why: Stop) {
         self.stop.send_replace(Some(why));
     }
 }
@@ -1265,10 +1239,10 @@ pub(crate) fn start_question(
             from: job.asker.id.clone(),
             to: job.target.agent_id.clone(),
             text: clip(&job.text, EVENT_CHARS),
-            at_ms: now_ms(),
+            at_ms: unix_ms(),
         },
     );
-    lock(&shared.knowledge.last_asked).insert(job.target.agent_id.clone(), now_ms());
+    lock(&shared.knowledge.last_asked).insert(job.target.agent_id.clone(), unix_ms());
     let (stop, receiver) = watch::channel(None);
     let id = job.question_id.clone();
     let handle = tokio::spawn(run_question(Arc::clone(shared), job, number, receiver));
@@ -1411,7 +1385,7 @@ async fn run_question(
             },
             cost_usd: cost,
             cached_ratio,
-            at_ms: now_ms(),
+            at_ms: unix_ms(),
         },
     );
     tracing::debug!(question = %job.question_id, ?outcome, took_ms = started.elapsed().as_millis() as u64, "question ended");

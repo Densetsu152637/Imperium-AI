@@ -4,7 +4,7 @@
 
 import type { LucideIcon } from "lucide-react";
 
-import { formatChord, type ShortcutId } from "../shortcuts";
+import { formatChord, type ShortcutId } from "../settings/shortcuts";
 import type { Rankable } from "./rank";
 
 export type Command = Rankable & {

@@ -1,9 +1,9 @@
-// Relative times in session rows (src/ago.ts). Run with `pnpm test` (node's test runner).
+// Relative times in session rows (src/shared/ago.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { formatAgo } from "../src/ago.ts";
+import { formatAgo } from "../src/shared/ago.ts";
 
 const now = Date.UTC(2026, 10, 11, 12, 0, 0);
 

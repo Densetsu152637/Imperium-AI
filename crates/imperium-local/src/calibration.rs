@@ -235,8 +235,7 @@ impl Calibration {
         })
         .map_err(io::Error::other)?;
         let temporary = path.with_extension("json.tmp");
-        fs::write(&temporary, text)?;
-        fs::rename(&temporary, path)
+        imperium_api::fs::replace_file(path, &temporary, text)
     }
 }
 

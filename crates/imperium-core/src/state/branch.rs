@@ -27,9 +27,9 @@ const COMPARE_MODELS: std::ops::RangeInclusive<usize> = 2..=4;
 /// A line of a journal, as the engine reads it.
 #[derive(Deserialize)]
 struct Stored {
+    /// Never read: parsing it is the check that the line is an event.
     #[serde(flatten)]
-    #[allow(dead_code)]
-    event: AgentEvent,
+    _event: AgentEvent,
 }
 
 /// The first `events` readable lines of a journal (what the engine counts as events), and the

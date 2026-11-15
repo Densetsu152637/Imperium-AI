@@ -1,5 +1,5 @@
 // Knowledge agents in the desktop: the cards and questions a session's events build up, and how
-// the badge, the card details and the question list word them (src/knowledge.ts). Run with
+// the badge, the card details and the question list word them (src/sessions/knowledge.ts). Run with
 // `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
@@ -28,7 +28,7 @@ import {
   tokens,
   topicProblem,
   usd,
-} from "../src/knowledge.ts";
+} from "../src/sessions/knowledge.ts";
 
 function card(extra: Partial<KnowledgeCard> = {}): KnowledgeCard {
   return {

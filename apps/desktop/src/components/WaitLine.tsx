@@ -6,10 +6,10 @@ import { LoaderCircle, Play, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { formatShortcut } from "../commands/registry";
-import { useSettings } from "../settings";
-import { bindingFor } from "../shortcuts";
-import { formatElapsed, type WaitView } from "../waits";
-import { modelAliases } from "../modelNames";
+import { useSettings } from "../settings/settings";
+import { bindingFor } from "../settings/shortcuts";
+import { formatElapsed, type WaitView } from "../sessions/waits";
+import { modelAliases } from "../models/modelNames";
 
 /** The current time, every second while `active`. */
 function useNow(active: boolean): number {

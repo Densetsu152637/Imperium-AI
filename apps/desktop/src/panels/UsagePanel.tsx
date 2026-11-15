@@ -7,9 +7,9 @@ import { Gauge } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { BudgetStatus, BudgetsResult, UsageAmount, UsageReport } from "@imperium/protocol";
 
-import { describeUsage, formatShare, formatUsd } from "../budgets";
+import { describeUsage, formatShare, formatUsd } from "../models/budgets";
 import type { DaemonClient } from "../daemon/client";
-import { formatTokens } from "../sessions";
+import { formatTokens } from "../sessions/sessions";
 
 const DAYS = 30;
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));

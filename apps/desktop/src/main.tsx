@@ -3,9 +3,9 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
-import { armSplash, bootTheme, THEME_KEY } from "./boot";
-import { applySettings, loadSettings, resolvedTheme } from "./settings";
-import { loadStore } from "./store";
+import { armSplash, bootTheme, THEME_KEY } from "./shared/boot";
+import { applySettings, loadSettings, resolvedTheme } from "./settings/settings";
+import { loadStore } from "./shared/store";
 import "./styles.css";
 
 // The loading screen in index.html stays until the panels render (App calls splashDone); the

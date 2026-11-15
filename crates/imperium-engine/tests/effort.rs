@@ -5,9 +5,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use imperium_api::ChatMessage;
 use imperium_api::{Effort, FunctionCall, ToolCall};
 use imperium_engine::{ChatClient, ChatClients, ResolvedModel, Session, SessionConfig};
-use imperium_models::{ChatFuture, ChatMessage, ChatRequest, Completion, Endpoint};
+use imperium_models::{ChatFuture, ChatRequest, Completion, Endpoint};
 use imperium_protocol::session::{ROOT_AGENT, SessionEvent};
 use imperium_tools::Workspace;
 

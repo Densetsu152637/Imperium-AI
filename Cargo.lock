@@ -2364,6 +2364,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2374,7 +2375,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2385,17 +2385,18 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "imperium-api",
  "imperium-client",
  "imperium-config",
  "imperium-core",
  "imperium-ipc",
  "imperium-local",
  "imperium-memory",
+ "imperium-policy",
  "imperium-protocol",
  "imperium-workflow",
  "reqwest",
  "rpassword",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -2461,6 +2462,7 @@ dependencies = [
  "imperium-memory",
  "imperium-models",
  "imperium-pets",
+ "imperium-policy",
  "imperium-protocol",
  "imperium-tools",
  "imperium-web",
@@ -2517,6 +2519,7 @@ dependencies = [
  "imperium-media",
  "imperium-memory",
  "imperium-models",
+ "imperium-policy",
  "imperium-protocol",
  "imperium-tools",
  "imperium-web",
@@ -2554,9 +2557,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2656,7 +2657,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2667,6 +2667,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "imperium-policy"
+version = "0.1.0"
+dependencies = [
+ "imperium-api",
+ "imperium-workflow",
+ "tempfile",
 ]
 
 [[package]]
@@ -2684,6 +2693,7 @@ version = "0.1.0"
 dependencies = [
  "ignore",
  "imperium-api",
+ "imperium-policy",
  "regex",
  "serde",
  "serde_json",
@@ -2700,6 +2710,7 @@ dependencies = [
  "axum",
  "futures-util",
  "imperium-api",
+ "imperium-policy",
  "imperium-protocol",
  "imperium-tools",
  "reqwest",
@@ -2718,12 +2729,12 @@ dependencies = [
 name = "imperium-workflow"
 version = "0.1.0"
 dependencies = [
+ "imperium-api",
  "serde",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
- "tracing",
 ]
 
 [[package]]

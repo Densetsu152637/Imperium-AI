@@ -3,6 +3,8 @@
 //! it can and only where `robots.txt` allows. Results carry their URLs so agents can
 //! cite sources.
 
+#![warn(unreachable_pub)]
+
 pub mod browser;
 pub mod cache;
 mod download;

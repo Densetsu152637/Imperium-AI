@@ -6,11 +6,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels, LocalRequest};
 use imperium_api::{FunctionCall, ToolCall, Usage};
-use imperium_engine::{
-    AcquireFuture, Availability, ChatClient, ChatClients, LocalLease, LocalModels, LocalRequest,
-    ResolvedModel, Session, SessionConfig,
-};
+use imperium_engine::{ChatClient, ChatClients, ResolvedModel, Session, SessionConfig};
 use imperium_models::{ChatFuture, ChatRequest, Completion, Endpoint, ModelError};
 use imperium_protocol::session::SessionEvent;
 use imperium_tools::Workspace;

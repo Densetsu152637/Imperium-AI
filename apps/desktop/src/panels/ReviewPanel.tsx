@@ -20,8 +20,8 @@ import type {
 
 import { RowMenu } from "../components/RowMenu";
 import type { DaemonClient } from "../daemon/client";
-import { checkpointLabel, filesIn, lineCounts, lineKind, repoName } from "../review";
-import type { SessionState } from "../sessions";
+import { checkpointLabel, filesIn, lineCounts, lineKind, repoName } from "../review/review";
+import type { SessionState } from "../sessions/sessions";
 
 function message(failure: unknown): string {
   return failure instanceof Error ? failure.message : String(failure);

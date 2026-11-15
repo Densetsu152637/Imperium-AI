@@ -4,11 +4,12 @@
 //! The catalogue of servers to browse is data: `catalog/connectors.json`, built in, extended or
 //! overridden by id from `<config>/connectors.json`.
 
+use imperium_api::time::unix_ms;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use imperium_config::{
     McpServerSettings, Paths, SecretName, SecretRef, SecretStore, SetError, Settings,
@@ -170,7 +171,7 @@ impl StatusCache {
 
 /// The settings in the user's config file now (with the environment, no project), or `None`
 /// when there is no user file or it does not load.
-pub fn saved_settings(paths: &Paths) -> Option<Settings> {
+pub(crate) fn saved_settings(paths: &Paths) -> Option<Settings> {
     if !paths.user_config_file().exists() {
         return None;
     }
@@ -197,18 +198,10 @@ fn set_error(error: SetError) -> ErrorObject {
     ErrorObject::new(code, error.to_string())
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 // ---- mcp.list ----
 
 /// `mcp.list`.
-pub fn list(state: &DaemonState) -> McpListResult {
+pub(crate) fn list(state: &DaemonState) -> McpListResult {
     let mut problems = Vec::new();
     let settings = current(state).unwrap_or_else(|error| {
         problems.push(error.message);
@@ -420,7 +413,10 @@ fn from_wire(config: &McpServerConfig) -> Result<McpServerSettings, ErrorObject>
 // ---- mcp.save, mcp.install, mcp.set_enabled, mcp.remove ----
 
 /// `mcp.save`.
-pub fn save(state: &DaemonState, params: McpSaveParams) -> Result<McpSaveResult, ErrorObject> {
+pub(crate) fn save(
+    state: &DaemonState,
+    params: McpSaveParams,
+) -> Result<McpSaveResult, ErrorObject> {
     if !imperium_config::valid_server_name(&params.name) {
         return Err(invalid(format!(
             "{:?} cannot name a server: use up to {} lowercase letters, digits, '_' or '-'",
@@ -464,7 +460,7 @@ pub fn save(state: &DaemonState, params: McpSaveParams) -> Result<McpSaveResult,
 }
 
 /// `mcp.install`: a catalogue entry, filled in and saved under a new name.
-pub fn install(
+pub(crate) fn install(
     state: &DaemonState,
     params: McpInstallParams,
 ) -> Result<McpSaveResult, ErrorObject> {
@@ -497,7 +493,7 @@ pub fn install(
 }
 
 /// `mcp.set_enabled`.
-pub fn set_enabled(
+pub(crate) fn set_enabled(
     state: &DaemonState,
     params: McpSetEnabledParams,
 ) -> Result<McpSaveResult, ErrorObject> {
@@ -514,7 +510,7 @@ pub fn set_enabled(
 }
 
 /// `mcp.remove`.
-pub fn remove(
+pub(crate) fn remove(
     state: &DaemonState,
     params: McpRemoveParams,
 ) -> Result<McpRemoveResult, ErrorObject> {
@@ -564,7 +560,7 @@ pub fn remove(
 // ---- mcp.test ----
 
 /// `mcp.test`: connects to the server as a session would, lists its tools, then stops it.
-pub async fn test(
+pub(crate) async fn test(
     state: Arc<DaemonState>,
     params: McpTestParams,
 ) -> Result<McpStatus, ErrorObject> {
@@ -608,7 +604,7 @@ pub async fn test(
                 state: "connected".into(),
                 tools,
                 error: None,
-                checked_at: Some(now_ms()),
+                checked_at: Some(unix_ms()),
                 missing_secrets: Vec::new(),
                 sign_in: None,
             },
@@ -616,7 +612,7 @@ pub async fn test(
                 state: "error".into(),
                 tools: Vec::new(),
                 error: Some(error),
-                checked_at: Some(now_ms()),
+                checked_at: Some(unix_ms()),
                 missing_secrets: Vec::new(),
                 sign_in: None,
             },
@@ -661,7 +657,7 @@ fn sign_in_url(state: &DaemonState, name: &str) -> Result<String, ErrorObject> {
 /// `mcp.login`: discovers the server's authorization server, registers Imperium, listens on
 /// `127.0.0.1` for the redirect, and returns the URL for the user to open in their own browser.
 /// The sign-in then finishes in the background; it shows as `signing_in` until it ends.
-pub async fn login(
+pub(crate) async fn login(
     state: Arc<DaemonState>,
     params: McpLoginParams,
 ) -> Result<McpLoginResult, ErrorObject> {
@@ -698,7 +694,7 @@ pub async fn login(
                             state: "error".into(),
                             tools: Vec::new(),
                             error: Some(format!("sign-in failed: {error}")),
-                            checked_at: Some(now_ms()),
+                            checked_at: Some(unix_ms()),
                             missing_secrets: Vec::new(),
                             sign_in: None,
                         },
@@ -713,7 +709,7 @@ pub async fn login(
 
 /// `mcp.logout`: revokes the server's token where it offers revocation, forgets the sign-in,
 /// and cancels one that is still waiting for the browser.
-pub async fn logout(
+pub(crate) async fn logout(
     state: Arc<DaemonState>,
     params: McpLogoutParams,
 ) -> Result<McpLogoutResult, ErrorObject> {
@@ -745,7 +741,7 @@ struct CatalogFile {
 }
 
 /// `mcp.catalog`: the built-in entries, then the user's file (same id replaces, new ids add).
-pub fn catalog(state: &DaemonState) -> McpCatalogResult {
+pub(crate) fn catalog(state: &DaemonState) -> McpCatalogResult {
     let file = state.paths().config_dir().join("connectors.json");
     let mut problems = Vec::new();
     let mut entries = serde_json::from_str::<CatalogFile>(BUILT_IN)

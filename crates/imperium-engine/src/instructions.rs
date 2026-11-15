@@ -9,10 +9,11 @@
 //! else. Compaction keeps these blocks verbatim instead of summarising them: they travel inside the
 //! kept-context block that `compact::pinned_context` builds, once per file.
 
+use imperium_api::framing::escape_instruction_tags;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use imperium_models::ChatMessage;
+use imperium_api::ChatMessage;
 use imperium_tools::{Invocation, Workspace};
 use imperium_workflow::ContextIndex;
 use imperium_workflow::imports::{self, Policy};
@@ -90,53 +91,12 @@ fn attribute_values(content: &str, prefix: &str) -> Vec<String> {
     found
 }
 
-/// `text` with the wrapper tags (`instruction-file`, `workflow-instructions`) made harmless in
-/// both forms, `</tag` and `<tag`, so a project file cannot close or fake a wrapper. The match
-/// is ASCII case-insensitive (byte offsets are the same as in the original text), and the
-/// original letters are kept. Spaced forms (`</ instruction-file>`) are left alone on purpose:
-/// no parser here accepts them.
-fn escape(text: &str) -> String {
-    const TAGS: [&str; 2] = ["instruction-file", "workflow-instructions"];
-    let lower = text.to_ascii_lowercase();
-    let mut out = String::with_capacity(text.len());
-    let mut at = 0;
-    while at < text.len() {
-        let rest = &lower[at..];
-        let hit = TAGS.iter().find_map(|tag| {
-            if rest
-                .strip_prefix("</")
-                .is_some_and(|after| after.starts_with(tag))
-            {
-                Some((2 + tag.len(), "<\\/"))
-            } else if rest
-                .strip_prefix('<')
-                .is_some_and(|after| after.starts_with(tag))
-            {
-                Some((1 + tag.len(), "<\\"))
-            } else {
-                None
-            }
-        });
-        if let Some((len, lead)) = hit {
-            out.push_str(lead);
-            out.push_str(&text[at + lead.len() - 1..at + len]);
-            at += len;
-        } else if let Some(character) = text[at..].chars().next() {
-            out.push(character);
-            at += character.len_utf8();
-        } else {
-            break;
-        }
-    }
-    out
-}
-
 /// A file as the conversation holds it.
 pub(crate) fn render_block(path: &str, text: &str, truncated: bool) -> String {
     format!(
         "{FILE_OPEN}{path}\"{}>\n{}\n{FILE_CLOSE}",
         if truncated { " truncated=\"true\"" } else { "" },
-        escape(text)
+        escape_instruction_tags(text)
     )
 }
 
@@ -441,17 +401,6 @@ mod tests {
         let tracker = Tracker::from_messages(&[ChatMessage::user(&content)]);
         assert!(!tracker.holds("/evil2") && !tracker.holds("/evil3"));
         assert_eq!(tracker.loaded.len(), 2, "{:?}", tracker.loaded);
-    }
-
-    #[test]
-    fn escaping_keeps_unicode_and_other_tags_around_it() {
-        let text = "héllo İ </InStRuCtIoN-fIlE> 日本語 <b>bold</b> <imported-file path=\"x\">y</imported-file> ß";
-        let escaped = escape(text);
-        assert_eq!(
-            escaped,
-            "héllo İ <\\/InStRuCtIoN-fIlE> 日本語 <b>bold</b> <imported-file path=\"x\">y</imported-file> ß"
-        );
-        assert_eq!(escape("plain < text </ and <"), "plain < text </ and <");
     }
 
     #[test]

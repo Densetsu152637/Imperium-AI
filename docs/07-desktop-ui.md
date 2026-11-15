@@ -33,7 +33,7 @@
   ones two decimals with `k` or `M`. `cost` is dollars with two decimals from the calls'
   `cost_usd`, and an em dash for local models (a local runtime's spec or a table row marked
   local) or when no cost was reported. The model shows its model-table id, else the spec
-  without its endpoint (`modelLabel` in `telemetry.ts`, the one place to switch to aliases).
+  without its endpoint (`modelLabel` in `models/telemetry.ts`, the one place to switch to aliases).
   A row the window saw go idle stays for a minute with its last values, then drops off.
   Session totals and per-turn usage stay in the session panel.
 - Display settings: UI scale, prose and code text scale, density, and line length. They are
@@ -79,7 +79,7 @@ changed, its context, what one question costs, how much of the last one was cach
 pages or tool results in its context), its questions newest first with who asked, how each ended,
 what it cost and the answer (marked when degraded or possibly holding outside material), an
 **Ask** box that asks it as you (`session.agent_ask`; the question and answer appear in the list),
-and **Retire**. The cards and questions come from the session's events (`knowledge.ts`).
+and **Retire**. The cards and questions come from the session's events (`sessions/knowledge.ts`).
 
 Choosing a line (or the subagent's title in the transcript) opens its log in the main session
 panel in place of the root's transcript; choosing it again, the breadcrumb's **←
@@ -125,7 +125,7 @@ kind count as *used 2 other tools*, or *Used 4 tools* when none has one). While 
 runs the line shows a spinner and the latest running call's summary; once all have ended it
 shows a cross when any failed, otherwise a check. Opening it lists the calls as the rows above,
 each still opening on its own. A lone call stays its own row. A subagent's log folds its calls the same way, and a session search hit on a folded call lands on its group's
-line (`apps/desktop/src/toolCalls.ts`, `components/ToolGroup.tsx`).
+line (`apps/desktop/src/sessions/toolCalls.ts`, `components/ToolGroup.tsx`).
 
 ### Free scroll while streaming (implemented)
 
@@ -138,8 +138,8 @@ pill with a down arrow floats over the bottom of the transcript while it is not 
 shows how many items arrived since following stopped, or a dot when only streamed text did.
 Choosing it, scrolling back to within 32 px of the bottom, sending a message, or opening another
 session or subagent follows again. A session search hit stops following so the hit stays in view.
-The rules are pure functions in `apps/desktop/src/follow.ts` (tested in `test/follow.test.ts`);
-`useFollowScroll.ts` wires them to the transcript for both views, and
+The rules are pure functions in `apps/desktop/src/sessions/follow.ts` (tested in `test/follow.test.ts`);
+`sessions/useFollowScroll.ts` wires them to the transcript for both views, and
 `components/JumpToLatest.tsx` draws the pill.
 
 ### Waiting status line (implemented)
@@ -150,7 +150,7 @@ under the sent message says what, with an elapsed timer and the action that ends
 wait; it clears on the first output. A message this window sent shows at once, dimmed, until
 its `turn_started` adds it to the transcript (or `message_queued` puts it in the queue, or the
 session turns out to need a model). The line reads, from the session's events
-(`apps/desktop/src/waits.ts`):
+(`apps/desktop/src/sessions/waits.ts`):
 
 - `local_model_waiting` by reason, one sentence naming the model by its alias: *Loading
   Qwen 3…*, *Growing Qwen 3's context pool…*, *Waiting for room in Qwen 3's context cache…*,
@@ -226,7 +226,7 @@ the others and follow the open session.
   takes an address the user types, which wins until the agent opens a different page. Only
   `localhost` and `127.0.0.1` (http or https, no user name or password; not `[::1]`, which the
   window's content security policy cannot name) are shown: the page runs scripts inside the
-  app window, so `previewUrl` (`src/preview.ts`) refuses anything else with the reason (and
+  app window, so `previewUrl` (`src/sessions/preview.ts`) refuses anything else with the reason (and
   checks every page it frames, including the one an agent opened), the daemon applies the same
   rule to agents' URLs, and the window's content security policy allows frames from those
   origins only, so a redirect cannot load a remote site either. A development build is served
@@ -283,6 +283,21 @@ running `imperium-core` or starts the one installed beside the app (see
 [platform bundles](11-ci-cd.md#platform-bundles)), handles native menus, notifications, file dialogs, deep links, and
 the updater ([desktop updates](11-ci-cd.md#desktop-updates)). All application logic goes through the daemon protocol, so the web UI could also
 be served to a browser for remote use.
+
+### Source layout (implemented)
+
+`apps/desktop/src` holds `App.tsx` (the daemon connection, the panels and the layout), `main.tsx`
+and `styles.css`, and these folders: `sessions/` (the session store hook, sessions, branching,
+the queue, waits, tool calls, attachments, the transcript's follow-scroll and voice),
+`models/` (model names, options, availability, preferences, settings table and memory, the
+model configuration dialog and its forms, telemetry and budgets), `environments/` (the
+environment window, icons, the environments hook and the lookup by id), `settings/` (the
+Settings window, one file per section, the app settings and the shortcuts), `connectors/` (the
+Connectors window and its views and forms), `tour/` (the first-run tour and its hook), `review/`,
+and `shared/` (the connection banner, the daemon cache, the windows hook, notifications, the
+store, panel windows and the icon registry), beside `panels/`, `components/`, `layout/`, `mods/`,
+`commands/` and `daemon/`. Pure rules live in `.ts` files, tested under `apps/desktop/test/` (for example
+`models/spec.ts` by `modelSpec.test.ts`); only those files are loaded by the tests.
 
 ### The bundled daemon belongs to the app (implemented)
 
@@ -520,7 +535,7 @@ it. Settings, the context breakdown's agent picker, and the Hugging Face quantis
 use it.
 
 **Theme (implemented):** Settings → Appearance → Theme picks System (the default, following the
-operating system and its changes), Light, or Dark. `settings.ts` sets `data-theme` on the root
+operating system and its changes), Light, or Dark. `settings/settings.ts` sets `data-theme` on the root
 element and `styles.css` keys the light tokens on `:root[data-theme="light"]`; the command
 palette's *Switch to light/dark theme* flips it. Mod panels pick up the tokens when they open.
 
@@ -532,10 +547,10 @@ takes a moment) nothing shows white:
 - **Loading screen:** `index.html` carries a themed screen with the Imperium mark and a
   spinner, styled by the linked `public/boot.css` (never an inline `<style>`: Tauri would add a
   style nonce to the release CSP and turn off `'unsafe-inline'` for every other inline style). `aria-busy` is set on `<body>` and the
-  screen is `role="status"`. `src/boot.ts` fades it out (180 ms) once `App` has mounted and the
+  screen is `role="status"`. `src/shared/boot.ts` fades it out (180 ms) once `App` has mounted and the
   panels have rendered, not merely when the script loads; an 8 s fallback removes it regardless,
   so it can never stick. With reduced motion the spinner is static and the fade is instant.
-- **Theme before the daemon (or settings) is read:** `settings.ts` remembers the chosen theme in
+- **Theme before the daemon (or settings) is read:** `settings/settings.ts` remembers the chosen theme in
   `localStorage` (`imperium.theme`); the linked `public/boot.js` sets `data-theme` from it
   before first paint. When the webview has nothing remembered (first launch after an upgrade,
   cleared data), `main.rs` seeds that key from the saved `settings.json` with an initialization
@@ -643,7 +658,7 @@ for actions that no longer exist, that do not parse, or that now clash are dropp
 defaults. The palette shows each command's current binding, and the Settings button's tooltip
 follows it.
 
-**Registry:** `src/shortcuts.ts` declares the actions (id, label, description, default) and holds
+**Registry:** `src/settings/shortcuts.ts` declares the actions (id, label, description, default) and holds
 the pure logic (parsing, matching an event, conflict detection, sanitising what was saved);
 `useSettings().shortcuts` is read by the handlers in `App.tsx`, `commands/CommandPalette.tsx` and
 `panels/SessionPanel.tsx`. A command that has a shortcut names its action (`shortcutAction`) rather
@@ -671,9 +686,9 @@ and approvals, memory, and Settings. Each step is a small card beside a highligh
   goes on, Left Arrow goes back, Esc skips, and each step after the first is announced, with its
   text, in a polite live region. Focus returns to where
   it was when the tour closes. It uses no animation.
-- **No network and no library.** The tour is `src/Tour.tsx` (the card and highlight, on the
-  app's theme tokens) over `src/tourSteps.ts` (the steps and pure logic); it adds no dependency.
-- **Declarative steps.** `TOUR_STEPS` in `tourSteps.ts` is a list of `{ id, title, body, target? }`,
+- **No network and no library.** The tour is `src/tour/Tour.tsx` (the card and highlight, on the
+  app's theme tokens) over `src/tour/tourSteps.ts` (the steps and pure logic); it adds no dependency.
+- **Declarative steps.** `TOUR_STEPS` in `tour/tourSteps.ts` is a list of `{ id, title, body, target? }`,
   where `target` is a CSS selector (panels have `data-panel`, and the title bar's Edit layout and
   Settings buttons `data-tour`). A step whose target is not on screen (no session open for the
   composer, a closed or detached panel) is skipped, in both directions, and the step counter counts
@@ -820,8 +835,8 @@ session.
 
 Notifications come from the main window only, so detached panel windows do not repeat them.
 Other parts of the app send their own through one internal entry point, `notify(notice,
-settings)` in `apps/desktop/src/notify.ts`, which applies these settings; budget alerts use it
-([budgets](#budgets-and-usage-implemented)). Which events notify is decided in `apps/desktop/src/attention.ts` and covered by
+settings)` in `apps/desktop/src/shared/notify.ts`, which applies these settings; budget alerts use it
+([budgets](#budgets-and-usage-implemented)). Which events notify is decided in `apps/desktop/src/shared/attention.ts` and covered by
 `apps/desktop/test/attention.test.ts`.
 
 ## API settings (implemented)
@@ -924,7 +939,7 @@ fields, spacing and light/dark theming match the other modals, and below the nar
 navigation stacks above the content like theirs:
 
 - **General:** the name; the icon, picked from a searchable grid of every icon the app uses
-  (`icons.ts`, the shared registry — Settings sections, Connectors, the titlebar, and project
+  (`shared/icons.ts`, the shared registry — Settings sections, Connectors, the titlebar, and project
   glyphs; older saved names still resolve); the tile colour, from a row of rounded-square swatches;
   and the default *Pet* for the nursery.
 - **Folders & runtime:** the folders, the first marked as the working directory, with *Add folder*
@@ -1150,7 +1165,7 @@ its alias, tokens in and out, cost, and model time for the turn, and its reply a
 `session.compare_pick`, which keeps that branch and archives the others (they stay in the
 archive); *Open* shows a column's branch as an ordinary session, whose note links back to the
 side-by-side view. The column state, standouts and form rules are in
-`apps/desktop/src/branches.ts` (tested in `test/branches.test.ts`).
+`apps/desktop/src/sessions/branches.ts` (tested in `test/branches.test.ts`).
 
 ### Exporting transcripts (implemented)
 
@@ -1182,7 +1197,7 @@ how many more matches the session has, and *related* for a match found by meanin
 its words. Choosing a result opens the session scrolled to that point of the conversation, the
 entry outlined for a moment: each transcript entry remembers the index of the history event it
 started at, and the hit's `event_index` picks the entry holding it. The search call is exported
-as `searchSessions` (`apps/desktop/src/sessionSearch.ts`) for the command palette. How the index
+as `searchSessions` (`apps/desktop/src/sessions/sessionSearch.ts`) for the command palette. How the index
 is built and ranked is in [17](17-memory.md#session-search-implemented).
 
 ### Attachments and voice input (implemented)
@@ -1448,7 +1463,7 @@ model folders, no default), the new-session view shows a card above the model se
 Emperor (the root agent and planner, on a base of about 4B) and Consul (its critic and reviewer,
 which checks Emperor's plans and delegated work and can reject them, on a base of about 9B),
 Imperium's own fine-tuned open-weight models, each with a role blurb and an approximate size
-(placeholders until the models are published). The catalogue is `apps/desktop/src/houseModels.ts`; an entry with no download
+(placeholders until the models are published). The catalogue is `apps/desktop/src/models/houseModels.ts`; an entry with no download
 source (both, today) reads *not yet available — still in training* and has no button. An entry
 with a Hugging Face source gets a *Download* button that runs the same `models.hf_files` and
 `models.download` calls as the Local models panel's form. The × dismisses the card for good (the
@@ -1470,7 +1485,7 @@ beside it and on hover, and the search matches either. The selected model's alia
 heading.
 
 Each model's settings are tables, one row per setting, in groups (the rows, their groups and the
-wording of their explanations are one declarative table, `modelSettingsTable.ts`). A row has the
+wording of their explanations are one declarative table, `models/modelSettingsTable.ts`). A row has the
 setting's name with a small *(i)* button, a line saying what it affects (memory, speed, quality,
 routing, cost, names, availability, reliability), the value and a *reset* that clears the saved
 value. The *(i)* is a keyboard-focusable button: hovering or focusing it opens a popover that says
@@ -1542,7 +1557,7 @@ differ from what is saved, each as a whole-settings update, then closes and refr
 failure keeps the dialog open with the message. *Reset model* clears all of a model's saved
 settings. A loaded model's badge reads `loaded · <in use>/<slots> busy · pool <reserved>/<pool>`.
 
-A model's alias (`modelNames.ts`, from `models.list` and `models.local`) is what the interface
+A model's alias (`models/modelNames.ts`, from `models.list` and `models.local`) is what the interface
 names it by: the session model list and the command palette's *Use …* entries (the id in the
 description, and the palette's search matches either), the Models and Local models panels, the
 Resources panel's loaded models, the session list's hover, the context breakdown, the telemetry table,

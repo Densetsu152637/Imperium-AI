@@ -21,8 +21,8 @@ import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
 import { pickFile } from "../daemon/connection";
 import { ModelSetup } from "./ModelSetup";
-import { arrangeModels, markOf, type ModelMark } from "../modelPrefs";
-import { useModelMarks } from "../settings";
+import { arrangeModels, markOf, type ModelMark } from "../models/modelPrefs";
+import { useModelMarks } from "../settings/settings";
 import { HiddenGroupRow, ModelMarkButtons } from "./ModelMarks";
 import { localDescription, localSpec, memoryPlan } from "./ModelSelect";
 

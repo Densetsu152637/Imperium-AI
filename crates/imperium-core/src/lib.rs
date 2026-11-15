@@ -1,6 +1,8 @@
 //! The Imperium daemon: the single process that owns all state. Clients (the CLI, the desktop
 //! app, remote hosts) talk to it over JSON-RPC on a local, token-protected WebSocket.
 
+#![warn(unreachable_pub)]
+
 mod approvals;
 mod attachments;
 mod autofix;

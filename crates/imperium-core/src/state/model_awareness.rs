@@ -15,9 +15,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, PoisonError, Weak};
 use std::time::Duration;
 
+use imperium_api::LocalModels;
 use imperium_api::{ToolCheck, ToolContext, ToolFuture, ToolProvider, ToolSpec, parse_arguments};
 use imperium_config::{Location, Settings, Tier};
-use imperium_engine::{CatalogModel, LocalModels, resolve_model};
+use imperium_engine::{CatalogModel, resolve_model};
 use imperium_local::planner::Fit;
 use imperium_memory::models::{CardHit, ModelCard};
 use imperium_memory::retrieval::Embedder;
@@ -57,12 +58,12 @@ pub(crate) struct Measured {
 
 impl Measured {
     /// Mean completion tokens per second over the calls that reported it.
-    pub fn tokens_per_s(&self) -> Option<f64> {
+    pub(crate) fn tokens_per_s(&self) -> Option<f64> {
         (self.speed_calls > 0).then(|| self.speed_sum / self.speed_calls as f64)
     }
 
     /// Mean time to the first token, in milliseconds.
-    pub fn first_token_ms(&self) -> Option<f64> {
+    pub(crate) fn first_token_ms(&self) -> Option<f64> {
         (self.first_token_calls > 0)
             .then(|| self.first_token_sum_ms / self.first_token_calls as f64)
     }

@@ -1826,9 +1826,7 @@ impl Supervisor {
         let static_plan = Footprint::of(&model, &launch);
         let fixed = static_plan.weights_bytes + static_plan.overhead_bytes;
         let measured_fixed = measured.checked_sub(static_plan.kv_bytes)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
+        let now = imperium_api::time::unix_secs();
         calibration.record(id, lane, fixed, measured_fixed, now)
     }
 

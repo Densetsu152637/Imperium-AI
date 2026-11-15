@@ -179,6 +179,12 @@ impl ModelError {
         )
     }
 
+    /// Whether llama.cpp refused because the request does not fit its KV pool ("Context size
+    /// has been exceeded"), so sending it again without the output cap is worth trying.
+    pub fn is_context_overflow(&self) -> bool {
+        self.to_string().contains("Context size has been exceeded")
+    }
+
     /// When the provider says to retry, in seconds, if it said.
     pub fn retry_after_s(&self) -> Option<u64> {
         match self {
@@ -453,6 +459,22 @@ impl Assembler {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn llama_cpp_context_overflow_is_told_from_other_refusals() {
+        let status = |status: u16, body: &str| ModelError::Status {
+            status,
+            body: body.into(),
+            retry_after_s: None,
+        };
+        assert!(status(400, "Context size has been exceeded.").is_context_overflow());
+        assert!(
+            status(500, "{\"error\":\"Context size has been exceeded\"}").is_context_overflow()
+        );
+        assert!(!status(400, "invalid request").is_context_overflow());
+        assert!(!status(429, "slow down").is_context_overflow());
+        assert!(!ModelError::Decode("bad frame".into()).is_context_overflow());
+    }
+
     use super::*;
     use axum::Router;
     use axum::routing::post;

@@ -1,10 +1,10 @@
-// What a waiting message offers, and the requests its buttons send (src/queue.ts). Run with
+// What a waiting message offers, and the requests its buttons send (src/sessions/queue.ts). Run with
 // `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { editStillValid, queueActions, queueLabel, queueParams, steeredLabel } from "../src/queue.ts";
+import { editStillValid, queueActions, queueLabel, queueParams, steeredLabel } from "../src/sessions/queue.ts";
 
 const queued = { id: "q1", text: "then add tests", steer: false };
 const steering = { id: "q2", text: "use tabs", steer: true };

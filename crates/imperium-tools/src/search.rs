@@ -9,8 +9,9 @@ use std::path::PathBuf;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
-use crate::permissions::{RuleAction, glob};
 use crate::{ToolError, Workspace};
+use imperium_api::RuleAction;
+use imperium_policy::permissions::glob;
 
 /// Default and largest number of results one call returns.
 pub(crate) const DEFAULT_RESULTS: usize = 100;
@@ -213,7 +214,7 @@ fn page_note(shown: usize, total: usize, offset: usize, more: bool, noun: &str) 
 }
 
 /// Files whose names match `pattern` under the scope's folder.
-pub fn glob_files(
+pub(crate) fn glob_files(
     workspace: &Workspace,
     pattern: &str,
     scope: &Scope,
@@ -254,7 +255,7 @@ pub struct GrepQuery {
 
 /// Lines matching a regular expression in the files under the scope's folder, as
 /// `path:line:text`, with `path-line-text` context lines and `--` between separate groups.
-pub fn grep_files(
+pub(crate) fn grep_files(
     workspace: &Workspace,
     query: &GrepQuery,
     scope: &Scope,
@@ -322,12 +323,7 @@ pub fn grep_files(
                 };
                 for (index, line) in lines.iter().enumerate().take(to + 1).skip(from) {
                     let separator = if hits.contains(&index) { ':' } else { '-' };
-                    let line = if line.chars().count() > MAX_LINE_CHARS {
-                        let cut: String = line.chars().take(MAX_LINE_CHARS).collect();
-                        format!("{cut}…")
-                    } else {
-                        line.to_string()
-                    };
+                    let line = imperium_api::truncate_chars(line, MAX_LINE_CHARS);
                     out.push_str(&format!(
                         "{shown_path}{separator}{}{separator}{line}\n",
                         index + 1
@@ -369,7 +365,8 @@ pub fn grep_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::{PermissionRule, Permissions, SharedRules};
+    use imperium_api::PermissionRule;
+    use imperium_policy::permissions::{Permissions, SharedRules};
 
     fn scope(path: &str) -> Scope {
         Scope {

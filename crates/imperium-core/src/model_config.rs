@@ -21,7 +21,7 @@ const HEADER: &str = "# Written by the Imperium desktop app (Models dialog). Set
                       # win over config.toml, key by key. The app rewrites this file.\n\n";
 
 /// Every local model's settings and every model-table row's, as saved and as in effect.
-pub fn config(state: &DaemonState) -> ModelConfigResult {
+pub(crate) fn config(state: &DaemonState) -> ModelConfigResult {
     let file = state.paths().app_models_file();
     let saved = read_app_file(&file).unwrap_or_else(|error| {
         tracing::warn!("{error}");
@@ -32,7 +32,7 @@ pub fn config(state: &DaemonState) -> ModelConfigResult {
 
 /// Saves the updates to the app layer and applies them; with `dry_run`, only checks them and
 /// returns what the result would be.
-pub fn set_config(
+pub(crate) fn set_config(
     state: &DaemonState,
     params: ModelSetConfigParams,
 ) -> Result<ModelConfigResult, String> {

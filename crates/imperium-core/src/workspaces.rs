@@ -14,10 +14,10 @@ use imperium_memory::environment::FILE_NAME;
 
 /// A recorded copy of where the tree was last put, so a root changed by editing the config
 /// file while the daemon was off is still moved at the next start. Kept in the data folder.
-pub const ROOT_RECORD: &str = "workspaces-root.txt";
+pub(crate) const ROOT_RECORD: &str = "workspaces-root.txt";
 
 /// Whether `id` is safe to use as a folder name: letters, digits, `-` and `_` only.
-pub fn safe_id(id: &str) -> bool {
+pub(crate) fn safe_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id
@@ -27,7 +27,7 @@ pub fn safe_id(id: &str) -> bool {
 
 /// Whether `id` looks like one the daemon generates for a session (`new_session_id`: 16
 /// lowercase hex digits). The sweep deletes nothing else.
-pub fn is_generated_session_id(id: &str) -> bool {
+pub(crate) fn is_generated_session_id(id: &str) -> bool {
     id.len() == 16
         && id
             .bytes()
@@ -35,22 +35,22 @@ pub fn is_generated_session_id(id: &str) -> bool {
 }
 
 /// The environment's folder, `<root>/<environment-id>`.
-pub fn environment_dir(root: &Path, environment: &str) -> Option<PathBuf> {
+pub(crate) fn environment_dir(root: &Path, environment: &str) -> Option<PathBuf> {
     safe_id(environment).then(|| root.join(environment))
 }
 
 /// The environment's `Memory.md`.
-pub fn memory_file(root: &Path, environment: &str) -> Option<PathBuf> {
+pub(crate) fn memory_file(root: &Path, environment: &str) -> Option<PathBuf> {
     environment_dir(root, environment).map(|dir| dir.join(FILE_NAME))
 }
 
 /// The folder holding the environment's session folders.
-pub fn sessions_dir(root: &Path, environment: &str) -> Option<PathBuf> {
+pub(crate) fn sessions_dir(root: &Path, environment: &str) -> Option<PathBuf> {
     environment_dir(root, environment).map(|dir| dir.join("sessions"))
 }
 
 /// One session's scratch folder.
-pub fn session_dir(root: &Path, environment: &str, session: &str) -> Option<PathBuf> {
+pub(crate) fn session_dir(root: &Path, environment: &str, session: &str) -> Option<PathBuf> {
     if !safe_id(session) {
         return None;
     }
@@ -58,7 +58,11 @@ pub fn session_dir(root: &Path, environment: &str, session: &str) -> Option<Path
 }
 
 /// Makes the session's scratch folder (and the folders above it) and returns it.
-pub fn ensure_session_dir(root: &Path, environment: &str, session: &str) -> io::Result<PathBuf> {
+pub(crate) fn ensure_session_dir(
+    root: &Path,
+    environment: &str,
+    session: &str,
+) -> io::Result<PathBuf> {
     let dir = session_dir(root, environment, session).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -71,7 +75,11 @@ pub fn ensure_session_dir(root: &Path, environment: &str, session: &str) -> io::
 
 /// Deletes the session's scratch folder; a missing one is fine. Returns whether one was
 /// deleted.
-pub fn remove_session_dir(root: &Path, environment: &str, session: &str) -> io::Result<bool> {
+pub(crate) fn remove_session_dir(
+    root: &Path,
+    environment: &str,
+    session: &str,
+) -> io::Result<bool> {
     let Some(dir) = session_dir(root, environment, session) else {
         return Ok(false);
     };
@@ -83,21 +91,21 @@ pub fn remove_session_dir(root: &Path, environment: &str, session: &str) -> io::
 }
 
 /// Where the tree was last put, as recorded in the data folder.
-pub fn recorded_root(data_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn recorded_root(data_dir: &Path) -> Option<PathBuf> {
     let text = fs::read_to_string(data_dir.join(ROOT_RECORD)).ok()?;
     let text = text.trim();
     (!text.is_empty()).then(|| PathBuf::from(text))
 }
 
 /// Records where the tree is now.
-pub fn record_root(data_dir: &Path, root: &Path) -> io::Result<()> {
+pub(crate) fn record_root(data_dir: &Path, root: &Path) -> io::Result<()> {
     fs::create_dir_all(data_dir)?;
     fs::write(data_dir.join(ROOT_RECORD), root.display().to_string())
 }
 
 /// What a move did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MoveMethod {
+pub(crate) enum MoveMethod {
     /// There was nothing to move.
     Nothing,
     /// The folder was renamed (same volume).
@@ -109,7 +117,7 @@ pub enum MoveMethod {
 /// The outcome of a successful [`move_root`].
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MoveReport {
+pub(crate) struct MoveReport {
     pub method: MoveMethod,
     pub files: u64,
     pub bytes: u64,
@@ -120,7 +128,7 @@ pub struct MoveReport {
 
 /// A step of a move, for progress reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MoveProgress {
+pub(crate) struct MoveProgress {
     /// `scanning`, `copying`, `verifying` or `cleaning`.
     pub phase: &'static str,
     pub files_done: u64,
@@ -128,7 +136,7 @@ pub struct MoveProgress {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum MoveError {
+pub(crate) enum MoveError {
     #[error("the new folder must be an absolute path: {0}")]
     NotAbsolute(String),
     #[error("{0} is inside the current working folders; choose a folder outside {1}")]
@@ -162,7 +170,7 @@ pub(crate) struct MoveHooks {
 /// If saving fails, [`Staged::undo`] puts everything back.
 #[derive(Debug)]
 #[must_use = "a staged move must be finished or undone"]
-pub struct Staged {
+pub(crate) struct Staged {
     old: PathBuf,
     new: PathBuf,
     new_existed: bool,
@@ -175,7 +183,7 @@ pub struct Staged {
 
 /// Moves the working folders from `old` to `new`: [`stage`] then [`Staged::finish`].
 #[cfg(test)]
-pub fn move_root(
+pub(crate) fn move_root(
     old: &Path,
     new: &Path,
     progress: &mut dyn FnMut(MoveProgress),
@@ -202,7 +210,7 @@ fn finish_report(staged: Staged, progress: &mut dyn FnMut(MoveProgress)) -> Move
 /// A folder on the same volume is renamed; otherwise the tree is copied and every file compared
 /// with its original. If anything fails, what was written at `new` is removed and `old` is
 /// exactly as it was.
-pub fn stage(
+pub(crate) fn stage(
     old: &Path,
     new: &Path,
     progress: &mut dyn FnMut(MoveProgress),
@@ -298,7 +306,7 @@ pub(crate) fn stage_with(
 impl Staged {
     /// Deletes the originals of a copy. Once the data is verified at the new place, originals
     /// that cannot be deleted are warnings, not failure.
-    pub fn finish(self, progress: &mut dyn FnMut(MoveProgress)) -> Vec<String> {
+    pub(crate) fn finish(self, progress: &mut dyn FnMut(MoveProgress)) -> Vec<String> {
         let mut warnings = Vec::new();
         if self.method == MoveMethod::Copy {
             progress(MoveProgress {
@@ -319,7 +327,7 @@ impl Staged {
     }
 
     /// Puts everything back as it was before [`stage`].
-    pub fn undo(self) -> Result<(), String> {
+    pub(crate) fn undo(self) -> Result<(), String> {
         match self.method {
             MoveMethod::Nothing => {
                 if self.created_new {

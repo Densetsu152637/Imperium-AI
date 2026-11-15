@@ -19,9 +19,9 @@ import type {
   WeekStart,
 } from "@imperium/protocol";
 
-import { describeUsage, formatShare } from "../budgets";
+import { describeUsage, formatShare } from "../models/budgets";
 import type { DaemonClient } from "../daemon/client";
-import { formatTokens } from "../sessions";
+import { formatTokens } from "../sessions/sessions";
 import { Select } from "./Select";
 import { Row } from "./SettingsRow";
 

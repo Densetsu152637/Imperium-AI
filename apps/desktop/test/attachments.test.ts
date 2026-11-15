@@ -1,4 +1,4 @@
-// Composer attachment chips (src/attachments.ts). Run with `pnpm test` (node's test runner).
+// Composer attachment chips (src/sessions/attachments.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -14,7 +14,7 @@ import {
   pastedName,
   readyAttachments,
   removeChip,
-} from "../src/attachments.ts";
+} from "../src/sessions/attachments.ts";
 
 const staged = {
   id: "a1",

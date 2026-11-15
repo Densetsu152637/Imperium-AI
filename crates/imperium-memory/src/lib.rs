@@ -5,6 +5,8 @@
 //! makes past sessions searchable, and the model cards agents search when they choose a model
 //! ([`models`]), on the same retrieval primitives ([`retrieval`]).
 
+#![warn(unreachable_pub)]
+
 pub mod environment;
 pub mod migrate;
 pub mod models;
@@ -13,7 +15,6 @@ mod search;
 pub mod sessions;
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use imperium_api::markdown::front_matter;
 
@@ -380,9 +381,7 @@ pub fn project_id(dir: &Path) -> String {
 
 /// Today's date (UTC) as `YYYY-MM-DD`.
 fn today() -> String {
-    let days = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs() / 86_400);
+    let days = imperium_api::time::unix_secs() / 86_400;
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
     let z = days as i64 + 719_468;
     let era = z.div_euclid(146_097);

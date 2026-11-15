@@ -1,4 +1,4 @@
-// The first-run tour's steps and persistence (src/tourSteps.ts). Run with `pnpm test` (node's test runner).
+// The first-run tour's steps and persistence (src/tour/tourSteps.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -16,7 +16,7 @@ import {
   TOUR_STEPS,
   type TourState,
   type TourStep,
-} from "../src/tourSteps.ts";
+} from "../src/tour/tourSteps.ts";
 
 const steps: TourStep[] = [
   { id: "a", title: "A", body: "a" },
@@ -120,7 +120,7 @@ test("the card sits below its element, above it near the bottom, and inside the 
 });
 
 test("one modal check serves the tour, its auto-start and the Esc guard", async () => {
-  const { anyModalOpen, MODAL_SELECTOR } = await import("../src/tourSteps.ts");
+  const { anyModalOpen, MODAL_SELECTOR } = await import("../src/tour/tourSteps.ts");
   const asked: string[] = [];
   const dom = (found: boolean) => ({
     querySelector: (selector: string) => {

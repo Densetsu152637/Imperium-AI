@@ -13,7 +13,7 @@ use imperium_mcp::{Launch, ServerSpec, TokenSource, mcp_json};
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The servers to start, and notices for the user about servers left out.
-pub fn session_servers(
+pub(crate) fn session_servers(
     settings: &Settings,
     project_dir: &Path,
     load_secret: impl Fn(&SecretName) -> Result<Option<String>, SecretError>,
@@ -66,7 +66,7 @@ pub fn session_servers(
 /// daemon's own code reads them; config never refers to them, and they are never written to a
 /// plain file.
 #[derive(Debug)]
-pub struct KeychainCredentials(pub Arc<dyn SecretStore>);
+pub(crate) struct KeychainCredentials(pub Arc<dyn SecretStore>);
 
 impl KeychainCredentials {
     fn name(key: &str) -> Result<SecretName, String> {
@@ -96,7 +96,7 @@ impl CredentialStore for KeychainCredentials {
 
 /// Whether a remote server takes an OAuth sign-in: an HTTP server with no `Authorization` header
 /// of its own (a configured bearer token is one) and a name the keychain entries can carry.
-pub fn takes_sign_in(name: &str, launch: &Launch) -> bool {
+pub(crate) fn takes_sign_in(name: &str, launch: &Launch) -> bool {
     match launch {
         Launch::Http { headers, .. } => {
             imperium_config::valid_server_name(name)
@@ -112,7 +112,7 @@ pub fn takes_sign_in(name: &str, launch: &Launch) -> bool {
 /// signed in to simply has no token to offer; starting a session never starts a sign-in. The
 /// sources are the daemon's, one per server, shared by every session (and `mcp.test`), so their
 /// refresh lock covers all of them.
-pub fn oauth_sources(
+pub(crate) fn oauth_sources(
     specs: &[ServerSpec],
     secrets: &Arc<dyn SecretStore>,
     cache: &crate::connectors::StatusCache,

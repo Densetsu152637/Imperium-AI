@@ -21,7 +21,7 @@ pub(crate) struct EventFilter {
 
 impl EventFilter {
     /// Whether a notification of this `method` passes the connection's choice.
-    pub fn allows(&self, method: &str) -> bool {
+    pub(crate) fn allows(&self, method: &str) -> bool {
         self.include
             .as_ref()
             .is_none_or(|include| include.iter().any(|topic| topic_matches(topic, method)))
@@ -31,7 +31,7 @@ impl EventFilter {
                 .any(|topic| topic_matches(topic, method))
     }
 
-    pub fn subscribe(&mut self, topics: &[String]) -> Result<(), ErrorObject> {
+    pub(crate) fn subscribe(&mut self, topics: &[String]) -> Result<(), ErrorObject> {
         check(topics)?;
         if topics.is_empty() {
             return Ok(());
@@ -54,7 +54,7 @@ impl EventFilter {
         next.commit(self)
     }
 
-    pub fn unsubscribe(&mut self, topics: &[String]) -> Result<(), ErrorObject> {
+    pub(crate) fn unsubscribe(&mut self, topics: &[String]) -> Result<(), ErrorObject> {
         check(topics)?;
         let mut next = self.clone();
         for topic in topics {
@@ -83,7 +83,7 @@ impl EventFilter {
         Ok(())
     }
 
-    pub fn selection(&self) -> EventsSelection {
+    pub(crate) fn selection(&self) -> EventsSelection {
         EventsSelection {
             topics: self
                 .include

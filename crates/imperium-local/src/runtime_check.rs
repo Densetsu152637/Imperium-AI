@@ -339,7 +339,9 @@ fn mentions_missing_library(text: &str) -> bool {
         || text.contains("library not loaded")
 }
 
-/// The user's home folder, where llama.cpp builds are often left.
+/// The user's home folder, where llama.cpp builds are often left: `USERPROFILE` first, then
+/// `HOME` (the reverse of the workflow and policy crates' `home_dir`), with no check for an empty
+/// value.
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))

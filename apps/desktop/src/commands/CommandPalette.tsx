@@ -7,11 +7,11 @@
 import { Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import { useSettings } from "../settings";
-import { bindingFor, isCapturing, triggers } from "../shortcuts";
+import { useSettings } from "../settings/settings";
+import { bindingFor, isCapturing, triggers } from "../settings/shortcuts";
 import { getLayout, updateLayout } from "../layout/state";
-import { focusMainWindow } from "../notify";
-import { emitPanelEvent, listenPanelEvents } from "../panelWindows";
+import { focusMainWindow } from "../shared/notify";
+import { emitPanelEvent, listenPanelEvents } from "../shared/panelWindows";
 import { GROUP_LABELS, groupResults, nextGroupStart, pushRecent, rankCommands } from "./rank";
 import { allCommands, findCommand, formatShortcut, registerCommands, type Command, type CommandSource } from "./registry";
 

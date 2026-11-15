@@ -9,7 +9,7 @@ import { useState } from "react";
 import type { DownloadJob, HfFilesResult } from "@imperium/protocol";
 
 import type { DaemonClient } from "../daemon/client";
-import { approxSize, downloadable, type HouseModel } from "../houseModels";
+import { approxSize, downloadable, type HouseModel } from "../models/houseModels";
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 

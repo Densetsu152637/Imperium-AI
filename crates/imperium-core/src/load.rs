@@ -20,8 +20,8 @@
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
+use imperium_api::{Load, LoadView};
 use imperium_config::LoadSettings;
-use imperium_engine::{Load, LoadView};
 
 use crate::DaemonState;
 
@@ -145,7 +145,7 @@ impl LoadView for ManualLoad {
 
 /// Reads the machine and the daemon's own activity every `load.sample_s` and feeds the monitor,
 /// for as long as the daemon lives.
-pub fn start_sampling(daemon: &Arc<DaemonState>) {
+pub(crate) fn start_sampling(daemon: &Arc<DaemonState>) {
     let monitor = daemon.load_monitor();
     let every = Duration::from_secs(daemon.settings().load.sample_s.max(1));
     let daemon: Weak<DaemonState> = Arc::downgrade(daemon);

@@ -396,7 +396,7 @@ async fn pre_approved_tools_and_full_mode_do_not_skip_the_ask() {
     session
         .workspace()
         .permissions()
-        .set_mode(imperium_tools::permissions::PermissionMode::Full);
+        .set_mode(imperium_api::PermissionMode::Full);
     let mut events = session.subscribe();
     let (prompts, _) = run_answering(&session, &mut events, PermissionDecision::Allow).await;
     assert_eq!(prompts.len(), 1, "full mode does not skip it");

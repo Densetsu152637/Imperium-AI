@@ -1,0 +1,18 @@
+[package]
+name = "imperium-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "What agents may do: permission rules and modes, the safety floor, and agent profiles"
+
+[dependencies]
+imperium-api = { version = "0.1.0", path = "../imperium-api" }
+imperium-workflow = { version = "0.1.0", path = "../imperium-workflow" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

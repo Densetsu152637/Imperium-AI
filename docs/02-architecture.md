@@ -139,24 +139,22 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | Crate                 | Responsibility                                                         |
 | --------------------- | ---------------------------------------------------------------------- |
 | `imperium-api`        | Shared types and traits: chat messages, tool specs, usage and pricing, the local-model and tool-provider interfaces, Markdown front matter (implemented) |
+| `imperium-client`     | The client of the daemon protocol, used by the CLI and the tests (implemented) |
 | `imperium-ipc`        | Same-user local sockets: Unix domain socket, Windows named pipe (the one crate that allows `unsafe`, for the pipe's ACL) |
 | `imperium-protocol`   | Wire types, method/event definitions, TS export                        |
 | `imperium-engine`     | Agent engine library: sessions, agent loop, delegation, task graph, event bus |
 | `imperium-models`     | Endpoint clients behind `ChatClient`, model registry, router, cost accounting |
 | `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, runtime supervision (llama.cpp, vLLM); carries out residency decisions, decides none on its own |
-| `imperium-tools`      | Built-in tools: files, commands, isolation tiers (implemented)         |
+| `imperium-tools`      | Built-in tools: files, commands, isolation tiers; confines paths to a workspace and asks `imperium-policy` before it acts (implemented) |
 | `imperium-web`        | Web search providers, page fetching, and a CDP browser (implemented)   |
 | `imperium-mcp`        | MCP client (stdio, streamable HTTP; implemented) and the Imperium MCP server (`imperium mcp-serve`, the session-level [Claude harness](20-claude-harness.md) and its `--tools` bridge for Imperium's own tools) lives in `imperium-cli`; the engine side of the bridge is `imperium-engine`'s `bridge` module |
-| `imperium-sandbox`    | Isolation tiers: policy guard, container driver, SSH transport         |
 | `imperium-extensions` | Plugin, skill, hook, and slash-command loading; Claude Code plugin compatibility (implemented) |
 | `imperium-workflow`   | Workflow packs, context retrieval, load manifests, documentation pointers (implemented) |
-| `imperium-policy`     | Policy pack layering and prompt assembly (planned)                      |
+| `imperium-policy`     | What agents may do: permission rules and modes, the safety floor, agent profiles, and the layering of workflow packs (implemented); prompt assembly stays in `imperium-engine` |
 | `imperium-memory`     | Global memory and environment `Memory.md`: entries, index, search, redaction, migration of older project memory (implemented) |
 | `imperium-config`     | Layered config, schema validation, secret store (keychain, encrypted file, in-memory)  |
-| `imperium-telemetry`  | Metrics, traces, cost ledger, OpenTelemetry export                     |
 | `imperium-automation` | Schedule triggers (cron, interval, one-shot), missed runs, run history (implemented); project agents (planned) |
 | `imperium-github`     | Failing pull request checks through `gh`, auto-fix worktrees, commit and push (implemented) |
-| `imperium-remote`     | Device pairing, encrypted remote transport, relay client               |
 | `imperium-media`      | Image (OpenAI-compatible, ComfyUI), speech, and transcription tools (implemented) |
 | `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours run in the desktop's mod frames, not here ([16](16-pets.md)) |
 | `imperium-core`       | The daemon (`imperium-core` binary, formerly `imperiumd`), also a library for tests |
@@ -168,10 +166,15 @@ depend on it rather than on each other: `imperium-tools`, `imperium-mcp`, `imper
 `Pricing`; `imperium-memory` takes the front-matter parser instead of `imperium-extensions`;
 and `imperium-local` implements its `LocalModels` trait without depending on `imperium-engine`.
 Likewise `imperium-web`, `imperium-media`, and `imperium-mcp` implement its `ToolProvider` trait,
-so `imperium-engine` does not depend on them (it reaches `imperium-mcp` only through
-`imperium-extensions`, for plugins' server definitions); the daemon builds the providers.
-`imperium-models`, `imperium-engine`, and `imperium-extensions` re-export the moved items at their
-old paths.
+so `imperium-engine` does not depend on `imperium-web` or `imperium-mcp` (it reaches `imperium-mcp` only
+through `imperium-extensions`, for plugins' server definitions); the daemon builds the providers.
+`imperium-engine` does depend on `imperium-media`, for the attachments it stages and describes. There is
+no separate sandbox, telemetry or remote-transport crate: isolation tiers live in `imperium-tools`, usage
+and cost are recorded by the engine and the daemon, and remote hosts are reached over an SSH tunnel.
+The moved items are imported from `imperium-api` directly; no crate re-exports them at an old
+path. `imperium-policy` depends on `imperium-api` and `imperium-workflow` (and on no other
+Imperium crate, `imperium-config` included: it takes plain inputs); `imperium-tools`,
+`imperium-engine`, `imperium-core`, `imperium-web` and `imperium-cli` depend on it.
 
 Secrets go through the `SecretStore` trait in `imperium-config` (`load`, `store`, `delete`):
 `KeychainSecrets` uses the OS keychain, `FileSecrets` keeps them in an encrypted file,
@@ -229,14 +232,12 @@ Key dependencies (to confirm during phase 0): `tokio`, `axum` / `tokio-tungsteni
 ```text
 Cargo.toml              Rust workspace
 crates/                 Rust crates listed above
-apps/desktop/           Tauri 2 shell (src-tauri/) and React app (src/)
-apps/mobile/            Phone app (phase 11)
+apps/desktop/           Tauri 2 shell (src-tauri/) and React app (src/, in feature folders)
 pets/                   Bundled default pet packs
+mods/                   Bundled UI mods (opt-in), such as imperium-nursery
 packages/protocol/      Generated TypeScript protocol types
 packages/mod-sdk/       UI mod SDK (@imperium/mod-sdk)
 examples/mods/          Example UI mods
-packages/ui/            Shared React components and design tokens
-sidecars/media/         Python media sidecar (uv project)
 runtimes/               Pinned runtime versions (llama.cpp ref, vLLM version)
 policy/                 Bundled default policy pack (pinned snapshot)
 scripts/                Check, build, and CI helper scripts

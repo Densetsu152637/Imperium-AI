@@ -43,7 +43,10 @@ pub struct Expanded {
     pub truncated: bool,
 }
 
-/// The home folder, from the environment.
+/// The home folder, from the environment: `HOME`, else `USERPROFILE`, as a path; an empty value
+/// counts as unset. The other `home_dir` functions differ on purpose: the policy crate's keeps a
+/// string and skips blank values, the extension installer's reads one variable chosen by the OS,
+/// and the local-model checker's tries `USERPROFILE` first.
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))

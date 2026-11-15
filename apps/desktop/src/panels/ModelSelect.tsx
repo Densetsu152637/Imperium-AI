@@ -8,12 +8,12 @@ import { useEffect, useId, useState } from "react";
 import type { LocalModelRow, ModelRow, RuntimeInfo, SessionControlResult } from "@imperium/protocol";
 
 import { Select, type SelectOption } from "../components/Select";
-import { modelOptions } from "../modelOptions";
-import { effortHint, effortToSend } from "../effort";
-import { formatTokens } from "../sessions";
-import { useSettings } from "../settings";
+import { modelOptions } from "../models/modelOptions";
+import { effortHint, effortToSend } from "../sessions/effort";
+import { formatTokens } from "../sessions/sessions";
+import { useSettings } from "../settings/settings";
 
-export { asSpec, localDescription, localSpec, memoryPlan, modelOptions, sizeShort, tokensShort } from "../modelOptions";
+export { asSpec, localDescription, localSpec, memoryPlan, modelOptions, sizeShort, tokensShort } from "../models/modelOptions";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 

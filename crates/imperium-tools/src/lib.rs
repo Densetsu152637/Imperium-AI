@@ -2,13 +2,12 @@
 //! a policy check, not an OS sandbox — commands run with the user's full rights). A remote
 //! workspace runs them inside a Docker container, WSL, or over SSH ([`runtime`]).
 
+#![warn(unreachable_pub)]
+
 mod exec;
 mod files;
-mod floor;
 mod invocation;
-pub mod permissions;
 mod processes;
-pub mod profile;
 mod project_worktrees;
 mod remote_files;
 pub mod runtime;
@@ -20,7 +19,6 @@ mod writer_trees;
 pub use exec::{SPAWNED_MARK, shell};
 pub use invocation::{Access, Invocation, ToolError, specs};
 pub use processes::Processes;
-pub use profile::{AgentProfile, Allowlist, ProfileRules, SHELL_TOOLS, ToolSource};
 pub use runtime::{ProcessRunner, ProcessSpec, Remote, RunOutput, Runner};
 pub use sandbox::Sandbox;
 pub use search::{GrepQuery, Scope};

@@ -27,8 +27,8 @@ import type {
   SessionControlResult,
 } from "@imperium/protocol";
 
-import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
-import { entryForEvent } from "../sessionSearch";
+import { ProjectIcon, projectName, type ProjectIcons } from "../environments/projectIcons";
+import { entryForEvent } from "../sessions/sessionSearch";
 import {
   ROOT,
   agentName,
@@ -42,8 +42,8 @@ import {
   totals,
   type Entry,
   type SessionState,
-} from "../sessions";
-import { describeUsage, formatShare, indicator, modelSpec } from "../budgets";
+} from "../sessions/sessions";
+import { describeUsage, formatShare, indicator, modelSpec } from "../models/budgets";
 import { describeRule } from "../components/PermissionsEditor";
 import { RowMenu } from "../components/RowMenu";
 import { Select } from "../components/Select";
@@ -51,14 +51,14 @@ import { Switch } from "../components/Switch";
 import { ToolCall } from "../components/ToolCall";
 import { JumpToLatest } from "../components/JumpToLatest";
 import { ToolGroup } from "../components/ToolGroup";
-import { useFollowScroll } from "../useFollowScroll";
-import { groupToolRuns, itemForEntry } from "../toolCalls";
+import { useFollowScroll } from "../sessions/useFollowScroll";
+import { groupToolRuns, itemForEntry } from "../sessions/toolCalls";
 import { WaitLine } from "../components/WaitLine";
-import { describeWait, type Residency } from "../waits";
-import { modelName, useModelNames } from "../modelNames";
+import { describeWait, type Residency } from "../sessions/waits";
+import { modelName, useModelNames } from "../models/modelNames";
 import type { DaemonClient } from "../daemon/client";
 import { SentAttachments } from "../components/AttachmentChips";
-import { reasoningAvailable } from "../effort";
+import { reasoningAvailable } from "../sessions/effort";
 import { Composer } from "./Composer";
 import { CompareForm } from "./ComparePanel";
 import { ContextBreakdownView } from "./ContextBreakdown";
@@ -72,13 +72,13 @@ import {
 } from "./ModelSelect";
 import { StatusBadge } from "./StatusBadge";
 import { formatShortcut } from "../commands/registry";
-import { useSettings } from "../settings";
-import { bindingFor, isCapturing, triggers } from "../shortcuts";
-import { canStop, isStopped } from "../stop";
-import { editStillValid, queueActions, queueLabel, steeredLabel, type QueueChange } from "../queue";
+import { useSettings } from "../settings/settings";
+import { bindingFor, isCapturing, triggers } from "../settings/shortcuts";
+import { canStop, isStopped } from "../sessions/stop";
+import { editStillValid, queueActions, queueLabel, steeredLabel, type QueueChange } from "../sessions/queue";
 import { ModelName } from "../components/ModelName";
-import { startedByNote } from "../agents";
-import { branchNote } from "../branches";
+import { startedByNote } from "../sessions/agents";
+import { branchNote } from "../sessions/branches";
 
 type Props = {
   session: SessionState;

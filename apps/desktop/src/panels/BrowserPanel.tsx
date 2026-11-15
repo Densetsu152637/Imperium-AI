@@ -11,8 +11,8 @@ import { type FormEvent, type KeyboardEvent, type MouseEvent, useCallback, useEf
 import type { BrowserAction, BrowserActResult, BrowserControlResult } from "@imperium/protocol";
 
 import type { DaemonClient } from "../daemon/client";
-import { browserAddress, clickFraction, keyAction, shownTab } from "../preview";
-import type { SessionState } from "../sessions";
+import { browserAddress, clickFraction, keyAction, shownTab } from "../sessions/preview";
+import type { SessionState } from "../sessions/sessions";
 
 /** How long typed characters are gathered before they are sent as one action. */
 const TYPE_DELAY_MS = 200;

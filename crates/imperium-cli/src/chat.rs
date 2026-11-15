@@ -1067,10 +1067,7 @@ fn describe_checkpoints(result: &SessionCheckpointsResult) -> String {
             "(the files before a rewind)".to_string()
         } else {
             let line = checkpoint.prompt.lines().next().unwrap_or_default();
-            let mut shown: String = line.chars().take(70).collect();
-            if shown.len() < line.len() {
-                shown.push('…');
-            }
+            let shown = imperium_api::truncate_chars(line, 70);
             format!("before \"{shown}\"")
         };
         out.push_str(&format!("  #{} {what}\n", checkpoint.number));

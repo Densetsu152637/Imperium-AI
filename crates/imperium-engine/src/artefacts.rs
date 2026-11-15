@@ -25,7 +25,7 @@ pub(crate) struct Artefacts {
 }
 
 impl Artefacts {
-    pub fn store(&self, text: &str) -> String {
+    pub(crate) fn store(&self, text: &str) -> String {
         let id = format!(
             "a{}-{}",
             run_prefix(),
@@ -35,7 +35,7 @@ impl Artefacts {
         id
     }
 
-    pub fn get(&self, id: &str) -> Option<Arc<str>> {
+    pub(crate) fn get(&self, id: &str) -> Option<Arc<str>> {
         lock(&self.items).get(id).cloned()
     }
 }

@@ -1,11 +1,11 @@
-// Changes by agents and install provenance (src/configChanges.ts). Run with `pnpm test`.
+// Changes by agents and install provenance (src/settings/configChanges.ts). Run with `pnpm test`.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ConfigChange, InstallSource } from "@imperium/protocol";
 
-import { changeDetails, installedByAgent, sourceLabel, undoLabel } from "../src/configChanges.ts";
+import { changeDetails, installedByAgent, sourceLabel, undoLabel } from "../src/settings/configChanges.ts";
 
 const source: InstallSource = {
   kind: "git",

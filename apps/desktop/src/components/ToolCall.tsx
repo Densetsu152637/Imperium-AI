@@ -3,8 +3,8 @@
 
 import { useState } from "react";
 
-import type { ToolEntry } from "../sessions";
-import { clipText, formatToolDuration, prettyArguments } from "../toolCalls";
+import type { ToolEntry } from "../sessions/sessions";
+import { clipText, formatToolDuration, prettyArguments } from "../sessions/toolCalls";
 import { ToolState } from "./ToolState";
 
 export function ToolCall({ entry }: { entry: ToolEntry }) {

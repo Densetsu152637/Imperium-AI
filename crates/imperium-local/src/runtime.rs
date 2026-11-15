@@ -13,6 +13,7 @@
 //! the earlier build is kept (and used) until the new one has passed its checks and loaded a
 //! model once ([`refs_to_remove`]).
 
+use imperium_api::encoding::hex;
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -779,10 +780,6 @@ fn merge_into(from: &Path, into: &Path) -> Result<(), InstallError> {
         std::fs::rename(entry.path(), &target).map_err(io(target.display().to_string()))?;
     }
     Ok(())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Whether an installed build is good enough to keep.

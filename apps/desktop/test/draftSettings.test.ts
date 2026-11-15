@@ -1,9 +1,9 @@
-// The draft model fields of the model settings form (src/draftSettings.ts).
+// The draft model fields of the model settings form (src/models/draftSettings.ts).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { checkDraft } from "../src/draftSettings.ts";
+import { checkDraft } from "../src/models/draftSettings.ts";
 
 const none = { model: null, max: null, min: null, gpuLayers: null };
 

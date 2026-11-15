@@ -15,9 +15,10 @@
 //!
 //! An uninstall moves the folder aside to `<data>/config-trash/`, so undoing it puts it back.
 
+use imperium_api::time::unix_ms;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use imperium_protocol::methods::InstallSource;
 
@@ -127,6 +128,8 @@ fn is_scp_like(source: &str) -> bool {
     host.contains('@') && !host.contains(['/', '\\']) && !path.is_empty()
 }
 
+/// The home folder for `~` in an install source: one variable chosen by the OS (`USERPROFILE` on
+/// Windows, `HOME` elsewhere), with no fallback and no check for an empty value.
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
 }
@@ -154,13 +157,6 @@ pub(crate) struct Installed {
     pub disabled: bool,
     /// What the agent and the user are told about it.
     pub notes: Vec<String>,
-}
-
-pub(crate) fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
 }
 
 /// Installs `request` into the config folder.

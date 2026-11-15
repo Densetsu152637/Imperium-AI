@@ -6,7 +6,7 @@ use serde_json::Value;
 
 /// A tab the session knows: a short label for the agent and the browser's id for the page.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TabRec {
+pub(crate) struct TabRec {
     pub label: u32,
     /// The browser's target id.
     pub target: String,
@@ -14,7 +14,7 @@ pub struct TabRec {
 
 /// A page the browser lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Listed {
+pub(crate) struct Listed {
     pub id: String,
     pub url: String,
     pub title: String,
@@ -22,7 +22,7 @@ pub struct Listed {
 
 /// What [`reconcile`] changed.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct Reconciled {
+pub(crate) struct Reconciled {
     /// Tabs added because a page opened them: the label and the target id.
     pub opened: Vec<(u32, String)>,
     /// Targets that did not fit within the limit and are to be closed.
@@ -31,7 +31,7 @@ pub struct Reconciled {
 
 /// The pages in a `/json/list` reply: real pages only (not workers, extensions or the debugger's
 /// own front end), in the browser's order.
-pub fn listed(reply: &Value) -> Vec<Listed> {
+pub(crate) fn listed(reply: &Value) -> Vec<Listed> {
     reply
         .as_array()
         .into_iter()
@@ -54,7 +54,7 @@ pub fn listed(reply: &Value) -> Vec<Listed> {
 
 /// Whether `id` looks like a target id (letters, digits, `-` and `_`), so it can be put in a
 /// debugger URL without changing its meaning.
-pub fn is_target_id(id: &str) -> bool {
+pub(crate) fn is_target_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id
@@ -66,7 +66,7 @@ pub fn is_target_id(id: &str) -> bool {
 /// lists that are not tabs yet are added with fresh labels while there is room (`max` tabs in
 /// all), and the ones that do not fit are reported for closing. Tabs keep their labels and
 /// order.
-pub fn reconcile(
+pub(crate) fn reconcile(
     tabs: &mut Vec<TabRec>,
     next_label: &mut u32,
     listed: &[Listed],
@@ -96,19 +96,13 @@ pub fn reconcile(
 /// `text` on one line, at most `max` characters, with control characters replaced: a page
 /// chooses its titles, URLs and suggested file names, and none of them may add lines to what
 /// an agent reads.
-pub fn one_line(text: &str, max: usize) -> String {
+pub(crate) fn one_line(text: &str, max: usize) -> String {
     let flat: String = text
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
     let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        let mut cut: String = flat.chars().take(max).collect();
-        cut.push('…');
-        cut
-    }
+    imperium_api::truncate_chars(&flat, max)
 }
 
 #[cfg(test)]

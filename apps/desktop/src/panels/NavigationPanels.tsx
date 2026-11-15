@@ -13,21 +13,22 @@ import { useState, type KeyboardEvent } from "react";
 import type { EnvironmentInfo, SessionStatus } from "@imperium/protocol";
 
 import { RowMenu } from "../components/RowMenu";
+import { environmentById } from "../environments/byId";
 import { Select } from "../components/Select";
-import { ProjectIcon, environmentIcon, projectName, sameFolder } from "../projectIcons";
-import type { SearchClient } from "../sessionSearch";
-import { agentOfSession, agentTitle, startedByNote } from "../agents";
-import { formatAgo } from "../ago";
-import { branchNote, nestBranches } from "../branches";
-import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
+import { ProjectIcon, environmentIcon, projectName, sameFolder } from "../environments/projectIcons";
+import type { SearchClient } from "../sessions/sessionSearch";
+import { agentOfSession, agentTitle, startedByNote } from "../sessions/agents";
+import { formatAgo } from "../shared/ago";
+import { branchNote, nestBranches } from "../sessions/branches";
+import { formatCost, sessionTitle, totals, type SessionState } from "../sessions/sessions";
 import { SessionSearch } from "./SessionSearch";
 import { statusText } from "./StatusBadge";
-import { modelAliases, modelName } from "../modelNames";
+import { modelAliases, modelName } from "../models/modelNames";
 
 /** The environment a session works in: the one it names, else the one whose first folder it uses. */
 export function environmentOf(session: SessionState, environments: EnvironmentInfo[]): EnvironmentInfo | null {
   const id = session.summary.environment_id;
-  if (id) return environments.find((env) => env.id === id) ?? null;
+  if (id) return environmentById(environments, id);
   return environments.find((env) => env.folders[0] && sameFolder(env.folders[0], session.summary.project_dir)) ?? null;
 }
 

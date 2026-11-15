@@ -5,6 +5,8 @@
 //! CPU. Callers talk to a [`Session`] over channels and receive its
 //! [`AgentEvent`](imperium_protocol::session::AgentEvent)s by subscribing.
 
+#![warn(unreachable_pub)]
+
 mod agent;
 mod agents;
 mod artefacts;
@@ -32,11 +34,6 @@ pub use branch::{BranchPlan, mark_turn, plan_branch, plan_branch_at_end, turns_p
 pub use budget_gate::{BudgetGate, BudgetVerdict};
 pub use checkpoints::TurnCheckpoints;
 pub use compact::SwitchError;
-pub use imperium_api::{
-    AcquireError, AcquireFuture, Availability, Load, LoadView, LoadedFuture, LocalLease,
-    LocalModels, LocalPresence, LocalRequest, LocalWait, Priority, ResumeFuture, SuspendFuture,
-    ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,
-};
 pub use imperium_models::{ChatClient, ChatClients, ChatRequest, Endpoint};
 pub use journal::{journalled_model, messages_path, read_events as journal_events};
 pub use knowledge::{KnowledgeAnswer, KnowledgeConfig, ModelAvailability};

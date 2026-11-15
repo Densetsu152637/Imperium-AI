@@ -7,10 +7,12 @@
 //! hashing it, the [`Diff`] between two snapshots, the user's source list ([`Sources`]) and the
 //! on-disk [`PackStore`] of pins and pending updates. Fetching is the caller's job.
 
+use imperium_api::encoding::hex;
+use imperium_api::time::unix_secs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -38,10 +40,6 @@ pub enum UpdateError {
 
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> UpdateError + '_ {
     move |error| UpdateError::Io(path.display().to_string(), error)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Whether `name` may name a source: it becomes a folder name and a pack reference prefix.
@@ -823,13 +821,6 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), UpdateError> {
     std::fs::rename(&temp, path).map_err(io(path))
 }
 
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0)
-}
-
 /// An accepted version of a pack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pin {
@@ -1038,7 +1029,7 @@ impl PackStore {
             url: url.to_string(),
             hash: snapshot.hash(),
             commit: commit.to_string(),
-            fetched: now(),
+            fetched: unix_secs(),
         };
         let text = toml::to_string(&pending).map_err(|error| {
             UpdateError::Invalid(format!("could not write the update: {error}"))
@@ -1130,7 +1121,7 @@ impl PackStore {
             url: pending.url,
             hash: pending.hash,
             commit: pending.commit,
-            accepted: now(),
+            accepted: unix_secs(),
         };
         let mut pins = self.read_pins()?;
         let previous = pins.packs.insert(name.to_string(), pin.clone());

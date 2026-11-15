@@ -143,7 +143,7 @@ fn refused_name(name: &str) -> Option<String> {
 }
 
 /// The file name in a `Content-Disposition` header, if it names one (`filename*` first).
-pub fn disposition_name(header: &str) -> Option<String> {
+pub(crate) fn disposition_name(header: &str) -> Option<String> {
     let mut plain = None;
     for part in header.split(';').skip(1) {
         let Some((key, value)) = part.split_once('=') else {
@@ -172,7 +172,7 @@ pub fn disposition_name(header: &str) -> Option<String> {
 }
 
 /// The last path segment of `url`, percent-decoded, if there is one.
-pub fn url_name(url: &Url) -> Option<String> {
+pub(crate) fn url_name(url: &Url) -> Option<String> {
     let segment = url.path_segments()?.next_back()?;
     let decoded = percent_decode(segment);
     (!decoded.is_empty()).then_some(decoded)
@@ -334,9 +334,7 @@ fn mark_platform(path: &Path, source: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn mark_platform(path: &Path, _source: &str) -> Result<(), String> {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
+    let seconds = imperium_api::time::unix_secs();
     let value = format!("0083;{seconds:x};Imperium;");
     let status = std::process::Command::new("xattr")
         .args(["-w", "com.apple.quarantine", value.as_str()])

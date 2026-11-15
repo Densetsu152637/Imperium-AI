@@ -3,6 +3,8 @@
 //! for its role and task. The resolver chooses; agents load the items themselves with
 //! `context_load`, so the same role and task get the same files whatever model runs them.
 
+#![warn(unreachable_pub)]
+
 mod docs;
 pub mod imports;
 pub mod pack;

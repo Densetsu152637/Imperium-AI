@@ -1,4 +1,4 @@
-// Following a transcript while an agent writes, and free scroll away from it (src/follow.ts).
+// Following a transcript while an agent writes, and free scroll away from it (src/sessions/follow.ts).
 // Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
@@ -16,7 +16,7 @@ import {
   unseenCount,
   wheelScrollsUp,
   type FollowState,
-} from "../src/follow.ts";
+} from "../src/sessions/follow.ts";
 
 // A 400px view over 1000px of content: the bottom is at scrollTop 600.
 const at = (scrollTop: number) => ({ scrollTop, scrollHeight: 1000, clientHeight: 400 });

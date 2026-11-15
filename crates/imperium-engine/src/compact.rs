@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 
+use imperium_api::ChatMessage;
 use imperium_api::truncate_chars;
-use imperium_models::ChatMessage;
 
 use crate::breakdown::{
     Category, KEPT_CLOSE, KEPT_OPEN, Measured, PART_SEPARATOR, Spans, restored_spans,
@@ -453,7 +453,7 @@ pub(crate) fn shorten(summary: &str, target: u64, current: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use imperium_models::{FunctionCall, ToolCall};
+    use imperium_api::{FunctionCall, ToolCall};
     use imperium_protocol::session::TokenCountMethod;
 
     fn user(text: &str) -> ChatMessage {

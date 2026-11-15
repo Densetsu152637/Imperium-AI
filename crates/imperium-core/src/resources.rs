@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use imperium_config::{LLAMACPP_ENDPOINT, VLLM_ENDPOINT};
 use imperium_local::monitor::{Probe, Sample, SystemProbe};
@@ -23,7 +23,7 @@ use tokio::sync::broadcast;
 use crate::state::DaemonState;
 
 /// How often watchers get a snapshot.
-pub const INTERVAL: Duration = Duration::from_secs(2);
+pub(crate) const INTERVAL: Duration = Duration::from_secs(2);
 /// How far back endpoint activity is counted.
 const WINDOW: Duration = Duration::from_secs(15 * 60);
 
@@ -190,7 +190,7 @@ async fn sample_while_watched(monitor: Arc<ResourceMonitor>, daemon: std::sync::
 }
 
 /// What the machine and the sessions are using now.
-pub async fn snapshot(state: &DaemonState) -> ResourceSnapshot {
+pub(crate) async fn snapshot(state: &DaemonState) -> ResourceSnapshot {
     let loaded = state.loaded_local_models();
     let daemon_pid = std::process::id();
     let mut pids = vec![daemon_pid];
@@ -345,9 +345,7 @@ pub(crate) fn assemble(inputs: &Inputs<'_>) -> ResourceSnapshot {
         .collect();
 
     ResourceSnapshot {
-        taken_at_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, millis),
+        taken_at_ms: imperium_api::time::unix_ms(),
         cpu: CpuUsage {
             total_percent: sample.cpu_percent,
             per_core: sample.per_core.clone(),
@@ -408,7 +406,7 @@ fn host(base_url: &str) -> Option<String> {
 }
 
 /// Records a session's model calls and failed turns for endpoint activity.
-pub fn watch_session(
+pub(crate) fn watch_session(
     state: &Arc<DaemonState>,
     session_id: String,
     mut events: broadcast::Receiver<AgentEvent>,

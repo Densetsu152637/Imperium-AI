@@ -7,6 +7,7 @@
 //! bind it to a private overlay address (Tailscale, ZeroTier, WireGuard) to use the phone away
 //! from home, or to a trusted LAN.
 
+use imperium_api::encoding::hex;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -60,10 +61,6 @@ pub struct Devices {
     path: PathBuf,
     devices: Mutex<Vec<Device>>,
     codes: Mutex<Vec<(String, Instant)>>,
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn random_hex(bytes: usize) -> String {
@@ -178,7 +175,7 @@ impl Devices {
 }
 
 /// Serves the phone app, pairing, and device connections on `listener` until the daemon stops.
-pub async fn serve(listener: TcpListener, daemon: Arc<DaemonState>) -> std::io::Result<()> {
+pub(crate) async fn serve(listener: TcpListener, daemon: Arc<DaemonState>) -> std::io::Result<()> {
     let app = Router::new()
         .route("/", get(|| async { Html(PHONE_APP) }))
         .route("/pair", post(pair))
@@ -188,7 +185,10 @@ pub async fn serve(listener: TcpListener, daemon: Arc<DaemonState>) -> std::io::
 }
 
 /// Binds `address` and serves phones there in the background.
-pub async fn start(daemon: &Arc<DaemonState>, address: SocketAddr) -> std::io::Result<SocketAddr> {
+pub(crate) async fn start(
+    daemon: &Arc<DaemonState>,
+    address: SocketAddr,
+) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(address).await?;
     let bound = listener.local_addr()?;
     tokio::spawn(serve(listener, Arc::clone(daemon)));

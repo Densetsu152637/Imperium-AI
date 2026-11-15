@@ -32,7 +32,7 @@ pub enum EnvironmentError {
 
 /// The id of the built-in Home environment: fixed, and valid as a folder name
 /// ([`crate::workspaces::safe_id`]), since its working folder is named after it.
-pub const HOME_ID: &str = "home";
+pub(crate) const HOME_ID: &str = "home";
 
 /// The Home environment as first made: no project folders, on this machine. Its working
 /// folder holds its `Memory.md` and its sessions' scratch folders.
@@ -641,8 +641,7 @@ fn save(path: &Path, list: &[EnvironmentInfo]) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(&serde_json::json!({ "environments": list }))
         .map_err(std::io::Error::other)?;
     let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, text)?;
-    std::fs::rename(&temporary, path)
+    imperium_api::fs::replace_file(path, &temporary, text)
 }
 
 /// A runtime with its fields trimmed and checked: names that are empty, contain spaces, or

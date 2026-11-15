@@ -1,9 +1,9 @@
-// Whether the effort control is live for a session's model (src/effort.ts). Run with `pnpm test`.
+// Whether the effort control is live for a session's model (src/sessions/effort.ts). Run with `pnpm test`.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { effortHint, effortToSend, NO_REASONING_HINT, reasoningAvailable } from "../src/effort.ts";
+import { effortHint, effortToSend, NO_REASONING_HINT, reasoningAvailable } from "../src/sessions/effort.ts";
 
 test("a model that reasons enables the effort control", () => {
   assert.equal(reasoningAvailable({ model: "deepseek", reasoning: true }), true);

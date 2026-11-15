@@ -7,9 +7,8 @@ use std::time::Duration;
 
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use imperium_engine::{
-    AcquireFuture, Availability, LocalLease, LocalModels, ResolvedModel, Session, SessionConfig,
-};
+use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels};
+use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{ContextCategory, SessionEvent, TokenCountMethod};
 use imperium_tools::Workspace;

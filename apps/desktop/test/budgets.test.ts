@@ -1,11 +1,11 @@
-// Which budgets cover a session, the indicator, alert notices, and budget stops (src/budgets.ts).
+// Which budgets cover a session, the indicator, alert notices, and budget stops (src/models/budgets.ts).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Budget, BudgetStatus, ModelRow } from "@imperium/protocol";
 
-import { budgetNotice, budgetStop, covers, describeUsage, formatShare, indicator, modelSpec } from "../src/budgets.ts";
+import { budgetNotice, budgetStop, covers, describeUsage, formatShare, indicator, modelSpec } from "../src/models/budgets.ts";
 
 function budget(change: Partial<Budget>): Budget {
   return {

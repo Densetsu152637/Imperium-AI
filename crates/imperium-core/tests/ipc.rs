@@ -199,7 +199,9 @@ async fn a_trust_grant_from_the_daemons_own_process_is_refused_over_the_socket()
         panic!("trust should be refused: {refused:?}");
     };
     assert!(
-        error.message.contains("trust was not granted"),
+        error
+            .message
+            .contains(imperium_protocol::errors::TRUST_NOT_GRANTED),
         "{}",
         error.message
     );

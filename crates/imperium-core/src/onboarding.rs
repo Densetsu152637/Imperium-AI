@@ -146,7 +146,7 @@ async fn rescan(state: Arc<DaemonState>) -> Result<LocalModelListResult, ErrorOb
 }
 
 /// `models.add_folder`.
-pub async fn add_folder(
+pub(crate) async fn add_folder(
     state: Arc<DaemonState>,
     params: ModelFolderParams,
 ) -> Result<LocalModelListResult, ErrorObject> {
@@ -179,7 +179,7 @@ pub async fn add_folder(
 }
 
 /// `models.remove_folder`.
-pub async fn remove_folder(
+pub(crate) async fn remove_folder(
     state: Arc<DaemonState>,
     params: ModelFolderParams,
 ) -> Result<LocalModelListResult, ErrorObject> {
@@ -246,7 +246,7 @@ fn spec_of(state: &DaemonState, model: &str) -> Result<String, ErrorObject> {
 }
 
 /// `models.use`.
-pub fn use_model(
+pub(crate) fn use_model(
     state: &DaemonState,
     params: ModelUseParams,
 ) -> Result<ModelUseResult, ErrorObject> {
@@ -269,7 +269,7 @@ pub fn use_model(
 
 /// `models.add_endpoint`: saves `[endpoints.<id>]` (its API key to the keychain), and makes
 /// `<id>:<model>` the default when asked.
-pub fn add_endpoint(
+pub(crate) fn add_endpoint(
     state: &DaemonState,
     params: ModelAddEndpointParams,
 ) -> Result<ModelAddEndpointResult, ErrorObject> {
@@ -355,7 +355,7 @@ pub(crate) fn read_answer(body: &Value) -> Answer {
 }
 
 /// `models.test`.
-pub async fn test_model(
+pub(crate) async fn test_model(
     state: Arc<DaemonState>,
     params: ModelTestParams,
 ) -> Result<ModelTestResult, ErrorObject> {
@@ -503,7 +503,7 @@ pub(crate) async fn hardware(state: &DaemonState) -> Hardware {
 }
 
 /// `runtime.status`.
-pub async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResult {
+pub(crate) async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResult {
     let settings = state.settings();
     let llamacpp = &settings.runtime.llamacpp;
     let hardware = hardware(&state).await;
@@ -645,7 +645,7 @@ pub(crate) fn apply_server(state: &DaemonState) {
 }
 
 /// `runtime.set_server`.
-pub async fn set_server(
+pub(crate) async fn set_server(
     state: Arc<DaemonState>,
     params: RuntimeSetServerParams,
 ) -> Result<RuntimeStatusResult, ErrorObject> {
@@ -706,7 +706,9 @@ fn update_install(state: &DaemonState, change: impl FnOnce(&mut RuntimeInstallJo
 /// `runtime.install`: starts installing llama.cpp's build for this machine (or for
 /// `runtime.llamacpp.backend`) from its GitHub release, falling back to the next build when one
 /// does not run here, unless an installation is running.
-pub async fn install_runtime(state: Arc<DaemonState>) -> Result<RuntimeInstallJob, ErrorObject> {
+pub(crate) async fn install_runtime(
+    state: Arc<DaemonState>,
+) -> Result<RuntimeInstallJob, ErrorObject> {
     let hardware = hardware(&state).await;
     let packs = packs_for(&state.settings().runtime.llamacpp.backend, &hardware);
     let pack = packs[0].clone();

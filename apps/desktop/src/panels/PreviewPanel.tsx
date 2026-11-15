@@ -6,8 +6,8 @@
 import { RotateCw } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
-import { previewUrl } from "../preview";
-import type { SessionState } from "../sessions";
+import { previewUrl } from "../sessions/preview";
+import type { SessionState } from "../sessions/sessions";
 
 /** An address the user typed, and the agent's page it replaced (a newer agent page wins). */
 type Typed = { url: string; over: string | null };

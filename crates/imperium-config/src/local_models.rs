@@ -154,7 +154,7 @@ const OWNED_FLAGS: &[&str] = &[
 /// `-draft` (`--model-draft`, `--gpu-layers-draft`, `--cache-type-k-draft`, ...), and the short
 /// ones (`-md`, `-ngld`, `-hfd`, `-hfrd`, `-ctkd`, `-ctvd`, `-devd`, `-otd`, `-cmoed`,
 /// `-ncmoed`, `-td`, `-tbd`, `-Cd`, `-Crd`, `-Cbd`).
-pub fn is_draft_flag(flag: &str) -> bool {
+pub(crate) fn is_draft_flag(flag: &str) -> bool {
     const SHORT: [&str; 15] = [
         "-md", "-ngld", "-hfd", "-hfrd", "-ctkd", "-ctvd", "-devd", "-otd", "-cmoed", "-ncmoed",
         "-td", "-tbd", "-Cd", "-Crd", "-Cbd",
@@ -166,7 +166,7 @@ pub fn is_draft_flag(flag: &str) -> bool {
         || SHORT.contains(&flag)
 }
 /// llama-server's own default for `--spec-draft-n-max` (b12180), what `draft_max` replaces.
-pub const DEFAULT_DRAFT_MAX: u32 = 3;
+pub(crate) const DEFAULT_DRAFT_MAX: u32 = 3;
 
 /// `[runtime.llamacpp.models."<local model id>"]`: settings of one local model. Unset keys take
 /// the defaults under `[runtime.llamacpp]`.

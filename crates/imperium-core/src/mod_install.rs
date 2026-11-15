@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
+use imperium_api::time::unix_ms;
 use imperium_protocol::methods::{
     InstallSource, ModInspectParams, ModInstallParams, ModInstallResult, ModInstalled,
     ModListResult, ModPreview,
@@ -35,7 +36,7 @@ use sha2::{Digest, Sha256};
 
 use crate::extension_install::{
     self, ExtensionKind, Fetched, InstallRequest, SOURCE_FILE, Source, Staging, check_name,
-    check_subdir, move_tree, remove_tree, unix_ms, write_source,
+    check_subdir, move_tree, remove_tree, write_source,
 };
 use crate::state::DaemonState;
 
@@ -109,9 +110,8 @@ fn set_approval(state: &DaemonState, id: &str, approval: Option<Approval>) -> Re
     }
     let text = serde_json::to_string_pretty(&store).map_err(|error| error.to_string())?;
     let temp = path.with_extension("json.tmp");
-    std::fs::write(&temp, text)
-        .map_err(|error| format!("could not record the approval: {error}"))?;
-    std::fs::rename(&temp, &path).map_err(|error| format!("could not record the approval: {error}"))
+    imperium_api::fs::replace_file(&path, &temp, text)
+        .map_err(|error| format!("could not record the approval: {error}"))
 }
 
 /// Applies the approvals to what `mods.list` found in the user's folder. A mod with an approval

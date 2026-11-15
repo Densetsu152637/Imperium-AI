@@ -13,7 +13,7 @@ import type {
   Notification,
 } from "@imperium/protocol";
 
-import { INITIATIVE_OPTIONS, actLimits, initiativeHeadline, openSuggestions } from "../agents";
+import { INITIATIVE_OPTIONS, actLimits, initiativeHeadline, openSuggestions } from "../sessions/agents";
 import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
 

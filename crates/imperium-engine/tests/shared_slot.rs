@@ -11,9 +11,8 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
-use imperium_engine::{
-    AcquireFuture, Availability, LocalLease, LocalModels, ResolvedModel, Session, SessionConfig,
-};
+use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels};
+use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{AgentEvent, SessionEvent};
 use imperium_tools::Workspace;

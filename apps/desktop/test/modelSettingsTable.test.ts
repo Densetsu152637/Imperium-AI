@@ -1,10 +1,10 @@
-// The declarative settings table of the model configuration dialog (src/modelSettingsTable.ts).
+// The declarative settings table of the model configuration dialog (src/models/modelSettingsTable.ts).
 // Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { EMPTY_LOCAL, EMPTY_TABLE } from "../src/modelConfigDrafts.ts";
+import { EMPTY_LOCAL, EMPTY_TABLE } from "../src/models/modelConfigDrafts.ts";
 import {
   affectsText,
   ESTIMATE_ROWS,
@@ -14,7 +14,7 @@ import {
   settingFor,
   TABLE_GROUPS,
   TABLE_SETTINGS,
-} from "../src/modelSettingsTable.ts";
+} from "../src/models/modelSettingsTable.ts";
 
 test("every field of the local form has one setting with an explanation, and the on/off switch", () => {
   const keys = LOCAL_SETTINGS.map((setting) => setting.key).sort();

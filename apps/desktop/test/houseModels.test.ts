@@ -1,4 +1,4 @@
-// The house-model catalogue and the rule for showing its suggestion (src/houseModels.ts).
+// The house-model catalogue and the rule for showing its suggestion (src/models/houseModels.ts).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -10,7 +10,7 @@ import {
   houseModelSuggestion,
   parseHouseCatalogue,
   type ModelInventory,
-} from "../src/houseModels.ts";
+} from "../src/models/houseModels.ts";
 
 const none: ModelInventory = { hostedConfigured: 0, localFound: 0, defaultModel: null, loaded: true };
 

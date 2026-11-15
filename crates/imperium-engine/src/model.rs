@@ -1,9 +1,10 @@
+use imperium_api::Pricing;
 use imperium_api::{Availability, LocalModels};
 use imperium_config::{
     Capability, LLAMACPP_ENDPOINT, Location, Preference, RoutingRule, RoutingSettings, SecretError,
     SecretName, Settings, Tier, VLLM_ENDPOINT,
 };
-use imperium_models::{Endpoint, Pricing};
+use imperium_models::Endpoint;
 
 /// A model chosen for a session: where to call it, its id, and its prices.
 #[derive(Debug, Clone)]
@@ -512,7 +513,10 @@ pub fn route_noted(
 }
 
 /// The location a task is confined to: the call's, else the first matching rule of the user's.
-pub fn effective_location(routing: &RoutingSettings, request: TaskRequest<'_>) -> Option<Location> {
+pub(crate) fn effective_location(
+    routing: &RoutingSettings,
+    request: TaskRequest<'_>,
+) -> Option<Location> {
     request.location.or_else(|| {
         routing
             .rules

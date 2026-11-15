@@ -49,7 +49,7 @@ model = "whisper-large-v3"
 
 ## Media sidecar
 
-- A `uv` project in `sidecars/media/`, installed into a managed environment on first use with
+- A `uv` project in `sidecars/media/` (planned: the folder does not exist yet; the CI `python` job runs once it does), installed into a managed environment on first use with
   the right PyTorch build for the detected hardware (CUDA, ROCm, MPS, CPU).
 - Speaks JSON-RPC over stdio to the daemon; long jobs report progress events.
 - Each pipeline declares its memory footprint so the [memory planner](04-models-and-routing.md#hardware-awareness)
