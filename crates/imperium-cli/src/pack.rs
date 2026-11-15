@@ -373,10 +373,10 @@ fn git(args: &[&str], dir: Option<&Path>, hooks: &Path) -> anyhow::Result<String
     // Nothing of the caller's git environment (a GIT_DIR, GIT_CONFIG_*, an askpass helper)
     // steers a fetch of a pack.
     for (name, _) in std::env::vars_os() {
-        if name
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("GIT_")
+        let upper = name.to_string_lossy().to_ascii_uppercase();
+        // The certificate settings are kept so a fetch from a server behind a private CA works.
+        if upper.starts_with("GIT_")
+            && !matches!(upper.as_str(), "GIT_SSL_CAINFO" | "GIT_SSL_CAPATH")
         {
             command.env_remove(&name);
         }

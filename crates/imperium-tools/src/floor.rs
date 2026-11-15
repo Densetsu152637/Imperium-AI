@@ -458,17 +458,19 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
 /// own accept), so a person decides those as well; `check`, `diff` and `reject` change nothing
 /// that is in force.
 fn changes_agents(args: &[String]) -> bool {
-    if let Some(at) = args.iter().position(|word| word == "pack")
-        && args
-            .get(at + 1)
-            .is_some_and(|word| matches!(word.as_str(), "add-source" | "accept" | "remove-source"))
-    {
-        return true;
-    }
-    if let Some(at) = args.iter().position(|word| word == "mods")
-        && args
-            .get(at + 1)
-            .is_some_and(|word| matches!(word.as_str(), "install" | "update"))
+    // Global options such as `--remote <name>` may sit between the words, so the subcommand is
+    // looked for anywhere after the group word (a false alarm only asks a person).
+    let after = |group: &str, subs: &[&str]| {
+        args.iter()
+            .position(|word| word == group)
+            .is_some_and(|at| {
+                args[at + 1..]
+                    .iter()
+                    .any(|word| subs.contains(&word.as_str()))
+            })
+    };
+    if after("pack", &["add-source", "accept", "remove-source"])
+        || after("mods", &["install", "update"])
     {
         return true;
     }
@@ -608,6 +610,11 @@ mod tests {
             "imperium pack accept acw --hash 0123456789abcdef",
             "imperium.exe pack accept acw --allow-loosening",
             "imperium pack remove-source acw",
+            "imperium pack --remote x accept acw --hash 0123456789abcdef",
+            "imperium --remote pack pack accept acw --hash 0123456789abcdef",
+            "imperium --remote=box pack add-source a https://example.com/p.git",
+            "imperium mods --remote x install ./demo",
+            "imperium --remote mods mods update demo",
         ] {
             assert!(dangerous_command(line), "{line}");
         }

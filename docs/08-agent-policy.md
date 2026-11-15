@@ -43,8 +43,8 @@ the data folder, and a session reads the pins when it starts.
   `list` and `reject` change nothing in force and are not asked about.
 - **Fetching never applies anything.** `imperium pack check [name]` shallow-clones the source
   without a checkout and without blobs over 2 MiB, with git hooks off, no prompts (ssh runs in
-  batch mode), no LFS downloads, no submodules, the `ext::` transport refused and the caller's
-  `GIT_*` environment removed. Before any file is written it refuses a source with more than
+  batch mode through `GIT_SSH_COMMAND`, which takes the place of a `core.sshCommand` of yours), no LFS downloads, no submodules, the `ext::` transport refused and the caller's
+  `GIT_*` environment removed (except `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH`). Before any file is written it refuses a source with more than
   2000 files or any file over 2 MiB; then it checks out, reads the files (leaving out `.git`
   and anything that is not a regular file; at most 32 MiB in all) and stages them as a
   **pending update** next to the pinned version. Sessions keep using the pinned version. The
