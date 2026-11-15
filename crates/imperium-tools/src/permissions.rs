@@ -342,6 +342,8 @@ const FLOOR_PATHS: &[&str] = &[
     "secrets.enc",
     "secrets.*.tmp",
     "secrets.lock",
+    // Which secret store the daemon uses; the CLI follows it.
+    "secrets.backend",
 ];
 
 /// Whether the built-in safety floor covers a call: a destructive command (see
@@ -942,6 +944,7 @@ mod tests {
             "secrets.enc",
             "secrets.key",
             "secrets.lock",
+            "secrets.backend",
             "secrets.0a1b2c3d4e5f6071.tmp",
         ] {
             assert!(

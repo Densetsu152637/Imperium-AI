@@ -774,16 +774,17 @@ fn read_backend_record(path: &Path) -> Option<SecretBackend> {
     }
 }
 
-fn write_backend_record(path: &Path, backend: SecretBackend) -> std::io::Result<()> {
+fn write_backend_record(path: &Path, backend: SecretBackend) -> Result<(), SecretError> {
     let text = match backend {
         SecretBackend::Keychain => "keychain\n",
         SecretBackend::EncryptedFile => "file\n",
     };
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        create_private_dir(parent)?;
     }
-    // Not a secret: just which store the daemon is using.
-    fs::write(path, text)
+    // Not a secret, but written like one: a new owner-only temporary file renamed into place,
+    // which replaces a symbolic link at the path instead of following it.
+    write_private_atomically(path, text.as_bytes())
 }
 
 impl AutoSecrets {
@@ -874,8 +875,22 @@ impl AutoSecrets {
         if self.backend != SecretBackend::Keychain || !self.file.exists() {
             return Ok(MigrationReport::default());
         }
-        let moved = self.file.drain_into(self.keychain.as_ref())?;
+        let moved = self
+            .file
+            .drain_into(self.keychain.as_ref())
+            .map_err(|error| self.leftover(error))?;
         Ok(MigrationReport { moved })
+    }
+
+    /// Adds what to do to an error from the leftover secret file while the keychain is in use.
+    fn leftover(&self, error: SecretError) -> SecretError {
+        match error {
+            SecretError::File(message) => SecretError::File(format!(
+                "{message}. The OS keychain is in use but the older encrypted file {} cannot be used: set {PASSPHRASE_FILE_ENV} to its passphrase file if it was made with a passphrase, or delete it if you no longer need the secrets in it",
+                self.file.path().display()
+            )),
+            other => other,
+        }
     }
 
     /// The warning to show wherever the fallback is in use.
@@ -927,7 +942,9 @@ impl SecretStore for AutoSecrets {
         // An older copy in the file would be read in preference to this one, so the write has
         // not taken effect until it is gone: report a failure to remove it.
         if self.file.exists() {
-            self.file.delete(name)?;
+            self.file
+                .delete(name)
+                .map_err(|error| self.leftover(error))?;
         }
         Ok(())
     }
@@ -938,7 +955,9 @@ impl SecretStore for AutoSecrets {
         }
         let in_keychain = self.keychain.delete(name)?;
         let in_file = if self.file.exists() {
-            self.file.delete(name)?
+            self.file
+                .delete(name)
+                .map_err(|error| self.leftover(error))?
         } else {
             false
         };
@@ -1380,7 +1399,13 @@ mod tests {
         keychain.on.store(true, Ordering::SeqCst);
         fs::write(dir.path().join("secrets.enc"), "not json").unwrap();
         let auto = open(dir.path(), &keychain, SecretBackend::Keychain);
-        assert!(auto.store(&name("a"), "new").is_err());
+        let error = auto.store(&name("a"), "new").unwrap_err().to_string();
+        assert!(
+            error.contains(PASSPHRASE_FILE_ENV) && error.contains("delete it"),
+            "{error}"
+        );
+        let error = auto.migrate().unwrap_err().to_string();
+        assert!(error.contains("delete it"), "{error}");
     }
 
     #[test]
@@ -1410,6 +1435,17 @@ mod tests {
         assert_eq!(read_backend_record(&record), Some(Keychain));
         fs::write(&record, "nonsense").unwrap();
         assert_eq!(read_backend_record(&record), None);
+        // A symbolic link at the record is replaced, not written through.
+        #[cfg(unix)]
+        {
+            let target = dir.path().join("target");
+            fs::write(&target, "untouched").unwrap();
+            fs::remove_file(&record).unwrap();
+            std::os::unix::fs::symlink(&target, &record).unwrap();
+            write_backend_record(&record, Keychain).unwrap();
+            assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
+            assert_eq!(read_backend_record(&record), Some(Keychain));
+        }
     }
 
     #[test]
