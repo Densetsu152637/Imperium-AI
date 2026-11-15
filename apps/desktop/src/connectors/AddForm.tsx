@@ -102,7 +102,8 @@ function CatalogInput({ id, field, value, onChange }: { id: string; field: Catal
         shown again.
       </>
     ) : field.kind === "path_list" ? (
-      `${field.description ? `${field.description} ` : ""}One per line.`
+      // A catalogue description that already says "per line" is not said twice.
+      field.description?.includes("per line") ? field.description : `${field.description ? `${field.description} ` : ""}One per line.`
     ) : (
       field.description
     );
