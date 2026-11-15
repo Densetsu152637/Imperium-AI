@@ -118,7 +118,9 @@ import {
   type AppSettings,
   type ChangeSettings,
 } from "./settings";
-import { PANELS_ICON, SETTINGS_SECTIONS, SettingsWindow, type LayoutNotice } from "./SettingsWindow";
+import { SettingsWindow } from "./SettingsWindow";
+import type { LayoutNotice } from "./settings/LayoutRows";
+import { PANELS_ICON, SETTINGS_SECTIONS } from "./settings/sections";
 import { appCommands } from "./commands/appCommands";
 import { formatShortcut } from "./commands/registry";
 import { bindingFor } from "./shortcuts";
