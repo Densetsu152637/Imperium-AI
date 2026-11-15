@@ -117,7 +117,7 @@ pub(crate) enum MoveMethod {
 /// The outcome of a successful [`move_root`].
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MoveReport {
+pub(crate) struct MoveReport {
     pub method: MoveMethod,
     pub files: u64,
     pub bytes: u64,
@@ -183,7 +183,7 @@ pub(crate) struct Staged {
 
 /// Moves the working folders from `old` to `new`: [`stage`] then [`Staged::finish`].
 #[cfg(test)]
-pub fn move_root(
+pub(crate) fn move_root(
     old: &Path,
     new: &Path,
     progress: &mut dyn FnMut(MoveProgress),
