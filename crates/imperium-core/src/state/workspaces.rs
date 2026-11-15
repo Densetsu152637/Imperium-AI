@@ -17,7 +17,7 @@ use super::DaemonState;
 use crate::workspaces::{self, MoveMethod, MoveProgress};
 
 /// The setting that names the folder.
-pub const ROOT_SETTING: &str = "workspaces.root";
+pub(crate) const ROOT_SETTING: &str = "workspaces.root";
 
 impl DaemonState {
     /// The folder that holds the environments' working folders now.

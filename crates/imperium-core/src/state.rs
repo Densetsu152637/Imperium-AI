@@ -59,7 +59,7 @@ mod session_search;
 mod sessions;
 mod titles;
 mod workspaces;
-pub use archive::ArchiveError;
+pub(crate) use archive::ArchiveError;
 pub(crate) use workspaces::ROOT_SETTING as WORKSPACES_ROOT_SETTING;
 
 /// Options for [`DaemonState::create_session_with`].
@@ -1212,7 +1212,7 @@ fn recorded_unattended(meta: &serde_json::Value) -> bool {
 
 /// Answers a batch of questions with the agent's own recommendations: an unattended session
 /// (a project agent, a scheduled task) has nobody to ask.
-pub fn answer_with_recommendations(
+pub(crate) fn answer_with_recommendations(
     session: &Session,
     request_id: u64,
     questions: &[imperium_protocol::session::Question],

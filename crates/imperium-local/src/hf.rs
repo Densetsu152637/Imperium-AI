@@ -788,7 +788,7 @@ pub(crate) mod fake {
     use sha2::{Digest, Sha256};
 
     #[derive(Debug, Default)]
-    pub struct Repo {
+    pub(crate) struct Repo {
         /// Path to contents.
         pub files: BTreeMap<String, Vec<u8>>,
         /// Paths whose listed checksum is wrong, to test the check.
@@ -800,7 +800,7 @@ pub(crate) mod fake {
     }
 
     #[derive(Debug, Default)]
-    pub struct Shared {
+    pub(crate) struct Shared {
         pub repo: Mutex<Repo>,
         /// Range headers seen, by path.
         pub ranges: Mutex<Vec<(String, Option<String>)>>,
@@ -879,7 +879,7 @@ pub(crate) mod fake {
     }
 
     /// Serves `repo` at a local address; returns the endpoint and the shared state.
-    pub async fn serve(repo: Repo) -> (String, Arc<Shared>) {
+    pub(crate) async fn serve(repo: Repo) -> (String, Arc<Shared>) {
         let shared = Arc::new(Shared {
             repo: Mutex::new(repo),
             ranges: Mutex::default(),

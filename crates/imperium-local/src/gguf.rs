@@ -353,7 +353,7 @@ fn read_u64(reader: &mut impl Read) -> io::Result<u64> {
 /// Writes GGUF headers for tests.
 #[cfg(test)]
 pub(crate) mod fixture {
-    pub enum V<'a> {
+    pub(crate) enum V<'a> {
         Str(&'a str),
         U32(u32),
         U64(u64),
@@ -362,7 +362,7 @@ pub(crate) mod fixture {
         I32Array(&'a [i32]),
     }
 
-    pub fn header(pairs: &[(&str, V<'_>)]) -> Vec<u8> {
+    pub(crate) fn header(pairs: &[(&str, V<'_>)]) -> Vec<u8> {
         let mut out = b"GGUF".to_vec();
         out.extend(3u32.to_le_bytes());
         out.extend(0u64.to_le_bytes());
@@ -412,7 +412,7 @@ pub(crate) mod fixture {
     }
 
     /// A small Llama-shaped model header: 32 layers, 32 heads, 8 KV heads, 4096 wide.
-    pub fn llama(name: &str) -> Vec<u8> {
+    pub(crate) fn llama(name: &str) -> Vec<u8> {
         header(&[
             ("general.architecture", V::Str("llama")),
             ("general.name", V::Str(name)),

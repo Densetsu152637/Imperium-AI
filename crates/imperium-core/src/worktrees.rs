@@ -35,7 +35,7 @@ fn repository(folder: &Path) -> Option<PathBuf> {
 
 /// Whether `folder` looks like it is inside a git repository: it or a parent holds `.git`. A
 /// cheap check for listings; starting worktrees asks git itself.
-pub fn in_repository(folder: &Path) -> bool {
+pub(crate) fn in_repository(folder: &Path) -> bool {
     folder.ancestors().any(|dir| dir.join(".git").exists())
 }
 
@@ -83,7 +83,7 @@ fn exclude_worktrees(repo: &Path) -> Result<(), String> {
 /// worktree (one per repository, shared by folders in the same one) and is replaced by the same
 /// place inside it. Returns the folders to use and, for each replaced folder, its worktree. On
 /// failure, worktrees already made are removed again.
-pub fn create(
+pub(crate) fn create(
     folders: &[String],
     branch: &str,
     worktree_dir: Option<&Path>,
@@ -160,7 +160,7 @@ fn make(repo: &Path, branch: &str, worktree_dir: Option<&Path>) -> Result<String
 }
 
 /// The folders a resumed session uses: each folder recorded with a worktree is replaced by it.
-pub fn apply(folders: &[String], worktrees: &[SessionWorktree]) -> Vec<String> {
+pub(crate) fn apply(folders: &[String], worktrees: &[SessionWorktree]) -> Vec<String> {
     folders
         .iter()
         .map(|folder| {
@@ -216,7 +216,7 @@ pub(crate) fn registered_root(repo: &Path, path: &Path) -> Result<String, String
 
 /// Removes the worktrees `records` name (one per repository, whatever is in them), keeping
 /// their branches. Returns the folders removed and the failures.
-pub fn remove(records: &[SessionWorktree]) -> (Vec<String>, Vec<String>) {
+pub(crate) fn remove(records: &[SessionWorktree]) -> (Vec<String>, Vec<String>) {
     let mut removed: Vec<String> = Vec::new();
     let mut failed = Vec::new();
     for record in records {
