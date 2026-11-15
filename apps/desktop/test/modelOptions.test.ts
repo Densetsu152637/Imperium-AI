@@ -54,6 +54,10 @@ test("a new-session picker does not offer a model that is off, even as its chose
   assert.deepEqual(modelOptions([], [local("gemma", false)], "llamacpp:gemma").length, 0);
 });
 
+test("a table id names only a table row, never a local model", () => {
+  assert.equal(modelOptions([], [local("gemma", false)], "gemma", undefined, true)[0].label, "gemma");
+});
+
 test("the session's model is found by its table id too", () => {
   const models = [row("old", "cloud:old-1", false, "Old one")];
   const options = modelOptions(models, [], "old", undefined, true);

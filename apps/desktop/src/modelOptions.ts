@@ -113,7 +113,7 @@ export function currentOption(
 ): SelectOption | null {
   // The session's model is a spec or a model table id.
   const row = models.find((candidate) => candidate.spec === current || candidate.id === current);
-  const localRow = local.find((candidate) => localSpec(candidate) === current || candidate.id === current);
+  const localRow = local.find((candidate) => localSpec(candidate) === current);
   const off = (row != null && !row.enabled) || (localRow != null && !localRow.enabled);
   if (!off) return { value: current, label: current };
   // Off: shown for the open session that is on it, never offered to a new one.

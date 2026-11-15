@@ -132,7 +132,9 @@ export function NewSessionPanel({
         settings.houseModelsDismissed,
       )
     : [];
-  const model = chosenModel ?? defaultSpec ?? "";
+  // A choice made before its model was switched off no longer stands.
+  const chosen = chosenModel !== undefined && modelIsOff(chosenModel, models, localModels) ? undefined : chosenModel;
+  const model = chosen ?? defaultSpec ?? "";
   const options = [
     // Without a configured default a session may start with no model; its messages wait.
     ...(defaultSpec ? [] : [{ value: "", label: "No model", description: "Pick one later; messages wait until then" }]),

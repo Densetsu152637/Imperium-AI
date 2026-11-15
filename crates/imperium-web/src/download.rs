@@ -539,13 +539,29 @@ impl Web {
             notes.push(why);
         }
         still_secured(&secured, &part).await?;
+        // The part file's identity, taken just before it is moved, so that what is found at the
+        // destination afterwards can be told from something else.
+        let part_id = identity(&part).await.ok();
         tokio::fs::rename(&part, &path)
             .await
             .map_err(|error| WebError::Http(format!("could not finish the file: {error}")))?;
         if let Err(error) = still_secured(&secured, &path).await {
-            // It landed where it should not have: take it back.
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(error);
+            // It landed where it should not have: take it back, but only if what is there is
+            // the file just moved; anything else is not ours to delete.
+            let ours = match (&part_id, identity(&path).await) {
+                (Some(before), Ok(now)) => *before == now,
+                _ => false,
+            };
+            return Err(if ours {
+                let _ = tokio::fs::remove_file(&path).await;
+                error
+            } else {
+                WebError::Http(format!(
+                    "{error}; the file at {} was left in place because it could not be \
+                     confirmed to be the one just saved",
+                    path.display()
+                ))
+            });
         }
         guard.paths.clear();
         if path.file_name().and_then(|file| file.to_str()) != Some(name.as_str()) {
