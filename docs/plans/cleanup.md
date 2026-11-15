@@ -290,10 +290,15 @@ so the helpers go there (a new `imperium-util` crate was rejected: one more crat
 lines).
 
 1. `time::{unix_ms, unix_secs}` for the sites with a matching fallback.
-2. `encoding::hex` (all five copies); `fs::replace_file(path, temp, bytes)` for the 13
-   identical temp-then-rename sites, each keeping its temp name and its own error mapping.
+2. `encoding::hex` (all five copies); `fs::replace_file(path, temp, bytes)` for **10 of the 13**
+   identical temp-then-rename sites, each keeping its temp name and its own error mapping. The
+   other three (`core/config_changes.rs`, `core/model_config.rs` and the pack store's
+   `write_atomic` in `workflow/update.rs`) say in their error text which step failed, the write or
+   the rename, so converting them would change messages; they keep their two calls.
    `home_dir` copies stay (all differ) and gain comments saying how.
-3. `text::clip`: only copies identical to `truncate_chars`.
+3. Identical clip copies call the existing `imperium_api::truncate_chars`; no `text::clip` was
+   added, since `truncate_chars` is already the shared function. Copies with other suffixes, byte
+   limits or trimming stay.
 4. `framing`: the four tag-defusing functions moved under their current names (move commit),
    then given descriptive names (edit commit); group-0 golden tests unchanged.
 

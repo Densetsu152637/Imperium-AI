@@ -128,6 +128,8 @@ fn is_scp_like(source: &str) -> bool {
     host.contains('@') && !host.contains(['/', '\\']) && !path.is_empty()
 }
 
+/// The home folder for `~` in an install source: one variable chosen by the OS (`USERPROFILE` on
+/// Windows, `HOME` elsewhere), with no fallback and no check for an empty value.
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
 }
