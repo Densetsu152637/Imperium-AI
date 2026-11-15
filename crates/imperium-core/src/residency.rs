@@ -104,8 +104,9 @@ pub fn plan(loaded: &[LoadedStatus], idle_unload: Duration) -> Vec<Planned> {
 
 /// The budget to plan against after reading `fresh`, or `None` when it stays as it is.
 ///
-/// VRAM is what is free now plus what the loaded models hold (they are Imperium's own), so it
-/// follows what other programs take or give back. RAM is read only while nothing is loaded:
+/// VRAM is what is free now plus what the loaded models hold, and what the local whisper holds
+/// beside them (`side`, and its RAM when nothing is loaded): they are Imperium's own, so it follows what other programs take
+/// or give back. RAM is read only while nothing is loaded:
 /// weights are memory-mapped and prompt caches fill lazily, so the free RAM beside a loaded
 /// model says little about what it will use. A reading with no GPU where the start found one
 /// (a failed `nvidia-smi`) leaves the VRAM as it is. Changes under [`BUDGET_STEP`] are noise.
@@ -115,16 +116,23 @@ pub fn refreshed_budget(
     fresh: &Hardware,
     ram_headroom_bytes: u64,
     loaded: &[LoadedStatus],
+    side: (u64, u64),
 ) -> Option<Budget> {
     let measured = Budget::of(fresh, ram_headroom_bytes);
-    let held_vram: u64 = loaded.iter().map(|model| model.vram_bytes).sum();
+    let held_vram: u64 = loaded
+        .iter()
+        .map(|model| model.vram_bytes)
+        .sum::<u64>()
+        .saturating_add(side.0);
     let vram = if fresh.gpus.is_empty() && start.vram_bytes > 0 {
         current.vram_bytes
     } else {
         measured.vram_bytes.saturating_add(held_vram)
     };
+    // What the local whisper holds in RAM is Imperium's own too: the free RAM read while it
+    // runs lacks it, and `Supervisor::budget` takes it off again.
     let ram = if loaded.is_empty() {
-        measured.ram_bytes
+        measured.ram_bytes.saturating_add(side.1)
     } else {
         current.ram_bytes
     };
@@ -239,11 +247,12 @@ impl ResidencyController {
         };
         let loaded = supervisor.loaded();
         let Some(budget) = refreshed_budget(
-            supervisor.budget(),
+            supervisor.raw_budget(),
             supervisor.start_budget(),
             &fresh,
             self.ram_headroom_bytes,
             &loaded,
+            supervisor.side_load(),
         ) else {
             return false;
         };
@@ -392,13 +401,13 @@ mod tests {
         let fresh = machine(4, 30);
         let loaded = [status("ours")];
         assert_eq!(
-            refreshed_budget(start, start, &fresh, 0, &loaded),
+            refreshed_budget(start, start, &fresh, 0, &loaded, (0, 0)),
             // VRAM: 4 free + 4 ours. RAM is not read while a model is loaded.
             Some(budget(8, 40))
         );
         // It gave the memory back and our model unloaded: both come back.
         assert_eq!(
-            refreshed_budget(budget(8, 40), start, &machine(14, 40), 0, &[]),
+            refreshed_budget(budget(8, 40), start, &machine(14, 40), 0, &[], (0, 0)),
             Some(start)
         );
         // Noise under the step changes nothing.
@@ -409,7 +418,7 @@ mod tests {
             }],
             ..machine(0, 40)
         };
-        assert_eq!(refreshed_budget(start, start, &noisy, 0, &[]), None);
+        assert_eq!(refreshed_budget(start, start, &noisy, 0, &[], (0, 0)), None);
     }
 
     #[test]
@@ -421,8 +430,39 @@ mod tests {
         };
         // RAM moved (nothing loaded), VRAM stays.
         assert_eq!(
-            refreshed_budget(start, start, &no_gpu, 0, &[]),
+            refreshed_budget(start, start, &no_gpu, 0, &[], (0, 0)),
             Some(budget(14, 20))
+        );
+    }
+
+    #[test]
+    fn what_the_local_whisper_holds_is_not_counted_twice() {
+        let start = budget(14, 40);
+        // The machine reads 2 GiB of VRAM and 3 GiB of RAM short: that is the whisper.
+        let fresh = machine(12, 37);
+        assert_eq!(
+            refreshed_budget(start, start, &fresh, 0, &[], (2 * GIB, 3 * GIB)),
+            None,
+            "the raw budget already has it; the supervisor takes it off once"
+        );
+        assert_eq!(
+            refreshed_budget(start, start, &fresh, 0, &[], (0, 0)),
+            Some(budget(12, 37)),
+            "without it counted, the whisper would shrink the budget a second time"
+        );
+        // With a model loaded the RAM reading is not used, and VRAM adds the model's and the
+        // whisper's.
+        let loaded = [status("ours")];
+        assert_eq!(
+            refreshed_budget(
+                start,
+                start,
+                &machine(6, 30),
+                0,
+                &loaded,
+                (2 * GIB, 3 * GIB)
+            ),
+            Some(budget(12, 40))
         );
     }
 

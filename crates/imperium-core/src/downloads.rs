@@ -85,7 +85,7 @@ fn rpc_error(error: HfError) -> ErrorObject {
 }
 
 /// `<download_dir>/<owner>/<name>` for a repository id already checked by the Hub.
-fn destination(state: &DaemonState, repo: &str) -> std::path::PathBuf {
+pub(crate) fn destination(state: &DaemonState, repo: &str) -> std::path::PathBuf {
     let mut dir = state.settings().models.download_dir(state.data_dir());
     dir.extend(repo.split('/'));
     dir

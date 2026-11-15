@@ -59,12 +59,12 @@ pub use settings::{
     CatalogEntry, ConditionSettings, ContextSettings, DaemonSettings, EndpointSettings, Enforce,
     ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HarnessMode, HarnessSettings,
     HookSettings, ImageSettings, InitiativeSettings, IsolationSettings, KnowledgeSettings,
-    LLAMACPP_ENDPOINT, ListModelsScope, LlamaCppSettings, LoadSettings, Location,
-    McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings, MemorySettings,
+    LLAMACPP_ENDPOINT, ListModelsScope, LlamaCppSettings, LoadSettings, LocalWhisperSettings,
+    Location, McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings, MemorySettings,
     MemoryWrite, ModelPlacement, ModelSettings, OpenAiApiSettings, PetSettings, PhoneSettings,
     PolicySettings, Preference, ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings,
     RuntimeSettings, ScheduleSettings, SecretRef, SessionSearchScope, SessionSettings, Settings,
-    Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings,
-    WorkspacesSettings, WritePolicy, default_workspaces_root,
+    Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, VoiceSettings, VoiceTranscription,
+    WebSettings, WorkflowSettings, WorkspacesSettings, WritePolicy, default_workspaces_root,
 };
 pub use settings::{SuggestionCandidate, default_suggestions};

@@ -203,6 +203,9 @@ pub struct DaemonState {
     pub(crate) runtime_update: Mutex<Option<imperium_protocol::methods::RuntimeUpdateJob>>,
     /// The Hugging Face Hub to use instead of the one from the environment (for tests).
     hub: OnceLock<imperium_local::hf::Hub>,
+    /// The supervised local whisper, created the first time local transcription is used
+    /// ([`crate::voice`]).
+    speech: OnceLock<Arc<imperium_local::speech::SpeechServer>>,
     /// The `gh` to use instead of the one on the PATH (for tests).
     gh: OnceLock<PathBuf>,
     /// Notifications for every connected client, such as schedule runs.
@@ -326,6 +329,7 @@ impl DaemonState {
             runtime_install: Mutex::new(None),
             runtime_update: Mutex::new(None),
             hub: OnceLock::new(),
+            speech: OnceLock::new(),
             gh: OnceLock::new(),
             announcements: broadcast::channel(256).0,
             scheduler: OnceLock::new(),
@@ -1515,6 +1519,34 @@ impl DaemonState {
     /// The `gh` set with [`Self::use_gh`], if any.
     pub(crate) fn gh_override(&self) -> Option<PathBuf> {
         self.gh.get().cloned()
+    }
+
+    /// The supervised local whisper, once local transcription has been used or set up.
+    pub fn speech_server(&self) -> Option<Arc<imperium_local::speech::SpeechServer>> {
+        self.speech.get().cloned()
+    }
+
+    /// Transcribes with `server` instead of one built from `[voice.local]`, such as one that
+    /// starts a fake in tests. Call once, before the first recording; returns whether it was
+    /// taken.
+    pub fn use_speech_server(&self, server: Arc<imperium_local::speech::SpeechServer>) -> bool {
+        self.speech.set(server).is_ok()
+    }
+
+    /// Stops the local whisper, if one is running: the daemon is shutting down.
+    pub async fn stop_speech(&self) {
+        if let Some(server) = self.speech.get() {
+            server.shutdown().await;
+        }
+    }
+
+    pub(crate) fn speech_slot(&self) -> &OnceLock<Arc<imperium_local::speech::SpeechServer>> {
+        &self.speech
+    }
+
+    /// The language-model supervisor, when local models are supervised.
+    pub(crate) fn local_supervisor(&self) -> Option<Arc<imperium_local::supervisor::Supervisor>> {
+        self.local.get().map(|local| Arc::clone(&local.supervisor))
     }
 
     /// Uses `hub` instead of the environment's, such as a local fake in tests. Call once.

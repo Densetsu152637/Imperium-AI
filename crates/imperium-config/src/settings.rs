@@ -143,6 +143,9 @@ pub struct Settings {
     pub pets: PetSettings,
     #[serde(default)]
     pub media: MediaSettings,
+    /// `[voice]`: where push-to-talk speech is transcribed (see docs/07).
+    #[serde(default)]
+    pub voice: VoiceSettings,
     #[serde(default)]
     pub phone: PhoneSettings,
     /// `[api.openai_compatible]`: the local API server for other tools (see docs/04).
@@ -373,6 +376,27 @@ impl Settings {
             && !dir.is_absolute()
         {
             return Err("web.download_dir must be an absolute folder (or empty)".into());
+        }
+        if !matches!(self.voice.local.gpu.as_str(), "auto" | "off") {
+            return Err("voice.local.gpu must be auto or off".into());
+        }
+        if self.voice.local.language.trim().is_empty() {
+            return Err("voice.local.language must be a language code or auto".into());
+        }
+        for arg in &self.voice.local.extra_args {
+            let name = arg.split('=').next().unwrap_or_default();
+            if matches!(
+                name,
+                "--inference-path" | "--host" | "--port" | "-m" | "--model"
+            ) {
+                return Err(format!(
+                    "voice.local.extra_args may not set {name}: the daemon chooses the model, \
+                     address and route itself (use voice.local.model)"
+                ));
+            }
+        }
+        if self.voice.local.start_timeout_s == 0 {
+            return Err("voice.local.start_timeout_s must be at least 1".into());
         }
         if !matches!(self.web.robots.as_str(), "respect" | "off") {
             return Err("web.robots must be respect or off".into());
@@ -785,6 +809,76 @@ pub struct MediaServiceSettings {
     /// Speech only.
     #[serde(default)]
     pub voice: Option<String>,
+}
+
+/// Where push-to-talk speech is transcribed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceTranscription {
+    /// The `[media.transcription]` endpoint, which may be hosted.
+    #[default]
+    Hosted,
+    /// A whisper.cpp `whisper-server` the daemon runs on this machine ([`LocalWhisperSettings`]).
+    Local,
+}
+
+/// `[voice]`: push-to-talk transcription (see docs/07-desktop-ui.md#attachments-and-voice-input-implemented).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct VoiceSettings {
+    pub transcription: VoiceTranscription,
+    pub local: LocalWhisperSettings,
+}
+
+/// `[voice.local]`: the supervised whisper.cpp server used when `voice.transcription = "local"`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LocalWhisperSettings {
+    /// The `whisper-server` executable; found on `PATH` when unset.
+    pub binary: Option<PathBuf>,
+    /// The ggml model file (`ggml-base.en.bin`, ...). Unset, `download` decides.
+    pub model: Option<PathBuf>,
+    /// With no `model`, fetch `model_file` from `model_repo` through the Hugging Face download
+    /// path the first time speech is transcribed. Off by default: nothing downloads unasked.
+    pub download: bool,
+    pub model_repo: String,
+    pub model_file: String,
+    /// `auto` offloads to the GPU when it has room beside the loaded models and falls back to
+    /// the CPU when it has not; `off` always runs on the CPU.
+    pub gpu: String,
+    /// CPU threads; 0 lets whisper.cpp choose.
+    pub threads: u32,
+    /// A language code such as `en`, or `auto`.
+    pub language: String,
+    /// Seconds without a transcription before the server stops and gives its memory back; 0
+    /// keeps it running.
+    pub idle_stop_s: u64,
+    /// Seconds the server may take to load its model before the start is abandoned.
+    pub start_timeout_s: u64,
+    /// Decode recordings with ffmpeg first (`--convert`): the app records WebM/Opus, which
+    /// whisper.cpp reads only through ffmpeg.
+    pub convert: bool,
+    /// Extra arguments for `whisper-server`.
+    pub extra_args: Vec<String>,
+}
+
+impl Default for LocalWhisperSettings {
+    fn default() -> Self {
+        LocalWhisperSettings {
+            binary: None,
+            model: None,
+            download: false,
+            model_repo: "ggerganov/whisper.cpp".into(),
+            model_file: "ggml-base.en.bin".into(),
+            gpu: "auto".into(),
+            threads: 0,
+            language: "auto".into(),
+            idle_stop_s: 300,
+            start_timeout_s: 120,
+            convert: true,
+            extra_args: Vec::new(),
+        }
+    }
 }
 
 /// Pets (see docs/16-pets.md).
