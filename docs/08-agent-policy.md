@@ -121,7 +121,8 @@ list order; detached signatures; pinning a commit instead of a branch.
 [02](02-architecture.md)) is deferred to the final cleanup: layering lives in `imperium-core`'s
 session setup and `imperium-workflow`, and moving it needs a stable interface (pack list in,
 instruction blocks out) that is easiest to cut once the remaining roadmap items stop touching
-those call sites.
+those call sites. The [cleanup plan](plans/cleanup.md#decision-the-policy-crate) sets out its
+scope and interface.
 
 ## How a pack maps onto the engine
 
