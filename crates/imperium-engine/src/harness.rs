@@ -17,7 +17,7 @@
 //! the rewrite may only add entities to it, and tag-like text is taken out of everything that
 //! goes into a block.
 
-use imperium_api::framing::harness::defuse;
+use imperium_api::framing::defuse_harness_tags;
 use imperium_models::ChatMessage;
 use serde::{Deserialize, Serialize};
 
@@ -329,7 +329,7 @@ fn user_text(content: &str) -> String {
 /// The first `max` characters of `text` on one line, with an ellipsis when cut, and the
 /// harness's tags defused.
 fn clip(text: &str, max: usize) -> String {
-    let line = defuse(&text.split_whitespace().collect::<Vec<_>>().join(" "));
+    let line = defuse_harness_tags(&text.split_whitespace().collect::<Vec<_>>().join(" "));
     imperium_api::truncate_chars(&line, max)
 }
 
@@ -406,7 +406,7 @@ pub(crate) fn dereference_request(
     } else {
         excerpt
     };
-    let message = defuse(message);
+    let message = defuse_harness_tags(message);
     let user = format!(
         "{STATE_OPEN}\n{state}\n{STATE_CLOSE}\n\n<conversation-excerpt>\n{excerpt}\n</conversation-excerpt>\n\n<latest-message>\n{message}\n</latest-message>"
     );
@@ -448,7 +448,7 @@ pub(crate) fn parse_dereference(reply: &str, message: &str) -> Option<Dereferenc
         .map(StateUpdate::entities_only)
         .filter(|update| !update.entities.is_empty());
     Some(Dereferenced {
-        prompt: (prompt != message.trim()).then(|| defuse(prompt)),
+        prompt: (prompt != message.trim()).then(|| defuse_harness_tags(prompt)),
         update,
     })
 }

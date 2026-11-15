@@ -9,7 +9,7 @@
 //! else. Compaction keeps these blocks verbatim instead of summarising them: they travel inside the
 //! kept-context block that `compact::pinned_context` builds, once per file.
 
-use imperium_api::framing::instructions::escape;
+use imperium_api::framing::escape_instruction_tags;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -96,7 +96,7 @@ pub(crate) fn render_block(path: &str, text: &str, truncated: bool) -> String {
     format!(
         "{FILE_OPEN}{path}\"{}>\n{}\n{FILE_CLOSE}",
         if truncated { " truncated=\"true\"" } else { "" },
-        escape(text)
+        escape_instruction_tags(text)
     )
 }
 

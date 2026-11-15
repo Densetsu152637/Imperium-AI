@@ -4,7 +4,7 @@
 //! answer is framed, and the question's life from `ask_agent` to its `question_answered` event.
 //! The fork that answers is run by [`crate::agent::run_fork`].
 
-use imperium_api::framing::knowledge::escape_tag;
+use imperium_api::framing::escape_wrapper_tag;
 use imperium_api::time::unix_ms;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -1082,7 +1082,7 @@ pub(crate) fn question_message(
     text.push_str(&format!(
         "\n\n<question from=\"{}\">\n{}\n</question>",
         attribute(from),
-        escape_tag(question, "question")
+        escape_wrapper_tag(question, "question")
     ));
     text
 }
@@ -1138,7 +1138,7 @@ fn frame_answer(
         "<agent-answer from=\"{}\" topic=\"{}\" untrusted-web=\"{web}\" untrusted-tools=\"{tools}\">\n{}\n</agent-answer>",
         attribute(&card.agent_id),
         attribute(&card.topic),
-        escape_tag(answer, "agent-answer")
+        escape_wrapper_tag(answer, "agent-answer")
     ));
     text
 }
