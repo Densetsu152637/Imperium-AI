@@ -7,16 +7,17 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use imperium_api::{ChatMessage, ToolCall, ToolSpec, Usage};
 use imperium_api::{
     Effort, Load, LocalRequest, Priority, Sampler, SamplingFuture, SamplingReply, SamplingRequest,
     ToolContext, ToolEvent, ToolGroup, ToolProvider, parse_arguments as parse,
     truncate_chars as truncate,
 };
+use imperium_api::{PermissionMode, PermissionRule, RuleAction};
 use imperium_config::{Location, Tier};
-use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
+use imperium_models::{ChatClient, ChatRequest, Endpoint};
 use imperium_policy::permissions::{
-    CallKind, Decision, PermissionMode, PermissionRule, Refusal, RuleAction, Target, decide_call,
-    safety_floor, suggest,
+    CallKind, Decision, Refusal, Target, decide_call, safety_floor, suggest,
 };
 use imperium_policy::{SHELL_TOOLS, ToolSource};
 use imperium_protocol::patterns;
@@ -92,8 +93,8 @@ const MAX_REWRITE_HISTORY_CHARS: usize = 20_000;
 const WAIT_REASON_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// A local runtime's wait reason as the protocol says it.
-fn wait_reason(reason: crate::LocalWait) -> imperium_protocol::session::LocalWaitReason {
-    use crate::LocalWait as Wait;
+fn wait_reason(reason: imperium_api::LocalWait) -> imperium_protocol::session::LocalWaitReason {
+    use imperium_api::LocalWait as Wait;
     use imperium_protocol::session::LocalWaitReason as Reason;
     match reason {
         Wait::Loading => Reason::Loading,

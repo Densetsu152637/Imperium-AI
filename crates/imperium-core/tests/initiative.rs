@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
+use imperium_api::Load;
 use imperium_core::{Connection, DaemonState, ManualLoad};
-use imperium_engine::Load;
 use imperium_protocol::agents::EnvironmentAgent;
 use imperium_protocol::initiative::{Initiative, NoticeKind, SuggestionStatus};
 use imperium_protocol::jsonrpc::{Notification, Outcome, Response};

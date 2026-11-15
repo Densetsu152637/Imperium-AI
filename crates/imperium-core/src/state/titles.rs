@@ -11,10 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use imperium_api::ChatMessage;
-use imperium_engine::{
-    AcquireError, Availability, ChatClients, ChatRequest, Endpoint, LocalModels, LocalRequest,
-    Priority, ResolvedModel, Session,
-};
+use imperium_api::{AcquireError, Availability, LocalModels, LocalRequest, Priority};
+use imperium_engine::{ChatClients, ChatRequest, Endpoint, ResolvedModel, Session};
 use imperium_protocol::methods::SESSION_UPDATED;
 use imperium_protocol::session::{AgentEvent, ROOT_AGENT, SessionEvent};
 use tokio::sync::broadcast;

@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
+use imperium_api::LoadView;
 use imperium_core::ManualLoad;
-use imperium_engine::LoadView;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
@@ -69,7 +69,7 @@ impl Setup {
             (*self.daemon.settings()).clone(),
             None,
         );
-        let load = ManualLoad::new(imperium_engine::Load::Busy);
+        let load = ManualLoad::new(imperium_api::Load::Busy);
         daemon.use_load_view(load.clone());
         (daemon, load)
     }
@@ -128,7 +128,7 @@ async fn setup(extra: &str) -> Setup {
     .unwrap();
     let daemon =
         imperium_core::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
-    let load = ManualLoad::new(imperium_engine::Load::Busy);
+    let load = ManualLoad::new(imperium_api::Load::Busy);
     daemon.use_load_view(load.clone());
     Setup {
         daemon,
@@ -176,7 +176,7 @@ async fn quiet_release_a_schedule_prompt_runs_after_max_defer_though_the_machine
         || setup.plain.load(Ordering::SeqCst) >= 1,
     )
     .await;
-    assert_eq!(setup.load.level(), imperium_engine::Load::Busy);
+    assert_eq!(setup.load.level(), imperium_api::Load::Busy);
 }
 
 #[tokio::test]
@@ -268,7 +268,7 @@ async fn quiet_release_a_project_agents_session_runs_after_max_defer_though_busy
         || setup.plain.load(Ordering::SeqCst) >= 1,
     )
     .await;
-    assert_eq!(setup.load.level(), imperium_engine::Load::Busy);
+    assert_eq!(setup.load.level(), imperium_api::Load::Busy);
     assert!(session.hold().is_none());
 }
 
@@ -319,7 +319,7 @@ async fn quiet_release_a_waiting_brief_survives_a_restart_and_runs_when_quiet() 
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(setup.plain.load(Ordering::SeqCst), 0);
 
-    load.set(imperium_engine::Load::Quiet);
+    load.set(imperium_api::Load::Quiet);
     until("the brief is sent", Duration::from_secs(30), || {
         restored.title() == "Look around"
     })

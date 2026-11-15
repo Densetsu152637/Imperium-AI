@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use imperium_api::{ChatMessage, Usage};
 use imperium_api::{LocalPresence, truncate_chars};
 use imperium_config::KnowledgeSettings;
-use imperium_models::{ChatMessage, Usage};
 use imperium_protocol::session::{
     AgentStatus, KnowledgeCard, KnowledgeSource, KnowledgeSourceKind, KnowledgeStatus,
     KnowledgeUntrusted, QuestionCost, QuestionOutcome, ROOT_AGENT, SessionEvent, TokenUsage,

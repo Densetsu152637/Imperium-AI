@@ -8,10 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use imperium_api::Usage;
-use imperium_engine::{
-    AcquireFuture, Availability, ChatClient, ChatClients, LocalLease, LocalModels, LocalRequest,
-    ResolvedModel, Session, SessionConfig,
-};
+use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels, LocalRequest};
+use imperium_engine::{ChatClient, ChatClients, ResolvedModel, Session, SessionConfig};
 use imperium_models::{ChatFuture, ChatRequest, Completion, Endpoint};
 use imperium_protocol::session::{AgentEvent, SessionEvent, TokenCountMethod};
 use imperium_tools::Workspace;

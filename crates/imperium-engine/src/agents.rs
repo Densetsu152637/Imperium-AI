@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use imperium_models::ChatMessage;
+use imperium_api::ChatMessage;
 use imperium_protocol::session::{
     AgentEvent, AgentStatus, AgentSummary, KnowledgeCard, ROOT_AGENT, SessionEvent, TokenUsage,
 };
@@ -69,7 +69,7 @@ pub(crate) struct FrozenTool {
 }
 
 impl FrozenTool {
-    pub fn of(spec: &imperium_models::ToolSpec) -> Self {
+    pub fn of(spec: &imperium_api::ToolSpec) -> Self {
         FrozenTool {
             name: spec.name.clone(),
             description: spec.description.clone(),
@@ -77,8 +77,8 @@ impl FrozenTool {
         }
     }
 
-    pub fn spec(&self) -> imperium_models::ToolSpec {
-        imperium_models::ToolSpec {
+    pub fn spec(&self) -> imperium_api::ToolSpec {
+        imperium_api::ToolSpec {
             name: self.name.clone(),
             description: self.description.clone(),
             parameters: self.parameters.clone(),

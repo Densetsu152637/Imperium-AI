@@ -14,7 +14,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use imperium_policy::permissions::{RuleAction, Target};
+use imperium_api::RuleAction;
+use imperium_policy::permissions::Target;
 use imperium_protocol::methods::{
     ReviewAction, ReviewFile, ReviewHunk, SessionReviewCommitParams, SessionReviewCommitResult,
     SessionReviewHunkParams, SessionReviewHunkResult, SessionReviewParams,

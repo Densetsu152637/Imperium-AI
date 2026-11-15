@@ -13,9 +13,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
+use imperium_api::Load;
 use imperium_automation::{History, Missed, RunRecord, Trigger, next_run, parse_duration};
 use imperium_config::ScheduleSettings;
-use imperium_engine::{Load, RunNow, Waited, wait_for_quiet};
+use imperium_engine::{RunNow, Waited, wait_for_quiet};
 use imperium_protocol::methods::{
     SCHEDULE_EVENT, ScheduleEventParams, ScheduleListResult, ScheduleRow,
 };
@@ -50,7 +51,7 @@ struct Deferred {
 
 /// What a deferred run waits on.
 struct Wait {
-    view: Arc<dyn imperium_engine::LoadView>,
+    view: Arc<dyn imperium_api::LoadView>,
     run_now: Arc<RunNow>,
     limit: Option<Duration>,
     reason: String,
@@ -526,7 +527,7 @@ fn notify_os(id: &str, status: &str, summary: &str) {
 mod tests {
     use super::*;
     use crate::ManualLoad;
-    use imperium_engine::Load;
+    use imperium_api::Load;
 
     /// A daemon whose one schedule only tells a project agent that does not exist, so a run
     /// ends at once without touching a model or a process.

@@ -7,10 +7,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError, RwLock};
 
+use imperium_api::{PathGrant, PathMode, PermissionRule, RuleAction};
 use imperium_config::PermissionSettings;
 use imperium_policy::permissions::{
-    PathGrant, PathMode, PermissionRule, Permissions, RuleAction, SharedRules, home_dir,
-    validate_grant, validate_rule,
+    Permissions, SharedRules, home_dir, validate_grant, validate_rule,
 };
 use imperium_policy::{AgentProfile, Allowlist, ProfileRules};
 use imperium_protocol::agents::{AgentPermissions, ToolAccess};

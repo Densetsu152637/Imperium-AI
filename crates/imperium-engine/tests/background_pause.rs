@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use imperium_engine::{
-    AcquireFuture, Availability, Background, Load, LoadView, LocalLease, LocalModels,
-    LocalPresence, Priority, ResolvedModel, Session, SessionConfig,
+use imperium_api::{
+    AcquireFuture, Availability, Load, LoadView, LocalLease, LocalModels, LocalPresence, Priority,
 };
+use imperium_engine::{Background, ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{AgentEvent, PauseCause, SessionEvent, SessionStatus};
 use imperium_tools::Workspace;

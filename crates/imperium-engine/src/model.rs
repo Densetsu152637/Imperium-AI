@@ -1,9 +1,10 @@
+use imperium_api::Pricing;
 use imperium_api::{Availability, LocalModels};
 use imperium_config::{
     Capability, LLAMACPP_ENDPOINT, Location, Preference, RoutingRule, RoutingSettings, SecretError,
     SecretName, Settings, Tier, VLLM_ENDPOINT,
 };
-use imperium_models::{Endpoint, Pricing};
+use imperium_models::Endpoint;
 
 /// A model chosen for a session: where to call it, its id, and its prices.
 #[derive(Debug, Clone)]

@@ -9,13 +9,15 @@ use std::time::Duration;
 use axum::Router;
 use axum::routing::post;
 use futures_util::StreamExt;
+use imperium_api::LocalModels;
+use imperium_api::Pricing;
 use imperium_config::{LlamaCppSettings, Location, Preference, RoutingSettings, Tier};
-use imperium_engine::{CatalogModel, LocalModels, ResolvedModel, Session, SessionConfig};
+use imperium_engine::{CatalogModel, ResolvedModel, Session, SessionConfig};
 use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
 use imperium_local::scan::LocalModel;
 use imperium_local::supervisor::{LaunchFuture, LaunchSpec, Launcher, Server, Supervisor};
-use imperium_models::{Endpoint, Pricing};
+use imperium_models::Endpoint;
 use imperium_protocol::session::SessionEvent;
 use imperium_tools::Workspace;
 

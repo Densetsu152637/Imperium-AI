@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, PoisonError, RwLock};
 
-pub use imperium_api::{PathGrant, PathMode, PermissionMode, PermissionRule, RuleAction};
+use imperium_api::{PathGrant, PathMode, PermissionMode, PermissionRule, RuleAction};
 
 /// The tool whose rule patterns are command prefixes.
 pub const COMMAND_TOOL: &str = "run_command";

@@ -4,10 +4,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use imperium_api::Usage;
 use imperium_engine::{ChatClient, ChatClients, ResolvedModel, Session, SessionConfig};
-use imperium_models::{
-    ChatFuture, ChatRequest, Completion, Endpoint, TokenFuture, Tokenizer, Usage,
-};
+use imperium_models::{ChatFuture, ChatRequest, Completion, Endpoint, TokenFuture, Tokenizer};
 use imperium_protocol::session::{SessionEvent, TokenCountMethod};
 use imperium_tools::Workspace;
 use serde_json::Value;

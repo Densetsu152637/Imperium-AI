@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use imperium_engine::{ResolvedModel, Session, SessionConfig, ToolProvider};
+use imperium_api::ToolProvider;
+use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
 use imperium_policy::permissions::{Permissions, SharedRules};
 use imperium_protocol::session::{PermissionDecision, SessionEvent};

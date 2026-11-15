@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, Weak};
 use std::time::{Duration, Instant};
 
+use imperium_api::{LoadView, LocalModels, ToolProvider};
 use imperium_config::{
     Config, EnvironmentConfig, EnvironmentSettings, IsolationSettings, KeychainSecrets, Layer,
     ModelPlacement, Paths, SecretStore, Settings,
 };
 use imperium_engine::{
-    Background, CatalogModel, ChatClients, LoadView, LocalModels, ModelError, ResolvedModel,
-    Session, SessionConfig, SessionMemory, TaskRequest, ToolProvider, new_session_id,
-    resolve_model, route,
+    Background, CatalogModel, ChatClients, ModelError, ResolvedModel, Session, SessionConfig,
+    SessionMemory, TaskRequest, new_session_id, resolve_model, route,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_local::supervisor::SwapDirection;
@@ -547,7 +547,7 @@ impl DaemonState {
                     .map(|env| (env.id.as_str(), env.permissions.rules.as_slice())),
             )
             .with_fixed_rules(fixed_rules);
-        let mut grants: Vec<imperium_policy::permissions::PathGrant> = env
+        let mut grants: Vec<imperium_api::PathGrant> = env
             .iter()
             .flat_map(|env| &env.permissions.grants)
             .map(crate::permissions::grant_from_wire)
@@ -565,7 +565,7 @@ impl DaemonState {
         folders: &[String],
         runtime: &EnvironmentRuntime,
         isolation: &IsolationSettings,
-        grants: &mut Vec<imperium_policy::permissions::PathGrant>,
+        grants: &mut Vec<imperium_api::PathGrant>,
     ) -> Result<Workspace, CreateError> {
         let remote = match runtime {
             EnvironmentRuntime::Local
@@ -1879,9 +1879,9 @@ impl DaemonState {
         let workspace = if workspace.runtime().is_none() {
             let store = crate::attachments::store_dir(self.paths.data_dir(), &id);
             match std::fs::create_dir_all(&store) {
-                Ok(()) => workspace.with_grants(&[imperium_policy::permissions::PathGrant {
+                Ok(()) => workspace.with_grants(&[imperium_api::PathGrant {
                     path: store.display().to_string(),
-                    mode: imperium_policy::permissions::PathMode::Read,
+                    mode: imperium_api::PathMode::Read,
                 }]),
                 Err(error) => {
                     tracing::warn!(%error, "could not create the session's attachments folder");

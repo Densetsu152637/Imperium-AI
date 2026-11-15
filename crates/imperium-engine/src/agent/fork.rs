@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use imperium_api::parse_arguments as parse;
-use imperium_models::{ChatMessage, ChatRequest, ToolSpec, Usage};
+use imperium_api::{ChatMessage, ToolSpec, Usage};
+use imperium_models::ChatRequest;
 use imperium_protocol::session::{QuestionOutcome, SessionEvent};
 use serde::Deserialize;
 use tokio::sync::watch;
@@ -182,7 +183,7 @@ impl Agent {
     /// Waits while the session is stopped, at a safe point, unless the question is stopped first.
     async fn hold_unless_cancelled(
         &self,
-        attached: &mut Option<crate::LocalPresence>,
+        attached: &mut Option<imperium_api::LocalPresence>,
         holder: &str,
     ) -> Option<Stop> {
         let mut cancel = self.cancel_signal();

@@ -389,10 +389,10 @@ const STEERING_OPEN: &str = "<steering>";
 
 /// Whether `message` is a steering message added mid-turn (see [`steering_text`]); attachment
 /// text may come before the wrapper.
-pub(crate) fn is_steering_message(message: &imperium_models::ChatMessage) -> bool {
+pub(crate) fn is_steering_message(message: &imperium_api::ChatMessage) -> bool {
     matches!(
         message,
-        imperium_models::ChatMessage::User { content, .. }
+        imperium_api::ChatMessage::User { content, .. }
             if content.starts_with(STEERING_OPEN)
                 || content.contains(&format!("{PART_SEPARATOR}{STEERING_OPEN}"))
     )

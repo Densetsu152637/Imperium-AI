@@ -13,7 +13,7 @@ use imperium_api::framing::escape_instruction_tags;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use imperium_models::ChatMessage;
+use imperium_api::ChatMessage;
 use imperium_tools::{Invocation, Workspace};
 use imperium_workflow::ContextIndex;
 use imperium_workflow::imports::{self, Policy};

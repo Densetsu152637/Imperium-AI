@@ -35,7 +35,8 @@ use crate::journal::Journal;
 use crate::queue::{Inboxes, QueueError};
 use crate::quiet::{Background, RunNow};
 use crate::status::Controls;
-use crate::{CatalogModel, LocalModels, ResolvedModel, SessionLauncher};
+use crate::{CatalogModel, ResolvedModel, SessionLauncher};
+use imperium_api::LocalModels;
 
 /// Chunk subagents of `delegate_chunks` that run at once in a session; the rest wait.
 const MAX_PARALLEL_CHUNKS: usize = 4;
@@ -1757,7 +1758,7 @@ fn save_messages(
     shared: &Shared,
     journal: &std::path::Path,
     path: &std::path::Path,
-    messages: &[imperium_models::ChatMessage],
+    messages: &[imperium_api::ChatMessage],
     compacted: bool,
 ) {
     shared.agents.save_conversation(ROOT_AGENT, messages);

@@ -478,8 +478,8 @@ pub fn disabled() -> LocalModelListResult {
 mod tests {
     use std::time::Duration;
 
+    use imperium_api::LocalModels;
     use imperium_config::{Config, Layer, Source};
-    use imperium_engine::LocalModels;
     use imperium_local::gguf::GgufInfo;
     use imperium_local::hardware::Gpu;
     use imperium_local::scan::LocalModel;

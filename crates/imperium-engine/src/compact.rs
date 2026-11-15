@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 
+use imperium_api::ChatMessage;
 use imperium_api::truncate_chars;
-use imperium_models::ChatMessage;
 
 use crate::breakdown::{
     Category, KEPT_CLOSE, KEPT_OPEN, Measured, PART_SEPARATOR, Spans, restored_spans,

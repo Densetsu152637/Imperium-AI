@@ -15,9 +15,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, PoisonError, Weak};
 use std::time::Duration;
 
+use imperium_api::LocalModels;
 use imperium_api::{ToolCheck, ToolContext, ToolFuture, ToolProvider, ToolSpec, parse_arguments};
 use imperium_config::{Location, Settings, Tier};
-use imperium_engine::{CatalogModel, LocalModels, resolve_model};
+use imperium_engine::{CatalogModel, resolve_model};
 use imperium_local::planner::Fit;
 use imperium_memory::models::{CardHit, ModelCard};
 use imperium_memory::retrieval::Embedder;

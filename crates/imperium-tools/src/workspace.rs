@@ -7,8 +7,9 @@ use crate::project_worktrees::ProjectWorktrees;
 use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
 use crate::writer_trees::{WriterHandle, WriterStart};
 use crate::{Sandbox, ToolError, WriterTrees};
+use imperium_api::{PathGrant, PathMode};
 use imperium_policy::AgentProfile;
-use imperium_policy::permissions::{PathGrant, PathMode, Permissions, Target, expand_home};
+use imperium_policy::permissions::{Permissions, Target, expand_home};
 
 /// The folders an agent works in: an environment's folders, the first of which is the working
 /// directory (the root). Relative paths given to tools resolve against the root; absolute paths

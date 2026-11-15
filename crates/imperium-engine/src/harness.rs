@@ -17,8 +17,8 @@
 //! the rewrite may only add entities to it, and tag-like text is taken out of everything that
 //! goes into a block.
 
+use imperium_api::ChatMessage;
 use imperium_api::framing::defuse_harness_tags;
-use imperium_models::ChatMessage;
 use serde::{Deserialize, Serialize};
 
 use crate::breakdown::{Category, PART_SEPARATOR, restored_spans};

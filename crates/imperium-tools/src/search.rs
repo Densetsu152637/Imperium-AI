@@ -10,7 +10,8 @@ use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
 use crate::{ToolError, Workspace};
-use imperium_policy::permissions::{RuleAction, glob};
+use imperium_api::RuleAction;
+use imperium_policy::permissions::glob;
 
 /// Default and largest number of results one call returns.
 pub(crate) const DEFAULT_RESULTS: usize = 100;
