@@ -10,6 +10,8 @@ import {
   Check,
   KeyRound,
   LoaderCircle,
+  LogIn,
+  LogOut,
   Pencil,
   Plug,
   Plus,
@@ -29,6 +31,8 @@ import type {
   ConfigSetResult,
   McpCatalogResult,
   McpListResult,
+  McpLoginResult,
+  McpLogoutResult,
   McpRemoveResult,
   McpSaveResult,
   McpServerConfig,
@@ -43,6 +47,7 @@ import { Switch } from "./components/Switch";
 import { installedByAgent, sourceLabel } from "./configChanges";
 import { ConnectorIcon } from "./connectorIcons";
 import type { DaemonClient } from "./daemon/client";
+import { openExternal } from "./openExternal";
 
 type Tab = "installed" | "browse";
 
@@ -77,6 +82,8 @@ export function ConnectorsWindow({
   const [error, setError] = useState<string | null>(null);
   const [testing, setTesting] = useState<Set<string>>(new Set());
   const [restartNeeded, setRestartNeeded] = useState(false);
+  // The address of a sign-in under way, kept on screen so it can be reopened or copied.
+  const [signInAddress, setSignInAddress] = useState<{ name: string; url: string } | null>(null);
   const titleId = useId();
 
   const refresh = useCallback(async () => {
@@ -93,6 +100,14 @@ export function ConnectorsWindow({
     void refresh();
     client.call<McpCatalogResult>("mcp.catalog").then(setCatalog, (failure: unknown) => setError(message(failure)));
   }, [client, refresh]);
+
+  // While a sign-in waits for the browser, look again every couple of seconds.
+  const signingIn = installed?.servers.some((s) => s.status.sign_in === "signing_in") ?? false;
+  useEffect(() => {
+    if (!signingIn) return;
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => window.clearInterval(timer);
+  }, [signingIn, refresh]);
 
   // Escape steps back from a form, then closes the window.
   useEffect(() => {
@@ -130,6 +145,30 @@ export function ConnectorsWindow({
         next.delete(name);
         return next;
       });
+    }
+  };
+
+  /** Starts an OAuth sign-in and opens the address in the user's own browser. */
+  const signIn = async (name: string) => {
+    if (!client) return;
+    try {
+      const { authorization_url } = await client.call<McpLoginResult>("mcp.login", { name });
+      setSignInAddress({ name, url: authorization_url });
+      await refresh();
+      await openExternal(authorization_url);
+    } catch (failure) {
+      setError(message(failure));
+    }
+  };
+
+  const signOut = async (name: string) => {
+    if (!client) return;
+    try {
+      await client.call<McpLogoutResult>("mcp.logout", { name });
+      setSignInAddress((current) => (current?.name === name ? null : current));
+      await refresh();
+    } catch (failure) {
+      setError(message(failure));
     }
   };
 
@@ -231,6 +270,10 @@ export function ConnectorsWindow({
         byId={byId}
         testing={testing}
         onTest={test}
+        onSignIn={signIn}
+        onSignOut={signOut}
+        signInAddress={signInAddress}
+        onDismissSignIn={() => setSignInAddress(null)}
         onEnable={setEnabled}
         onRemove={remove}
         onConfigure={(server) => setView({ kind: "custom", editing: server })}
@@ -421,17 +464,32 @@ function StatusPill({ status, busy }: { status: McpStatus; busy: boolean }) {
       </span>
     );
   }
-  const text = {
-    connected: `Connected · ${status.tools.length} ${status.tools.length === 1 ? "tool" : "tools"}`,
-    error: "Error",
-    untested: "Not tested",
-    disabled: "Off",
-  }[status.state];
+  if (status.sign_in === "signing_in") {
+    return (
+      <span className="status-pill" data-state="testing">
+        <LoaderCircle className="spin" aria-hidden="true" /> Waiting for sign-in…
+      </span>
+    );
+  }
+  const text =
+    status.state !== "disabled" && status.sign_in === "needs_sign_in"
+      ? "Needs sign-in"
+      : {
+          connected: `Connected · ${status.tools.length} ${status.tools.length === 1 ? "tool" : "tools"}`,
+          error: "Error",
+          untested: status.sign_in === "signed_in" ? "Signed in" : "Not tested",
+          disabled: "Off",
+        }[status.state];
   return (
     <span className="status-pill" data-state={status.state} title={status.checked_at ? `Checked ${relative(status.checked_at)}` : undefined}>
       <span className="status-dot" aria-hidden="true" /> {text}
     </span>
   );
+}
+
+/** Whether the server carries its own `Authorization` header, which leaves no room for a sign-in. */
+function hasAuthorizationHeader(server: McpServerInfo): boolean {
+  return Object.keys(server.config.headers).some((name) => name.toLowerCase() === "authorization");
 }
 
 function InstalledView({
@@ -440,6 +498,10 @@ function InstalledView({
   byId,
   testing,
   onTest,
+  onSignIn,
+  onSignOut,
+  signInAddress,
+  onDismissSignIn,
   onEnable,
   onRemove,
   onConfigure,
@@ -452,6 +514,10 @@ function InstalledView({
   byId: Map<string, CatalogServer>;
   testing: Set<string>;
   onTest: (name: string) => void;
+  onSignIn: (name: string) => void;
+  onSignOut: (name: string) => void;
+  signInAddress: { name: string; url: string } | null;
+  onDismissSignIn: () => void;
   onEnable: (name: string, enabled: boolean) => void;
   onRemove: (name: string, forgetSecrets: boolean) => void;
   onConfigure: (server: McpServerInfo) => void;
@@ -502,6 +568,26 @@ function InstalledView({
                       {where}
                     </code>
                     {server.status.error && !busy && <p className="error connector-row-error">{server.status.error}</p>}
+                    {server.status.sign_in === "signing_in" && signInAddress?.name === server.name && (
+                      <div className="connector-confirm" role="status">
+                        <span>Finish signing in in your browser. If it did not open, use this address:</span>
+                        <code className="connector-row-where" title={signInAddress.url}>
+                          {signInAddress.url}
+                        </code>
+                        <button className="small" onClick={() => void openExternal(signInAddress.url)}>
+                          Open again
+                        </button>
+                        <button className="small" onClick={() => void navigator.clipboard?.writeText(signInAddress.url)}>
+                          Copy address
+                        </button>
+                        <button className="small" onClick={() => onSignOut(server.name)}>
+                          Cancel
+                        </button>
+                        <button className="ghost icon-only" onClick={onDismissSignIn} aria-label="Hide">
+                          <X />
+                        </button>
+                      </div>
+                    )}
                     {server.status.missing_secrets.length > 0 && (
                       <p className="warning connector-row-error">
                         <KeyRound aria-hidden="true" /> Missing from the keychain: {server.status.missing_secrets.join(", ")}.
@@ -545,6 +631,11 @@ function InstalledView({
                     )}
                   </div>
                   <div className="connector-row-actions">
+                    {server.status.sign_in === "needs_sign_in" && server.config.enabled && (
+                      <button className="small primary" onClick={() => onSignIn(server.name)}>
+                        <LogIn aria-hidden="true" /> Sign in
+                      </button>
+                    )}
                     <RowMenu
                       label={`More for ${server.name}`}
                       items={[
@@ -554,6 +645,22 @@ function InstalledView({
                           disabled: busy || !server.config.enabled,
                           onSelect: () => onTest(server.name),
                         },
+                        ...(server.config.url && !server.config.bearer_secret && !hasAuthorizationHeader(server)
+                          ? [
+                              server.status.sign_in === "signed_in" || server.status.sign_in === "signing_in"
+                                ? {
+                                    label: server.status.sign_in === "signing_in" ? "Cancel sign-in" : "Sign out",
+                                    icon: LogOut,
+                                    onSelect: () => onSignOut(server.name),
+                                  }
+                                : {
+                                    label: "Sign in",
+                                    icon: LogIn,
+                                    disabled: !server.config.enabled,
+                                    onSelect: () => onSignIn(server.name),
+                                  },
+                            ]
+                          : []),
                         { label: "Configure", icon: Pencil, onSelect: () => onConfigure(server) },
                         {
                           label: "Remove",
