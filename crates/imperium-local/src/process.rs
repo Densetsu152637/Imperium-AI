@@ -6,6 +6,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -46,6 +47,10 @@ pub trait RuntimeHooks: Send + Sync + fmt::Debug {
 pub struct ProcessLauncher {
     /// Runtime id and its executable.
     programs: Mutex<Vec<(String, PathBuf)>>,
+    /// `docker`, the image vLLM models run in and the scope their containers are labelled with
+    /// ([`crate::vllm_env::scope`]), when the managed environment is Docker's
+    /// ([`crate::vllm_env`]); each model then gets a container of its own.
+    docker_vllm: Mutex<Option<(PathBuf, String, String)>>,
     /// Asked before and after a llama.cpp model loads.
     hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     logs: PathBuf,
@@ -60,6 +65,7 @@ impl ProcessLauncher {
     pub fn new(server: PathBuf, vllm: PathBuf, logs: PathBuf) -> Self {
         ProcessLauncher {
             programs: Mutex::new(vec![(LLAMA_CPP.into(), server), (VLLM.into(), vllm)]),
+            docker_vllm: Mutex::new(None),
             hooks: Mutex::new(None),
             logs,
             slots: None,
@@ -70,6 +76,38 @@ impl ProcessLauncher {
     /// Saves the slots of models swapped out to `dir` (see [`Launcher::slot_dir`]).
     pub fn with_slot_dir(mut self, dir: PathBuf) -> Self {
         self.slots = Some(dir);
+        self
+    }
+
+    /// Runs vLLM models in containers of `image`, started by `docker`, labelled with the scope of
+    /// `data_dir`. Once per daemon, containers an earlier daemon of this host and data folder
+    /// left behind are removed, off the start's path ([`crate::vllm_env::sweep_stale_containers`]).
+    pub fn with_docker_vllm(self, docker: PathBuf, image: String, data_dir: &Path) -> Self {
+        static SWEEP: std::sync::Once = std::sync::Once::new();
+        let scope = crate::vllm_env::scope(data_dir);
+        let sweeper = (docker.clone(), scope.clone());
+        SWEEP.call_once(|| {
+            std::thread::spawn(move || {
+                let (docker, scope) = sweeper;
+                let remote = std::env::var_os("DOCKER_HOST").is_some_and(|host| !host.is_empty());
+                let system = sysinfo::System::new_all();
+                let removed = crate::vllm_env::sweep_stale_containers(
+                    &docker,
+                    &scope,
+                    std::process::id(),
+                    &|pid| system.process(sysinfo::Pid::from_u32(pid)).is_some(),
+                    remote,
+                    crate::vllm_env::SWEEP_TIMEOUT,
+                );
+                if !removed.is_empty() {
+                    tracing::info!(containers = ?removed, "removed vLLM containers a previous daemon left");
+                }
+            });
+        });
+        *self
+            .docker_vllm
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((docker, image, scope));
         self
     }
 
@@ -120,16 +158,39 @@ impl ProcessLauncher {
             let present = program.is_file();
             program = hooks.ensure(program, present).await?;
         }
-        let program = program.as_path();
-        spec.backend.check_program(program)?;
+        let docker = (spec.backend.id() == VLLM)
+            .then(|| {
+                self.docker_vllm
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone()
+            })
+            .flatten();
+        if docker.is_none() {
+            spec.backend.check_program(program.as_path())?;
+        }
         let port = free_port()?;
+        // A container is named so it can be removed; its client process is what is supervised.
+        let (program, args, container) = match docker {
+            Some((docker, image, scope)) => {
+                let name = crate::vllm_env::fresh_container_name(port);
+                let args =
+                    crate::vllm_env::docker_run_args(&image, &name, port, &scope, &spec.args())?;
+                (docker.clone(), args, Some((docker, name)))
+            }
+            None => {
+                let mut args = spec.args();
+                args.extend(["--port".to_string(), port.to_string()]);
+                (program, args, None)
+            }
+        };
+        let program = program.as_path();
         std::fs::create_dir_all(&self.logs).map_err(|error| error.to_string())?;
         let log_path = self.logs.join(format!("llama-{}.log", spec.model_id));
         let log = std::fs::File::create(&log_path).map_err(|error| error.to_string())?;
         let mut command = Command::new(program);
         command
-            .args(spec.args())
-            .args(["--port", &port.to_string()])
+            .args(&args)
             .stdin(Stdio::null())
             .stdout(log.try_clone().map_err(|error| error.to_string())?)
             .stderr(log)
@@ -139,10 +200,21 @@ impl ProcessLauncher {
         for variable in crate::backend::scrubbed_env(spec) {
             command.env_remove(&variable);
         }
-        library_path(&mut command, program);
+        if container.is_none() {
+            library_path(&mut command, program);
+        }
+        if spec.backend.id() == VLLM {
+            // vLLM reports usage to its maintainers unless told not to.
+            command
+                .env("VLLM_NO_USAGE_STATS", "1")
+                .env("DO_NOT_TRACK", "1");
+        }
         let mut child = command
             .spawn()
             .map_err(|error| format!("could not start {}: {error}", program.display()))?;
+        // From here on the container is ours to remove: by `stop`, on a failed start, or when
+        // this future is dropped (a cancelled start) or the server is.
+        let container = container.map(|(docker, name)| ContainerGuard::new(docker, name));
         let base = format!("http://127.0.0.1:{port}");
         let ready = tokio::time::timeout(LOAD_TIMEOUT, self.wait_ready(&base, &mut child)).await;
         if let (Ok(Ok(())), Some(hooks)) = (&ready, &hooks) {
@@ -150,18 +222,32 @@ impl ProcessLauncher {
         }
         match ready {
             Ok(Ok(())) => Ok(Box::new(ProcessServer {
+                container,
                 pid: child.id(),
                 child: Mutex::new(Some(child)),
                 base_url: format!("{base}/v1"),
                 root: base,
                 http: self.http.clone(),
             })),
-            Ok(Err(message)) => Err(format!("{message}; see {}", log_path.display()).into()),
-            Err(_) => Err(LaunchError::timed_out(format!(
-                "the model did not load within {} s; see {}",
-                LOAD_TIMEOUT.as_secs(),
-                log_path.display()
-            ))),
+            Ok(Err(message)) => {
+                let hint = if let Some(guard) = &container {
+                    guard.remove().await;
+                    "; if the image is missing, run `imperium runtime vllm setup --docker`"
+                } else {
+                    ""
+                };
+                Err(format!("{message}{hint}; see {}", log_path.display()).into())
+            }
+            Err(_) => {
+                if let Some(guard) = &container {
+                    guard.remove().await;
+                }
+                Err(LaunchError::timed_out(format!(
+                    "the model did not load within {} s; see {}",
+                    LOAD_TIMEOUT.as_secs(),
+                    log_path.display()
+                )))
+            }
         }
     }
 
@@ -192,6 +278,8 @@ impl Launcher for ProcessLauncher {
 
 /// A running server process; dropping it kills the process.
 struct ProcessServer {
+    /// The container of a vLLM model run in Docker; removed by [`Server::stop`] or on drop.
+    container: Option<ContainerGuard>,
     /// Killed on drop if [`Server::stop`] has not taken it.
     child: Mutex<Option<Child>>,
     /// The process id, for resource readings; kept after [`Server::stop`] takes the child.
@@ -298,6 +386,10 @@ impl Server for ProcessServer {
             {
                 tracing::warn!(%error, "could not stop a model server");
             }
+            // Killing `docker run` leaves its container running.
+            if let Some(guard) = &self.container {
+                guard.remove().await;
+            }
         })
     }
 
@@ -313,6 +405,63 @@ impl Server for ProcessServer {
             Ok(Some(status)) => Some(format!("the server exited ({status})")),
             // Not knowing is not a crash: calls to it still say whether it serves.
             Ok(None) | Err(_) => None,
+        }
+    }
+}
+
+/// A model's Docker container, removed when this is dropped unless [`ContainerGuard::remove`]
+/// already did it, so a cancelled start, a stopped or dropped server and a daemon shutting down
+/// leave nothing running (a killed daemon is covered by the sweep at the next start,
+/// [`crate::vllm_env::sweep_stale_containers`]).
+#[derive(Debug)]
+pub(crate) struct ContainerGuard {
+    docker: PathBuf,
+    name: String,
+    /// Cleared by whoever removes the container, so it is removed once.
+    armed: AtomicBool,
+}
+
+impl ContainerGuard {
+    pub(crate) fn new(docker: PathBuf, name: String) -> Self {
+        ContainerGuard {
+            docker,
+            name,
+            armed: AtomicBool::new(true),
+        }
+    }
+
+    /// `docker rm -f <name>`, awaited. Failures are not errors (it may be gone already).
+    pub(crate) async fn remove(&self) {
+        if !self.armed.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let _ = Command::new(&self.docker)
+            .args(["rm", "-f", &self.name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+    }
+}
+
+impl Drop for ContainerGuard {
+    /// Starts the removal and does not wait for it (a reaper thread collects the process), so
+    /// dropping never blocks the runtime.
+    fn drop(&mut self) {
+        if !self.armed.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let spawned = std::process::Command::new(&self.docker)
+            .args(["rm", "-f", &self.name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(mut child) = spawned {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
         }
     }
 }
@@ -430,5 +579,112 @@ mod tests {
             "{error}"
         );
         assert!(!error.timed_out, "a missing server fails at once");
+    }
+
+    /// A `docker` that appends its arguments to `log`.
+    #[cfg(unix)]
+    fn fake_docker(dir: &Path, log: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("docker");
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\necho \"$@\" >> {}\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn lines(log: &Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Waits for the detached removal a drop starts.
+    #[cfg(unix)]
+    fn wait_for_lines(log: &Path, count: usize) -> Vec<String> {
+        for _ in 0..200 {
+            let seen = lines(log);
+            if seen.len() >= count {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        lines(log)
+    }
+
+    #[cfg(unix)]
+    fn server_with(container: Option<ContainerGuard>) -> ProcessServer {
+        ProcessServer {
+            container,
+            pid: None,
+            child: Mutex::new(None),
+            base_url: String::new(),
+            root: String::new(),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopping_a_docker_server_removes_its_container_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let docker = fake_docker(dir.path(), &log);
+        let server = server_with(Some(ContainerGuard::new(
+            docker,
+            "imperium-vllm-1-0-9".into(),
+        )));
+        server.stop().await;
+        assert_eq!(lines(&log), vec!["rm -f imperium-vllm-1-0-9".to_string()]);
+        // Stopping again, and dropping afterwards, remove nothing more.
+        server.stop().await;
+        drop(server);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(lines(&log).len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_docker_server_that_was_never_stopped_removes_its_container() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let docker = fake_docker(dir.path(), &log);
+        drop(server_with(Some(ContainerGuard::new(
+            docker,
+            "imperium-vllm-1-1-9".into(),
+        ))));
+        assert_eq!(
+            wait_for_lines(&log, 1),
+            vec!["rm -f imperium-vllm-1-1-9".to_string()]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cancelled_start_leaves_no_container() {
+        // The guard a start holds is dropped with its future when the start is cancelled.
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let docker = fake_docker(dir.path(), &log);
+        let start = async {
+            let _guard = ContainerGuard::new(docker, "imperium-vllm-1-2-9".into());
+            std::future::pending::<()>().await;
+        };
+        let _ = tokio::time::timeout(Duration::from_millis(50), start).await;
+        assert_eq!(
+            wait_for_lines(&log, 1),
+            vec!["rm -f imperium-vllm-1-2-9".to_string()]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_without_a_container_has_nothing_to_remove() {
+        server_with(None).stop().await;
     }
 }

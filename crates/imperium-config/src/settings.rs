@@ -1687,19 +1687,28 @@ pub struct RuntimeSettings {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct VllmSettings {
-    /// The `vllm` executable (from a managed environment, or on `PATH`).
+    /// The `vllm` executable. Empty (the default) is the managed environment when one is set up
+    /// (`imperium runtime vllm setup`), else `vllm` on `PATH`; any value, `vllm` included, is
+    /// used as it is.
     pub command: String,
     /// Upper bound for vLLM's `--gpu-memory-utilization`.
     pub max_gpu_memory_utilization: f64,
     pub extra_args: Vec<String>,
+    /// The vLLM release `imperium runtime vllm setup` installs; empty is the pinned one
+    /// (`runtimes/vllm.env`).
+    pub version: String,
+    /// The Docker image `imperium runtime vllm setup --docker` pulls; empty is the pinned one.
+    pub docker_image: String,
 }
 
 impl Default for VllmSettings {
     fn default() -> Self {
         VllmSettings {
-            command: "vllm".into(),
+            command: String::new(),
             max_gpu_memory_utilization: 0.9,
             extra_args: Vec::new(),
+            version: String::new(),
+            docker_image: String::new(),
         }
     }
 }

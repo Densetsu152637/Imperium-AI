@@ -19,6 +19,7 @@ mod resources;
 mod schedule;
 mod session;
 mod settings;
+mod vllm;
 mod workflow;
 mod workspaces;
 
@@ -695,6 +696,38 @@ enum RuntimeCommand {
     /// Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back
     /// to the installed runtime.
     Use { path: Option<PathBuf> },
+    /// The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is
+    /// downloaded unless you run `setup` and confirm.
+    Vllm {
+        #[command(subcommand)]
+        command: VllmCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum VllmCommand {
+    /// Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or
+    /// with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the
+    /// disk and GPU requirements and asks before downloading. Linux and WSL2 only.
+    Setup {
+        /// Pull the Docker image instead of making a virtual environment.
+        #[arg(long)]
+        docker: bool,
+        /// Approve the download without asking.
+        #[arg(long)]
+        yes: bool,
+        /// A vLLM version other than the setting or the pinned one.
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// Show what is set up and which vLLM the daemon starts.
+    Status,
+    /// Remove the managed environment (its folder, or the Docker image).
+    Remove {
+        /// Approve without asking.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -968,6 +1001,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Use { path },
         } => local::use_server(path),
+        Command::Runtime {
+            command:
+                RuntimeCommand::Vllm {
+                    command:
+                        VllmCommand::Setup {
+                            docker,
+                            yes,
+                            version,
+                        },
+                },
+        } => vllm::setup(docker, yes, version),
+        Command::Runtime {
+            command:
+                RuntimeCommand::Vllm {
+                    command: VllmCommand::Status,
+                },
+        } => vllm::status(),
+        Command::Runtime {
+            command:
+                RuntimeCommand::Vllm {
+                    command: VllmCommand::Remove { yes },
+                },
+        } => vllm::remove(yes),
         Command::Resources { watch } => resources::show(watch),
         Command::McpServe {
             tools,
@@ -1177,6 +1233,21 @@ async fn connect() -> anyhow::Result<(Client, String)> {
         )
     })?;
     Ok((client, endpoint.url))
+}
+
+/// Whether the daemon of this machine answers (never a `--remote` one).
+async fn local_daemon_running() -> bool {
+    let Ok(paths) = Paths::from_env() else {
+        return false;
+    };
+    let Ok(endpoint) = read_endpoint(&paths.daemon_endpoint_file()) else {
+        return false;
+    };
+    let me = Peer {
+        name: "imperium-cli".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+    };
+    Client::connect(&endpoint, me).await.is_ok()
 }
 
 fn explain(key: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
