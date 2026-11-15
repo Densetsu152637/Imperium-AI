@@ -41,7 +41,14 @@ Recorded from the user and the plan review (round 1):
    name-collision check to pinned packs. Caveat: the CLI finds the bundled pack by its own
    lookup (see [the policy crate](#decision-the-policy-crate)), so a CLI installed apart from the
    daemon, or run without `IMPERIUM_RESOURCE_DIR`, may find a different bundled pack or none;
-   it prints which one it used.
+   it prints which one it used. Settled when the work started: the aligned command **honours
+   `workflow.enabled`** like the daemon (a turned-off workflow resolves nothing and the command
+   says so), and an explicit **`--pack` stays exclusive**: it replaces `workflow.packs`, the
+   pinned packs and the bundled pack, and the `enabled` switch is not consulted, exactly as
+   today. The new behaviour applies only to the configured path (no `--pack`). A group-0 CLI
+   test (`crates/imperium-cli/tests/workflow_resolve.rs`) pins today's behaviour; the commit
+   that aligns the command rewrites the tests marked "today" in it, so the change is visible in
+   that diff.
 2. **The policy crate** is built as designed [below](#decision-the-policy-crate).
 3. **Errors matched by text** become shared constants; no protocol change.
 4. **Deprecated protocol names** (0.22 `persistent_agent`/`agent_session_id`, 0.31 memory scope
