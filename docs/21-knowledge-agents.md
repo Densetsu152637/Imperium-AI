@@ -1,7 +1,7 @@
 # 21 — Knowledge agents
 
-**Stage 1 implemented** (engine core and contract, protocol 0.38); stages 2 and 3 are designed,
-not built ([roadmap item 45](12-roadmap.md#next-in-order)). Agents of a session can
+**Stages 1 and 2 implemented** (engine core and contract, protocol 0.38; local residency, no
+protocol change); stage 3 is designed, not built ([roadmap item 45](12-roadmap.md#next-in-order)). Agents of a session can
 ask questions of other agents that keep context they already loaded. A research subagent that
 read a module, a specification or a set of pages stays available as a **knowledge agent**: the
 root and other subagents ask it (`ask_agent`) instead of searching and reading the same material
@@ -349,7 +349,7 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
      routes normally; a `routing.knowledge_model` that is turned off, missing or outside the
      catalog falls back like a missing Emperor;
    - the schema drift check passes.
-2. **Local residency (not built).** The `kept` presence kind; the slot saved after every fork, whatever its
+2. **Local residency (implemented).** The `kept` presence kind; the slot saved after every fork, whatever its
    outcome, without erasing its cells; for `kept` holders, `Supervisor::restore` restoring only
    when the leased slot's last holder is someone else or its cells were freed, and keeping the
    file after reading it (removed on retirement or resume); slot files counted against
@@ -427,17 +427,59 @@ design left open, or differs from it:
 - **Staleness note to the root.** A degraded answer's header advises the asker; when the asker is
   not the root, the user also gets a notice (the root's context is not changed).
 - **Cost estimate.** `est_question_cost` counts the uncached share of the prefix from
-  `last_cached_ratio` plus a typical question and answer; the provider cache-lifetime rule is
-  stage 2.
+  `last_cached_ratio` plus a typical question and answer (the cache-lifetime rule is in
+  [stage 2 as built](#stage-2-as-built)).
 - **Asker and local slots.** An asker on a local model sleeps (`LocalModels::waiting`) while it
-  waits, as in `await_tasks`; keeping its slot when a free one exists is stage 2. A fork already
-  uses the knowledge agent's holder, and a local model answers one question at a time.
+  waits, as in `await_tasks`, unless stage 2 lets it keep its slot. A fork uses the knowledge
+  agent's holder, and a local model answers one question at a time.
 - **No usage-limit waits in a fork.** A fork that hits a provider usage limit fails the question
   rather than waiting for the reset; the asker's budget and limits are the ordinary ones.
-- **Not built, by design of the stages:** the `kept` presence kind, saving the slot after each fork
-  and the restore rule, `knowledge.slot_cache_share` (stored, not read), the Agents panel, the
+- **Not built in stage 1:** local residency (built in stage 2), the Agents panel, the
   `/agents` cards, the root and subagent prompt lines, `brief.md`, Emperor's root prompt and the
   eval case.
+
+## Stage 2 as built
+
+Local residency is built in `imperium-local` and used by the engine through five new defaulted
+methods of `LocalModels` (`keep`, `save_kept`, `drop_saved`, `fork_fits`, and the two readings
+`swap_cache_bytes` and `kv_bytes_per_token`); no protocol type changed. Tests:
+`crates/imperium-local/tests/kept.rs`, the unit tests in `supervisor.rs` and `slot_files.rs`, and the
+local-runtime tests at the end of `crates/imperium-engine/tests/knowledge.rs`.
+
+- **`kept` presence.** `keep(model, holder)` returns a presence held from promotion (and taken
+  again at the first question after a restart) until the agent is retired. It counts in two places
+  only: `save_slots` saves a kept holder's slot on a swap or an idle unload, and `SlotFiles::trim`
+  drops the files of holders that cannot come back before it. It never pins a model, is neither
+  working nor waiting (`claims`, `critic_may_have_gpu`, `yield_waiters`, the idle unload and the
+  swap policy look at those two only), and a model whose only presence is `kept` is swapped or
+  unloaded as an idle one.
+- **Saving after every fork.** When a fork ends, whatever the outcome (answered, timed out,
+  cancelled or failed; a question refused before any call has nothing to save), the engine calls
+  `save_kept`: the holder's slot is written to its file with its cells left in place (reported as a
+  `save_slot` move with the reason `kept`). It is skipped when another agent has already taken the
+  slot, or slots are not saved.
+- **Restoring only when needed.** The slot table says whether the slot a lease got still holds its
+  holder's own cells (it used the slot last and the slot was not reserved for a restore or erased).
+  For a kept holder, `Supervisor::restore` does nothing in that case (no `RestoreSlot` move) and
+  otherwise restores from the saved file, which stays after it is read. Other holders keep today's
+  behaviour.
+- **File lifetime.** A kept holder's file is removed by `drop_saved`, which the engine calls when the
+  agent is retired and when it is resumed (its prefix changes), and by trim under its priority.
+- **Slot cache share.** Promoting a local agent is refused, with the list oldest asked first, when
+  the saved slots of the session's local knowledge agents (each `context_tokens` times the
+  model's KV bytes per token) would exceed `knowledge.slot_cache_share` of `swap_cache_mb`. The
+  check is skipped when slots are not saved or the model's KV size is unknown.
+- **Asker keeps its slot.** An asker on a local model stays awake while the fork runs on a hosted
+  model, or on a loaded local model with a slot free for it (beside the asker's own when it is the
+  same model: `fork_fits`); otherwise it is marked asleep as in stage 1. The fit is judged when
+  the question starts.
+- **Cache lifetime.** On a hosted model, `est_question_cost` prices the whole prefix uncached when
+  the last question is older than the model's cache lifetime: `cache_lifetime_s` on its row of the
+  model table, else 5 minutes. A card never asked has no cached share to lose, so it is priced
+  uncached anyway. The estimate is recomputed when `session.agents` or `list_knowledge_agents` reads
+  the card, not stored.
+- **Replay time.** A replayed journal dates each turn by the time the journal recorded, so a staleness
+  mark from before a restart keeps its meaning; a turn without a known time marks nothing.
 
 ## Settings
 

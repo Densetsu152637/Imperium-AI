@@ -1742,6 +1742,10 @@ pub struct CatalogEntry {
     /// tasks that take minutes. Only valid with `placement = "cpu"`.
     #[serde(default)]
     pub max_wait_s: Option<u64>,
+    /// How long (seconds) a hosted provider keeps a prompt cached for this model, which a
+    /// knowledge agent's cost estimate uses (docs/21); unset, 5 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_lifetime_s: Option<u32>,
     /// False leaves the row out of routing.
     #[serde(default = "default_enabled")]
     pub enabled: bool,

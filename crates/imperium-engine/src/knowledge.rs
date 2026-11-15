@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use imperium_api::truncate_chars;
+use imperium_api::{LocalPresence, truncate_chars};
 use imperium_config::KnowledgeSettings;
 use imperium_models::{ChatMessage, Usage};
 use imperium_protocol::session::{
@@ -37,6 +37,8 @@ const MAX_SOURCES: usize = 50;
 const ANSWER_CHARS: usize = 8_000;
 /// Longest question or answer in an event, in characters.
 const EVENT_CHARS: usize = 2_000;
+/// How long a hosted provider keeps a prompt cached when the model table does not say, in seconds.
+const DEFAULT_CACHE_LIFETIME_S: u64 = 300;
 /// What a typical question and its answer take, in tokens, for a card's cost estimate.
 const TYPICAL_QUESTION_TOKENS: u64 = 300;
 const TYPICAL_ANSWER_TOKENS: u64 = 500;
@@ -60,6 +62,9 @@ pub struct KnowledgeConfig {
     pub settings: KnowledgeSettings,
     /// Checks a knowledge agent's model before each question (`None`: the engine's own checks).
     pub models: Option<Arc<dyn ModelAvailability>>,
+    /// How long a hosted provider keeps a prompt cached, in seconds, by model spec, from the
+    /// model table; a model not listed is taken to keep it for 5 minutes.
+    pub cache_lifetime_s: HashMap<String, u64>,
 }
 
 /// Why a question was stopped before it was answered.
@@ -112,6 +117,8 @@ pub(crate) struct Knowledge {
     last_asked: Mutex<HashMap<String, u64>>,
     /// Subagents spawned with `knowledge`, by task id, with the topic to keep them under.
     pending: Mutex<HashMap<String, String>>,
+    /// The presence of each knowledge agent kept on a local model, until it is retired.
+    kept: Mutex<HashMap<String, LocalPresence>>,
 }
 
 impl Knowledge {
@@ -122,6 +129,7 @@ impl Knowledge {
             next_question: AtomicU64::new(0),
             last_asked: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            kept: Mutex::new(HashMap::new()),
         }
     }
 
@@ -149,6 +157,8 @@ impl Knowledge {
     fn forget_lane(&self, id: &str) {
         lock(&self.lanes).remove(id);
         lock(&self.last_asked).remove(id);
+        // Dropping the presence says to the runtime that the agent is no longer kept.
+        lock(&self.kept).remove(id);
     }
 
     /// Notes that the subagent `task` is kept as knowledge under `topic` when it succeeds.
@@ -203,12 +213,19 @@ fn window_of(shared: &Shared, model: &ResolvedModel) -> u64 {
 
 /// What a card says one question costs: the uncached share of the prefix plus a typical
 /// question and answer.
+/// A prompt cache the provider dropped (`expired`) holds none of the prefix.
 fn question_cost(
     context: u64,
     cached_ratio: Option<f64>,
     model: &ResolvedModel,
+    expired: bool,
 ) -> Option<QuestionCost> {
-    let cached = (context as f64 * cached_ratio.unwrap_or(0.0).clamp(0.0, 1.0)) as u64;
+    let ratio = if expired {
+        0.0
+    } else {
+        cached_ratio.unwrap_or(0.0).clamp(0.0, 1.0)
+    };
+    let cached = (context as f64 * ratio) as u64;
     let usage = Usage {
         prompt_tokens: context + TYPICAL_QUESTION_TOKENS,
         completion_tokens: TYPICAL_ANSWER_TOKENS,
@@ -318,7 +335,8 @@ pub(crate) fn sources_of(
         } else {
             (None, None)
         };
-        let stale = modified_ms.is_some_and(|modified| modified > since_ms);
+        // A turn whose start is unknown (0) marks nothing.
+        let stale = since_ms > 0 && modified_ms.is_some_and(|modified| modified > since_ms);
         found.push(KnowledgeSource {
             kind,
             target,
@@ -527,6 +545,7 @@ pub(crate) fn promote(
             model.spec
         ));
     }
+    check_slot_share(shared, &cards, &model, context)?;
     let (sources, more_sources) = sources_of(
         &shared.workspace,
         &conversation,
@@ -544,7 +563,7 @@ pub(crate) fn promote(
         untrusted: untrusted_of(&conversation),
         context_tokens: context,
         context_window: Some(window),
-        est_question_cost: question_cost(context, None, &model),
+        est_question_cost: question_cost(context, None, &model, false),
         last_cached_ratio: None,
         questions: 0,
         usage: TokenUsage::default(),
@@ -555,6 +574,7 @@ pub(crate) fn promote(
     };
     shared.agents.set_knowledge(agent_id, card.clone(), frozen);
     shared.knowledge.lane(agent_id, model.local);
+    keep_resident(shared, agent_id, &model);
     shared.emitter.emit(
         agent_id,
         SessionEvent::KnowledgeChanged {
@@ -564,6 +584,109 @@ pub(crate) fn promote(
         },
     );
     Ok(card)
+}
+
+/// Tells the local runtime that a knowledge agent on a local model is kept, so its slot is saved
+/// when the model is swapped out or unloaded; held until it is retired.
+fn keep_resident(shared: &Shared, agent_id: &str, model: &ResolvedModel) {
+    if !model.local {
+        return;
+    }
+    let Some(local) = shared.local.as_deref() else {
+        return;
+    };
+    let holder = imperium_api::holder(&shared.session_id, agent_id);
+    lock(&shared.knowledge.kept)
+        .entry(agent_id.to_string())
+        .or_insert_with(|| local.keep(&model.model, &holder));
+}
+
+/// Removes a knowledge agent's saved slots from the runtime: it was retired, or resumed (its
+/// prefix changes).
+fn drop_saved(shared: &Shared, agent_id: &str) {
+    if let Some(local) = shared.local.as_deref() {
+        local.drop_saved(&imperium_api::holder(&shared.session_id, agent_id));
+    }
+}
+
+/// Local knowledge agents keep a saved slot each, sized from their context: together they may
+/// take `knowledge.slot_cache_share` of the saved-slot cache (`swap_cache_mb`). Refused with
+/// the list, oldest asked first, when another would not fit.
+fn check_slot_share(
+    shared: &Shared,
+    cards: &[KnowledgeCard],
+    model: &ResolvedModel,
+    context: u64,
+) -> Result<(), String> {
+    if !model.local {
+        return Ok(());
+    }
+    let Some(local) = shared.local.as_deref() else {
+        return Ok(());
+    };
+    let Some(cache) = local.swap_cache_bytes() else {
+        return Ok(());
+    };
+    let share = shared.knowledge.settings().slot_cache_share.clamp(0.0, 1.0);
+    let budget = (cache as f64 * share) as u64;
+    let bytes = |model: &ResolvedModel, tokens: u64| {
+        local
+            .kv_bytes_per_token(&model.model)
+            .map_or(0, |per_token| per_token.saturating_mul(tokens))
+    };
+    let asked = lock(&shared.knowledge.last_asked);
+    let mut used = 0u64;
+    let mut listed: Vec<(u64, String)> = Vec::new();
+    for card in cards.iter().filter(|card| card.local) {
+        let Some(kept) = model_of(shared, &card.agent_id, &card.model) else {
+            continue;
+        };
+        used = used.saturating_add(bytes(&kept, card.context_tokens));
+        listed.push((
+            asked.get(&card.agent_id).copied().unwrap_or(0),
+            format!("{} ({})", card.agent_id, card.topic),
+        ));
+    }
+    let need = bytes(model, context);
+    if used.saturating_add(need) <= budget {
+        return Ok(());
+    }
+    listed.sort();
+    Err(format!(
+        "the saved slots of this session's local knowledge agents would take about {} MB, over \
+         knowledge.slot_cache_share of swap_cache_mb ({} MB); retire one first, oldest asked \
+         first: {}",
+        used.saturating_add(need) / (1024 * 1024),
+        budget / (1024 * 1024),
+        listed
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>()
+            .join("; ")
+    ))
+}
+
+/// The card's cost estimate as it is now: on a hosted model, a prompt cache the provider dropped
+/// since the last question (older than its cache lifetime, 5 minutes unless the model table says
+/// otherwise) holds none of the prefix, so the whole of it is priced uncached.
+pub(crate) fn refresh_estimate(shared: &Shared, card: &mut KnowledgeCard) {
+    let Some(model) = model_of(shared, &card.agent_id, &card.model) else {
+        return;
+    };
+    let lifetime_ms = shared
+        .knowledge
+        .config
+        .cache_lifetime_s
+        .get(&model.spec)
+        .copied()
+        .unwrap_or(DEFAULT_CACHE_LIFETIME_S)
+        .saturating_mul(1000);
+    let expired = !model.local
+        && lock(&shared.knowledge.last_asked)
+            .get(&card.agent_id)
+            .is_some_and(|at| now_ms().saturating_sub(*at) >= lifetime_ms);
+    card.est_question_cost =
+        question_cost(card.context_tokens, card.last_cached_ratio, &model, expired);
 }
 
 /// Keeps a subagent spawned with `knowledge` once its first turn succeeded; says why not in a
@@ -588,6 +711,7 @@ pub(crate) fn retire(shared: &Arc<Shared>, agent_id: &str) -> Result<(), String>
         return Err(format!("{agent_id} is not a knowledge agent"));
     }
     shared.knowledge.forget_lane(agent_id);
+    drop_saved(shared, agent_id);
     shared.emitter.emit(
         agent_id,
         SessionEvent::KnowledgeChanged {
@@ -610,6 +734,8 @@ pub(crate) fn resumed(shared: &Arc<Shared>, agent_id: &str) {
     };
     let lane = shared.knowledge.lane(agent_id, card.local);
     lane.busy.send_replace(true);
+    // Its conversation grows, so the saved prefix is out of date.
+    drop_saved(shared, agent_id);
     changed(shared, agent_id, &lane);
 }
 
@@ -677,7 +803,7 @@ pub(crate) fn finished(shared: &Arc<Shared>, agent_id: &str, ok: bool) {
         card.context_tokens = context;
         card.context_window = Some(window);
         card.stale_fraction = stale_fraction;
-        card.est_question_cost = question_cost(context, card.last_cached_ratio, &model);
+        card.est_question_cost = question_cost(context, card.last_cached_ratio, &model, false);
         card.status = lane.status();
         card.queued = lane.waiting.load(Ordering::SeqCst);
     });
@@ -807,6 +933,9 @@ pub(crate) fn list(shared: &Arc<Shared>, query: Option<&str>) -> String {
     let mut cards = shared.agents.knowledge_cards();
     if cards.is_empty() {
         return "No knowledge agents in this session.".into();
+    }
+    for card in &mut cards {
+        refresh_estimate(shared, card);
     }
     if let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) {
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
@@ -1191,7 +1320,8 @@ async fn run_question(
         if cached_ratio.is_some() {
             card.last_cached_ratio = cached_ratio;
             if let Some(model) = &model {
-                card.est_question_cost = question_cost(card.context_tokens, cached_ratio, model);
+                card.est_question_cost =
+                    question_cost(card.context_tokens, cached_ratio, model, false);
             }
         }
     });
@@ -1338,6 +1468,8 @@ async fn answer_in_lane(
             model.spec
         )));
     }
+    // A knowledge agent on a local model stays kept after a restart too.
+    keep_resident(shared, target, &model);
     // Which sources changed since they were read.
     let mut sources = source.card.sources.clone();
     let (stale, fraction) = check_stale(&shared.workspace, &mut sources);

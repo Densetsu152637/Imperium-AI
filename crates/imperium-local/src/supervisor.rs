@@ -424,7 +424,7 @@ impl SlotTable {
     /// The free slot `holder` used last, if nobody has used it since; otherwise the one that
     /// has been free the longest, so the prompts most recently used survive the longest, and
     /// one kept for another holder's saved prompt only when no other is free.
-    fn take(&mut self, holder: &str) -> Option<u32> {
+    fn take(&mut self, holder: &str) -> Option<(u32, bool)> {
         let own = self
             .free
             .iter()
@@ -435,8 +435,12 @@ impl SlotTable {
                 .position(|&slot| !self.reserved[slot as usize])
         };
         let slot = self.free.remove(own.or_else(unreserved).unwrap_or(0))?;
+        // Its cells are the holder's own when it used the slot last and nothing replaced them
+        // since (a reserved slot waits for a restore, an erased one holds nobody's prompt).
+        let intact = self.last_holder[slot as usize].as_deref() == Some(holder)
+            && !self.reserved[slot as usize];
         self.reserved[slot as usize] = false;
-        Some(slot)
+        Some((slot, intact))
     }
 
     /// Takes the free slot holding `holder`'s prompt, if one does, to suspend it.
@@ -587,13 +591,13 @@ impl SlotPool {
         granted: Granted,
         holder: &str,
         priority: Priority,
-    ) -> Result<LocalLease, String> {
+    ) -> Result<(LocalLease, bool), String> {
         let Granted {
             slot: permit,
             tokens,
             max_tokens,
         } = granted;
-        let index = lock(&self.table)
+        let (index, intact) = lock(&self.table)
             .take(holder)
             .ok_or("a slot permit was granted with no free slot")?;
         let interactive = priority == Priority::Interactive;
@@ -601,7 +605,7 @@ impl SlotPool {
             self.held_interactive.fetch_add(1, Ordering::SeqCst);
             *lock(&self.last_interactive) = Some(Instant::now());
         }
-        Ok(LocalLease::new(
+        let lease = LocalLease::new(
             self.base_url.clone(),
             self.pins_slots.then_some(index),
             max_tokens.filter(|_| tokens.is_some()),
@@ -613,7 +617,8 @@ impl SlotPool {
                 _permit: permit,
                 _tokens: tokens,
             },
-        ))
+        );
+        Ok((lease, intact))
     }
 
     /// Whether one of the user's own calls held a slot within `within`, or holds one now.
@@ -765,6 +770,7 @@ impl Loaded {
         Restore {
             server: Arc::clone(&self.server),
             key: self.key,
+            intact: false,
         }
     }
 }
@@ -773,6 +779,8 @@ impl Loaded {
 struct Restore {
     server: Arc<dyn Server>,
     key: Option<u64>,
+    /// The leased slot still held the holder's own cells.
+    intact: bool,
 }
 
 /// A call for a model, in arrival order.
@@ -942,12 +950,18 @@ struct User {
     working: u32,
     /// `await_tasks` calls in progress.
     waiting: u32,
+    /// Kept as a knowledge agent (docs/21-knowledge-agents.md): its slot is saved when the model
+    /// is swapped out or unloaded, and its saved file is trimmed after those of agents that
+    /// cannot come back. It counts nowhere else: it is not mid-turn and not asleep, so it pins
+    /// nothing and no yield or critic decision looks at it.
+    kept: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum Mark {
     Working,
     Waiting,
+    Kept,
 }
 
 impl Presence {
@@ -965,6 +979,7 @@ impl Presence {
             match mark {
                 Mark::Working => user.working += 1,
                 Mark::Waiting => user.waiting += 1,
+                Mark::Kept => user.kept += 1,
             }
         }
         changed.notify_waiters();
@@ -1029,8 +1044,9 @@ impl Drop for Present {
                 match self.mark {
                     Mark::Working => user.working = user.working.saturating_sub(1),
                     Mark::Waiting => user.waiting = user.waiting.saturating_sub(1),
+                    Mark::Kept => user.kept = user.kept.saturating_sub(1),
                 }
-                if user.working == 0 && user.waiting == 0 {
+                if user.working == 0 && user.waiting == 0 && user.kept == 0 {
                     users.remove(&self.holder);
                 }
             }
@@ -2599,7 +2615,8 @@ impl Supervisor {
                             tokens,
                             max_tokens: reservation.max_tokens,
                         };
-                        Step::Leased(pool.lease(granted, holder, priority)?, restore)
+                        let (lease, intact) = pool.lease(granted, holder, priority)?;
+                        Step::Leased(lease, Restore { intact, ..restore })
                     }
                     Err(_) if priority == Priority::Interactive => {
                         Step::Queued(Queued::new(pool, tokens, &reservation))
@@ -2635,7 +2652,8 @@ impl Supervisor {
             state.set_admitted(seq, false);
             return Ok(None);
         };
-        Ok(Some((pool.lease(granted, holder, priority)?, restore)))
+        let (lease, intact) = pool.lease(granted, holder, priority)?;
+        Ok(Some((lease, Restore { intact, ..restore })))
     }
 
     /// Decides, with loads held for this call, whether to load `model` now and what to swap
@@ -2999,7 +3017,7 @@ impl Supervisor {
             tokens,
             max_tokens: reservation.max_tokens,
         };
-        let lease = pool.lease(granted, holder, priority)?;
+        let (lease, _) = pool.lease(granted, holder, priority)?;
         // Settings changed while it loaded: it serves this call, then restarts once free.
         let now = self.launch(&model.id);
         let stale = launch.restarts_for(&now);
@@ -3045,7 +3063,11 @@ impl Supervisor {
                 reason: if replaced { "swap" } else { "restore" },
             });
         }
-        let restore = Restore { server, key };
+        let restore = Restore {
+            server,
+            key,
+            intact: false,
+        };
         Ok(self.restore(&model.id, holder, lease, restore, cause).await)
     }
 
@@ -3323,6 +3345,80 @@ impl Supervisor {
         kept
     }
 
+    /// Saves `holder`'s slot on the loaded model `model` to disk and leaves its cells where
+    /// they are, for a knowledge agent whose fork just ended (whatever the outcome): its prompt
+    /// is then restorable if another agent takes the slot. Nothing happens when slots are not
+    /// saved, the model is not loaded, or the holder's prompt is no longer in a free slot.
+    pub async fn save_kept_slot(&self, model: &str, holder: &str) -> bool {
+        let Some(files) = &self.slot_files else {
+            return false;
+        };
+        let found = {
+            let mut state = lock(&self.state);
+            let found = state.loaded.get(model).and_then(|entry| {
+                let key = entry.key?;
+                let permit = Arc::clone(&entry.pool.permits).try_acquire_owned().ok()?;
+                let slot = lock(&entry.pool.table).take_own(holder)?;
+                Some((
+                    Arc::clone(&entry.server),
+                    Arc::clone(&entry.pool),
+                    key,
+                    slot,
+                    permit,
+                ))
+            });
+            if found.is_some() {
+                state.saving.insert((model.to_string(), holder.to_string()));
+            }
+            found
+        };
+        let Some((server, pool, key, slot, _permit)) = found else {
+            return false;
+        };
+        let _saving = SavingMark {
+            supervisor: self,
+            model,
+            holder,
+        };
+        let action = Action::SaveSlot {
+            model: model.to_string(),
+            holder: holder.to_string(),
+        };
+        let started = Instant::now();
+        let present: HashSet<String> = lock(&self.presence.users).keys().cloned().collect();
+        let file = SlotFiles::file_name(key, holder);
+        let unrecorded = Forget { files, holder, key };
+        let saved = match server.save_slot(slot, &file).await {
+            Ok(saved) => {
+                lock(files).record(
+                    Saved {
+                        holder: holder.to_string(),
+                        key,
+                        slot,
+                        file,
+                        bytes: saved.bytes,
+                    },
+                    |other| present.contains(other),
+                );
+                unrecorded.keep();
+                self.record(
+                    Move::done(action, Reason::Kept)
+                        .took(started.elapsed().as_secs_f64(), saved.bytes),
+                );
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%holder, slot, %error, "could not save a knowledge agent's slot");
+                self.record(Move::failed(action, Reason::Kept, error));
+                false
+            }
+        };
+        // Its cells are untouched, so the slot is still the holder's prompt.
+        lock(&pool.table).give_back_suspended(slot, holder, false);
+        self.changed.notify_waiters();
+        saved
+    }
+
     /// Restores `holder`'s saved slot, if it has one for this server's model, into the slot it
     /// was just leased, before the lease is used.
     async fn restore(
@@ -3340,11 +3436,20 @@ impl Supervisor {
         let Some(saved) = lock(files).find(holder, key) else {
             return lease;
         };
+        // A knowledge agent's slot is restored only when its cells are gone: the slot it got
+        // still holds its prompt (a hot hit), so nothing is read and the file stays.
+        let kept = lock(&self.presence.users)
+            .get(holder)
+            .is_some_and(|user| user.kept > 0);
+        if kept && restore.intact {
+            return lease;
+        }
         // Cleared when the call's wait ends (see `Waiting`).
         lock(&self.waits).insert(holder.to_string(), LocalWait::RestoringContext);
         // It stays recorded while it is read, and is forgotten with its file once read, failed,
-        // or cancelled, so no file is left on disk outside the index.
-        let _forget = Forget { files, holder, key };
+        // or cancelled, so no file is left on disk outside the index. A kept holder's file
+        // outlives the restore: the next interference restores it again.
+        let forget = Forget { files, holder, key };
         let action = Action::RestoreSlot {
             model: model.to_string(),
             holder: holder.to_string(),
@@ -3356,6 +3461,9 @@ impl Supervisor {
                 self.record(
                     Move::done(action, cause).took(started.elapsed().as_secs_f64(), restored.bytes),
                 );
+                if kept {
+                    forget.keep();
+                }
             }
             Err(error) => {
                 tracing::warn!(%holder, slot, %error, "could not restore a saved slot; its prompt will be read again");
@@ -3750,6 +3858,49 @@ impl LocalModels for Supervisor {
             .enter(&self.changed, model, holder, Mark::Waiting)
     }
 
+    fn keep(&self, model: &str, holder: &str) -> LocalPresence {
+        self.presence
+            .enter(&self.changed, model, holder, Mark::Kept)
+    }
+
+    fn save_kept<'a>(&'a self, model: &'a str, holder: &'a str) -> SuspendFuture<'a> {
+        Box::pin(async move {
+            self.save_kept_slot(model, holder).await;
+        })
+    }
+
+    fn drop_saved(&self, holder: &str) {
+        if let Some(files) = &self.slot_files {
+            lock(files).forget_holder(holder);
+        }
+    }
+
+    fn fork_fits(&self, asker_model: &str, fork_model: &str) -> bool {
+        let state = lock(&self.state);
+        let Some(entry) = state.loaded.get(fork_model) else {
+            return false;
+        };
+        // The asker's own slot is free while it waits, so a fork on the same model needs one
+        // more beside it.
+        let needed = if asker_model == fork_model { 2 } else { 1 };
+        entry.pool.permits.available_permits() >= needed
+    }
+
+    fn swap_cache_bytes(&self) -> Option<u64> {
+        self.slot_files
+            .as_ref()
+            .map(|files| lock(files).capacity_bytes())
+    }
+
+    fn kv_bytes_per_token(&self, id: &str) -> Option<u64> {
+        let model = self.model(id)?;
+        let launch = self.launch(id);
+        model.info.kv_bytes_per_token_kv(
+            crate::planner::cache_element_bytes(&launch.cache_type_k),
+            crate::planner::cache_element_bytes(&launch.cache_type_v),
+        )
+    }
+
     fn suspended(&self, holder: &str) -> bool {
         self.slot_files
             .as_ref()
@@ -3803,6 +3954,63 @@ impl LocalModels for Supervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A knowledge agent's `kept` mark is neither working nor waiting: the critic's placement
+    /// and the other session's "mid-turn" test look at those two only.
+    #[test]
+    fn a_kept_agent_counts_for_neither_the_critic_nor_the_working_sessions() {
+        let mut users: HashMap<String, User> = HashMap::new();
+        users.insert(
+            "mine/t1".into(),
+            User {
+                model: "m".into(),
+                kept: 1,
+                ..User::default()
+            },
+        );
+        assert!(!critic_may_have_gpu(&users, "mine"));
+        assert!(!other_session_working(&users, "theirs"));
+        // The same agent waiting is what the critic looks for, and working is what blocks it.
+        users.get_mut("mine/t1").unwrap().waiting = 1;
+        assert!(critic_may_have_gpu(&users, "mine"));
+        users.insert(
+            "theirs/t1".into(),
+            User {
+                model: "m".into(),
+                working: 1,
+                ..User::default()
+            },
+        );
+        assert!(!critic_may_have_gpu(&users, "mine"));
+        assert!(other_session_working(&users, "mine"));
+    }
+
+    #[test]
+    fn a_slot_is_intact_only_for_the_holder_that_used_it_last() {
+        let mut table = SlotTable::new(2);
+        let (slot, intact) = table.take("a").unwrap();
+        assert!(!intact, "nobody's prompt was there");
+        table.give_back(slot, "a");
+        let (again, intact) = table.take("a").unwrap();
+        assert_eq!((again, intact), (slot, true));
+        table.give_back(again, "a");
+        // Another holder takes the slot and the cells change hands.
+        let (other, _) = table.take("b").unwrap();
+        let (third, _) = table.take("c").unwrap();
+        table.give_back(other, "b");
+        table.give_back(third, "c");
+        let (_, intact) = table.take("a").unwrap();
+        assert!(!intact);
+        // Reserved for a restore, or erased: not intact either.
+        let mut table = SlotTable::new(1);
+        assert!(table.reserve(0, "a"));
+        assert!(!table.take("a").unwrap().1);
+        table.give_back(0, "a");
+        let slot = table.take_own("a").unwrap();
+        table.give_back_suspended(slot, "a", true);
+        assert!(!table.take("a").unwrap().1);
+    }
+
     use crate::backend::{LlamaCpp, Vllm};
     use crate::gguf::GgufInfo;
     use crate::hardware::Gpu;

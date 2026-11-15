@@ -2071,6 +2071,16 @@ impl DaemonState {
                 models: Some(Arc::new(crate::knowledge::ModelSwitch::new(
                     self.me.clone(),
                 ))),
+                cache_lifetime_s: settings
+                    .models
+                    .catalog
+                    .iter()
+                    .filter_map(|entry| {
+                        entry
+                            .cache_lifetime_s
+                            .map(|seconds| (entry.spec.clone(), u64::from(seconds)))
+                    })
+                    .collect(),
             },
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;

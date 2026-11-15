@@ -88,6 +88,22 @@ impl SlotFiles {
             .cloned()
     }
 
+    /// The bytes the folder may hold.
+    pub fn capacity_bytes(&self) -> u64 {
+        self.capacity_bytes
+    }
+
+    /// Removes every saved slot of `holder`, on any model, with its file.
+    pub fn forget_holder(&mut self, holder: &str) {
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.saved)
+            .into_iter()
+            .partition(|saved| saved.holder == holder);
+        self.saved = kept;
+        for saved in gone {
+            remove(&self.dir.join(saved.file));
+        }
+    }
+
     /// Whether a slot of `holder`'s is saved, on any model.
     pub fn holds(&self, holder: &str) -> bool {
         self.saved.iter().any(|saved| saved.holder == holder)
@@ -193,6 +209,23 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgetting_a_holder_removes_its_files_on_every_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut files = SlotFiles::open(dir.path().to_path_buf(), 1 << 30).unwrap();
+        for (holder, key) in [("s/a", 1), ("s/a", 2), ("s/b", 1)] {
+            std::fs::write(dir.path().join(SlotFiles::file_name(key, holder)), b"kv").unwrap();
+            files.record(saved(holder, key, 10), |_| true);
+        }
+        assert_eq!(files.capacity_bytes(), 1 << 30);
+        files.forget_holder("s/a");
+        assert!(!files.holds("s/a"));
+        assert!(files.holds("s/b"));
+        assert!(!dir.path().join(SlotFiles::file_name(1, "s/a")).exists());
+        assert!(!dir.path().join(SlotFiles::file_name(2, "s/a")).exists());
+        assert!(dir.path().join(SlotFiles::file_name(1, "s/b")).exists());
+    }
 
     fn saved(holder: &str, key: u64, bytes: u64) -> Saved {
         Saved {

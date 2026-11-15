@@ -242,15 +242,15 @@ notice; plan mode refuses a writer, and a rule denying `git_commit` keeps its ch
 uncommitted in its worktree. Details, placement and cleanup:
 [worktrees](14-projects-and-automation.md#worktrees).
 
-### Knowledge agents (stage 1 implemented)
+### Knowledge agents (stages 1 and 2 implemented)
 
 A finished subagent the root (or the user) keeps as a **knowledge agent** answers questions from
 the root and other subagents with `ask_agent`, each in an ephemeral fork that sends its kept
 conversation, system message and tool list unchanged (so a local model's cached prompt is
 reused) and may call only read and web tools, checked at dispatch. Context one research agent
 loaded is reused instead of reloaded by every implementer. Knowledge agents never ask in turn,
-writers are not promotable, and nothing from a question is kept. Stage 1 (the tools, forks, framing,
-events and settings) is built; local residency and the clients are not. Design, safety rules and
+writers are not promotable, and nothing from a question is kept. Stages 1 (the tools, forks, framing,
+events and settings) and 2 (local residency) are built; the clients are not. Design, safety rules and
 build order: [21](21-knowledge-agents.md) (roadmap item 45).
 
 ### Choosing a model

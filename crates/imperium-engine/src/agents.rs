@@ -200,13 +200,21 @@ impl AgentStore {
     /// resumed session (`load`), the records kept in `dir`. Kept records win over the journal:
     /// they hold the conversations, and are written at least as often.
     pub fn open(dir: Option<PathBuf>, history: &[AgentEvent], load: bool) -> Self {
+        let timed: Vec<(u64, AgentEvent)> =
+            history.iter().map(|event| (0, event.clone())).collect();
+        Self::open_timed(dir, &timed, load)
+    }
+
+    /// [`AgentStore::open`] with the time each event was journalled (0: unknown), so a turn
+    /// that is replayed is dated by when it happened rather than when it was replayed.
+    pub fn open_timed(dir: Option<PathBuf>, history: &[(u64, AgentEvent)], load: bool) -> Self {
         let store = AgentStore {
             dir,
             state: Mutex::default(),
         };
         lock(&store.state).replaying = true;
-        for event in history {
-            store.observe(event);
+        for (at_ms, event) in history {
+            store.observe_at(event, *at_ms);
         }
         let mut state = lock(&store.state);
         state.replaying = false;
@@ -516,6 +524,11 @@ impl AgentStore {
 
     /// Follows an event into the agent records it changes.
     pub fn observe(&self, event: &AgentEvent) {
+        self.observe_at(event, now_ms());
+    }
+
+    /// [`AgentStore::observe`] for an event that happened at `at_ms` (0: unknown).
+    fn observe_at(&self, event: &AgentEvent, at_ms: u64) {
         let agent = event.agent_id.as_str();
         // A question's fork is not an agent: its tool events carry a derived id and make no
         // record.
@@ -589,7 +602,7 @@ impl AgentStore {
                     }
                 };
                 record.summary.turns += 1;
-                record.turn_started_ms = now_ms();
+                record.turn_started_ms = at_ms;
                 record.summary.status = AgentStatus::Running;
                 Some(agent)
             }
@@ -756,6 +769,37 @@ mod tests {
                 },
             ),
         ]
+    }
+
+    #[test]
+    fn a_replayed_turn_is_dated_by_the_journal_not_by_the_replay() {
+        let mut timed: Vec<(u64, AgentEvent)> =
+            journal().into_iter().map(|event| (1_000, event)).collect();
+        timed.push((
+            2_345,
+            event(
+                "t1",
+                SessionEvent::TurnStarted {
+                    text: "a later turn".into(),
+                    attachments: Vec::new(),
+                },
+            ),
+        ));
+        let store = AgentStore::open_timed(None, &timed, true);
+        assert_eq!(store.turn_started_ms("t1"), 2_345);
+        // A journal line without a time marks nothing.
+        let untimed = AgentStore::open(None, &journal(), true);
+        assert_eq!(untimed.turn_started_ms("t1"), 0);
+        // A turn that starts now is dated now.
+        let live = AgentStore::open(None, &journal(), true);
+        live.observe(&event(
+            "t1",
+            SessionEvent::TurnStarted {
+                text: "now".into(),
+                attachments: Vec::new(),
+            },
+        ));
+        assert!(live.turn_started_ms("t1") > 1_000_000_000_000);
     }
 
     #[test]

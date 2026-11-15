@@ -98,6 +98,9 @@ async fn cancelled(stop: &mut watch::Receiver<Option<Stop>>) {
 /// conversation, unchanged, then the question. Nothing of it is kept.
 pub(crate) async fn run_fork(shared: Arc<Shared>, request: ForkRequest) -> ForkResult {
     let effort = request.frozen.effort.clone();
+    // What the runtime needs to save the slot once the fork is over, however it ends.
+    let local_model = request.model.local.then(|| request.model.model.clone());
+    let holder = imperium_api::holder(&shared.session_id, &request.source_id);
     let ForkRequest {
         fork_id,
         source_id,
@@ -135,6 +138,12 @@ pub(crate) async fn run_fork(shared: Arc<Shared>, request: ForkRequest) -> ForkR
     });
     let result = agent.answer_loop(&tools, max_steps).await;
     shared.inboxes.close(&fork_id);
+    drop(agent);
+    // The slot is saved with its cells in place, so the prefix can be restored if another
+    // agent takes the slot before the next question.
+    if let (Some(model), Some(local)) = (local_model, shared.local.as_deref()) {
+        local.save_kept(&model, &holder).await;
+    }
     result
 }
 
@@ -417,13 +426,18 @@ impl Agent {
             id: self.id.clone(),
             title,
         };
+        let fork_model = self.shared.agents.model(&target.agent_id);
         let mut pending =
             crate::knowledge::start_question(&self.shared, asker, target, question.to_string());
-        // Asleep until the answer arrives: the local runtime may swap this agent's model out
-        // for the fork's and restore it afterwards.
-        let _waiting = self
-            .local_models()
-            .map(|local| local.waiting(&self.model.model, &self.holder()));
+        // Asleep until the answer arrives, so the local runtime may swap this agent's model out
+        // for the fork's and restore it afterwards; but not when the fork runs where it needs
+        // nothing of this agent's slot: hosted, or loaded with a free slot beside it.
+        let asleep = self.local_models().filter(|local| match &fork_model {
+            Some(model) if !model.local => false,
+            Some(model) => !local.fork_fits(&self.model.model, &model.model),
+            None => true,
+        });
+        let _waiting = asleep.map(|local| local.waiting(&self.model.model, &self.holder()));
         let answer = self.wait_for_answer(&mut pending, timeout).await;
         match answer.outcome {
             QuestionOutcome::Answered => Ok(answer.text),
