@@ -171,8 +171,8 @@ async fn it_starts_on_the_first_recording_and_is_reused_after() {
 async fn an_idle_server_stops_and_the_next_recording_starts_a_new_one() {
     let (server, log, _dir) = server(150, 100);
     drop(server.acquire().await.unwrap());
-    until("the idle stop", || !server.status().running).await;
-    assert_eq!(log.stops.load(Ordering::SeqCst), 1);
+    until("the idle stop", || log.stops.load(Ordering::SeqCst) == 1).await;
+    assert!(!server.status().running);
     assert_eq!(
         server.status().last_stop.as_deref(),
         Some("it was idle"),

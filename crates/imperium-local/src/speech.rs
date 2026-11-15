@@ -631,12 +631,19 @@ impl SpeechServer {
 
     /// Stops the running server (if any) and gives its memory back. Call with the gate held.
     async fn stop_running(&self, why: &str) {
-        let running = lock(&self.state).running.take();
+        let running = {
+            let mut state = lock(&self.state);
+            let running = state.running.take();
+            if running.is_some() {
+                state.last_stop = Some(why.to_string());
+            }
+            running
+        };
         let Some(running) = running else {
             return;
         };
         running.process.stop().await;
-        lock(&self.state).last_stop = Some(why.to_string());
+        // Its memory is held until the process is gone.
         self.reserve(0, 0);
         tracing::info!(reason = why, "local speech-to-text stopped");
     }
