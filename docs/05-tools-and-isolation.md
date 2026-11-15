@@ -778,7 +778,8 @@ answers:
   `imperium mods install|update`, which approve code for the desktop app (an agent could pass
   `--yes` to its own prompt; [06](06-extensibility.md#installing-and-updating-mods-implemented)).
   The daemon counts such an approval only from a process of the user's on the local socket (not
-  a descendant of the daemon, not marked as one), so an agent's shell cannot give it
+  a descendant of the daemon, not marked as one), so an agent's shell running the CLI does not
+  give it; an agent that detaches a process and clears its environment can
   ([06](06-extensibility.md#who-may-grant-trust-and-approval-implemented)).
 - Writing into the installed mods (`<config>/mods`) and the daemon's approvals file
   (`mod-approvals.json`), which a mod approval vouches for.

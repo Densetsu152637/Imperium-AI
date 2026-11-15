@@ -195,7 +195,6 @@ pub async fn connect(address: &str, expected_pid: Option<u32>) -> io::Result<Str
     }
 }
 
-/// Refuses a pipe whose server is not process `expected`.
 /// The process id of the client of an accepted connection, as the operating system reports it
 /// (`GetNamedPipeClientProcessId`); `None` for the client's own end or when it cannot say.
 pub fn peer_pid(stream: &Stream) -> Option<u32> {
@@ -210,6 +209,7 @@ pub fn peer_pid(stream: &Stream) -> Option<u32> {
     (found != 0 && client != 0).then_some(client)
 }
 
+/// Refuses a pipe whose server is not process `expected`.
 fn check_server(client: &NamedPipeClient, expected: u32) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     let mut served_by = 0u32;

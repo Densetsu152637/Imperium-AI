@@ -421,9 +421,12 @@ sandbox exists to stop, so the manifest alone never grants it:
   loses it (it is `modified`, with no permissions, and off); a mod without an approval record
   (copied in by hand, or installed by an agent's `install_extension`) is not trusted. An
   installed mod must sit in the folder named for its manifest id (`mods/<id>`, where
-  `imperium mods install` puts it); another folder's mod is not listed, with a problem saying why,
-  so it cannot ride on what an id earned, and the daemon still reads `mods/<id>` once for the
-  hash and for the source it lists (a listing that is not that folder's is `modified`).
+  `imperium mods install` puts it); another folder's mod is not listed, with a problem saying why
+  and to rename the folder to the id, so it cannot ride on what an id earned, and the daemon
+  still reads `mods/<id>` once for the hash and for the source it lists (a listing that is not
+  that folder's is `modified`). **Migration:** a mod you copied in by hand under another folder
+  name stops being listed; rename its folder to its `id` (mods installed by `imperium mods
+  install` or an agent's `install_extension` already are).
   `mods.list` reports `main_context` (what the manifest asks) and `trusted`
   (what the user confirmed for these files, checked intact). A mod whose update newly asks for
   `main_context` is installed sandboxed: trusting it takes a fresh install.
@@ -462,21 +465,39 @@ asking**, using what the operating system says about the caller.
   that process (1) is neither the daemon nor a **descendant** of it (the parent chain is
   walked), and (2) does not carry the `IMPERIUM_SPAWNED_BY_DAEMON` mark in its environment,
   which the daemon sets on every shell it starts for a tool call, a background command or a
-  hook, and which a child keeps when it detaches from its parent (an orphan has no daemon in its
-  chain but keeps its environment). A process that is no longer in the process table is not
-  vouched for.
+  hook, in the OS sandbox and the container runner too, and which a child keeps when it detaches
+  from its parent (an orphan has no daemon in its chain but keeps its environment). The mark is
+  checked on the peer and on every ancestor walked.
+- **It fails closed.** The peer must still be in the process table, not a zombie or dead, and
+  must have started no later than the moment its connection was accepted (so a reused process
+  id is not mistaken for it); its environment must be readable and non-empty. An elevated
+  terminal's environment is not readable by the daemon, so a grant from it is refused: run the
+  command from a terminal of your own privilege. A missing parent ends the walk (on Windows a
+  parent that has exited is no longer linked, so a chain can end early; the mark in the peer's
+  own environment covers that). Any `sshd` among the peer and its ancestors is refused too.
 - A connection over loopback TCP has no process to ask about and never makes a grant (the CLI
   tries the local socket first). A paired phone and a mod frame cannot call `mods.*` at all.
 - **When the check fails:** `trusted` is an error (`trust was not granted`, nothing installed);
   `interactive` is dropped, the mod installs off, and the result's `notes` say so. The result
   carries `interactive` and `trusted` as counted, and the CLI reports those, not what it sent.
-- **What it is not.** The same-user check is the operating system's, but this is not a boundary
-  against an agent that is trying to evade it: one that clears the mark from the environment of
-  a process that also has no daemon ancestor (it detaches first), talks to the daemon some other
-  way, or acts through the user's desktop session, is not caught. It stops the mistake and the
-  plain case, an agent's shell running `imperium mods install --yes`, and it does not depend on
-  the agent being unable to read the token. Isolated tool tiers, the safety floor and the
-  per-agent permission profiles remain the controls for the rest.
+- **What it is not.** Only an agent's shell running the CLI does not give a grant; an agent
+  that detaches a process and clears its environment can. This is not a boundary against one
+  that is trying to evade it: it talks to the daemon some other way, acts through the user's
+  desktop session, or reaches the socket by SSH. A connection by SSH is refused when the CLI runs
+  in an SSH session (`sshd` is among its ancestors, which also covers `ssh localhost`), and
+  from a socket SSH forwards to the daemon (the peer is then `sshd` itself); a grant needs
+  the machine's own terminal. The check does not depend on the agent being unable to read the
+  token. Isolated tool tiers, the safety floor and the per-agent permission profiles remain the
+  controls for the rest.
+- **Required before the main-window loader ships.** The loader must not be built on this check
+  alone. It needs a stronger one first: either confinement the daemon can verify, such as a
+  Windows job object with breakaway disallowed (and `IsProcessInJob` on the caller) or, on
+  Linux, `PR_SET_CHILD_SUBREAPER` so detached descendants stay in the tree, or a confirmation
+  that does not pass through the daemon's protocol at all: a **native, non-webview OS dialog
+  shown by the desktop app**. The native dialog answers the objection to a daemon-owned prompt
+  above, that anything holding the token could answer over the same protocol: nothing but
+  the person at the screen can click a window of the desktop app's own process, and the app can
+  show the content hash it is confirming.
 
 Contribution points: new panels, modules placeable inside any panel
 ([layout](07-desktop-ui.md#modules-inside-panels)), extensions to any panel's slots, panel wrappers and

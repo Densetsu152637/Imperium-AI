@@ -80,9 +80,10 @@ where
         .await
 }
 
-/// The process on the other end of a local-socket connection, when the operating system says.
+/// The process on the other end of a local-socket connection, when the operating system says,
+/// and when (Unix seconds) the connection was accepted, so a reused id can be told from it.
 #[derive(Debug, Clone, Copy)]
-struct PeerPid(Option<u32>);
+struct PeerPid(Option<(u32, u64)>);
 
 impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, IpcListener>>
     for PeerPid
@@ -103,7 +104,11 @@ impl axum::serve::Listener for IpcListener {
         loop {
             match self.0.accept().await {
                 Ok(stream) => {
-                    let peer = PeerPid(imperium_ipc::peer_pid(&stream));
+                    let accepted_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |elapsed| elapsed.as_secs());
+                    let peer =
+                        PeerPid(imperium_ipc::peer_pid(&stream).map(|pid| (pid, accepted_at)));
                     return (stream, peer);
                 }
                 Err(error) => {
@@ -144,7 +149,7 @@ fn authorise(
     state: Arc<ServerState>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
-    peer_pid: Option<u32>,
+    peer: Option<(u32, u64)>,
 ) -> HttpResponse {
     let by_header = headers
         .get(header::AUTHORIZATION)
@@ -167,7 +172,7 @@ fn authorise(
         let announcements = daemon.announcements();
         run_connection(
             socket,
-            Connection::new(daemon).with_peer_pid(peer_pid),
+            Connection::new(daemon).with_peer(peer),
             announcements,
         )
     })

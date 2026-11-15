@@ -76,18 +76,25 @@ pub fn install(
         // gives it.
         let trusted =
             preview.main_context && answer == Answer::Prompted && confirm_trust(&preview)?;
-        let done = client
-            .call::<ModInstall>(ModInstallParams {
-                source,
-                revision,
-                path,
-                sha256: preview.sha256.clone(),
-                permissions: preview.permissions.clone(),
-                replace: false,
-                interactive: answer == Answer::Prompted,
-                trusted,
-            })
-            .await?;
+        let request = |trusted: bool| ModInstallParams {
+            source: source.clone(),
+            revision: revision.clone(),
+            path: path.clone(),
+            sha256: preview.sha256.clone(),
+            permissions: preview.permissions.clone(),
+            replace: false,
+            interactive: answer == Answer::Prompted,
+            trusted,
+        };
+        let done = match client.call::<ModInstall>(request(trusted)).await {
+            // The daemon decides who may grant trust; when it does not count this process, the
+            // mod still installs, in its sandbox.
+            Err(error) if trusted && error.to_string().contains("trust was not granted") => {
+                println!("Note: {error}\nInstalling it in the sandbox instead.");
+                client.call::<ModInstall>(request(false)).await?
+            }
+            other => other?,
+        };
         // What the daemon counted, which is what holds, not what was asked.
         for note in &done.notes {
             println!("Note: {note}");
@@ -170,18 +177,25 @@ pub fn update(id: String, sha256: Option<String>, yes: bool) -> anyhow::Result<(
         if was_trusted && !trusted {
             println!("The updated mod runs in the sandbox, not in the app's own window.");
         }
-        let done = client
-            .call::<ModInstall>(ModInstallParams {
-                source: from.location.clone(),
-                revision: from.requested.clone(),
-                path: from.subdir.clone(),
-                sha256: preview.sha256.clone(),
-                permissions: preview.permissions.clone(),
-                replace: true,
-                interactive,
-                trusted,
-            })
-            .await?;
+        let request = |trusted: bool| ModInstallParams {
+            source: from.location.clone(),
+            revision: from.requested.clone(),
+            path: from.subdir.clone(),
+            sha256: preview.sha256.clone(),
+            permissions: preview.permissions.clone(),
+            replace: true,
+            interactive,
+            trusted,
+        };
+        let done = match client.call::<ModInstall>(request(trusted)).await {
+            // When the daemon does not count this process, the update still goes ahead, in the
+            // sandbox.
+            Err(error) if trusted && error.to_string().contains("trust was not granted") => {
+                println!("Note: {error}\nUpdating it in the sandbox instead.");
+                client.call::<ModInstall>(request(false)).await?
+            }
+            other => other?,
+        };
         for note in &done.notes {
             println!("Note: {note}");
         }

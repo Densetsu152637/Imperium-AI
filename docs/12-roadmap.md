@@ -347,7 +347,12 @@ and `environments.agent_update` (protocol 0.28)
     *Still not built:* the desktop loader that runs a trusted mod in the app's own window (it
     needs the app's content security policy changed for that mod only, and whether that holds can
     only be checked in a running app; the reasoning and the order to build it in are in
-    [06](06-extensibility.md#trusted-main-context-mods-trust-implemented-loader-not-built)),
+    [06](06-extensibility.md#trusted-main-context-mods-trust-implemented-loader-not-built)).
+    **It must not ship until a stronger check than the daemon's process check exists**: a Windows
+    job object with breakaway disallowed, Linux `PR_SET_CHILD_SUBREAPER`, or a native
+    (non-webview) OS confirmation dialog shown by the desktop app, which also answers the
+    objection that a prompt over the daemon's protocol can be answered by whatever holds the
+    token ([06](06-extensibility.md#who-may-grant-trust-and-approval-implemented)),
     more mod contribution points, and the desktop's own install dialog.
 31. **Policy packs and MCP.** Fetching pack updates shown as a diff to accept, a policy crate
     that layers packs into the prompt; MCP resources, prompts, sampling, and OAuth for remote

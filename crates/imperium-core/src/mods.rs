@@ -92,7 +92,8 @@ pub fn list(user_dir: &Path, bundled: &[PathBuf]) -> ModListResult {
                             != Some(info.id.as_str()) =>
                 {
                     problems.push(format!(
-                        "{}: the folder must be named for the mod's id, {}",
+                        "{}: the folder must be named for the mod's id; rename it to {} (a mod \
+                         installed by `imperium mods install` already is)",
                         dir.display(),
                         info.id
                     ));
@@ -220,7 +221,7 @@ mod tests {
         assert_eq!(ids, ["demo"]);
         assert_eq!(listing.problems.len(), 1, "{:?}", listing.problems);
         assert!(
-            listing.problems[0].contains("must be named for the mod's id, also-demo"),
+            listing.problems[0].contains("rename it to also-demo"),
             "{:?}",
             listing.problems
         );
