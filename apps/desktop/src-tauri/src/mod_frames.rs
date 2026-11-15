@@ -12,8 +12,10 @@ use tauri::http::{Request, Response, header};
 pub const SCHEME: &str = "imperium-mod";
 
 /// What a mod frame may load: its own inline scripts, styles and `data:` modules and images, and
-/// WebAssembly it compiles itself (`wasm-unsafe-eval`, for pet behaviours: a module can touch
-/// nothing but the imports the behaviour host gives it, and the frame still has no network).
+/// WebAssembly (`wasm-unsafe-eval`, for pet behaviours). That makes WebAssembly available to all of
+/// a mod's JavaScript, not only to behaviours, and adds the engine as attack surface; the frame still
+/// has no network and an opaque origin. The behaviour host's checks guard against runaway
+/// behaviours, not against a malicious mod, which can already run any JavaScript here.
 const POLICY: &str = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' data:; \
     style-src 'unsafe-inline'; img-src data: blob:; font-src data:";
 

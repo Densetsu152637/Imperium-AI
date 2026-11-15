@@ -8,6 +8,7 @@ export const LIMITS: Readonly<{
   maxPages: number;
   maxFuel: number;
   maxTickMs: number;
+  maxSlowTicks: number;
   maxBehaviours: number;
   maxSpeed: number;
 }>;
@@ -45,7 +46,7 @@ export type RunningBehaviour = {
   readonly fault: string | null;
   tick(state: TickState): TickResult;
 };
-export type LoadResult = { ok: true; behaviour: RunningBehaviour & { close(): void } } | { ok: false; error: string };
+export type LoadResult = { ok: true; behaviour: RunningBehaviour & { close(): void } } | { ok: false; error: string; busy?: true };
 
 export function loadBehaviour(
   bytes: Uint8Array,

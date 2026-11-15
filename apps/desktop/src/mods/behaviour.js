@@ -29,6 +29,8 @@ export const LIMITS = Object.freeze({
   maxFuel: 100000,
   /** A tick that took longer than this (milliseconds, measured by the host) stops the module. */
   maxTickMs: 50,
+  /** Slow ticks (over maxTickMs) a behaviour is allowed before it is stopped: one hiccup is not a fault. */
+  maxSlowTicks: 3,
   /** Live behaviours per host (one mod frame). */
   maxBehaviours: 32,
   /** Speed a behaviour may ask for, in pixels per second, each axis. */
@@ -157,7 +159,8 @@ const SIMPLE = new Set([
   0x00, 0x01, 0x0f, 0x1a, 0x1b, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x67, 0x68,
   0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78,
 ]);
-const MEMORY_OPS = new Set([0x28, 0x2c, 0x2d, 0x2e, 0x2f, 0x36, 0x3a, 0x3b]);
+/** Memory instructions allowed, with the largest alignment exponent each may declare (its natural one). */
+const MEMORY_OPS = new Map([[0x28, 2], [0x2c, 0], [0x2d, 0], [0x2e, 1], [0x2f, 1], [0x36, 2], [0x3a, 0], [0x3b, 1]]);
 
 /** Why an opcode is refused, for the ones a mod author is likely to reach for. */
 function refusal(op) {
@@ -242,7 +245,9 @@ function readBody(r, functionCount, paramCount) {
         break;
       default:
         if (MEMORY_OPS.has(op)) {
-          r.u32(); // alignment
+          // Bit 6 of the alignment field would mean an explicit memory index follows (multi-memory),
+          // which this parser would misread; any value above the natural alignment is refused, flags included.
+          if (r.u32() > MEMORY_OPS.get(op)) reject("a memory access declares more than its natural alignment");
           r.u32(); // offset
           break;
         }
@@ -490,6 +495,7 @@ export function loadBehaviour(input, options = {}) {
   const clock = options.clock ?? (() => globalThis.performance?.now() ?? Date.now());
   let fault = null;
   let count = 0;
+  let slow = 0;
   const stop = (message) => {
     fault = message;
     try {
@@ -541,7 +547,7 @@ export function loadBehaviour(input, options = {}) {
         return stop(`trapped: ${error instanceof Error ? error.message : String(error)}`);
       }
       const took = clock() - started;
-      if (!(took <= LIMITS.maxTickMs)) return stop(`a tick took ${Math.round(took)} ms (the limit is ${LIMITS.maxTickMs})`);
+      if (!(took <= LIMITS.maxTickMs) && ++slow >= LIMITS.maxSlowTicks) return stop(`${slow} ticks took over ${LIMITS.maxTickMs} ms (the last ${Math.round(took)} ms)`);
       const out = new Int32Array(memory.buffer, 0, ABI.clearedWords);
       const shot = out[ABI.outputStart];
       if (shot < 0 || shot > SHOTS.length) return stop(`asked for a reaction that does not exist (${shot})`);
@@ -575,7 +581,7 @@ export function createHost(options = {}) {
       if (live.size >= LIMITS.maxBehaviours) {
         const error = `at most ${LIMITS.maxBehaviours} behaviours may run at once`;
         report({ name: label, phase: "load", reason: error });
-        return { ok: false, error };
+        return { ok: false, error, busy: true };
       }
       const loaded = loadBehaviour(bytes, {
         seed: loadOptions.seed,

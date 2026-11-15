@@ -1176,7 +1176,7 @@ function ModsSection({
         );
       })}
       {faults.map((fault) => (
-        <p key={`${fault.modId}${fault.at}${fault.name}`} className="muted">
+        <p key={`${fault.modId}|${fault.at}|${fault.name}|${fault.reason}`} className="muted">
           A behaviour of {fault.modId} was {fault.phase === "load" ? "refused" : "stopped"}: {fault.name} ({fault.reason}). The mod carries on without it.
         </p>
       ))}

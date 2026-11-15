@@ -137,3 +137,15 @@ test("the nursery frees a pet's behaviour when the pet is taken out, and hands a
   expect(fake.closed).toBe(1);
   n.shot("gone", "waving", T0); // no such pet: nothing happens
 });
+
+test("a frame at its limit of behaviours leaves that pet to the built-in roaming without writing the module off", () => {
+  let full = true;
+  const inner = host(() => walk).host;
+  const h: Pick<Behaviours, "load"> = { load: (name, bytes, options) => (full ? { ok: false, error: "at most 32 behaviours may run at once", busy: true } : inner.load(name, bytes, options)) };
+  const d = new Director(h, "wander", new Uint8Array([0]));
+  expect(d.guide("a", pet, T0)).toBeNull();
+  expect(d.active).toBe(true);
+  expect(d.faults).toHaveLength(0);
+  full = false;
+  expect(d.guide("a", pet, T0 + 1000)).toEqual({ vx: 12, vy: -6, shot: null });
+});

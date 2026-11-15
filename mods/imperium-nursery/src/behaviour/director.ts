@@ -50,6 +50,8 @@ export class Director {
     if (!slot) {
       const loaded = this.host.load(`${this.name}:${key}`, this.bytes, { seed: hash(key) })
       if (!loaded.ok) {
+        // Too many behaviours running: this pet roams the built-in way for now; the module is fine.
+        if (loaded.busy) return null
         // A module that was refused is refused for every pet; stop trying.
         this.refused = loaded.error
         this.faults.push(`${this.name}: ${loaded.error}`)

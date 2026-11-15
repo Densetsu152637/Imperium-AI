@@ -231,8 +231,9 @@ test("a tick that takes too long, or answers with something invalid, stops the b
   let now = 0;
   const slow = loadBehaviour(ticking([0x01]), { clock: () => (now += LIMITS.maxTickMs + 1) });
   assert.ok(slow.ok);
+  for (let i = 1; i < LIMITS.maxSlowTicks; i++) assert.equal(slow.behaviour.tick(state()).ok, true, "one slow tick is forgiven");
   const r = slow.behaviour.tick(state());
-  assert.match(r.ok ? "" : r.error, /took .* ms/);
+  assert.match(r.ok ? "" : r.error, /ticks took over 50 ms/);
   assert.equal(slow.behaviour.stopped, true);
   const bad = loadBehaviour(ticking([...store(SHOT, c(SHOTS.length + 1))]));
   assert.ok(bad.ok);
@@ -250,6 +251,7 @@ test("the host counts live behaviours, reports what it refuses or stops, and fre
   assert.ok(live.every((l) => l.ok));
   const over = host.load("extra", ok);
   assert.equal(over.ok, false);
+  assert.equal(!over.ok && over.busy, true, "a full frame is not a refused module");
   assert.deepEqual(reports.map((r) => [r.name, r.phase]), [["extra", "load"]]);
   if (live[0]?.ok) live[0].behaviour.close();
   assert.equal(host.load("again", ok).ok, true);
@@ -283,4 +285,17 @@ test("a module cannot reach anything the host did not give it", () => {
   const outside = ticking([], { rand: { module: "env", name: "fetch" }, exports: exportsOf(1) });
   assert.equal(loadBehaviour(outside).ok, false);
   assert.throws(() => new WebAssembly.Instance(new WebAssembly.Module(outside), {}));
+});
+
+test("memory access flags cannot desynchronise the validator (multi-memory smuggling)", () => {
+  // The reviewed proof of concept: i32.load with alignment 0x42 (bit 6 = a memory index follows), hiding a loop.
+  const poc = [0x41, 0x00, 0x28, 0x42, 0x00, 0x02, 0x40, 0x00, 0x1a, 0x41, 0x00, 0x28, 0x42, 0x00, 0x41, 0x03, 0x00, 0x0c, 0x00, 0x0b, 0x1a, 0x0b];
+  refused(ticking(poc.slice(0, -1)), /natural alignment/);
+  // Every access kind: alignment at its natural limit is fine, one more is refused, flag bits are refused.
+  const access = (opcode: number, align: number, store = false): Uint8Array => ticking(store ? [...c(0), ...c(0), opcode, align, 0] : [...c(0), opcode, align, 0, 0x1a]);
+  for (const [opcode, natural, store] of [[0x28, 2, false], [0x2c, 0, false], [0x2d, 0, false], [0x2e, 1, false], [0x2f, 1, false], [0x36, 2, true], [0x3a, 0, true], [0x3b, 1, true]] as const) {
+    assert.equal(validateModule(access(opcode, natural, store)).ok, true, `op ${opcode} at its natural alignment`);
+    refused(access(opcode, natural + 1, store), /natural alignment/);
+    refused(access(opcode, 0x40 | natural, store), /natural alignment/);
+  }
 });

@@ -97,7 +97,8 @@ export type Behaviour = {
   close(): void;
 };
 
-export type BehaviourLoad = { ok: true; behaviour: Behaviour } | { ok: false; error: string };
+/** `busy` is set when the frame is at its limit of live behaviours: the module itself was not refused, so a later load may succeed. */
+export type BehaviourLoad = { ok: true; behaviour: Behaviour } | { ok: false; error: string; busy?: true };
 
 /** Runs pet behaviours shipped as WebAssembly, sandboxed: see docs/06-extensibility.md. */
 export type Behaviours = {
@@ -114,7 +115,7 @@ export type Behaviours = {
   readonly shots: readonly string[];
 };
 
-export type Permission ="telemetry:read" | "sessions:read" | "pets:read" | "storage";
+export type Permission = "telemetry:read" | "sessions:read" | "pets:read" | "storage";
 
 export type PanelContribution = { id: string; title: string; slot?: string };
 

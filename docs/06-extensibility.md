@@ -308,7 +308,7 @@ later work.
 A mod can steer pets with a small WebAssembly module, `ctx.behaviours` (no permission: a module
 can touch nothing but its own memory). The module is not compiled until the host has read it and
 proved the rules below; it runs in the mod's own sandboxed frame, whose policy allows
-`wasm-unsafe-eval` and still no network, so this adds no capability a mod frame did not have.
+`wasm-unsafe-eval` and still no network, so no new capability reaches the network or the app. It does make WebAssembly available to all of the mod's JavaScript, not only to behaviours, and adds the engine as attack surface; the checks below protect the host from runaway *behaviours*, they are not a defence against a malicious mod, which already runs arbitrary JavaScript in its frame (a mod that spins forever can freeze the window on engines that share the page's thread, such as WKWebView and WebKitGTK; that was already true of JavaScript).
 
 **Where it runs, and why.** In the frame (the webview), not the daemon: no WebAssembly runtime is
 in the workspace, so the daemon route would add a native dependency (and an engine to keep
@@ -331,10 +331,10 @@ call, so limits are proved up front instead of metered:
 - **No ambient access.** No import but `imperium.rand` (anything else is refused before it is
   compiled, and an engine-level link would fail anyway), no network, files, DOM or `postMessage`.
 - **Failures stop the module, not the app.** A trap (including an out-of-range memory access or a
-  division by zero), a tick that took over 50 ms (measured by the host, which cannot interrupt
-  it), or an invalid answer stops that behaviour for good, and every later tick returns an error.
+  division by zero), three ticks that each took over 50 ms (measured by the host, which cannot interrupt
+  one), or an invalid answer stops that behaviour for good, and every later tick returns an error.
   The frame reports it to the app (`behaviours.report`, needs no permission, checked, clipped and
-  rate-limited there) and Settings → Mods lists "A behaviour of <mod> was refused/stopped". The
+  capped there: ten kept per mod, fifty in all, repeats dropped) and Settings → Mods lists "A behaviour of <mod> was refused/stopped". The
   mod carries on: the Nursery's pet goes back to its built-in roaming.
 
 **ABI** (32-bit little-endian words at the start of the module's exported `memory`, which must be
