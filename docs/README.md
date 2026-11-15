@@ -26,7 +26,7 @@ implemented behaviour and to mark anything still aspirational.
 | 18  | [Workflow contract](18-workflow-contract.md)      | Public contract for custom workflows; context retrieval (RAG) |
 | 19  | [Sharing and sync](19-sharing-and-sync.md)        | Session bundles, redaction, import; team sync design (designed) |
 | 20  | [Claude harness](20-claude-harness.md)            | `imperium mcp-serve`: Claude Code drives sessions and tests agents |
-| 21  | [Knowledge agents](21-knowledge-agents.md)        | Subagents that keep loaded context and answer other agents' questions (designed) |
+| 21  | [Knowledge agents](21-knowledge-agents.md)        | Subagents that keep loaded context and answer other agents' questions (stage 1 implemented) |
 
 ## Conventions
 

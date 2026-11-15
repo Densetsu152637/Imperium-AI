@@ -614,7 +614,7 @@ impl AgentStore {
             // Cards follow the journal when it is replayed; otherwise the store is the source.
             SessionEvent::KnowledgeChanged { agent_id, card, .. } if replaying => {
                 records.get_mut(agent_id).map(|record| {
-                    record.summary.knowledge = card.clone();
+                    record.summary.knowledge = card.as_deref().cloned();
                     agent_id.as_str()
                 })
             }

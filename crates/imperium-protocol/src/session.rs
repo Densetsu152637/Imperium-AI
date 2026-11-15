@@ -395,7 +395,7 @@ pub enum SessionEvent {
     /// Emitted under the knowledge agent's id; a replayed journal rebuilds the cards from these.
     KnowledgeChanged {
         agent_id: String,
-        card: Option<KnowledgeCard>,
+        card: Option<Box<KnowledgeCard>>,
         retired: bool,
     },
     /// An agent asked a knowledge agent a question (`ask_agent`). `text` is clipped to 2,000

@@ -502,7 +502,7 @@ and `environments.agent_update` (protocol 0.28)
     machine's hardware, download progress and resume on the card itself, checksum verification,
     making the downloaded model the default (or assigning Emperor and Consul to their roles),
     and offering the suggestion again from the Local models panel.
-45. **Knowledge agents** (designed). Subagents ask questions of other subagents: a research
+45. **Knowledge agents** (stage 1 implemented). Subagents ask questions of other subagents: a research
     subagent that has loaded context (files, specifications, pages) is kept as a knowledge agent
     with a card (topic, sources, size), and the root and other subagents call `ask_agent`
     instead of searching and reading the same material themselves. Each question runs in an
@@ -519,7 +519,10 @@ and `environments.agent_update` (protocol 0.28)
     Protocol 0.37 (`ask_agent`, `list_knowledge_agents`, `keep_as_knowledge`,
     `knowledge_changed`/`question_asked`/`question_answered` events, `session.agent_knowledge`).
     Three stages: engine and contract; local residency; clients and prompts
-    ([21](21-knowledge-agents.md), [03](03-agent-engine.md#knowledge-agents-designed)).
+    ([21](21-knowledge-agents.md), [03](03-agent-engine.md#knowledge-agents-stage-1-implemented)).
+    Stage 1 is built (protocol 0.37, the tools, forks, framing, events, `session.agent_knowledge`,
+    the K8 routing preference and the `[knowledge]` settings); local residency (the `kept`
+    presence and slot saving) and the clients, prompts and eval case are not.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.

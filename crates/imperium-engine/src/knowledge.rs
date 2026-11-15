@@ -547,7 +547,7 @@ pub(crate) fn promote(
         agent_id,
         SessionEvent::KnowledgeChanged {
             agent_id: agent_id.to_string(),
-            card: Some(card.clone()),
+            card: Some(Box::new(card.clone())),
             retired: false,
         },
     );
@@ -669,7 +669,7 @@ pub(crate) fn finished(shared: &Arc<Shared>, agent_id: &str, ok: bool) {
             agent_id,
             SessionEvent::KnowledgeChanged {
                 agent_id: agent_id.to_string(),
-                card: Some(card),
+                card: Some(Box::new(card)),
                 retired: false,
             },
         );
@@ -687,7 +687,7 @@ fn changed(shared: &Arc<Shared>, agent_id: &str, lane: &Lane) {
             agent_id,
             SessionEvent::KnowledgeChanged {
                 agent_id: agent_id.to_string(),
-                card: Some(card),
+                card: Some(Box::new(card)),
                 retired: false,
             },
         );
@@ -1154,7 +1154,7 @@ async fn run_question(
             &target,
             SessionEvent::KnowledgeChanged {
                 agent_id: target.clone(),
-                card: Some(card),
+                card: Some(Box::new(card)),
                 retired: false,
             },
         );
@@ -1302,7 +1302,7 @@ async fn answer_in_lane(
             target,
             SessionEvent::KnowledgeChanged {
                 agent_id: target.to_string(),
-                card: Some(card),
+                card: Some(Box::new(card)),
                 retired: false,
             },
         );

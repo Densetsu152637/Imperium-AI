@@ -1213,6 +1213,11 @@ same tag (or a catch-all) replaces them:
 | `architecture`, `math`, `proof`, `algorithm`, `design` | `cloud` | at least `frontier` |
 | `refactor`, `tests`, `ui`, `format`, `docs` | `local` | the task's own (not raised) |
 
+A subagent spawned with `knowledge` (or tagged `knowledge`), meant to be kept as a [knowledge
+agent](21-knowledge-agents.md), prefers the Emperor row (or `routing.knowledge_model`) ahead of both
+rows above, as a preference that gives way to a tier above the row's, an explicit `model` or
+`location`, a rule of yours, and a row that cannot take the task now.
+
 A task with tags from both rows counts as hard. A built-in rule's location and tier floor are
 preferences, not restrictions: the router first looks for a row in that location at the floor,
 then (for a hard task with no cloud `frontier` row) for a `frontier` row in any location, and
