@@ -682,6 +682,35 @@ impl Session {
         crate::knowledge::promote(shared, agent_id, topic).map(Some)
     }
 
+    /// The user asks knowledge agent `agent` (an id or a title) a question, as an agent does
+    /// with `ask_agent`, and waits for the answer: its id, how it ended, and the answer without
+    /// its frame (the reason when it was not answered). `timeout_s` defaults to
+    /// `knowledge.default_timeout_s` and is at most 600. The future does not borrow the session,
+    /// so a question outlives a handle that is dropped meanwhile.
+    pub fn ask_knowledge(
+        &self,
+        agent: &str,
+        question: &str,
+        timeout_s: Option<u32>,
+    ) -> impl std::future::Future<Output = Result<crate::KnowledgeAnswer, String>> + Send + 'static
+    {
+        let shared = self.shared.0.get().cloned();
+        let (agent, question) = (agent.to_string(), question.to_string());
+        async move {
+            let shared = shared.ok_or("the session is still starting; try again in a moment")?;
+            let seconds =
+                u64::from(timeout_s.unwrap_or(shared.knowledge.settings().default_timeout_s))
+                    .clamp(1, crate::knowledge::MAX_TIMEOUT_S);
+            crate::knowledge::ask_as_user(
+                &shared,
+                &agent,
+                &question,
+                std::time::Duration::from_secs(seconds),
+            )
+            .await
+        }
+    }
+
     /// Ends a paused (or otherwise finished) subagent without resuming it.
     pub fn cancel_agent(&self, agent_id: &str) -> Result<(), String> {
         let shared = self

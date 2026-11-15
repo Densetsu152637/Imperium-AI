@@ -481,6 +481,9 @@ mod tests {
             "list_agents",
             "resume_agent",
             "update_plan",
+            "keep_as_knowledge",
+            "ask_agent",
+            "list_knowledge_agents",
         ] {
             assert!(root.contains(name), "{name} missing from the root prompt");
         }
@@ -496,6 +499,7 @@ mod tests {
         ] {
             assert!(root.contains(rule), "{rule} missing from the root prompt");
         }
+        assert!(prompt("brief.md").contains("knowledge"));
         assert!(prompt("questions.md").contains("recommended"));
         // The harness aids: the root prompt names them, and the patterns are written out.
         for name in ["request_clarification", "update_state", "<session-state>"] {

@@ -1,0 +1,60 @@
+{
+  "cases": [
+    {
+      "id": "asks-about-what-t1-read",
+      "context": [
+        "knowledge agent t1 (topic: the parser module) read src/parser.rs, src/lexer.rs and docs/grammar.md",
+        "you have not read those files"
+      ],
+      "message": "Add a test for what the parser does with an empty token list.",
+      "covered": ["src/parser.rs", "src/lexer.rs", "docs/grammar.md"],
+      "should_ask": true
+    },
+    {
+      "id": "asks-about-the-spec",
+      "context": [
+        "knowledge agent t2 (topic: the sync protocol specification) read docs/sync.md and docs/errors.md",
+        "you are implementing a client for it"
+      ],
+      "message": "Which error codes can the server return for a rejected push, and which of them are retried?",
+      "covered": ["docs/sync.md", "docs/errors.md"],
+      "should_ask": true
+    },
+    {
+      "id": "asks-then-needs-the-line",
+      "context": [
+        "knowledge agent t1 (topic: the billing crate) read crates/billing/src/lib.rs and crates/billing/src/invoice.rs"
+      ],
+      "message": "Where is the rounding of an invoice total done, and in which function?",
+      "covered": ["crates/billing/src/lib.rs", "crates/billing/src/invoice.rs"],
+      "should_ask": true
+    },
+    {
+      "id": "reads-what-no-one-read",
+      "context": [
+        "knowledge agent t1 (topic: the parser module) read src/parser.rs and src/lexer.rs",
+        "nobody read src/config.rs"
+      ],
+      "message": "What default does src/config.rs give the timeout?",
+      "covered": ["src/parser.rs", "src/lexer.rs"],
+      "should_ask": false
+    },
+    {
+      "id": "reads-the-file-it-will-edit",
+      "context": [
+        "knowledge agent t1 (topic: the parser module) read src/parser.rs",
+        "you are about to change one line of src/parser.rs and need its exact current text"
+      ],
+      "message": "Change the error message in src/parser.rs line 40 to mention the column.",
+      "covered": [],
+      "should_ask": false
+    },
+    {
+      "id": "no-knowledge-agent-to-ask",
+      "context": ["there are no knowledge agents in this session"],
+      "message": "What does src/main.rs do on start-up?",
+      "covered": [],
+      "should_ask": false
+    }
+  ]
+}

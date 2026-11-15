@@ -28,6 +28,7 @@ import { describeWait, type Residency } from "../waits";
 import { modelName, useModelNames } from "../modelNames";
 import { useNow } from "./AgentsPanel";
 import { Composer } from "./Composer";
+import { KnowledgeSection } from "./KnowledgeSection";
 import { EntryView, PlanView, QueueView } from "./SessionPanel";
 
 type Props = {
@@ -46,6 +47,10 @@ type Props = {
   onResume?: (taskId: string, text: string) => Promise<unknown>;
   /** Ends a paused subagent (`session.agent_cancel`). */
   onCancel?: (taskId: string) => Promise<unknown>;
+  /** Keeps the finished subagent as a knowledge agent, retires it, or asks it (knowledge.ts). */
+  onKeep?: (taskId: string, topic: string) => Promise<unknown>;
+  onRetire?: (taskId: string) => Promise<unknown>;
+  onAsk?: (taskId: string, question: string) => Promise<unknown>;
   /** Stops the session's work, from the subagent's status line. */
   onStop?: () => void;
   client?: DaemonClient | null;
@@ -65,6 +70,9 @@ export function AgentView({
   onAnswer,
   onResume,
   onCancel,
+  onKeep,
+  onRetire,
+  onAsk,
   onStop,
   client = null,
   runtimeInstall = null,
@@ -186,6 +194,8 @@ export function AgentView({
       </header>
 
       {task.plan && <PlanView plan={task.plan} />}
+
+      <KnowledgeSection session={session} task={task} onKeep={onKeep} onRetire={onRetire} onAsk={onAsk} />
 
       <div className="conversation" aria-live="polite" ref={follow.ref}>
         {items.map((item) =>

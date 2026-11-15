@@ -7,20 +7,22 @@ use std::path::PathBuf;
 use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
-    ContextFit, MODEL_RESIDENCY, ModelResidency, RewindMode, SessionAgentResume,
-    SessionAgentResumeParams, SessionAgents, SessionAgentsParams, SessionAnswer,
-    SessionAnswerParams, SessionBranch, SessionBranchParams, SessionCheckpoints,
-    SessionCheckpointsParams, SessionCheckpointsResult, SessionCompare, SessionCompareParams,
-    SessionComparePick, SessionComparePickParams, SessionControl, SessionControlParams,
-    SessionCreate, SessionCreateParams, SessionQueue, SessionQueueParams, SessionRespond,
-    SessionRespondParams, SessionReview, SessionReviewParams, SessionReviewResult, SessionRewind,
-    SessionRewindParams, SessionRewindResult, SessionSend, SessionSendParams, SessionSubscribe,
-    SessionSubscribeParams, SessionSuggestionRespond, SuggestionRespondParams,
+    ContextFit, MODEL_RESIDENCY, ModelResidency, RewindMode, SessionAgentAsk,
+    SessionAgentAskParams, SessionAgentAskResult, SessionAgentKnowledge,
+    SessionAgentKnowledgeParams, SessionAgentResume, SessionAgentResumeParams, SessionAgents,
+    SessionAgentsParams, SessionAnswer, SessionAnswerParams, SessionBranch, SessionBranchParams,
+    SessionCheckpoints, SessionCheckpointsParams, SessionCheckpointsResult, SessionCompare,
+    SessionCompareParams, SessionComparePick, SessionComparePickParams, SessionControl,
+    SessionControlParams, SessionCreate, SessionCreateParams, SessionQueue, SessionQueueParams,
+    SessionRespond, SessionRespondParams, SessionReview, SessionReviewParams, SessionReviewResult,
+    SessionRewind, SessionRewindParams, SessionRewindResult, SessionSend, SessionSendParams,
+    SessionSubscribe, SessionSubscribeParams, SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
-    AgentEvent, AgentStatus, AgentSummary, ContextCategory, ExtensionKind, LocalWaitReason,
-    PauseCause, PermissionDecision, Question, QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode,
-    SessionEvent, SessionEventParams, StepStatus, TokenCountMethod,
+    AgentEvent, AgentStatus, AgentSummary, ContextCategory, ExtensionKind, KnowledgeCard,
+    KnowledgeStatus, LocalWaitReason, PauseCause, PermissionDecision, Question, QuestionOutcome,
+    QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent, SessionEventParams,
+    StepStatus, TokenCountMethod,
 };
 use tokio::sync::mpsc;
 
@@ -362,6 +364,55 @@ impl Chat {
                     })
                     .await?;
                 print!("{}", describe_agents(&result.agents));
+            }
+            Some(Command::Ask(agent_id, question)) => {
+                println!("Asking {agent_id}…");
+                let result = client
+                    .call::<SessionAgentAsk>(SessionAgentAskParams {
+                        session_id: session_id.to_string(),
+                        agent_id,
+                        question,
+                        timeout_s: None,
+                    })
+                    .await;
+                match result {
+                    Ok(result) => print!("{}", describe_answer(&result)),
+                    Err(error) => println!("{error}"),
+                }
+            }
+            Some(Command::Keep(agent_id, topic)) => {
+                let result = client
+                    .call::<SessionAgentKnowledge>(SessionAgentKnowledgeParams {
+                        session_id: session_id.to_string(),
+                        agent_id: agent_id.clone(),
+                        topic: Some(topic),
+                        retire: false,
+                    })
+                    .await;
+                match result {
+                    Ok(result) => match result.card {
+                        Some(card) => println!(
+                            "{agent_id} is kept as knowledge.\n{}",
+                            describe_knowledge(&card)
+                        ),
+                        None => println!("{agent_id} is kept as knowledge."),
+                    },
+                    Err(error) => println!("{error}"),
+                }
+            }
+            Some(Command::Retire(agent_id)) => {
+                let result = client
+                    .call::<SessionAgentKnowledge>(SessionAgentKnowledgeParams {
+                        session_id: session_id.to_string(),
+                        agent_id: agent_id.clone(),
+                        topic: None,
+                        retire: true,
+                    })
+                    .await;
+                match result {
+                    Ok(_) => println!("{agent_id} is an ordinary idle subagent again."),
+                    Err(error) => println!("{error}"),
+                }
             }
             Some(Command::ResumeAgent(agent_id, text)) => {
                 let result = client
@@ -940,6 +991,12 @@ enum Command {
     Agents,
     /// `/resume-agent <id> <text>`: a follow-up for a finished subagent.
     ResumeAgent(String, String),
+    /// `/ask <agent> <question>`: asks a knowledge agent, as `ask_agent` does.
+    Ask(String, String),
+    /// `/keep <id> <topic>`: keeps a finished subagent as a knowledge agent.
+    Keep(String, String),
+    /// `/retire <id>`: makes a knowledge agent an ordinary subagent again.
+    Retire(String),
     /// `/download`, `/dismiss`, or `/never`: the answer to a model download suggestion, as
     /// `session.suggestion_respond` names it.
     Suggestion(&'static str),
@@ -961,6 +1018,11 @@ enum Command {
 
 const COMPARE_USAGE: &str =
     "Usage: /compare <model> <model> [<model> <model>] -- <message> (two to four models)";
+const ASK_USAGE: &str =
+    "Usage: /ask <agent id or title> <question> (a knowledge agent; see /agents)";
+const KEEP_USAGE: &str =
+    "Usage: /keep <id> <topic> (keeps a finished read-only subagent as a knowledge agent)";
+const RETIRE_USAGE: &str = "Usage: /retire <id> (a knowledge agent)";
 const PICK_USAGE: &str = "Usage: /pick <n> (the number of a branch from the latest /compare)";
 
 /// `/compare <model> <model> [...] -- <message>`: two to four models, then the message.
@@ -1130,6 +1192,27 @@ fn command(text: &str) -> Option<Command> {
         let steer = steer.trim();
         return (!steer.is_empty()).then(|| Command::Steer(steer.to_string()));
     }
+    for (prefix, usage) in [
+        ("/ask", ASK_USAGE),
+        ("/keep", KEEP_USAGE),
+        ("/retire", RETIRE_USAGE),
+    ] {
+        if text == prefix || text.starts_with(&format!("{prefix} ")) {
+            let (first, others) = agent_and_rest(&text[prefix.len()..]);
+            return Some(match prefix {
+                "/retire" if !first.is_empty() && others.is_empty() => {
+                    Command::Retire(first.to_string())
+                }
+                "/ask" if !first.is_empty() && !others.is_empty() => {
+                    Command::Ask(first.to_string(), others.to_string())
+                }
+                "/keep" if !first.is_empty() && !others.is_empty() => {
+                    Command::Keep(first.to_string(), others.to_string())
+                }
+                _ => Command::Usage(usage),
+            });
+        }
+    }
     if let Some(rest) = text.strip_prefix("/resume-agent ") {
         let (agent_id, follow_up) = rest.trim().split_once(char::is_whitespace)?;
         let follow_up = follow_up.trim();
@@ -1167,13 +1250,87 @@ fn describe_agents(agents: &[AgentSummary]) -> String {
             "  {} ({status}{resumable}) {} · {} turns{cost}: {title}\n",
             agent.agent_id, agent.model, agent.turns
         ));
+        if let Some(card) = &agent.knowledge {
+            out.push_str(&describe_knowledge(card));
+        }
     }
     if agents.iter().any(|agent| agent.agent_id != ROOT_AGENT) {
         out.push_str("  /resume-agent <id> <text> gives a finished subagent a follow-up.\n");
+        out.push_str(
+            "  /keep <id> <topic> keeps a finished reader as a knowledge agent; /ask <id> <question> asks one; /retire <id> ends it.\n",
+        );
     } else {
         out.push_str("  No subagents yet.\n");
     }
     out
+}
+
+/// A knowledge agent's card as `/agents` prints it under the agent's line.
+fn describe_knowledge(card: &KnowledgeCard) -> String {
+    let status = match card.status {
+        KnowledgeStatus::Ready => "ready".to_string(),
+        KnowledgeStatus::Answering => format!("answering, {} waiting", card.queued),
+        KnowledgeStatus::Busy => "busy with a follow-up".to_string(),
+    };
+    let stale = card.sources.iter().filter(|source| source.stale).count();
+    let sources = card.sources.len() + card.more_sources as usize;
+    let mut parts = vec![
+        format!("knowledge: {} ({status})", card.topic),
+        if stale > 0 {
+            format!("{sources} sources, {stale} changed")
+        } else {
+            format!("{sources} sources")
+        },
+        format!("{} questions", card.questions),
+    ];
+    if let Some(cost) = &card.est_question_cost {
+        parts.push(format!("about {} tokens a question", cost.tokens));
+    }
+    if let Some(ratio) = card.last_cached_ratio {
+        parts.push(format!("{:.0} % cached last time", ratio * 100.0));
+    }
+    if card.untrusted.web {
+        parts.push("holds web material".into());
+    }
+    if card.untrusted.tools {
+        parts.push("holds tool results".into());
+    }
+    format!("      {}\n", parts.join(" · "))
+}
+
+/// An answer to `/ask`, with the marks it carries.
+fn describe_answer(result: &SessionAgentAskResult) -> String {
+    let mut out = match result.outcome {
+        QuestionOutcome::Answered => format!("{}\n", result.answer),
+        other => format!("The question ended ({other:?}): {}\n", result.answer),
+    };
+    let marks: Vec<&str> = [
+        (
+            result.degraded,
+            "degraded: its sources changed since it read them",
+        ),
+        (result.untrusted_web, "may hold web material"),
+        (result.untrusted_tools, "may hold tool results"),
+    ]
+    .into_iter()
+    .filter_map(|(set, mark)| set.then_some(mark))
+    .collect();
+    if !marks.is_empty() {
+        out.push_str(&format!("({})\n", marks.join("; ")));
+    }
+    out
+}
+
+/// Splits `/ask`'s argument into the agent (a word, or a title in double quotes) and the rest.
+fn agent_and_rest(text: &str) -> (&str, &str) {
+    let text = text.trim();
+    if let Some(quoted) = text.strip_prefix('"')
+        && let Some((title, rest)) = quoted.split_once('"')
+    {
+        return (title.trim(), rest.trim());
+    }
+    text.split_once(char::is_whitespace)
+        .map_or((text, ""), |(first, rest)| (first, rest.trim()))
 }
 
 /// The queue as `/queue` prints it.
@@ -1658,6 +1815,125 @@ mod tests {
         );
         assert_eq!(command("/rewind x"), None);
         assert_eq!(command("/rewind 2 all"), None);
+    }
+
+    #[test]
+    fn knowledge_commands_are_recognised() {
+        assert_eq!(
+            command("/ask t1  where is the rounding done? "),
+            Some(Command::Ask(
+                "t1".into(),
+                "where is the rounding done?".into()
+            ))
+        );
+        assert_eq!(
+            command("/keep t2 the billing crate"),
+            Some(Command::Keep("t2".into(), "the billing crate".into()))
+        );
+        assert_eq!(command("/retire t2"), Some(Command::Retire("t2".into())));
+        for malformed in ["/ask", "/ask t1", "/keep t1", "/retire", "/retire t1 now"] {
+            assert!(
+                matches!(command(malformed), Some(Command::Usage(_))),
+                "{malformed}"
+            );
+        }
+        assert_eq!(command("please /ask t1 this"), None);
+        // A title with spaces is quoted.
+        assert_eq!(
+            command("/ask \"Billing crate reader\" where is rounding done?"),
+            Some(Command::Ask(
+                "Billing crate reader".into(),
+                "where is rounding done?".into()
+            ))
+        );
+        assert_eq!(
+            command("/retire \"Billing crate reader\""),
+            Some(Command::Retire("Billing crate reader".into()))
+        );
+        assert!(matches!(
+            command("/ask \"Billing crate reader\""),
+            Some(Command::Usage(_))
+        ));
+    }
+
+    fn card(topic: &str) -> KnowledgeCard {
+        use imperium_protocol::session::{
+            KnowledgeSource, KnowledgeSourceKind, KnowledgeUntrusted, QuestionCost, TokenUsage,
+        };
+        KnowledgeCard {
+            agent_id: "t1".into(),
+            title: "Reader".into(),
+            model: "m".into(),
+            local: false,
+            topic: topic.into(),
+            sources: vec![
+                KnowledgeSource {
+                    kind: KnowledgeSourceKind::File,
+                    target: "a.rs".into(),
+                    size: Some(1),
+                    modified_ms: Some(1),
+                    stale: true,
+                },
+                KnowledgeSource {
+                    kind: KnowledgeSourceKind::File,
+                    target: "b.rs".into(),
+                    size: Some(1),
+                    modified_ms: Some(1),
+                    stale: false,
+                },
+            ],
+            more_sources: 3,
+            untrusted: KnowledgeUntrusted {
+                web: true,
+                tools: false,
+            },
+            context_tokens: 100,
+            context_window: Some(1000),
+            est_question_cost: Some(QuestionCost {
+                tokens: 800,
+                cost_usd: None,
+            }),
+            last_cached_ratio: Some(0.5),
+            questions: 4,
+            usage: TokenUsage::default(),
+            cost_usd: None,
+            status: KnowledgeStatus::Answering,
+            queued: 2,
+            stale_fraction: 0.5,
+        }
+    }
+
+    #[test]
+    fn agents_show_a_knowledge_agents_card() {
+        let text = describe_knowledge(&card("the parser"));
+        assert_eq!(
+            text,
+            "      knowledge: the parser (answering, 2 waiting) · 5 sources, 1 changed · 4 questions · about 800 tokens a question · 50 % cached last time · holds web material\n"
+        );
+        let reply = |outcome, answer: &str| SessionAgentAskResult {
+            question_id: "q1".into(),
+            outcome,
+            answer: answer.into(),
+            degraded: false,
+            untrusted_web: false,
+            untrusted_tools: false,
+        };
+        assert_eq!(
+            describe_answer(&reply(QuestionOutcome::Answered, "it is 42")),
+            "it is 42\n"
+        );
+        assert!(describe_answer(&reply(QuestionOutcome::Timeout, "too slow")).contains("Timeout"));
+        // The marks the answer carries are printed after it.
+        let marked = SessionAgentAskResult {
+            degraded: true,
+            untrusted_web: true,
+            untrusted_tools: true,
+            ..reply(QuestionOutcome::Answered, "it is 42")
+        };
+        assert_eq!(
+            describe_answer(&marked),
+            "it is 42\n(degraded: its sources changed since it read them; may hold web material; may hold tool results)\n"
+        );
     }
 
     #[test]

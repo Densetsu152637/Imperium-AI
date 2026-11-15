@@ -1854,3 +1854,160 @@ async fn a_failed_lease_save_falls_back_and_a_closed_session_saves_nothing() {
         saved
     );
 }
+
+// ---- stage 3 ----
+
+#[tokio::test]
+async fn the_user_asks_a_knowledge_agent_and_the_events_are_the_roots() {
+    let lab = Arc::new(Lab::default());
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let session = start(&url, dir.path(), Options::default());
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research the alpha module").await;
+
+    let reply = session
+        .ask_knowledge("t1", "plain: what is in a.txt?", None)
+        .await
+        .unwrap();
+    let id = reply.question_id.clone();
+    assert_eq!(reply.outcome, QuestionOutcome::Answered);
+    assert_eq!(reply.answer, "the answer is 42", "without its frame");
+    assert!(!reply.degraded && !reply.untrusted_web && !reply.untrusted_tools);
+    assert!(id.starts_with('q'));
+    // The user is no agent: the events are the root's, and name the user as the asker.
+    let seen = history(&session);
+    assert!(seen.iter().any(|event| event.agent_id == "root"
+        && matches!(&event.event, SessionEvent::QuestionAsked { from, to, .. }
+            if from == "user" && to == "t1")));
+    assert!(seen.iter().any(|event| event.agent_id == "root"
+        && matches!(&event.event, SessionEvent::QuestionAnswered { question_id, .. }
+            if *question_id == id)));
+    assert!(
+        session
+            .agents()
+            .iter()
+            .all(|agent| agent.agent_id != "user")
+    );
+    assert_eq!(card(&session, "t1").unwrap().questions, 1);
+    // It can be asked by title, and a bad request is an error with its reason.
+    let title = session.agents()[1].title.clone();
+    assert!(
+        session
+            .ask_knowledge(&title, "plain", Some(60))
+            .await
+            .is_ok()
+    );
+    let missing = session
+        .ask_knowledge("t9", "plain", None)
+        .await
+        .unwrap_err();
+    assert!(missing.contains("no knowledge agent"), "{missing}");
+    let empty = session.ask_knowledge("t1", "  ", None).await.unwrap_err();
+    assert!(empty.contains("must not be empty"), "{empty}");
+}
+
+#[tokio::test]
+async fn a_fork_finishing_after_the_session_closed_leaves_no_file_and_no_mark() {
+    let lab = Arc::new(Lab::default());
+    lab.slow_ms.store(1_500, Ordering::SeqCst);
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let runtime = Local::new(&url, true);
+    let session = start(&url, dir.path(), local_options(&runtime));
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research the alpha module").await;
+    assert_eq!(runtime.count("keep s/t1"), 1);
+
+    // The question outlives the session handle; its fork is still waiting for the model when the
+    // session closes.
+    let pending = tokio::spawn(session.ask_knowledge("t1", "slow", Some(60)));
+    for _ in 0..100 {
+        if !lab.forks().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(lab.forks().len(), 1);
+    drop(events);
+    drop(session);
+    let reply = pending.await.unwrap().unwrap();
+    assert_eq!(reply.outcome, QuestionOutcome::Answered);
+    assert!(reply.answer.contains("slow answer"));
+
+    // Closing removed the mark and the saved files; finishing afterwards saved nothing.
+    assert_eq!(
+        runtime.count("unkeep s/t1"),
+        1,
+        "its mark went with the session"
+    );
+    assert_eq!(runtime.count("drop_saved s/t1"), 1);
+    assert_eq!(runtime.count("save_leased s/t1 0"), 0);
+    assert_eq!(runtime.count("save_kept s/t1"), 0);
+    assert_eq!(runtime.count("keep s/t1"), 1, "and no new mark was made");
+}
+
+#[tokio::test]
+async fn the_user_is_told_the_marks_of_an_answer_and_refused_while_the_session_is_stopped() {
+    let lab = Arc::new(Lab::default());
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let session = start(
+        &url,
+        dir.path(),
+        Options {
+            tools: vec![Outside::web() as Arc<dyn ToolProvider>],
+            ..Options::default()
+        },
+    );
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research web the alpha module").await;
+    // The research read the web, so its answers carry that mark; a changed file degrades them.
+    std::fs::write(dir.path().join("a.txt"), "alpha, edited later").unwrap();
+    let reply = session.ask_knowledge("t1", "plain", None).await.unwrap();
+    assert!(reply.untrusted_web && !reply.untrusted_tools, "{reply:?}");
+    assert!(reply.degraded, "{reply:?}");
+
+    session.stop();
+    let refused = session
+        .ask_knowledge("t1", "plain", None)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("the session is stopped"), "{refused}");
+    assert_eq!(answers(&session).len(), 1, "no question was started");
+    session.resume_work();
+    assert!(session.ask_knowledge("t1", "plain", None).await.is_ok());
+}
+
+#[tokio::test]
+async fn the_root_prompt_teaches_knowledge_agents_only_while_the_feature_is_on() {
+    for enabled in [true, false] {
+        let lab = Arc::new(Lab::default());
+        let url = serve(Arc::clone(&lab)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let session = start(
+            &url,
+            dir.path(),
+            Options {
+                knowledge: KnowledgeConfig {
+                    settings: imperium_config::KnowledgeSettings {
+                        enabled,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Options::default()
+            },
+        );
+        let mut events = session.subscribe();
+        say(&session, &mut events, "hello").await;
+        let first = lab.all().remove(0);
+        let system = system(&first);
+        let tools = first["tools"].to_string();
+        assert_eq!(system.contains("keep_as_knowledge"), enabled);
+        assert_eq!(tools.contains("keep_as_knowledge"), enabled);
+    }
+}
