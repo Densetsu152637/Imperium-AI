@@ -528,5 +528,8 @@ fn joined_answer(joined: Result<Answer, tokio::task::JoinError>) -> Answer {
         outcome: QuestionOutcome::Failed,
         text: format!("the question's task crashed: {error}"),
         plain: format!("the question's task crashed: {error}"),
+        degraded: false,
+        untrusted_web: false,
+        untrusted_tools: false,
     })
 }

@@ -692,9 +692,8 @@ impl Session {
         agent: &str,
         question: &str,
         timeout_s: Option<u32>,
-    ) -> impl std::future::Future<Output = Result<(String, QuestionOutcome, String), String>>
-    + Send
-    + 'static {
+    ) -> impl std::future::Future<Output = Result<crate::KnowledgeAnswer, String>> + Send + 'static
+    {
         let shared = self.shared.0.get().cloned();
         let (agent, question) = (agent.to_string(), question.to_string());
         async move {

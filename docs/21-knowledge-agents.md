@@ -277,8 +277,9 @@ be self-contained, like briefs.
 - Method: `session.agent_knowledge` (`session_id`, `agent_id`, `topic` or `retire`) for the user
   to promote or retire.
 - Method (0.39): `session.agent_ask` (`session_id`, `agent_id` (an id or a title), `question`,
-  `timeout_s?`) for the user to ask: the result is `question_id`, `outcome` and `answer` (the
-  answer without its frame, or the reason it ended). The question runs exactly as an agent's,
+  `timeout_s?`) for the user to ask: the result is `question_id`, `outcome`, `answer` (the
+  answer without its frame, or the reason it ended) and the marks `degraded`, `untrusted_web` and
+  `untrusted_tools`. A stopped session refuses the question at once. The question runs exactly as an agent's,
   with `user` as the asker in `question_asked`; its events are the root's.
 
 **Journal.** `knowledge_changed`, `question_asked`, `question_answered` and the forks' tool events
@@ -294,7 +295,7 @@ marked), its card's cost estimate and cached share, and its questions with asker
 cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
 
 **CLI.** `imperium chat` shows cards in `/agents`, and `/keep <id> <topic>`, `/ask <agent> <question>` and
-`/retire <id>` keep, ask and retire.
+`/retire <id>` keep, ask and retire; an agent is an id or a title, quoted when it has spaces.
 
 ## Interactions
 
@@ -524,7 +525,8 @@ questions and for a fork finishing after its session closed.
   everything else.
 - **`imperium chat`.** `/agents` prints each card under its agent (topic, status, sources and how
   many changed, questions, the cost of one, the cached share, outside material); `/ask`, `/keep`
-  and `/retire` call `session.agent_ask` and `session.agent_knowledge`.
+  and `/retire` call `session.agent_ask` and `session.agent_knowledge`; an answer is followed by
+  its marks. The root prompt mentions knowledge agents only while `knowledge.enabled` is on.
 - **Prompts.** The root prompt and Emperor's `emperor-root.md` say to keep research that several
   tasks will need (`spawn_agent` with `knowledge`, or `keep_as_knowledge`, which `await_tasks`
   suggests after a large report), to ask with a self-contained question and to treat answers as
@@ -533,7 +535,8 @@ questions and for a fork finishing after its session closed.
 - **Evaluation.** `schemas/eval/knowledge-cases.json` and `imperium_protocol::knowledge_eval`: six
   cases (three where the answer is in what a knowledge agent read, three where it is not) scored
   1.0 for asking without re-reading, 0.5 for asking and re-reading, -1.0 for re-reading, and -0.5
-  for asking when there is nothing to ask. A hold-out, like the clarification cases.
+  for asking when there is nothing to ask. A re-read is found by path (separators, `./`, absolute
+  or relative forms) and by `list_dir`, `grep` or `glob` over a covering folder or pattern. A hold-out, like the clarification cases.
 - **Not built:** a browser-preview check of the panel (the panel is reviewed as code and its rules
   are tested), the acceptance measurement of the item, phone access, fork streaming events,
   `ask_agent` in `imperium mcp-serve`, task-tree edges for waiting questions and a wait-for map.

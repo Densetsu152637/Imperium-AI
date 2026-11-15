@@ -236,6 +236,11 @@ pub struct SessionAgentAskResult {
     pub question_id: String,
     pub outcome: crate::session::QuestionOutcome,
     pub answer: String,
+    // The marks the answer carries: its sources changed since they were read, and it may hold
+    // web material or tool results.
+    pub degraded: bool,
+    pub untrusted_web: bool,
+    pub untrusted_tools: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

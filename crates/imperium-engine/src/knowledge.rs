@@ -1202,6 +1202,24 @@ pub(crate) struct Answer {
     pub text: String,
     /// The answer without its frame (the same as `text` when it was not answered).
     pub plain: String,
+    /// The marks the answer's frame carries.
+    pub degraded: bool,
+    pub untrusted_web: bool,
+    pub untrusted_tools: bool,
+}
+
+/// What the user gets back from `session.agent_ask`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeAnswer {
+    pub question_id: String,
+    pub outcome: QuestionOutcome,
+    /// The answer without its frame, or why there is none.
+    pub answer: String,
+    /// Its sources changed since they were read.
+    pub degraded: bool,
+    /// It may hold web material, or tool results.
+    pub untrusted_web: bool,
+    pub untrusted_tools: bool,
 }
 
 /// A question in flight. Dropping it before it ends cancels it.
@@ -1401,6 +1419,9 @@ async fn run_question(
         outcome,
         text,
         plain,
+        degraded,
+        untrusted_web: tally.web || job.target.untrusted.web,
+        untrusted_tools: job.target.untrusted.tools,
     }
 }
 
@@ -1596,9 +1617,13 @@ pub(crate) async fn ask_as_user(
     name: &str,
     question: &str,
     timeout: std::time::Duration,
-) -> Result<(String, QuestionOutcome, String), String> {
+) -> Result<KnowledgeAnswer, String> {
     if !shared.knowledge.enabled() {
         return Err("knowledge agents are turned off (knowledge.enabled)".into());
+    }
+    // A stopped session answers nothing: its forks would halt at once, and the user asked now.
+    if *shared.controls.stop_signal().borrow() {
+        return Err("the session is stopped; resume it to ask a question".into());
     }
     let question = question.trim();
     if question.is_empty() {
@@ -1637,5 +1662,12 @@ pub(crate) async fn ask_as_user(
         }
     };
     let answer = joined.map_err(|error| format!("the question's task crashed: {error}"))?;
-    Ok((pending.id.clone(), answer.outcome, answer.plain))
+    Ok(KnowledgeAnswer {
+        question_id: pending.id.clone(),
+        outcome: answer.outcome,
+        answer: answer.plain,
+        degraded: answer.degraded,
+        untrusted_web: answer.untrusted_web,
+        untrusted_tools: answer.untrusted_tools,
+    })
 }

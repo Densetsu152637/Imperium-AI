@@ -38,7 +38,7 @@ pub use imperium_api::{
 };
 pub use imperium_models::{ChatClient, ChatClients, ChatRequest, Endpoint};
 pub use journal::{journalled_model, messages_path, read_events as journal_events};
-pub use knowledge::{KnowledgeConfig, ModelAvailability};
+pub use knowledge::{KnowledgeAnswer, KnowledgeConfig, ModelAvailability};
 pub use launcher::{LaunchFuture, LaunchRequest, SessionLauncher};
 pub use model::{
     CatalogModel, ModelError, ResolvedModel, Routed, TaskRequest, escalate, resolve_model, route,

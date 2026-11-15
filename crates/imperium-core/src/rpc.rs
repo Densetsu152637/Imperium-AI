@@ -957,14 +957,17 @@ impl Connection {
                 |params: SessionAgentAskParams| {
                     let session = self.session(&params.session_id);
                     async move {
-                        let (question_id, outcome, answer) = session?
+                        let answer = session?
                             .ask_knowledge(&params.agent_id, &params.question, params.timeout_s)
                             .await
                             .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
                         Ok(SessionAgentAskResult {
-                            question_id,
-                            outcome,
-                            answer,
+                            question_id: answer.question_id,
+                            outcome: answer.outcome,
+                            answer: answer.answer,
+                            degraded: answer.degraded,
+                            untrusted_web: answer.untrusted_web,
+                            untrusted_tools: answer.untrusted_tools,
                         })
                     }
                 },

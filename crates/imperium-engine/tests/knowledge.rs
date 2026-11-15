@@ -1867,12 +1867,14 @@ async fn the_user_asks_a_knowledge_agent_and_the_events_are_the_roots() {
     let mut events = session.subscribe();
     research(&session, &mut events, "research the alpha module").await;
 
-    let (id, outcome, answer) = session
+    let reply = session
         .ask_knowledge("t1", "plain: what is in a.txt?", None)
         .await
         .unwrap();
-    assert_eq!(outcome, QuestionOutcome::Answered);
-    assert_eq!(answer, "the answer is 42", "without its frame");
+    let id = reply.question_id.clone();
+    assert_eq!(reply.outcome, QuestionOutcome::Answered);
+    assert_eq!(reply.answer, "the answer is 42", "without its frame");
+    assert!(!reply.degraded && !reply.untrusted_web && !reply.untrusted_tools);
     assert!(id.starts_with('q'));
     // The user is no agent: the events are the root's, and name the user as the asker.
     let seen = history(&session);
@@ -1931,9 +1933,9 @@ async fn a_fork_finishing_after_the_session_closed_leaves_no_file_and_no_mark() 
     assert_eq!(lab.forks().len(), 1);
     drop(events);
     drop(session);
-    let (_, outcome, answer) = pending.await.unwrap().unwrap();
-    assert_eq!(outcome, QuestionOutcome::Answered);
-    assert!(answer.contains("slow answer"));
+    let reply = pending.await.unwrap().unwrap();
+    assert_eq!(reply.outcome, QuestionOutcome::Answered);
+    assert!(reply.answer.contains("slow answer"));
 
     // Closing removed the mark and the saved files; finishing afterwards saved nothing.
     assert_eq!(
@@ -1945,4 +1947,67 @@ async fn a_fork_finishing_after_the_session_closed_leaves_no_file_and_no_mark() 
     assert_eq!(runtime.count("save_leased s/t1 0"), 0);
     assert_eq!(runtime.count("save_kept s/t1"), 0);
     assert_eq!(runtime.count("keep s/t1"), 1, "and no new mark was made");
+}
+
+#[tokio::test]
+async fn the_user_is_told_the_marks_of_an_answer_and_refused_while_the_session_is_stopped() {
+    let lab = Arc::new(Lab::default());
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let session = start(
+        &url,
+        dir.path(),
+        Options {
+            tools: vec![Outside::web() as Arc<dyn ToolProvider>],
+            ..Options::default()
+        },
+    );
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research web the alpha module").await;
+    // The research read the web, so its answers carry that mark; a changed file degrades them.
+    std::fs::write(dir.path().join("a.txt"), "alpha, edited later").unwrap();
+    let reply = session.ask_knowledge("t1", "plain", None).await.unwrap();
+    assert!(reply.untrusted_web && !reply.untrusted_tools, "{reply:?}");
+    assert!(reply.degraded, "{reply:?}");
+
+    session.stop();
+    let refused = session
+        .ask_knowledge("t1", "plain", None)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("the session is stopped"), "{refused}");
+    assert_eq!(answers(&session).len(), 1, "no question was started");
+    session.resume_work();
+    assert!(session.ask_knowledge("t1", "plain", None).await.is_ok());
+}
+
+#[tokio::test]
+async fn the_root_prompt_teaches_knowledge_agents_only_while_the_feature_is_on() {
+    for enabled in [true, false] {
+        let lab = Arc::new(Lab::default());
+        let url = serve(Arc::clone(&lab)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let session = start(
+            &url,
+            dir.path(),
+            Options {
+                knowledge: KnowledgeConfig {
+                    settings: imperium_config::KnowledgeSettings {
+                        enabled,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Options::default()
+            },
+        );
+        let mut events = session.subscribe();
+        say(&session, &mut events, "hello").await;
+        let first = lab.all().remove(0);
+        let system = system(&first);
+        let tools = first["tools"].to_string();
+        assert_eq!(system.contains("keep_as_knowledge"), enabled);
+        assert_eq!(tools.contains("keep_as_knowledge"), enabled);
+    }
 }

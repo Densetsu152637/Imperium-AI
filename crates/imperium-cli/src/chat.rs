@@ -8,15 +8,15 @@ use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
     ContextFit, MODEL_RESIDENCY, ModelResidency, RewindMode, SessionAgentAsk,
-    SessionAgentAskParams, SessionAgentKnowledge, SessionAgentKnowledgeParams, SessionAgentResume,
-    SessionAgentResumeParams, SessionAgents, SessionAgentsParams, SessionAnswer,
-    SessionAnswerParams, SessionBranch, SessionBranchParams, SessionCheckpoints,
-    SessionCheckpointsParams, SessionCheckpointsResult, SessionCompare, SessionCompareParams,
-    SessionComparePick, SessionComparePickParams, SessionControl, SessionControlParams,
-    SessionCreate, SessionCreateParams, SessionQueue, SessionQueueParams, SessionRespond,
-    SessionRespondParams, SessionReview, SessionReviewParams, SessionReviewResult, SessionRewind,
-    SessionRewindParams, SessionRewindResult, SessionSend, SessionSendParams, SessionSubscribe,
-    SessionSubscribeParams, SessionSuggestionRespond, SuggestionRespondParams,
+    SessionAgentAskParams, SessionAgentAskResult, SessionAgentKnowledge,
+    SessionAgentKnowledgeParams, SessionAgentResume, SessionAgentResumeParams, SessionAgents,
+    SessionAgentsParams, SessionAnswer, SessionAnswerParams, SessionBranch, SessionBranchParams,
+    SessionCheckpoints, SessionCheckpointsParams, SessionCheckpointsResult, SessionCompare,
+    SessionCompareParams, SessionComparePick, SessionComparePickParams, SessionControl,
+    SessionControlParams, SessionCreate, SessionCreateParams, SessionQueue, SessionQueueParams,
+    SessionRespond, SessionRespondParams, SessionReview, SessionReviewParams, SessionReviewResult,
+    SessionRewind, SessionRewindParams, SessionRewindResult, SessionSend, SessionSendParams,
+    SessionSubscribe, SessionSubscribeParams, SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
     AgentEvent, AgentStatus, AgentSummary, ContextCategory, ExtensionKind, KnowledgeCard,
@@ -376,7 +376,7 @@ impl Chat {
                     })
                     .await;
                 match result {
-                    Ok(result) => print!("{}", describe_answer(result.outcome, &result.answer)),
+                    Ok(result) => print!("{}", describe_answer(&result)),
                     Err(error) => println!("{error}"),
                 }
             }
@@ -1198,10 +1198,7 @@ fn command(text: &str) -> Option<Command> {
         ("/retire", RETIRE_USAGE),
     ] {
         if text == prefix || text.starts_with(&format!("{prefix} ")) {
-            let rest = text[prefix.len()..].trim();
-            let (first, others) = rest
-                .split_once(char::is_whitespace)
-                .map_or((rest, ""), |(first, others)| (first, others.trim()));
+            let (first, others) = agent_and_rest(&text[prefix.len()..]);
             return Some(match prefix {
                 "/retire" if !first.is_empty() && others.is_empty() => {
                     Command::Retire(first.to_string())
@@ -1301,12 +1298,39 @@ fn describe_knowledge(card: &KnowledgeCard) -> String {
     format!("      {}\n", parts.join(" · "))
 }
 
-/// An answer to `/ask`.
-fn describe_answer(outcome: QuestionOutcome, answer: &str) -> String {
-    match outcome {
-        QuestionOutcome::Answered => format!("{answer}\n"),
-        other => format!("The question ended ({other:?}): {answer}\n"),
+/// An answer to `/ask`, with the marks it carries.
+fn describe_answer(result: &SessionAgentAskResult) -> String {
+    let mut out = match result.outcome {
+        QuestionOutcome::Answered => format!("{}\n", result.answer),
+        other => format!("The question ended ({other:?}): {}\n", result.answer),
+    };
+    let marks: Vec<&str> = [
+        (
+            result.degraded,
+            "degraded: its sources changed since it read them",
+        ),
+        (result.untrusted_web, "may hold web material"),
+        (result.untrusted_tools, "may hold tool results"),
+    ]
+    .into_iter()
+    .filter_map(|(set, mark)| set.then_some(mark))
+    .collect();
+    if !marks.is_empty() {
+        out.push_str(&format!("({})\n", marks.join("; ")));
     }
+    out
+}
+
+/// Splits `/ask`'s argument into the agent (a word, or a title in double quotes) and the rest.
+fn agent_and_rest(text: &str) -> (&str, &str) {
+    let text = text.trim();
+    if let Some(quoted) = text.strip_prefix('"')
+        && let Some((title, rest)) = quoted.split_once('"')
+    {
+        return (title.trim(), rest.trim());
+    }
+    text.split_once(char::is_whitespace)
+        .map_or((text, ""), |(first, rest)| (first, rest.trim()))
 }
 
 /// The queue as `/queue` prints it.
@@ -1814,6 +1838,22 @@ mod tests {
             );
         }
         assert_eq!(command("please /ask t1 this"), None);
+        // A title with spaces is quoted.
+        assert_eq!(
+            command("/ask \"Billing crate reader\" where is rounding done?"),
+            Some(Command::Ask(
+                "Billing crate reader".into(),
+                "where is rounding done?".into()
+            ))
+        );
+        assert_eq!(
+            command("/retire \"Billing crate reader\""),
+            Some(Command::Retire("Billing crate reader".into()))
+        );
+        assert!(matches!(
+            command("/ask \"Billing crate reader\""),
+            Some(Command::Usage(_))
+        ));
     }
 
     fn card(topic: &str) -> KnowledgeCard {
@@ -1870,11 +1910,30 @@ mod tests {
             text,
             "      knowledge: the parser (answering, 2 waiting) · 5 sources, 1 changed · 4 questions · about 800 tokens a question · 50 % cached last time · holds web material\n"
         );
+        let reply = |outcome, answer: &str| SessionAgentAskResult {
+            question_id: "q1".into(),
+            outcome,
+            answer: answer.into(),
+            degraded: false,
+            untrusted_web: false,
+            untrusted_tools: false,
+        };
         assert_eq!(
-            describe_answer(QuestionOutcome::Answered, "it is 42"),
+            describe_answer(&reply(QuestionOutcome::Answered, "it is 42")),
             "it is 42\n"
         );
-        assert!(describe_answer(QuestionOutcome::Timeout, "too slow").contains("Timeout"));
+        assert!(describe_answer(&reply(QuestionOutcome::Timeout, "too slow")).contains("Timeout"));
+        // The marks the answer carries are printed after it.
+        let marked = SessionAgentAskResult {
+            degraded: true,
+            untrusted_web: true,
+            untrusted_tools: true,
+            ..reply(QuestionOutcome::Answered, "it is 42")
+        };
+        assert_eq!(
+            describe_answer(&marked),
+            "it is 42\n(degraded: its sources changed since it read them; may hold web material; may hold tool results)\n"
+        );
     }
 
     #[test]

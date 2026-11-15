@@ -83,12 +83,127 @@ impl Observed {
                 observed.asked = true;
             } else if READ_TOOLS.contains(&tool.as_str())
                 && let Some(arguments) = arguments
-                && case.covered.iter().any(|path| arguments.contains(path))
+                && case
+                    .covered
+                    .iter()
+                    .any(|covered| rereads(tool, arguments, covered))
             {
                 observed.reread = true;
             }
         }
         observed
+    }
+}
+
+/// Whether a call of `tool` with these JSON `arguments` reads the `covered` file again:
+/// `read_file` of it, `list_dir` or `grep` over it or a folder holding it (a `grep`'s `glob`
+/// must match its name), or `glob` with a pattern that matches it under the folder searched.
+fn rereads(tool: &str, arguments: &str, covered: &str) -> bool {
+    let Ok(serde_json::Value::Object(arguments)) = serde_json::from_str(arguments) else {
+        // Arguments that are not a JSON object: fall back to looking for the path in the text.
+        return arguments.replace('\\', "/").contains(&normalise(covered));
+    };
+    let text = |key: &str| arguments.get(key).and_then(serde_json::Value::as_str);
+    let covered = normalise(covered);
+    // The folder or file named; the project root when none.
+    let Some(rest) = rest_under(&normalise(text("path").unwrap_or("")), &covered) else {
+        return false;
+    };
+    match tool {
+        "read_file" => text("path").is_some() && rest.is_empty(),
+        "grep" => text("glob").is_none_or(|glob| glob_matches(glob, &rest)),
+        "glob" => text("pattern").is_some_and(|pattern| glob_matches(pattern, &rest)),
+        _ => true,
+    }
+}
+
+/// A path with `/` separators, no `./` start and no trailing `/`.
+fn normalise(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    let segments: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect();
+    let joined = segments.join("/");
+    // An absolute path keeps its first slash only so a root alone is not empty.
+    if path.starts_with('/') && !joined.is_empty() {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+/// What lies below `folder` on the way to `file` ("" when they are the same path), when `file`
+/// is in it. An empty folder is the project root, which holds everything. One path may be
+/// absolute and the other relative to the project, so leading segments of either may be dropped.
+fn rest_under(folder: &str, file: &str) -> Option<String> {
+    if folder.is_empty() {
+        return Some(file.trim_start_matches('/').to_string());
+    }
+    let folder: Vec<&str> = folder.split('/').filter(|part| !part.is_empty()).collect();
+    let file: Vec<&str> = file.split('/').filter(|part| !part.is_empty()).collect();
+    for skip in 0..folder.len() {
+        if file.starts_with(&folder[skip..]) {
+            return Some(file[folder.len() - skip..].join("/"));
+        }
+    }
+    for skip in 0..file.len() {
+        if file[skip..].starts_with(&folder) {
+            return Some(file[skip + folder.len()..].join("/"));
+        }
+    }
+    None
+}
+
+/// Whether `glob` (`*`, `**`, `?`, `{a,b}`) matches `rest`: a glob without `/` matches the
+/// file's name at any depth, one with it the path below the folder.
+fn glob_matches(glob: &str, rest: &str) -> bool {
+    let glob = glob.replace('\\', "/");
+    let subject = if glob.contains('/') {
+        rest
+    } else {
+        rest.rsplit('/').next().unwrap_or(rest)
+    };
+    let glob = glob.trim_start_matches("./");
+    expand_braces(glob)
+        .iter()
+        .any(|alternative| wildcard(alternative.as_bytes(), subject.as_bytes()))
+}
+
+fn expand_braces(glob: &str) -> Vec<String> {
+    let Some(open) = glob.find('{') else {
+        return vec![glob.to_string()];
+    };
+    let Some(close) = glob[open..].find('}').map(|at| open + at) else {
+        return vec![glob.to_string()];
+    };
+    let (head, tail) = (&glob[..open], &glob[close + 1..]);
+    glob[open + 1..close]
+        .split(',')
+        .flat_map(|choice| expand_braces(&format!("{head}{choice}{tail}")))
+        .collect()
+}
+
+fn wildcard(pattern: &[u8], text: &[u8]) -> bool {
+    match pattern {
+        [] => text.is_empty(),
+        [b'*', b'*', rest @ ..] => {
+            let rest = rest.strip_prefix(b"/").unwrap_or(rest);
+            (0..=text.len()).any(|at| wildcard(rest, &text[at..]))
+        }
+        [b'*', rest @ ..] => {
+            let reach = text
+                .iter()
+                .position(|byte| *byte == b'/')
+                .unwrap_or(text.len());
+            (0..=reach).any(|at| wildcard(rest, &text[at..]))
+        }
+        [b'?', rest @ ..] => text
+            .split_first()
+            .is_some_and(|(byte, tail)| *byte != b'/' && wildcard(rest, tail)),
+        [byte, rest @ ..] => text
+            .split_first()
+            .is_some_and(|(head, tail)| head == byte && wildcard(rest, tail)),
     }
 }
 
@@ -181,6 +296,61 @@ mod tests {
         assert_eq!(reward(&elsewhere).verdict, Verdict::Reread, "no ask at all");
         assert!(reward(&asked).reward > reward(&both).reward);
         assert!(reward(&both).reward > reward(&reread).reward);
+    }
+
+    #[test]
+    fn a_re_read_is_found_whatever_the_path_looks_like() {
+        let case = case("asks-about-what-t1-read");
+        let rereads = |tool: &str, arguments: &str| {
+            Observed::from_events(&case, [&started(tool, arguments)]).reread
+        };
+        // Separators, a leading ./, and absolute or relative forms of the same file.
+        assert!(rereads("read_file", r#"{"path":"src\\parser.rs"}"#));
+        assert!(rereads("read_file", r#"{"path":"./src/parser.rs"}"#));
+        assert!(rereads(
+            "read_file",
+            r#"{"path":"/work/project/src/parser.rs"}"#
+        ));
+        assert!(rereads(
+            "read_file",
+            r#"{"path":"C:\\work\\src\\lexer.rs"}"#
+        ));
+        assert!(!rereads("read_file", r#"{"path":"src/parser_tests.rs"}"#));
+        assert!(
+            !rereads("read_file", r#"{"path":"src"}"#),
+            "a folder is not a file read"
+        );
+        // A listing, search or glob over a folder that holds a covered file.
+        assert!(rereads("list_dir", r#"{"path":"src"}"#));
+        assert!(rereads("list_dir", r#"{"path":"/work/project/docs"}"#));
+        assert!(!rereads("list_dir", r#"{"path":"tests"}"#));
+        assert!(
+            rereads("grep", r#"{"pattern":"fn parse"}"#),
+            "the project root covers it"
+        );
+        assert!(rereads("grep", r#"{"pattern":"x","path":"src"}"#));
+        assert!(rereads("grep", r#"{"pattern":"x","path":"src/parser.rs"}"#));
+        assert!(rereads(
+            "grep",
+            r#"{"pattern":"x","path":"src","glob":"*.rs"}"#
+        ));
+        assert!(!rereads(
+            "grep",
+            r#"{"pattern":"x","path":"src","glob":"*.toml"}"#
+        ));
+        assert!(!rereads("grep", r#"{"pattern":"x","path":"tests"}"#));
+        assert!(rereads("glob", r#"{"pattern":"**/*.rs"}"#));
+        assert!(rereads("glob", r#"{"pattern":"src/*.{rs,toml}"}"#));
+        assert!(rereads("glob", r#"{"pattern":"*.rs","path":"src"}"#));
+        assert!(rereads("glob", r#"{"pattern":"parser.rs"}"#));
+        assert!(!rereads("glob", r#"{"pattern":"*.toml"}"#));
+        assert!(!rereads("glob", r#"{"pattern":"*.rs","path":"tests"}"#));
+        // Other tools never count, and arguments that are not JSON fall back to the text.
+        assert!(!rereads(
+            "run_command",
+            r#"{"command":"cat src/parser.rs"}"#
+        ));
+        assert!(rereads("read_file", "src/parser.rs"));
     }
 
     #[test]
