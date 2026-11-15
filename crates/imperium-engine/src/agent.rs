@@ -756,7 +756,9 @@ impl Agent {
                     Frozen {
                         system: content.clone(),
                         tools: self.last_tools.iter().map(FrozenTool::of).collect(),
-                        effort: self.request_effort().map(|effort| effort.as_str().to_string()),
+                        effort: self
+                            .request_effort()
+                            .map(|effort| effort.as_str().to_string()),
                     },
                 );
             }

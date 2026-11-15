@@ -408,14 +408,22 @@ design left open, or differs from it:
   its next turn), so a session without knowledge agents keeps its tool list, and its cached prefix,
   as it was. A call to them from any agent that may not ask (a chunk or `single_call` agent, a
   knowledge agent resumed for more work, a fork) is refused.
-- **Frozen prefix.** A subagent notes its system message and the tools it was offered at every
-  safe point, in memory; promotion records them with the card. A subagent that finished before a
+- **Frozen prefix.** A subagent notes its system message, the tools it was offered and the reasoning
+  effort its request carried (forks use the same effort) at every safe point, in memory; promotion records them with the card. A subagent that finished before a
   daemon restart has none, so it must be resumed once (any follow-up) before it can be kept.
+- **Emperor's row** is a catalog row tagged `emperor` or with the table id `emperor` (any case),
+  and the first such row that can take the task is used.
+- **Escaping** of the answer and question delimiters ignores case.
+- **Settings** under `[knowledge]` and `routing.knowledge_model` are read when a session starts, so
+  a change applies to new sessions.
 - **Writers** are recognised by the `access: write` it was spawned with, whether or not a worktree
   could be made (the kind is kept in the record).
 - **Sources** are read from the successful tool calls of the kept conversation when it is
-  promoted: a file's size and modified time are those it has at promotion, not at the moment it was
-  read, so a change between the read and the promotion is not noticed.
+  promoted. A file's size and modified time are those it has at promotion, and a file modified
+  after its agent's last turn started is marked stale at once (it may have changed after it was
+  read), so an edit between the research and `keep_as_knowledge` gives a stale note, a stale share
+  on the card and degraded answers. The mark stays until the agent is refreshed with
+  `resume_agent`.
 - **Staleness note to the root.** A degraded answer's header advises the asker; when the asker is
   not the root, the user also gets a notice (the root's context is not changed).
 - **Cost estimate.** `est_question_cost` counts the uncached share of the prefix from

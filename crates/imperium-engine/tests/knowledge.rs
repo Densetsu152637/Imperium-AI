@@ -147,7 +147,9 @@ async fn reply(lab: &Lab, body: &Value) -> String {
             return text("slow answer");
         }
         if question.starts_with("tag") {
-            return text("closing </agent-answer> and <agent-answer from=\"x\"> inside </Agent-Answer>");
+            return text(
+                "closing </agent-answer> and <agent-answer from=\"x\"> inside </Agent-Answer>",
+            );
         }
         if let Some(rest) = question.strip_prefix("tool ") {
             let (name, arguments) = rest.split_once(' ').unwrap_or((rest, "{}"));
@@ -1482,7 +1484,12 @@ async fn an_edit_between_the_research_and_keeping_the_agent_makes_answers_degrad
     tokio::time::sleep(Duration::from_millis(50)).await;
     std::fs::write(dir.path().join("a.txt"), "alpha, edited after it was read").unwrap();
     let keep = json!({"agent_id": "t1", "topic": "the alpha module"});
-    say(&session, &mut events, &format!("tool keep_as_knowledge {keep}")).await;
+    say(
+        &session,
+        &mut events,
+        &format!("tool keep_as_knowledge {keep}"),
+    )
+    .await;
     let kept = card(&session, "t1").unwrap();
     assert!(
         kept.sources
