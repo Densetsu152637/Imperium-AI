@@ -215,8 +215,9 @@ fn today_a_pinned_pack_follows_the_configured_ones() {
 fn today_a_pinned_pack_with_a_listed_pack_s_name_loads_beside_it() {
     let env = Env::new();
     let same = env.pack("acw");
-    env.configure(&listing(&[&same]));
+    // The command refuses a source name a listed pack already has, so pin before listing.
     env.pin("acw");
+    env.configure(&listing(&[&same]));
     let output = env.resolve(&[]);
     // Both are indexed (the daemon would skip the pinned one); the manifest names a reference
     // once, so one line shows.
