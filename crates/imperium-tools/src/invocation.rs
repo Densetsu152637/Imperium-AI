@@ -709,12 +709,15 @@ mod tests {
     #[tokio::test]
     async fn a_workspace_limited_to_local_files_runs_no_commands_but_edits_files() {
         let dir = tempfile::tempdir().unwrap();
-        let workspace = Workspace::new(dir.path())
-            .unwrap()
-            .with_profile(crate::AgentProfile::new(crate::ProfileRules {
-                local_files_only: true,
-                ..Default::default()
-            }));
+        let workspace =
+            Workspace::new(dir.path())
+                .unwrap()
+                .with_profile(imperium_policy::AgentProfile::new(
+                    imperium_policy::ProfileRules {
+                        local_files_only: true,
+                        ..Default::default()
+                    },
+                ));
         for (name, arguments) in [
             ("run_command", r#"{"command":"echo hi"}"#),
             ("run_command", r#"{"command":"echo hi","background":true}"#),
