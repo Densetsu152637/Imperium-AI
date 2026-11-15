@@ -6,7 +6,7 @@ use imperium_api::truncate_chars;
 use serde_json::{Value, json};
 
 /// Most characters of one result handed to the model.
-pub const MAX_RESULT_CHARS: usize = 60_000;
+pub(crate) const MAX_RESULT_CHARS: usize = 60_000;
 
 /// The extra tools a server's resources and prompts become, beside its own tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +87,7 @@ impl ToolKind {
 
 /// `body` marked as untrusted data returned by `server`. A closing tag inside the body cannot
 /// end the frame early.
-pub fn frame(kind: &str, server: &str, attribute: (&str, &str), body: &str) -> String {
+pub(crate) fn frame(kind: &str, server: &str, attribute: (&str, &str), body: &str) -> String {
     let body = neutralise(&truncate_chars(body, MAX_RESULT_CHARS));
     let (name, value) = attribute;
     let value = value.replace(['"', '<', '>', '\n', '\r'], " ");
@@ -123,7 +123,7 @@ fn field<'a>(value: &'a Value, name: &str) -> &'a str {
 }
 
 /// A page of resources, and of resource templates when given.
-pub fn resources_listing(page: &Value, templates: Option<&Value>) -> String {
+pub(crate) fn resources_listing(page: &Value, templates: Option<&Value>) -> String {
     let mut out = String::new();
     for resource in page
         .get("resources")
@@ -175,7 +175,7 @@ pub fn resources_listing(page: &Value, templates: Option<&Value>) -> String {
 }
 
 /// A page of prompts with their arguments (required ones starred).
-pub fn prompts_listing(page: &Value) -> String {
+pub(crate) fn prompts_listing(page: &Value) -> String {
     let mut out = String::new();
     for prompt in page
         .get("prompts")
@@ -221,7 +221,7 @@ fn cursor_line(out: &mut String, page: &Value) {
 }
 
 /// The contents of a `resources/read` result as text; a binary blob is described, not decoded.
-pub fn resource_text(result: &Value) -> String {
+pub(crate) fn resource_text(result: &Value) -> String {
     let parts: Vec<String> = result
         .get("contents")
         .and_then(Value::as_array)
@@ -259,7 +259,7 @@ pub fn resource_text(result: &Value) -> String {
 }
 
 /// The messages of a `prompts/get` result, one block per message.
-pub fn prompt_text(result: &Value) -> String {
+pub(crate) fn prompt_text(result: &Value) -> String {
     let mut out = String::new();
     let description = field(result, "description");
     if !description.is_empty() {

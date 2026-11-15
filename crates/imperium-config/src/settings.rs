@@ -2011,13 +2011,13 @@ impl Default for RoutingSettings {
 }
 
 /// Task tags the built-in rules send to small local models.
-pub const MENIAL_TAGS: [&str; 5] = ["refactor", "tests", "ui", "format", "docs"];
+pub(crate) const MENIAL_TAGS: [&str; 5] = ["refactor", "tests", "ui", "format", "docs"];
 
 /// Task tags the built-in rules send to the CPU lane when it can take them.
-pub const CPU_LANE_TAGS: [&str; 4] = ["critique", "review", "verify", "proof-check"];
+pub(crate) const CPU_LANE_TAGS: [&str; 4] = ["critique", "review", "verify", "proof-check"];
 
 /// Task tags the built-in rules send to cloud frontier models.
-pub const HARD_TAGS: [&str; 5] = ["architecture", "math", "proof", "algorithm", "design"];
+pub(crate) const HARD_TAGS: [&str; 5] = ["architecture", "math", "proof", "algorithm", "design"];
 
 impl RoutingSettings {
     /// The built-in task-class rules, hard classes first so a task tagged with both a hard

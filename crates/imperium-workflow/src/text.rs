@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 /// A Markdown link on a line, with the text before it since the previous link.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Link {
+pub(crate) struct Link {
     /// The words leading up to the link (`Incorrect behavior or incidents:`).
     pub lead: String,
     pub text: String,
@@ -13,7 +13,7 @@ pub struct Link {
 }
 
 /// Inline `[text](target)` links in `line`. Images and links without a target are skipped.
-pub fn links(line: &str) -> Vec<Link> {
+pub(crate) fn links(line: &str) -> Vec<Link> {
     let mut found = Vec::new();
     let mut rest = line;
     let mut lead_start = 0;
@@ -43,7 +43,7 @@ pub fn links(line: &str) -> Vec<Link> {
 }
 
 /// GitHub's heading anchor: lowercase, spaces to hyphens, punctuation dropped.
-pub fn anchor(heading: &str) -> String {
+pub(crate) fn anchor(heading: &str) -> String {
     heading
         .trim()
         .to_lowercase()
@@ -58,7 +58,7 @@ pub fn anchor(heading: &str) -> String {
 
 /// A heading and its body, up to the next heading of the same or a higher level.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Section {
+pub(crate) struct Section {
     pub heading: String,
     pub anchor: String,
     pub level: usize,
@@ -66,7 +66,7 @@ pub struct Section {
 }
 
 /// Every heading section of a document (fenced code is not mistaken for headings).
-pub fn sections(document: &str) -> Vec<Section> {
+pub(crate) fn sections(document: &str) -> Vec<Section> {
     let lines: Vec<&str> = document.lines().collect();
     let mut headings = Vec::new();
     let mut in_fence = false;
@@ -108,7 +108,7 @@ const STOPWORDS: [&str; 30] = [
 ];
 
 /// Matching terms: lowercase words of three letters or more, minus common filler words.
-pub fn terms(text: &str) -> BTreeSet<String> {
+pub(crate) fn terms(text: &str) -> BTreeSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .map(str::to_lowercase)
         .filter(|word| word.len() >= 3 && !STOPWORDS.contains(&word.as_str()))
@@ -117,13 +117,13 @@ pub fn terms(text: &str) -> BTreeSet<String> {
 
 /// Whether two terms are the same word: equal, or one of four letters or more begins the
 /// other (`debug` and `debugging`, `push` and `pushes`).
-pub fn same_word(a: &str, b: &str) -> bool {
+pub(crate) fn same_word(a: &str, b: &str) -> bool {
     let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
     short == long || (short.len() >= 4 && long.starts_with(short))
 }
 
 /// How many of `wanted` appear in `have`.
-pub fn overlap(wanted: &BTreeSet<String>, have: &BTreeSet<String>) -> usize {
+pub(crate) fn overlap(wanted: &BTreeSet<String>, have: &BTreeSet<String>) -> usize {
     wanted
         .iter()
         .filter(|term| have.iter().any(|other| same_word(term, other)))
@@ -131,7 +131,7 @@ pub fn overlap(wanted: &BTreeSet<String>, have: &BTreeSet<String>) -> usize {
 }
 
 /// Rough tokens in a text: four characters a token.
-pub fn tokens(text: &str) -> u32 {
+pub(crate) fn tokens(text: &str) -> u32 {
     u32::try_from(text.len().div_ceil(4)).unwrap_or(u32::MAX)
 }
 

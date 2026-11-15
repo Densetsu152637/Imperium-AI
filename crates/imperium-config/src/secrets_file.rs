@@ -735,7 +735,7 @@ impl fmt::Debug for AutoSecrets {
 
 /// Decides which store to use: on Linux, the keychain when reading a name nobody writes does not
 /// report the keychain as missing; on every other platform, always the keychain.
-pub fn detect_backend(keychain: &dyn SecretStore) -> SecretBackend {
+pub(crate) fn detect_backend(keychain: &dyn SecretStore) -> SecretBackend {
     if !cfg!(target_os = "linux") {
         return SecretBackend::Keychain;
     }
@@ -748,7 +748,7 @@ pub fn detect_backend(keychain: &dyn SecretStore) -> SecretBackend {
 /// Who is opening the store. The daemon decides the backend and records it; every other process
 /// follows the record, so the CLI and the daemon cannot keep secrets in different places.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Opener {
+pub(crate) enum Opener {
     Daemon,
     Client,
 }
