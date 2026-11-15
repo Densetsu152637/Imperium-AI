@@ -44,6 +44,8 @@ pub(super) struct ForkInfo {
     /// Raised when the question times out or is cancelled.
     pub stop: watch::Receiver<Option<Stop>>,
     used_web: AtomicBool,
+    /// Its slot was saved under its last lease.
+    saved: AtomicBool,
 }
 
 impl ForkInfo {
@@ -98,6 +100,9 @@ async fn cancelled(stop: &mut watch::Receiver<Option<Stop>>) {
 /// conversation, unchanged, then the question. Nothing of it is kept.
 pub(crate) async fn run_fork(shared: Arc<Shared>, request: ForkRequest) -> ForkResult {
     let effort = request.frozen.effort.clone();
+    // What the runtime needs to save the slot once the fork is over, however it ends.
+    let local_model = request.model.local.then(|| request.model.model.clone());
+    let holder = imperium_api::holder(&shared.session_id, &request.source_id);
     let ForkRequest {
         fork_id,
         source_id,
@@ -132,9 +137,20 @@ pub(crate) async fn run_fork(shared: Arc<Shared>, request: ForkRequest) -> ForkR
         source: source_id,
         stop,
         used_web: AtomicBool::new(false),
+        saved: AtomicBool::new(false),
     });
     let result = agent.answer_loop(&tools, max_steps).await;
     shared.inboxes.close(&fork_id);
+    drop(agent);
+    // A fork that did not save its slot under its last lease (it was cancelled or failed, or
+    // ended on an error) saves it now, with its cells in place, if nobody has taken it.
+    // A session that has closed leaves no file behind.
+    if !result.saved
+        && !shared.knowledge.closed()
+        && let (Some(model), Some(local)) = (local_model, shared.local.as_deref())
+    {
+        local.save_kept(&model, &holder).await;
+    }
     result
 }
 
@@ -152,6 +168,10 @@ impl Agent {
 
     fn ended(&self, end: ForkEnd, usage: Usage, calls: u32) -> ForkResult {
         ForkResult {
+            saved: self
+                .fork
+                .as_ref()
+                .is_some_and(|fork| fork.saved.load(Ordering::SeqCst)),
             end,
             usage,
             calls,
@@ -199,7 +219,7 @@ impl Agent {
             if let Some(why) = self.hold_unless_cancelled(&mut attached, &holder).await {
                 return self.ended(ForkEnd::Stopped(why), usage, calls);
             }
-            let (result, started, queue_wait) = loop {
+            let (result, started, queue_wait, lease) = loop {
                 // Every call is checked against the budgets, charged to the knowledge agent's
                 // model.
                 if let Some(message) = self.budget_stop().await {
@@ -228,15 +248,18 @@ impl Agent {
                     () = cancelled(&mut cancel) => Streamed::Paused,
                     Ok(_) = stop.wait_for(|stopped| *stopped) => Streamed::Stopped,
                 };
-                drop(lease);
                 match streamed {
-                    Streamed::Done(result) => break (result, started, queue_wait),
+                    // The lease is kept until the reply is read: a final reply saves the slot
+                    // under it.
+                    Streamed::Done(result) => break (result, started, queue_wait, lease),
                     Streamed::Paused => {
+                        drop(lease);
                         let why = self.stop_reason().unwrap_or(Stop::Cancelled);
                         return self.ended(ForkEnd::Stopped(why), usage, calls);
                     }
                     // The session was stopped: the request is sent again on resume.
                     Streamed::Stopped => {
+                        drop(lease);
                         if let Some(why) = self.hold_unless_cancelled(&mut attached, &holder).await
                         {
                             return self.ended(ForkEnd::Stopped(why), usage, calls);
@@ -278,6 +301,26 @@ impl Agent {
                     self.messages.len(),
                 ));
             }
+            // The slot of a fork's last call is saved while the fork still holds it: once it is
+            // released a call queued for a slot takes it and writes over the prefix. A call that
+            // goes on to tools, or a fork that is cancelled or fails, is saved after the fact,
+            // best effort.
+            if tool_calls.is_empty()
+                && !self.shared.knowledge.closed()
+                && let (Some(slot), Some(local), Some(fork)) = (
+                    lease.as_ref().and_then(|lease| lease.slot),
+                    self.local_models(),
+                    &self.fork,
+                )
+                && local
+                    .save_leased(&self.model.model, &holder, slot)
+                    .await
+                    .is_ok()
+            {
+                // Only a save that worked spares the after-the-fact one.
+                fork.saved.store(true, Ordering::SeqCst);
+            }
+            drop(lease);
             if tool_calls.is_empty() {
                 let end = if text.trim().is_empty() {
                     ForkEnd::Failed("the model replied with nothing".into())
@@ -417,13 +460,18 @@ impl Agent {
             id: self.id.clone(),
             title,
         };
+        let fork_model = self.shared.agents.model(&target.agent_id);
         let mut pending =
             crate::knowledge::start_question(&self.shared, asker, target, question.to_string());
-        // Asleep until the answer arrives: the local runtime may swap this agent's model out
-        // for the fork's and restore it afterwards.
-        let _waiting = self
-            .local_models()
-            .map(|local| local.waiting(&self.model.model, &self.holder()));
+        // Asleep until the answer arrives, so the local runtime may swap this agent's model out
+        // for the fork's and restore it afterwards; but not when the fork runs where it needs
+        // nothing of this agent's slot: hosted, or loaded with a free slot beside it.
+        let asleep = self.local_models().filter(|local| match &fork_model {
+            Some(model) if !model.local => false,
+            Some(model) => !local.fork_fits(&self.model.model, &model.model),
+            None => true,
+        });
+        let _waiting = asleep.map(|local| local.waiting(&self.model.model, &self.holder()));
         let answer = self.wait_for_answer(&mut pending, timeout).await;
         match answer.outcome {
             QuestionOutcome::Answered => Ok(answer.text),

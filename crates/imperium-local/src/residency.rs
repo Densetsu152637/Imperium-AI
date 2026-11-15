@@ -116,6 +116,9 @@ pub enum Reason {
     /// Its server exited on its own: it is taken out of the loaded set, and the next call for
     /// it loads it again (after [`crash_backoff`] when it keeps crashing).
     Crashed,
+    /// A knowledge agent's fork ended: its slot was saved, cells and all, to be restored if
+    /// another agent takes the slot.
+    Kept,
 }
 
 /// How long a model that crashed `streak` times in a row stays down before a call may load it
@@ -153,6 +156,7 @@ impl Reason {
             Reason::Stopped => "stopped",
             Reason::Budget => "budget",
             Reason::Crashed => "crashed",
+            Reason::Kept => "kept",
         }
     }
 

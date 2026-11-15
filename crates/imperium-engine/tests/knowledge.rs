@@ -2,7 +2,8 @@
 //! kept with the context it loaded, other agents ask it questions, and each question runs in an
 //! ephemeral fork that may only read.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,10 +11,11 @@ use axum::routing::post;
 use axum::{Json, Router};
 use imperium_api::{ToolCheck, ToolContext, ToolFuture, ToolProvider, ToolSpec};
 use imperium_engine::{
-    BudgetGate, BudgetVerdict, CatalogModel, KnowledgeConfig, ModelAvailability, ResolvedModel,
-    Session, SessionConfig, ToolGroup,
+    AcquireFuture, Availability, BudgetGate, BudgetVerdict, CatalogModel, KnowledgeConfig,
+    LocalLease, LocalModels, LocalPresence, LocalRequest, ModelAvailability, ResolvedModel,
+    ResumeFuture, Session, SessionConfig, SuspendFuture, ToolGroup,
 };
-use imperium_models::Endpoint;
+use imperium_models::{Endpoint, Pricing};
 use imperium_protocol::session::{
     AgentEvent, AgentStatus, KnowledgeCard, QuestionOutcome, SessionEvent,
 };
@@ -62,7 +64,8 @@ impl Lab {
 
 fn stream(delta: Value) -> String {
     let chunk = json!({"choices": [{"delta": delta}],
-                       "usage": {"prompt_tokens": 10, "completion_tokens": 2}});
+                       "usage": {"prompt_tokens": 10, "completion_tokens": 2,
+                                 "prompt_tokens_details": {"cached_tokens": 5}}});
     format!("data: {chunk}\n\ndata: [DONE]\n\n")
 }
 
@@ -338,6 +341,9 @@ struct Options {
     gate: Option<Arc<dyn BudgetGate>>,
     catalog: Vec<CatalogModel>,
     resume: bool,
+    /// A local runtime: the session's model runs on it.
+    local: Option<Arc<dyn LocalModels>>,
+    pricing: Option<Pricing>,
 }
 
 fn model(url: &str, spec: &str, name: &str, window: Option<u64>) -> ResolvedModel {
@@ -360,11 +366,30 @@ fn start(url: &str, dir: &std::path::Path, options: Options) -> Session {
     Session::spawn(SessionConfig {
         id: "s".into(),
         workspace: Workspace::new(dir).unwrap(),
-        model: Some(model(url, "fake:m", "m", options.window)),
+        model: Some(if options.local.is_some() {
+            ResolvedModel {
+                spec: "llamacpp:q".into(),
+                endpoint: Endpoint {
+                    base_url: String::new(),
+                    api_key: None,
+                },
+                model: "q".into(),
+                pricing: None,
+                local: true,
+                context_window: options.window,
+                kind: "llamacpp".into(),
+                reasoning: None,
+            }
+        } else {
+            ResolvedModel {
+                pricing: options.pricing,
+                ..model(url, "fake:m", "m", options.window)
+            }
+        }),
         catalog: options.catalog,
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),
-        local: None,
+        local: options.local,
         tools: options.tools,
         notices: Vec::new(),
         extensions: Default::default(),
@@ -844,6 +869,7 @@ async fn timeouts_remove_queued_questions_and_cancel_running_forks() {
                     ..Default::default()
                 },
                 models: None,
+                ..Default::default()
             },
             ..Options::default()
         },
@@ -1024,6 +1050,7 @@ async fn a_model_turned_off_after_promotion_refuses_the_question() {
             knowledge: KnowledgeConfig {
                 settings: Default::default(),
                 models: Some(Arc::clone(&switch) as Arc<dyn ModelAvailability>),
+                ..Default::default()
             },
             ..Options::default()
         },
@@ -1503,4 +1530,327 @@ async fn an_edit_between_the_research_and_keeping_the_agent_makes_answers_degrad
     assert!(output.contains("DEGRADED"), "{output}");
     let fork = lab.forks().pop().unwrap();
     assert!(last_content(&fork).contains("a.txt"));
+}
+
+// ---- stage 2: local residency ----
+
+/// A local runtime that serves every call from the fake model and records what it was asked.
+#[derive(Debug)]
+struct Local {
+    url: String,
+    log: Arc<Mutex<Vec<String>>>,
+    /// What `fork_fits` answers.
+    fits: AtomicBool,
+    /// The saved-slot cache, in bytes.
+    cache: AtomicU64,
+    /// `save_leased` fails.
+    fail_lease_saves: AtomicBool,
+}
+
+/// Records when it is dropped: the agent is no longer kept.
+struct Unkeep {
+    log: Arc<Mutex<Vec<String>>>,
+    what: String,
+}
+
+impl Drop for Unkeep {
+    fn drop(&mut self) {
+        self.log.lock().unwrap().push(self.what.clone());
+    }
+}
+
+impl Local {
+    fn new(url: &str, fits: bool) -> Arc<Self> {
+        Arc::new(Local {
+            url: url.into(),
+            log: Arc::default(),
+            fits: AtomicBool::new(fits),
+            cache: AtomicU64::new(1 << 40),
+            fail_lease_saves: AtomicBool::new(false),
+        })
+    }
+
+    fn count(&self, entry: &str) -> usize {
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|logged| logged.as_str() == entry)
+            .count()
+    }
+
+    fn note(&self, entry: String) {
+        self.log.lock().unwrap().push(entry);
+    }
+}
+
+impl LocalModels for Local {
+    fn availability(&self, _model: &str) -> Availability {
+        Availability::Loaded
+    }
+
+    fn acquire<'a>(&'a self, model: &'a str, holder: &'a str) -> AcquireFuture<'a> {
+        self.acquire_with(model, holder, LocalRequest::default())
+    }
+
+    fn acquire_with<'a>(
+        &'a self,
+        _model: &'a str,
+        _holder: &'a str,
+        _request: LocalRequest,
+    ) -> AcquireFuture<'a> {
+        Box::pin(async move { Ok(LocalLease::new(self.url.clone(), Some(0), None, ())) })
+    }
+
+    fn waiting(&self, _model: &str, holder: &str) -> LocalPresence {
+        self.note(format!("waiting {holder}"));
+        LocalPresence::untracked()
+    }
+
+    fn keep(&self, _model: &str, holder: &str) -> LocalPresence {
+        self.note(format!("keep {holder}"));
+        LocalPresence::new(Unkeep {
+            log: Arc::clone(&self.log),
+            what: format!("unkeep {holder}"),
+        })
+    }
+
+    fn save_kept<'a>(&'a self, _model: &'a str, holder: &'a str) -> SuspendFuture<'a> {
+        Box::pin(async move { self.note(format!("save_kept {holder}")) })
+    }
+
+    fn save_leased<'a>(&'a self, _model: &'a str, holder: &'a str, slot: u32) -> ResumeFuture<'a> {
+        Box::pin(async move {
+            self.note(format!("save_leased {holder} {slot}"));
+            if self.fail_lease_saves.load(Ordering::SeqCst) {
+                Err("no".to_string())
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    fn drop_saved(&self, holder: &str) {
+        self.note(format!("drop_saved {holder}"));
+    }
+
+    fn fork_fits(&self, _asker_model: &str, _fork_model: &str) -> bool {
+        self.fits.load(Ordering::SeqCst)
+    }
+
+    fn swap_cache_bytes(&self) -> Option<u64> {
+        Some(self.cache.load(Ordering::SeqCst))
+    }
+
+    fn kv_bytes_per_token(&self, _model: &str) -> Option<u64> {
+        Some(1000)
+    }
+}
+
+fn local_options(runtime: &Arc<Local>) -> Options {
+    Options {
+        local: Some(Arc::clone(runtime) as Arc<dyn LocalModels>),
+        ..Options::default()
+    }
+}
+
+#[tokio::test]
+async fn a_local_knowledge_agent_is_kept_saved_after_every_fork_and_forgotten_when_retired() {
+    let lab = Arc::new(Lab::default());
+    lab.slow_ms.store(30_000, Ordering::SeqCst);
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let runtime = Local::new(&url, true);
+    let session = start(&url, dir.path(), local_options(&runtime));
+    let mut events = session.subscribe();
+    let kept = research(&session, &mut events, "research the alpha module").await;
+    assert!(kept.local);
+    assert_eq!(runtime.count("keep s/t1"), 1, "kept from promotion");
+
+    // A fork that answers saves its slot under its last lease; one the asker gave up on is
+    // saved after the fact.
+    say(&session, &mut events, &ask("t1", "plain")).await;
+    assert_eq!(runtime.count("save_leased s/t1 0"), 1);
+    assert_eq!(runtime.count("save_kept s/t1"), 0);
+    let slow = json!({"agent": "t1", "question": "slow", "timeout_s": 1});
+    say(&session, &mut events, &format!("tool ask_agent {slow}")).await;
+    assert_eq!(answers(&session)[1].0, QuestionOutcome::Timeout);
+    assert_eq!(runtime.count("save_kept s/t1"), 1, "a cancelled fork too");
+    assert_eq!(runtime.count("save_leased s/t1 0"), 1);
+
+    // Resuming it changes the prefix, so the saved file goes; retiring removes it and the mark.
+    let resume = json!({"agent_id": "t1", "text": "read b.txt too"});
+    say(
+        &session,
+        &mut events,
+        &format!("tool resume_agent {resume}"),
+    )
+    .await;
+    say(&session, &mut events, "tool await_tasks {}").await;
+    assert_eq!(runtime.count("drop_saved s/t1"), 1);
+    assert_eq!(runtime.count("unkeep s/t1"), 0);
+    let retire = json!({"agent_id": "t1", "retire": true});
+    say(
+        &session,
+        &mut events,
+        &format!("tool keep_as_knowledge {retire}"),
+    )
+    .await;
+    assert_eq!(runtime.count("drop_saved s/t1"), 2);
+    assert_eq!(runtime.count("unkeep s/t1"), 1, "no longer kept");
+}
+
+#[tokio::test]
+async fn an_asker_keeps_its_slot_while_the_fork_has_room_and_sleeps_when_it_does_not() {
+    let lab = Arc::new(Lab::default());
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let runtime = Local::new(&url, true);
+    let session = start(&url, dir.path(), local_options(&runtime));
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research the alpha module").await;
+    let asleep = runtime.count("waiting s/root");
+
+    say(&session, &mut events, &ask("t1", "plain")).await;
+    assert_eq!(
+        runtime.count("waiting s/root"),
+        asleep,
+        "the fork had room beside it"
+    );
+
+    runtime.fits.store(false, Ordering::SeqCst);
+    say(&session, &mut events, &ask("t1", "plain")).await;
+    assert_eq!(
+        runtime.count("waiting s/root"),
+        asleep + 1,
+        "the fork needs its slot"
+    );
+}
+
+#[tokio::test]
+async fn local_knowledge_agents_are_limited_by_their_share_of_the_saved_slot_cache() {
+    let lab = Arc::new(Lab::default());
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let runtime = Local::new(&url, true);
+    let session = start(&url, dir.path(), local_options(&runtime));
+    let mut events = session.subscribe();
+    let first = research(&session, &mut events, "research the alpha module").await;
+
+    // Room for one and a half slots at the default share of one half: a second is refused.
+    runtime
+        .cache
+        .store(first.context_tokens * 1000 * 3, Ordering::SeqCst);
+    say(
+        &session,
+        &mut events,
+        &format!("spawn {}", json!([{"brief": "research"}])),
+    )
+    .await;
+    let keep = json!({"agent_id": "t2", "topic": "the beta module"});
+    say(
+        &session,
+        &mut events,
+        &format!("tool keep_as_knowledge {keep}"),
+    )
+    .await;
+    let output = tool_output(&session, "root", "keep_as_knowledge").unwrap();
+    assert!(
+        output.contains("slot_cache_share") && output.contains("t1 (the alpha module)"),
+        "{output}"
+    );
+    assert!(card(&session, "t2").is_none());
+
+    // Retiring the first makes room.
+    let retire = json!({"agent_id": "t1", "retire": true});
+    say(
+        &session,
+        &mut events,
+        &format!("tool keep_as_knowledge {retire}"),
+    )
+    .await;
+    say(
+        &session,
+        &mut events,
+        &format!("tool keep_as_knowledge {keep}"),
+    )
+    .await;
+    assert!(card(&session, "t2").is_some());
+}
+
+#[tokio::test]
+async fn a_hosted_estimate_prices_the_whole_prefix_once_the_provider_cache_has_expired() {
+    let lab = Arc::new(Lab::default());
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let session = start(
+        &url,
+        dir.path(),
+        Options {
+            pricing: Some(Pricing {
+                input_usd_per_mtok: 10.0,
+                output_usd_per_mtok: 20.0,
+                cached_input_usd_per_mtok: Some(1.0),
+            }),
+            knowledge: KnowledgeConfig {
+                cache_lifetime_s: HashMap::from([("fake:m".to_string(), 3)]),
+                ..Default::default()
+            },
+            ..Options::default()
+        },
+    );
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research the alpha module").await;
+    say(&session, &mut events, &ask("t1", "plain")).await;
+
+    // Half of the last fork's prompt was cached, and the cache is still warm.
+    let warm = card(&session, "t1").unwrap();
+    assert_eq!(warm.last_cached_ratio, Some(0.5));
+    let context = warm.context_tokens;
+    let cached = (context as f64 * 0.5) as u64;
+    let warm_cost = warm.est_question_cost.unwrap();
+    assert_eq!(warm_cost.tokens, context - cached + 800);
+
+    // Past the cache lifetime of its row of the model table, all of it is read afresh.
+    tokio::time::sleep(Duration::from_millis(3_300)).await;
+    let cold = card(&session, "t1").unwrap().est_question_cost.unwrap();
+    assert_eq!(cold.tokens, context + 800);
+    assert!(cold.cost_usd.unwrap() > warm_cost.cost_usd.unwrap());
+}
+
+#[tokio::test]
+async fn a_failed_lease_save_falls_back_and_a_closed_session_saves_nothing() {
+    let lab = Arc::new(Lab::default());
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let runtime = Local::new(&url, true);
+    let session = start(&url, dir.path(), local_options(&runtime));
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research the alpha module").await;
+
+    // The save under the final lease failed: the after-the-fact save still runs.
+    runtime.fail_lease_saves.store(true, Ordering::SeqCst);
+    say(&session, &mut events, &ask("t1", "plain")).await;
+    assert_eq!(runtime.count("save_leased s/t1 0"), 1);
+    assert_eq!(runtime.count("save_kept s/t1"), 1);
+
+    // After the session closed, a fork finishing leaves no file and no mark.
+    let saved = runtime.count("save_kept s/t1") + runtime.count("save_leased s/t1 0");
+    drop(events);
+    drop(session);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        runtime.count("unkeep s/t1"),
+        1,
+        "its mark went with the session"
+    );
+    assert_eq!(
+        runtime.count("save_kept s/t1") + runtime.count("save_leased s/t1 0"),
+        saved
+    );
 }

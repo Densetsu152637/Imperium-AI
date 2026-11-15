@@ -342,4 +342,47 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     fn queue_wait_s(&self, _model: &str) -> u32 {
         0
     }
+    /// Says that `holder`, a knowledge agent, is kept on `model` (docs/21-knowledge-agents.md):
+    /// from now until the presence is dropped its slot is saved when the model is swapped out or
+    /// unloaded, and its saved file outranks those of finished agents when the saved-slot cache
+    /// is trimmed. It never pins the model, and counts as neither working nor waiting.
+    fn keep(&self, _model: &str, _holder: &str) -> LocalPresence {
+        LocalPresence::untracked()
+    }
+    /// Saves `holder`'s slot on `model` to disk now without erasing its cells, after a question's
+    /// fork ended (however it ended), so the prefix can be restored if another agent overwrites
+    /// the slot. Does nothing when slots are not saved or the holder's cells are not in a free
+    /// slot any more.
+    fn save_kept<'a>(&'a self, _model: &'a str, _holder: &'a str) -> SuspendFuture<'a> {
+        Box::pin(async {})
+    }
+    /// Saves `holder`'s slot `slot` on `model` while the caller still holds its lease on it, so
+    /// nobody queued for a slot can take it first; leaves the cells in place. For a fork's final
+    /// call (see [`LocalModels::save_kept`] for the best-effort save after the lease is gone).
+    /// `Err` says why nothing was saved, so the caller can fall back.
+    fn save_leased<'a>(
+        &'a self,
+        _model: &'a str,
+        _holder: &'a str,
+        _slot: u32,
+    ) -> ResumeFuture<'a> {
+        Box::pin(async { Err("this runtime does not save slots".to_string()) })
+    }
+    /// Removes `holder`'s saved slots from the disk, for a knowledge agent that was retired or
+    /// resumed (its prefix changed).
+    fn drop_saved(&self, _holder: &str) {}
+    /// Whether `fork_model` is loaded with a slot free for a fork: an asker waiting for the fork's
+    /// answer holds no slot, so one free permit is enough even on the asker's own model, and the
+    /// asker need not give up its cached prompt.
+    fn fork_fits(&self, _asker_model: &str, _fork_model: &str) -> bool {
+        false
+    }
+    /// The bytes the saved-slot cache may hold, `None` when slots are not saved.
+    fn swap_cache_bytes(&self) -> Option<u64> {
+        None
+    }
+    /// The bytes of KV cache one token takes on `model`, `None` when unknown.
+    fn kv_bytes_per_token(&self, _model: &str) -> Option<u64> {
+        None
+    }
 }

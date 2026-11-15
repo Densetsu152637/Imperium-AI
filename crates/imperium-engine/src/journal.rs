@@ -40,8 +40,19 @@ impl Journal {
 
 /// The events recorded in a journal, oldest first; unreadable lines are skipped.
 pub fn read_events(path: &Path) -> Vec<AgentEvent> {
+    read_timed_events(path)
+        .into_iter()
+        .map(|(_, event)| event)
+        .collect()
+}
+
+/// [`read_events`] with the time each event was recorded, in milliseconds since the Unix epoch
+/// (0 for a line without one).
+pub fn read_timed_events(path: &Path) -> Vec<(u64, AgentEvent)> {
     #[derive(Deserialize)]
     struct Stored {
+        #[serde(default)]
+        at_ms: u64,
         #[serde(flatten)]
         event: AgentEvent,
     }
@@ -49,7 +60,7 @@ pub fn read_events(path: &Path) -> Vec<AgentEvent> {
         .unwrap_or_default()
         .lines()
         .filter_map(|line| serde_json::from_str::<Stored>(line).ok())
-        .map(|stored| stored.event)
+        .map(|stored| (stored.at_ms, stored.event))
         .collect()
 }
 

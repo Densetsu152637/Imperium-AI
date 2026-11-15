@@ -585,6 +585,12 @@ impl Agent {
     /// model is loaded and its context restored now, as the user's work, ahead of idle
     /// subagents, rather than at its next call. A hosted model keeps no state between calls.
     async fn ensure_resident(&self) {
+        // A fork's slot is restored by its next call, at the session's own priority (a
+        // background session's fork does not jump the user's calls); resuming it here would
+        // be the user's.
+        if self.fork.is_some() {
+            return;
+        }
         let Some(local) = self.local_models() else {
             return;
         };

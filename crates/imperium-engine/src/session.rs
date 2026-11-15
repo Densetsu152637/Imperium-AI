@@ -240,18 +240,19 @@ fn reset_after_restart(emitter: &Emitter, history: &History) {
 impl Session {
     /// Starts the session's root agent task. Must be called from within a Tokio runtime.
     pub fn spawn(config: SessionConfig) -> std::io::Result<Self> {
-        let previous = if config.resume {
-            crate::journal::read_events(&config.journal_path)
+        let timed = if config.resume {
+            crate::journal::read_timed_events(&config.journal_path)
         } else {
             Vec::new()
         };
-        let agents = Arc::new(AgentStore::open(
+        let agents = Arc::new(AgentStore::open_timed(
             config
                 .keep_agent_state
                 .then(|| agents_dir(&config.journal_path)),
-            &previous,
+            &timed,
             config.resume,
         ));
+        let previous: Vec<AgentEvent> = timed.into_iter().map(|(_, event)| event).collect();
         let journal = Journal::open(&config.journal_path)?;
         let (commands, receiver) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(EVENT_BUFFER);
@@ -630,7 +631,17 @@ impl Session {
     /// Every agent of the session with its kept state: the root first, then subagents in the
     /// order they started.
     pub fn agents(&self) -> Vec<AgentSummary> {
-        self.agents.list()
+        let mut agents = self.agents.list();
+        // A knowledge agent's cost estimate depends on how long ago it was last asked.
+        if let Some(shared) = self.shared.0.get() {
+            for card in agents
+                .iter_mut()
+                .filter_map(|agent| agent.knowledge.as_mut())
+            {
+                crate::knowledge::refresh_estimate(shared, card);
+            }
+        }
+        agents
     }
 
     /// Gives a finished (idle, failed, or interrupted) subagent a follow-up: it works again with
@@ -1158,6 +1169,7 @@ async fn run(
 /// Starts the `session.end` hooks as the session's task finishes: `reason` is `closed` (every
 /// handle was dropped) or `stopped`. They run detached, so ending never waits for them.
 fn session_ended(shared: &Shared, session_id: &str, reason: &str) {
+    crate::knowledge::session_closed(shared);
     shared.observe_in(
         &shared.workspace,
         HookEvent::SessionEnd,
