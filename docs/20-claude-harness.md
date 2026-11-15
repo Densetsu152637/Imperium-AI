@@ -4,8 +4,9 @@
 external agent, Claude Code in particular, use a running Imperium daemon: hand it tasks to
 orchestrate, and exercise its agents to find bugs and test features. It is the first piece of
 the MCP server bridge planned in [02](02-architecture.md#rust-workspace) and
-[12](12-roadmap.md) (item 31), which also covers exposing Imperium's own tools; nothing here
-exposes those.
+[12](12-roadmap.md) (item 31); the other half, which exposes Imperium's own tools to an outside
+client, is [`imperium mcp-serve --tools`](#exposing-imperiums-own-tools-implemented). Nothing in
+the harness itself exposes those.
 
 ## How it works
 
@@ -158,43 +159,117 @@ archived or exported there like any session.
 ## Tests
 
 `crates/imperium-cli/tests/mcp_serve.rs` runs the harness over an in-memory stdio pipe against
-a real daemon whose model is a fake HTTP endpoint (no model runtime, no network): tool listing,
+a real daemon whose model is a fake HTTP endpoint (no model runtime, no network). The `--tools`
+bridge is tested the same way, plus at the daemon's own method level
+(`crates/imperium-core/tests/bridge_tools.rs`): read tools only unless writes are on, a read
+framed as untrusted and journalled in one session, a write refused with no one to ask, and a
+write waiting for the user's answer and happening only after `allow`. The harness tests cover:
+tool listing,
 orchestrating a task, the `read_file` smoke test, a permission request left pending until
 denied and then allowed (with the file written only after `allow`), timeouts, errors, and the
 token never appearing in a reply. It also covers continuing a timed-out wait and a wait after a
 permission answer from the returned cursor, a steering message's wait, and bad input (non-UTF-8
 bytes, a request with no method). The event-reading logic has unit tests of its own.
 
-## Exposing Imperium's own tools (design, not built)
+## Exposing Imperium's own tools (implemented)
 
-Roadmap 31 also lists a full server bridge. Only the design is settled; nothing below exists.
+`imperium mcp-serve --tools` serves Imperium's own tools to an outside MCP client instead of
+the session-driving tools above. It is a separate mode of the same command, not more tools on
+the harness: the harness hands an agent a model to orchestrate, the bridge hands a client
+single tool calls, and a registration should say which one it is. Register it like the harness:
 
-- **Calls run inside a session.** An MCP client cannot be handed the file, search or memory code
-  directly: every call would go through a session (the caller's, or a bridge session the
-  caller creates in an environment), so the permission rules, the safety floor, the sandbox, the
-  budgets and the journal apply exactly as for the session's own agent. No second permission
-  path is added.
-- **Read-only by default.** The first version would list only read tools (`read_file`, `glob`,
-  `grep`, `memory_search`) as `imperium_<tool>`; anything that writes or runs commands appears
-  only when the user turns it on for that environment, and its calls still ask under the
-  session's mode. An ask cannot be answered by the MCP caller on its own authority: it surfaces
-  as a pending permission, answered with `respond_permission` or in the desktop, as it does for
-  sessions started through this server.
-- **Results are data.** Output returned over MCP is framed as untrusted for the caller, and an
-  Imperium MCP client never connects to this server (a loopback or self-referencing server is
-  refused), so tool calls cannot recurse through two daemons.
-- **Open questions:** whose budget a bridge session spends; how a caller names the session when
-  several are running; whether MCP resources (memory index, journal) are exposed too.
+```json
+{
+  "mcpServers": {
+    "imperium-tools": {
+      "command": "imperium",
+      "args": ["mcp-serve", "--tools", "--environment", "Work"]
+    }
+  }
+}
+```
+
+| Flag | Meaning |
+| ---- | ------- |
+| `--environment <name or id>` / `--project-dir <folder>` | Where the tools work: the environment's folders and rules, or a folder (default: the Home environment). |
+| `--session <id>` | Run the calls in an existing session instead of starting one. |
+| `--model <spec>` | The model of the session the server starts. The tools never call it, but a session needs one (`models.default` otherwise). |
+| `--allow-write` | Also offer the tools that change things. Off by default. |
+| `--approval-timeout-s <n>` | Seconds a permission request waits for the user (default 120). `0` refuses at once, for unattended use. |
+
+The tools are `imperium_<tool>`. Read tools: `read_file`, `list_dir`, `glob`, `grep`,
+`memory_search`, `memory_read`, `web_search`, `web_fetch`. With `--allow-write`:
+`write_file`, `edit_file`, `run_command`, `command_output`, `command_stop`, `memory_remember`.
+Their descriptions and schemas are the ones models are offered (`session.tools`), with MCP
+`readOnlyHint` and `openWorldHint` annotations. Delegation (`spawn_agent`), questions to the
+user (`ask_user`), starting sessions, and MCP and plugin tools are never bridged.
+
+### How it works
+
+- **Calls run inside a session.** The server starts one session when the first tool is called
+  (in the environment named, read-only unless writes are on, titled "MCP bridge", archived
+  when the server exits) and runs every call there with `session.run_tool` (protocol 0.41).
+  The session's root agent runs it between turns through the same path as a call its model
+  makes: the launcher's tool limits, the agent's permission profile and local-files-only lock,
+  the tool's own validation, the permission rules and the safety floor, approval, hooks and the
+  journal. There is no second permission path, and the call and its result are in the session's
+  events and transcript like any other. Calls run one at a time, in order; a call made while a
+  turn runs (only with `--session` on a busy session), or on a stopped session, ends at once
+  with an error.
+- **No model, no budget.** The tools make no model call, so a bridge session spends no tokens
+  or money and the token and cost budgets have nothing to count. The session still needs a
+  model to exist; without one the call says so.
+- **Read-only by default.** Without `--allow-write` the write tools are not listed, the
+  daemon refuses them if called anyway (`session.run_tool` takes `allow_write`, and the server
+  sends it only for a user who turned writes on), and the session the server starts mounts the
+  environment read-only. Writes are therefore an explicit choice made when the server is
+  registered, per server, and each write still asks under the session's permission mode (`ask`,
+  `default`, `accept_edits`; `full` runs them, `plan` refuses them) and the safety floor.
+- **Approvals are the user's.** A call that asks becomes a `permission_requested` event in the
+  bridge session, which the user answers in the desktop app or the CLI. The MCP client has no
+  tool to answer it, and nothing here approves one. If nobody answers within the timeout (or
+  at once with `--approval-timeout-s 0`) the server denies the request and the call ends with
+  the refusal and the reason.
+- **Results are untrusted data.** A tool's output comes back wrapped in
+  `<imperium_tool_result tool="..." trust="untrusted">`, with a closing tag inside the output
+  defused, followed by a reminder not to follow instructions in it. Output is clipped at
+  100,000 characters. The server's own errors (unknown tool, refused write, no session) are
+  plain `isError` text, not framed.
+- **No loops.** The bridge is for outside agents. An Imperium session never starts
+  `imperium mcp-serve` as one of its MCP servers: `imperium-mcp` refuses to launch a command that
+  runs it (any spelling of the path, `.exe`, or a shell-style single argument), with the reason
+  in the server's status. The bridge has no HTTP transport, so there is no loopback address to
+  refuse. A bridged tool also cannot start a session or an agent.
+- **Which session.** The server owns its session, so several running clients each get their
+  own and there is nothing to name. `--session` binds the server to an existing one instead.
+
+### Protocol 0.41
+
+Three CLI methods with no generated TypeScript types; a paired phone cannot call them.
+`session.tools` lists the tools above with `name`, `description`, JSON Schema `parameters` and
+`writes`. `session.run_tool` (`session_id`, `tool`, `arguments`, `allow_write`) checks the tool
+against the list and returns a `call_id` at once. `session.tool_result` (`session_id`,
+`call_id`, `wait_ms`, at most 5000) waits for it and hands the result over once (`done`, `ok`,
+`output`); a call waiting for a permission answer is `done: false`. The call does not block the
+connection, which is how the server keeps reading the session while a request waits for the
+user.
 
 ## Not built
 
-- Exposing Imperium's own tools (file, search, memory and so on) as MCP tools to other agents,
-  and MCP resources or prompts for sessions.
+- MCP resources and prompts for sessions (the memory index, the journal), any bridge tool that
+  needs a model or delegates (`spawn_agent`, `ask_user`, `ask_agent`), and MCP or plugin tools
+  through the bridge.
+- A setting in the environment that turns writes on; today it is the `--allow-write` flag of
+  the registration, and the read-only mount applies to sessions the server starts (a
+  `--session` binding relies on the daemon refusing write tools).
+- Running bridged calls in parallel (they queue), cancelling a running call when the client
+  sends `notifications/cancelled`, and progress notifications.
+- Binary output (screenshots, images from `read_file`); the tools return text.
 - Automatic reconnection to a restarted daemon, and the streamable HTTP transport (stdio only).
-- Streaming a turn's text to the caller as it is written (the result arrives when the turn
-  ends or the wait times out); MCP progress notifications.
-- Creating or configuring environments, changing models or permission modes, archiving, the
-  approval queue of unattended work (`imperium approvals`), budgets confirmations
+- Streaming a turn's text to the caller as it is written (the harness's result arrives when the
+  turn ends or the wait times out).
+- In the harness: creating or configuring environments, changing models or permission modes,
+  archiving, the approval queue of unattended work (`imperium approvals`), budget confirmations
   (`confirm_budget`) and attachments.
-- Cancelling a running wait when the caller sends `notifications/cancelled` (the wait runs to
-  its timeout).
+- Cancelling a running harness wait when the caller sends `notifications/cancelled` (the wait
+  runs to its timeout).

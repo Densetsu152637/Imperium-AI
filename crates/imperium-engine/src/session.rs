@@ -29,6 +29,7 @@ use crate::agent::Agent;
 use crate::agents::{AgentStore, agents_dir};
 use crate::artefacts::Artefacts;
 use crate::breakdown::TokenCounter;
+use crate::bridge::{BridgeResults, BridgeWait};
 use crate::compact::SwitchError;
 use crate::journal::Journal;
 use crate::queue::{Inboxes, QueueError};
@@ -141,11 +142,32 @@ enum Command {
         request_id: u64,
         answers: Vec<String>,
     },
+    /// A tool call an outside caller sent through the MCP bridge: it runs between turns.
+    RunTool(BridgedRun),
+}
+
+/// A bridged tool call, queued for the root agent. Its result goes to the session's
+/// [`BridgeResults`] under `id`.
+#[derive(Debug)]
+struct BridgedRun {
+    id: String,
+    name: String,
+    arguments: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the session has stopped")]
 pub struct SessionClosed;
+
+/// Why a bridged tool call was not started.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BridgeError {
+    /// The tool is not one the bridge runs, or writes are not allowed.
+    #[error("{0}")]
+    NotBridged(String),
+    #[error("the session has stopped")]
+    Closed,
+}
 
 /// Handle to a running session. Its root agent and every subagent are separate tasks on the
 /// daemon's multi-threaded runtime, so agents run in parallel across cores. Dropping every
@@ -170,6 +192,8 @@ pub struct Session {
     inboxes: Arc<Inboxes>,
     agents: Arc<AgentStore>,
     shared: SharedSlot,
+    /// Bridged tool calls: the ones running and the results waiting to be collected.
+    bridge: Arc<BridgeResults>,
     _task: JoinHandle<()>,
 }
 
@@ -287,6 +311,7 @@ impl Session {
         }
         let inboxes = Arc::new(Inboxes::new(Arc::clone(&emitter), &history.lock()));
         let shared = SharedSlot::default();
+        let bridge = Arc::new(BridgeResults::default());
         let task = tokio::spawn(run(
             config,
             receiver,
@@ -296,6 +321,7 @@ impl Session {
                 agents: Arc::clone(&agents),
                 slot: shared.clone(),
                 effort: effort.clone(),
+                bridge: Arc::clone(&bridge),
             },
             Arc::clone(&model),
         ));
@@ -315,6 +341,7 @@ impl Session {
             inboxes,
             agents,
             shared,
+            bridge,
             _task: task,
         })
     }
@@ -736,6 +763,37 @@ impl Session {
             .map_err(|_| SessionClosed)
     }
 
+    /// Starts a tool call for an outside caller (the MCP bridge) and returns its id at once;
+    /// the call runs between turns, through the checks and approval a model's call goes
+    /// through, and [`Session::tool_result`] collects what it returned. Calls run one at a
+    /// time, in order. Refused for a tool the bridge does not run, and for a write tool unless
+    /// `allow_write`. A call made while a turn runs, or while the session is stopped or has no
+    /// model, ends at once with an error result.
+    pub fn start_tool(
+        &self,
+        name: &str,
+        arguments: String,
+        allow_write: bool,
+    ) -> Result<String, BridgeError> {
+        crate::bridge::check(name, allow_write).map_err(BridgeError::NotBridged)?;
+        let id = self.bridge.begin();
+        let sent = self.commands.send(Command::RunTool(BridgedRun {
+            id: id.clone(),
+            name: name.to_string(),
+            arguments,
+        }));
+        if sent.is_err() {
+            self.bridge.abandon(&id);
+            return Err(BridgeError::Closed);
+        }
+        Ok(id)
+    }
+
+    /// Waits up to `limit` for a bridged call to end and takes its result.
+    pub async fn tool_result(&self, id: &str, limit: std::time::Duration) -> BridgeWait {
+        self.bridge.wait(id, limit).await
+    }
+
     /// Answers a batch of questions from `ask_user`, one answer per question in order. Answers
     /// to unknown or already-answered requests are ignored.
     pub fn answer(&self, request_id: u64, answers: Vec<String>) -> Result<(), SessionClosed> {
@@ -855,6 +913,7 @@ fn replay_extensions(history: &[AgentEvent]) -> (HashSet<(String, String)>, Vec<
 
 /// What a session's task starts with besides its configuration.
 struct Started {
+    bridge: Arc<BridgeResults>,
     emitter: Arc<Emitter>,
     inboxes: Arc<Inboxes>,
     agents: Arc<AgentStore>,
@@ -871,6 +930,7 @@ async fn run(
     model: Arc<Mutex<Option<String>>>,
 ) {
     let Started {
+        bridge,
         emitter,
         inboxes,
         agents,
@@ -952,7 +1012,7 @@ async fn run(
             true,
             "root".into(),
         ),
-        None => match wait_for_model(&shared, &mut commands, &model).await {
+        None => match wait_for_model(&shared, &mut commands, &model, &bridge).await {
             Some(root) => root,
             None => return session_ended(&shared, &config.id, "closed"),
         },
@@ -1061,6 +1121,13 @@ async fn run(
                     shared.questions.resolve(request_id, answers);
                     continue;
                 }
+                // A tool call from the MCP bridge: it runs here, between turns.
+                Some(Command::RunTool(run)) => {
+                    if !run_bridged_calls(&mut root, &shared, &bridge, &mut commands, run).await {
+                        return session_ended(&shared, &config.id, "closed");
+                    }
+                    continue;
+                }
                 None => return session_ended(&shared, &config.id, "closed"),
             },
         };
@@ -1156,6 +1223,12 @@ async fn run(
                         Some(Command::SetModel { reply, .. } | Command::Compact { reply }) => {
                             let _ = reply.send(Err(SwitchError::Busy));
                         }
+                        Some(Command::RunTool(run)) => bridge.finish(
+                            &run.id,
+                            false,
+                            "error: the session is running a turn; call the tool again when it ends"
+                                .into(),
+                        ),
                         // Every handle is gone and the session is stopped: its agents would
                         // wait forever, so the turn is dropped (a restart reports it as cut off).
                         None if shared.controls.is_stopped() => {
@@ -1195,6 +1268,60 @@ async fn run(
     }
 }
 
+/// Runs bridged tool calls one after another, starting with `first`, answering the commands
+/// that arrive meanwhile (a permission answer reaches the call that asked). Returns whether a
+/// handle to the session is still open.
+async fn run_bridged_calls(
+    root: &mut Agent,
+    shared: &Arc<Shared>,
+    bridge: &BridgeResults,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    first: BridgedRun,
+) -> bool {
+    let mut waiting = std::collections::VecDeque::from([first]);
+    let mut open = true;
+    while let Some(run) = waiting.pop_front() {
+        if shared.controls.is_stopped() {
+            bridge.finish(
+                &run.id,
+                false,
+                "error: the session is stopped; resume it before calling tools".into(),
+            );
+            continue;
+        }
+        let (ok, output) = {
+            let work = root.run_bridged(&run.id, &run.name, &run.arguments);
+            tokio::pin!(work);
+            loop {
+                tokio::select! {
+                    done = &mut work => break done,
+                    command = commands.recv(), if open => match command {
+                        Some(Command::Respond { request_id, decision }) => {
+                            shared.broker.resolve(request_id, decision);
+                        }
+                        Some(Command::Answer { request_id, answers }) => {
+                            shared.questions.resolve(request_id, answers);
+                        }
+                        Some(Command::Message(message)) => shared.inboxes.queue_for_root(message),
+                        Some(Command::RunTool(next)) => waiting.push_back(next),
+                        Some(Command::SetModel { reply, .. } | Command::Compact { reply }) => {
+                            let _ = reply.send(Err(SwitchError::Busy));
+                        }
+                        // Every handle is gone: nobody can answer, so deny what is pending.
+                        None => {
+                            open = false;
+                            shared.broker.deny_all();
+                            shared.questions.close();
+                        }
+                    },
+                }
+            }
+        };
+        bridge.finish(&run.id, ok, output);
+    }
+    open
+}
+
 /// Starts the `session.end` hooks as the session's task finishes: `reason` is `closed` (every
 /// handle was dropped) or `stopped`. They run detached, so ending never waits for them.
 fn session_ended(shared: &Shared, session_id: &str, reason: &str) {
@@ -1217,6 +1344,7 @@ async fn wait_for_model(
     shared: &Arc<Shared>,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     model: &Mutex<Option<String>>,
+    bridge: &BridgeResults,
 ) -> Option<Agent> {
     let needs_model = |needs: bool| {
         if let Some(event) = shared.controls.set_needs_model(needs) {
@@ -1264,6 +1392,11 @@ async fn wait_for_model(
             Command::Compact { reply } => {
                 let _ = reply.send(Err(SwitchError::NoModel));
             }
+            Command::RunTool(run) => bridge.finish(
+                &run.id,
+                false,
+                "error: this session has no model yet, so it cannot run tools".into(),
+            ),
         }
     }
 }

@@ -387,11 +387,25 @@ and `environments.agent_update` (protocol 0.28)
     again at every session start. Tests fetch from a local Git repository
     ([08](08-agent-policy.md#pack-updates)). *Not built in stage 3a:* signatures (no format
     support; decision recorded in 08), scheduled checks, a desktop review screen and rollback.
-    *Remaining:* the policy crate (deferred to the final cleanup, see 08), the full server
-    bridge (`imperium mcp-serve` already bridges sessions, [20](20-claude-harness.md); the
-    design for exposing Imperium's own tools is in
-    [20](20-claude-harness.md#exposing-imperiums-own-tools-design-not-built), not built), and
-    inserting MCP prompts as slash commands in the desktop and CLI.
+    *Stage 4 (the MCP server bridge) is implemented* (protocol 0.41: `session.tools`,
+    `session.run_tool`, `session.tool_result`): `imperium mcp-serve --tools` exposes Imperium's
+    own tools (`read_file`, `list_dir`, `glob`, `grep`, `memory_search`, `memory_read`,
+    `web_search`, `web_fetch`, and with `--allow-write` also `write_file`, `edit_file`,
+    `run_command`, `command_output`, `command_stop`, `memory_remember`) as `imperium_<tool>` MCP
+    tools. Every call runs inside an Imperium session, through the checks a model's own call
+    goes through (permission rules, safety floor, agent profile and local-files-only lock,
+    sandbox, hooks, journal), with no model call and so no budget spent; the session is
+    read-only unless writes are on; an ask surfaces as a permission request the user answers
+    and is refused when nobody answers in time (`--approval-timeout-s`, 0 for unattended);
+    results come back framed as untrusted data; and a session never starts `imperium
+    mcp-serve` as one of its MCP servers ([20](20-claude-harness.md#exposing-imperiums-own-tools-implemented)).
+    Tests drive it over an in-memory stdio pipe against a daemon with a fake model. *Not built
+    in stage 4:* MCP resources and prompts for the bridge, the streamable HTTP transport, tools
+    that need a model or delegate (`spawn_agent`, `ask_user`, MCP and plugin tools), an
+    environment-level "writes allowed" setting (it is a flag of the server's registration),
+    progress notifications and cancellation of a running call, and the per-call budget
+    (the tools spend none). *Remaining:* the policy crate (deferred to the final cleanup, see
+    08), and inserting MCP prompts as slash commands in the desktop and CLI.
 32. **Web and browser** (implemented, stage 2: tabs and downloads). The browser pane the user
     can take over exists.
     Kagi and Exa join SearXNG, Brave and Tavily as search providers (keys only from the keychain);
@@ -508,8 +522,9 @@ and `environments.agent_update` (protocol 0.28)
     exercise its agents to test bugs and new features. It lists environments and sessions, starts
     a session with a prompt, sends messages, waits for a turn, reads tool logs and transcripts,
     answers permission requests only when told to, and stops sessions, all through the daemon's
-    own permission checks and without exposing the token. No protocol change. *Not built:*
-    exposing Imperium's own tools over MCP, streamed turn text, and automatic reconnection
+    own permission checks and without exposing the token. No protocol change. With `--tools` it
+    is also the bridge for Imperium's own tools (item 31, stage 4). *Not built:*
+    streamed turn text and automatic reconnection
     ([20](20-claude-harness.md), [02](02-architecture.md), [03](03-agent-engine.md)).
 43. **Harness-level engineering** (implemented). One change to the harness around the model, in four parts.
     (a) A de-reference step before the planner. The small (4B) model reads the latest user message

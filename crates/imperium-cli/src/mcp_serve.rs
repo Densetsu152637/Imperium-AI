@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::mcp_bridge::{Bridge, BridgeOptions};
 use imperium_client::Client;
 use imperium_protocol::session::SESSION_EVENT;
 use serde_json::{Map, Value, json};
@@ -67,7 +68,7 @@ struct Call {
 /// [`Client`], which makes calls one at a time, and keeps reading notifications so none pile up;
 /// a session event wakes the calls waiting for a turn.
 #[derive(Clone)]
-struct Hub {
+pub(crate) struct Hub {
     calls: mpsc::UnboundedSender<Call>,
     changed: Arc<Notify>,
     /// Sessions that had an event (other than streamed text) since a wait last read them.
@@ -78,13 +79,15 @@ struct Hub {
     /// the request as open until the agent moves on. The index tells it from a later request
     /// that reuses the id (ids restart when a session is restarted in place).
     answered: Arc<Mutex<Answered>>,
+    /// Set when serving Imperium's own tools (`mcp-serve --tools`) instead of the harness.
+    bridge: Option<Arc<Bridge>>,
 }
 
 /// Per session, the requests answered through the harness.
 type Answered = HashMap<String, HashSet<(bool, usize, u64)>>;
 
 impl Hub {
-    fn start(client: Client) -> (Hub, tokio::task::JoinHandle<()>) {
+    fn start(client: Client, bridge: Option<Arc<Bridge>>) -> (Hub, tokio::task::JoinHandle<()>) {
         let (calls, receiver) = mpsc::unbounded_channel();
         let changed = Arc::new(Notify::new());
         let dirty = Arc::new(Mutex::new(HashSet::new()));
@@ -99,6 +102,7 @@ impl Hub {
             changed,
             dirty,
             answered: Arc::new(Mutex::new(HashMap::new())),
+            bridge,
         };
         (hub, pump)
     }
@@ -141,7 +145,7 @@ impl Hub {
         answered.get(session_id).cloned().unwrap_or_default()
     }
 
-    async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+    pub(crate) async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         let (reply, answer) = oneshot::channel();
         self.calls
             .send(Call {
@@ -154,7 +158,7 @@ impl Hub {
     }
 
     /// Every event the session has emitted so far, oldest first.
-    async fn history(&self, session_id: &str) -> Result<Vec<Value>, String> {
+    pub(crate) async fn history(&self, session_id: &str) -> Result<Vec<Value>, String> {
         let mut subscribed = self
             .call("session.subscribe", json!({"session_id": session_id}))
             .await
@@ -176,7 +180,7 @@ impl Hub {
     }
 
     /// The daemon's summary of one session.
-    async fn summary(&self, session_id: &str) -> Result<Value, String> {
+    pub(crate) async fn summary(&self, session_id: &str) -> Result<Value, String> {
         let listed = self.call("session.list", json!({})).await?;
         listed
             .get("sessions")
@@ -245,7 +249,35 @@ where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let (hub, pump) = Hub::start(client);
+    serve_with(client, input, output, None).await
+}
+
+/// Serves Imperium's own tools over MCP (`imperium mcp-serve --tools`, see
+/// [`crate::mcp_bridge`]) over `input` and `output` until `input` ends.
+pub async fn serve_tools<R, W>(
+    client: Client,
+    input: R,
+    output: W,
+    options: BridgeOptions,
+) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    serve_with(client, input, output, Some(Arc::new(Bridge::new(options)))).await
+}
+
+async fn serve_with<R, W>(
+    client: Client,
+    input: R,
+    output: W,
+    bridge: Option<Arc<Bridge>>,
+) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let (hub, pump) = Hub::start(client, bridge);
     let (out, mut replies) = mpsc::unbounded_channel::<String>();
     let writer = tokio::spawn(async move {
         let mut output = output;
@@ -311,6 +343,9 @@ where
     }
     running.abort_all();
     while running.join_next().await.is_some() {}
+    if let Some(bridge) = &hub.bridge {
+        bridge.close(&hub).await;
+    }
     drop(out);
     let _ = writer.await;
     pump.abort();
@@ -334,10 +369,19 @@ async fn handle(hub: &Hub, message: Value) -> Option<Value> {
     };
     let params = message.get("params").cloned().unwrap_or(Value::Null);
     let result = match method {
-        "initialize" => initialize(&params),
+        "initialize" => initialize(&params, hub.bridge.as_deref()),
         "ping" => json!({}),
-        "tools/list" => json!({"tools": tools()}),
-        "tools/call" => call_tool(hub, &params).await,
+        "tools/list" => match &hub.bridge {
+            Some(bridge) => match bridge.list(hub).await {
+                Ok(listed) => listed,
+                Err(message) => return Some(error_reply(id, -32603, &message)),
+            },
+            None => json!({"tools": tools()}),
+        },
+        "tools/call" => match &hub.bridge {
+            Some(bridge) => bridge.call(hub, &params).await,
+            None => call_tool(hub, &params).await,
+        },
         other => {
             return Some(error_reply(
                 id,
@@ -349,13 +393,21 @@ async fn handle(hub: &Hub, message: Value) -> Option<Value> {
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
-fn initialize(params: &Value) -> Value {
+fn initialize(params: &Value, bridge: Option<&Bridge>) -> Value {
     let asked = params["protocolVersion"].as_str().unwrap_or_default();
     let version = SUPPORTED
         .iter()
         .find(|version| **version == asked)
         .copied()
         .unwrap_or(SUPPORTED[0]);
+    if let Some(bridge) = bridge {
+        return json!({
+            "protocolVersion": version,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "imperium", "version": env!("CARGO_PKG_VERSION")},
+            "instructions": bridge.instructions(),
+        });
+    }
     json!({
         "protocolVersion": version,
         "capabilities": {"tools": {}},
@@ -447,7 +499,7 @@ fn pick(value: &Value, keys: &[&str]) -> Value {
     Value::Object(picked)
 }
 
-fn clip(text: &str, limit: usize) -> String {
+pub(crate) fn clip(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_string();
     }
@@ -924,7 +976,7 @@ fn is_root(event: &Value) -> bool {
     event["agent_id"] == "root"
 }
 
-fn kind(event: &Value) -> &str {
+pub(crate) fn kind(event: &Value) -> &str {
     event["event"]["type"].as_str().unwrap_or_default()
 }
 
@@ -1573,11 +1625,11 @@ mod tests {
         assert_eq!(clip("abc", 3), "abc");
         assert_eq!(text_arg(&json!({"a": "  "}), "a"), None);
         assert_eq!(
-            initialize(&json!({"protocolVersion": "2024-11-05"}))["protocolVersion"],
+            initialize(&json!({"protocolVersion": "2024-11-05"}), None)["protocolVersion"],
             "2024-11-05"
         );
         assert_eq!(
-            initialize(&json!({"protocolVersion": "1999"}))["protocolVersion"],
+            initialize(&json!({"protocolVersion": "1999"}), None)["protocolVersion"],
             SUPPORTED[0]
         );
     }

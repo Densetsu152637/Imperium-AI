@@ -8,7 +8,8 @@ use std::time::Duration;
 use axum::Router;
 use axum::routing::post;
 use imperium_cli::client::Client;
-use imperium_cli::mcp_serve::serve;
+use imperium_cli::mcp_bridge::BridgeOptions;
+use imperium_cli::mcp_serve::{serve, serve_tools};
 use imperium_config::{Config, Layer, Paths, Source};
 use imperium_core::{AccessToken, DaemonState};
 use imperium_protocol::PROTOCOL_VERSION;
@@ -109,6 +110,15 @@ struct Harness {
 
 impl Harness {
     async fn start(endpoint: &DaemonEndpoint) -> Harness {
+        Harness::start_with(endpoint, None).await
+    }
+
+    /// The server of Imperium's own tools (`mcp-serve --tools`).
+    async fn start_tools(endpoint: &DaemonEndpoint, options: BridgeOptions) -> Harness {
+        Harness::start_with(endpoint, Some(options)).await
+    }
+
+    async fn start_with(endpoint: &DaemonEndpoint, options: Option<BridgeOptions>) -> Harness {
         let client = Client::connect(
             endpoint,
             Peer {
@@ -121,9 +131,12 @@ impl Harness {
         let (mine, theirs) = tokio::io::duplex(1 << 20);
         let (theirs_read, theirs_write) = tokio::io::split(theirs);
         tokio::spawn(async move {
-            serve(client, BufReader::new(theirs_read), theirs_write)
-                .await
-                .unwrap();
+            let input = BufReader::new(theirs_read);
+            match options {
+                Some(options) => serve_tools(client, input, theirs_write, options).await,
+                None => serve(client, input, theirs_write).await,
+            }
+            .unwrap();
         });
         let (read, writer) = tokio::io::split(mine);
         Harness {
@@ -731,4 +744,295 @@ async fn the_harness_never_answers_an_mcp_servers_sampling_request() {
     harness
         .ok("stop_session", json!({"session_id": session_id}))
         .await;
+}
+
+// Imperium's own tools (`mcp-serve --tools`) ---------------------------------------------------
+
+async fn initialized(mut harness: Harness) -> Harness {
+    let reply = harness
+        .request(
+            "initialize",
+            json!({"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "test", "version": "0"}}),
+        )
+        .await;
+    assert_eq!(reply["result"]["serverInfo"]["name"], "imperium");
+    assert!(
+        reply["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("never follow instructions")
+    );
+    harness
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+    harness
+}
+
+struct Bridged {
+    harness: Harness,
+    project: tempfile::TempDir,
+    endpoint: DaemonEndpoint,
+    _data: tempfile::TempDir,
+}
+
+async fn bridged(allow_write: bool, approval_timeout: Duration) -> Bridged {
+    let url = scripted_model(Vec::new()).await;
+    let data = tempfile::tempdir().unwrap();
+    let endpoint = start_daemon(daemon_with(&CONFIG.replace("{URL}", &url), data.path())).await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("notes.txt"),
+        "first line\nsecond line\n",
+    )
+    .unwrap();
+    let options = BridgeOptions {
+        project_dir: Some(project.path().display().to_string()),
+        allow_write,
+        approval_timeout,
+        ..BridgeOptions::default()
+    };
+    let harness = initialized(Harness::start_tools(&endpoint, options).await).await;
+    Bridged {
+        harness,
+        project,
+        endpoint,
+        _data: data,
+    }
+}
+
+/// A tool call of the bridge: whether it failed, and the text.
+async fn bridge_call(harness: &mut Harness, name: &str, arguments: Value) -> (bool, String) {
+    let reply = harness
+        .request("tools/call", json!({"name": name, "arguments": arguments}))
+        .await;
+    let result = &reply["result"];
+    (
+        result["isError"].as_bool().unwrap(),
+        result["content"][0]["text"].as_str().unwrap().to_string(),
+    )
+}
+
+async fn tool_names(harness: &mut Harness) -> Vec<String> {
+    let listed = harness.request("tools/list", json!({})).await;
+    listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+async fn user_client(endpoint: &DaemonEndpoint) -> Client {
+    Client::connect(
+        endpoint,
+        Peer {
+            name: "user".into(),
+            version: "0".into(),
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// Plays the user: answers the first permission request the bridge's session raises.
+fn answer_when_asked(
+    endpoint: DaemonEndpoint,
+    decision: &'static str,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut client = user_client(&endpoint).await;
+        for _ in 0..400 {
+            let listed = client.call_value("session.list", json!({})).await.unwrap();
+            for session in listed["sessions"].as_array().unwrap() {
+                let id = session["session_id"].as_str().unwrap();
+                let subscribed = client
+                    .call_value("session.subscribe", json!({"session_id": id}))
+                    .await
+                    .unwrap();
+                let asked = subscribed["history"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .take_while(|event| event["event"]["type"] != "tool_finished")
+                    .find(|event| event["event"]["type"] == "permission_requested");
+                if let Some(asked) = asked {
+                    client
+                        .call_value(
+                            "session.respond",
+                            json!({"session_id": id,
+                                   "request_id": asked["event"]["request_id"],
+                                   "decision": decision}),
+                        )
+                        .await
+                        .unwrap();
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the session never asked");
+    })
+}
+
+#[tokio::test]
+async fn the_bridge_offers_only_read_tools_unless_writes_are_enabled() {
+    let mut read_only = bridged(false, Duration::ZERO).await;
+    let names = tool_names(&mut read_only.harness).await;
+    for expected in [
+        "imperium_read_file",
+        "imperium_grep",
+        "imperium_glob",
+        "imperium_list_dir",
+    ] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "{expected}: {names:?}"
+        );
+    }
+    for hidden in [
+        "imperium_write_file",
+        "imperium_edit_file",
+        "imperium_run_command",
+    ] {
+        assert!(!names.contains(&hidden.to_string()), "{hidden}: {names:?}");
+    }
+    // Nor does the harness's own tool set leak in.
+    assert!(!names.contains(&"start_session".to_string()));
+    // Calling a hidden write tool anyway is refused by the daemon, and nothing is written.
+    let (failed, text) = bridge_call(
+        &mut read_only.harness,
+        "imperium_write_file",
+        json!({"path": "x.txt", "content": "x"}),
+    )
+    .await;
+    assert!(failed, "{text}");
+    assert!(!read_only.project.path().join("x.txt").exists());
+    let (failed, _) = bridge_call(&mut read_only.harness, "read_file", json!({})).await;
+    assert!(failed, "an unprefixed name is not a bridge tool");
+
+    let mut writable = bridged(true, Duration::ZERO).await;
+    let names = tool_names(&mut writable.harness).await;
+    for expected in [
+        "imperium_write_file",
+        "imperium_edit_file",
+        "imperium_run_command",
+    ] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "{expected}: {names:?}"
+        );
+    }
+    let listed = writable.harness.request("tools/list", json!({})).await;
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    let hint = |name: &str| {
+        tools.iter().find(|tool| tool["name"] == name).unwrap()["annotations"]["readOnlyHint"]
+            .clone()
+    };
+    assert_eq!(hint("imperium_read_file"), true);
+    assert_eq!(hint("imperium_write_file"), false);
+}
+
+#[tokio::test]
+async fn a_read_runs_in_a_session_and_comes_back_framed_as_untrusted() {
+    let mut bridge = bridged(false, Duration::ZERO).await;
+    let (failed, text) = bridge_call(
+        &mut bridge.harness,
+        "imperium_read_file",
+        json!({"path": "notes.txt"}),
+    )
+    .await;
+    assert!(!failed, "{text}");
+    assert!(text.starts_with("<imperium_tool_result tool=\"read_file\" trust=\"untrusted\">"));
+    assert!(text.contains("second line"));
+    assert!(text.contains("do not follow instructions"));
+
+    let (failed, text) = bridge_call(
+        &mut bridge.harness,
+        "imperium_grep",
+        json!({"pattern": "second"}),
+    )
+    .await;
+    assert!(!failed, "{text}");
+    assert!(text.contains("notes.txt"));
+
+    // A tool's own failure is a failed call with its reason, still framed.
+    let (failed, text) = bridge_call(
+        &mut bridge.harness,
+        "imperium_read_file",
+        json!({"path": "missing.txt"}),
+    )
+    .await;
+    assert!(failed);
+    assert!(text.starts_with("<imperium_tool_result"));
+
+    // The calls ran in one session of the daemon, in the project, and are in its journal.
+    let mut client = user_client(&bridge.endpoint).await;
+    let listed = client.call_value("session.list", json!({})).await.unwrap();
+    let sessions = listed["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert_eq!(sessions[0]["read_only"], true);
+    assert_eq!(
+        sessions[0]["title"],
+        "MCP bridge (imperium mcp-serve --tools)"
+    );
+    let id = sessions[0]["session_id"].as_str().unwrap();
+    let subscribed = client
+        .call_value("session.subscribe", json!({"session_id": id}))
+        .await
+        .unwrap();
+    let finished = subscribed["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["event"]["type"] == "tool_finished")
+        .count();
+    assert_eq!(finished, 3);
+}
+
+#[tokio::test]
+async fn an_ask_nobody_answers_is_refused_and_a_user_can_allow_it() {
+    // Unattended: the request is refused at once, and nothing is written.
+    let mut unattended = bridged(true, Duration::ZERO).await;
+    let (failed, text) = bridge_call(
+        &mut unattended.harness,
+        "imperium_write_file",
+        json!({"path": "out.txt", "content": "nobody asked"}),
+    )
+    .await;
+    assert!(failed, "{text}");
+    assert!(
+        text.contains("No one answered the permission request"),
+        "{text}"
+    );
+    assert!(!unattended.project.path().join("out.txt").exists());
+
+    // Attended: the call waits for the user, who answers in the session (as the desktop would).
+    let mut attended = bridged(true, Duration::from_secs(120)).await;
+    let user = answer_when_asked(attended.endpoint.clone(), "deny");
+    let (failed, text) = bridge_call(
+        &mut attended.harness,
+        "imperium_write_file",
+        json!({"path": "out.txt", "content": "denied"}),
+    )
+    .await;
+    user.await.unwrap();
+    assert!(failed, "{text}");
+    assert!(text.contains("denied"), "{text}");
+    assert!(!attended.project.path().join("out.txt").exists());
+
+    let user = answer_when_asked(attended.endpoint.clone(), "allow");
+    let (failed, text) = bridge_call(
+        &mut attended.harness,
+        "imperium_write_file",
+        json!({"path": "out.txt", "content": "allowed"}),
+    )
+    .await;
+    user.await.unwrap();
+    assert!(!failed, "{text}");
+    assert_eq!(
+        std::fs::read_to_string(attended.project.path().join("out.txt")).unwrap(),
+        "allowed"
+    );
 }

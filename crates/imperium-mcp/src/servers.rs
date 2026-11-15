@@ -308,6 +308,27 @@ impl McpServers {
     }
 }
 
+/// Whether a stdio launch runs `imperium mcp-serve` (the harness or the tools bridge): the
+/// `imperium` binary, in any spelling of its path or `.exe`, and the `mcp-serve` word, in the
+/// arguments or inside a single shell-style argument such as `imperium mcp-serve --tools`.
+pub fn is_own_bridge(command: &str, args: &[String]) -> bool {
+    let words: Vec<String> = std::iter::once(command)
+        .chain(args.iter().map(String::as_str))
+        .flat_map(str::split_whitespace)
+        .map(|word| {
+            let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
+            let name = name
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_ascii_lowercase();
+            name.strip_suffix(".exe").unwrap_or(&name).to_string()
+        })
+        .collect();
+    words
+        .iter()
+        .any(|word| word == "imperium" || word == "imperium-cli")
+        && words.iter().any(|word| word == "mcp-serve")
+}
+
 /// What a server reports when it needs a sign-in the user has not done (or that expired).
 pub const NEEDS_SIGN_IN: &str = "needs sign-in";
 
@@ -319,6 +340,16 @@ async fn start(spec: ServerSpec, auth: Option<Arc<dyn TokenSource>>) -> Result<S
             env,
             cwd,
         } => {
+            // Imperium's own server bridge is for outside agents. A session that connected to
+            // it would call back into the daemon it runs in.
+            if is_own_bridge(command, args) {
+                return Err(format!(
+                    "{} is Imperium's own MCP server (`imperium mcp-serve`), which is for other \
+                     agents to use Imperium: it is not started from inside Imperium, so tool \
+                     calls cannot loop back into this daemon",
+                    spec.name
+                ));
+            }
             let mut process = Command::new(command);
             process
                 .args(args)
@@ -536,6 +567,31 @@ fn content_text(result: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imperiums_own_server_is_not_started_from_inside_imperium() {
+        let own = |command: &str, args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            is_own_bridge(command, &args)
+        };
+        assert!(own("imperium", &["mcp-serve"]));
+        assert!(own(
+            "imperium",
+            &["--remote", "box", "mcp-serve", "--tools"]
+        ));
+        assert!(own(
+            "C:\\Program Files\\Imperium\\imperium.exe",
+            &["mcp-serve"]
+        ));
+        assert!(own("/usr/local/bin/imperium", &["mcp-serve", "--tools"]));
+        assert!(own("cmd", &["/c", "imperium mcp-serve --tools"]));
+        assert!(!own("imperium", &["status"]));
+        assert!(!own(
+            "npx",
+            &["-y", "@modelcontextprotocol/server-filesystem"]
+        ));
+        assert!(!own("other-server", &["mcp-serve"]));
+    }
 
     #[test]
     fn names_are_qualified_and_sanitised() {

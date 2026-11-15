@@ -2248,6 +2248,29 @@ impl Agent {
         format!("(A hook rewrote this call's arguments before it ran.)\n{output}")
     }
 
+    /// Runs a tool call an outside caller sent through the MCP bridge (`imperium mcp-serve
+    /// --tools`), between turns. It is dispatched exactly like a call the model makes: every
+    /// check, the user's approval and the journal apply. Returns whether it succeeded and the
+    /// full output.
+    pub(crate) async fn run_bridged(
+        &mut self,
+        id: &str,
+        name: &str,
+        arguments: &str,
+    ) -> (bool, String) {
+        let call: ToolCall = match serde_json::from_value(json!({
+            "id": id,
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        })) {
+            Ok(call) => call,
+            Err(error) => return (false, format!("error: {error}")),
+        };
+        self.last_tool_ok.store(false, Ordering::SeqCst);
+        let output = self.run_tool(&call).await;
+        (self.last_tool_ok.load(Ordering::SeqCst), output)
+    }
+
     async fn run_tool_once(&mut self, call: &ToolCall) -> String {
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
@@ -4461,7 +4484,7 @@ fn context_load_spec() -> ToolSpec {
     }
 }
 
-fn memory_search_spec() -> ToolSpec {
+pub(crate) fn memory_search_spec() -> ToolSpec {
     ToolSpec {
         name: "memory_search".into(),
         description: "Search saved memories (global, and this environment's Memory.md) by meaning words; returns names and descriptions."
@@ -4473,7 +4496,7 @@ fn memory_search_spec() -> ToolSpec {
     }
 }
 
-fn memory_read_spec() -> ToolSpec {
+pub(crate) fn memory_read_spec() -> ToolSpec {
     ToolSpec {
         name: "memory_read".into(),
         description: "Read a saved memory by name: a global entry or a section of this environment's Memory.md (the name Memory.md reads the whole file).".into(),
@@ -4484,7 +4507,7 @@ fn memory_read_spec() -> ToolSpec {
     }
 }
 
-fn memory_remember_spec() -> ToolSpec {
+pub(crate) fn memory_remember_spec() -> ToolSpec {
     ToolSpec {
         name: "memory_remember".into(),
         description: "Save (or replace) a memory for future sessions.".into(),

@@ -294,6 +294,107 @@ impl Method for SessionAnswer {
     type Result = Accepted;
 }
 
+/// `session.tools`: the tools `session.run_tool` can run for an outside caller, with their
+/// definitions. Used by the MCP server bridge (`imperium mcp-serve --tools`); not part of the
+/// desktop app's protocol, so it has no generated TypeScript type, and a paired phone cannot
+/// call it.
+#[derive(Debug)]
+pub struct SessionTools;
+
+impl Method for SessionTools {
+    const NAME: &'static str = "session.tools";
+    type Params = SessionToolsParams;
+    type Result = SessionToolsResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionToolsParams {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionToolsResult {
+    /// Read tools first.
+    pub tools: Vec<BridgedToolInfo>,
+}
+
+/// A tool the bridge can run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BridgedToolInfo {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema for the arguments object.
+    pub parameters: serde_json::Value,
+    /// Whether it changes files, runs commands or saves memory: only run when `allow_write`.
+    pub writes: bool,
+}
+
+/// `session.run_tool`: starts one of the session's own tools for an outside caller (the MCP
+/// server bridge), between turns, and returns its id at once. The call runs exactly as a call
+/// the session's agent makes does: the launcher's tool limits, the agent's permission profile
+/// and local-files-only lock, the permission rules and safety floor, the user's approval (a
+/// `permission_requested` event nobody but a person or the caller's `session.respond` answers),
+/// hooks and the journal; no model is called. Collect the result with `session.tool_result`.
+/// Not part of the desktop app's protocol, so it has no generated TypeScript type, and a paired
+/// phone cannot call it.
+#[derive(Debug)]
+pub struct SessionRunTool;
+
+impl Method for SessionRunTool {
+    const NAME: &'static str = "session.run_tool";
+    type Params = SessionRunToolParams;
+    type Result = SessionRunToolResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionRunToolParams {
+    pub session_id: String,
+    pub tool: String,
+    /// The tool's arguments, an object.
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    /// Allow the tools that change things (`writes` in `session.tools`). Off, only read tools
+    /// run.
+    #[serde(default)]
+    pub allow_write: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRunToolResult {
+    /// Names the call in `session.tool_result` and in the session's `tool_started` and
+    /// `tool_finished` events.
+    pub call_id: String,
+}
+
+/// `session.tool_result`: waits up to `wait_ms` (at most 5000) for a call started with
+/// `session.run_tool` and takes its result: it is handed over once. A call still running
+/// (including one waiting for a permission answer) answers `done: false`.
+#[derive(Debug)]
+pub struct SessionToolResult;
+
+impl Method for SessionToolResult {
+    const NAME: &'static str = "session.tool_result";
+    type Params = SessionToolResultParams;
+    type Result = SessionToolResultResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionToolResultParams {
+    pub session_id: String,
+    pub call_id: String,
+    #[serde(default)]
+    pub wait_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionToolResultResult {
+    pub done: bool,
+    /// Whether the tool ran and succeeded; a refusal or denial is `false` with the reason in
+    /// `output`. Meaningless until `done`.
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub output: String,
+}
+
 /// `session.list`: the sessions running in this daemon.
 #[derive(Debug)]
 pub struct SessionList;
