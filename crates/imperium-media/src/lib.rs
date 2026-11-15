@@ -55,14 +55,31 @@ pub enum MediaError {
     NotConfigured(&'static str),
     #[error("{0}")]
     Service(String),
+    /// The service answered with an HTTP error status.
+    #[error("{message}")]
+    Status { status: u16, message: String },
     #[error("{0}: {1}")]
     Io(String, std::io::Error),
     #[error("{0} must be a path inside the project")]
     Outside(String),
 }
 
+impl MediaError {
+    /// Whether the service refused the request (a 4xx status): the request was at fault, not
+    /// the service.
+    pub fn is_client_error(&self) -> bool {
+        matches!(self, MediaError::Status { status, .. } if (400..500).contains(status))
+    }
+}
+
 fn service_error(error: reqwest::Error) -> MediaError {
-    MediaError::Service(error.to_string())
+    match error.status() {
+        Some(status) => MediaError::Status {
+            status: status.as_u16(),
+            message: error.to_string(),
+        },
+        None => MediaError::Service(error.to_string()),
+    }
 }
 
 impl Media {

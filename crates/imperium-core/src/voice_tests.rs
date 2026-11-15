@@ -3,7 +3,7 @@
 //! process. Nothing starts a real server, reads a GPU or downloads a model.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,6 +29,10 @@ struct Fake {
     requests: Mutex<Vec<Vec<u8>>>,
     /// Answer with an error instead of a transcription.
     broken: AtomicBool,
+    /// Answer with this status (when not 0) instead of a transcription.
+    status: AtomicU16,
+    /// Answer 200 with a body that is not JSON.
+    unreadable: AtomicBool,
     launches: AtomicU32,
     stops: AtomicU32,
     /// Launches fail with this message.
@@ -48,6 +52,16 @@ async fn transcriptions(State(fake): State<Arc<Fake>>, body: Bytes) -> (StatusCo
             StatusCode::INTERNAL_SERVER_ERROR,
             "{\"error\":\"boom\"}".into(),
         );
+    }
+    let status = fake.status.load(Ordering::SeqCst);
+    if status != 0 {
+        return (
+            StatusCode::from_u16(status).unwrap(),
+            "{\"error\":\"refused\"}".into(),
+        );
+    }
+    if fake.unreadable.load(Ordering::SeqCst) {
+        return (StatusCode::OK, "this is not json".into());
     }
     (StatusCode::OK, "{\"text\":\"  hello there  \"}".into())
 }
@@ -295,4 +309,34 @@ async fn a_recording_that_is_not_base64_is_refused_before_anything_starts() {
     .unwrap_err();
     assert!(error.message.contains("base64"), "{}", error.message);
     assert_eq!(setup.fake.launches.load(Ordering::SeqCst), 0);
+}
+
+/// A refused recording (4xx) is the recording's fault and leaves the server running; a server
+/// error, or an answer that cannot be read, marks the server failed so the next recording
+/// starts a fresh one.
+#[tokio::test]
+async fn only_a_refusal_leaves_the_server_running() {
+    let setup = setup().await;
+    let transcribe = || crate::attachments::transcribe(Arc::clone(&setup.state), recording(b"abc"));
+    // 400: the same server answers the next recording.
+    setup.fake.status.store(400, Ordering::SeqCst);
+    assert!(transcribe().await.is_err());
+    setup.fake.status.store(0, Ordering::SeqCst);
+    assert_eq!(transcribe().await.unwrap().text, "hello there");
+    assert_eq!(setup.fake.launches.load(Ordering::SeqCst), 1);
+    assert_eq!(setup.fake.stops.load(Ordering::SeqCst), 0);
+    // 500: a fresh server for the next one.
+    setup.fake.status.store(500, Ordering::SeqCst);
+    assert!(transcribe().await.is_err());
+    setup.fake.status.store(0, Ordering::SeqCst);
+    assert_eq!(transcribe().await.unwrap().text, "hello there");
+    assert_eq!(setup.fake.launches.load(Ordering::SeqCst), 2);
+    assert_eq!(setup.fake.stops.load(Ordering::SeqCst), 1);
+    // 200 with a body that is not JSON: failed as well.
+    setup.fake.unreadable.store(true, Ordering::SeqCst);
+    assert!(transcribe().await.is_err());
+    setup.fake.unreadable.store(false, Ordering::SeqCst);
+    assert_eq!(transcribe().await.unwrap().text, "hello there");
+    assert_eq!(setup.fake.launches.load(Ordering::SeqCst), 3);
+    assert_eq!(setup.fake.stops.load(Ordering::SeqCst), 2);
 }

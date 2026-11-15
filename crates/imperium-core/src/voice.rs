@@ -54,7 +54,7 @@ pub(crate) async fn transcribe(
         Ok(text) => Ok(text),
         Err(error) => {
             // A refused request (4xx) is the recording's fault, not the server's.
-            if !error.to_string().contains("client error") {
+            if !error.is_client_error() {
                 lease.failed();
             }
             Err(ErrorObject::new(
