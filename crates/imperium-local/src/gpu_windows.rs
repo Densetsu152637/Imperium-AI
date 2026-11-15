@@ -175,7 +175,9 @@ pub fn intel_has_own_memory(name: &str) -> bool {
 /// The adapter script's output; `None` when it is not what the script prints.
 pub fn parse_adapters(json: &str) -> Option<Adapters> {
     let root = root(json)?;
-    root.get("adapters")?;
+    // A list (or the one entry PowerShell wrote bare), not any other value.
+    root.get("adapters")
+        .filter(|v| v.is_array() || v.is_object())?;
     let adapters = entries(root.get("adapters"), MAX_ADAPTERS);
     let registry: HashMap<String, u64> = entries(root.get("memory"), MAX_ADAPTERS)
         .into_iter()
