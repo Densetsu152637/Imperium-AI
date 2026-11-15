@@ -79,6 +79,7 @@ read again, so such a save never brings an old value back.
 | `models.add_endpoint` `{id, base_url, api_key?, model?, make_default}` | — | Writes `[endpoints.<id>]` with the key as a keychain reference (`<id>-api-key`), optionally making `<id>:<model>` the default |
 | `runtime.status` | `imperium runtime status` | See [runtime readiness](#runtime-readiness) |
 | `runtime.set_server` `{path}` | `imperium runtime use [<path>]` | Sets (or with null clears) `runtime.llamacpp.custom_path`; models loaded from then on use it |
+| (CLI only) | `imperium runtime vllm setup\|status\|remove` | The managed vLLM environment ([backends](#runtimes)); runs on this machine, not through the daemon |
 | `runtime.install` | `imperium runtime install` | Installs llama.cpp's own build for this machine from its GitHub release in the background with `runtime.install_progress` notifications, falling back to the next build when one does not run ([runtimes](#runtimes)); new loads use it unless a custom server is set |
 | `runtime.update_external` | — | Runs the package manager's upgrade of the `llama-server` in use (winget, scoop, Chocolatey, Homebrew; the llama.cpp package only) in the background with `runtime.update_progress` notifications; refused while a model is loaded from it ([updates](#llamacpp-updates)) |
 
@@ -929,8 +930,39 @@ and passing it to `Supervisor::with_backends`.
   Metal) are downloaded on demand and verified by SHA-256 ([runtimes](#runtimes)). Users can
   point at their own `llama-server` build instead, and one already on the machine is used
   while none is installed.
-- **vLLM:** installed into a managed `uv` environment on Linux/WSL2, or run from the official
-  Docker image, or used on a remote host. Imperium never bundles vLLM.
+- **vLLM** (managed environment, implemented): installed into a managed `uv` environment on
+  Linux/WSL2, or run from the official Docker image, or used on a remote host. Imperium never
+  bundles vLLM and never sets it up by itself: only `imperium runtime vllm setup` does, after
+  showing what it needs and asking.
+  - `imperium runtime vllm setup [--docker] [--yes] [--version <v>]` prints the requirements,
+    the GPUs found and the folder, then asks (without a terminal `--yes` is the only way to
+    approve). A virtual environment mode needs `uv` on PATH and about 10 to 15 GiB of disk
+    (PyTorch, CUDA libraries, vLLM), Linux or WSL2, and an NVIDIA GPU with a CUDA 12 driver
+    (the PyPI build targets CUDA); it runs `uv venv --python 3.12` and `uv pip install
+    vllm==<version>` under `<data dir>/runtimes/vllm/<version>/venv`, then `vllm --version`. Docker
+    mode (`--docker`) needs Docker and, for NVIDIA GPUs, the NVIDIA Container Toolkit, runs `docker
+    pull <image>` (about 10 to 20 GiB), and starts each model in a container of its own
+    (`docker run --rm --gpus all --ipc=host`, the model folder mounted read-only, the port
+    published on the loopback only, `--entrypoint vllm`), which is removed when the model stops.
+    For AMD or Intel GPUs set `runtime.vllm.docker_image` to a build for them.
+  - The version and image are pinned in `runtimes/vllm.env` and overridden by
+    `runtime.vllm.version` and `runtime.vllm.docker_image` (or `--version`); both are checked
+    against the characters a version or image reference uses before they reach a command.
+    Everything runs without a shell; output is shown line by line with URL credentials and
+    Hugging Face tokens masked, and no secret is put on a command line or in the record
+    (`managed.json`, written last, so an interrupted setup records nothing). A failure removes
+    the unfinished environment and shows the end of the failing command's output; setting up the
+    version already recorded changes nothing, and another version needs `remove` first.
+  - `imperium runtime vllm status` shows the mode, version, folder and size and which `vllm` the
+    daemon starts; `imperium runtime vllm remove` deletes the version's folder (and nothing else)
+    or runs `docker rmi`, after asking.
+  - The daemon uses it when it starts: a `runtime.vllm.command` other than the default `vllm`
+    wins; else the managed environment's `vllm` (venv) or its container (Docker); else `vllm` on
+    PATH. Restart the daemon after setup or removal.
+  - Tested with a fake command runner (no `uv`, `pip`, Docker or vLLM runs in tests); not yet
+    verified on hardware, so the first real setup, the container arguments and the free-space
+    check (none: the requirements are shown, the disk is not measured) are the things to watch.
+    No desktop action yet: the CLI is the only way to set it up.
 - Each loaded model is a supervised process with a port, health check, idle timeout, and
   memory reservation. Multiple slots (`--parallel`) over one KV pool (`--kv-unified`) let one
   loaded model serve several agents concurrently; an agent holds a slot and a token reservation

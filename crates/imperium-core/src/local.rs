@@ -123,14 +123,22 @@ impl LocalRuntime {
             tracing::warn!(path = %skipped.path.display(), reason = %skipped.reason, "skipped model file");
         }
         let vllm = &settings.runtime.vllm;
-        let launcher = Arc::new(
-            ProcessLauncher::new(
-                server.clone(),
-                PathBuf::from(&vllm.command),
-                paths.data_dir().join("logs"),
-            )
-            .with_slot_dir(paths.data_dir().join("swap")),
-        );
+        // The managed environment (`imperium runtime vllm setup`) unless the user chose a command.
+        let mut launcher = ProcessLauncher::new(
+            server.clone(),
+            PathBuf::from(&vllm.command),
+            paths.data_dir().join("logs"),
+        )
+        .with_slot_dir(paths.data_dir().join("swap"));
+        match imperium_local::vllm_env::resolve(paths.data_dir(), &vllm.command) {
+            imperium_local::vllm_env::Launch::Command(program) => {
+                launcher = launcher.with_program(imperium_local::backend::VLLM, program);
+            }
+            imperium_local::vllm_env::Launch::Docker { docker, image } => {
+                launcher = launcher.with_docker_vllm(docker, image);
+            }
+        }
+        let launcher = Arc::new(launcher);
         let runtimes = Runtimes {
             vllm: vllm.clone(),
             vllm_available: VLLM_AVAILABLE,

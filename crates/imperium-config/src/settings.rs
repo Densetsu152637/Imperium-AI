@@ -1692,6 +1692,11 @@ pub struct VllmSettings {
     /// Upper bound for vLLM's `--gpu-memory-utilization`.
     pub max_gpu_memory_utilization: f64,
     pub extra_args: Vec<String>,
+    /// The vLLM release `imperium runtime vllm setup` installs; empty is the pinned one
+    /// (`runtimes/vllm.env`).
+    pub version: String,
+    /// The Docker image `imperium runtime vllm setup --docker` pulls; empty is the pinned one.
+    pub docker_image: String,
 }
 
 impl Default for VllmSettings {
@@ -1700,6 +1705,8 @@ impl Default for VllmSettings {
             command: "vllm".into(),
             max_gpu_memory_utilization: 0.9,
             extra_args: Vec::new(),
+            version: String::new(),
+            docker_image: String::new(),
         }
     }
 }

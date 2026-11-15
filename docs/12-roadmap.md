@@ -306,7 +306,7 @@ and `environments.agent_update` (protocol 0.28)
     ([14](14-projects-and-automation.md#narrowed-sessions-implemented)); and schedules and
     project agents attached to an environment
     ([14](14-projects-and-automation.md#schedules-and-project-agents-per-environment-implemented)).
-28. **Local runtimes and hardware** (implemented, in part). GPU probes for AMD (`rocm-smi`,
+28. **Local runtimes and hardware** (implemented; not yet verified on hardware). GPU probes for AMD (`rocm-smi`,
     `sysfs`), Intel (`xpu-smi`, `sysfs`) and Apple Silicon (`sysctl`, unified memory) feed the
     hardware view, the resource monitor and the llama.cpp backend choice, and memory estimates
     are calibrated against the peak memory benchmark runs measure (llama.cpp models wholly on one side, not vLLM or split placements), bounded and kept per model
@@ -315,9 +315,13 @@ and `environments.agent_update` (protocol 0.28)
     PowerShell run of `Win32_VideoController` and the GPU memory counters; see the accuracy
     limits in 04) and per-process GPU memory for AMD and Intel (Linux DRM `fdinfo`, Windows GPU
     process counters), both tested on synthetic samples laid out as the vendors document them, not yet verified on
-    hardware. Not built: a managed `uv`
-    environment or the Docker image for vLLM; GPU utilisation and temperature on Windows
-    (`intel_gpu_top` and the engine counters); and checks on real hardware.
+    hardware. The managed vLLM environment is built: `imperium runtime vllm
+    setup|status|remove` makes a `uv` virtual environment with a pinned vLLM, or pulls and runs
+    the official Docker image, only on the user's command after showing disk and GPU
+    requirements, and the daemon uses it when present ([04](04-models-and-routing.md#runtimes)).
+    Not built: a desktop action for it; GPU utilisation and temperature on Windows
+    (`intel_gpu_top` and the engine counters); and checks on real hardware, which the vLLM
+    setup, the Windows probes and the AMD and Intel parsers still need.
 29. **Routing extras** (implemented). Queue-delay handling, capability filters, escalation, and built-in
     rules sending critique, review, and verify tasks to the CPU lane. A local model whose
     expected queue wait is over `routing.max_queue_wait_s` is skipped for the next eligible

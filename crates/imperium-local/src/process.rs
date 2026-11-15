@@ -46,6 +46,9 @@ pub trait RuntimeHooks: Send + Sync + fmt::Debug {
 pub struct ProcessLauncher {
     /// Runtime id and its executable.
     programs: Mutex<Vec<(String, PathBuf)>>,
+    /// `docker` and the image vLLM models run in, when the managed environment is Docker's
+    /// ([`crate::vllm_env`]); each model then gets a container of its own.
+    docker_vllm: Mutex<Option<(PathBuf, String)>>,
     /// Asked before and after a llama.cpp model loads.
     hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     logs: PathBuf,
@@ -60,6 +63,7 @@ impl ProcessLauncher {
     pub fn new(server: PathBuf, vllm: PathBuf, logs: PathBuf) -> Self {
         ProcessLauncher {
             programs: Mutex::new(vec![(LLAMA_CPP.into(), server), (VLLM.into(), vllm)]),
+            docker_vllm: Mutex::new(None),
             hooks: Mutex::new(None),
             logs,
             slots: None,
@@ -70,6 +74,15 @@ impl ProcessLauncher {
     /// Saves the slots of models swapped out to `dir` (see [`Launcher::slot_dir`]).
     pub fn with_slot_dir(mut self, dir: PathBuf) -> Self {
         self.slots = Some(dir);
+        self
+    }
+
+    /// Runs vLLM models in containers of `image`, started by `docker`.
+    pub fn with_docker_vllm(self, docker: PathBuf, image: String) -> Self {
+        *self
+            .docker_vllm
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((docker, image));
         self
     }
 
@@ -120,16 +133,38 @@ impl ProcessLauncher {
             let present = program.is_file();
             program = hooks.ensure(program, present).await?;
         }
-        let program = program.as_path();
-        spec.backend.check_program(program)?;
+        let docker = (spec.backend.id() == VLLM)
+            .then(|| {
+                self.docker_vllm
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone()
+            })
+            .flatten();
+        if docker.is_none() {
+            spec.backend.check_program(program.as_path())?;
+        }
         let port = free_port()?;
+        // A container is named so it can be removed; its client process is what is supervised.
+        let (program, args, container) = match docker {
+            Some((docker, image)) => {
+                let name = crate::vllm_env::container_name(port);
+                let args = crate::vllm_env::docker_run_args(&image, &name, port, &spec.args())?;
+                (docker.clone(), args, Some((docker, name)))
+            }
+            None => {
+                let mut args = spec.args();
+                args.extend(["--port".to_string(), port.to_string()]);
+                (program, args, None)
+            }
+        };
+        let program = program.as_path();
         std::fs::create_dir_all(&self.logs).map_err(|error| error.to_string())?;
         let log_path = self.logs.join(format!("llama-{}.log", spec.model_id));
         let log = std::fs::File::create(&log_path).map_err(|error| error.to_string())?;
         let mut command = Command::new(program);
         command
-            .args(spec.args())
-            .args(["--port", &port.to_string()])
+            .args(&args)
             .stdin(Stdio::null())
             .stdout(log.try_clone().map_err(|error| error.to_string())?)
             .stderr(log)
@@ -139,7 +174,9 @@ impl ProcessLauncher {
         for variable in crate::backend::scrubbed_env(spec) {
             command.env_remove(&variable);
         }
-        library_path(&mut command, program);
+        if container.is_none() {
+            library_path(&mut command, program);
+        }
         let mut child = command
             .spawn()
             .map_err(|error| format!("could not start {}: {error}", program.display()))?;
@@ -150,18 +187,25 @@ impl ProcessLauncher {
         }
         match ready {
             Ok(Ok(())) => Ok(Box::new(ProcessServer {
+                container,
                 pid: child.id(),
                 child: Mutex::new(Some(child)),
                 base_url: format!("{base}/v1"),
                 root: base,
                 http: self.http.clone(),
             })),
-            Ok(Err(message)) => Err(format!("{message}; see {}", log_path.display()).into()),
-            Err(_) => Err(LaunchError::timed_out(format!(
-                "the model did not load within {} s; see {}",
-                LOAD_TIMEOUT.as_secs(),
-                log_path.display()
-            ))),
+            Ok(Err(message)) => {
+                remove_container(container.as_ref()).await;
+                Err(format!("{message}; see {}", log_path.display()).into())
+            }
+            Err(_) => {
+                remove_container(container.as_ref()).await;
+                Err(LaunchError::timed_out(format!(
+                    "the model did not load within {} s; see {}",
+                    LOAD_TIMEOUT.as_secs(),
+                    log_path.display()
+                )))
+            }
         }
     }
 
@@ -192,6 +236,8 @@ impl Launcher for ProcessLauncher {
 
 /// A running server process; dropping it kills the process.
 struct ProcessServer {
+    /// `docker` and the container's name, for a vLLM model run in Docker.
+    container: Option<(PathBuf, String)>,
     /// Killed on drop if [`Server::stop`] has not taken it.
     child: Mutex<Option<Child>>,
     /// The process id, for resource readings; kept after [`Server::stop`] takes the child.
@@ -290,6 +336,7 @@ impl Server for ProcessServer {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
+        let container = self.container.clone();
         Box::pin(async move {
             // One that has exited on its own (see `exited`) is already gone.
             if let Some(mut child) = child
@@ -298,6 +345,8 @@ impl Server for ProcessServer {
             {
                 tracing::warn!(%error, "could not stop a model server");
             }
+            // Killing `docker run` leaves its container running.
+            remove_container(container.as_ref()).await;
         })
     }
 
@@ -315,6 +364,35 @@ impl Server for ProcessServer {
             Ok(None) | Err(_) => None,
         }
     }
+}
+
+impl Drop for ProcessServer {
+    /// A server dropped without being stopped must not leave its container behind.
+    fn drop(&mut self) {
+        if let Some((docker, name)) = &self.container {
+            let _ = std::process::Command::new(docker)
+                .args(["rm", "-f", name])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
+/// `docker rm -f <name>`: removes a model's container, running or not. Failures are not errors
+/// (it may be gone already).
+async fn remove_container(container: Option<&(PathBuf, String)>) {
+    let Some((docker, name)) = container else {
+        return;
+    };
+    let _ = Command::new(docker)
+        .args(["rm", "-f", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
 }
 
 /// Whether any slot in a `/slots` reply has a speculative decoding context; `None` when the

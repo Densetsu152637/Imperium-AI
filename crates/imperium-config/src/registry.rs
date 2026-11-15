@@ -164,6 +164,8 @@ pub static SETTINGS: &[SettingDef] = &[
     def("runtime.vllm.command", "vLLM command", STRING, "The vllm executable for Hugging Face model folders (Linux and WSL2)."),
     def("runtime.vllm.max_gpu_memory_utilization", "vLLM GPU memory share", Number, "Upper bound for vLLM's share of GPU memory (0-1)."),
     def("runtime.vllm.extra_args", "Extra vLLM arguments", StringList, "Arguments added to vllm serve."),
+    def("runtime.vllm.version", "vLLM version", STRING, "The vLLM release the managed environment installs (`imperium runtime vllm setup`); empty is the one Imperium pins."),
+    def("runtime.vllm.docker_image", "vLLM Docker image", STRING, "The Docker image the managed environment pulls (`imperium runtime vllm setup --docker`); empty is the one Imperium pins."),
     def("hardware.vram_mb", "VRAM override (MB)", Integer, "Overrides the probed GPU memory; empty uses the probe."),
     def("hardware.ram_mb", "RAM override (MB)", Integer, "Overrides the probed system memory; empty uses the probe."),
     def("mcp.trusted_projects", "Trusted MCP projects", PathList, "Project folders whose .mcp.json servers may start."),

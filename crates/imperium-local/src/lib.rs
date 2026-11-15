@@ -26,3 +26,4 @@ pub mod speculative;
 pub mod speech;
 pub mod suggest;
 pub mod supervisor;
+pub mod vllm_env;
