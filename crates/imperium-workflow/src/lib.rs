@@ -8,6 +8,7 @@ pub mod imports;
 pub mod pack;
 pub mod personality;
 mod text;
+pub mod update;
 
 use std::path::{Component, Path, PathBuf};
 

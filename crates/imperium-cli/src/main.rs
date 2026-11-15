@@ -10,6 +10,7 @@ mod local;
 mod mcp_login;
 mod memory;
 mod mods;
+mod pack;
 mod phone;
 mod project;
 mod pull;
@@ -161,6 +162,12 @@ enum Command {
     Workflow {
         #[command(subcommand)]
         command: WorkflowCommand,
+    },
+    /// Policy pack updates: fetch a pack from a source you added, read what changed in plain
+    /// words, and accept or reject it. Nothing is applied until you accept.
+    Pack {
+        #[command(subcommand)]
+        command: PackCommand,
     },
     /// Inference runtimes.
     Runtime {
@@ -597,6 +604,48 @@ enum WorkflowCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum PackCommand {
+    /// Pack sources, the version pinned for each and any update waiting for a decision.
+    List,
+    /// Add an update source for a pack: a Git URL (`https://`, `ssh://`, `git@host:path` or
+    /// `file://`) with no credentials in it. Sources are kept only in your config folder.
+    AddSource {
+        /// A short name; it also prefixes the pack's references.
+        name: String,
+        url: String,
+        /// A branch or tag; defaults to the repository's default branch.
+        #[arg(long)]
+        revision: Option<String>,
+    },
+    /// Remove a source together with its pin and any pending update.
+    RemoveSource { name: String },
+    /// Fetch the source(s) and show what changed since the pinned version. Applies nothing.
+    Check {
+        /// A source name; every source when left out.
+        name: Option<String>,
+    },
+    /// Show the pending update again.
+    Diff {
+        name: String,
+        /// Also list every changed line.
+        #[arg(long)]
+        full: bool,
+    },
+    /// Pin the pending update. At a terminal you type the confirmation shown; otherwise pass
+    /// `--hash` (at least 12 digits of the new hash, as shown by `check` and `diff`).
+    Accept {
+        name: String,
+        #[arg(long)]
+        hash: Option<String>,
+        /// Also accept changes marked as possibly loosening what agents must do.
+        #[arg(long)]
+        allow_loosening: bool,
+    },
+    /// Discard the pending update; the pinned version is unchanged.
+    Reject { name: String },
+}
+
+#[derive(Debug, Subcommand)]
 enum RuntimeCommand {
     /// Download llama.cpp's own build for this machine from its GitHub release, verified
     /// against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12,
@@ -955,6 +1004,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     packs,
                 },
         } => workflow::resolve(&role, &task, project, packs),
+        Command::Pack { command } => match command {
+            PackCommand::List => pack::list(),
+            PackCommand::AddSource {
+                name,
+                url,
+                revision,
+            } => pack::add_source(name, url, revision),
+            PackCommand::RemoveSource { name } => pack::remove_source(name),
+            PackCommand::Check { name } => pack::check(name),
+            PackCommand::Diff { name, full } => pack::diff(name, full),
+            PackCommand::Accept {
+                name,
+                hash,
+                allow_loosening,
+            } => pack::accept(name, hash, allow_loosening),
+            PackCommand::Reject { name } => pack::reject(name),
+        },
         Command::Memory { command } => match command {
             MemoryCommand::List => memory::list(),
             MemoryCommand::Search { query } => memory::search(&query),
