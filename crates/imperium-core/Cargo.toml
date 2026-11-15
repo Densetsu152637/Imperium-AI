@@ -15,24 +15,24 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 constant_time_eq = "0.6.1"
 futures-util = "0.3.34"
 getrandom = "0.4.3"
-imperium-api = { version = "0.1.0", path = "../imperium-api" }
-imperium-automation = { version = "0.1.0", path = "../imperium-automation" }
-imperium-config = { version = "0.1.0", path = "../imperium-config" }
-imperium-engine = { version = "0.1.0", path = "../imperium-engine" }
-imperium-extensions = { version = "0.1.0", path = "../imperium-extensions" }
-imperium-github = { version = "0.1.0", path = "../imperium-github" }
-imperium-ipc = { version = "0.1.0", path = "../imperium-ipc" }
-imperium-local = { version = "0.1.0", path = "../imperium-local" }
-imperium-mcp = { version = "0.1.0", path = "../imperium-mcp" }
-imperium-media = { version = "0.1.0", path = "../imperium-media" }
-imperium-memory = { version = "0.1.0", path = "../imperium-memory" }
-imperium-models = { version = "0.1.0", path = "../imperium-models" }
-imperium-pets = { version = "0.1.0", path = "../imperium-pets" }
-imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
-imperium-policy = { version = "0.1.0", path = "../imperium-policy" }
-imperium-tools = { version = "0.1.0", path = "../imperium-tools" }
-imperium-web = { version = "0.1.0", path = "../imperium-web" }
-imperium-workflow = { version = "0.1.0", path = "../imperium-workflow" }
+imperium-api = { version = "0.2.0", path = "../imperium-api" }
+imperium-automation = { version = "0.2.0", path = "../imperium-automation" }
+imperium-config = { version = "0.2.0", path = "../imperium-config" }
+imperium-engine = { version = "0.2.0", path = "../imperium-engine" }
+imperium-extensions = { version = "0.2.0", path = "../imperium-extensions" }
+imperium-github = { version = "0.2.0", path = "../imperium-github" }
+imperium-ipc = { version = "0.2.0", path = "../imperium-ipc" }
+imperium-local = { version = "0.2.0", path = "../imperium-local" }
+imperium-mcp = { version = "0.2.0", path = "../imperium-mcp" }
+imperium-media = { version = "0.2.0", path = "../imperium-media" }
+imperium-memory = { version = "0.2.0", path = "../imperium-memory" }
+imperium-models = { version = "0.2.0", path = "../imperium-models" }
+imperium-pets = { version = "0.2.0", path = "../imperium-pets" }
+imperium-protocol = { version = "0.2.0", path = "../imperium-protocol" }
+imperium-policy = { version = "0.2.0", path = "../imperium-policy" }
+imperium-tools = { version = "0.2.0", path = "../imperium-tools" }
+imperium-web = { version = "0.2.0", path = "../imperium-web" }
+imperium-workflow = { version = "0.2.0", path = "../imperium-workflow" }
 notify-rust = "4.18.2"
 reqwest = { version = "0.13.5", features = ["json", "stream"] }
 serde = "1.0.229"

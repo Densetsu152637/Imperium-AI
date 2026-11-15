@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Compute the experimental release's version: X.Y.<run number>-experimental, where X.Y comes
-# from the desktop app's version (for example v0.1.9-experimental). The run number only grows,
+# from the desktop app's version (for example v0.2.9-experimental). The run number only grows,
 # so each build updates the one before it.
 set -euo pipefail
 

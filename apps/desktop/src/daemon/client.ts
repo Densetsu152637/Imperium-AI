@@ -51,7 +51,7 @@ export class DaemonClient {
     });
     const client = new DaemonClient(socket);
     const params: HandshakeParams = {
-      client: { name: "imperium-desktop", version: "0.1.0" },
+      client: { name: "imperium-desktop", version: "0.2.0" },
       protocol: { major: 0, minor: 41 },
     };
     client.daemon = await client.call<HandshakeResult>("system.handshake", params);

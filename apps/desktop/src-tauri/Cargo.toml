@@ -11,9 +11,9 @@ description = "The Imperium desktop app's native shell"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-imperium-client = { version = "0.1.0", path = "../../../crates/imperium-client" }
-imperium-config = { version = "0.1.0", path = "../../../crates/imperium-config" }
-imperium-protocol = { version = "0.1.0", path = "../../../crates/imperium-protocol" }
+imperium-client = { version = "0.2.0", path = "../../../crates/imperium-client" }
+imperium-config = { version = "0.2.0", path = "../../../crates/imperium-config" }
+imperium-protocol = { version = "0.2.0", path = "../../../crates/imperium-protocol" }
 reqwest = "0.13.5"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

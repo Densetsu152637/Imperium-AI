@@ -2360,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-automation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2379,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2405,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "imperium-ipc",
@@ -2418,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -2439,7 +2439,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2485,7 +2485,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "imperium-client",
  "imperium-config",
@@ -2506,7 +2506,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -2535,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-extensions"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "imperium-api",
@@ -2552,7 +2552,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-github"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2562,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.4.3",
  "tempfile",
@@ -2572,7 +2572,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-local"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "flate2",
@@ -2598,7 +2598,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -2616,7 +2616,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-media"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -2634,7 +2634,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "imperium-api",
  "imperium-protocol",
@@ -2647,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-models"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "futures-util",
@@ -2661,7 +2661,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-pets"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2671,7 +2671,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-policy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "imperium-api",
  "imperium-workflow",
@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2689,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ignore",
  "imperium-api",
@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "futures-util",
@@ -2727,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "imperium-workflow"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "imperium-api",
  "serde",

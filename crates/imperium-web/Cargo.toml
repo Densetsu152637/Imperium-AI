@@ -9,10 +9,10 @@ description = "Web search and fetch tools for Imperium agents"
 
 [dependencies]
 futures-util = "0.3.34"
-imperium-api = { version = "0.1.0", path = "../imperium-api" }
-imperium-policy = { version = "0.1.0", path = "../imperium-policy" }
-imperium-tools = { version = "0.1.0", path = "../imperium-tools" }
-imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
+imperium-api = { version = "0.2.0", path = "../imperium-api" }
+imperium-policy = { version = "0.2.0", path = "../imperium-policy" }
+imperium-tools = { version = "0.2.0", path = "../imperium-tools" }
+imperium-protocol = { version = "0.2.0", path = "../imperium-protocol" }
 reqwest = { version = "0.13.5", features = ["json", "query"] }
 same-file = "1.0.6"
 serde = { version = "1.0.229", features = ["derive"] }

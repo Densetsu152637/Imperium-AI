@@ -34,7 +34,7 @@ There are two channels, each with its own branch, workflow, and update feed.
 | ------------ | ----------------------------------- | ---------------------------- | -------------------------------------------------------------- |
 | Main         | Tag `vX.Y.Z` on `main`              | `X.Y.Z`                      | `vX.Y.Z (main)`, marked latest                                 |
 | Main (pre)   | Tag `vX.Y.Z-beta.N` etc.            | `X.Y.Z-beta.N`               | `vX.Y.Z-beta.N (main)` pre-release; not offered by the updater |
-| Experimental | Each push to the `experimental` branch | `X.Y.<run>-experimental` | `vX.Y.<run>-experimental` pre-release (for example `v0.1.9-experimental`) |
+| Experimental | Each push to the `experimental` branch | `X.Y.<run>-experimental` | `vX.Y.<run>-experimental` pre-release (for example `v0.2.9-experimental`) |
 
 Each channel keeps one release. After a new release is published,
 `scripts/ci/prune-releases.sh` deletes the channel's older releases and their tags: a new
@@ -46,6 +46,13 @@ nothing. Runtime-pack releases are never touched.
 `X.Y.Z` is the version in `apps/desktop/src-tauri/tauri.conf.json`. Experimental builds keep its
 `X.Y` and use the experimental workflow's run number as the patch, so every experimental build
 is newer than the last. `release.yml` ignores `-experimental` tags.
+
+The version is **0.2.0**, set when the last roadmap item (the final cleanup, item 46) was merged;
+experimental builds are `0.2.<run>-experimental`. It is declared in the Cargo workspace
+(`Cargo.toml`, which every crate and the Tauri shell inherit, and the path dependencies'
+versions), `apps/desktop/package.json` and `apps/desktop/src-tauri/tauri.conf.json`, and the
+desktop and phone clients send it in their handshake. `PROTOCOL_VERSION` is separate and stays
+at 0.41; the mods, `packages/protocol` and `packages/mod-sdk` keep their own versions.
 
 ### Desktop updates
 
