@@ -20,6 +20,7 @@ import type {
 import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
 import { taskTitle } from "./agentView";
+import { environmentById } from "./environments/byId";
 import { applyKnowledge, emptyKnowledge, type KnowledgeState } from "./knowledge";
 import { modelAliases, modelName } from "./modelNames";
 import { applyBrowserView, applyPreviewEvent, type BrowserDriver, type BrowserMirror } from "./preview";
@@ -686,7 +687,7 @@ export function snapshotSessions(sessions: SessionState[], environments: Environ
       environmentId: session.summary.environment_id,
       archived: session.summary.archived,
       persistent: session.summary.persistent,
-      pet: environments.find((env) => env.id === session.summary.environment_id)?.pet ?? null,
+      pet: environmentById(environments, session.summary.environment_id)?.pet ?? null,
       createdAt: session.summary.created_at ?? null,
       agents,
     };

@@ -6,6 +6,7 @@
 import type { LocalModelRow, ModelRow } from "@imperium/protocol";
 
 import type { SelectOption } from "./components/Select";
+import { rowById, rowBySpecOrId } from "./models/spec.ts";
 import { chooserModels, type ModelGroup, type ModelMarks } from "./modelPrefs.ts";
 
 const RUNTIMES: Record<LocalModelRow["runtime"], string> = { llamacpp: "llama.cpp", vllm: "vLLM" };
@@ -112,7 +113,7 @@ export function currentOption(
   liveSession = true,
 ): SelectOption | null {
   // The session's model is a spec or a model table id.
-  const row = models.find((candidate) => candidate.spec === current || candidate.id === current);
+  const row = rowBySpecOrId(models, current);
   const localRow = local.find((candidate) => localSpec(candidate) === current);
   const off = (row != null && !row.enabled) || (localRow != null && !localRow.enabled);
   if (!off) return { value: current, label: current };
@@ -162,5 +163,5 @@ function allModelOptions(models: ModelRow[], local: LocalModelRow[]): SelectOpti
 /** A configured model name (a table id or a spec) as the spec the list uses. */
 export function asSpec(models: ModelRow[], name: string | null): string | null {
   if (!name) return null;
-  return models.find((row) => row.id === name)?.spec ?? name;
+  return rowById(models, name)?.spec ?? name;
 }

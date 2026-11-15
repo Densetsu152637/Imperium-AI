@@ -12,6 +12,7 @@
 import type { ModelRow } from "@imperium/protocol";
 
 import type { ModelAliases } from "./modelNames";
+import { rowBySpecOrId } from "./models/spec.ts";
 
 import type { ModelCall, SessionState } from "./sessions";
 
@@ -37,16 +38,13 @@ type Work = { models: string[]; calls: ModelCall[] };
 /** Runtimes the daemon starts on this machine; their specs are `<runtime>:<model>`. */
 const LOCAL_RUNTIMES = ["llamacpp", "vllm"];
 
-const findRow = (spec: string, models: ModelRow[]): ModelRow | undefined =>
-  models.find((row) => row.spec === spec) ?? models.find((row) => row.id === spec);
-
 /**
  * The name a model goes by in telemetry: its alias (the table row's, else one of `aliases` for
  * the spec or the row, which covers local models; see modelNames.ts), else its id in the model
  * table, else the spec without its endpoint.
  */
 export function modelLabel(spec: string, models: ModelRow[], aliases: ModelAliases = new Map()): string {
-  const row = findRow(spec, models);
+  const row = rowBySpecOrId(models, spec);
   const alias = row?.alias ?? aliases.get(spec) ?? (row ? aliases.get(row.id) : undefined);
   if (alias) return alias;
   if (row) return row.id;
@@ -56,7 +54,7 @@ export function modelLabel(spec: string, models: ModelRow[], aliases: ModelAlias
 
 /** Whether a model runs on this machine: a local runtime's spec or a table row marked local. */
 export function isLocalModel(spec: string, models: ModelRow[]): boolean {
-  const row = findRow(spec, models);
+  const row = rowBySpecOrId(models, spec);
   if (row) return row.location === "local";
   return LOCAL_RUNTIMES.includes(spec.slice(0, spec.indexOf(":")));
 }

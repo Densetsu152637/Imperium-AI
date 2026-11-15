@@ -5,6 +5,7 @@
 import type { Budget, BudgetAlert, BudgetStatus, BudgetStop, ModelRow } from "@imperium/protocol";
 
 import type { Notice } from "./attention";
+import { rowById } from "./models/spec.ts";
 
 /** `-32008`: a used-up budget asks before, or blocks, a new turn (jsonrpc.rs `BUDGET_EXCEEDED`). */
 export const BUDGET_EXCEEDED = -32008;
@@ -13,7 +14,7 @@ export const BUDGET_EXCEEDED = -32008;
 export function modelSpec(model: string | null | undefined, models: ModelRow[]): string | null {
   if (!model) return null;
   if (model.includes(":")) return model;
-  return models.find((row) => row.id === model)?.spec ?? null;
+  return rowById(models, model)?.spec ?? null;
 }
 
 /** Whether a budget covers a session in `environmentId` using `spec`. */

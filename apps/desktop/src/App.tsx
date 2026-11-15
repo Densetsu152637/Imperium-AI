@@ -92,6 +92,7 @@ import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { ResourcesPanel } from "./panels/ResourcesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
 import { cleanName } from "./agents";
+import { environmentById } from "./environments/byId";
 import { environmentIcon, projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./projectIcons";
 import {
   applyEvent,
@@ -579,7 +580,7 @@ export function App() {
     () => ({ sessions: snapshotSessions(allSessions, environments), selected, client }),
     [allSessions, environments, selected, client],
   );
-  const environment = environments.find((env) => env.id === envId) ?? null;
+  const environment = environmentById(environments, envId);
   // The session header shows a session's icon by its folder: that of its environment.
   const icons = useMemo<ProjectIcons>(
     () => ({
@@ -665,7 +666,7 @@ export function App() {
 
   /** Creates a session from the new-session composer and sends its first message; rejects with the daemon's reason. */
   const createSession = async ({ environmentId, model, worktree, subfolder, readOnly, text }: NewSessionOptions) => {
-    const env = environments.find((e) => e.id === environmentId);
+    const env = environmentById(environments, environmentId);
     if (!client || !env) throw new Error("Not connected to imperium-core.");
     const params: SessionCreateParams = {
       environment_id: env.id,
@@ -1548,7 +1549,7 @@ export function App() {
     if (!sameArrangement(next, layoutColumns)) setArrangement(next);
   };
   const installedMods = (mods?.mods ?? []).map((mod) => mod.id);
-  const environmentName = environments.find((env) => env.id === envId)?.name ?? null;
+  const environmentName = environmentById(environments, envId)?.name ?? null;
   /** *Export layout preset*: the layout that applies here, as a JSON file through the save dialog. */
   const exportPreset = () => {
     const preset = makePreset(shape, projectLayout && environmentName ? `${environmentName} layout` : "Layout", installedMods);
@@ -1696,7 +1697,7 @@ export function App() {
       {envWindow && (envWindow.id === null || environments.some((env) => env.id === envWindow.id)) && (
         <EnvironmentWindow
           key={envWindow.id ?? "new"}
-          environment={envWindow.id ? (environments.find((env) => env.id === envWindow.id) ?? null) : null}
+          environment={environmentById(environments, envWindow.id)}
           client={client}
           confirmDelete={envWindow.confirmDelete}
           onSaved={(env) => {

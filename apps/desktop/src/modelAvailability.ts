@@ -5,6 +5,8 @@
 // off the default (`models.set_config`), so the dialog asks for another default first. Pure
 // (test/modelAvailability.test.ts).
 
+import { rowById } from "./models/spec.ts";
+
 /** What the dialog needs of the daemon's `models.config` result. */
 export type AvailabilityInput = {
   /** `models.disabled`: specs switched off. */
@@ -65,7 +67,7 @@ export function disabledToSave(disabled: readonly string[], switches: Switches):
 export function defaultTurnedOff(input: AvailabilityInput, switches: Switches): string | null {
   if (input.defaultModel === null) return null;
   // `models.default` may name a table row by its id.
-  const spec = input.rows.find((row) => row.id === input.defaultModel)?.spec ?? input.defaultModel;
+  const spec = rowById(input.rows, input.defaultModel)?.spec ?? input.defaultModel;
   const before = offSpecs(input);
   const after = offSpecs(input, switches);
   return after.has(spec) && !before.has(spec) ? spec : null;
