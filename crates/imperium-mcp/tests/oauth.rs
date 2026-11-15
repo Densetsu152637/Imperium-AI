@@ -156,9 +156,20 @@ fn issue(inner: &mut Inner) -> Response {
 
 async fn as_token(State(fake): State<Shared>, body: String) -> Response {
     let params = form(&body);
-    let mut inner = fake.lock();
     let grant = params.get("grant_type").cloned().unwrap_or_default();
-    inner.as_requests.push(format!("token:{grant}"));
+    let gate = {
+        let mut inner = fake.lock();
+        inner.as_requests.push(format!("token:{grant}"));
+        inner
+            .refresh_gate
+            .clone()
+            .filter(|_| grant == "refresh_token")
+    };
+    // A refresh held mid-flight until the test releases it.
+    if let Some(gate) = gate {
+        gate.notified().await;
+    }
+    let mut inner = fake.lock();
     match grant.as_str() {
         "authorization_code" => {
             let Some(challenge) = params.get("code").and_then(|code| inner.codes.remove(code))
@@ -174,12 +185,6 @@ async fn as_token(State(fake): State<Shared>, body: String) -> Response {
             issue(&mut inner)
         }
         "refresh_token" => {
-            // A refresh held mid-flight until the test releases it.
-            if let Some(gate) = inner.refresh_gate.clone() {
-                drop(inner);
-                gate.notified().await;
-                inner = fake.lock();
-            }
             if inner.refresh_fails || params.get("refresh_token") != Some(&inner.refresh) {
                 return invalid_grant();
             }
