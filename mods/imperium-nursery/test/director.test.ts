@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import type { Behaviour, BehaviourState, BehaviourTick, Behaviours } from "@imperium/mod-sdk";
 
-import { Director, TICK_MS } from "../src/behaviour/director.ts";
+import { Director, RETRY_MS, TICK_MS } from "../src/behaviour/director.ts";
 import { Nursery } from "../src/nursery.ts";
 import { allDrawn } from "../src/pet.ts";
 import type { Env } from "../src/arbiter.ts";
@@ -140,12 +140,20 @@ test("the nursery frees a pet's behaviour when the pet is taken out, and hands a
 
 test("a frame at its limit of behaviours leaves that pet to the built-in roaming without writing the module off", () => {
   let full = true;
+  let asked = 0;
   const inner = host(() => walk).host;
-  const h: Pick<Behaviours, "load"> = { load: (name, bytes, options) => (full ? { ok: false, error: "at most 32 behaviours may run at once", busy: true } : inner.load(name, bytes, options)) };
+  const h: Pick<Behaviours, "load"> = { load: (name, bytes, options) => (asked++, full ? { ok: false, error: "at most 32 behaviours may run at once", busy: true } : inner.load(name, bytes, options)) };
   const d = new Director(h, "wander", new Uint8Array([0]));
   expect(d.guide("a", pet, T0)).toBeNull();
   expect(d.active).toBe(true);
   expect(d.faults).toHaveLength(0);
+  // Not asked again every frame: only after the backoff.
+  expect(d.guide("a", pet, T0 + 50)).toBeNull();
+  expect(d.guide("b", pet, T0 + 100)).toBeNull();
+  expect(asked).toBe(1);
   full = false;
-  expect(d.guide("a", pet, T0 + 1000)).toEqual({ vx: 12, vy: -6, shot: null });
+  expect(d.guide("a", pet, T0 + RETRY_MS - 1)).toBeNull();
+  expect(asked).toBe(1);
+  expect(d.guide("a", pet, T0 + RETRY_MS)).toEqual({ vx: 12, vy: -6, shot: null });
+  expect(asked).toBe(2);
 });

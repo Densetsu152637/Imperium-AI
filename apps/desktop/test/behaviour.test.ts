@@ -252,7 +252,7 @@ test("the host counts live behaviours, reports what it refuses or stops, and fre
   const over = host.load("extra", ok);
   assert.equal(over.ok, false);
   assert.equal(!over.ok && over.busy, true, "a full frame is not a refused module");
-  assert.deepEqual(reports.map((r) => [r.name, r.phase]), [["extra", "load"]]);
+  assert.deepEqual(reports, [], "a full frame is not a fault, so nothing is reported");
   if (live[0]?.ok) live[0].behaviour.close();
   assert.equal(host.load("again", ok).ok, true);
 

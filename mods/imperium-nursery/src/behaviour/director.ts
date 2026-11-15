@@ -10,6 +10,9 @@ import { hash } from "../pick.ts"
 /** How often a pet's behaviour runs, in ms; between ticks the last velocity holds. */
 export const TICK_MS = 250
 
+/** After the host says it is full, how long before the director asks again (a freed slot asks sooner). */
+export const RETRY_MS = 5000
+
 export type Guide = { vx: number; vy: number; shot: string | null }
 
 /** What the room tells the director about a free pet. */
@@ -23,6 +26,8 @@ export class Director {
   private readonly name: string
   private readonly slots = new Map<string, Slot>()
   private readonly failed = new Set<string>()
+  /** Do not ask the host to load before this time (it was full), or 0. */
+  private retryAt = 0
   /** Why the director cannot run at all (the module was refused), or null. */
   refused: string | null = null
   /** One line per behaviour that stopped, newest last. */
@@ -48,10 +53,14 @@ export class Director {
     if (this.refused !== null || this.failed.has(key)) return null
     let slot = this.slots.get(key)
     if (!slot) {
+      if (now < this.retryAt) return null
       const loaded = this.host.load(`${this.name}:${key}`, this.bytes, { seed: hash(key) })
       if (!loaded.ok) {
         // Too many behaviours running: this pet roams the built-in way for now; the module is fine.
-        if (loaded.busy) return null
+        if (loaded.busy) {
+          this.retryAt = now + RETRY_MS
+          return null
+        }
         // A module that was refused is refused for every pet; stop trying.
         this.refused = loaded.error
         this.faults.push(`${this.name}: ${loaded.error}`)
@@ -76,6 +85,7 @@ export class Director {
   /** The pet left the nursery: free its instance. */
   forget(key: string): void {
     this.slots.get(key)?.behaviour.close()
+    this.retryAt = 0
     this.slots.delete(key)
     this.failed.delete(key)
   }

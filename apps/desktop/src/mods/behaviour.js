@@ -580,7 +580,7 @@ export function createHost(options = {}) {
       const label = String(name).slice(0, 64);
       if (live.size >= LIMITS.maxBehaviours) {
         const error = `at most ${LIMITS.maxBehaviours} behaviours may run at once`;
-        report({ name: label, phase: "load", reason: error });
+        // Not a fault of the module: nothing is reported, the caller may try again once a slot is free.
         return { ok: false, error, busy: true };
       }
       const loaded = loadBehaviour(bytes, {
