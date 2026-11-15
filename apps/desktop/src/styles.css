@@ -6663,6 +6663,7 @@ button.select.open .select-chevron {
   padding: 0 calc(var(--space) * 1.5);
   overflow: auto;
   font-size: 0.95rem;
+}
 
 /* The review pane: changed files as quiet unified diffs. Hunk and file tools are row tools,
    shown on hover or focus; added and removed lines are tinted, context stays plain. */
