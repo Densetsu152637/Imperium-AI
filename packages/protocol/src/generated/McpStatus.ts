@@ -15,7 +15,7 @@ checked_at: number | null,
 /**
  * Secrets the server refers to that are not in the secret store.
  */
-missing_secrets: Array<string>,
+missing_secrets: Array<string>, 
 /**
  * Where a remote server's OAuth sign-in stands; `null` for servers that take no sign-in (a
  * local command, or a URL with a fixed token or `Authorization` header).
