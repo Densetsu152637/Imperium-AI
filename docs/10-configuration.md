@@ -352,7 +352,7 @@ This is **weaker than a keychain**: a keychain also stops other programs running
 file does not. The daemon logs a warning at start and `imperium secret set` prints one whenever
 the fallback is in use. When a later daemon start finds a keychain, it moves every secret from the file into it. The
 file's copy wins over a value already in the keychain (it is the newer one: a keychain write
-removes the file's copy first, or fails), and until the move a read finds the file's copy
+is reported as failed unless it also removes the file's copy), and until the move a read finds the file's copy
 without moving it. An unreadable leftover file is logged and ignored for reads, and a keychain
 write that cannot remove an older file copy fails rather than being quietly shadowed. The file
 is deleted once empty (the key file is left, and may be deleted by hand). Name the passphrase
