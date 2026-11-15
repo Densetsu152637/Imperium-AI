@@ -365,7 +365,8 @@ pub fn grep_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use imperium_policy::permissions::{PermissionRule, Permissions, SharedRules};
+    use imperium_api::PermissionRule;
+    use imperium_policy::permissions::{Permissions, SharedRules};
 
     fn scope(path: &str) -> Scope {
         Scope {

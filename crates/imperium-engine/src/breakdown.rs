@@ -883,7 +883,7 @@ fn content_hash(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use imperium_models::{FunctionCall, ToolCall};
+    use imperium_api::{FunctionCall, ToolCall};
     use serde_json::json;
 
     fn spec(name: &str) -> ToolSpec {

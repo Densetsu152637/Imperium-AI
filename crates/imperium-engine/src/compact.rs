@@ -453,7 +453,7 @@ pub(crate) fn shorten(summary: &str, target: u64, current: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use imperium_models::{FunctionCall, ToolCall};
+    use imperium_api::{FunctionCall, ToolCall};
     use imperium_protocol::session::TokenCountMethod;
 
     fn user(text: &str) -> ChatMessage {

@@ -377,7 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_only_grants_refuse_writes_and_edits() {
-        use imperium_policy::permissions::{PathGrant, PathMode};
+        use imperium_api::{PathGrant, PathMode};
         let project = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let toolchain = tempfile::tempdir().unwrap();

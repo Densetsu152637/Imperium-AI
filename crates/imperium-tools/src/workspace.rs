@@ -1103,7 +1103,7 @@ mod tests {
 
     #[test]
     fn remote_grants_are_paths_inside_the_runtime() {
-        use imperium_policy::permissions::{PathGrant, PathMode};
+        use imperium_api::{PathGrant, PathMode};
         let workspace = Workspace::remote(
             Remote::Ssh { host: "box".into() },
             &["/home/me/project".to_string()],
