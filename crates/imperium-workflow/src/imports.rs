@@ -254,7 +254,7 @@ impl State<'_> {
             self.out.files.push(canonical.clone());
             blocks.push_str(&format!(
                 "\n\n<imported-file path=\"{shown}\">\n{}\n</imported-file>",
-                body.replace("</imported-file>", "<\\/imported-file>")
+                escape_close(&body)
             ));
             self.stack.push(canonical.clone());
             self.visit(&canonical, &imported, depth + 1, blocks);
@@ -283,6 +283,22 @@ impl State<'_> {
             base.join(path)
         })
     }
+}
+
+/// `text` with every `</imported-file` (ASCII case-insensitive, original letters kept) written
+/// as `<\/imported-file`, so an imported file cannot close its own block.
+fn escape_close(text: &str) -> String {
+    const CLOSE: &str = "</imported-file";
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (at, _) in lower.match_indices(CLOSE) {
+        out.push_str(&text[copied..at + 1]);
+        out.push('\\');
+        copied = at + 1;
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 /// The paths `text` imports, in order and without repeats: `@path` words outside code. `\ `
@@ -398,6 +414,18 @@ pub(crate) mod tests {
         assert_eq!(expanded.skipped.len(), 2, "{:?}", expanded.skipped);
         assert!(expanded.skipped.iter().all(|note| note.contains("cycle")));
         assert_eq!(expanded.text.matches("<imported-file").count(), 2);
+    }
+
+    #[test]
+    fn an_import_cannot_close_its_block_in_any_letter_case() {
+        assert_eq!(
+            escape_close("a </imported-file> b </IMPORTED-File>é </Imported-File >"),
+            "a <\\/imported-file> b <\\/IMPORTED-File>é <\\/Imported-File >"
+        );
+        assert_eq!(
+            escape_close("Vec<String> </b> <imported-file"),
+            "Vec<String> </b> <imported-file"
+        );
     }
 
     #[test]
