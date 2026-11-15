@@ -100,6 +100,9 @@ impl fmt::Debug for KeySource {
     }
 }
 
+/// A derived key and the serialized header it was derived for.
+type DerivedKey = (Vec<u8>, Zeroizing<[u8; KEY_LEN]>);
+
 /// Secrets in one encrypted file. Safe to use from several processes: each change takes an
 /// exclusive lock, rereads the file, and replaces it atomically.
 pub struct FileSecrets {
@@ -108,7 +111,7 @@ pub struct FileSecrets {
     cost: KdfCost,
     /// The last derived key and the header it was derived for, so a passphrase is stretched
     /// once per file rather than once per call.
-    cache: Mutex<Option<(Vec<u8>, Zeroizing<[u8; KEY_LEN]>)>>,
+    cache: Mutex<Option<DerivedKey>>,
 }
 
 impl fmt::Debug for FileSecrets {
