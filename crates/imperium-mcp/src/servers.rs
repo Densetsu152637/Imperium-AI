@@ -1,7 +1,9 @@
 //! A session's MCP servers: starting them, listing their tools, and calling them.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -9,7 +11,7 @@ use imperium_api::{Sampler, SamplingFuture, SamplingRequest, ToolSpec};
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 
-use crate::client::{Client, McpError, PROTOCOL_VERSION, Sampling};
+use crate::client::{Client, McpError, PROTOCOL_VERSION, Sampling, TokenSource};
 use crate::extras::{self, ToolKind};
 use crate::sampling::MAX_REQUESTS_PER_CALL;
 
@@ -126,9 +128,22 @@ pub struct Failed {
 impl McpServers {
     /// Starts every server concurrently. Servers that fail are reported, not fatal.
     pub async fn connect(specs: Vec<ServerSpec>) -> (Self, Vec<Failed>) {
-        let attempts = futures_util::future::join_all(specs.into_iter().map(|spec| async move {
-            let name = spec.name.clone();
-            (name, start(spec).await)
+        McpServers::connect_with(specs, HashMap::new()).await
+    }
+
+    /// Like [`McpServers::connect`], giving each HTTP server named in `auths` the OAuth access
+    /// tokens of its [`TokenSource`]. Connecting never starts a sign-in: a server that needs one
+    /// fails with a reason that says so.
+    pub async fn connect_with(
+        specs: Vec<ServerSpec>,
+        auths: HashMap<String, Arc<dyn TokenSource>>,
+    ) -> (Self, Vec<Failed>) {
+        let attempts = futures_util::future::join_all(specs.into_iter().map(|spec| {
+            let auth = auths.get(&spec.name).cloned();
+            async move {
+                let name = spec.name.clone();
+                (name, start(spec, auth).await)
+            }
         }))
         .await;
         let mut servers = McpServers::default();
@@ -293,7 +308,10 @@ impl McpServers {
     }
 }
 
-async fn start(spec: ServerSpec) -> Result<Server, String> {
+/// What a server reports when it needs a sign-in the user has not done (or that expired).
+pub const NEEDS_SIGN_IN: &str = "needs sign-in";
+
+async fn start(spec: ServerSpec, auth: Option<Arc<dyn TokenSource>>) -> Result<Server, String> {
     let (client, child) = match &spec.launch {
         Launch::Stdio {
             command,
@@ -324,7 +342,7 @@ async fn start(spec: ServerSpec) -> Result<Server, String> {
             )
         }
         Launch::Http { url, headers } => (
-            Client::over_http(url.clone(), headers.clone(), spec.timeout),
+            Client::over_http_with(url.clone(), headers.clone(), spec.timeout, auth.clone()),
             None,
         ),
     };
@@ -333,7 +351,16 @@ async fn start(spec: ServerSpec) -> Result<Server, String> {
     }
     let tools = initialize(&client, &spec)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| match error {
+            McpError::AuthRequired(_) if auth.is_some() => format!(
+                "{NEEDS_SIGN_IN}: run `imperium mcp login {}` or use Sign in on the server in Connectors",
+                spec.name
+            ),
+            McpError::AuthRequired(_) => {
+                "the server answered 401: its credentials were refused".to_string()
+            }
+            other => other.to_string(),
+        })?;
     Ok(Server {
         name: spec.name,
         client,

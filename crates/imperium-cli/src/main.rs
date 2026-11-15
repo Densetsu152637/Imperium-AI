@@ -7,6 +7,7 @@ mod chat;
 mod env;
 mod initiative;
 mod local;
+mod mcp_login;
 mod memory;
 mod mods;
 mod phone;
@@ -170,6 +171,11 @@ enum Command {
     /// external agent such as Claude Code start sessions, follow them and answer their
     /// permission requests through this daemon. Register it in `.mcp.json`.
     McpServe,
+    /// Remote MCP servers that use OAuth: sign in and out.
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
     /// CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use.
     Resources {
         /// Keep printing a fresh snapshot every two seconds until Ctrl+C.
@@ -680,6 +686,22 @@ enum ModsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum McpCommand {
+    /// Sign in to a remote MCP server that uses OAuth. Prints an address to open in your own
+    /// browser; the sign-in finishes when the browser returns to this machine.
+    Login {
+        /// The server's name in your connectors.
+        server: String,
+    },
+    /// Sign out of a remote MCP server: revoke its token where the server allows it, and forget
+    /// the tokens kept in the keychain.
+    Logout {
+        /// The server's name in your connectors.
+        server: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum SecretCommand {
     /// Store a secret. The value is read from standard input, or prompted for without echo.
     Set { name: SecretName },
@@ -869,6 +891,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => local::use_server(path),
         Command::Resources { watch } => resources::show(watch),
         Command::McpServe => mcp_serve(),
+        Command::Mcp { command } => match command {
+            McpCommand::Login { server } => mcp_login::login(server),
+            McpCommand::Logout { server } => mcp_login::logout(server),
+        },
         Command::Api { command } => match command {
             ApiCommand::Status => api::status(),
             ApiCommand::Enable => api::set_enabled(true),
