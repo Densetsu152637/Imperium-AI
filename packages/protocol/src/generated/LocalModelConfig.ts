@@ -56,4 +56,30 @@ draft_in_use: string | null,
  * Why a configured draft model is not used: the model loads without it. `required_bytes`
  * counts the draft only while it is used.
  */
-draft_notice: string | null, };
+draft_notice: string | null, 
+/**
+ * False when the user switched the model off (`models.disabled`).
+ */
+enabled: boolean, 
+/**
+ * Size of the model's weights on disk, which is what loading them takes.
+ */
+weights_bytes: number, 
+/**
+ * Layers the model has, when its header says.
+ */
+layers: number | null, 
+/**
+ * Layers the planner puts on the GPU with the effective settings, when it can place the
+ * model at all (null otherwise).
+ */
+gpu_layers: number | null, 
+/**
+ * VRAM the model would take with the effective settings, weights and KV pool included;
+ * 0 when it cannot be placed. An estimate beside what is loaded now.
+ */
+vram_bytes: number, 
+/**
+ * System RAM the model would take with the effective settings; 0 when it cannot be placed.
+ */
+ram_bytes: number, };

@@ -100,7 +100,7 @@ function modelChoices(models: ModelRow[], local: LocalModelRow[], marks: ModelMa
     });
   for (const row of local) {
     const spec = `${row.runtime}:${row.id}`;
-    if (row.problem || choices.some((choice) => choice.spec === spec)) continue;
+    if (row.problem || !row.enabled || choices.some((choice) => choice.spec === spec)) continue;
     choices.push({ spec, id: row.id, label: row.alias ?? row.id, detail: [row.alias ? row.id : null, row.quantization, "local"].filter(Boolean).join(" · ") });
   }
   return chooserModels(choices, (choice) => choice.spec, marks).map(({ item, group }) =>

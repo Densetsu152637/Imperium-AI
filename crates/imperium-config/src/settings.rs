@@ -1360,10 +1360,55 @@ pub struct ModelSettings {
     /// a hidden local model outside the model table is not offered for delegation by name.
     #[serde(default)]
     pub hidden: Vec<String>,
+    /// Specs of models the user switched off in the model configuration dialog ("Use this
+    /// model"): `llamacpp:<id>` or `vllm:<id>` for a local model, the row's spec for a hosted
+    /// one. A disabled model is never routed or escalated to, never offered to agents by
+    /// `list_models`, the API or a model picker, and cannot be the default model or picked for
+    /// a session. Unlike [`ModelSettings::hidden`], which only tidies lists, it stops the model
+    /// being used. A row's own `enabled = false` (see [`ModelSettings::is_disabled`]) counts too.
+    #[serde(default)]
+    pub disabled: Vec<String>,
     /// Which agents get the `list_models` tool: `root` (the default), `all` (subagents too), or
     /// `off`.
     #[serde(default)]
     pub list_models: ListModelsScope,
+}
+
+impl ModelSettings {
+    /// Whether the user switched the model `spec` off: it is in `disabled`, or the model table
+    /// names it and every row that does has `enabled = false`.
+    pub fn is_disabled(&self, spec: &str) -> bool {
+        if self.disabled.iter().any(|disabled| disabled == spec) {
+            return true;
+        }
+        let mut rows = self
+            .catalog
+            .iter()
+            .filter(|entry| entry.spec == spec)
+            .peekable();
+        rows.peek().is_some() && rows.all(|entry| !entry.enabled)
+    }
+
+    /// The spec a model table id or a spec names: the row's spec when `name` is a row id, else
+    /// `name` itself (`models.default` and `--model` take either).
+    pub fn spec_of<'a>(&'a self, name: &'a str) -> &'a str {
+        self.catalog
+            .iter()
+            .find(|entry| entry.id == name)
+            .map_or(name, |entry| entry.spec.as_str())
+    }
+
+    /// Whether `models.default` names a model that is switched off (by spec or table id).
+    pub fn default_is_disabled(&self) -> bool {
+        self.default
+            .as_deref()
+            .is_some_and(|name| self.is_disabled(self.spec_of(name)))
+    }
+
+    /// Whether routing may use `entry`: the row is enabled and its model is not disabled.
+    pub fn row_enabled(&self, entry: &CatalogEntry) -> bool {
+        entry.enabled && !self.disabled.iter().any(|disabled| disabled == &entry.spec)
+    }
 }
 
 /// Which agents of a session get the `list_models` tool.
@@ -1391,6 +1436,7 @@ impl Default for ModelSettings {
             suggest_downloads: true,
             suggestions: default_suggestions(),
             hidden: Vec::new(),
+            disabled: Vec::new(),
             list_models: ListModelsScope::Root,
         }
     }

@@ -432,7 +432,7 @@ function ModelTable({
         key={row.id}
         row={row}
         isDefault={listing.default_model === spec}
-        unusable={row.problem != null || (row.placement === "none" && !row.loaded)}
+        unusable={row.problem != null || !row.enabled || (row.placement === "none" && !row.loaded)}
         hidden={hidden}
         mark={markOf(marks, spec)}
         testing={testing === row.id}
@@ -523,6 +523,11 @@ function ModelRows({
               </span>
             )}
             {isDefault && <span className="badge local">default</span>}
+            {!row.enabled && (
+              <span className="badge off" title="Switched off in the model settings (Use this model): never routed to, offered or chosen">
+                off
+              </span>
+            )}
             <span className="muted fit-inline">{fit}</span>
           </span>
         </td>
@@ -549,7 +554,7 @@ function ModelRows({
               <Check aria-hidden="true" /> Default
             </span>
           ) : (
-            <button onClick={onUse} disabled={row.problem != null} title={`Use for new sessions: ${localDescription(row)}`}>
+            <button onClick={onUse} disabled={row.problem != null || !row.enabled} title={row.enabled ? `Use for new sessions: ${localDescription(row)}` : "Switched off: turn it on in its settings first"}>
               Use
             </button>
           )}

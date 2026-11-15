@@ -1077,3 +1077,40 @@ async fn turning_the_network_off_puts_the_address_back_on_this_computer() {
     assert!(saved.contains("bind = \"127.0.0.1\""), "{saved}");
     assert!(saved.contains("allow_lan = false"), "{saved}");
 }
+
+#[tokio::test]
+async fn a_model_that_is_off_is_neither_listed_nor_served() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    // The default cannot be switched off, so the hosted row becomes the default first.
+    fixture.call("models.use", json!({"model": "big"})).await;
+    fixture
+        .call("models.set_config", json!({"disabled": ["llamacpp:tiny"]}))
+        .await;
+    let (base, token) = fixture.enable().await;
+    let http = reqwest::Client::new();
+
+    let listed: Value = http
+        .get(format!("{base}/models"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(listed["data"].as_array().unwrap().is_empty(), "{listed}");
+    let refused = post_chat(&base, &token, &chat_body("llamacpp:tiny", json!({}))).await;
+    assert!(!refused.status().is_success(), "{}", refused.status());
+    assert!(
+        fixture.received.lock().unwrap().is_empty(),
+        "nothing reached the model"
+    );
+
+    // Switched back on, it is served again.
+    fixture
+        .call("models.set_config", json!({"disabled": []}))
+        .await;
+    let served = post_chat(&base, &token, &chat_body("llamacpp:tiny", json!({}))).await;
+    assert!(served.status().is_success(), "{}", served.status());
+}

@@ -564,7 +564,7 @@ export function App() {
       .call<ModelConfigResult>("models.config")
       .then((config) => {
         if (!live || [...(config.hidden ?? [])].sort().join("\n") === hiddenKey) return;
-        const params: ModelSetConfigParams = { local: [], table: [], hidden, dry_run: false };
+        const params: ModelSetConfigParams = { local: [], table: [], hidden, disabled: null, dry_run: false };
         return client.call("models.set_config", params);
       })
       .catch(() => {});

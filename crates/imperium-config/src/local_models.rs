@@ -1032,6 +1032,62 @@ alias = "Plain"
     }
 
     #[test]
+    fn disabled_models_come_from_the_list_and_from_rows_that_are_off() {
+        let table = r#"
+[[models.catalog]]
+id = "coder"
+spec = "cloud:coder-1"
+location = "cloud"
+tier = "basic"
+[[models.catalog]]
+id = "twin-a"
+spec = "cloud:twin"
+location = "cloud"
+tier = "basic"
+enabled = false
+[[models.catalog]]
+id = "twin-b"
+spec = "cloud:twin"
+location = "cloud"
+tier = "basic"
+[endpoints.cloud]
+base_url = "https://example.invalid/v1"
+[models]
+disabled = ["llamacpp:old"]
+"#;
+        let models = config(&[(user(), table)]).settings().unwrap().models;
+        assert_eq!(models.disabled, ["llamacpp:old"]);
+        assert!(models.is_disabled("llamacpp:old"), "listed models are off");
+        assert!(!models.is_disabled("llamacpp:new"));
+        assert!(!models.is_disabled("cloud:coder-1"));
+        assert!(
+            !models.is_disabled("cloud:twin"),
+            "one enabled row keeps the model on"
+        );
+        assert!(
+            !models.row_enabled(&models.catalog[1]),
+            "its own switch is off"
+        );
+        assert!(models.row_enabled(&models.catalog[2]));
+        // A row of a disabled model is off whatever its own switch says.
+        let off = config(&[
+            (user(), table),
+            (
+                app(),
+                "[models]
+disabled = [\"cloud:coder-1\"]
+",
+            ),
+        ])
+        .settings()
+        .unwrap()
+        .models;
+        assert!(off.is_disabled("cloud:coder-1"));
+        assert!(!off.row_enabled(&off.catalog[0]));
+        assert!(config(&[]).settings().unwrap().models.disabled.is_empty());
+    }
+
+    #[test]
     fn cards_are_kept_per_model_and_checked() {
         let table = r#"
 [[models.catalog]]

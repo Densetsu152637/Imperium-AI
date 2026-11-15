@@ -96,4 +96,9 @@ pool_tokens: number,
 /**
  * Of those, tokens reserved by calls running now.
  */
-pool_reserved_tokens: number, };
+pool_reserved_tokens: number, 
+/**
+ * False when the user switched the model off ("Use this model" in the model configuration
+ * dialog, `models.disabled`): it is not routed to, offered to agents, or selectable.
+ */
+enabled: boolean, };

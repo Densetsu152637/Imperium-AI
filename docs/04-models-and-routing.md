@@ -1328,12 +1328,44 @@ permissions as before.
 Notices appear where the task starts, in the same place as other session notices (the desktop
 app's session view, `imperium chat`); there is no protocol change.
 
+## Disabled models (implemented)
+
+A model the user switched off (*Use this model* in the
+[model configuration dialog](07-desktop-ui.md#model-configuration-dialog-implemented)) is never
+used, though its settings are kept. It is off when its spec (`llamacpp:<id>`, `vllm:<id>`, or a
+hosted row's `<endpoint>:<model>`) is in `models.disabled`, or when the model table names the spec
+and every row that does has `enabled = false`; a row of a disabled model is off whatever its own
+`enabled` says. That one rule (`ModelSettings::is_disabled` in `imperium-config`) decides
+everywhere:
+
+- **Routing and escalation.** The catalog a session routes subagents over leaves out disabled rows
+  and disabled local models, so a task is never sent to one by tier, rule, location, name or CPU
+  lane, and a failed task is never retried on one (escalation routes over the same catalog).
+- **Offering.** `list_models`, the OpenAI-compatible API's model list and the desktop's model
+  selector, new-session chooser and command palette leave them out; `models.list` and
+  `models.local` still list them, with `enabled: false`, so the Models panels can show them greyed.
+- **Choosing.** A new session cannot be created on one, a session cannot be switched to one or
+  compared on one, whether the model is named or comes from `models.default`, and `models.use`,
+  `config.set` of `models.default` and `models.bench` refuse one. The refusal says the model is
+  turned off. The embedding model (`memory.embedding_model`) and session titles do not call one
+  either.
+- **The default.** `models.set_config` refuses to switch off the model that is `models.default`
+  (through `disabled` or a row's `enabled`): choose another default with `models.use` first. A
+  default that was already off before the save (edited by hand) does not block other changes.
+
+A session already running keeps routing over the models it started with, and a session that is
+resumed after a restart (also a persistent or project agent restarted) keeps the model it was
+journalled with even if that model is off now: the change applies to sessions started afterwards
+and to new routing decisions, as for a row's `enabled`. A running session's subagents may still
+fall back to its own model when nothing else fits (the router's fallback), which can be a model
+that is off now.
+
 ## Model awareness and model cards (implemented)
 
 The root agent picks a model for delegated work with the `list_models` tool. It lists the
 models the session may delegate to: the model table's enabled rows, and every local model the
 table does not name (by spec, `llamacpp:<id>` or `vllm:<id>`, which `spawn_agent` accepts by
-name). Models the user hid are left out: the desktop app keeps `models.hidden` in step with
+name). Models the user switched off ([disabled models](#disabled-models-implemented)) are left out as well. Models the user hid are left out: the desktop app keeps `models.hidden` in step with
 its hidden marks ([07](07-desktop-ui.md)), and a hidden local model outside the table is not
 offered by name either. For each model it gives:
 

@@ -117,7 +117,9 @@ impl DaemonState {
         }
         let own = session
             .model()
-            .and_then(|spec| self.resolve_model(Some(&spec)).ok());
+            // A model the user switched off (a resumed or running session may still be on one)
+            // is not asked for a title.
+            .and_then(|spec| self.resolve_usable_model(Some(&spec)).ok());
         let local = self.local_models_handle();
         let loaded = |model: &ResolvedModel| {
             model.local

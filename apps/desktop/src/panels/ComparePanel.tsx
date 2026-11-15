@@ -27,6 +27,7 @@ function choices(models: ModelRow[], local: LocalModelRow[]): { spec: string; la
   const rows = models.filter((row) => row.enabled && row.endpoint_configured).map((row) => ({ spec: row.id, label: row.alias ?? row.id }));
   const known = new Set(models.map((row) => row.spec));
   const found = local
+    .filter((row) => row.enabled)
     .map((row) => ({ spec: `${row.runtime}:${row.id}`, label: row.id }))
     .filter((row) => !known.has(row.spec) && !rows.some((r) => r.spec === row.spec));
   return [...rows, ...found];

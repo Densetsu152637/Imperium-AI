@@ -1420,36 +1420,79 @@ the Models panel (on the model table). The navigation column has a *Search model
 groups, *Local models* (the models in `models.folders`) and *Model table*, each model with its
 badges; a model with an [alias](10-configuration.md#model-aliases) is listed by it, with its id
 beside it and on hover, and the search matches either. The selected model's alias (or id) is the
-heading. Both forms start with *Display name*: the alias shown instead of the id everywhere a
-model is named, with the id as the placeholder; empty (or *reset*) shows the id again (or a
-table row's alias from config.toml). Below it, *Model card*: what the model is good at and
-notes, which agents read when they pick a model to delegate to
-([model cards](04-models-and-routing.md#model-awareness-and-model-cards-implemented)); for a local
-model, a *From the model's metadata* fold shows what its header and model card say, with *copy
-into the card* while the card is empty. Each local form field is optional, shows the effective value as its placeholder and
-has a *reset* that clears the saved value. Fields: max context per agent (a number of tokens or
-*auto*, offered in the field's list; the placeholder shows the sized ceiling, such as *auto
-(131072)*), KV pool tokens (empty: starts small and grows on demand; a number fixes it), slots, K
-and V cache types (`q8_0` about halves the KV memory), flash attention, max GPU layers, *Draft model* (speculative decoding: the field lists the other installed
-llama.cpp models; with a draft set, *Draft max tokens*, *Draft min tokens* (0 or more, at most the maximum in effect) and *Draft GPU layers* (empty is llama.cpp's `auto`)
-become editable), max wait, max output tokens (0 is uncapped) and extra arguments (one per
-line). The summary says how much
-context one agent gets, and warns when a fixed KV pool was cut to keep the layers on the GPU or
-when the weights do not fit on the GPU, says which draft model the model drafts with (its memory
+heading.
+
+Each model's settings are tables, one row per setting, in groups (the rows, their groups and the
+wording of their explanations are one declarative table, `modelSettingsTable.ts`). A row has the
+setting's name with a small *(i)* button, a line saying what it affects (memory, speed, quality,
+routing, cost, names, availability, reliability), the value and a *reset* that clears the saved
+value. The *(i)* is a keyboard-focusable button: hovering or focusing it opens a popover that says
+in plain words what the setting does and what changing it trades off (it is the button's
+`aria-describedby`, so a screen reader reads it too), and Esc closes the popover without closing
+the dialog. A local model's groups:
+
+- *Identity and availability*: **Use this model** (a switch, below), *Display name* (the alias
+  shown instead of the id everywhere a model is named, with the id as the placeholder; empty shows
+  the id again, or a table row's alias from config.toml) and *Model card* (what the model is good at
+  and notes, which agents read when they pick a model to delegate to
+  ([model cards](04-models-and-routing.md#model-awareness-and-model-cards-implemented)); a *From
+  the model's metadata* fold shows what its header and model card say, with *copy into the card*
+  while the card is empty);
+- *Context and memory*: max context per agent (a number of tokens or *auto*, offered in the field's
+  list; the placeholder shows the sized ceiling, such as *auto (131072)*), KV pool tokens (empty:
+  starts small and grows on demand; a number fixes it), slots, K and V cache types (`q8_0` about
+  halves the KV memory), flash attention and max GPU layers;
+- *Speed: speculative decoding*: *Draft model* (the field lists the other installed llama.cpp
+  models; with a draft set, *Draft max tokens*, *Draft min tokens* (0 or more, at most the maximum
+  in effect) and *Draft GPU layers* (empty is llama.cpp's `auto`) become editable);
+- *Limits*: max wait and max output tokens (0 is uncapped); *Advanced*: extra arguments (one per
+  line).
+
+Each field is optional and shows the effective value as its placeholder. For a vLLM model the
+cache types, flash attention, GPU layers and draft rows are shown dimmed as not used. A
+model-table row has *Identity and availability* (the same three rows), *Routing* (tier and tags)
+and *Context and cost* (context window and the two prices, both or neither); the form edits
+existing rows only and does not add or remove them.
+
+**Estimated memory.** Above its settings a local model has an *Estimated memory* table, marked
+*≈ estimate*: VRAM, RAM, the total needed, the model weights, the KV cache and where it would run
+(all layers on the GPU, *22 of 36 layers on the GPU, the rest on the CPU*, CPU only, or too large),
+each with its own *(i)*. The figures are the daemon's planner's for the settings being edited, not a
+second formula in the app: the debounced (500 ms) `models.set_config` dry run returns
+`required_bytes`, `kv_pool_bytes`, `weights_bytes`, `vram_bytes`, `ram_bytes`, `gpu_layers` and
+`placement` for the model under the effective settings (context, pool, K/V cache types, GPU layers,
+draft model; calibrated by the measured memory of earlier loads), and the table follows them,
+greyed with *updating…* while the answer is on its way. The total is weights + KV pool + runtime
+overhead (+ a draft model); the KV pool is its tokens times the bytes per token, which the cache
+types scale; the planner then fills the GPU with as many layers as fit and puts the rest, with
+their share of the pool, in RAM (all of it in RAM on the CPU lane). They are estimates beside what
+else is loaded, and the real figures also depend on the driver. A table row that names a local
+model (`llamacpp:` or `vllm:`) shows that model's estimate; a hosted row says it *runs remotely*.
+
+**Use this model.** The switch turns a model off without forgetting its settings. Off, the model
+is greyed in the dialog's navigation (with an *off* badge) and its tables, dimmed with an *off*
+badge in the Models and Local models panels, left out of the session model selector, the new-session
+chooser and the command palette, never chosen by routing or by an escalation retry, not offered to
+agents (`list_models`) or the OpenAI-compatible API, and cannot start a session or be made the default
+model; turning it on again restores all of that. A local model's switch is saved as its spec in
+`models.disabled`; a model-table row's is its own `enabled`, and a row whose model is off in the
+local list is off too, with its switch locked and a note saying so (see
+[disabled models](04-models-and-routing.md#disabled-models-implemented)). The daemon refuses to
+switch off the default model, so switching it off shows a *choose a model* list of the other models
+that are on: *Apply* or *Save* then makes that one the default (`models.use`) and switches the old
+one off; with no choice made, saving shows "choose another default model before switching it off". If that save fails after the default was changed, the message says the default was already changed. A default that is off counts as none in the new-session chooser, with a *Your default model is off; pick one* note.
+
+*Apply* (or Ctrl+S) saves without closing: the dialog shows "Saved" for a moment and the values now
+in effect (such as a cut pool or the layers on the GPU), and closing it afterwards keeps what was
+applied; *Save* saves and closes. Both are disabled while nothing has changed. The summary says how
+much context one agent gets, and warns when a fixed KV pool was cut to keep the layers on the GPU
+or when the weights do not fit on the GPU, says which draft model the model drafts with (its memory
 is in the figures), and shows the notice when a configured draft is missing, incompatible or does
-not fit and the model runs without it. *Apply* (or Ctrl+S) saves without closing: the dialog
-shows "Saved" for a moment and the values now in effect (such as a cut pool or the layers on the
-GPU), and closing it afterwards keeps what was applied; *Save* saves and closes. Both are
-disabled while nothing has changed. For a vLLM model the cache types, flash attention, GPU
-layers and draft fields are disabled. A debounced (500 ms) `models.set_config` dry run shows the memory the model
-would need, its KV pool and its placement, or the server's error. A model-table row's form edits
-existing rows only (display name, enabled, tier, tags, context window, prices; both prices or neither); it
-does not add or remove rows. The footer shows the file the settings are saved to, *Cancel* (or
-*Close* once nothing is pending), *Apply* and *Save*. *Save* sends only the models that differ from what is saved, each
-as a whole-settings update, then closes and refreshes the panels; a failure keeps the dialog
-open with the message. *Reset model* clears all of a model's saved settings. A loaded model's
-badge reads `loaded · <in use>/<slots> busy · pool <reserved>/<pool>`, and a disabled table row
-is dimmed with an *off* badge.
+not fit and the model runs without it. The footer shows the file the settings are saved to,
+*Cancel* (or *Close* once nothing is pending), *Apply* and *Save*. *Save* sends only the models that
+differ from what is saved, each as a whole-settings update, then closes and refreshes the panels; a
+failure keeps the dialog open with the message. *Reset model* clears all of a model's saved
+settings. A loaded model's badge reads `loaded · <in use>/<slots> busy · pool <reserved>/<pool>`.
 
 A model's alias (`modelNames.ts`, from `models.list` and `models.local`) is what the interface
 names it by: the session model list and the command palette's *Use …* entries (the id in the

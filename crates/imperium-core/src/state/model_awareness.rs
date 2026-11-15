@@ -168,7 +168,10 @@ impl DaemonState {
                 imperium_local::scan::Format::Safetensors => imperium_config::VLLM_ENDPOINT,
             };
             let spec = format!("{runtime}:{}", model.id);
-            if named.contains(spec.as_str()) || hidden.contains(spec.as_str()) {
+            if named.contains(spec.as_str())
+                || hidden.contains(spec.as_str())
+                || settings.models.is_disabled(&spec)
+            {
                 continue;
             }
             let Ok(resolved) = resolve_model(&settings, Some(&spec), |_| Ok(None)) else {
@@ -194,6 +197,7 @@ impl DaemonState {
         catalog
             .iter()
             .filter(|row| !hidden.contains(row.model.spec.as_str()))
+            .filter(|row| !settings.models.is_disabled(&row.model.spec))
             .map(|row| self.model_entry(&settings, row))
             .collect()
     }
@@ -712,11 +716,16 @@ card = "Good at: creative writing, stories and essays."
         /// and idle, `writer` small, `mid` too large beside `coder`, `huge` too large for the
         /// machine, and `secret` hidden.
         async fn daemon(home: &std::path::Path) -> Arc<DaemonState> {
+            daemon_with(home, CONFIG).await
+        }
+
+        /// [`daemon`] over another config.
+        async fn daemon_with(home: &std::path::Path, config: &str) -> Arc<DaemonState> {
             let settings = imperium_config::Config::from_layers([
                 imperium_config::Layer::defaults(),
                 imperium_config::Layer::new(
                     imperium_config::Source::User("test".into()),
-                    CONFIG.parse().unwrap(),
+                    config.parse().unwrap(),
                 ),
             ])
             .settings()
@@ -827,6 +836,182 @@ card = "Good at: creative writing, stories and essays."
                 "{}",
                 scholar.card
             );
+        }
+
+        #[tokio::test]
+        async fn disabled_models_are_never_offered_routed_or_escalated_to() {
+            use imperium_config::Tier;
+            use imperium_engine::{TaskRequest, escalate, route};
+
+            let home = tempfile::tempdir().unwrap();
+            let off = ["llamacpp:writer", "cloud:scholar-1", "llamacpp:coder"];
+            let config = CONFIG.replace(
+                "hidden = [\"llamacpp:secret\", \"cloud:hidden-1\"]",
+                &format!(
+                    "hidden = [\"llamacpp:secret\", \"cloud:hidden-1\"]
+disabled = {off:?}"
+                ),
+            );
+            let state = daemon_with(home.path(), &config).await;
+
+            // Not in the catalog sessions route over: neither the table rows that are off (the
+            // row's spec is listed) nor the local model nobody names.
+            let catalog = state.session_catalog();
+            let ids: Vec<&str> = catalog.iter().map(|row| row.id.as_str()).collect();
+            assert_eq!(ids, ["hidden-row", "llamacpp:huge", "llamacpp:mid"]);
+            // Not described to agents, so `list_models` never offers them.
+            let entries = state.model_entries(&catalog);
+            assert!(
+                entries
+                    .iter()
+                    .all(|entry| !off.contains(&entry.spec.as_str()))
+            );
+
+            // Not routed to, by name, by rule or by tier, whatever the task asks for.
+            let settings = state.settings();
+            let fallback = state.resolve_model(Some("cloud:hidden-1")).unwrap();
+            for tier in [Tier::Basic, Tier::Standard, Tier::Strong, Tier::Frontier] {
+                for named in [
+                    None,
+                    Some("scholar"),
+                    Some("llamacpp:writer"),
+                    Some("coder-row"),
+                ] {
+                    let request = TaskRequest {
+                        named,
+                        tier,
+                        ..TaskRequest::default()
+                    };
+                    let routed = route(&catalog, &settings.routing, &fallback, request, None);
+                    assert!(
+                        !off.contains(&routed.spec.as_str()),
+                        "{named:?} at {tier:?} was routed to {}",
+                        routed.spec
+                    );
+                    // Nor is a failed task retried on one.
+                    let retry = escalate(
+                        &catalog,
+                        &settings.routing,
+                        &fallback,
+                        request,
+                        "cloud:hidden-1",
+                        1,
+                        None,
+                    );
+                    if let Some(retry) = retry {
+                        assert!(
+                            !off.contains(&retry.model.spec.as_str()),
+                            "{}",
+                            retry.model.spec
+                        );
+                    }
+                }
+            }
+
+            // Not offered as a table row, nor chosen for a session, whether named or default.
+            let table = state.model_table();
+            let scholar = table.models.iter().find(|row| row.id == "scholar").unwrap();
+            assert!(!scholar.enabled, "the row's model is switched off");
+            assert!(
+                table
+                    .models
+                    .iter()
+                    .any(|row| row.id == "hidden-row" && row.enabled)
+            );
+            for spec in off {
+                let error = state.resolve_usable_model(Some(spec)).unwrap_err();
+                assert!(error.to_string().contains("turned off"), "{error}");
+                let resolved = state.resolve_model(Some(spec)).unwrap();
+                assert!(
+                    state
+                        .check_selectable(&resolved)
+                        .unwrap_err()
+                        .contains("turned off")
+                );
+            }
+            // `models.default` is cloud:scholar-1 in this config, which is switched off.
+            assert!(state.resolve_usable_model(None).is_err());
+            assert!(state.resolve_usable_model(Some("llamacpp:mid")).is_ok());
+
+            // A new session is refused a model that is off; a resumed one keeps its own.
+            let project = tempfile::tempdir().unwrap();
+            let path = project.path().to_str().unwrap();
+            let new = state.create_session_with(
+                path,
+                Some("cloud:scholar-1"),
+                crate::state::SessionOptions::default(),
+            );
+            assert!(matches!(
+                new,
+                Err(crate::state::CreateError::Model(
+                    imperium_engine::ModelError::Disabled(_)
+                ))
+            ));
+            let resumed = state.create_session_with(
+                path,
+                Some("cloud:scholar-1"),
+                crate::state::SessionOptions {
+                    resume_id: Some("s-resumed".into()),
+                    ..crate::state::SessionOptions::default()
+                },
+            );
+            assert!(resumed.is_ok(), "a resumed session keeps its model");
+
+            // No model named and the default off: the session waits for one when it may (also a
+            // resumed one whose journal has no model), and is refused when it may not.
+            let waiting = |resume: Option<&str>, may_wait: bool| {
+                state.create_session_with(
+                    path,
+                    None,
+                    crate::state::SessionOptions {
+                        resume_id: resume.map(str::to_string),
+                        may_wait_for_model: may_wait,
+                        ..crate::state::SessionOptions::default()
+                    },
+                )
+            };
+            assert!(matches!(waiting(None, true), Ok((session, _)) if session.model().is_none()));
+            assert!(matches!(
+                waiting(Some("s-null"), true),
+                Ok((session, _)) if session.model().is_none()
+            ));
+            assert!(matches!(
+                waiting(None, false),
+                Err(crate::state::CreateError::Model(
+                    imperium_engine::ModelError::Disabled(_)
+                ))
+            ));
+
+            // Switched back on, they are offered again.
+            let on = daemon(home.path()).await;
+            let ids: Vec<String> = on
+                .session_catalog()
+                .iter()
+                .map(|row| row.id.clone())
+                .collect();
+            assert!(
+                ids.contains(&"scholar".to_string())
+                    && ids.contains(&"llamacpp:writer".to_string())
+            );
+            assert!(on.resolve_usable_model(None).is_ok());
+        }
+
+        #[tokio::test]
+        async fn a_row_switched_off_by_its_own_enabled_is_left_out_too() {
+            let home = tempfile::tempdir().unwrap();
+            let config = CONFIG.replace(
+                "id = \"scholar\"
+",
+                "id = \"scholar\"
+enabled = false
+",
+            );
+            let state = daemon_with(home.path(), &config).await;
+            let catalog = state.session_catalog();
+            assert!(catalog.iter().all(|row| row.id != "scholar"));
+            // The one row of the model turned off: the model counts as off.
+            assert!(state.settings().models.is_disabled("cloud:scholar-1"));
+            assert!(state.resolve_usable_model(None).is_err());
         }
 
         #[tokio::test]

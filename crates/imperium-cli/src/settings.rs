@@ -46,6 +46,18 @@ fn apply(key: &str, value: Json) -> anyhow::Result<()> {
             let paths = Paths::from_env()?;
             let state = imperium_config::set_user_setting(&paths, key, &value, std::env::vars())
                 .with_context(|| format!("could not set {key}"))?;
+            // The offline path cannot refuse (only the daemon knows what is switched off), so it
+            // says so after saving.
+            if key == "models.default"
+                && let Some(settings) = imperium_config::load(&paths, None, std::env::vars())
+                    .ok()
+                    .and_then(|config| config.settings().ok())
+                && settings.models.default_is_disabled()
+            {
+                eprintln!(
+                    "warning: that model is switched off (\"Use this model\" in Settings → Models),                      so new sessions cannot start on it until it is switched on or another default                      is chosen"
+                );
+            }
             (state.value, state.def.restart)
         }
     };

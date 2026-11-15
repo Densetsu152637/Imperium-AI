@@ -476,3 +476,230 @@ async fn a_vllm_model_is_refused_a_draft_model() {
         "{message}"
     );
 }
+
+#[tokio::test]
+async fn models_are_switched_off_and_the_default_model_cannot_be() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    let paths = Paths::under(home.path());
+
+    // Everything is on to begin with, and a local model carries its memory estimate.
+    let config = call(&mut socket, "models.config", json!({})).await.unwrap();
+    assert_eq!(config["local"][0]["enabled"], true);
+    assert_eq!(config["disabled"], json!([]));
+    assert_eq!(config["default_model"], Value::Null);
+    assert!(config["local"][0]["weights_bytes"].is_u64());
+    assert!(config["local"][0]["vram_bytes"].is_u64());
+    assert!(config["local"][0]["ram_bytes"].is_u64());
+
+    // Switching off a local model and a hosted one: saved sorted and once each, listed as off.
+    let result = call(
+        &mut socket,
+        "models.set_config",
+        json!({"disabled": ["llamacpp:tiny", "cloud:coder-1", "llamacpp:tiny", " "]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result["disabled"],
+        json!(["cloud:coder-1", "llamacpp:tiny"])
+    );
+    assert_eq!(result["local"][0]["enabled"], false);
+    assert_eq!(daemon.settings().models.disabled.len(), 2);
+    let listing = call(&mut socket, "models.local", json!({})).await.unwrap();
+    assert_eq!(listing["models"][0]["enabled"], false);
+    let table = call(&mut socket, "models.list", json!({})).await.unwrap();
+    assert_eq!(table["models"][0]["enabled"], false);
+    let loaded = imperium_config::load(&paths, None, [])
+        .unwrap()
+        .settings()
+        .unwrap();
+    assert_eq!(loaded.models.disabled, ["cloud:coder-1", "llamacpp:tiny"]);
+
+    // A session cannot start on a model that is off, and it cannot become the default.
+    let refused = call(
+        &mut socket,
+        "session.create",
+        json!({"model": "llamacpp:tiny"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused["message"].as_str().unwrap().contains("turned off"),
+        "{refused}"
+    );
+    let refused = call(&mut socket, "models.use", json!({"model": "tiny"}))
+        .await
+        .unwrap_err();
+    assert_eq!(refused["code"], -32602, "{refused}");
+
+    // Leaving it out keeps the list; an empty one switches everything back on.
+    let kept = call(&mut socket, "models.set_config", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(kept["disabled"], json!(["cloud:coder-1", "llamacpp:tiny"]));
+    let cleared = call(&mut socket, "models.set_config", json!({"disabled": []}))
+        .await
+        .unwrap();
+    assert_eq!(cleared["disabled"], json!([]));
+    assert_eq!(cleared["local"][0]["enabled"], true);
+
+    // The default model is refused, dry run or not, and nothing is saved.
+    call(&mut socket, "models.use", json!({"model": "tiny"}))
+        .await
+        .unwrap();
+    for dry_run in [true, false] {
+        let refused = call(
+            &mut socket,
+            "models.set_config",
+            json!({"disabled": ["llamacpp:tiny"], "dry_run": dry_run}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused["message"]
+                .as_str()
+                .unwrap()
+                .contains("default model"),
+            "{refused}"
+        );
+    }
+    assert!(daemon.settings().models.disabled.is_empty());
+    let config = call(&mut socket, "models.config", json!({})).await.unwrap();
+    assert_eq!(config["default_model"], "llamacpp:tiny");
+
+    // Choosing another default first lets it go; the row's own switch counts the same way.
+    call(&mut socket, "models.use", json!({"model": "coder"}))
+        .await
+        .unwrap();
+    let result = call(
+        &mut socket,
+        "models.set_config",
+        json!({"disabled": ["llamacpp:tiny"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["local"][0]["enabled"], false);
+    let refused = call(
+        &mut socket,
+        "models.set_config",
+        json!({"table": [{"id": "coder", "settings": {"enabled": false}}]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("default model"),
+        "{refused}"
+    );
+}
+
+#[tokio::test]
+async fn a_model_that_is_off_cannot_be_picked_for_a_session_switch_or_comparison() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    let paths = Paths::under(home.path());
+
+    // A dry run checks the list and writes nothing.
+    let dry = call(
+        &mut socket,
+        "models.set_config",
+        json!({"disabled": ["llamacpp:tiny"], "dry_run": true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(dry["local"][0]["enabled"], false);
+    assert!(!paths.app_models_file().exists(), "a dry run saves nothing");
+    assert!(daemon.settings().models.disabled.is_empty());
+
+    // A session on a model that is on, then the other model is switched off.
+    let created = call(
+        &mut socket,
+        "session.create",
+        json!({"model": "cloud:coder-1", "project_dir": project.path().display().to_string()}),
+    )
+    .await
+    .unwrap();
+    let session_id = created["session_id"].as_str().unwrap().to_string();
+    call(
+        &mut socket,
+        "models.set_config",
+        json!({"disabled": ["llamacpp:tiny"]}),
+    )
+    .await
+    .unwrap();
+
+    let refused = call(
+        &mut socket,
+        "session.control",
+        json!({"session_id": session_id, "action": "set_model", "model": "llamacpp:tiny"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused["message"].as_str().unwrap().contains("turned off"),
+        "{refused}"
+    );
+    let refused = call(
+        &mut socket,
+        "session.compare",
+        json!({"session_id": session_id, "message": "hi",
+               "models": ["llamacpp:tiny", "cloud:coder-1"]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused["message"].as_str().unwrap().contains("turned off"),
+        "{refused}"
+    );
+}
+
+#[tokio::test]
+async fn an_off_model_cannot_be_written_as_the_default_by_spec_or_row_id() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    call(
+        &mut socket,
+        "models.set_config",
+        json!({"disabled": ["llamacpp:tiny", "cloud:coder-1"]}),
+    )
+    .await
+    .unwrap();
+    // `config.set` and `models.use` (the onboarding save) both refuse, naming it by spec or by
+    // the model table row's id.
+    for name in ["llamacpp:tiny", "cloud:coder-1", "coder"] {
+        let refused = call(
+            &mut socket,
+            "config.set",
+            json!({"key": "models.default", "value": name}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused["message"].as_str().unwrap().contains("turned off"),
+            "{name}: {refused}"
+        );
+        let refused = call(&mut socket, "models.use", json!({"model": name}))
+            .await
+            .unwrap_err();
+        assert!(
+            refused["message"].as_str().unwrap().contains("turned off"),
+            "{name}: {refused}"
+        );
+    }
+    assert_eq!(daemon.settings().models.default, None);
+    // On again, it is accepted.
+    call(&mut socket, "models.set_config", json!({"disabled": []}))
+        .await
+        .unwrap();
+    call(
+        &mut socket,
+        "config.set",
+        json!({"key": "models.default", "value": "coder"}),
+    )
+    .await
+    .unwrap();
+}

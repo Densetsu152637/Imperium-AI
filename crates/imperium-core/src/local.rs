@@ -290,6 +290,9 @@ impl LocalRuntime {
                 .models
                 .get(&row.id)
                 .and_then(|own| own.alias.clone());
+            row.enabled = !settings
+                .models
+                .is_disabled(&format!("{}:{}", row.runtime, row.id));
         }
         listing.enabled = !listing.configured_folders.is_empty() || !listing.models.is_empty();
         listing
@@ -369,6 +372,8 @@ impl LocalRuntime {
                     context_auto: launch.context_auto,
                     pool_tokens: status.map_or(planned_pool, |s| s.pool_tokens),
                     pool_reserved_tokens: status.map_or(0, |s| s.pool_reserved_tokens),
+                    // The daemon's listing marks the models the user switched off.
+                    enabled: true,
                 }
             })
             .collect();

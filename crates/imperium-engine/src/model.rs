@@ -50,6 +50,10 @@ pub enum ModelError {
     NoDefault,
     #[error("model {0:?} must be written as <endpoint>:<model>")]
     BadSpec(String),
+    #[error(
+        "{0} is turned off (\"Use this model\" in Settings → Models); turn it on or pick another model"
+    )]
+    Disabled(String),
     #[error("endpoint {0:?} is not configured under [endpoints]")]
     UnknownEndpoint(String),
     #[error("secret {0:?} for endpoint {1:?} is not in the keychain; run: imperium secret set {0}")]
