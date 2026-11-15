@@ -358,7 +358,7 @@ and `environments.agent_update` (protocol 0.28)
     through the budgets
     ([05](05-tools-and-isolation.md#resources-prompts-and-sampling-implemented)), with no
     protocol change.
-    *Stage 2 (OAuth for remote servers) is implemented* (protocol 0.38: `mcp.login`,
+    *Stage 2 (OAuth for remote servers) is implemented* (protocol 0.37: `mcp.login`,
     `mcp.logout`, `sign_in` on server status): discovery (protected resource and authorization
     server metadata), dynamic client registration, the authorization code flow with PKCE `S256`
     and the `resource` indicator through a `127.0.0.1` loopback redirect with a random port and a
