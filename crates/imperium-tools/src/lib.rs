@@ -17,7 +17,7 @@ mod search;
 mod workspace;
 mod writer_trees;
 
-pub use exec::shell;
+pub use exec::{SPAWNED_MARK, shell};
 pub use invocation::{Access, Invocation, ToolError, specs};
 pub use processes::Processes;
 pub use profile::{AgentProfile, Allowlist, ProfileRules, SHELL_TOOLS, ToolSource};

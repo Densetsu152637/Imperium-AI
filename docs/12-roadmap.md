@@ -340,11 +340,14 @@ and `environments.agent_update` (protocol 0.28)
     trusted main-context mods: a manifest's `main_context`, a typed confirmation at a terminal
     bound to the content hash, and `trusted` on `mods.list`
     ([06](06-extensibility.md#trusted-main-context-mods-trust-implemented-loader-not-built)).
+    *Third stage (implemented):* the daemon-side check that only the user can grant mod trust or
+    count an approval as given at a terminal (the caller's process on the local socket, not a
+    descendant of the daemon and not marked as one), and the rule that an installed mod's folder
+    is named for its id ([06](06-extensibility.md#who-may-grant-trust-and-approval-implemented)).
     *Still not built:* the desktop loader that runs a trusted mod in the app's own window (it
-    needs the app's content security policy changed and can only be checked in a running app, and
-    it must not ship before a daemon-side check of the trust grant, the peer's process or a
-    prompt the daemon itself puts to the user: today the CLI's terminal check holds only against
-    an agent that cannot reach the daemon's token or socket),
+    needs the app's content security policy changed for that mod only, and whether that holds can
+    only be checked in a running app; the reasoning and the order to build it in are in
+    [06](06-extensibility.md#trusted-main-context-mods-trust-implemented-loader-not-built)),
     more mod contribution points, and the desktop's own install dialog.
 31. **Policy packs and MCP.** Fetching pack updates shown as a diff to accept, a policy crate
     that layers packs into the prompt; MCP resources, prompts, sampling, and OAuth for remote

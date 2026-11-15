@@ -14,6 +14,16 @@ pub type Stream = UnixStream;
 const DIRECTORY: &str = "ipc";
 const SOCKET: &str = "daemon.sock";
 
+/// The process id of the other end of an accepted connection, as the operating system reports
+/// it (`SO_PEERCRED`); `None` when it cannot say.
+pub fn peer_pid(stream: &Stream) -> Option<u32> {
+    stream
+        .peer_cred()
+        .ok()
+        .and_then(|credentials| credentials.pid())
+        .and_then(|pid| u32::try_from(pid).ok())
+}
+
 /// A listening socket at `<data>/ipc/daemon.sock`. The file is removed when this is dropped.
 #[derive(Debug)]
 pub struct Listener {

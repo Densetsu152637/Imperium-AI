@@ -3124,6 +3124,16 @@ pub struct ModInstallResult {
     /// The version it replaced, for an update.
     #[serde(default)]
     pub replaced: Option<String>,
+    /// Whether the mod now stands as approved at a terminal prompt (it is on unless the user
+    /// turns it off); false means it stays off until the user turns it on.
+    #[serde(default)]
+    pub interactive: bool,
+    /// Whether the mod is trusted to run in the app's own window.
+    #[serde(default)]
+    pub trusted: bool,
+    /// Anything the daemon did not do as asked, such as a grant it did not count.
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// `schedules.list`: configured schedules with their next and last runs.

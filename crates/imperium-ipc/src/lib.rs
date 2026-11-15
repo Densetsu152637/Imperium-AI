@@ -13,6 +13,6 @@ mod unix;
 mod windows;
 
 #[cfg(unix)]
-pub use unix::{Listener, Stream, connect};
+pub use unix::{Listener, Stream, connect, peer_pid};
 #[cfg(windows)]
-pub use windows::{Listener, Stream, connect};
+pub use windows::{Listener, Stream, connect, peer_pid};

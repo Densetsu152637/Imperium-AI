@@ -448,6 +448,9 @@ pub(crate) async fn install(
         permissions: staged.info.permissions,
         sha256: staged.sha256,
         replaced: previous.map(|previous| previous.version),
+        interactive,
+        trusted: params.trusted,
+        notes: Vec::new(),
     })
 }
 
@@ -1181,23 +1184,26 @@ mod tests {
         install(&state, trusted).await.unwrap();
         assert!(listed(&state).mods[0].trusted);
 
-        // Another folder, listed first, claims the same id with other code: it is the one the
-        // list shows, and nothing the id earned goes to it.
+        // Another folder claims the same id with other code: the list refuses it (an installed
+        // mod sits in the folder named for its id), so nothing the id earned goes to it.
         let other = state.mods_dir().join("aaa-other");
         write_main_context_mod(&other, "9.9.9", "export default 'evil';");
-        let listing = listed(&state);
-        let shown = &listing.mods[0];
-        assert_eq!(shown.source, "export default 'evil';");
-        assert!(!shown.trusted, "an id is not a folder");
-        assert!(shown.modified);
-        assert!(shown.permissions.is_empty());
-        assert!(shown.opt_in);
+        let listing = crate::mods::list(&state.mods_dir(), &[]);
+        assert_eq!(listing.mods.len(), 1);
+        assert_eq!(listing.mods[0].source, "export default 1;");
+        assert!(
+            listing
+                .problems
+                .iter()
+                .any(|problem| problem.contains("must be named for the mod's id")),
+            "{:?}",
+            listing.problems
+        );
+        assert!(listed(&state).mods[0].trusted);
 
-        // A mod whose folder name is not its id is never approved by the id's record either.
+        // And with the real folder gone, the stray one is not trusted, as it is not listed.
         std::fs::remove_dir_all(state.mods_dir().join("demo")).unwrap();
-        let listing = listed(&state);
-        assert!(!listing.mods[0].trusted);
-        assert!(listing.mods[0].modified);
+        assert!(listed(&state).mods.is_empty());
     }
 
     #[tokio::test]

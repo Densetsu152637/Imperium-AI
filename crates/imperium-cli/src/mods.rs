@@ -88,20 +88,21 @@ pub fn install(
                 trusted,
             })
             .await?;
-        if preview.main_context && !trusted {
+        // What the daemon counted, which is what holds, not what was asked.
+        for note in &done.notes {
+            println!("Note: {note}");
+        }
+        if preview.main_context && !done.trusted {
             println!("It asked to run in the app's own window; it runs in the sandbox instead.");
         }
+        let standing = if done.interactive {
+            "Its panels show in the desktop app."
+        } else {
+            "It was not counted as approved at a terminal prompt, so it stays off until you turn it on in the desktop app (Settings → Mods)."
+        };
         println!(
-            "Installed {} {} into {}.{}",
-            done.id,
-            done.version,
-            done.path,
-            if answer == Answer::Prompted {
-                " Its panels show in the desktop app."
-            } else {
-                " It was not approved at a terminal prompt, so it stays off until you turn it on \
-                 in the desktop app (Settings → Mods)."
-            }
+            "Installed {} {} into {}. {standing}",
+            done.id, done.version, done.path
         );
         Ok(())
     })
@@ -181,6 +182,9 @@ pub fn update(id: String, sha256: Option<String>, yes: bool) -> anyhow::Result<(
                 trusted,
             })
             .await?;
+        for note in &done.notes {
+            println!("Note: {note}");
+        }
         println!(
             "Updated {} to {}{}. The previous folder was kept in the daemon's config-trash.",
             done.id,

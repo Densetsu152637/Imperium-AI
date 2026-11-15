@@ -335,16 +335,13 @@ is the user's approval:
    until the user turns it on in Settings → Mods; so is an update that adds permissions without
    a prompt (only an update that asks for nothing new keeps an earlier prompt's standing), and a
    `modified` mod stays off even if the app had saved it as on. Whether the answer came from a
-   prompt (`interactive`) is stated by the caller of `mods.install`, the CLI, which checks for a
-   terminal; the daemon takes its word, as it does for the `trusted` answer below. That holds
-   against an agent that cannot reach the daemon's token or socket (the floor asks about the
-   command, a paired phone is not allowed `mods.*`, a mod frame cannot reach the daemon), not
-   against one that can.
-   Residual: an agent with an unisolated shell (tier 0) that the person lets run commands can
-   still write the daemon's files or call its socket directly; the floor guards
-   `mod-approvals.json` and the installed mods (`<config>/mods`) against file-tool writes, but it
-   reads command lines and is not a security boundary ([05](05-tools-and-isolation.md#permissions)). A mod without an
-   approval record (copied in by hand, or installed by an agent) behaves as before.
+   prompt (`interactive`) is stated by the CLI, which checks for a terminal; the daemon counts it
+   only from a process that [may grant it](#who-may-grant-trust-and-approval-implemented) and
+   otherwise installs the mod off and says so (`notes` in the result). The floor also asks about
+   the command and about file-tool writes into `mod-approvals.json` and the installed mods
+   (`<config>/mods`), but it reads command lines and is not a security boundary
+   ([05](05-tools-and-isolation.md#permissions)). A mod without an approval record (copied in
+   by hand, or installed by an agent) behaves as before.
 5. **Update** reads the source from the approval record, not from the folder's
    `.imperium-source.json` (which a mod could rewrite), and refuses a source, folder or revision
    other than the approved one: to change where a mod comes from, uninstall it and install it
@@ -415,23 +412,19 @@ sandbox exists to stop, so the manifest alone never grants it:
   that the user **types** `trust <id>`; `--yes`, a missing terminal, or any other answer
   installs the mod in its sandbox. It is separate from the permission prompt and no flag
   answers it.
-- **What enforces that, and what does not.** The terminal check and the typed answer are made
-  by the CLI, which then tells the daemon (`mods.install` with `trusted`). The daemon cannot
-  tell that call from one made by another client that holds its token or socket, so the grant
-  holds only against an agent that cannot reach them (the safety floor asks about `imperium
-  mods install|update` and about writes into the mods folder, and an isolated tool tier keeps
-  the token out of reach). An agent with an unisolated shell and a person who approves what it
-  runs is outside that. **A daemon-side check (the peer's process, or a prompt the daemon
-  itself puts to the user) is required before the loader that runs a trusted mod in the app's
-  own window ships**; it is not built.
+- **What enforces that.** The terminal check and the typed answer are made by the CLI, which
+  tells the daemon (`mods.install` with `trusted`). The daemon does not take its word: it grants
+  trust only to a caller [it can tell is the user's own process](#who-may-grant-trust-and-approval-implemented).
 - The confirmation is bound to the content hash and is kept in the daemon's approvals
   ([above](#installing-and-updating-mods-implemented)), not the mod's folder. A new version
   (`mods update`) asks again and is sandboxed unless the user types it again; a modified mod
   loses it (it is `modified`, with no permissions, and off); a mod without an approval record
-  (copied in by hand, or installed by an agent's `install_extension`) is not trusted, and a mod
-  in a folder other than `mods/<id>` does not inherit what the id earned (the daemon reads that
-  folder once for the hash and for the source it lists, and a listing that is not that folder's
-  is `modified`). `mods.list` reports `main_context` (what the manifest asks) and `trusted`
+  (copied in by hand, or installed by an agent's `install_extension`) is not trusted. An
+  installed mod must sit in the folder named for its manifest id (`mods/<id>`, where
+  `imperium mods install` puts it); another folder's mod is not listed, with a problem saying why,
+  so it cannot ride on what an id earned, and the daemon still reads `mods/<id>` once for the
+  hash and for the source it lists (a listing that is not that folder's is `modified`).
+  `mods.list` reports `main_context` (what the manifest asks) and `trusted`
   (what the user confirmed for these files, checked intact). A mod whose update newly asks for
   `main_context` is installed sandboxed: trusting it takes a fresh install.
 - It is revocable: turning the mod off in Settings → Mods stops it, and installing it afresh
@@ -441,11 +434,49 @@ sandbox exists to stop, so the manifest alone never grants it:
   change everything the app can, including the daemon connection and its token, and act as
   the user; trust it only after reading its code; the confirmation is for exactly this content;
   a new version asks again.
-- **Not built:** the desktop loader that actually runs a trusted mod in the app's own window.
-  The app's content security policy allows no inline or blob scripts, so loading needs a policy
-  change and a way to serve the mod's module to the main window, which can only be checked in a
-  running app. Until then every mod, trusted or not, stays in its sandboxed frame, and `trusted`
-  has no effect beyond being recorded and shown.
+- **Not built, and why:** the desktop loader that actually runs a trusted mod in the app's own
+  window. The app's content security policy is `default-src 'self'` with no `script-src`, so a
+  main-window script must come from the app's own origin. Loading a mod's module needs either a
+  `script-src` that names the `imperium-mod:` protocol (which would let every mod's page run
+  scripts in the main window unless that handler, in `src-tauri`, refuses all but a trusted mod
+  whose files still hash to the trusted content), or a per-mod nonce or hash. Either is a change
+  to the one policy that keeps untrusted code out of the main window, and whether it holds
+  (the protocol handler's checks, the frame's own policy, `frame-src`) can only be seen in a
+  running app, which this work could not launch. It stays the next step: build the serving
+  check first, then the policy scoped to it. Until then every mod, trusted or not, stays in its
+  sandboxed frame, and `trusted` has no effect beyond being recorded and shown. The daemon-side
+  check that only the user can grant it, which had to come first, is below.
+
+### Who may grant trust and approval (implemented)
+
+`trusted` and `interactive` on `mods.install` are claims that a person answered at a terminal.
+The daemon cannot see the terminal, so it does not rely on the claim: it checks **who is
+asking**, using what the operating system says about the caller.
+
+- **Chosen: the caller's process, not a daemon-owned prompt.** A prompt the daemon puts to the
+  user would be answered over the same protocol (or shown on a screen) that anything holding
+  the daemon's token can use, so it would only move the question to who may answer. What the
+  daemon can observe about a caller is its process.
+- On the local socket, the daemon learns the caller's process id from the operating system
+  (`SO_PEERCRED` on Unix; `GetNamedPipeClientProcessId` on Windows). A grant is counted only if
+  that process (1) is neither the daemon nor a **descendant** of it (the parent chain is
+  walked), and (2) does not carry the `IMPERIUM_SPAWNED_BY_DAEMON` mark in its environment,
+  which the daemon sets on every shell it starts for a tool call, a background command or a
+  hook, and which a child keeps when it detaches from its parent (an orphan has no daemon in its
+  chain but keeps its environment). A process that is no longer in the process table is not
+  vouched for.
+- A connection over loopback TCP has no process to ask about and never makes a grant (the CLI
+  tries the local socket first). A paired phone and a mod frame cannot call `mods.*` at all.
+- **When the check fails:** `trusted` is an error (`trust was not granted`, nothing installed);
+  `interactive` is dropped, the mod installs off, and the result's `notes` say so. The result
+  carries `interactive` and `trusted` as counted, and the CLI reports those, not what it sent.
+- **What it is not.** The same-user check is the operating system's, but this is not a boundary
+  against an agent that is trying to evade it: one that clears the mark from the environment of
+  a process that also has no daemon ancestor (it detaches first), talks to the daemon some other
+  way, or acts through the user's desktop session, is not caught. It stops the mistake and the
+  plain case, an agent's shell running `imperium mods install --yes`, and it does not depend on
+  the agent being unable to read the token. Isolated tool tiers, the safety floor and the
+  per-agent permission profiles remain the controls for the rest.
 
 Contribution points: new panels, modules placeable inside any panel
 ([layout](07-desktop-ui.md#modules-inside-panels)), extensions to any panel's slots, panel wrappers and
