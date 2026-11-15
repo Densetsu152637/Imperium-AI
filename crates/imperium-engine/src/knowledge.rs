@@ -924,14 +924,12 @@ fn frame_answer(
     tools: bool,
     degraded: Option<&str>,
 ) -> String {
-    let cached = if usage.prompt_tokens > 0 {
-        format!(
-            ", {} % cached",
-            usage.cached_tokens * 100 / usage.prompt_tokens
-        )
-    } else {
-        String::new()
-    };
+    let cached = usage
+        .cached_tokens
+        .saturating_mul(100)
+        .checked_div(usage.prompt_tokens)
+        .map(|percent| format!(", {percent} % cached"))
+        .unwrap_or_default();
     let total = usage.prompt_tokens + usage.completion_tokens;
     let mut text = format!(
         "answered by {} in {calls} call{}, {} tokens{cached}\n",

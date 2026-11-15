@@ -1806,3 +1806,211 @@ tier = "basic"
         );
     }
 }
+
+#[cfg(test)]
+mod knowledge_routing_tests {
+    use super::*;
+
+    fn row(id: &str, tier: Tier, location: Location, price: f64) -> CatalogModel {
+        CatalogModel {
+            id: id.into(),
+            model: ResolvedModel {
+                spec: format!("endpoint:{id}"),
+                endpoint: Endpoint {
+                    base_url: String::new(),
+                    api_key: None,
+                },
+                model: id.into(),
+                pricing: Some(Pricing {
+                    input_usd_per_mtok: price,
+                    output_usd_per_mtok: price,
+                    cached_input_usd_per_mtok: None,
+                }),
+                local: false,
+                context_window: None,
+                kind: "openai".into(),
+                reasoning: None,
+            },
+            tier,
+            location,
+            tags: Vec::new(),
+            named_only: false,
+            cpu_lane: false,
+        }
+    }
+
+    fn fallback() -> ResolvedModel {
+        row("session", Tier::Standard, Location::Cloud, 0.0).model
+    }
+
+    /// A cheap standard row, a strong one, a frontier one, and Emperor (when asked for) at a
+    /// price that ranking alone would never pick.
+    fn rows(emperor: Option<Tier>) -> Vec<CatalogModel> {
+        let mut rows = vec![
+            row("plain", Tier::Standard, Location::Cloud, 1.0),
+            row("strong", Tier::Strong, Location::Cloud, 2.0),
+            row("frontier", Tier::Frontier, Location::Cloud, 3.0),
+        ];
+        if let Some(tier) = emperor {
+            rows.push(row("Emperor-4B", tier, Location::Cloud, 9.0));
+        }
+        rows
+    }
+
+    fn pick(rows: &[CatalogModel], routing: &RoutingSettings, tags: &[&str], tier: Tier) -> Routed {
+        let tags: Vec<String> = tags.iter().map(|tag| (*tag).to_string()).collect();
+        route_noted(
+            rows,
+            routing,
+            &fallback(),
+            TaskRequest {
+                tier,
+                tags: &tags,
+                ..TaskRequest::default()
+            },
+            None,
+        )
+    }
+
+    #[test]
+    fn a_knowledge_task_prefers_the_emperor_row_and_falls_back_without_one() {
+        let routing = RoutingSettings::default();
+        let routed = pick(
+            &rows(Some(Tier::Standard)),
+            &routing,
+            &["knowledge"],
+            Tier::Standard,
+        );
+        assert_eq!(routed.model.model, "Emperor-4B");
+        assert!(!routed.fell_back);
+        // Without the tag it ranks as usual; without a row (none installed, or turned off,
+        // which takes it out of the catalog) the normal route is used, quietly.
+        let plain = pick(&rows(Some(Tier::Standard)), &routing, &[], Tier::Standard);
+        assert_eq!(plain.model.model, "plain");
+        let none = pick(&rows(None), &routing, &["knowledge"], Tier::Standard);
+        assert_eq!(none.model.model, "plain");
+        assert!(none.notes.is_empty(), "{:?}", none.notes);
+    }
+
+    #[test]
+    fn an_explicit_model_or_location_still_wins() {
+        let routing = RoutingSettings::default();
+        let tags = ["knowledge".to_string()];
+        let named = route_noted(
+            &rows(Some(Tier::Standard)),
+            &routing,
+            &fallback(),
+            TaskRequest {
+                named: Some("strong"),
+                tags: &tags,
+                ..TaskRequest::default()
+            },
+            None,
+        );
+        assert_eq!(named.model.model, "strong");
+        let mut with_local = rows(Some(Tier::Standard));
+        with_local.push(row("home", Tier::Standard, Location::Local, 0.0));
+        let confined = route_noted(
+            &with_local,
+            &routing,
+            &fallback(),
+            TaskRequest {
+                location: Some(Location::Local),
+                tags: &tags,
+                ..TaskRequest::default()
+            },
+            None,
+        );
+        // The local row cannot run without a runtime, so the session's model carries on; what
+        // matters is that the cloud Emperor was not chosen against the call's location.
+        assert_ne!(confined.model.model, "Emperor-4B");
+    }
+
+    #[test]
+    fn knowledge_beats_the_built_in_tag_rows_but_not_a_rule_of_the_users() {
+        let routing = RoutingSettings::default();
+        let rows = rows(Some(Tier::Standard));
+        // An architecture task prefers the cloud frontier row; one that is also a knowledge
+        // task prefers Emperor.
+        let hard = pick(&rows, &routing, &["architecture"], Tier::Standard);
+        assert_eq!(hard.model.model, "frontier");
+        let both = pick(
+            &rows,
+            &routing,
+            &["architecture", "knowledge"],
+            Tier::Standard,
+        );
+        assert_eq!(both.model.model, "Emperor-4B");
+        // A rule of the user's for the tag decides first.
+        let ruled = RoutingSettings {
+            rules: vec![RoutingRule {
+                when_tag: Some("knowledge".into()),
+                use_models: vec!["strong".into()],
+                ..RoutingRule::default()
+            }],
+            ..RoutingSettings::default()
+        };
+        let chosen = pick(&rows, &ruled, &["knowledge"], Tier::Standard);
+        assert_eq!(chosen.model.model, "strong");
+        // The built-in rules can be turned off together.
+        let off = RoutingSettings {
+            builtin_rules: false,
+            ..RoutingSettings::default()
+        };
+        let unruled = pick(&rows, &off, &["knowledge"], Tier::Standard);
+        assert_eq!(unruled.model.model, "plain");
+    }
+
+    #[test]
+    fn a_tier_floor_above_emperors_row_routes_normally() {
+        let routing = RoutingSettings::default();
+        let routed = pick(
+            &rows(Some(Tier::Standard)),
+            &routing,
+            &["knowledge"],
+            Tier::Strong,
+        );
+        assert_eq!(routed.model.model, "strong");
+        let lifted = pick(
+            &rows(Some(Tier::Strong)),
+            &routing,
+            &["knowledge"],
+            Tier::Strong,
+        );
+        assert_eq!(lifted.model.model, "Emperor-4B");
+    }
+
+    #[test]
+    fn a_configured_knowledge_model_is_preferred_and_falls_back_like_a_missing_emperor() {
+        let rows = rows(Some(Tier::Standard));
+        let named = RoutingSettings {
+            knowledge_model: "strong".into(),
+            ..RoutingSettings::default()
+        };
+        let routed = pick(&rows, &named, &["knowledge"], Tier::Standard);
+        assert_eq!(routed.model.model, "strong");
+        // By spec as well as by table id.
+        let by_spec = RoutingSettings {
+            knowledge_model: "endpoint:frontier".into(),
+            ..RoutingSettings::default()
+        };
+        let routed = pick(&rows, &by_spec, &["knowledge"], Tier::Standard);
+        assert_eq!(routed.model.model, "frontier");
+        // Turned off, missing from the model folders, or not in the catalog: the same thing
+        // to routing, which falls back to the normal route and says so.
+        let gone = RoutingSettings {
+            knowledge_model: "vanished".into(),
+            ..RoutingSettings::default()
+        };
+        let routed = pick(&rows, &gone, &["knowledge"], Tier::Standard);
+        assert_eq!(routed.model.model, "plain");
+        assert!(
+            routed
+                .notes
+                .iter()
+                .any(|note| note.contains("routing.knowledge_model vanished")),
+            "{:?}",
+            routed.notes
+        );
+    }
+}
