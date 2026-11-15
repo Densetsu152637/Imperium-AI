@@ -1,0 +1,13 @@
+pos:	0
+flags:	02100002
+mnt_id:	27
+ino:	531
+drm-driver:	i915
+drm-pdev:	0000:03:00.0
+drm-client-id:	12
+drm-total-local0:	8192 KiB
+drm-shared-local0:	0
+drm-total-system0:	1024 KiB
+drm-shared-system0:	0
+drm-engine-render:	52000 ns
+drm-engine-capacity-render:	1

@@ -8,6 +8,8 @@ pub mod card;
 pub mod context;
 pub mod gguf;
 pub mod gpu;
+pub mod gpu_fdinfo;
+pub mod gpu_windows;
 pub mod hardware;
 pub mod hf;
 pub mod monitor;

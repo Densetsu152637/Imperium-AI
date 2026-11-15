@@ -44,8 +44,9 @@ pub struct ProcessSample {
     /// Share of the whole machine (every core), 0 to 100.
     pub cpu_percent: f32,
     pub ram_bytes: u64,
-    /// GPU memory the process holds; `None` when the driver does not report it per process
-    /// (as on Windows under WDDM) or there is no NVIDIA GPU.
+    /// GPU memory the process holds: `nvidia-smi`'s figure, plus on Linux the AMD and Intel
+    /// DRM clients' video memory and on Windows the GPU process counters where `nvidia-smi`
+    /// has none (WDDM). `None` when no source reports it.
     pub vram_bytes: Option<u64>,
 }
 
@@ -99,6 +100,11 @@ impl SystemProbe {
             true,
             ProcessRefreshKind::nothing().with_cpu().with_memory(),
         );
+    }
+
+    /// GPU memory per process on AMD and Intel GPUs, where the platform reports it.
+    fn vendor_apps(&mut self, pids: &[u32]) -> Vec<(u32, u64)> {
+        self.vendors.process_vram(pids)
     }
 
     fn gpus(&mut self) -> (Vec<GpuSample>, Vec<(u32, u64)>) {
@@ -162,16 +168,24 @@ impl Probe for SystemProbe {
         self.system.refresh_memory();
         let cores = self.system.cpus().len().max(1);
         let (gpus, apps) = self.gpus();
+        // On Windows the counters cover every adapter, NVIDIA's included, so they are asked only
+        // about processes `nvidia-smi` has no figure for (it has none under WDDM).
+        let unknown: Vec<u32> = pids
+            .iter()
+            .copied()
+            .filter(|pid| !cfg!(windows) || figure_for(&apps, *pid).is_none())
+            .collect();
+        let vendor_apps = self.vendor_apps(&unknown);
         let processes = wanted
             .iter()
             .filter_map(|pid| {
                 let process = self.system.process(*pid)?;
                 let pid = pid.as_u32();
-                let vram = apps
-                    .iter()
-                    .filter(|(app, _)| *app == pid)
-                    .map(|(_, bytes)| *bytes)
-                    .reduce(|a, b| a + b);
+                let vram = combine_vram(
+                    figure_for(&apps, pid),
+                    figure_for(&vendor_apps, pid),
+                    cfg!(windows),
+                );
                 Some(ProcessSample {
                     pid,
                     name: process.name().to_string_lossy().into_owned(),
@@ -196,6 +210,26 @@ impl Probe for SystemProbe {
             gpus,
             processes,
         }
+    }
+}
+
+/// The sum of the figures listed for `pid`; `None` when there is none.
+fn figure_for(apps: &[(u32, u64)], pid: u32) -> Option<u64> {
+    apps.iter()
+        .filter(|(app, _)| *app == pid)
+        .map(|(_, bytes)| *bytes)
+        .reduce(u64::saturating_add)
+}
+
+/// A process's GPU memory from `nvidia-smi` and from the AMD and Intel sources. They cover
+/// different GPUs and add up, except where `vendor_covers_all` (Windows: its counters include
+/// NVIDIA's memory), when `nvidia-smi`'s figure stands alone and the counters fill in only
+/// where it has none (it has none under WDDM).
+fn combine_vram(nvidia: Option<u64>, vendor: Option<u64>, vendor_covers_all: bool) -> Option<u64> {
+    match (nvidia, vendor) {
+        (Some(n), Some(v)) if !vendor_covers_all => Some(n.saturating_add(v)),
+        (Some(n), _) => Some(n),
+        (None, v) => v,
     }
 }
 
@@ -261,6 +295,18 @@ mod tests {
         assert_eq!(gpus[1].temperature_c, None);
         let apps = parse_compute_apps("1234, 2048\n5678, [N/A]\n");
         assert_eq!(apps, vec![(1234, 2048 * MIB)]);
+    }
+
+    #[test]
+    fn process_memory_from_nvidia_and_the_other_vendors_combines() {
+        assert_eq!(combine_vram(None, None, false), None);
+        assert_eq!(combine_vram(Some(5), None, false), Some(5));
+        assert_eq!(combine_vram(None, Some(7), true), Some(7));
+        assert_eq!(combine_vram(Some(5), Some(7), false), Some(12));
+        // Windows counters already include NVIDIA's memory.
+        assert_eq!(combine_vram(Some(5), Some(7), true), Some(5));
+        assert_eq!(figure_for(&[(1, 2), (1, 3), (4, 9)], 1), Some(5));
+        assert_eq!(figure_for(&[(4, 9)], 1), None);
     }
 
     #[test]

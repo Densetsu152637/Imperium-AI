@@ -127,7 +127,11 @@ pub fn refreshed_budget(
     let vram = if fresh.gpus.is_empty() && start.vram_bytes > 0 {
         current.vram_bytes
     } else {
-        measured.vram_bytes.saturating_add(held_vram)
+        let total = fresh.vram_total_bytes();
+        let sum = measured.vram_bytes.saturating_add(held_vram);
+        // A GPU whose memory in use is unknown counts as half free, which with what the loaded
+        // models hold on top could pass the card's size: never plan for more than it has.
+        if total > 0 { sum.min(total) } else { sum }
     };
     // What the local whisper holds in RAM is Imperium's own too: the free RAM read while it
     // runs lacks it, and `Supervisor::budget` takes it off again.
@@ -419,6 +423,20 @@ mod tests {
             ..machine(0, 40)
         };
         assert_eq!(refreshed_budget(start, start, &noisy, 0, &[], (0, 0)), None);
+    }
+
+    #[test]
+    fn the_vram_budget_never_passes_the_planned_gpus_total() {
+        // Memory in use unknown: half of 16 GiB is free, and 10 GiB held on top is past the card.
+        let mut fresh = machine(8, 40);
+        fresh.gpus[0].vendor = "amd".into();
+        let mut held = status("held");
+        held.vram_bytes = 10 * GIB;
+        let start = budget(16, 40);
+        assert_eq!(
+            refreshed_budget(budget(8, 40), start, &fresh, 0, &[held], (0, 0)),
+            Some(budget(16, 40))
+        );
     }
 
     #[test]
