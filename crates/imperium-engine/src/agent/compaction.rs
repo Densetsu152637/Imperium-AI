@@ -107,7 +107,7 @@ impl Agent {
     /// compacted if it does not fit) when the next turn starts ([`Agent::settle_model`]).
     /// Returns an estimate of the conversation against the window the target is expected to
     /// have.
-    pub fn select_model(&mut self, target: ResolvedModel) -> ContextFit {
+    pub(crate) fn select_model(&mut self, target: ResolvedModel) -> ContextFit {
         let from = std::mem::replace(&mut self.model, target);
         self.shared
             .agents
@@ -205,7 +205,7 @@ impl Agent {
 
     /// Compacts the conversation now for this agent's own model, keeping the last
     /// [`KEEP_TURNS`](compact::KEEP_TURNS) turns verbatim (fewer if they do not fit).
-    pub async fn compact_now(&mut self) -> Result<ContextFit, SwitchError> {
+    pub(crate) async fn compact_now(&mut self) -> Result<ContextFit, SwitchError> {
         let model = self.model.clone();
         let fit = self.fit_to(&model, true).await?;
         self.fit_pending = false;
@@ -215,7 +215,7 @@ impl Agent {
 
     /// Compacts the conversation only when it no longer fits this agent's own model's budget
     /// (nothing happens when the model's context window is unknown).
-    pub async fn fit_current(&mut self) -> Result<ContextFit, SwitchError> {
+    pub(crate) async fn fit_current(&mut self) -> Result<ContextFit, SwitchError> {
         let model = self.model.clone();
         let fit = self.fit_to(&model, false).await?;
         self.fit_pending = false;

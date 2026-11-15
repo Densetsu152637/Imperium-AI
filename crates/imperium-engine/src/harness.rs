@@ -112,22 +112,22 @@ fn clean(text: &str, max: usize) -> String {
 }
 
 impl SessionState {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.entities.is_empty() && self.goals.is_empty() && self.constraints.is_empty()
     }
 
     /// The state as compact JSON.
-    pub fn json(&self) -> String {
+    pub(crate) fn json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
 
     /// The block that carries the state at the top of a turn; `None` while it is empty.
-    pub fn block(&self) -> Option<String> {
+    pub(crate) fn block(&self) -> Option<String> {
         (!self.is_empty()).then(|| format!("{STATE_OPEN}\n{}\n{STATE_CLOSE}", self.json()))
     }
 
     /// Applies `update`, then cuts the state to `max_chars` of JSON.
-    pub fn apply(&mut self, update: StateUpdate, max_chars: usize) {
+    pub(crate) fn apply(&mut self, update: StateUpdate, max_chars: usize) {
         for entity in update.entities {
             let kind = clean(&entity.kind, MAX_KIND_CHARS).to_lowercase();
             let name = clean(&entity.name, MAX_FIELD_CHARS);
@@ -167,7 +167,7 @@ impl SessionState {
 
     /// Cuts the state to its entry limits and to `max_chars` of JSON: the oldest entities go
     /// first, then the oldest constraints, then the last goals.
-    pub fn bound(&mut self, max_chars: usize) {
+    pub(crate) fn bound(&mut self, max_chars: usize) {
         let extra = self.entities.len().saturating_sub(MAX_ENTITIES);
         self.entities.drain(..extra);
         let extra = self.constraints.len().saturating_sub(MAX_CONSTRAINTS);

@@ -51,7 +51,7 @@ pub(super) struct ForkInfo {
 
 impl ForkInfo {
     /// Notes that a call to `tool` worked, for the answer's web marker.
-    pub fn note_tool(&self, tool: &str) {
+    pub(crate) fn note_tool(&self, tool: &str) {
         if WEB_TOOLS.contains(&tool) {
             self.used_web.store(true, Ordering::SeqCst);
         }

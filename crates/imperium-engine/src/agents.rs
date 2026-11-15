@@ -69,7 +69,7 @@ pub(crate) struct FrozenTool {
 }
 
 impl FrozenTool {
-    pub fn of(spec: &imperium_api::ToolSpec) -> Self {
+    pub(crate) fn of(spec: &imperium_api::ToolSpec) -> Self {
         FrozenTool {
             name: spec.name.clone(),
             description: spec.description.clone(),
@@ -77,7 +77,7 @@ impl FrozenTool {
         }
     }
 
-    pub fn spec(&self) -> imperium_api::ToolSpec {
+    pub(crate) fn spec(&self) -> imperium_api::ToolSpec {
         imperium_api::ToolSpec {
             name: self.name.clone(),
             description: self.description.clone(),
@@ -200,7 +200,11 @@ impl AgentStore {
 
     /// [`AgentStore::open`] with the time each event was journalled (0: unknown), so a turn
     /// that is replayed is dated by when it happened rather than when it was replayed.
-    pub fn open_timed(dir: Option<PathBuf>, history: &[(u64, AgentEvent)], load: bool) -> Self {
+    pub(crate) fn open_timed(
+        dir: Option<PathBuf>,
+        history: &[(u64, AgentEvent)],
+        load: bool,
+    ) -> Self {
         let store = AgentStore {
             dir,
             state: Mutex::default(),
@@ -245,7 +249,7 @@ impl AgentStore {
     }
 
     /// The highest task number in use, so new tasks continue after it.
-    pub fn last_task_number(&self) -> u32 {
+    pub(crate) fn last_task_number(&self) -> u32 {
         lock(&self.state)
             .records
             .keys()
@@ -255,7 +259,7 @@ impl AgentStore {
     }
 
     /// Subagents recorded as working: after a restart, those the daemon stopped.
-    pub fn running_subagents(&self) -> Vec<String> {
+    pub(crate) fn running_subagents(&self) -> Vec<String> {
         let mut ids: Vec<String> = lock(&self.state)
             .records
             .values()
@@ -270,7 +274,7 @@ impl AgentStore {
     }
 
     /// Marks subagents the daemon stopped mid-turn; they resume from their last saved point.
-    pub fn mark_interrupted(&self, ids: &[String]) {
+    pub(crate) fn mark_interrupted(&self, ids: &[String]) {
         let mut state = lock(&self.state);
         for id in ids {
             if let Some(record) = state.records.get_mut(id) {
@@ -282,7 +286,7 @@ impl AgentStore {
     }
 
     /// Every agent, the root first and then subagents in the order they started.
-    pub fn list(&self) -> Vec<AgentSummary> {
+    pub(crate) fn list(&self) -> Vec<AgentSummary> {
         let mut agents: Vec<AgentSummary> = lock(&self.state)
             .records
             .values()
@@ -293,12 +297,12 @@ impl AgentStore {
     }
 
     /// The model `id` last ran on, when it ran in this daemon.
-    pub fn model(&self, id: &str) -> Option<ResolvedModel> {
+    pub(crate) fn model(&self, id: &str) -> Option<ResolvedModel> {
         lock(&self.state).models.get(id).cloned()
     }
 
     /// Notes an agent's role and model when it is created or switched.
-    pub fn register(&self, id: &str, role: &str, model: &ResolvedModel) {
+    pub(crate) fn register(&self, id: &str, role: &str, model: &ResolvedModel) {
         let mut state = lock(&self.state);
         state.models.insert(id.to_string(), model.clone());
         let record = state.records.entry(id.to_string()).or_insert_with(|| {
@@ -315,7 +319,7 @@ impl AgentStore {
     /// Saves a subagent's conversation (after its instructions) at a safe point: tool calls all
     /// have their results. For the root only the size is noted; its conversation is kept in the
     /// session's messages file.
-    pub fn save_conversation(&self, id: &str, messages: &[ChatMessage]) {
+    pub(crate) fn save_conversation(&self, id: &str, messages: &[ChatMessage]) {
         let mut state = lock(&self.state);
         let Some(record) = state.records.get_mut(id) else {
             return;
@@ -335,7 +339,7 @@ impl AgentStore {
     }
 
     /// A subagent's kept conversation.
-    pub fn conversation(&self, id: &str) -> Vec<ChatMessage> {
+    pub(crate) fn conversation(&self, id: &str) -> Vec<ChatMessage> {
         lock(&self.state)
             .records
             .get(id)
@@ -346,7 +350,7 @@ impl AgentStore {
     /// Claims a finished subagent for a follow-up: it must have a kept conversation and not be
     /// working. Returns its state before the claim; it is marked running at once, so it cannot
     /// be resumed twice.
-    pub fn claim(&self, id: &str) -> Result<AgentSummary, String> {
+    pub(crate) fn claim(&self, id: &str) -> Result<AgentSummary, String> {
         let mut state = lock(&self.state);
         if id == ROOT_AGENT {
             return Err(
@@ -377,7 +381,7 @@ impl AgentStore {
 
     /// Marks a subagent that is not working as cancelled (failed, with that report), so it is
     /// no longer listed as paused. Fails for the root, an unknown agent, or one that works.
-    pub fn cancel(&self, id: &str) -> Result<(), String> {
+    pub(crate) fn cancel(&self, id: &str) -> Result<(), String> {
         let mut state = lock(&self.state);
         if id == ROOT_AGENT {
             return Err("the root agent cannot be cancelled".into());
@@ -398,7 +402,7 @@ impl AgentStore {
     }
 
     /// Gives back a claim that could not start, restoring the status it had.
-    pub fn release(&self, id: &str, status: AgentStatus) {
+    pub(crate) fn release(&self, id: &str, status: AgentStatus) {
         let mut state = lock(&self.state);
         if let Some(record) = state.records.get_mut(id) {
             record.summary.status = status;
@@ -407,7 +411,7 @@ impl AgentStore {
     }
 
     /// Notes what kind of agent `id` is and what its latest request began with.
-    pub fn note_run(&self, id: &str, kind: AgentKind, prefix: Frozen) {
+    pub(crate) fn note_run(&self, id: &str, kind: AgentKind, prefix: Frozen) {
         let mut state = lock(&self.state);
         if let Some(record) = state.records.get_mut(id) {
             record.kind = kind;
@@ -416,14 +420,14 @@ impl AgentStore {
     }
 
     /// When `id`'s latest turn started (0 when unknown).
-    pub fn turn_started_ms(&self, id: &str) -> u64 {
+    pub(crate) fn turn_started_ms(&self, id: &str) -> u64 {
         lock(&self.state)
             .records
             .get(id)
             .map_or(0, |record| record.turn_started_ms)
     }
 
-    pub fn kind(&self, id: &str) -> AgentKind {
+    pub(crate) fn kind(&self, id: &str) -> AgentKind {
         lock(&self.state)
             .records
             .get(id)
@@ -431,11 +435,11 @@ impl AgentStore {
     }
 
     /// What `id`'s latest request began with, when it ran in this daemon.
-    pub fn latest_prefix(&self, id: &str) -> Option<Frozen> {
+    pub(crate) fn latest_prefix(&self, id: &str) -> Option<Frozen> {
         lock(&self.state).prefixes.get(id).cloned()
     }
 
-    pub fn summary(&self, id: &str) -> Option<AgentSummary> {
+    pub(crate) fn summary(&self, id: &str) -> Option<AgentSummary> {
         lock(&self.state)
             .records
             .get(id)
@@ -443,7 +447,7 @@ impl AgentStore {
     }
 
     /// Keeps `id` as a knowledge agent with `card` and its frozen prefix.
-    pub fn set_knowledge(&self, id: &str, card: KnowledgeCard, frozen: Frozen) {
+    pub(crate) fn set_knowledge(&self, id: &str, card: KnowledgeCard, frozen: Frozen) {
         let mut state = lock(&self.state);
         if let Some(record) = state.records.get_mut(id) {
             record.summary.knowledge = Some(card);
@@ -454,7 +458,7 @@ impl AgentStore {
     }
 
     /// Makes `id` an ordinary idle subagent again; whether it was a knowledge agent.
-    pub fn clear_knowledge(&self, id: &str) -> bool {
+    pub(crate) fn clear_knowledge(&self, id: &str) -> bool {
         let mut state = lock(&self.state);
         let Some(record) = state.records.get_mut(id) else {
             return false;
@@ -467,7 +471,7 @@ impl AgentStore {
     }
 
     /// Changes `id`'s card; returns it as it is afterwards (`None` when `id` has none).
-    pub fn update_knowledge(
+    pub(crate) fn update_knowledge(
         &self,
         id: &str,
         change: impl FnOnce(&mut KnowledgeCard),
@@ -483,7 +487,7 @@ impl AgentStore {
     }
 
     /// Replaces a knowledge agent's frozen prefix (after it was resumed and finished).
-    pub fn refreeze(&self, id: &str, frozen: Frozen) {
+    pub(crate) fn refreeze(&self, id: &str, frozen: Frozen) {
         let mut state = lock(&self.state);
         if let Some(record) = state.records.get_mut(id)
             && record.summary.knowledge.is_some()
@@ -494,7 +498,7 @@ impl AgentStore {
     }
 
     /// The session's knowledge agents' cards, in the order the agents started.
-    pub fn knowledge_cards(&self) -> Vec<KnowledgeCard> {
+    pub(crate) fn knowledge_cards(&self) -> Vec<KnowledgeCard> {
         let mut cards: Vec<KnowledgeCard> = lock(&self.state)
             .records
             .values()
@@ -505,7 +509,7 @@ impl AgentStore {
     }
 
     /// What a fork of knowledge agent `id` starts from.
-    pub fn fork_source(&self, id: &str) -> Option<ForkSource> {
+    pub(crate) fn fork_source(&self, id: &str) -> Option<ForkSource> {
         let state = lock(&self.state);
         let record = state.records.get(id)?;
         Some(ForkSource {
@@ -516,7 +520,7 @@ impl AgentStore {
     }
 
     /// Follows an event into the agent records it changes.
-    pub fn observe(&self, event: &AgentEvent) {
+    pub(crate) fn observe(&self, event: &AgentEvent) {
         self.observe_at(event, unix_ms());
     }
 

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 /// Append-only JSON Lines record of a session: one object per event, with a timestamp.
 #[derive(Debug)]
-pub struct Journal {
+pub(crate) struct Journal {
     file: File,
 }
 
@@ -19,7 +19,7 @@ struct Line<'a> {
 }
 
 impl Journal {
-    pub fn open(path: &Path) -> std::io::Result<Self> {
+    pub(crate) fn open(path: &Path) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -27,7 +27,7 @@ impl Journal {
         Ok(Journal { file })
     }
 
-    pub fn record(&mut self, event: &AgentEvent) -> std::io::Result<()> {
+    pub(crate) fn record(&mut self, event: &AgentEvent) -> std::io::Result<()> {
         let at_ms = imperium_api::time::unix_ms();
         let mut line = serde_json::to_vec(&Line { at_ms, event })?;
         line.push(b'\n');
@@ -45,7 +45,7 @@ pub fn read_events(path: &Path) -> Vec<AgentEvent> {
 
 /// [`read_events`] with the time each event was recorded, in milliseconds since the Unix epoch
 /// (0 for a line without one).
-pub fn read_timed_events(path: &Path) -> Vec<(u64, AgentEvent)> {
+pub(crate) fn read_timed_events(path: &Path) -> Vec<(u64, AgentEvent)> {
     #[derive(Deserialize)]
     struct Stored {
         #[serde(default)]

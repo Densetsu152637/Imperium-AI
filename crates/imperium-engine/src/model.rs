@@ -513,7 +513,10 @@ pub fn route_noted(
 }
 
 /// The location a task is confined to: the call's, else the first matching rule of the user's.
-pub fn effective_location(routing: &RoutingSettings, request: TaskRequest<'_>) -> Option<Location> {
+pub(crate) fn effective_location(
+    routing: &RoutingSettings,
+    request: TaskRequest<'_>,
+) -> Option<Location> {
     request.location.or_else(|| {
         routing
             .rules

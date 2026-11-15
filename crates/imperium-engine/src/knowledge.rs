@@ -126,7 +126,7 @@ pub(crate) struct Knowledge {
 }
 
 impl Knowledge {
-    pub fn new(config: KnowledgeConfig) -> Self {
+    pub(crate) fn new(config: KnowledgeConfig) -> Self {
         Knowledge {
             config,
             lanes: Mutex::new(HashMap::new()),
@@ -138,11 +138,11 @@ impl Knowledge {
         }
     }
 
-    pub fn settings(&self) -> &KnowledgeSettings {
+    pub(crate) fn settings(&self) -> &KnowledgeSettings {
         &self.config.settings
     }
 
-    pub fn enabled(&self) -> bool {
+    pub(crate) fn enabled(&self) -> bool {
         self.config.settings.enabled
     }
 
@@ -160,7 +160,7 @@ impl Knowledge {
     }
 
     /// Whether the session has closed.
-    pub fn closed(&self) -> bool {
+    pub(crate) fn closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
     }
 
@@ -172,7 +172,7 @@ impl Knowledge {
     }
 
     /// Notes that the subagent `task` is kept as knowledge under `topic` when it succeeds.
-    pub fn expect(&self, task: &str, topic: String) {
+    pub(crate) fn expect(&self, task: &str, topic: String) {
         lock(&self.pending).insert(task.to_string(), topic);
     }
 
@@ -1206,7 +1206,7 @@ pub(crate) struct Question {
 
 impl Question {
     /// Stops the question at its next safe point; its handle then resolves.
-    pub fn stop(&self, why: Stop) {
+    pub(crate) fn stop(&self, why: Stop) {
         self.stop.send_replace(Some(why));
     }
 }

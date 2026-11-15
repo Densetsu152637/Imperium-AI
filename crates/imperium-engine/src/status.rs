@@ -59,7 +59,7 @@ impl Tracker {
 
 /// Shared between a session's handle and its agents.
 #[derive(Debug)]
-pub struct Controls {
+pub(crate) struct Controls {
     tracker: Mutex<Tracker>,
     default_policy: ResumePolicy,
     policy: Mutex<Option<ResumePolicy>>,
@@ -74,7 +74,7 @@ pub struct Controls {
 }
 
 impl Controls {
-    pub fn new(default_policy: ResumePolicy) -> Self {
+    pub(crate) fn new(default_policy: ResumePolicy) -> Self {
         Controls {
             tracker: Mutex::new(Tracker::default()),
             default_policy,
@@ -89,7 +89,7 @@ impl Controls {
     /// The id of the message (as `send_message` returned it) whose turn the root agent is
     /// running now; `None` between turns. Read by whoever must know which message a running
     /// turn answers, such as the daemon holding a turn to extra restrictions.
-    pub fn turn_message(&self) -> Option<String> {
+    pub(crate) fn turn_message(&self) -> Option<String> {
         lock(&self.turn_message).clone()
     }
 
@@ -98,7 +98,7 @@ impl Controls {
     }
 
     /// Whether the user stopped the session.
-    pub fn is_stopped(&self) -> bool {
+    pub(crate) fn is_stopped(&self) -> bool {
         *self.stop.borrow()
     }
 
@@ -108,7 +108,7 @@ impl Controls {
     }
 
     /// Why background work is waiting for a quiet machine, if it is.
-    pub fn hold(&self) -> Option<SessionHold> {
+    pub(crate) fn hold(&self) -> Option<SessionHold> {
         lock(&self.tracker).hold.clone()
     }
 
@@ -123,7 +123,7 @@ impl Controls {
         tracker.paused = false;
     }
 
-    pub fn status(&self) -> (SessionStatus, Option<String>) {
+    pub(crate) fn status(&self) -> (SessionStatus, Option<String>) {
         lock(&self.tracker).current()
     }
 
@@ -205,20 +205,20 @@ impl Controls {
         })
     }
 
-    pub fn policy(&self) -> ResumePolicy {
+    pub(crate) fn policy(&self) -> ResumePolicy {
         lock(&self.policy)
             .clone()
             .unwrap_or_else(|| self.default_policy.clone())
     }
 
     /// Overrides the session's policy; `None` returns to the configured default.
-    pub fn set_policy(&self, policy: Option<ResumePolicy>) {
+    pub(crate) fn set_policy(&self, policy: Option<ResumePolicy>) {
         *lock(&self.policy) = policy;
     }
 
     /// Ends a usage-limit wait now, or a background session's wait for a quiet machine, which
     /// then stops giving way to the load.
-    pub fn resume_now(&self) {
+    pub(crate) fn resume_now(&self) {
         if lock(&self.tracker).hold.is_some() {
             self.run_now.release();
         }

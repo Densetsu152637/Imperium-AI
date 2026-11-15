@@ -107,7 +107,7 @@ const MAX_REWRITE_HISTORY_CHARS: usize = 20_000;
 /// How often a call waiting for a local model looks at why it waits.
 const WAIT_REASON_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 /// What a turn produced, for a parent awaiting a subagent.
-pub struct TurnOutcome {
+pub(crate) struct TurnOutcome {
     pub text: String,
     pub ok: bool,
     /// The turn stopped early because the user steered the root agent; `text` says how far
@@ -144,7 +144,7 @@ impl TaskReport {
     }
 }
 
-pub struct Agent {
+pub(crate) struct Agent {
     id: String,
     shared: Arc<Shared>,
     /// The folders, grants and sandbox this agent's tools work in: the session's, or for a
@@ -236,7 +236,7 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(
+    pub(crate) fn new(
         id: String,
         shared: Arc<Shared>,
         model: ResolvedModel,
@@ -249,7 +249,7 @@ impl Agent {
 
     /// An agent whose tools work in `workspace` (a writer subagent's own worktrees) instead of
     /// the session's.
-    pub fn new_in(
+    pub(crate) fn new_in(
         id: String,
         shared: Arc<Shared>,
         model: ResolvedModel,
@@ -444,7 +444,7 @@ impl Agent {
     }
 
     /// Thinks at `effort` instead of the session's effort, when its model can reason.
-    pub fn with_effort(mut self, effort: Option<Effort>) -> Self {
+    pub(crate) fn with_effort(mut self, effort: Option<Effort>) -> Self {
         self.effort = effort;
         self
     }
@@ -458,12 +458,12 @@ impl Agent {
     }
 
     /// The model this agent calls.
-    pub fn model(&self) -> &ResolvedModel {
+    pub(crate) fn model(&self) -> &ResolvedModel {
         &self.model
     }
 
     /// Messages waiting for this agent.
-    pub fn inbox(&self) -> &Arc<Inbox> {
+    pub(crate) fn inbox(&self) -> &Arc<Inbox> {
         &self.inbox
     }
     /// What the root reads, after a steering message, about the subagents that stopped for it.
@@ -520,7 +520,7 @@ impl Agent {
     }
     /// Makes this a single-call agent: it is given the brief and no tools, makes exactly one
     /// model call, and that reply is its report.
-    pub fn single_call(mut self) -> Self {
+    pub(crate) fn single_call(mut self) -> Self {
         let root = self.workspace.root_display();
         let system = single_call_prompt(&root);
         let (system, spans) = join_parts(vec![(Category::SystemBase, system)]);
@@ -533,13 +533,13 @@ impl Agent {
     }
 
     /// The conversation so far.
-    pub fn messages(&self) -> &[ChatMessage] {
+    pub(crate) fn messages(&self) -> &[ChatMessage] {
         &self.messages
     }
 
     /// Continues an earlier conversation: its messages after the instructions, which stay
     /// this agent's current ones.
-    pub fn restore(&mut self, messages: Vec<ChatMessage>) {
+    pub(crate) fn restore(&mut self, messages: Vec<ChatMessage>) {
         let earlier = messages
             .into_iter()
             .skip_while(|message| matches!(message, ChatMessage::System { .. }));

@@ -171,13 +171,13 @@ impl Agent {
     /// Runs one turn: model calls and tool calls until the model answers without tools.
     /// `context` (recalled memories) is given to the model before the message but not shown
     /// as part of it.
-    pub async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
+    pub(crate) async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
         self.run_turn_with(text, Vec::new(), context).await
     }
 
     /// [`run_turn`](Self::run_turn) for a message with files attached: they are read now and
     /// go before the message's text (images as image parts for a vision model).
-    pub async fn run_turn_with(
+    pub(crate) async fn run_turn_with(
         &mut self,
         text: String,
         attachments: Vec<Attachment>,
