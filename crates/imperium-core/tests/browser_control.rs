@@ -40,7 +40,11 @@ async fn call(connection: &mut Connection, method: &str, params: Value) -> Resul
     };
     match response.outcome {
         Outcome::Result(value) => Ok(value),
-        Outcome::Error(error) => Err(error.code),
+        Outcome::Error(error) => {
+            // The tests compare codes; keep the reason for the failure output.
+            eprintln!("{method} failed with {}: {}", error.code, error.message);
+            Err(error.code)
+        }
     }
 }
 

@@ -33,6 +33,7 @@ struct Inner {
     no_s256: bool,
     no_registration: bool,
     refresh_fails: bool,
+    refresh_gate: Option<Arc<tokio::sync::Notify>>,
     as_requests: Vec<String>,
     registrations: Vec<Value>,
     last_authorize: HashMap<String, String>,
@@ -155,9 +156,20 @@ fn issue(inner: &mut Inner) -> Response {
 
 async fn as_token(State(fake): State<Shared>, body: String) -> Response {
     let params = form(&body);
-    let mut inner = fake.lock();
     let grant = params.get("grant_type").cloned().unwrap_or_default();
-    inner.as_requests.push(format!("token:{grant}"));
+    let gate = {
+        let mut inner = fake.lock();
+        inner.as_requests.push(format!("token:{grant}"));
+        inner
+            .refresh_gate
+            .clone()
+            .filter(|_| grant == "refresh_token")
+    };
+    // A refresh held mid-flight until the test releases it.
+    if let Some(gate) = gate {
+        gate.notified().await;
+    }
+    let mut inner = fake.lock();
     match grant.as_str() {
         "authorization_code" => {
             let Some(challenge) = params.get("code").and_then(|code| inner.codes.remove(code))
@@ -763,4 +775,124 @@ async fn signing_out_revokes_the_token_forgets_the_tokens_and_keeps_the_registra
     revocation.send().await;
     assert_eq!(env.fake.lock().revoked.len(), 2);
     assert!(env.memory.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn removing_a_server_waits_for_a_refresh_in_flight_and_nothing_is_stored_afterwards() {
+    let env = setup().await;
+    env.sign_in("remote").await;
+    env.expire("remote");
+    let gate = Arc::new(tokio::sync::Notify::new());
+    env.fake.lock().refresh_gate = Some(Arc::clone(&gate));
+    let source = Arc::new(OAuthSource::new("remote", Arc::clone(&env.store)));
+
+    // A refresh that has reached the authorization server and is held there.
+    let refreshing = tokio::spawn({
+        let source = Arc::clone(&source);
+        let url = env.mcp_url.clone();
+        async move { source.token(&url, false).await }
+    });
+    while !env
+        .as_requests()
+        .iter()
+        .any(|request| request == "token:refresh_token")
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Removing the server queues behind the refresh's lock instead of racing it.
+    let mut removing = tokio::spawn({
+        let source = Arc::clone(&source);
+        async move { source.forget_for_removal().await }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut removing)
+            .await
+            .is_err(),
+        "removal must wait for the refresh in flight"
+    );
+    assert_eq!(
+        env.stored("remote", "refresh").as_deref(),
+        Some("rt-1"),
+        "nothing is removed while the refresh holds the lock"
+    );
+
+    gate.notify_one();
+    assert_eq!(refreshing.await.unwrap().as_deref(), Some("at-2"));
+    let revocation = removing.await.unwrap().unwrap().unwrap();
+    // The refresh finished first, so what removal revokes is the newest refresh token, and
+    // nothing the refresh stored survives.
+    revocation.send().await;
+    assert_eq!(env.fake.lock().revoked, ["rt-2"]);
+    assert!(env.memory.0.lock().unwrap().is_empty());
+    assert_eq!(source.token(&env.mcp_url, false).await, None);
+    assert!(env.memory.0.lock().unwrap().is_empty());
+}
+
+/// A credential store that can be told to refuse writes, as a locked keychain does.
+#[derive(Debug)]
+struct Refusing {
+    inner: Arc<MemoryCredentials>,
+    refuse: std::sync::atomic::AtomicBool,
+}
+
+impl CredentialStore for Refusing {
+    fn load(&self, key: &str) -> Result<Option<String>, String> {
+        self.inner.load(key)
+    }
+
+    fn store(&self, key: &str, value: &str) -> Result<(), String> {
+        if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("the keychain is locked".into());
+        }
+        self.inner.store(key, value)
+    }
+
+    fn delete(&self, key: &str) -> Result<bool, String> {
+        self.inner.delete(key)
+    }
+}
+
+#[tokio::test]
+async fn reset_after_a_new_sign_in_drops_the_in_memory_token_that_would_shadow_it() {
+    let env = setup().await;
+    env.sign_in("remote").await;
+    env.expire("remote");
+    let flaky = Arc::new(Refusing {
+        inner: Arc::clone(&env.memory),
+        refuse: std::sync::atomic::AtomicBool::new(true),
+    });
+    let store: Arc<dyn CredentialStore> = flaky.clone();
+    let source = OAuthSource::new("remote", store);
+
+    // The keychain refuses the refreshed sign-in, so the source keeps it in memory.
+    assert_eq!(
+        source.token(&env.mcp_url, false).await.as_deref(),
+        Some("at-2")
+    );
+    assert_eq!(
+        env.stored("remote", "access").as_deref(),
+        Some("at-1"),
+        "the refreshed token never reached the store"
+    );
+
+    // The user signs in again (the keychain works now); the new sign-in lasts less long than
+    // the token held in memory, which therefore still wins until the source is reset.
+    flaky
+        .refuse
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    env.fake.lock().expires_in = 1800;
+    env.sign_in("remote").await;
+    assert_eq!(env.stored("remote", "access").as_deref(), Some("at-3"));
+    assert_eq!(
+        source.token(&env.mcp_url, false).await.as_deref(),
+        Some("at-2"),
+        "the older in-memory token shadows the new sign-in"
+    );
+
+    source.reset().await;
+    assert_eq!(
+        source.token(&env.mcp_url, false).await.as_deref(),
+        Some("at-3")
+    );
 }
