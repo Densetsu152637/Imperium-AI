@@ -242,6 +242,14 @@ notice; plan mode refuses a writer, and a rule denying `git_commit` keeps its ch
 uncommitted in its worktree. Details, placement and cleanup:
 [worktrees](14-projects-and-automation.md#worktrees).
 
+### Knowledge agents (designed)
+
+A finished subagent the root (or the user) keeps as a **knowledge agent** answers questions from
+the root and other subagents with `ask_agent`, each in an ephemeral, read-only fork of its kept
+conversation, so context one research agent loaded is reused instead of reloaded by every
+implementer. Knowledge agents never ask in turn. Design, safety rules and build order:
+[21](21-knowledge-agents.md) (roadmap item 45).
+
 ### Choosing a model
 
 **Implemented:** the root agent has `list_models`, which lists the models it may delegate to,

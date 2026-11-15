@@ -502,6 +502,18 @@ and `environments.agent_update` (protocol 0.28)
     machine's hardware, download progress and resume on the card itself, checksum verification,
     making the downloaded model the default (or assigning Emperor and Consul to their roles),
     and offering the suggestion again from the Local models panel.
+45. **Knowledge agents** (designed). Subagents ask questions of other subagents: a research
+    subagent that has loaded context (files, specifications, pages) is kept as a knowledge agent
+    with a card (topic, sources, size), and the root and other subagents call `ask_agent`
+    instead of searching and reading the same material themselves. Each question runs in an
+    ephemeral, read-only fork of the knowledge agent's kept conversation (plan mode, no tool that
+    asks, a step cap), queued per knowledge agent with timeouts and cancellation; answers are
+    framed as data; knowledge agents never ask, so no cycle can form. Session-scoped, at most
+    four per session, dormant local slots saved and restored, kept across restarts with agent
+    state. Protocol 0.37 (`ask_agent`, `list_knowledge_agents`, `keep_as_knowledge`,
+    `question_asked`/`question_answered` events, `session.agent_ask`). Three stages: engine and
+    contract; residency and lifetime; clients and prompts
+    ([21](21-knowledge-agents.md), [03](03-agent-engine.md#knowledge-agents-designed)).
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
