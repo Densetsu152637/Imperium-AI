@@ -7,6 +7,7 @@
 //! hashing it, the [`Diff`] between two snapshots, the user's source list ([`Sources`]) and the
 //! on-disk [`PackStore`] of pins and pending updates. Fetching is the caller's job.
 
+use imperium_api::encoding::hex;
 use imperium_api::time::unix_secs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -39,10 +40,6 @@ pub enum UpdateError {
 
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> UpdateError + '_ {
     move |error| UpdateError::Io(path.display().to_string(), error)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Whether `name` may name a source: it becomes a folder name and a pack reference prefix.

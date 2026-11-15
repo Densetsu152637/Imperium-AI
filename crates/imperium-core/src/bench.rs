@@ -225,8 +225,7 @@ fn save(state: &DaemonState, result: &BenchResult) -> std::io::Result<()> {
     }
     let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(&Saved { results }).map_err(std::io::Error::other)?;
-    std::fs::write(&temporary, bytes)?;
-    std::fs::rename(&temporary, &path)
+    imperium_api::fs::replace_file(&path, &temporary, bytes)
 }
 
 /// `models.bench_results`.

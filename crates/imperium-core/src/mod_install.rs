@@ -110,9 +110,8 @@ fn set_approval(state: &DaemonState, id: &str, approval: Option<Approval>) -> Re
     }
     let text = serde_json::to_string_pretty(&store).map_err(|error| error.to_string())?;
     let temp = path.with_extension("json.tmp");
-    std::fs::write(&temp, text)
-        .map_err(|error| format!("could not record the approval: {error}"))?;
-    std::fs::rename(&temp, &path).map_err(|error| format!("could not record the approval: {error}"))
+    imperium_api::fs::replace_file(&path, &temp, text)
+        .map_err(|error| format!("could not record the approval: {error}"))
 }
 
 /// Applies the approvals to what `mods.list` found in the user's folder. A mod with an approval

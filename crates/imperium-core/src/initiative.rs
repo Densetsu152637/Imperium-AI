@@ -301,8 +301,7 @@ impl InitiativeBook {
         };
         let written = text.map_err(std::io::Error::other).and_then(|text| {
             let temporary = path.with_extension("json.tmp");
-            std::fs::write(&temporary, text)?;
-            std::fs::rename(&temporary, path)
+            imperium_api::fs::replace_file(path, &temporary, text)
         });
         if let Err(error) = written {
             tracing::warn!(path = %path.display(), %error, "could not save the initiative file");

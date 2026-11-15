@@ -584,8 +584,7 @@ fn write(path: &Path, text: &str) -> Result<(), SetError> {
         std::fs::create_dir_all(dir).map_err(failed)?;
     }
     let temporary = path.with_extension("toml.tmp");
-    std::fs::write(&temporary, text).map_err(failed)?;
-    std::fs::rename(&temporary, path).map_err(failed)
+    imperium_api::fs::replace_file(path, &temporary, text).map_err(failed)
 }
 
 #[cfg(test)]

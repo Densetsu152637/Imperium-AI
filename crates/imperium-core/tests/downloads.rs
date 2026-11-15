@@ -1,6 +1,7 @@
 //! `models.hf_files` and `models.download` against a fake Hugging Face Hub: the downloaded model
 //! shows up in `models.local`.
 
+use imperium_api::encoding::hex;
 use std::sync::Arc;
 
 use axum::Router;
@@ -27,10 +28,6 @@ fn gguf() -> Vec<u8> {
     bytes.extend(0u64.to_le_bytes());
     bytes.extend(0u64.to_le_bytes());
     bytes
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// A Hub with `acme/tiny-GGUF` (two quantisations) and `acme/gated` (needs a token).

@@ -4,6 +4,8 @@
 
 mod chat;
 mod effort;
+pub mod encoding;
+pub mod fs;
 mod load;
 mod local;
 pub mod markdown;

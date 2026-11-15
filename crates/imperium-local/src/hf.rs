@@ -2,6 +2,7 @@
 //! (a GGUF quantisation for llama.cpp, or a safetensors folder for vLLM), and downloading them
 //! with resume and SHA256 checks into `<dir>/<owner>/<repo>/`, where the scanner finds them.
 
+use imperium_api::encoding::hex;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -548,10 +549,6 @@ fn encode(text: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn file_name(path: &str) -> &str {

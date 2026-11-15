@@ -641,8 +641,7 @@ fn save(path: &Path, list: &[EnvironmentInfo]) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(&serde_json::json!({ "environments": list }))
         .map_err(std::io::Error::other)?;
     let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, text)?;
-    std::fs::rename(&temporary, path)
+    imperium_api::fs::replace_file(path, &temporary, text)
 }
 
 /// A runtime with its fields trimmed and checked: names that are empty, contain spaces, or

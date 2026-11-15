@@ -481,8 +481,7 @@ impl BudgetBook {
             }
         };
         let temporary = path.with_extension("json.tmp");
-        let written =
-            std::fs::write(&temporary, text).and_then(|()| std::fs::rename(&temporary, path));
+        let written = imperium_api::fs::replace_file(path, &temporary, text);
         if let Err(error) = written {
             tracing::warn!(path = %path.display(), %error, "could not save the usage ledger");
         }

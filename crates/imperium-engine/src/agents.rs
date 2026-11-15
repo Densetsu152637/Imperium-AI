@@ -668,8 +668,7 @@ impl AgentStore {
             std::fs::create_dir_all(dir)?;
             let path = dir.join(format!("{id}.json"));
             let temporary = dir.join(format!("{id}.json.tmp"));
-            std::fs::write(&temporary, serde_json::to_vec(record)?)?;
-            std::fs::rename(&temporary, &path)
+            imperium_api::fs::replace_file(&path, &temporary, serde_json::to_vec(record)?)
         })();
         if let Err(error) = result {
             tracing::warn!(dir = %dir.display(), agent = %id, %error, "could not save an agent's state");

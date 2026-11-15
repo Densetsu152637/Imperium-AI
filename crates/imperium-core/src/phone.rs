@@ -7,6 +7,7 @@
 //! bind it to a private overlay address (Tailscale, ZeroTier, WireGuard) to use the phone away
 //! from home, or to a trusted LAN.
 
+use imperium_api::encoding::hex;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -60,10 +61,6 @@ pub struct Devices {
     path: PathBuf,
     devices: Mutex<Vec<Device>>,
     codes: Mutex<Vec<(String, Instant)>>,
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn random_hex(bytes: usize) -> String {

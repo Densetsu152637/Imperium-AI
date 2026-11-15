@@ -474,8 +474,7 @@ impl SessionIndex {
     fn save_state(&self, id: &str, indexed: &Indexed) -> io::Result<()> {
         let path = self.path(id, "state.json");
         let temporary = self.path(id, "state.json.tmp");
-        fs::write(&temporary, serde_json::to_vec(&indexed.state())?)?;
-        fs::rename(&temporary, &path)
+        imperium_api::fs::replace_file(&path, &temporary, serde_json::to_vec(&indexed.state())?)
     }
 
     /// Records the sessions the daemon knows (their titles, environments, and whether they are
