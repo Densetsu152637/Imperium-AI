@@ -102,13 +102,7 @@ pub fn one_line(text: &str, max: usize) -> String {
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
     let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        let mut cut: String = flat.chars().take(max).collect();
-        cut.push('…');
-        cut
-    }
+    imperium_api::truncate_chars(&flat, max)
 }
 
 #[cfg(test)]

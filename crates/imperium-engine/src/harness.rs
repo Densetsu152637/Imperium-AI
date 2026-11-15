@@ -372,12 +372,7 @@ fn user_text(content: &str) -> String {
 /// harness's tags defused.
 fn clip(text: &str, max: usize) -> String {
     let line = defuse(&text.split_whitespace().collect::<Vec<_>>().join(" "));
-    if line.chars().count() <= max {
-        return line;
-    }
-    let mut cut: String = line.chars().take(max).collect();
-    cut.push('…');
-    cut
+    imperium_api::truncate_chars(&line, max)
 }
 
 /// The tail of a conversation as short lines for the de-reference step, newest last, within

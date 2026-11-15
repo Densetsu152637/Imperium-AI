@@ -2385,6 +2385,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "imperium-api",
  "imperium-client",
  "imperium-config",
  "imperium-core",

@@ -322,12 +322,7 @@ pub fn grep_files(
                 };
                 for (index, line) in lines.iter().enumerate().take(to + 1).skip(from) {
                     let separator = if hits.contains(&index) { ':' } else { '-' };
-                    let line = if line.chars().count() > MAX_LINE_CHARS {
-                        let cut: String = line.chars().take(MAX_LINE_CHARS).collect();
-                        format!("{cut}…")
-                    } else {
-                        line.to_string()
-                    };
+                    let line = imperium_api::truncate_chars(line, MAX_LINE_CHARS);
                     out.push_str(&format!(
                         "{shown_path}{separator}{}{separator}{line}\n",
                         index + 1

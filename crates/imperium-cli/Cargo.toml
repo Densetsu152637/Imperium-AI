@@ -15,6 +15,7 @@ path = "src/main.rs"
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6.7", features = ["derive"] }
+imperium-api = { version = "0.1.0", path = "../imperium-api" }
 imperium-client = { version = "0.1.0", path = "../imperium-client" }
 imperium-config = { version = "0.1.0", path = "../imperium-config" }
 imperium-local = { version = "0.1.0", path = "../imperium-local" }
