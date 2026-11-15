@@ -486,4 +486,3 @@ Where the pull request differs from the plan above, or settled something the pla
   window, all 36 Settings sections, Connectors and the model dialog came up as before. It found
   the duplicated "One per line." in the Add Filesystem form (fixed here) and an unclosed CSS rule
   that predates this work (#121), fixed in a separate pull request.
-
