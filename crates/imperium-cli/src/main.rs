@@ -1328,3 +1328,36 @@ fn delete_secret(name: &SecretName) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod help_snapshot {
+    use clap::CommandFactory;
+
+    use super::Cli;
+
+    /// Appends the long help of `command` and, under it, of each of its subcommands.
+    fn collect(command: &clap::Command, out: &mut String) {
+        let name = command.get_bin_name().unwrap_or_else(|| command.get_name());
+        out.push_str(&format!("===== {name} =====\n"));
+        out.push_str(&command.clone().render_long_help().to_string());
+        out.push('\n');
+        for subcommand in command.get_subcommands() {
+            collect(subcommand, out);
+        }
+    }
+
+    /// Writes the long help of every command to `snapshots/help.txt`. `scripts/check-rust.sh`
+    /// fails when it differs from what is checked in, so a change to a flag or a help text
+    /// shows in review. It runs on Linux only, so platform-specific arguments cannot make the
+    /// file differ between machines.
+    #[test]
+    fn exports_the_command_line_help() {
+        let mut root = Cli::command();
+        root.build();
+        let mut text = String::new();
+        collect(&root, &mut text);
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("snapshots");
+        std::fs::create_dir_all(&dir).expect("create snapshots");
+        std::fs::write(dir.join("help.txt"), text).expect("write the help snapshot");
+    }
+}
