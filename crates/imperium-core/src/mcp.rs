@@ -61,9 +61,10 @@ pub fn session_servers(
     (specs, notices)
 }
 
-/// OAuth sign-in state in the secret store (the OS keychain): one set of entries per server,
-/// named `mcp.<server>.oauth.*`. Only the daemon's own code reads them; config never refers to
-/// them, and they are never written to a file.
+/// OAuth sign-in state in the secret store (the OS keychain, or on Linux without one the
+/// encrypted secret file): one set of entries per server, named `mcp.<server>.oauth.*`. Only the
+/// daemon's own code reads them; config never refers to them, and they are never written to a
+/// plain file.
 #[derive(Debug)]
 pub struct KeychainCredentials(pub Arc<dyn SecretStore>);
 

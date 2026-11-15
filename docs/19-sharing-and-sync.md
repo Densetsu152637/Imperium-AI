@@ -18,7 +18,7 @@ Requirements, taken from the vision and the shipped design:
 - **Local first.** The daemon holds all state ([01](01-vision.md), [02](02-architecture.md#process-model),
   D1 and D11 in [13](13-decisions.md)). Nothing leaves the machine unless the user acts, and
   no feature may need a hosted Imperium service to work.
-- **Secrets never travel.** Secrets live in the OS keychain and config files name them only
+- **Secrets never travel.** Secrets live in the OS keychain (or, on Linux with none, an encrypted file) and config files name them only
   ([10](10-configuration.md#secrets), D7). Sharing and sync must not add a path that carries
   one.
 - **The safety floor holds.** Permission prompts for destructive actions and secret handling

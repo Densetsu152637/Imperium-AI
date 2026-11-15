@@ -152,7 +152,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-workflow`   | Workflow packs, context retrieval, load manifests, documentation pointers (implemented) |
 | `imperium-policy`     | Policy pack layering and prompt assembly (planned)                      |
 | `imperium-memory`     | Global memory and environment `Memory.md`: entries, index, search, redaction, migration of older project memory (implemented) |
-| `imperium-config`     | Layered config, schema validation, secret store (keychain, in-memory)  |
+| `imperium-config`     | Layered config, schema validation, secret store (keychain, encrypted file, in-memory)  |
 | `imperium-telemetry`  | Metrics, traces, cost ledger, OpenTelemetry export                     |
 | `imperium-automation` | Schedule triggers (cron, interval, one-shot), missed runs, run history (implemented); project agents (planned) |
 | `imperium-github`     | Failing pull request checks through `gh`, auto-fix worktrees, commit and push (implemented) |
@@ -174,8 +174,10 @@ so `imperium-engine` does not depend on them (it reaches `imperium-mcp` only thr
 old paths.
 
 Secrets go through the `SecretStore` trait in `imperium-config` (`load`, `store`, `delete`):
-`KeychainSecrets` uses the OS keychain and `MemorySecrets` keeps them in memory for tests and
-headless runs. The daemon builds one `Arc<dyn SecretStore>` at start and every key lookup
+`KeychainSecrets` uses the OS keychain, `FileSecrets` keeps them in an encrypted file,
+`AutoSecrets` uses the keychain and falls back to that file where there is none
+([10](10-configuration.md#encrypted-file-fallback-implemented)), and `MemorySecrets` keeps them
+in memory for tests. The daemon builds one `Arc<dyn SecretStore>` at start and every key lookup
 (endpoint and media keys, web search keys, MCP tokens, the Hugging Face token) reads through it;
 environment variables such as `HF_TOKEN` still take precedence where they did before.
 
@@ -186,7 +188,7 @@ one is added without editing its callers:
 
 | Seam | Trait | Built-ins | Chosen by |
 | ---- | ----- | --------- | --------- |
-| Secrets | `SecretStore` (`imperium-config`) | `KeychainSecrets`, `MemorySecrets` | The daemon at start |
+| Secrets | `SecretStore` (`imperium-config`) | `AutoSecrets` (`KeychainSecrets`, `FileSecrets`), `MemorySecrets` | The daemon at start |
 | Local runtimes | `RuntimeBackend` (`imperium-local`) | `LlamaCpp`, `Vllm` | First backend that accepts the model format and is available; `Supervisor::with_backends` sets the list |
 | Web search | `SearchProvider` (`imperium-web`) | `Searxng`, `Brave`, `Tavily`, `Kagi`, `Exa` | `web.search` through `SearchProviders::register` / `build` |
 | Image generation | `ImageGenerator` (`imperium-media`) | `OpenAiImages`, `ComfyUi` | `media.image.backend` through `ImageGenerators::register` / `build` |
