@@ -157,3 +157,61 @@ async fn subscriptions_and_announcements_work_over_the_socket() {
     let value: serde_json::Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
     assert_eq!(value["method"], "model.residency", "{value}");
 }
+
+/// Proves the wiring from the socket to the check: the test process is the daemon here and the
+/// client both, so its trust grant is refused as one from the daemon's own tree, and an
+/// approval it claims is not counted.
+#[tokio::test]
+async fn a_trust_grant_from_the_daemons_own_process_is_refused_over_the_socket() {
+    let daemon = start("secret").await;
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(
+        source.path().join("mod.json"),
+        r#"{"id": "wired", "permissions": ["storage"], "main_context": true}"#,
+    )
+    .unwrap();
+    std::fs::write(source.path().join("index.js"), "export default {};").unwrap();
+    let location = source.path().display().to_string();
+    let mut socket = upgrade(&daemon.address, Some("Bearer secret"))
+        .await
+        .unwrap();
+    reply(
+        &mut socket,
+        json!({"jsonrpc":"2.0","id":1,"method":"system.handshake","params":{
+            "client":{"name":"test","version":"0"},"protocol":PROTOCOL_VERSION}}),
+    )
+    .await;
+    let inspected = reply(
+        &mut socket,
+        json!({"jsonrpc":"2.0","id":2,"method":"mods.inspect","params":{"source": location}}),
+    )
+    .await;
+    let Outcome::Result(preview) = inspected.outcome else {
+        panic!("mods.inspect failed: {inspected:?}");
+    };
+    let install = |id: i64, trusted: bool, interactive: bool| {
+        json!({"jsonrpc":"2.0","id":id,"method":"mods.install","params":{
+            "source": location, "sha256": preview["sha256"], "permissions": ["storage"],
+            "trusted": trusted, "interactive": interactive}})
+    };
+    let refused = reply(&mut socket, install(3, true, false)).await;
+    let Outcome::Error(error) = refused.outcome else {
+        panic!("trust should be refused: {refused:?}");
+    };
+    assert!(
+        error.message.contains("trust was not granted"),
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("your own terminal"),
+        "{}",
+        error.message
+    );
+    let counted = reply(&mut socket, install(4, false, true)).await;
+    let Outcome::Result(done) = counted.outcome else {
+        panic!("the install should go ahead: {counted:?}");
+    };
+    assert_eq!(done["interactive"], false, "{done}");
+    drop(daemon.state);
+}

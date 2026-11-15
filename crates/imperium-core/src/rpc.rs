@@ -175,6 +175,9 @@ pub struct Connection {
     handshake_done: bool,
     /// For a paired phone: the only methods it may call.
     allowed: Option<Vec<&'static str>>,
+    /// The process id of the other end and when (Unix seconds) the connection was accepted, for
+    /// a connection on the local socket.
+    peer: Option<(u32, u64)>,
     /// Set while this connection watches resources (`system.resources_subscribe`).
     resources: Option<crate::resources::Watch>,
     /// The topics chosen with `events.subscribe`; narrows what `receives` lets through.
@@ -192,9 +195,18 @@ impl Connection {
             state,
             handshake_done: false,
             allowed: None,
+            peer: None,
             resources: None,
             events: crate::events::EventFilter::default(),
         }
+    }
+
+    /// This connection, with the process id of its other end and when it was accepted (a
+    /// local-socket connection).
+    #[must_use]
+    pub fn with_peer(mut self, peer: Option<(u32, u64)>) -> Self {
+        self.peer = peer;
+        self
     }
 
     /// A connection limited to `allowed` methods (a paired phone's scopes).
@@ -203,6 +215,7 @@ impl Connection {
             state,
             handshake_done: false,
             allowed: Some(allowed),
+            peer: None,
             resources: None,
             events: crate::events::EventFilter::default(),
         }
@@ -646,12 +659,42 @@ impl Connection {
             ModInstall::NAME => call_later::<ModInstall, _>(
                 request.params,
                 &mut later,
-                |params: ModInstallParams| {
+                |mut params: ModInstallParams| {
                     let state = Arc::clone(&self.state);
+                    let peer = self.peer;
                     async move {
-                        crate::mod_install::install(&state, params)
+                        // Only a person's own process makes a grant (see `crate::peer`).
+                        let mut notes = Vec::new();
+                        if params.trusted || params.interactive {
+                            let may = match peer {
+                                Some((pid, accepted_at)) => {
+                                    tokio::task::spawn_blocking(move || {
+                                        crate::peer::may_grant(pid, accepted_at)
+                                    })
+                                    .await
+                                    .unwrap_or(false)
+                                }
+                                None => false,
+                            };
+                            if !may {
+                                let why = "a grant needs a process of your own on the local socket (not one an agent ran, not over TCP or SSH): run `imperium mods install` or `update` from your own terminal";
+                                if params.trusted {
+                                    return Err(ErrorObject::new(
+                                        codes::INVALID_PARAMS,
+                                        format!("trust was not granted: {why}"),
+                                    ));
+                                }
+                                params.interactive = false;
+                                notes.push(format!(
+                                    "the approval was not counted as given at a terminal: {why}"
+                                ));
+                            }
+                        }
+                        let mut done = crate::mod_install::install(&state, params)
                             .await
-                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+                        done.notes.extend(notes);
+                        Ok(done)
                     }
                 },
             ),
@@ -2571,5 +2614,55 @@ mod tests {
         assert_eq!(listed["environments"].as_array().unwrap().len(), 2);
         let bogus = connection.handle_text(&request(12, "environments.nothing", json!({})));
         assert_eq!(error_code(&bogus), Some(codes::METHOD_NOT_FOUND));
+    }
+
+    #[tokio::test]
+    async fn a_grant_needs_a_process_of_the_users_on_the_local_socket() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(
+            source.path().join("mod.json"),
+            r#"{"id": "grant-demo", "permissions": ["storage"], "main_context": true}"#,
+        )
+        .unwrap();
+        std::fs::write(source.path().join("index.js"), "export default {};").unwrap();
+        let location = source.path().display().to_string();
+        // A connection with no peer process to vouch for: loopback TCP, or none known.
+        let mut connection = handshaken();
+        let handled =
+            connection.handle_text(&request(2, ModInspect::NAME, json!({"source": location})));
+        let response = handled.deferred.expect("a deferred reply").await;
+        let Outcome::Result(preview) = response.outcome else {
+            panic!("mods.inspect failed: {response:?}");
+        };
+        let params = |trusted: bool, interactive: bool| {
+            json!({
+                "source": location,
+                "sha256": preview["sha256"],
+                "permissions": ["storage"],
+                "trusted": trusted,
+                "interactive": interactive,
+            })
+        };
+        // Trust is refused, and nothing is installed.
+        let handled = connection.handle_text(&request(3, ModInstall::NAME, params(true, false)));
+        let response = handled.deferred.expect("a deferred reply").await;
+        let Outcome::Error(error) = response.outcome else {
+            panic!("trust should be refused: {response:?}");
+        };
+        assert!(
+            error.message.contains("trust was not granted"),
+            "{}",
+            error.message
+        );
+        // An approval is taken as given without a prompt: installed, but off.
+        let handled = connection.handle_text(&request(4, ModInstall::NAME, params(false, true)));
+        let response = handled.deferred.expect("a deferred reply").await;
+        let Outcome::Result(done) = response.outcome else {
+            panic!("the install should go ahead: {response:?}");
+        };
+        assert_eq!(done["interactive"], false);
+        assert_eq!(done["trusted"], false);
+        let note = done["notes"][0].as_str().unwrap_or_default();
+        assert!(note.contains("not counted"), "{done}");
     }
 }

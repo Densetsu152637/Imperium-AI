@@ -83,6 +83,21 @@ pub fn list(user_dir: &Path, bundled: &[PathBuf]) -> ModListResult {
         dirs.sort();
         for dir in dirs {
             match load(&dir, is_bundled) {
+                // An installed mod lives in the folder named for its id, the one an approval
+                // is keyed to and `imperium mods install` writes: a mod in another folder could
+                // otherwise ride on what another folder's id earned.
+                Ok(info)
+                    if !is_bundled
+                        && dir.file_name().and_then(|name| name.to_str())
+                            != Some(info.id.as_str()) =>
+                {
+                    problems.push(format!(
+                        "{}: the folder must be named for the mod's id; rename it to {} (a mod \
+                         installed by `imperium mods install` already is)",
+                        dir.display(),
+                        info.id
+                    ));
+                }
                 Ok(info) if taken.contains(&info.id) => {}
                 Ok(info) if mods.iter().any(|m: &ModInfo| m.id == info.id) => {
                     problems.push(format!(
@@ -160,7 +175,7 @@ mod tests {
     #[test]
     fn mods_load_with_their_panels_and_bad_ones_are_reported() {
         let dir = tempfile::tempdir().unwrap();
-        let good = dir.path().join("tokens");
+        let good = dir.path().join("tokens-per-dollar");
         std::fs::create_dir_all(&good).unwrap();
         std::fs::write(
             good.join("mod.json"),
@@ -196,6 +211,27 @@ mod tests {
         assert!(list(&dir.path().join("missing"), &[]).mods.is_empty());
     }
 
+    #[test]
+    fn an_installed_mod_must_sit_in_the_folder_named_for_its_id() {
+        let config = tempfile::tempdir().unwrap();
+        write_mod(config.path(), "demo", "demo", "right");
+        write_mod(config.path(), "other-name", "also-demo", "wrong folder");
+        let listing = list(config.path(), &[]);
+        let ids: Vec<_> = listing.mods.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["demo"]);
+        assert_eq!(listing.problems.len(), 1, "{:?}", listing.problems);
+        assert!(
+            listing.problems[0].contains("rename it to also-demo"),
+            "{:?}",
+            listing.problems
+        );
+        // Bundled mods are not held to it.
+        let shipped = tempfile::tempdir().unwrap();
+        write_mod(shipped.path(), "any-folder", "any-id", "bundled");
+        let listing = list(config.path(), &[shipped.path().to_path_buf()]);
+        assert!(listing.mods.iter().any(|m| m.id == "any-id" && m.bundled));
+    }
+
     fn write_mod(root: &Path, folder: &str, id: &str, source: &str) {
         let dir = root.join(folder);
         std::fs::create_dir_all(&dir).unwrap();
@@ -212,7 +248,7 @@ mod tests {
         let config = tempfile::tempdir().unwrap();
         let shipped = tempfile::tempdir().unwrap();
         let beside = tempfile::tempdir().unwrap();
-        write_mod(config.path(), "mine", "nursery", "installed");
+        write_mod(config.path(), "nursery", "nursery", "installed");
         write_mod(shipped.path(), "nursery", "nursery", "bundled");
         write_mod(shipped.path(), "extra", "extra", "bundled extra");
         write_mod(beside.path(), "extra", "extra", "same id, other root");

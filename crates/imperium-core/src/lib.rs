@@ -29,6 +29,7 @@ mod model_config;
 mod mods;
 mod onboarding;
 mod openai;
+mod peer;
 mod permissions;
 mod pets;
 mod phone;

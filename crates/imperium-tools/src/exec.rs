@@ -10,19 +10,25 @@ use crate::{ToolError, Workspace};
 const MAX_STREAM_CHARS: usize = 30_000;
 pub(crate) const DEFAULT_TIMEOUT_S: u64 = 120;
 
+/// Set (to `1`) in the environment of every shell the daemon starts for a tool call or a hook,
+/// and inherited by what that shell starts. The daemon reads it from a connecting process to
+/// tell a command an agent ran from a person's own terminal (`imperium-core`'s peer check); it is
+/// a mark, not a secret.
+pub const SPAWNED_MARK: &str = "IMPERIUM_SPAWNED_BY_DAEMON";
+
 /// A command line run through the platform shell: `sh -c`, or `cmd /C` on Windows, where the
 /// line is passed verbatim because cmd does not understand the quoting other programs expect.
 pub fn shell(command: &str) -> Command {
     #[cfg(windows)]
     {
         let mut process = Command::new("cmd");
-        process.arg("/C").raw_arg(command);
+        process.arg("/C").raw_arg(command).env(SPAWNED_MARK, "1");
         process
     }
     #[cfg(not(windows))]
     {
         let mut process = Command::new("sh");
-        process.arg("-c").arg(command);
+        process.arg("-c").arg(command).env(SPAWNED_MARK, "1");
         process
     }
 }

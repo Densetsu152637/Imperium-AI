@@ -76,32 +76,40 @@ pub fn install(
         // gives it.
         let trusted =
             preview.main_context && answer == Answer::Prompted && confirm_trust(&preview)?;
-        let done = client
-            .call::<ModInstall>(ModInstallParams {
-                source,
-                revision,
-                path,
-                sha256: preview.sha256.clone(),
-                permissions: preview.permissions.clone(),
-                replace: false,
-                interactive: answer == Answer::Prompted,
-                trusted,
-            })
-            .await?;
-        if preview.main_context && !trusted {
+        let request = |trusted: bool| ModInstallParams {
+            source: source.clone(),
+            revision: revision.clone(),
+            path: path.clone(),
+            sha256: preview.sha256.clone(),
+            permissions: preview.permissions.clone(),
+            replace: false,
+            interactive: answer == Answer::Prompted,
+            trusted,
+        };
+        let done = match client.call::<ModInstall>(request(trusted)).await {
+            // The daemon decides who may grant trust; when it does not count this process, the
+            // mod still installs, in its sandbox.
+            Err(error) if trusted && error.to_string().contains("trust was not granted") => {
+                println!("Note: {error}\nInstalling it in the sandbox instead.");
+                client.call::<ModInstall>(request(false)).await?
+            }
+            other => other?,
+        };
+        // What the daemon counted, which is what holds, not what was asked.
+        for note in &done.notes {
+            println!("Note: {note}");
+        }
+        if preview.main_context && !done.trusted {
             println!("It asked to run in the app's own window; it runs in the sandbox instead.");
         }
+        let standing = if done.interactive {
+            "Its panels show in the desktop app."
+        } else {
+            "It was not counted as approved at a terminal prompt, so it stays off until you turn it on in the desktop app (Settings → Mods)."
+        };
         println!(
-            "Installed {} {} into {}.{}",
-            done.id,
-            done.version,
-            done.path,
-            if answer == Answer::Prompted {
-                " Its panels show in the desktop app."
-            } else {
-                " It was not approved at a terminal prompt, so it stays off until you turn it on \
-                 in the desktop app (Settings → Mods)."
-            }
+            "Installed {} {} into {}. {standing}",
+            done.id, done.version, done.path
         );
         Ok(())
     })
@@ -169,18 +177,28 @@ pub fn update(id: String, sha256: Option<String>, yes: bool) -> anyhow::Result<(
         if was_trusted && !trusted {
             println!("The updated mod runs in the sandbox, not in the app's own window.");
         }
-        let done = client
-            .call::<ModInstall>(ModInstallParams {
-                source: from.location.clone(),
-                revision: from.requested.clone(),
-                path: from.subdir.clone(),
-                sha256: preview.sha256.clone(),
-                permissions: preview.permissions.clone(),
-                replace: true,
-                interactive,
-                trusted,
-            })
-            .await?;
+        let request = |trusted: bool| ModInstallParams {
+            source: from.location.clone(),
+            revision: from.requested.clone(),
+            path: from.subdir.clone(),
+            sha256: preview.sha256.clone(),
+            permissions: preview.permissions.clone(),
+            replace: true,
+            interactive,
+            trusted,
+        };
+        let done = match client.call::<ModInstall>(request(trusted)).await {
+            // When the daemon does not count this process, the update still goes ahead, in the
+            // sandbox.
+            Err(error) if trusted && error.to_string().contains("trust was not granted") => {
+                println!("Note: {error}\nUpdating it in the sandbox instead.");
+                client.call::<ModInstall>(request(false)).await?
+            }
+            other => other?,
+        };
+        for note in &done.notes {
+            println!("Note: {note}");
+        }
         println!(
             "Updated {} to {}{}. The previous folder was kept in the daemon's config-trash.",
             done.id,

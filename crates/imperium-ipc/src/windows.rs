@@ -26,7 +26,7 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
-use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+use windows_sys::Win32::System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 /// How many times a client retries a pipe whose instances are all busy.
@@ -193,6 +193,20 @@ pub async fn connect(address: &str, expected_pid: Option<u32>) -> io::Result<Str
             Err(error) => return Err(error),
         }
     }
+}
+
+/// The process id of the client of an accepted connection, as the operating system reports it
+/// (`GetNamedPipeClientProcessId`); `None` for the client's own end or when it cannot say.
+pub fn peer_pid(stream: &Stream) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+    let Stream::Server(pipe) = stream else {
+        return None;
+    };
+    let mut client = 0u32;
+    // SAFETY: the handle belongs to the live server end in `pipe`; `client` is a valid
+    // out-pointer.
+    let found = unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle() as HANDLE, &mut client) };
+    (found != 0 && client != 0).then_some(client)
 }
 
 /// Refuses a pipe whose server is not process `expected`.

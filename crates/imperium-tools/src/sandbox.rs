@@ -16,7 +16,7 @@ use tokio::process::Command;
 use crate::GrantedPath;
 
 use crate::ToolError;
-use crate::exec::shell;
+use crate::exec::{SPAWNED_MARK, shell};
 
 /// Where commands run.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -104,7 +104,10 @@ impl Sandbox {
                 } else {
                     Vec::new()
                 };
-                os_command(root, &writable, &protected, command, *network)
+                os_command(root, &writable, &protected, command, *network).map(|mut process| {
+                    process.env(SPAWNED_MARK, "1");
+                    process
+                })
             }
             Sandbox::Container {
                 runtime,
@@ -117,7 +120,7 @@ impl Sandbox {
                     // After `run --rm -i`.
                     args.splice(3..3, ["--name".to_string(), name.to_string()]);
                 }
-                process.args(args);
+                process.args(args).env(SPAWNED_MARK, "1");
                 Ok(process)
             }
         }

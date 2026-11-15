@@ -50,7 +50,17 @@ pub async fn serve_ipc(
     daemon: Arc<DaemonState>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    serve_on(IpcListener(listener), token, daemon, shutdown).await
+    let state = Arc::new(ServerState { token, daemon });
+    let app = Router::new()
+        .route("/rpc", get(upgrade_local))
+        .with_state(state);
+    // Each connection carries the process id the operating system gives for its other end.
+    axum::serve(
+        IpcListener(listener),
+        app.into_make_service_with_connect_info::<PeerPid>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
 }
 
 async fn serve_on<L>(
@@ -70,17 +80,37 @@ where
         .await
 }
 
+/// The process on the other end of a local-socket connection, when the operating system says,
+/// and when (Unix seconds) the connection was accepted, so a reused id can be told from it.
+#[derive(Debug, Clone, Copy)]
+struct PeerPid(Option<(u32, u64)>);
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, IpcListener>>
+    for PeerPid
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, IpcListener>) -> Self {
+        *stream.remote_addr()
+    }
+}
+
 /// Lets axum accept connections from the local socket.
 struct IpcListener(imperium_ipc::Listener);
 
 impl axum::serve::Listener for IpcListener {
     type Io = imperium_ipc::Stream;
-    type Addr = ();
+    type Addr = PeerPid;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
             match self.0.accept().await {
-                Ok(stream) => return (stream, ()),
+                Ok(stream) => {
+                    let accepted_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |elapsed| elapsed.as_secs());
+                    let peer =
+                        PeerPid(imperium_ipc::peer_pid(&stream).map(|pid| (pid, accepted_at)));
+                    return (stream, peer);
+                }
                 Err(error) => {
                     // A client that vanished mid-accept is routine; anything else may repeat,
                     // so pause rather than spin.
@@ -92,14 +122,34 @@ impl axum::serve::Listener for IpcListener {
     }
 
     fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        Ok(())
+        Ok(PeerPid(None))
     }
 }
 
+/// The upgrade on loopback TCP: no peer process to ask about.
 async fn upgrade(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
+) -> HttpResponse {
+    authorise(state, headers, ws, None)
+}
+
+/// The upgrade on the local socket, with the calling process's id.
+async fn upgrade_local(
+    State(state): State<Arc<ServerState>>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<PeerPid>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> HttpResponse {
+    authorise(state, headers, ws, peer.0)
+}
+
+fn authorise(
+    state: Arc<ServerState>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+    peer: Option<(u32, u64)>,
 ) -> HttpResponse {
     let by_header = headers
         .get(header::AUTHORIZATION)
@@ -120,7 +170,11 @@ async fn upgrade(
     let daemon = Arc::clone(&state.daemon);
     ws.protocols([SUBPROTOCOL]).on_upgrade(move |socket| {
         let announcements = daemon.announcements();
-        run_connection(socket, Connection::new(daemon), announcements)
+        run_connection(
+            socket,
+            Connection::new(daemon).with_peer(peer),
+            announcements,
+        )
     })
 }
 
