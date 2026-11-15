@@ -480,14 +480,16 @@ asking**, using what the operating system says about the caller.
 - **When the check fails:** `trusted` is an error (`trust was not granted`, nothing installed);
   `interactive` is dropped, the mod installs off, and the result's `notes` say so. The result
   carries `interactive` and `trusted` as counted, and the CLI reports those, not what it sent.
-- **What it is not.** Only an agent's shell running the CLI does not give a grant; an agent
-  that detaches a process and clears its environment can. This is not a boundary against one
-  that is trying to evade it: it talks to the daemon some other way, acts through the user's
-  desktop session, or reaches the socket by SSH. A connection by SSH is refused when the CLI runs
-  in an SSH session (`sshd` is among its ancestors, which also covers `ssh localhost`), and
-  from a socket SSH forwards to the daemon (the peer is then `sshd` itself); a grant needs
-  the machine's own terminal. The check does not depend on the agent being unable to read the
-  token. Isolated tool tiers, the safety floor and the per-agent permission profiles remain the
+- **What it is not.** An agent's shell running the CLI does not give a grant; an agent that
+  detaches a process and clears its environment can. This is not a boundary against one that
+  is trying to evade it: it talks to the daemon some other way, or acts through the user's
+  desktop session. SSH is refused when the CLI runs in an SSH session (`sshd` is among its
+  ancestors, which covers a plain `ssh localhost <command>`) and from a socket SSH forwards to
+  the daemon (the peer is then `sshd` itself); a grant needs the machine's own terminal. That
+  check is easy to sidestep: `ssh localhost tmux new -d ...` (or `mosh`, or anything that
+  leaves a process that no longer descends from `sshd`) starts a process with no `sshd`
+  ancestor, and it is caught only if its environment still carries the mark. The check does not
+  depend on the agent being unable to read the token. Isolated tool tiers, the safety floor and the per-agent permission profiles remain the
   controls for the rest.
 - **Required before the main-window loader ships.** The loader must not be built on this check
   alone. It needs a stronger one first: either confinement the daemon can verify, such as a
@@ -495,9 +497,14 @@ asking**, using what the operating system says about the caller.
   Linux, `PR_SET_CHILD_SUBREAPER` so detached descendants stay in the tree, or a confirmation
   that does not pass through the daemon's protocol at all: a **native, non-webview OS dialog
   shown by the desktop app**. The native dialog answers the objection to a daemon-owned prompt
-  above, that anything holding the token could answer over the same protocol: nothing but
-  the person at the screen can click a window of the desktop app's own process, and the app can
-  show the content hash it is confirming.
+  above, that anything holding the token could answer over the same protocol: it is a window of
+  the desktop app's own process, so answering it takes input into that window, not a call to the
+  daemon, and the app can show the content hash it is confirming. It is much harder to answer
+  than a protocol prompt, not impossible: same-user input automation (`SendInput`, UI
+  Automation, `xdotool`) can click a dialog on the user's desktop, unless the dialog runs on a
+  secure desktop (Windows' UAC-style desktop, which other processes cannot reach) or checks that
+  the input is real (for example, that it is not injected). The loader's precondition is one of
+  those, not the dialog alone.
 
 Contribution points: new panels, modules placeable inside any panel
 ([layout](07-desktop-ui.md#modules-inside-panels)), extensions to any panel's slots, panel wrappers and
