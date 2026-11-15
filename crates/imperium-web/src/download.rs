@@ -552,6 +552,8 @@ impl Web {
                 (Some(before), Ok(now)) => *before == now,
                 _ => false,
             };
+            // The guard must not remove it either: that is decided here.
+            guard.paths.clear();
             return Err(if ours {
                 let _ = tokio::fs::remove_file(&path).await;
                 error
