@@ -305,12 +305,38 @@ and rotated only there (Settings → API, `imperium api token`) and is never wri
 file, the data folder, or the logs.
 
 Secret names are 1–64 characters of lowercase letters, digits, `.`, `_`, and `-`, starting
-with a letter or digit. Today `imperium secret set <name>` (value from standard input, or a
-prompt without echo) and `imperium secret delete <name>` write the keychain directly; the
+with a letter or digit. `imperium secret set <name>` (value from standard input, or a
+prompt without echo) and `imperium secret delete <name>` write the secret store directly (keychain, or the encrypted file below); the
 `secret.*` protocol methods arrive with the desktop settings UI.
 
-Headless Linux without a Secret Service will fall back to an encrypted file unlocked by a
-passphrase (not yet implemented; today such systems report a keychain error). Secrets are never written to logs, transcripts, telemetry, or exported sessions,
+### Encrypted file fallback (implemented)
+
+Where there is no OS keychain (headless Linux without a Secret Service, or a locked or
+unreachable one), the daemon and `imperium secret` keep secrets in `secrets.enc` in the data
+folder instead. The whole file is one XChaCha20-Poly1305 message with a fresh random nonce per
+write, so neither values nor names are readable and the header (format version, key derivation)
+is authenticated; writes take a lock, reread, and replace the file atomically, with mode `0600`
+on Unix. The key comes from one of two places:
+
+- **A key file** (the default): `secrets.key`, 32 random bytes made with mode `0600` on first
+  use. It needs no prompt, so an unattended daemon can start, and the file is refused when other
+  users can read it. It protects the secrets file when only that file leaks (a backup, a synced
+  folder); anyone who can read both files as you can decrypt everything. It is never recreated
+  next to existing secrets, since a new key could not open them.
+- **A passphrase**: set `IMPERIUM_SECRETS_PASSPHRASE` in the environment of the daemon and the
+  CLI. The key is derived with Argon2id (64 MiB, 3 passes; the file records its own cost and
+  salt). Without the passphrase nothing can be decrypted. A file made one way is not opened
+  the other way, and the error says which is needed.
+
+This is **weaker than a keychain**: a keychain also stops other programs running as you, and
+this file does not. The daemon logs a warning at start and `imperium secret set` prints one
+whenever the fallback is in use. When a keychain later becomes available, each secret moves into
+it when first read and the rest move at the next daemon start; the file is deleted once empty
+(the key file is left, and may be deleted by hand). Passphrase changes, rekeying, and Windows
+or macOS fallbacks are not built; a Windows or macOS machine with a working keychain never uses
+the file.
+
+Secrets are never written to logs, transcripts, telemetry, or exported sessions,
 and the protocol exposes `secret.set` / `secret.delete` but no read.
 
 ## Example

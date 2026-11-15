@@ -28,7 +28,7 @@ use std::time::Instant;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use imperium_cli::client::{Client, read_endpoint};
-use imperium_config::{Paths, SecretName};
+use imperium_config::{Paths, SecretName, SecretStore};
 use imperium_protocol::methods::{
     ModelDownloadParams, Peer, Ping, PingParams, Shutdown, ShutdownParams,
 };
@@ -96,7 +96,7 @@ enum Command {
         #[command(subcommand)]
         command: ModsCommand,
     },
-    /// Manage secrets in the OS keychain.
+    /// Manage secrets in the OS keychain (an encrypted file where there is none).
     Secret {
         #[command(subcommand)]
         command: SecretCommand,
@@ -1049,6 +1049,17 @@ fn explain(key: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn open_secrets() -> anyhow::Result<imperium_config::AutoSecrets> {
+    Ok(imperium_config::AutoSecrets::open(&Paths::from_env()?))
+}
+
+/// Says so when secrets went to the encrypted file because the OS has no keychain.
+fn warn_if_weaker(secrets: &imperium_config::AutoSecrets) {
+    if secrets.backend() == imperium_config::SecretBackend::EncryptedFile {
+        eprintln!("warning: {}", secrets.fallback_warning());
+    }
+}
+
 fn set_secret(name: &SecretName) -> anyhow::Result<()> {
     let value = if std::io::stdin().is_terminal() {
         rpassword::prompt_password(format!("Value for {name}: "))
@@ -1060,13 +1071,15 @@ fn set_secret(name: &SecretName) -> anyhow::Result<()> {
             .context("could not read the value from standard input")?;
         value.trim_end_matches(['\r', '\n']).to_string()
     };
-    imperium_config::store_secret(name, &value)?;
+    let secrets = open_secrets()?;
+    secrets.store(name, &value)?;
     println!("stored {name}");
+    warn_if_weaker(&secrets);
     Ok(())
 }
 
 fn delete_secret(name: &SecretName) -> anyhow::Result<()> {
-    if imperium_config::delete_secret(name)? {
+    if open_secrets()?.delete(name)? {
         println!("deleted {name}");
     } else {
         println!("{name} was not stored");

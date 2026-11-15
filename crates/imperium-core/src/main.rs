@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use imperium_config::{KeychainSecrets, Paths, SecretStore};
+use imperium_config::{AutoSecrets, Paths, SecretBackend, SecretStore};
 use imperium_core::{AccessToken, DaemonState, EndpointFile};
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
@@ -79,7 +79,21 @@ async fn run() -> anyhow::Result<()> {
 
     let (stop, _) = watch::channel(false);
     let local = imperium_core::LocalRuntime::start(&paths, &settings);
-    let secrets: Arc<dyn SecretStore> = Arc::new(KeychainSecrets);
+    let auto_secrets = AutoSecrets::open(&paths);
+    match auto_secrets.backend() {
+        SecretBackend::Keychain => match auto_secrets.migrate() {
+            Ok(report) if report.moved > 0 => tracing::info!(
+                moved = report.moved,
+                "moved secrets from the encrypted file into the OS keychain"
+            ),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "could not move the encrypted secret file into the keychain")
+            }
+        },
+        SecretBackend::EncryptedFile => tracing::warn!("{}", auto_secrets.fallback_warning()),
+    }
+    let secrets: Arc<dyn SecretStore> = Arc::new(auto_secrets);
     let daemon = DaemonState::with_secrets(paths.clone(), settings, local, secrets);
     daemon.remember_config(&config);
     daemon.start_pets();

@@ -20,6 +20,7 @@ mod paths;
 mod permissions;
 mod registry;
 mod secrets;
+mod secrets_file;
 mod settings;
 
 pub use budgets::{
@@ -49,6 +50,9 @@ pub use registry::{
 pub use secrets::{
     KeychainSecrets, MemorySecrets, SecretError, SecretName, SecretStore, delete_secret,
     load_secret, store_secret,
+};
+pub use secrets_file::{
+    AutoSecrets, FileSecrets, KeySource, MigrationReport, PASSPHRASE_ENV, SecretBackend,
 };
 pub use settings::{
     ActionSettings, AgentSettings, ApiSettings, AttachmentSettings, AutofixSettings, Capability,
