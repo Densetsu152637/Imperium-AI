@@ -6,7 +6,7 @@ use crate::{ToolError, Workspace, remote_files};
 /// notes count; a longer line is cut where this ends).
 const MAX_READ_CHARS: usize = 100_000;
 
-pub async fn read_file(
+pub(crate) async fn read_file(
     workspace: &Workspace,
     path: &str,
     offset: Option<usize>,
@@ -119,7 +119,7 @@ fn readable_text(bytes: Vec<u8>, shown: &str) -> Result<(String, Option<&'static
     })
 }
 
-pub async fn write_file(
+pub(crate) async fn write_file(
     workspace: &Workspace,
     path: &str,
     content: &str,
@@ -144,7 +144,7 @@ pub async fn write_file(
     ))
 }
 
-pub async fn edit_file(
+pub(crate) async fn edit_file(
     workspace: &Workspace,
     path: &str,
     old: &str,
@@ -181,7 +181,7 @@ fn replace_once(text: &str, old: &str, new: &str, path: &str) -> Result<String, 
     }
 }
 
-pub async fn list_dir(workspace: &Workspace, path: &str) -> Result<String, ToolError> {
+pub(crate) async fn list_dir(workspace: &Workspace, path: &str) -> Result<String, ToolError> {
     if workspace.runtime().is_some() {
         return remote_files::list(workspace, path).await;
     }

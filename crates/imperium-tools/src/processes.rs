@@ -17,11 +17,11 @@ use tokio::sync::{oneshot, watch};
 use crate::{Sandbox, ToolError, Workspace};
 
 /// Background commands one session may run at once.
-pub const MAX_RUNNING: usize = 8;
+pub(crate) const MAX_RUNNING: usize = 8;
 /// Processes kept in the table, finished ones included; the oldest finished go first.
 const MAX_KEPT: usize = 32;
 /// Output kept per process, in bytes; older output is dropped.
-pub const MAX_BUFFER: usize = 1024 * 1024;
+pub(crate) const MAX_BUFFER: usize = 1024 * 1024;
 /// Most output returned by one `command_output` call, in bytes.
 const MAX_READ: usize = 30_000;
 /// How long `command_stop` waits for the process to end.

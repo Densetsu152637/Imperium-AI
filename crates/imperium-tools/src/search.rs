@@ -214,7 +214,7 @@ fn page_note(shown: usize, total: usize, offset: usize, more: bool, noun: &str) 
 }
 
 /// Files whose names match `pattern` under the scope's folder.
-pub fn glob_files(
+pub(crate) fn glob_files(
     workspace: &Workspace,
     pattern: &str,
     scope: &Scope,
@@ -255,7 +255,7 @@ pub struct GrepQuery {
 
 /// Lines matching a regular expression in the files under the scope's folder, as
 /// `path:line:text`, with `path-line-text` context lines and `--` between separate groups.
-pub fn grep_files(
+pub(crate) fn grep_files(
     workspace: &Workspace,
     query: &GrepQuery,
     scope: &Scope,

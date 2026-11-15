@@ -38,7 +38,7 @@ pub fn shell(command: &str) -> Command {
 ///
 /// On timeout the shell is killed; processes it started may keep running until they exit
 /// (in the container tier the container is removed with them).
-pub async fn run_command(
+pub(crate) async fn run_command(
     workspace: &Workspace,
     command: &str,
     timeout: Duration,
