@@ -965,7 +965,7 @@ function CatalogInput({ id, field, value, onChange }: { id: string; field: Catal
         shown again.
       </>
     ) : field.kind === "path_list" ? (
-      field.description || "One per line."
+      `${field.description ? `${field.description} ` : ""}One per line.`
     ) : (
       field.description
     );
