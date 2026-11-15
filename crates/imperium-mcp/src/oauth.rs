@@ -226,6 +226,19 @@ fn host_ip(url: &Url) -> Option<IpAddr> {
     url.host_str()?.trim_matches(['[', ']']).parse().ok()
 }
 
+/// Loopback, private, link-local, unspecified, broadcast, `0.0.0.0/8` and shared (CGNAT,
+/// `100.64.0.0/10`) IPv4 addresses.
+fn local_v4(ip: std::net::Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || octets[0] == 0
+        || (octets[0] == 100 && octets[1] & 0xc0 == 0x40)
+}
+
 fn is_loopback(url: &Url) -> bool {
     url.host_str() == Some("localhost") || host_ip(url).is_some_and(|ip| ip.is_loopback())
 }
@@ -236,16 +249,12 @@ fn is_local(url: &Url) -> bool {
         return true;
     }
     match host_ip(url) {
-        Some(IpAddr::V4(ip)) => {
-            ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_broadcast()
-        }
+        Some(IpAddr::V4(ip)) => local_v4(ip),
         Some(IpAddr::V6(ip)) => {
             let first = ip.segments()[0];
-            ip.is_loopback()
+            // An IPv4 address written as IPv6 (`::ffff:7f00:1`) is judged as the IPv4 address.
+            ip.to_ipv4_mapped().is_some_and(local_v4)
+                || ip.is_loopback()
                 || ip.is_unspecified()
                 || first & 0xfe00 == 0xfc00
                 || first & 0xffc0 == 0xfe80
@@ -1293,6 +1302,21 @@ impl OAuthSource {
         }
     }
 
+    /// Forgets the in-memory sign-in after a new sign-in was stored, so nothing older shadows it.
+    pub async fn reset(&self) {
+        let _turn = self.refreshing.lock().await;
+        *self.fallback() = None;
+    }
+
+    /// For a server being removed: waits for a refresh in progress (so it cannot store tokens
+    /// afterwards), then forgets everything stored, the registration too, and returns what is
+    /// needed to revoke the token.
+    pub async fn forget_for_removal(&self) -> Result<Option<Revocation>, OAuthError> {
+        let _turn = self.refreshing.lock().await;
+        *self.fallback() = None;
+        forget_for_removal(self.store.as_ref(), &self.server)
+    }
+
     /// Signs out: waits for a refresh in progress, revokes the token where the authorization
     /// server offers revocation (best effort), and forgets everything stored (keeping the client
     /// registration for the next sign-in). Returns whether a sign-in existed.
@@ -1428,6 +1452,10 @@ mod tests {
             "https://[::1]/x",
             "https://[fe80::1]/x",
             "https://[fd00::1]/x",
+            "https://[::ffff:7f00:1]/x",
+            "https://[::ffff:10.0.0.1]/x",
+            "https://0.1.2.3/x",
+            "https://100.64.0.1/x",
         ] {
             assert!(secure_url(local, "u", true).is_err(), "{local}");
             assert!(secure_url(local, "u", false).is_ok(), "{local}");

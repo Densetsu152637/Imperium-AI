@@ -516,7 +516,9 @@ is not signed in to: a sign-in is started by name from the user's config.
 approves the sign-in in their browser at that address. A malicious MCP server could name a
 legitimate authorization server that ignores the `resource` indicator (RFC 8707); the token it
 issued would then not be limited to that server, though Imperium still sends it only to the URL
-it signed in for. Sign in only to servers you trust. In the desktop app a server row shows *Waiting for sign-in*, *Needs
+it signed in for. Sign in only to servers you trust.
+
+In the desktop app a server row shows *Waiting for sign-in*, *Needs
 sign-in* or *Signed in*, with *Sign in*, *Cancel sign-in* and *Sign out* actions; a sign-in
 that is under way keeps its address on screen so it can be opened again or copied. From the
 command line, `imperium mcp login <server>` prints the address and waits for the result;

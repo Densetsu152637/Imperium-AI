@@ -526,18 +526,27 @@ pub fn remove(
     };
     // A removed server's sign-in goes with it: its tokens are not kept for a server that is gone.
     state.connector_status().cancel_sign_in(&params.name);
+    let source = state
+        .connector_status()
+        .oauth_source(&params.name, state.secrets());
     state.connector_status().drop_source(&params.name);
     state.connector_status().forget_signed_in(&params.name);
-    let store = crate::mcp::KeychainCredentials(Arc::clone(state.secrets()));
-    match imperium_mcp::oauth::forget_for_removal(&store, &params.name) {
-        // The token is revoked in the background where the authorization server allows it.
-        Ok(Some(revocation)) => {
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                runtime.spawn(revocation.send());
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        // Under the source's refresh lock, so a refresh in flight cannot store tokens for a
+        // server that is gone; then the token is revoked where the authorization server allows.
+        let name = params.name.clone();
+        runtime.spawn(async move {
+            match source.forget_for_removal().await {
+                Ok(Some(revocation)) => revocation.send().await,
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(server = %name, %error, "could not delete a connector's sign-in");
+                }
             }
-        }
-        Ok(None) => {}
-        Err(error) => {
+        });
+    } else {
+        let store = crate::mcp::KeychainCredentials(Arc::clone(state.secrets()));
+        if let Err(error) = imperium_mcp::oauth::forget_for_removal(&store, &params.name) {
             tracing::warn!(server = %params.name, %error, "could not delete a connector's sign-in");
         }
     }
@@ -673,6 +682,11 @@ pub async fn login(
             match pending.finish().await {
                 Ok(()) => {
                     tracing::info!(server = %task_name, "signed in to an MCP server");
+                    // Whatever the shared source kept in memory is older than this sign-in.
+                    status
+                        .oauth_source(&task_name, background.secrets())
+                        .reset()
+                        .await;
                     status.forget(&task_name);
                     status.forget_signed_in(&task_name);
                 }
