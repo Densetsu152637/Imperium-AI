@@ -9,7 +9,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -48,6 +49,8 @@ pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 40
         && !name.starts_with('.')
+        // `project:<path>` is how references name the project's own files.
+        && name != "project"
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
@@ -67,7 +70,7 @@ fn check_name(name: &str) -> Result<(), UpdateError> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
     files: BTreeMap<String, Vec<u8>>,
-    /// Entries left out: symbolic links, which a pack may not use.
+    /// Entries left out: symbolic links and other files that are not regular files.
     pub skipped: Vec<String>,
 }
 
@@ -85,12 +88,22 @@ impl Snapshot {
         }
     }
 
-    /// Reads every regular file under `root`, leaving out `.git` and symbolic links, within
-    /// the size limits.
+    /// Reads every regular file under `root`, leaving out `.git`, symbolic links and anything
+    /// else that is not a regular file (listed in [`Snapshot::skipped`]), within the size limits.
     pub fn read(root: &Path) -> Result<Self, UpdateError> {
         let mut snapshot = Snapshot::default();
         let mut total = 0u64;
-        read_dir(root, "", &mut snapshot, &mut total)?;
+        read_dir(root, "", &mut snapshot, &mut total, false)?;
+        Ok(snapshot)
+    }
+
+    /// Reads a folder the user's sessions would load from: anything that is not a regular
+    /// file (a link, which the hash would not cover, or a `.git` folder) fails the read, so a
+    /// folder that verifies holds exactly the files that were hashed.
+    pub fn read_verified(root: &Path) -> Result<Self, UpdateError> {
+        let mut snapshot = Snapshot::default();
+        let mut total = 0u64;
+        read_dir(root, "", &mut snapshot, &mut total, true)?;
         Ok(snapshot)
     }
 
@@ -134,6 +147,7 @@ fn read_dir(
     prefix: &str,
     snapshot: &mut Snapshot,
     total: &mut u64,
+    strict: bool,
 ) -> Result<(), UpdateError> {
     let entries = std::fs::read_dir(dir).map_err(io(dir))?;
     for entry in entries {
@@ -147,6 +161,12 @@ fn read_dir(
             )));
         };
         if name == ".git" {
+            if strict {
+                return Err(UpdateError::Invalid(format!(
+                    "{} holds a .git entry, which a pinned pack never has",
+                    dir.display()
+                )));
+            }
             continue;
         }
         let path = if prefix.is_empty() {
@@ -155,11 +175,16 @@ fn read_dir(
             format!("{prefix}/{name}")
         };
         let kind = entry.file_type().map_err(io(&full))?;
-        if kind.is_symlink() {
+        if kind.is_dir() {
+            read_dir(&full, &path, snapshot, total, strict)?;
+        } else if !kind.is_file() {
+            if strict {
+                return Err(UpdateError::Invalid(format!(
+                    "{path} is a link or special file, which a pinned pack never has"
+                )));
+            }
             snapshot.skipped.push(path);
-        } else if kind.is_dir() {
-            read_dir(&full, &path, snapshot, total)?;
-        } else if kind.is_file() {
+        } else {
             let size = entry.metadata().map_err(io(&full))?.len();
             *total += size;
             if size > MAX_FILE_BYTES
@@ -364,11 +389,13 @@ impl Diff {
                 removed,
             });
         }
-        let findings = if old.is_some() {
+        let mut findings = if old.is_some() {
             findings(before, new, &files)
         } else {
             Vec::new()
         };
+        // Every finding is kept, whatever the display shows: the accept gate reads them all.
+        findings.sort_by_key(|finding| !finding.loosening);
         Diff {
             old_hash: old.map(Snapshot::hash),
             new_hash: new.hash(),
@@ -409,15 +436,29 @@ impl Diff {
                 "\n!! These changes may loosen what agents are required or allowed to do. \
                  Accepting needs your separate, explicit yes (--allow-loosening):\n",
             );
-            for finding in loosening {
+            let shown = if full { loosening.len() } else { 50 };
+            for finding in loosening.iter().take(shown) {
                 text.push_str(&format!("  ! {}: {}\n", finding.path, finding.text));
+            }
+            if loosening.len() > shown {
+                text.push_str(&format!(
+                    "  ... and {} more (imperium pack diff <name> --full lists them all)\n",
+                    loosening.len() - shown
+                ));
             }
         }
         let notes: Vec<&Finding> = self.findings.iter().filter(|f| !f.loosening).collect();
         if !notes.is_empty() {
             text.push_str("\nAlso worth knowing:\n");
-            for finding in notes {
+            let shown = if full { notes.len() } else { 20 };
+            for finding in notes.iter().take(shown) {
                 text.push_str(&format!("  - {}: {}\n", finding.path, finding.text));
+            }
+            if notes.len() > shown {
+                text.push_str(&format!(
+                    "  ... and {} more (imperium pack diff <name> --full lists them all)\n",
+                    notes.len() - shown
+                ));
             }
         }
         let mut areas: Vec<Area> = self.files.iter().map(|f| f.area).collect();
@@ -586,7 +627,9 @@ fn findings(old: &Snapshot, new: &Snapshot, files: &[FileChange]) -> Vec<Finding
                 format!("the {role} role's instruction file is removed"),
             );
         }
-        if !matches!(file.area, Area::Rules | Area::Prompts) {
+        // The manifest is read structurally above; every other file, whatever its kind or
+        // whether anything references it, is checked for wording.
+        if file.area == Area::Manifest {
             continue;
         }
         for line in &file.added {
@@ -619,7 +662,6 @@ fn findings(old: &Snapshot, new: &Snapshot, files: &[FileChange]) -> Vec<Finding
             }
         }
     }
-    out.truncate(200);
     out
 }
 
@@ -654,6 +696,13 @@ pub fn check_url(url: &str) -> Result<(), UpdateError> {
         if authority.is_empty() {
             return bad("it has no host");
         }
+        if authority
+            .rsplit('@')
+            .next()
+            .is_some_and(|host| host.starts_with('-'))
+        {
+            return bad("the host looks like an option");
+        }
         // `ssh://git@host/...` names a user, not a secret; a password or a token is the problem.
         if authority.contains(':') && authority.contains('@') {
             return bad("do not put a password or token in the address");
@@ -666,8 +715,14 @@ pub fn check_url(url: &str) -> Result<(), UpdateError> {
     if url.starts_with("file://") && url.len() > "file://".len() {
         return Ok(());
     }
-    if url.starts_with("git@") && url.contains(':') {
-        return Ok(());
+    if let Some(rest) = url.strip_prefix("git@")
+        && rest.contains(':')
+    {
+        return if rest.starts_with('-') {
+            bad("the host looks like an option")
+        } else {
+            Ok(())
+        };
     }
     bad("use https://, ssh://, git@host:path or file://")
 }
@@ -844,6 +899,12 @@ pub enum AcceptError {
     Update(#[from] UpdateError),
 }
 
+/// How long a verified [`PackStore::pinned`] result is reused, so one session start (which asks
+/// for the packs and for their personalities) and a settings screen hash the packs once.
+const PINNED_TTL: Duration = Duration::from_secs(2);
+
+static PINNED_CACHE: Mutex<BTreeMap<PathBuf, (Instant, Pinned)>> = Mutex::new(BTreeMap::new());
+
 /// Pins and pending updates, under `<data>/packs/`.
 #[derive(Debug, Clone)]
 pub struct PackStore {
@@ -889,6 +950,7 @@ impl PackStore {
         std::fs::create_dir_all(&self.root).map_err(io(&self.root))?;
         let text = toml::to_string(pins)
             .map_err(|error| UpdateError::Invalid(format!("could not write the pins: {error}")))?;
+        self.forget_cached();
         write_atomic(&self.pins_file(), &text)
     }
 
@@ -902,7 +964,7 @@ impl PackStore {
             return Ok(None);
         };
         let dir = self.pack_dir(name)?.join(&pin.hash);
-        let snapshot = Snapshot::read(&dir)?;
+        let snapshot = Snapshot::read_verified(&dir)?;
         if snapshot.hash() != pin.hash {
             return Err(UpdateError::Invalid(format!(
                 "the files of pack {name} no longer match the hash you accepted ({}); \
@@ -916,6 +978,25 @@ impl PackStore {
     /// Every pinned pack whose files still match their pin. A pack that does not is skipped
     /// with a notice rather than loaded.
     pub fn pinned(&self) -> Pinned {
+        let mut cache = PINNED_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, pinned)) = cache.get(&self.root)
+            && at.elapsed() < PINNED_TTL
+        {
+            return pinned.clone();
+        }
+        let pinned = self.pinned_fresh();
+        cache.insert(self.root.clone(), (Instant::now(), pinned.clone()));
+        pinned
+    }
+
+    fn forget_cached(&self) {
+        PINNED_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.root);
+    }
+
+    fn pinned_fresh(&self) -> Pinned {
         let mut pinned = Pinned::default();
         let pins = match self.pins() {
             Ok(pins) => pins,
@@ -978,7 +1059,7 @@ impl PackStore {
         };
         let pending: Pending = toml::from_str(&text)
             .map_err(|error| UpdateError::Invalid(format!("{}: {error}", file.display())))?;
-        let snapshot = Snapshot::read(&dir.join("files"))?;
+        let snapshot = Snapshot::read_verified(&dir.join("files"))?;
         if snapshot.hash() != pending.hash {
             return Err(AcceptError::Tampered);
         }
@@ -997,6 +1078,7 @@ impl PackStore {
 
     /// Removes everything held for `name`: its pin, its files and any staged update.
     pub fn forget(&self, name: &str) -> Result<(), UpdateError> {
+        self.forget_cached();
         let mut pins = self.read_pins()?;
         if pins.packs.remove(name).is_some() {
             self.write_pins(&pins)?;
@@ -1225,6 +1307,10 @@ mod tests {
             "https://token@github.com/a/b",
             "ext::sh -c evil",
             "-oProxyCommand=evil",
+            "ssh://-oProxyCommand=evil/x",
+            "ssh://git@-oProxyCommand=evil/x",
+            "https://-evil/x",
+            "git@-oProxyCommand=evil:x",
             "https://a b",
             "/local/folder",
             "",
@@ -1233,7 +1319,7 @@ mod tests {
         }
         assert!(valid_name("acw") && valid_name("my_pack-1.2"));
         let long = "x".repeat(41);
-        for name in ["", ".hidden", "a/b", "..", "a b", long.as_str()] {
+        for name in ["", ".hidden", "a/b", "..", "a b", "project", long.as_str()] {
             assert!(!valid_name(name), "{name}");
         }
         assert!(check_revision("main").is_ok() && check_revision("v1.2/x").is_ok());
@@ -1388,6 +1474,78 @@ mod tests {
         let store = PackStore::new(data.path());
         assert!(store.reject("../x").is_err());
         assert!(store.forget("a/b").is_err());
+    }
+
+    #[test]
+    fn many_notes_cannot_push_a_loosening_out_of_the_gate() {
+        let old = pack(&[("guides/git.md", "Ask before every push.\n")]);
+        let mut manifest = String::from("[roles]\nleaf = [");
+        for n in 0..300 {
+            manifest.push_str(&format!("\"guides/new{n}.md\", "));
+        }
+        manifest.push_str("]\n");
+        let new = pack(&[
+            ("guides/git.md", "Push freely.\n"),
+            (MANIFEST, manifest.as_str()),
+        ]);
+        let diff = Diff::between(Some(&old), &new);
+        assert!(diff.findings.len() > 200, "{}", diff.findings.len());
+        assert!(diff.has_loosening());
+        assert!(diff.findings[0].loosening, "loosening comes first");
+        assert!(diff.render(false).contains("!! These changes may loosen"));
+
+        let data = tempfile::tempdir().unwrap();
+        let store = PackStore::new(data.path());
+        let first = stage(&store, &old);
+        store.accept("acw", &first.hash, false).unwrap();
+        let second = stage(&store, &new);
+        assert!(matches!(
+            store.accept("acw", &second.hash, false),
+            Err(AcceptError::Loosening)
+        ));
+    }
+
+    #[test]
+    fn wording_is_checked_in_every_kind_of_file() {
+        let old = pack(&[
+            ("learning/lesson.md", "Always ask first.\n"),
+            ("tools/run.sh", "echo ok\n"),
+        ]);
+        let new = pack(&[
+            ("learning/lesson.md", "Fine.\n"),
+            ("tools/run.sh", "git push --force-push --no-verify\n"),
+        ]);
+        let diff = Diff::between(Some(&old), &new);
+        let paths: Vec<&str> = diff
+            .findings
+            .iter()
+            .filter(|f| f.loosening)
+            .map(|f| f.path.as_str())
+            .collect();
+        assert!(paths.contains(&"learning/lesson.md"), "{paths:?}");
+        assert!(paths.contains(&"tools/run.sh"), "{paths:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_a_pinned_or_staged_pack_fails_verification() {
+        let data = tempfile::tempdir().unwrap();
+        let store = PackStore::new(data.path());
+        let pending = stage(&store, &pack(&[("guides/a.md", "one\n")]));
+        let staged = data.path().join("packs/acw/pending/files");
+        std::os::unix::fs::symlink("/etc/passwd", staged.join("guides/link.md")).unwrap();
+        assert!(matches!(
+            store.accept("acw", &pending.hash, true),
+            Err(AcceptError::Update(_))
+        ));
+        std::fs::remove_file(staged.join("guides/link.md")).unwrap();
+        store.accept("acw", &pending.hash, true).unwrap();
+
+        let dir = data.path().join("packs/acw").join(&pending.hash);
+        std::os::unix::fs::symlink("/etc/passwd", dir.join("guides/link.md")).unwrap();
+        let pinned = store.pinned();
+        assert!(pinned.packs.is_empty());
+        assert!(pinned.notices[0].contains("link"), "{:?}", pinned.notices);
     }
 
     #[test]

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, bail};
 use imperium_config::Paths;
 use imperium_workflow::update::{
-    Diff, MIN_HASH_PREFIX, PackStore, Pending, Snapshot, Source, Sources, check_revision,
-    check_url, valid_name,
+    Diff, MAX_FILE_BYTES, MAX_FILES, MIN_HASH_PREFIX, PackStore, Pending, PinnedSnapshot, Snapshot,
+    Source, Sources, check_revision, check_url, valid_name,
 };
 
 /// Longest a fetch may take.
@@ -77,6 +77,24 @@ pub fn add_source(name: String, url: String, revision: Option<String>) -> anyhow
         check_revision(revision)?;
     }
     let paths = Paths::from_env()?;
+    // A pack's name prefixes its references (`<name>:<path>`), so a source may not share the
+    // name of a pack already listed in workflow.packs.
+    let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
+    for root in &settings.workflow.packs {
+        let listed = imperium_workflow::Pack::load(root)
+            .map(|pack| pack.name)
+            .unwrap_or_else(|_| {
+                root.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+        if listed == name {
+            bail!(
+                "{} in workflow.packs is already called {name}; pick another source name",
+                root.display()
+            );
+        }
+    }
     let mut sources = Sources::load(paths.config_dir())?;
     sources.add(&name, Source { url, revision })?;
     sources.save(paths.config_dir())?;
@@ -134,14 +152,7 @@ fn check_one(store: &PackStore, name: &str, source: &Source) -> anyhow::Result<(
     if snapshot.is_empty() {
         bail!("the source has no files");
     }
-    // A pin whose files no longer match is no baseline to compare with.
-    let pinned = match store.pinned_snapshot(name) {
-        Ok(pinned) => pinned,
-        Err(error) => {
-            println!("{name}: warning: {error}");
-            None
-        }
-    };
+    let (pinned, note) = baseline(store, name);
     let hash = snapshot.hash();
     if pinned.as_ref().is_some_and(|found| found.pin.hash == hash) {
         store.reject(name)?;
@@ -158,9 +169,12 @@ fn check_one(store: &PackStore, name: &str, source: &Source) -> anyhow::Result<(
     );
     if !snapshot.skipped.is_empty() {
         println!(
-            "  left out {} symbolic link(s): packs may not contain them",
+            "  left out {} entries that are not regular files",
             snapshot.skipped.len()
         );
+    }
+    if let Some(note) = note {
+        println!("\n{note}");
     }
     println!("{}", diff.render(false));
     println!("Nothing has been applied; sessions keep using the pinned version.");
@@ -174,6 +188,33 @@ fn check_one(store: &PackStore, name: &str, source: &Source) -> anyhow::Result<(
         }
     );
     Ok(())
+}
+
+/// The pinned version to compare with and, when there is none, what that means for the review.
+fn baseline(store: &PackStore, name: &str) -> (Option<PinnedSnapshot>, Option<String>) {
+    let bundled = if store.pins().map(|pins| pins.is_empty()).unwrap_or(true) {
+        " With no folders in workflow.packs, the bundled Agent-Custom-Workflow snapshot also \
+         stops loading once this is the first pack pinned."
+    } else {
+        ""
+    };
+    match store.pinned_snapshot(name) {
+        Ok(Some(found)) => (Some(found), None),
+        Ok(None) => (
+            None,
+            Some(format!(
+                "NO COMPARISON: nothing is pinned for {name}, so this version is shown in full \
+                 and nothing can be flagged as loosening.{bundled}"
+            )),
+        ),
+        Err(error) => (
+            None,
+            Some(format!(
+                "NO COMPARISON: the pinned version of {name} could not be verified ({error}), so \
+                 this version is shown in full and nothing can be flagged as loosening.{bundled}"
+            )),
+        ),
+    }
 }
 
 fn print_update(url: &str, pending: &Pending, pinned: Option<&str>) {
@@ -192,13 +233,16 @@ pub fn diff(name: String, full: bool) -> anyhow::Result<()> {
     let Some((pending, snapshot)) = store.pending(&name)? else {
         bail!("{name} has no pending update; run imperium pack check {name}");
     };
-    let pinned = store.pinned_snapshot(&name).ok().flatten();
+    let (pinned, note) = baseline(&store, &name);
     let diff = Diff::between(pinned.as_ref().map(|found| &found.snapshot), &snapshot);
     print_update(
         &pending.url,
         &pending,
         pinned.as_ref().map(|p| p.pin.hash.as_str()),
     );
+    if let Some(note) = note {
+        println!("\n{note}");
+    }
     println!("{}", diff.render(full));
     Ok(())
 }
@@ -210,6 +254,10 @@ pub fn accept(name: String, hash: Option<String>, allow_loosening: bool) -> anyh
         bail!("{name} has no pending update; run imperium pack check {name}");
     };
     let id = short(&pending.hash).to_string();
+    let (pinned, note) = baseline(&store, &name);
+    if let Some(note) = &note {
+        println!("{note}");
+    }
     let (hash, allow) = match hash {
         Some(hash) => (hash, allow_loosening),
         None => {
@@ -219,7 +267,6 @@ pub fn accept(name: String, hash: Option<String>, allow_loosening: bool) -> anyh
                      imperium pack diff {name}"
                 );
             }
-            let pinned = store.pinned_snapshot(&name).ok().flatten();
             let diff = Diff::between(pinned.as_ref().map(|found| &found.snapshot), &snapshot);
             println!("{}", diff.render(false));
             let loosening = diff.has_loosening();
@@ -269,7 +316,9 @@ impl Drop for Cleanup {
 
 /// Clones the source and reads its files. Nothing from the clone runs: hooks are off, the
 /// `ext::` transport is refused, there are no prompts, LFS downloads or submodules, and `.git`
-/// and symbolic links are left out of the pack.
+/// and anything that is not a regular file is left out of the pack. The clone is made without
+/// a checkout and without files over the size limit; the file count and any omitted file are
+/// checked before a single file is written to disk.
 fn fetch(store: &PackStore, source: &Source) -> anyhow::Result<(Snapshot, String)> {
     let scratch = store.scratch();
     std::fs::create_dir_all(&scratch)
@@ -283,18 +332,37 @@ fn fetch(store: &PackStore, source: &Source) -> anyhow::Result<(Snapshot, String
     let repo = work.join("repo");
     let hooks = work.join("no-hooks");
     let repo_text = repo.display().to_string();
+    let limit = format!("--filter=blob:limit={MAX_FILE_BYTES}");
     let mut args: Vec<&str> = vec![
         "clone",
         "--quiet",
         "--no-recurse-submodules",
+        "--no-checkout",
         "--depth",
         "1",
+        limit.as_str(),
     ];
     if let Some(revision) = &source.revision {
         args.extend(["--branch", revision.as_str()]);
     }
     args.extend(["--", source.url.as_str(), repo_text.as_str()]);
     git(&args, None, &hooks)?;
+    let listing = git(&["ls-tree", "-r", "HEAD"], Some(&repo), &hooks)?;
+    if listing.lines().count() > MAX_FILES {
+        bail!("the source has more than {MAX_FILES} files");
+    }
+    let objects = git(
+        &["rev-list", "--objects", "--missing=print", "HEAD"],
+        Some(&repo),
+        &hooks,
+    )?;
+    if objects.lines().any(|line| line.starts_with('?')) {
+        bail!(
+            "the source has a file over {} MiB, which a pack may not",
+            MAX_FILE_BYTES / (1024 * 1024)
+        );
+    }
+    git(&["reset", "--hard", "--quiet", "HEAD"], Some(&repo), &hooks)?;
     let commit = git(&["rev-parse", "HEAD"], Some(&repo), &hooks)?;
     let snapshot = Snapshot::read(&repo)?;
     Ok((snapshot, commit.trim().to_string()))
@@ -302,6 +370,17 @@ fn fetch(store: &PackStore, source: &Source) -> anyhow::Result<(Snapshot, String
 
 fn git(args: &[&str], dir: Option<&Path>, hooks: &Path) -> anyhow::Result<String> {
     let mut command = Command::new("git");
+    // Nothing of the caller's git environment (a GIT_DIR, GIT_CONFIG_*, an askpass helper)
+    // steers a fetch of a pack.
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("GIT_")
+        {
+            command.env_remove(&name);
+        }
+    }
     command
         .args(["-c", "protocol.ext.allow=never"])
         .args(["-c", "core.symlinks=false"])
@@ -311,6 +390,7 @@ fn git(args: &[&str], dir: Option<&Path>, hooks: &Path) -> anyhow::Result<String
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_LFS_SKIP_SMUDGE", "1")
         .env("GCM_INTERACTIVE", "never")
+        .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -320,6 +400,28 @@ fn git(args: &[&str], dir: Option<&Path>, hooks: &Path) -> anyhow::Result<String
     let mut child = command
         .spawn()
         .context("could not run git; it must be installed to fetch packs")?;
+    // Both pipes are drained as the process runs, so a chatty git cannot fill one and stall.
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    };
+    let out = drain(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let err = drain(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
     let deadline = Instant::now() + GIT_TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -332,15 +434,9 @@ fn git(args: &[&str], dir: Option<&Path>, hooks: &Path) -> anyhow::Result<String
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_string(&mut stdout);
-    }
+    let stdout = out.join().unwrap_or_default();
+    let stderr = err.join().unwrap_or_default();
     if !status.success() {
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.stderr.take() {
-            let _ = pipe.read_to_string(&mut stderr);
-        }
         bail!("git {} failed: {}", args[0], stderr.trim());
     }
     Ok(stdout)

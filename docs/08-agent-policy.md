@@ -31,23 +31,34 @@ the data folder, and a session reads the pins when it starts.
 
 - **Sources are the user's own.** A source is a name and a Git URL (`https://`, `ssh://`,
   `git@host:path` or `file://`; never `http://`, never credentials in the address, never an
-  `ext::` helper), optionally a branch or tag. They live only in `<config>/pack-sources.toml`,
+  `ext::` helper, never a host that starts with `-`), optionally a branch or tag. A source name
+  may not be `project` or the name of a pack listed in `workflow.packs` (references are
+  `<name>:<path>`). They live only in `<config>/pack-sources.toml`,
   added with `imperium pack add-source <name> <url> [--revision <ref>]`. A project's files
   (`.imperium/`), environment variables, a pack's own manifest and an agent's tool calls
   cannot add or change one: the command reads that one file and nothing else. The pack store
   (`<data>/packs/`) is on the safety floor's protected list, so an agent's write there is
-  always asked about.
+  always asked about, and so is an agent running `imperium pack add-source`, `accept` or
+  `remove-source` (a person decides those, as for `imperium mods install`); `check`, `diff`,
+  `list` and `reject` change nothing in force and are not asked about.
 - **Fetching never applies anything.** `imperium pack check [name]` shallow-clones the source
-  with git hooks off, no prompts, no LFS downloads, no submodules and the `ext::` transport
-  refused, reads the files (leaving out `.git` and symbolic links, within 2000 files, 2 MiB per
-  file and 32 MiB), and stages them as a **pending update** next to the pinned version. Sessions
-  keep using the pinned version.
+  without a checkout and without blobs over 2 MiB, with git hooks off, no prompts (ssh runs in
+  batch mode), no LFS downloads, no submodules, the `ext::` transport refused and the caller's
+  `GIT_*` environment removed. Before any file is written it refuses a source with more than
+  2000 files or any file over 2 MiB; then it checks out, reads the files (leaving out `.git`
+  and anything that is not a regular file; at most 32 MiB in all) and stages them as a
+  **pending update** next to the pinned version. Sessions keep using the pinned version. The
+  clone itself is bounded by a five-minute timeout, not by size: a server that ignores the
+  filter can still send a large history before the limits are checked.
 - **The diff is in plain words.** Files are grouped as *rules and workflows* (the entry index,
   workflows, guides), *prompts and personalities*, *lessons*, *pack settings* (the manifest:
   which files each role must load, which of your settings a pack file is filled from) and
   other files, each marked added, removed or changed with its line counts.
   `imperium pack diff <name> --full` lists every changed line. A first version has nothing to
-  compare with, so it is shown as a full listing to read before accepting.
+  compare with, so it is shown as a full listing to read before accepting. When no
+  comparison was possible (nothing pinned yet, or the pinned files failed their check),
+  `check`, `diff` and `accept` say so in capitals, say that nothing can be flagged as
+  loosening, and, for the first pack pinned, say that the bundled snapshot stops loading.
 - **An update cannot loosen quietly.** Changes that may reduce what agents are required or
   allowed to do are listed first, marked `!`, and accepting an update that has any needs
   `--allow-loosening` (or the longer phrase typed at a terminal) on top of the usual
@@ -55,10 +66,14 @@ the data folder, and a session reads the pins when it starts.
   required list; the entry index changed; a pack file newly filled from one of your settings;
   an unreadable manifest; wording added that reduces asking or checking ("without asking",
   "bypass", "force push" and similar); and a line removed that made agents ask or hold back
-  ("ask before", "explicit permission", "must not" and similar). The wording checks are a
-  floor for review, not a parser of meaning: they can miss a rewrite and they flag harmless
-  edits, which is why the full diff is always available and why they never decide for the user.
-  Tightening (a newly required file) is shown as a note.
+  ("ask before", "explicit permission", "must not" and similar). The wording checks run on
+  every changed file except the manifest (which is read structurally): rules, prompts, lessons,
+  local-paths files and any other kind, whether or not the manifest or the index references
+  them. They are a floor for review, not a parser of meaning: they can miss a rewrite and they
+  flag harmless edits, which is why the full diff is always available and why they never
+  decide for the user. Tightening (a newly required file) is shown as a note. The screen shows
+  the first 50 loosening items and 20 notes; the accept gate reads every finding, loosening
+  ones first, however many there are.
 - **Accepting is explicit and bound to what was read.** At a terminal, `imperium pack accept
   <name>` shows the diff and asks for `accept <hash12>` (`accept <hash12> loosening` when
   loosening is present). Without a terminal it needs `--hash <at least 12 digits>`, and the hash
@@ -66,10 +81,15 @@ the data folder, and a session reads the pins when it starts.
   mistake. `imperium pack reject <name>` discards it. A pack that does not load as a pack (no
   entry index, an unreadable manifest) is refused.
 - **Pinned by content hash.** The pin records the source, the commit and the SHA-256 of the
-  pack: every file path with the SHA-256 of its content, in path order. Every session start
-  checks the pinned files against that hash and skips the pack, with a notice, if they differ
-  (a pack edited on disk is never loaded under an old pin). Staged files are checked the same
-  way before accepting. The previous pinned version's files are removed on accept; the commit
+  pack: every file path with the SHA-256 of its content, in path order. Starting a session
+  checks the pinned files against that hash (the result is reused for two seconds, so one
+  start hashes once) and skips the pack, with a notice, if they differ (a pack edited on disk
+  is never loaded under an old pin). The check is at session start: a file changed on disk
+  while a session is running is read as it then is, which the safety floor's protection of
+  `<data>/packs` is there to ask about. A link or other non-regular file, or a `.git` entry,
+  in a pinned or staged folder fails the check outright, since the hash would not cover what
+  it points to; personality files of a pinned pack must also resolve inside the pack. Staged
+  files are checked the same way before accepting. The previous pinned version's files are removed on accept; the commit
   is in Git.
 - **How a pinned pack is used.** Like a folder in `workflow.packs`, except its `@` imports stay
   inside the pack (it is not trusted to reach other files) and its references are

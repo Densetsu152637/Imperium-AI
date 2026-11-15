@@ -301,5 +301,18 @@ fn unsafe_source_addresses_are_refused() {
             "{url}: {refused}"
         );
     }
+    // `project:` names the project's own files in references.
+    let url = file_url(env.repo.path());
+    let refused = env.fails(&["pack", "add-source", "project", &url]);
+    assert!(refused.contains("cannot name a pack source"), "{refused}");
     assert!(env.ok(&["pack", "list"]).contains("No pack sources"));
+}
+
+#[test]
+fn a_first_version_says_no_comparison_was_possible() {
+    let env = Env::new();
+    env.add_source();
+    let first = env.ok(&["pack", "check", "acw"]);
+    assert!(first.contains("NO COMPARISON"), "{first}");
+    assert!(first.contains("bundled"), "{first}");
 }

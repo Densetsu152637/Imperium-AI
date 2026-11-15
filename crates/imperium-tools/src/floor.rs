@@ -453,8 +453,18 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
 /// `imperium env agent add|set|rm …`: an agent could loosen its own permission profile (or its
 /// limits) this way, so a person decides each time. `imperium mods install|update …` installs
 /// and approves code for the desktop app (an agent could `--yes` its own prompt), so a person
-/// decides that too.
+/// decides that too. `imperium pack add-source|accept|remove-source …` adds a pack source,
+/// pins a pack the agents will then be instructed by, or drops one (an agent could `--hash` its
+/// own accept), so a person decides those as well; `check`, `diff` and `reject` change nothing
+/// that is in force.
 fn changes_agents(args: &[String]) -> bool {
+    if let Some(at) = args.iter().position(|word| word == "pack")
+        && args
+            .get(at + 1)
+            .is_some_and(|word| matches!(word.as_str(), "add-source" | "accept" | "remove-source"))
+    {
+        return true;
+    }
     if let Some(at) = args.iter().position(|word| word == "mods")
         && args
             .get(at + 1)
@@ -594,6 +604,10 @@ mod tests {
             "imperium mods install https://example.com/x.git --yes",
             "imperium mods update demo",
             "/usr/bin/imperium.exe mods install ./demo",
+            "imperium pack add-source acw https://example.com/p.git",
+            "imperium pack accept acw --hash 0123456789abcdef",
+            "imperium.exe pack accept acw --allow-loosening",
+            "imperium pack remove-source acw",
         ] {
             assert!(dangerous_command(line), "{line}");
         }
@@ -603,6 +617,10 @@ mod tests {
             "imperium ping",
             "imperium mods",
             "imperium config changes",
+            "imperium pack list",
+            "imperium pack check acw",
+            "imperium pack diff acw --full",
+            "imperium pack reject acw",
         ] {
             assert!(!dangerous_command(line), "{line}");
         }

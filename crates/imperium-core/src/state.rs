@@ -2677,6 +2677,15 @@ impl DaemonState {
             })
             .collect();
         for found in pinned.packs {
+            // A reference is `<pack name>:<path>`, so a pinned pack may not take the name of
+            // another loaded pack or of the project's own files.
+            if found.name == "project" || packs.iter().any(|pack| pack.name == found.name) {
+                notices.push(format!(
+                    "pinned pack {} skipped: another pack already has that name",
+                    found.name
+                ));
+                continue;
+            }
             match Pack::load(&found.dir) {
                 Ok(mut pack) => {
                     pack.name = found.name;
@@ -2693,19 +2702,12 @@ impl DaemonState {
     pub(crate) fn personality_sources(&self) -> personality::Sources {
         personality::Sources {
             config_dir: Some(self.paths.config_dir().to_path_buf()),
-            packs: self
-                .settings()
-                .workflow
+            packs: self.settings().workflow.packs.clone(),
+            confined: PackStore::new(self.paths.data_dir())
+                .pinned()
                 .packs
-                .iter()
-                .cloned()
-                .chain(
-                    PackStore::new(self.paths.data_dir())
-                        .pinned()
-                        .packs
-                        .into_iter()
-                        .map(|found| found.dir),
-                )
+                .into_iter()
+                .map(|found| (found.name, found.dir))
                 .collect(),
             built_in: bundled_pack(),
         }
