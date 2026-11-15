@@ -86,7 +86,8 @@ use imperium_protocol::methods::{
     SystemResourcesSubscribe, SystemResourcesSubscribeParams, SystemResourcesSubscribeResult,
 };
 use imperium_protocol::methods::{
-    SessionAgentCancel, SessionAgentCancelParams, SessionAgentCancelResult, SessionAgentKnowledge,
+    SessionAgentAsk, SessionAgentAskParams, SessionAgentAskResult, SessionAgentCancel,
+    SessionAgentCancelParams, SessionAgentCancelResult, SessionAgentKnowledge,
     SessionAgentKnowledgeParams, SessionAgentKnowledgeResult, SessionAgentResume,
     SessionAgentResumeParams, SessionAgentResumeResult, SessionAgents, SessionAgentsParams,
     SessionAgentsResult,
@@ -948,6 +949,24 @@ impl Connection {
                 |params: SessionReviewPullRequestParams| {
                     let state = Arc::clone(&self.state);
                     async move { blocking(move || crate::review::pull_request(&state, &params)).await }
+                },
+            ),
+            SessionAgentAsk::NAME => call_later::<SessionAgentAsk, _>(
+                request.params,
+                &mut later,
+                |params: SessionAgentAskParams| {
+                    let session = self.session(&params.session_id);
+                    async move {
+                        let (question_id, outcome, answer) = session?
+                            .ask_knowledge(&params.agent_id, &params.question, params.timeout_s)
+                            .await
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+                        Ok(SessionAgentAskResult {
+                            question_id,
+                            outcome,
+                            answer,
+                        })
+                    }
                 },
             ),
             SessionAgentKnowledge::NAME => call::<SessionAgentKnowledge>(

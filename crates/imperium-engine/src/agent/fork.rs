@@ -527,5 +527,6 @@ fn joined_answer(joined: Result<Answer, tokio::task::JoinError>) -> Answer {
     joined.unwrap_or_else(|error| Answer {
         outcome: QuestionOutcome::Failed,
         text: format!("the question's task crashed: {error}"),
+        plain: format!("the question's task crashed: {error}"),
     })
 }

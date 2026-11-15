@@ -23,6 +23,13 @@ What must not change, what is out of scope, limits on time, cost, tools or style
 
 Checks that show the work is done, each one something the subagent can run or observe.
 
+## Research to keep
+
+When the brief starts research that several later tasks will need (reading a module, a
+specification or a set of pages), spawn it with a `knowledge` topic. The subagent is then kept
+as a knowledge agent when it finishes, and later agents ask it with `ask_agent` instead of
+reading the same material again. Ask in a self-contained question that names the files or topics.
+
 ## Output format
 
 Exactly what the final report contains and in what shape: for example a short summary, the list

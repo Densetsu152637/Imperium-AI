@@ -1854,3 +1854,95 @@ async fn a_failed_lease_save_falls_back_and_a_closed_session_saves_nothing() {
         saved
     );
 }
+
+// ---- stage 3 ----
+
+#[tokio::test]
+async fn the_user_asks_a_knowledge_agent_and_the_events_are_the_roots() {
+    let lab = Arc::new(Lab::default());
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let session = start(&url, dir.path(), Options::default());
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research the alpha module").await;
+
+    let (id, outcome, answer) = session
+        .ask_knowledge("t1", "plain: what is in a.txt?", None)
+        .await
+        .unwrap();
+    assert_eq!(outcome, QuestionOutcome::Answered);
+    assert_eq!(answer, "the answer is 42", "without its frame");
+    assert!(id.starts_with('q'));
+    // The user is no agent: the events are the root's, and name the user as the asker.
+    let seen = history(&session);
+    assert!(seen.iter().any(|event| event.agent_id == "root"
+        && matches!(&event.event, SessionEvent::QuestionAsked { from, to, .. }
+            if from == "user" && to == "t1")));
+    assert!(seen.iter().any(|event| event.agent_id == "root"
+        && matches!(&event.event, SessionEvent::QuestionAnswered { question_id, .. }
+            if *question_id == id)));
+    assert!(
+        session
+            .agents()
+            .iter()
+            .all(|agent| agent.agent_id != "user")
+    );
+    assert_eq!(card(&session, "t1").unwrap().questions, 1);
+    // It can be asked by title, and a bad request is an error with its reason.
+    let title = session.agents()[1].title.clone();
+    assert!(
+        session
+            .ask_knowledge(&title, "plain", Some(60))
+            .await
+            .is_ok()
+    );
+    let missing = session
+        .ask_knowledge("t9", "plain", None)
+        .await
+        .unwrap_err();
+    assert!(missing.contains("no knowledge agent"), "{missing}");
+    let empty = session.ask_knowledge("t1", "  ", None).await.unwrap_err();
+    assert!(empty.contains("must not be empty"), "{empty}");
+}
+
+#[tokio::test]
+async fn a_fork_finishing_after_the_session_closed_leaves_no_file_and_no_mark() {
+    let lab = Arc::new(Lab::default());
+    lab.slow_ms.store(1_500, Ordering::SeqCst);
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let runtime = Local::new(&url, true);
+    let session = start(&url, dir.path(), local_options(&runtime));
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research the alpha module").await;
+    assert_eq!(runtime.count("keep s/t1"), 1);
+
+    // The question outlives the session handle; its fork is still waiting for the model when the
+    // session closes.
+    let pending = tokio::spawn(session.ask_knowledge("t1", "slow", Some(60)));
+    for _ in 0..100 {
+        if !lab.forks().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(lab.forks().len(), 1);
+    drop(events);
+    drop(session);
+    let (_, outcome, answer) = pending.await.unwrap().unwrap();
+    assert_eq!(outcome, QuestionOutcome::Answered);
+    assert!(answer.contains("slow answer"));
+
+    // Closing removed the mark and the saved files; finishing afterwards saved nothing.
+    assert_eq!(
+        runtime.count("unkeep s/t1"),
+        1,
+        "its mark went with the session"
+    );
+    assert_eq!(runtime.count("drop_saved s/t1"), 1);
+    assert_eq!(runtime.count("save_leased s/t1 0"), 0);
+    assert_eq!(runtime.count("save_kept s/t1"), 0);
+    assert_eq!(runtime.count("keep s/t1"), 1, "and no new mark was made");
+}

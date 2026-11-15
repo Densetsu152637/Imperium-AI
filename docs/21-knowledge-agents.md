@@ -1,7 +1,7 @@
 # 21 — Knowledge agents
 
-**Stages 1 and 2 implemented** (engine core and contract, protocol 0.38; local residency, no
-protocol change); stage 3 is designed, not built ([roadmap item 45](12-roadmap.md#next-in-order)). Agents of a session can
+**Implemented**: stage 1 (engine core and contract, protocol 0.38), stage 2 (local residency) and
+stage 3 (clients and prompts, protocol 0.39) ([roadmap item 45](12-roadmap.md#next-in-order)). Agents of a session can
 ask questions of other agents that keep context they already loaded. A research subagent that
 read a module, a specification or a set of pages stays available as a **knowledge agent**: the
 root and other subagents ask it (`ask_agent`) instead of searching and reading the same material
@@ -263,7 +263,7 @@ be self-contained, like briefs.
 
 ## Visibility
 
-**Protocol 0.38** (additive):
+**Protocol 0.38** (additive; 0.39 adds `session.agent_ask`, below):
 
 - `AgentSummary.knowledge: Option<KnowledgeCard>`.
 - Session events: `knowledge_changed` (`agent_id`, the card, or `retired`),
@@ -276,6 +276,10 @@ be self-contained, like briefs.
   (`t3#q7`), which the agent registry ignores, so no agent record is created for a fork.
 - Method: `session.agent_knowledge` (`session_id`, `agent_id`, `topic` or `retire`) for the user
   to promote or retire.
+- Method (0.39): `session.agent_ask` (`session_id`, `agent_id` (an id or a title), `question`,
+  `timeout_s?`) for the user to ask: the result is `question_id`, `outcome` and `answer` (the
+  answer without its frame, or the reason it ended). The question runs exactly as an agent's,
+  with `user` as the asker in `question_asked`; its events are the root's.
 
 **Journal.** `knowledge_changed`, `question_asked`, `question_answered` and the forks' tool events
 are journalled like every session event, so replay rebuilds cards and the question history. A
@@ -289,7 +293,8 @@ agents with a *Knowledge* badge and the topic; the agent's view lists its source
 marked), its card's cost estimate and cached share, and its questions with asker, outcome and
 cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
 
-**CLI.** `imperium chat` shows cards in `/agents`.
+**CLI.** `imperium chat` shows cards in `/agents`, and `/keep <id> <topic>`, `/ask <agent> <question>` and
+`/retire <id>` keep, ask and retire.
 
 ## Interactions
 
@@ -372,14 +377,16 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
      `yield_waiters` or suspend-to-yield runs on its behalf;
    - a promotion over the slot-cache share is refused with the list;
    - `est_question_cost` on a hosted model uses the uncached price after the cache lifetime.
-3. **Clients and prompts (not built).** Agents panel badge, sources, cost and questions; *Keep as knowledge*
+3. **Clients and prompts (implemented).** Agents panel badge, sources, cost and questions; *Keep as knowledge*
    and *Retire*; `/agents` cards in `imperium chat`; root and subagent prompt lines, `brief.md`,
    Emperor's root prompt and an eval case in `schemas/eval` (asking beats re-reading). *Tests:*
    desktop component tests for the badge and the question list; a browser-preview check of the
    panel.
 
-**Later, not in the first version:** fork streaming events, an *Ask* box and
-`session.agent_ask` for the user, phone access, `ask_agent` in `imperium mcp-serve`
+**Moved into stage 3:** an *Ask* box and `session.agent_ask` for the user (see
+[stage 3 as built](#stage-3-as-built)).
+
+**Later, not built:** fork streaming events, phone access, `ask_agent` in `imperium mcp-serve`
 ([20](20-claude-harness.md)), task-tree edges for waiting questions, and a wait-for map for deeper
 asking.
 
@@ -492,6 +499,44 @@ local-runtime tests at the end of `crates/imperium-engine/tests/knowledge.rs`.
   the card, not stored.
 - **Replay time.** A replayed journal dates each turn by the time the journal recorded, so a staleness
   mark from before a restart keeps its meaning; a turn without a known time marks nothing.
+
+## Stage 3 as built
+
+Clients and prompts. Tests: `apps/desktop/test/knowledge.test.ts` (the cards, the question list,
+the details and the checks), the `/agents`, `/ask`, `/keep` and `/retire` tests in
+`crates/imperium-cli/src/chat.rs`, the prompt tests in `agent.rs` and `tools.rs`, the evaluation's
+tests in `crates/imperium-protocol/src/knowledge_eval.rs`, and the engine tests for the user's
+questions and for a fork finishing after its session closed.
+
+- **Protocol 0.39** adds `session.agent_ask`, the *Ask* box's method, which the design listed under
+  "Later". It is built here because the Agents panel and `imperium chat` both need to ask as the
+  user. The user is an asker like a subagent (K3 only keeps knowledge agents and forks from asking):
+  `from` is `user`, the events are the root's (the user is no agent of the session), and the
+  question waits like any other, with its timeout paused while the session is stopped.
+- **Agents panel.** A *Knowledge* badge and the topic on a kept agent's row (its status on hover),
+  and in its view (`panels/KnowledgeSection.tsx`, the rules in `knowledge.ts`): the card (topic,
+  model, what it read with changed files marked, the stale share, what a question costs, the share
+  of the last one that was cached, outside material in its context), the questions asked of it
+  with asker, outcome, cost and answer (newest first), an *Ask* box, and *Retire*. A finished
+  subagent that is not kept offers *Keep as knowledge* (a topic, then the daemon's own checks); the
+  row's menu has *Keep as knowledge…* (opens the view) and *Retire knowledge agent*. The cards and
+  questions are built from the session's events, so a window attached later sees them as it sees
+  everything else.
+- **`imperium chat`.** `/agents` prints each card under its agent (topic, status, sources and how
+  many changed, questions, the cost of one, the cached share, outside material); `/ask`, `/keep`
+  and `/retire` call `session.agent_ask` and `session.agent_knowledge`.
+- **Prompts.** The root prompt and Emperor's `emperor-root.md` say to keep research that several
+  tasks will need (`spawn_agent` with `knowledge`, or `keep_as_knowledge`, which `await_tasks`
+  suggests after a large report), to ask with a self-contained question and to treat answers as
+  information; the subagent prompt says to ask a knowledge agent before reading the same material
+  again; `brief.md` has a *Research to keep* section.
+- **Evaluation.** `schemas/eval/knowledge-cases.json` and `imperium_protocol::knowledge_eval`: six
+  cases (three where the answer is in what a knowledge agent read, three where it is not) scored
+  1.0 for asking without re-reading, 0.5 for asking and re-reading, -1.0 for re-reading, and -0.5
+  for asking when there is nothing to ask. A hold-out, like the clarification cases.
+- **Not built:** a browser-preview check of the panel (the panel is reviewed as code and its rules
+  are tested), the acceptance measurement of the item, phone access, fork streaming events,
+  `ask_agent` in `imperium mcp-serve`, task-tree edges for waiting questions and a wait-for map.
 
 ## Settings
 

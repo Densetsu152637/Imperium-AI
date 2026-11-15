@@ -1179,6 +1179,15 @@ fn short_count(tokens: u64) -> String {
 
 // ---- a question ----
 
+/// The id the user's questions go by (`from` of their events); the events themselves are the
+/// root's, since the user is no agent of the session.
+pub(crate) const USER: &str = "user";
+
+/// The agent whose events a question's asker emits them as.
+fn asker_event_id(asker: &str) -> &str {
+    if asker == USER { ROOT_AGENT } else { asker }
+}
+
 /// Who asks.
 #[derive(Debug, Clone)]
 pub(crate) struct Asker {
@@ -1191,10 +1200,14 @@ pub(crate) struct Answer {
     pub outcome: QuestionOutcome,
     /// The framed answer when it was `answered`; why not, otherwise.
     pub text: String,
+    /// The answer without its frame (the same as `text` when it was not answered).
+    pub plain: String,
 }
 
 /// A question in flight. Dropping it before it ends cancels it.
 pub(crate) struct Question {
+    /// `q7`: the id its events carry.
+    pub id: String,
     pub handle: JoinHandle<Answer>,
     stop: watch::Sender<Option<Stop>>,
 }
@@ -1228,7 +1241,7 @@ pub(crate) fn start_question(
         text,
     };
     shared.emitter.emit(
-        &job.asker.id,
+        asker_event_id(&job.asker.id),
         SessionEvent::QuestionAsked {
             question_id: job.question_id.clone(),
             from: job.asker.id.clone(),
@@ -1239,8 +1252,9 @@ pub(crate) fn start_question(
     );
     lock(&shared.knowledge.last_asked).insert(job.target.agent_id.clone(), now_ms());
     let (stop, receiver) = watch::channel(None);
+    let id = job.question_id.clone();
     let handle = tokio::spawn(run_question(Arc::clone(shared), job, number, receiver));
-    Question { handle, stop }
+    Question { id, handle, stop }
 }
 
 /// How a fork ended.
@@ -1320,9 +1334,9 @@ async fn run_question(
     let target = job.target.agent_id.clone();
     let mut tally = Tally::default();
     let result = answer(&shared, &job, number, &mut stop, &mut tally).await;
-    let (outcome, text, degraded) = match result {
-        Ok((framed, degraded)) => (QuestionOutcome::Answered, framed, degraded),
-        Err((outcome, message)) => (outcome, message, false),
+    let (outcome, text, plain, degraded) = match result {
+        Ok((framed, plain, degraded)) => (QuestionOutcome::Answered, framed, plain, degraded),
+        Err((outcome, message)) => (outcome, message.clone(), message, false),
     };
     let answered = outcome == QuestionOutcome::Answered;
     let cost = tally.cost(&shared, &target);
@@ -1364,7 +1378,7 @@ async fn run_question(
         );
     }
     shared.emitter.emit(
-        &job.asker.id,
+        asker_event_id(&job.asker.id),
         SessionEvent::QuestionAnswered {
             question_id: job.question_id.clone(),
             outcome,
@@ -1383,7 +1397,11 @@ async fn run_question(
         },
     );
     tracing::debug!(question = %job.question_id, ?outcome, took_ms = started.elapsed().as_millis() as u64, "question ended");
-    Answer { outcome, text }
+    Answer {
+        outcome,
+        text,
+        plain,
+    }
 }
 
 /// What a question used.
@@ -1421,7 +1439,7 @@ async fn answer(
     number: u64,
     stop: &mut watch::Receiver<Option<Stop>>,
     tally: &mut Tally,
-) -> Result<(String, bool), Failure> {
+) -> Result<(String, String, bool), Failure> {
     let target = job.target.agent_id.as_str();
     let stopped_with = |why: Stop| (stop_outcome(why), stop_message(why));
     let lane = shared.knowledge.lane(target, job.target.local);
@@ -1464,7 +1482,7 @@ async fn answer_in_lane(
     stop: &mut watch::Receiver<Option<Stop>>,
     tally: &mut Tally,
     lane: &Arc<Lane>,
-) -> Result<(String, bool), Failure> {
+) -> Result<(String, String, bool), Failure> {
     let target = job.target.agent_id.as_str();
     let refused = |message: String| (QuestionOutcome::Refused, message);
     // A knowledge agent resumed for more work answers when its turn has finished.
@@ -1562,10 +1580,62 @@ async fn answer_in_lane(
                     },
                 );
             }
-            Ok((framed, degraded))
+            Ok((framed, truncate_chars(&text, ANSWER_CHARS), degraded))
         }
         ForkEnd::Stopped(why) => Err((stop_outcome(why), stop_message(why))),
         ForkEnd::Refused(message) => Err(refused(message)),
         ForkEnd::Failed(message) => Err((QuestionOutcome::Failed, message)),
     }
+}
+
+/// The user asks knowledge agent `name` a question and waits for the answer: the outcome, and
+/// the answer without its frame (the reason when it was not answered). The wait does not run
+/// while the session is stopped.
+pub(crate) async fn ask_as_user(
+    shared: &Arc<Shared>,
+    name: &str,
+    question: &str,
+    timeout: std::time::Duration,
+) -> Result<(String, QuestionOutcome, String), String> {
+    if !shared.knowledge.enabled() {
+        return Err("knowledge agents are turned off (knowledge.enabled)".into());
+    }
+    let question = question.trim();
+    if question.is_empty() {
+        return Err("the question must not be empty".into());
+    }
+    if question.chars().count() > MAX_QUESTION_CHARS {
+        return Err(format!(
+            "the question is over {MAX_QUESTION_CHARS} characters; make it shorter"
+        ));
+    }
+    let target = resolve_target(shared, name)?;
+    let asker = Asker {
+        id: USER.to_string(),
+        title: "the user".to_string(),
+    };
+    let mut pending = start_question(shared, asker, target, question.to_string());
+    let mut stop = shared.controls.stop_signal();
+    let mut remaining = timeout.min(std::time::Duration::from_secs(MAX_TIMEOUT_S));
+    let joined = loop {
+        if *stop.borrow_and_update() {
+            let _ = stop.wait_for(|stopped| !*stopped).await;
+        }
+        let began = Instant::now();
+        let next = tokio::select! {
+            joined = &mut pending.handle => Some(Some(joined)),
+            () = tokio::time::sleep(remaining) => Some(None),
+            Ok(_) = stop.wait_for(|stopped| *stopped) => None,
+        };
+        match next {
+            Some(Some(joined)) => break joined,
+            Some(None) => {
+                pending.stop(Stop::Timeout);
+                break (&mut pending.handle).await;
+            }
+            None => remaining = remaining.saturating_sub(began.elapsed()),
+        }
+    };
+    let answer = joined.map_err(|error| format!("the question's task crashed: {error}"))?;
+    Ok((pending.id.clone(), answer.outcome, answer.plain))
 }

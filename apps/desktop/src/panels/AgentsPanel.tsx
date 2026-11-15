@@ -3,12 +3,15 @@
 // session panel (AgentView), where it can be messaged and steered. A subagent paused by a
 // steering message to the root offers Resume and Cancel in its menu too.
 
-import { CircleX, PanelTop, Play } from "lucide-react";
+import { BookOpen, CircleX, PanelTop, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { RESUME_TEXT, formatElapsed, taskElapsed } from "../agentView";
 import { RowMenu, type RowMenuItem } from "../components/RowMenu";
+import { canKeep, rowNote } from "../knowledge";
 import { modelName, useModelNames } from "../modelNames";
+import type { KnowledgeCard } from "@imperium/protocol";
+
 import { formatCost, type SessionState, type TaskState } from "../sessions";
 import { isStopped, shownTaskStatus } from "../stop";
 
@@ -20,6 +23,8 @@ type Actions = {
   onResume?: (taskId: string, text: string) => Promise<unknown>;
   /** Ends a paused subagent (`session.agent_cancel`). */
   onCancel?: (taskId: string) => Promise<unknown>;
+  /** Makes a knowledge agent an ordinary subagent again (`session.agent_knowledge`). */
+  onRetire?: (taskId: string) => Promise<unknown>;
 };
 
 /** The current time, every second while `ticking`: running subagents' elapsed times count up. */
@@ -40,6 +45,7 @@ export function AgentsPanel({
   onOpen,
   onResume,
   onCancel,
+  onRetire,
 }: {
   session: SessionState | null;
   /** The subagent whose log the main panel shows, if any. */
@@ -62,9 +68,11 @@ export function AgentsPanel({
           now={now}
           stopped={stopped}
           open={task.taskId === openAgent}
+          card={session?.knowledge?.cards[task.taskId]}
           onOpen={onOpen}
           onResume={archived ? undefined : onResume}
           onCancel={archived ? undefined : onCancel}
+          onRetire={archived ? undefined : onRetire}
         />
       ))}
     </ul>
@@ -79,15 +87,19 @@ function AgentRow({
   onOpen,
   onResume,
   onCancel,
-}: { task: TaskState; now: number; stopped: boolean; open: boolean } & Actions) {
+  onRetire,
+  card,
+}: { task: TaskState; now: number; stopped: boolean; open: boolean; card?: KnowledgeCard } & Actions) {
   const aliases = useModelNames();
   const status = shownTaskStatus(task.status, stopped);
   const elapsed = taskElapsed(task, now);
   const paused = task.status === "paused";
+  const note = rowNote(card);
   const hover = [
     `${task.title} (${task.taskId})`,
     `${status} · ${modelName(aliases, task.model)} · ${formatCost(task.costUsd)}`,
     stopped && task.status === "running" ? "Halted while the session is stopped" : "",
+    note ? `Knowledge agent: ${note.title}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -99,6 +111,12 @@ function AgentRow({
   }
   if (paused && onCancel) {
     items.push({ label: "Cancel", icon: CircleX, danger: true, onSelect: () => void onCancel(task.taskId).catch(() => {}) });
+  }
+  if (canKeep(task.status, card) && onOpen) {
+    items.push({ label: "Keep as knowledge…", icon: BookOpen, onSelect: () => onOpen(task.taskId) });
+  }
+  if (card && onRetire) {
+    items.push({ label: "Retire knowledge agent", icon: CircleX, onSelect: () => void onRetire(task.taskId).catch(() => {}) });
   }
   return (
     <li>
@@ -113,6 +131,11 @@ function AgentRow({
         >
           <span className={`status-dot task-${status}`} role="img" aria-label={status} />
           <span className="name">{task.title}</span>
+          {note && (
+            <span className="badge knowledge" title={note.title}>
+              {note.badge}
+            </span>
+          )}
           {elapsed !== null && <span className="agent-elapsed">{formatElapsed(elapsed)}</span>}
         </button>
         <RowMenu label={`More for ${task.title}`} items={items} />
