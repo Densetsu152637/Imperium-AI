@@ -87,6 +87,23 @@ instead, one without `celebrating` jumps). With `prefers-reduced-motion` nothing
 nothing plays. The **Play** checkbox next to the Pets select (stored as `play`, on by
 default) turns it off.
 
+## Roaming and WebAssembly behaviours
+
+The **Roaming** select (stored as `behaviour`) chooses how free pets move: **Built-in** (walk to a
+spot, pause, repeat) or **Wander (WebAssembly)**, a bundled example behaviour that picks a
+heading, walks it for a few seconds, sometimes rests, sometimes waves or jumps, and turns back at
+the room's edges. Each pet gets its own instance, seeded from its key, ticked four times a second.
+Pets at work, in a play, or leaving are not steered. If the host refuses the module or stops it
+(a trap, a slow tick, an invalid answer) that pet goes back to the built-in roaming, and
+Settings → Mods says so.
+
+The behaviour is source, not a stored binary: `src/behaviour/wander.ts` assembles the module with
+the tiny assembler in `src/behaviour/asm.ts`, the same bytes every time. The rules a module must
+follow (no loops or recursion, 32-bit integers only, one import, capped memory), the memory
+layout and the limits are in
+[docs/06](../../docs/06-extensibility.md#webassembly-pet-behaviours-implemented). `ctx.behaviours`
+needs no permission.
+
 ## Which pet an agent gets
 
 A session's pet is, in order: the **default pet of its environment** (set in the environment

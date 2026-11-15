@@ -6,6 +6,7 @@
 
 import type { SessionEvent, SessionSnapshot } from "@imperium/mod-sdk";
 
+import type { Director } from "./behaviour/director.ts";
 import { advance, current, dispatch, initial, nextWake } from "./arbiter.ts";
 import type { Current, Env, PetEvent } from "./arbiter.ts";
 import { isReviewer } from "./events.ts";
@@ -97,6 +98,8 @@ export class Nursery {
   playEnabled = true;
   /** The interaction in progress, if any (one at a time per nursery). */
   playing: Play | null = null;
+  /** Steers free pets with a WebAssembly behaviour when set (the Behaviour setting); null roams the built-in way. */
+  director: Director | null = null;
   /** Randomness for play; tests inject a seeded one. */
   rand: () => number = Math.random;
   /** Where pet `key` stands in the room; the view replaces this with the real positions. */
@@ -165,6 +168,7 @@ export class Nursery {
   }
 
   private remove(key: string): void {
+    this.director?.forget(key);
     this.endPlayFor(key);
     this.entries.delete(key);
   }
@@ -345,6 +349,12 @@ export class Nursery {
       entry.cache = null;
     }
     this.onChange();
+  }
+
+  /** A reaction a behaviour asked for: handed to the pet's own arbiter, whose rules decide whether it plays. */
+  shot(key: string, name: string, now: number): void {
+    const entry = this.entries.get(key);
+    if (entry) this.send(entry, [{ type: "shot", name, source: "main" }], now);
   }
 
   /** Pats a pet. */

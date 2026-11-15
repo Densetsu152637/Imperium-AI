@@ -4,6 +4,8 @@
 import type { ModContext, SessionSnapshot } from "@imperium/mod-sdk";
 
 import type { Env } from "./arbiter.ts";
+import { Director } from "./behaviour/director.ts";
+import { wanderModule } from "./behaviour/wander.ts";
 import { PetLibrary } from "./library.ts";
 import { Nursery } from "./nursery.ts";
 import type { Deps, Kind } from "./nursery.ts";
@@ -91,6 +93,28 @@ function playToggle(ctx: ModContext, bar: HTMLElement, nursery: Nursery, on: boo
   bar.append(labelled("Play", box));
 }
 
+/**
+ * The "Roaming" select: the built-in roaming, or the bundled WebAssembly behaviour (`behaviour`,
+ * built-in by default). A behaviour the host refuses or stops leaves that pet roaming the built-in way.
+ */
+function behaviourSetting(ctx: ModContext, bar: HTMLElement, nursery: Nursery, choice: string): void {
+  const select = el("select");
+  setOptions(select, [["builtin", "Built-in"], ["wander", "Wander (WebAssembly)"]], "builtin");
+  const available = typeof (ctx as { behaviours?: unknown }).behaviours === "object";
+  const apply = (value: string): void => {
+    nursery.director?.clear();
+    nursery.director = value === "wander" && available ? new Director(ctx.behaviours, "wander", wanderModule()) : null;
+  };
+  select.value = choice === "wander" && available ? "wander" : "builtin";
+  select.disabled = !available;
+  apply(select.value);
+  select.addEventListener("change", () => {
+    void ctx.storage.set("behaviour", select.value);
+    apply(select.value);
+  });
+  bar.append(labelled("Roaming", select));
+}
+
 /** Runs every frame before painting: membership changes, then play. */
 function frameWork(loop: FrameLoop, nursery: Nursery, room: Room): void {
   nursery.at = (key) => room.pos(key);
@@ -144,6 +168,7 @@ async function sessionPanel(ctx: ModContext): Promise<void> {
     nursery.reassign(Date.now());
   });
   playToggle(ctx, bar, nursery, await reading(ctx, "play", true));
+  behaviourSetting(ctx, bar, nursery, await reading(ctx, "behaviour", "builtin"));
   nursery.pinned = await reading<string | null>(ctx, "pinnedSession", null);
   pick.addEventListener("change", () => {
     nursery.pinned = pick.value || null;
@@ -237,6 +262,7 @@ async function nurseryPanel(ctx: ModContext): Promise<void> {
     true,
   );
   playToggle(ctx, bar, nursery, await reading(ctx, "play", true));
+  behaviourSetting(ctx, bar, nursery, await reading(ctx, "behaviour", "builtin"));
 
   // Extra pets, put in and taken out by hand (the old "My nursery"; its `residents` are kept).
   const kept = await reading<Resident[]>(ctx, "residents", []);

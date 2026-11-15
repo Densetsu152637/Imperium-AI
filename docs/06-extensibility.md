@@ -303,6 +303,73 @@ An example lives in
 `examples/mods/tokens-per-dollar/`. Other contribution points and trusted main-context mods are
 later work.
 
+### WebAssembly pet behaviours (implemented)
+
+A mod can steer pets with a small WebAssembly module, `ctx.behaviours` (no permission: a module
+can touch nothing but its own memory). The module is not compiled until the host has read it and
+proved the rules below; it runs in the mod's own sandboxed frame, whose policy allows
+`wasm-unsafe-eval` and still no network, so this adds no capability a mod frame did not have.
+
+**Where it runs, and why.** In the frame (the webview), not the daemon: no WebAssembly runtime is
+in the workspace, so the daemon route would add a native dependency (and an engine to keep
+patched) for something only the desktop's Nursery uses, while the frame needs only the platform's
+engine. The cost is that a browser engine has no fuel metering and cannot interrupt a running
+call, so limits are proved up front instead of metered:
+
+- **Bounded steps.** No `loop`, no `call_indirect`, no recursion, no tables and no start function,
+  so a tick is straight-line code with forward branches and calls down an acyclic call graph. The
+  host counts the worst case exactly (each function's instructions plus its callees', per call
+  site) and refuses a module that could run more than 100,000 instructions in a tick. A module
+  that wants repetition unrolls it.
+- **Deterministic.** Only 32-bit integer arithmetic and memory access: no floating point (NaN
+  bits), no 64-bit values, no SIMD, no bulk memory. Its one import is `imperium.rand`, a seeded
+  generator (mulberry32); the seed is derived from the pet's key. There is no clock: time is the
+  `dt` the host writes into the input each tick.
+- **Memory caps.** One memory of at most 2 pages (128 KiB) with a declared maximum, no
+  `memory.grow`; at most 64 functions, 64 locals each and 32 globals; at most 4 KiB of module
+  (the size Chromium will compile synchronously); at most 32 live behaviours per frame.
+- **No ambient access.** No import but `imperium.rand` (anything else is refused before it is
+  compiled, and an engine-level link would fail anyway), no network, files, DOM or `postMessage`.
+- **Failures stop the module, not the app.** A trap (including an out-of-range memory access or a
+  division by zero), a tick that took over 50 ms (measured by the host, which cannot interrupt
+  it), or an invalid answer stops that behaviour for good, and every later tick returns an error.
+  The frame reports it to the app (`behaviours.report`, needs no permission, checked, clipped and
+  rate-limited there) and Settings → Mods lists "A behaviour of <mod> was refused/stopped". The
+  mod carries on: the Nursery's pet goes back to its built-in roaming.
+
+**ABI** (32-bit little-endian words at the start of the module's exported `memory`, which must be
+at least 128 bytes; the host clears words 0 to 31 before every tick, then writes the input):
+
+| Word | Dir | Meaning |
+|------|-----|---------|
+| 0 | in | ABI version, 1 |
+| 1 | in | `dt`: ms since the last tick, 0 to 1000 |
+| 2 | in | tick count |
+| 3 | in | index of the pet's current animation in `behaviours.animations` |
+| 4 | in | flags: 1 the pet is free to roam, 2 it is busy (working, waiting, reacting) |
+| 5 | in | ms since the pet last had an event, 0 to 600000 |
+| 6, 7 | in | x and y of its feet, px |
+| 8 to 11 | in | the room's bounds: minX, maxX, minY, maxY |
+| 16 | out | a one-shot to request: 0 none, else a 1-based index in `behaviours.shots` (waving, jumping, celebrating, fidget); out of range stops the module. The pet's arbiter still decides whether it plays |
+| 17, 18 | out | velocity x and y in px/s, clamped to ±60 |
+
+The module exports `memory` and `tick()` (no parameters, no result); everything it keeps lives in
+its globals and memory. `ctx.behaviours.load(name, bytes, { seed })` returns `{ ok, behaviour }`
+or `{ ok: false, error }`; `behaviour.tick(state)` takes `dt`, `anim`, `free`, `busy`, `quiet`,
+`x`, `y` and `bounds` and answers `{ ok, shot, vx, vy }`. A behaviour reads what the host gives
+it and nothing else, and it can ask only for a velocity and a harmless one-shot, never for an
+animation that would report agent status (`failed`, `alert`, `waiting`).
+
+**Approval.** A behaviour ships inside the mod (the bundled Nursery builds its module from source
+at start), so the mod's content hash and approved permissions cover it: edit the module and the
+mod is `modified`, off and without permissions until approved again ([below](#installing-and-updating-mods-implemented)).
+A behaviour in a separate file, or in a pet package (`imperium.behaviour` in `pet.json`), is not
+built, because nothing would bind its bytes to an approval yet.
+
+The example is `mods/imperium-nursery/src/behaviour/wander.ts`, assembled with the 100-line
+assembler beside it (`asm.ts`, no toolchain needed; any compiler that follows the rules works).
+The Nursery's **Roaming** setting chooses it over the built-in roaming.
+
 ### Installing and updating mods (implemented)
 
 `imperium mods install <git-url-or-folder> [--path <folder>] [--revision <rev>] [--sha256 <hex>]
