@@ -1355,9 +1355,7 @@ mod tests {
         let fake = Fake::new(venv_dir(dir.path(), &plan.version));
         setup(&fake, dir.path(), &plan, &mut |_| {}).unwrap();
         // Unset: the managed environment. Set to `vllm`: the user asked for PATH.
-        assert!(
-            matches!(resolve(dir.path(), ""), Launch::Command(p) if p != PathBuf::from("vllm"))
-        );
+        assert!(matches!(resolve(dir.path(), ""), Launch::Command(p) if p != Path::new("vllm")));
         assert_eq!(
             resolve(dir.path(), "vllm"),
             Launch::Command(PathBuf::from("vllm"))
