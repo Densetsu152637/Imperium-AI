@@ -440,6 +440,8 @@ pub struct SpeechServer {
     gate: tokio::sync::Mutex<()>,
     /// A task is waiting to stop the server for a language model.
     yielding: AtomicBool,
+    /// The daemon is shutting down: nothing starts.
+    closed: AtomicBool,
     /// No GPU placement until then: the server just left it for a language model.
     no_gpu_until: Mutex<Option<Instant>>,
     me: Weak<SpeechServer>,
@@ -500,6 +502,7 @@ impl SpeechServer {
             state: Mutex::new(State::default()),
             gate: tokio::sync::Mutex::new(()),
             yielding: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
             no_gpu_until: Mutex::new(None),
             me: Weak::clone(me),
         })
@@ -567,6 +570,11 @@ impl SpeechServer {
     /// The server, started if it is not running, claimed until the lease is dropped.
     pub async fn acquire(self: &Arc<Self>) -> Result<SpeechLease, SpeechError> {
         let _gate = self.gate.lock().await;
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(SpeechError::Setup(
+                "the daemon is shutting down; local speech-to-text is not available".into(),
+            ));
+        }
         if let Some(lease) = self.claim_running() {
             return Ok(lease);
         }
@@ -699,6 +707,7 @@ impl SpeechServer {
 
     /// Stops the server for good, in use or not: the daemon is shutting down.
     pub async fn shutdown(&self) {
+        self.closed.store(true, Ordering::SeqCst);
         let _gate = self.gate.lock().await;
         self.stop_running("the daemon stopped").await;
     }

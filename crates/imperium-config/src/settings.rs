@@ -390,7 +390,8 @@ impl Settings {
                 "--inference-path" | "--host" | "--port" | "-m" | "--model"
             ) {
                 return Err(format!(
-                    "voice.local.extra_args may not set {name}: the daemon chooses the model,                      address and route itself (use voice.local.model)"
+                    "voice.local.extra_args may not set {name}: the daemon chooses the model, \
+                     address and route itself (use voice.local.model)"
                 ));
             }
         }
