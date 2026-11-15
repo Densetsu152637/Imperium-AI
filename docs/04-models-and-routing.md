@@ -949,8 +949,17 @@ that is not installed is remembered for the life of the daemon; one that fails i
 after three failures in a row, so a broken driver cannot slow every refresh. Every figure is
 range-checked, and a GPU whose memory in use is not reported counts as half free for planning
 (neither all of it nor none). The AMD and Intel formats were written from the vendors'
-documentation and are tested on sample output, not yet on hardware; Windows AMD and Intel GPUs
-are not read. A runtime build drives one vendor's GPUs, so the budget counts NVIDIA's when there
+documentation and are tested on captured sample output (`tests/fixtures/gpu`: `rocm-smi`,
+`xpu-smi`, DRM `fdinfo`, the Windows counters), not yet on hardware.
+On Windows, AMD and Intel (Arc, Flex, Data Center) GPUs come from one PowerShell run
+(`Get-CimInstance Win32_VideoController`, the display class registry key's
+`HardwareInformation.qwMemorySize` for the real size, since `AdapterRAM` saturates below 4 GiB,
+and the `GPU Adapter Memory` counters), at most every 5 s and without `unsafe` (reading DXGI
+would need it). Accuracy limits: the counters are named by adapter LUID, so the memory in use is
+filled in only when the machine has a single PCI display adapter and otherwise stays unknown
+(half free for planning); utilisation and temperature are not read; counter names are English,
+so a localised Windows gives no memory in use; an integrated Intel GPU is not listed, as on
+Linux. A runtime build drives one vendor's GPUs, so the budget counts NVIDIA's when there
 are any, else the first AMD or Intel GPU's vendor, and only a GPU with at least 4 GiB (an
 integrated GPU's carve-out is not worth offloading to); the others are shown in the monitor, not
 planned on, and with no usable GPU models run on the CPU. Because the GPU names are part of the
@@ -983,7 +992,7 @@ higher ratio counts in full: a quiet run does not lower what a busy one showed.
 A reading is used only when a benchmark run answered all its prompts, from the server process
 that loaded the model (a restart resets the peak), for a llama.cpp model without a draft that is
 wholly on the GPU, wholly in RAM, or in unified memory. Split placements and vLLM models are not
-calibrated, and a lane whose figure is unknown (per-process VRAM under WDDM) is skipped. A ratio
+calibrated, and a lane whose figure is unknown (no per-process VRAM from `nvidia-smi`, `fdinfo` or the Windows counters) is skipped. A ratio
 outside 0.7 to 2.0 is a bad measurement (the wrong process, a failed load) and is discarded, not
 clamped.
 
@@ -1003,12 +1012,17 @@ unsubscribes it), so an idle daemon reads nothing. A snapshot holds:
 - **Machine:** CPU total and per core, RAM and swap used and total (`sysinfo`), and per NVIDIA
   GPU its utilisation, VRAM used and total, and temperature, read through `nvidia-smi` (NVML's
   counters); AMD, Intel and Apple Silicon GPUs are listed after the NVIDIA ones with the
-  figures their tools give (`rocm-smi`, `xpu-smi` or `sysfs`; Apple's GPU shows the machine's
-  memory in use and no utilisation) and `vendor` `amd`, `intel` or `apple`. Without any
+  figures their tools give (`rocm-smi`, `xpu-smi` or `sysfs` on Linux, the PowerShell counters on
+  Windows; Apple's GPU shows the machine's memory in use and no utilisation) and `vendor` `amd`, `intel` or `apple`. Without any
   supported GPU the list is empty.
 - **Processes:** `imperium-core` itself and each model server (`llama-server`, `vllm`) with
-  its pid, CPU share of the whole machine, RAM, and VRAM when the driver reports it per
-  process (it does not on Windows under WDDM).
+  its pid, CPU share of the whole machine, RAM, and VRAM when it can be read per process:
+  `nvidia-smi`'s figure for NVIDIA; on Linux also the video memory of the process's DRM clients
+  in `/proc/<pid>/fdinfo` (`amdgpu`'s `drm-memory-vram`, `xe`'s and `i915`'s `drm-resident-vram*`
+  / `drm-total-local*`; each client once, readable for the daemon's own user's processes only),
+  added to NVIDIA's; on Windows, where `nvidia-smi` gives none under WDDM, the `GPU Process
+  Memory` counters' dedicated memory (on every adapter together, not one vendor's). A process
+  no source reports shows none, never zero.
 - **Local models:** every model the supervisor holds, in use or idle (cached until it
   unloads): runtime, placement (`gpu`, `partial` with its GPU layers, or `cpu`), whether it is
   pinned to the CPU lane, the context one session may use, its KV pool and the tokens running

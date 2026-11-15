@@ -14,7 +14,13 @@
 //! - Apple Silicon: `sysctl` for the chip's name and the unified memory, which the GPU shares
 //!   with the CPU.
 //!
-//! The formats are written from the vendors' documentation, not captured from hardware. Every
+//! - Windows (AMD, Intel Arc): one PowerShell run of `Win32_VideoController`, the display class
+//!   registry key and the `GPU Adapter Memory` counters ([`crate::gpu_windows`], with its accuracy
+//!   limits). Per-process memory comes from `/proc/<pid>/fdinfo` on Linux
+//!   ([`crate::gpu_fdinfo`]) and the `GPU Process Memory` counters on Windows.
+//!
+//! The formats are written from the vendors' documentation and checked against sample output
+//! (`tests/fixtures/gpu`), not read from hardware. Every
 //! number is range-checked, and a GPU whose memory in use is not reported has it unknown
 //! ([`Reading::vram_used_bytes`] is `None`), never zero.
 //!
@@ -28,6 +34,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+
+use crate::{gpu_fdinfo, gpu_windows};
 
 const MIB: u64 = 1024 * 1024;
 /// The most memory a GPU is believed to have; a larger figure is a parsing error.
@@ -136,13 +144,13 @@ pub(crate) fn run_tool_for(program: &str, args: &[&str], timeout: Duration) -> T
 }
 
 /// What the process has learned about one vendor tool.
-struct ToolState {
+pub(crate) struct ToolState {
     missing: AtomicBool,
     failures: AtomicU32,
 }
 
 impl ToolState {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         ToolState {
             missing: AtomicBool::new(false),
             failures: AtomicU32::new(0),
@@ -150,7 +158,7 @@ impl ToolState {
     }
 
     /// Runs the tool unless it is known to be missing or has failed too often.
-    fn run(&self, program: &str, args: &[&str]) -> Option<String> {
+    pub(crate) fn run(&self, program: &str, args: &[&str]) -> Option<String> {
         if self.missing.load(Ordering::Relaxed)
             || self.failures.load(Ordering::Relaxed) >= MAX_FAILURES
         {
@@ -185,12 +193,15 @@ pub struct VendorProbe;
 
 impl VendorProbe {
     /// Every AMD, Intel and Apple GPU now. `ram_total_bytes` and `ram_used_bytes` are the
-    /// machine's, which Apple Silicon's GPU shares. AMD and Intel GPUs are read on Linux only.
+    /// machine's, which Apple Silicon's GPU shares. AMD and Intel GPUs are read on Linux and Windows.
     pub fn read(&mut self, ram_total_bytes: u64, ram_used_bytes: u64) -> Vec<Reading> {
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             return apple_gpu(ram_total_bytes, ram_used_bytes)
                 .into_iter()
                 .collect();
+        }
+        if cfg!(windows) {
+            return gpu_windows::snapshot().gpus;
         }
         if !cfg!(target_os = "linux") {
             return Vec::new();
@@ -198,6 +209,26 @@ impl VendorProbe {
         let mut gpus = amd();
         gpus.extend(intel());
         gpus
+    }
+
+    /// `(pid, bytes)` of GPU memory the processes `pids` hold, where the platform says: on Linux
+    /// the video memory of the DRM clients in `/proc/<pid>/fdinfo` (AMD, Intel; `nvidia-smi`
+    /// reports NVIDIA's), on Windows the dedicated memory of the GPU process counters on every
+    /// adapter together ([`gpu_windows`]). A process with no figure is left out.
+    pub fn process_vram(&mut self, pids: &[u32]) -> Vec<(u32, u64)> {
+        if cfg!(windows) {
+            return gpu_windows::snapshot()
+                .process_vram
+                .into_iter()
+                .filter(|(pid, _)| pids.contains(pid))
+                .collect();
+        }
+        if !cfg!(target_os = "linux") {
+            return Vec::new();
+        }
+        pids.iter()
+            .filter_map(|pid| Some((*pid, gpu_fdinfo::process_vram(Path::new("/proc"), *pid)?)))
+            .collect()
     }
 }
 
@@ -731,5 +762,75 @@ mod tests {
         let gpus = sysfs_gpus(dir.path());
         assert_eq!(gpus[0].vram_used_bytes, None);
         assert_eq!(gpus[0].vram_free_bytes(), 4 * GIB);
+    }
+
+    // Output laid out as the tools print it, kept in `tests/fixtures/gpu`.
+    const ROCM_SMI_6: &str = include_str!("../tests/fixtures/gpu/rocm-smi-6.json");
+    const ROCM_SMI_NA: &str =
+        include_str!("../tests/fixtures/gpu/rocm-smi-unsupported-fields.json");
+    const XPU_DISCOVERY_SAMPLE: &str = include_str!("../tests/fixtures/gpu/xpu-smi-discovery.json");
+    const XPU_STATS_SAMPLE: &str = include_str!("../tests/fixtures/gpu/xpu-smi-stats.json");
+
+    #[test]
+    fn rocm_smi_sample_output_parses() {
+        let gpus = parse_rocm_smi(ROCM_SMI_6);
+        assert_eq!(gpus.len(), 2, "{gpus:?}");
+        assert_eq!(gpus[0].name, "Navi 31 [Radeon RX 7900 XT/7900 XTX]");
+        assert_eq!(gpus[0].vram_total_bytes, 25_753_026_560);
+        assert_eq!(gpus[0].vram_used_bytes, Some(598_671_360));
+        assert_eq!(gpus[0].utilization_percent, Some(3.0));
+        // The edge sensor is preferred.
+        assert_eq!(gpus[0].temperature_c, Some(38.0));
+        assert_eq!(gpus[0].driver.as_deref(), Some("6.8.5"));
+        assert_eq!(gpus[1].name, "Raphael");
+        assert_eq!(gpus[1].vram_total_bytes, 512 * MIB);
+    }
+
+    #[test]
+    fn rocm_smi_not_available_fields_are_unknown() {
+        let gpus = parse_rocm_smi(ROCM_SMI_NA);
+        assert_eq!(gpus.len(), 1, "{gpus:?}");
+        assert_eq!(gpus[0].vram_total_bytes, 68_702_699_520);
+        assert_eq!(gpus[0].vram_used_bytes, None);
+        assert_eq!(gpus[0].utilization_percent, None);
+        // The edge sensor says N/A, so the junction one is used.
+        assert_eq!(gpus[0].temperature_c, Some(41.0));
+    }
+
+    #[test]
+    fn xpu_smi_sample_output_parses() {
+        let mut devices = parse_xpu_smi_discovery(XPU_DISCOVERY_SAMPLE);
+        assert_eq!(devices.len(), 2, "{devices:?}");
+        assert_eq!(devices[0].0, 0);
+        assert_eq!(devices[0].1.vram_total_bytes, 136_902_082_560);
+        let (id, gpu) = &mut devices[1];
+        assert_eq!(*id, 1);
+        assert_eq!(gpu.vram_total_bytes, 17_071_734_784);
+        assert_eq!(gpu.driver, None);
+        apply_xpu_smi_stats(gpu, XPU_STATS_SAMPLE);
+        // 903.12 MiB; a null metric and the per-tile section are ignored.
+        assert_eq!(gpu.vram_used_bytes, Some((903.12 * MIB as f64) as u64));
+        assert_eq!(gpu.utilization_percent, Some(2.5));
+        assert_eq!(gpu.temperature_c, Some(41.0));
+    }
+
+    #[test]
+    fn truncated_tool_output_gives_no_gpus_and_no_panic() {
+        for sample in [
+            ROCM_SMI_6,
+            ROCM_SMI_NA,
+            XPU_DISCOVERY_SAMPLE,
+            XPU_STATS_SAMPLE,
+        ] {
+            for end in (0..sample.len()).step_by(7) {
+                let Some(cut) = sample.get(..end) else {
+                    continue;
+                };
+                let _ = parse_rocm_smi(cut);
+                let _ = parse_xpu_smi_discovery(cut);
+                let mut gpu = Reading::default();
+                apply_xpu_smi_stats(&mut gpu, cut);
+            }
+        }
     }
 }
