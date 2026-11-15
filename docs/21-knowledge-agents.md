@@ -1,6 +1,6 @@
 # 21 — Knowledge agents
 
-**Stage 1 implemented** (engine core and contract, protocol 0.37); stages 2 and 3 are designed,
+**Stage 1 implemented** (engine core and contract, protocol 0.38); stages 2 and 3 are designed,
 not built ([roadmap item 45](12-roadmap.md#next-in-order)). Agents of a session can
 ask questions of other agents that keep context they already loaded. A research subagent that
 read a module, a specification or a set of pages stays available as a **knowledge agent**: the
@@ -263,7 +263,7 @@ be self-contained, like briefs.
 
 ## Visibility
 
-**Protocol 0.37** (additive):
+**Protocol 0.38** (additive):
 
 - `AgentSummary.knowledge: Option<KnowledgeCard>`.
 - Session events: `knowledge_changed` (`agent_id`, the card, or `retired`),
@@ -313,7 +313,7 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
 
 ## Implementation plan
 
-1. **Engine core and contract (protocol 0.37) (implemented).** Tool definitions and schemas
+1. **Engine core and contract (protocol 0.38) (implemented).** Tool definitions and schemas
    (`ask_agent`, `list_knowledge_agents`, `keep_as_knowledge`, `spawn_agent.knowledge`); the card
    and the frozen prefix and tool specs on the agent record, `AgentSummary.knowledge`, sources from
    the conversation; a `can_ask` flag beside `can_delegate`; the question queue; forks under a

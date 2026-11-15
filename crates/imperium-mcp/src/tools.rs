@@ -1,20 +1,23 @@
 //! A session's MCP servers as a [`ToolProvider`]: started before the session's first turn, their
 //! tools offered as `mcp__<server>__<tool>`.
 
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use imperium_api::{
     StartFuture, ToolCheck, ToolContext, ToolFuture, ToolGroup, ToolProvider, ToolSpec,
     truncate_chars,
 };
 
-use crate::{McpServers, ServerSpec};
+use crate::{McpServers, ServerSpec, TokenSource};
 
 /// MCP servers for one session. Until [`ToolProvider::start`] connects them it offers no tools.
 #[derive(Debug, Default)]
 pub struct McpTools {
     /// Servers waiting to be started.
     pending: Mutex<Vec<ServerSpec>>,
+    /// OAuth access tokens for the HTTP servers the user signs in to, by server name.
+    auths: HashMap<String, Arc<dyn TokenSource>>,
     servers: OnceLock<McpServers>,
 }
 
@@ -22,8 +25,16 @@ impl McpTools {
     pub fn new(specs: Vec<ServerSpec>) -> Self {
         McpTools {
             pending: Mutex::new(specs),
+            auths: HashMap::new(),
             servers: OnceLock::new(),
         }
+    }
+
+    /// Gives the named HTTP servers OAuth access tokens.
+    #[must_use]
+    pub fn with_auth(mut self, auths: HashMap<String, Arc<dyn TokenSource>>) -> Self {
+        self.auths = auths;
+        self
     }
 
     fn servers(&self) -> Option<&McpServers> {
@@ -44,7 +55,7 @@ impl ToolProvider for McpTools {
             if specs.is_empty() {
                 return Vec::new();
             }
-            let (servers, failed) = McpServers::connect(specs).await;
+            let (servers, failed) = McpServers::connect_with(specs, self.auths.clone()).await;
             let _ = self.servers.set(servers);
             failed
                 .into_iter()

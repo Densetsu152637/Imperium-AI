@@ -66,8 +66,8 @@ use imperium_protocol::methods::{
     ModelDownloadCancelResult, ModelDownloads, ModelDownloadsParams, ModelDownloadsResult,
 };
 use imperium_protocol::methods::{
-    McpCatalog, McpCatalogParams, McpInstall, McpList, McpListParams, McpRemove, McpSave,
-    McpSetEnabled, McpTest,
+    McpCatalog, McpCatalogParams, McpInstall, McpList, McpListParams, McpLogin, McpLogout,
+    McpRemove, McpSave, McpSetEnabled, McpTest,
 };
 use imperium_protocol::methods::{
     ModelAddEndpoint, ModelAddEndpointParams, ModelFolderAdd, ModelFolderRemove, ModelTest,
@@ -454,6 +454,12 @@ impl Connection {
             }),
             McpTest::NAME => call_later::<McpTest, _>(request.params, &mut later, |params| {
                 crate::connectors::test(Arc::clone(&self.state), params)
+            }),
+            McpLogin::NAME => call_later::<McpLogin, _>(request.params, &mut later, |params| {
+                crate::connectors::login(Arc::clone(&self.state), params)
+            }),
+            McpLogout::NAME => call_later::<McpLogout, _>(request.params, &mut later, |params| {
+                crate::connectors::logout(Arc::clone(&self.state), params)
             }),
             Ping::NAME => call::<Ping>(request.params, |_: PingParams| {
                 Ok(PingResult {
@@ -2206,6 +2212,62 @@ mod tests {
         assert!(
             matches!(response.outcome, Outcome::Error(ref error) if error.code == codes::INVALID_PARAMS)
         );
+    }
+
+    #[tokio::test]
+    async fn signing_in_is_offered_only_to_remote_servers_without_a_token_of_their_own() {
+        let (_home, _paths, _secrets, mut connection) = connectors_connection();
+        result(connection.handle_text(&request(
+            2,
+            McpSave::NAME,
+            json!({"name": "local", "config": {"command": "x"}}),
+        )));
+        result(connection.handle_text(&request(
+            3,
+            McpSave::NAME,
+            json!({
+                "name": "fixed",
+                "config": {"url": "https://example.com/mcp", "bearer_secret": "mcp.fixed.token"},
+                "secrets": {"mcp.fixed.token": "t"}
+            }),
+        )));
+        result(connection.handle_text(&request(
+            4,
+            McpSave::NAME,
+            json!({"name": "open", "config": {"url": "https://example.com/open"}}),
+        )));
+        for (id, name) in [(5, "local"), (6, "fixed"), (7, "missing")] {
+            let handled =
+                connection.handle_text(&request(id, McpLogin::NAME, json!({"name": name})));
+            let response = handled.deferred.expect("a deferred reply").await;
+            assert!(
+                matches!(response.outcome, Outcome::Error(ref error) if error.code == codes::INVALID_PARAMS),
+                "{name}: {response:?}"
+            );
+        }
+
+        // Signing out of a server that was never signed in changes nothing.
+        let handled = connection.handle_text(&request(8, McpLogout::NAME, json!({"name": "open"})));
+        let response = handled.deferred.expect("a deferred reply").await;
+        let Outcome::Result(signed_out) = response.outcome else {
+            panic!("mcp.logout failed: {response:?}");
+        };
+        assert_eq!(signed_out["signed_out"], false);
+
+        // Only a remote server without a token of its own has a sign-in state.
+        let listed = result(connection.handle_text(&request(9, McpList::NAME, json!({}))));
+        let state_of = |name: &str| {
+            listed["servers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|server| server["name"] == name)
+                .map(|server| server["status"]["sign_in"].clone())
+                .unwrap()
+        };
+        assert!(state_of("local").is_null());
+        assert!(state_of("fixed").is_null());
+        assert!(state_of("open").is_null());
     }
 
     #[tokio::test]

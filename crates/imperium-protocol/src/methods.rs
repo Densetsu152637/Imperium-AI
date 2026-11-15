@@ -4238,6 +4238,11 @@ pub struct McpStatus {
     pub checked_at: Option<u64>,
     /// Secrets the server refers to that are not in the secret store.
     pub missing_secrets: Vec<String>,
+    /// Where a remote server's OAuth sign-in stands; `null` for servers that take no sign-in (a
+    /// local command, or a URL with a fixed token or `Authorization` header).
+    #[serde(default)]
+    #[ts(type = "\"signed_in\" | \"signing_in\" | \"needs_sign_in\" | null")]
+    pub sign_in: Option<String>,
 }
 
 /// A plugin folder (Claude Code layout).
@@ -4382,6 +4387,56 @@ impl Method for McpTest {
 #[ts(export)]
 pub struct McpTestParams {
     pub name: String,
+}
+
+/// `mcp.login`: starts an OAuth sign-in to a remote server. The result is the URL the user opens
+/// in their own browser (Imperium never drives a browser for this); the sign-in finishes when
+/// the browser returns to the daemon on `127.0.0.1`, and shows in the server's `sign_in` and
+/// `status` from `mcp.list`. A second `mcp.login` for the same server replaces the first.
+#[derive(Debug)]
+pub struct McpLogin;
+
+impl Method for McpLogin {
+    const NAME: &'static str = "mcp.login";
+    type Params = McpLoginParams;
+    type Result = McpLoginResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpLoginParams {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpLoginResult {
+    /// Where the user signs in; open it in a browser.
+    pub authorization_url: String,
+}
+
+/// `mcp.logout`: signs out of a remote server: revokes its token where the server allows it and
+/// forgets what the keychain held, and cancels a sign-in still waiting for the browser.
+#[derive(Debug)]
+pub struct McpLogout;
+
+impl Method for McpLogout {
+    const NAME: &'static str = "mcp.logout";
+    type Params = McpLogoutParams;
+    type Result = McpLogoutResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpLogoutParams {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpLogoutResult {
+    /// Whether there was a sign-in to remove.
+    pub signed_out: bool,
 }
 
 /// `mcp.catalog`: the connector catalogue, built in and extended or overridden by

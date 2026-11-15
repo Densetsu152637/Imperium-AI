@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod browser;
 mod daemon;
 mod mod_frames;
 mod store;
@@ -85,6 +86,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            browser::open_external,
             daemon::daemon_endpoint,
             daemon::daemon_status,
             daemon::daemon_start,

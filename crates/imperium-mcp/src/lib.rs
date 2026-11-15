@@ -7,12 +7,13 @@
 pub mod client;
 mod extras;
 pub mod mcp_json;
+pub mod oauth;
 pub mod sampling;
 pub mod servers;
 mod tools;
 
-pub use client::{Client, McpError, PROTOCOL_VERSION};
+pub use client::{Client, McpError, PROTOCOL_VERSION, TokenFuture, TokenSource};
 pub use extras::ToolKind;
 pub use sampling::Sampling;
-pub use servers::{Failed, Launch, McpServers, McpTool, ServerSpec, qualified_name};
+pub use servers::{Failed, Launch, McpServers, McpTool, NEEDS_SIGN_IN, ServerSpec, qualified_name};
 pub use tools::McpTools;

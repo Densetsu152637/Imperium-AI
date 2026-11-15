@@ -641,7 +641,7 @@ pub struct AgentSummary {
     /// When its state last changed, in milliseconds since the Unix epoch.
     #[ts(type = "number")]
     pub updated_at_ms: u64,
-    // Set while the agent is kept as a knowledge agent (protocol 0.37).
+    // Set while the agent is kept as a knowledge agent (protocol 0.38).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub knowledge: Option<KnowledgeCard>,
