@@ -502,6 +502,24 @@ and `environments.agent_update` (protocol 0.28)
     machine's hardware, download progress and resume on the card itself, checksum verification,
     making the downloaded model the default (or assigning Emperor and Consul to their roles),
     and offering the suggestion again from the Local models panel.
+45. **Knowledge agents** (designed). Subagents ask questions of other subagents: a research
+    subagent that has loaded context (files, specifications, pages) is kept as a knowledge agent
+    with a card (topic, sources, size), and the root and other subagents call `ask_agent`
+    instead of searching and reading the same material themselves. Each question runs in an
+    ephemeral fork that sends the kept conversation, system message and tool list unchanged and
+    may call only read and web tools (checked at dispatch; anything that would ask is refused),
+    queued per knowledge agent with timeouts and cancellation; nothing from a question is kept;
+    answers are framed as data; knowledge agents never ask, so no cycle can form. Own session
+    only, at most four per session, explicit promotion (no writers, chunk agents or oversized
+    conversations), local slots saved after each answer and restored before the next, the
+    knowledge agent's model or a refusal (no fallback), kept across restarts with agent state.
+    Research meant to be kept is routed to Emperor by default (falling back to normal routing
+    while Emperor is in training or turned off); a promoted agent keeps its model. A question's
+    time limit is 300 s by default (600 at most), paused while the session is stopped.
+    Protocol 0.37 (`ask_agent`, `list_knowledge_agents`, `keep_as_knowledge`,
+    `knowledge_changed`/`question_asked`/`question_answered` events, `session.agent_knowledge`).
+    Three stages: engine and contract; local residency; clients and prompts
+    ([21](21-knowledge-agents.md), [03](03-agent-engine.md#knowledge-agents-designed)).
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
