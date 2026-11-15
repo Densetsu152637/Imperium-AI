@@ -28,7 +28,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::net::IpAddr;
+use std::sync::{Arc, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -50,6 +51,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BODY: usize = 1 << 20;
 /// A token expiring within this many seconds is refreshed before use.
 const REFRESH_SKEW_SECS: u64 = 60;
+/// No access token is trusted to live longer than this, whatever `expires_in` says.
+const MAX_LIFETIME_SECS: u64 = 365 * 24 * 3600;
 const CALLBACK_PATH: &str = "/callback";
 const CLIENT_NAME: &str = "Imperium";
 
@@ -111,10 +114,27 @@ struct Meta {
     scope: Option<String>,
 }
 
+#[derive(Clone)]
 struct Stored {
     meta: Meta,
     access: Option<String>,
     refresh: Option<String>,
+}
+
+/// The client registration kept for reuse: the next sign-in to the same authorization server
+/// reuses it (and the port it was registered with) instead of registering again.
+#[derive(Serialize, Deserialize)]
+struct ClientRecord {
+    issuer: String,
+    client_id: String,
+    #[serde(default)]
+    client_secret: Option<String>,
+    port: u16,
+}
+
+fn load_client(store: &dyn CredentialStore, server: &str) -> Option<ClientRecord> {
+    let text = store.load(&key(server, "client")).ok().flatten()?;
+    serde_json::from_str(&text).ok()
 }
 
 fn load(store: &dyn CredentialStore, server: &str) -> Result<Option<Stored>, OAuthError> {
@@ -168,6 +188,13 @@ pub fn forget(store: &dyn CredentialStore, server: &str) -> Result<bool, OAuthEr
     Ok(found)
 }
 
+/// Removes everything stored for `server`, including the client registration kept for reuse.
+pub fn forget_all(store: &dyn CredentialStore, server: &str) -> Result<bool, OAuthError> {
+    let found = forget(store, server)?;
+    let registration = store.delete(&key(server, "client")).map_err(store_error)?;
+    Ok(found || registration)
+}
+
 /// Whether `server` has a sign-in stored for exactly `url` (tokens for another URL do not count).
 pub fn is_signed_in(store: &dyn CredentialStore, server: &str, url: &str) -> bool {
     let Ok(parsed) = Url::parse(url) else {
@@ -188,17 +215,61 @@ fn now_secs() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
+/// When a token that lives `expires_in` seconds expires (clamped, never overflowing).
+fn expiry(expires_in: u64) -> u64 {
+    now_secs().saturating_add(expires_in.min(MAX_LIFETIME_SECS))
+}
+
 // ---- URLs ----
 
-/// Parses `text` and accepts only `https`, or `http` to a loopback host (for development and
-/// tests), without credentials in the URL.
-fn secure_url(text: &str, what: &str) -> Result<Url, OAuthError> {
+fn host_ip(url: &Url) -> Option<IpAddr> {
+    url.host_str()?.trim_matches(['[', ']']).parse().ok()
+}
+
+fn is_loopback(url: &Url) -> bool {
+    url.host_str() == Some("localhost") || host_ip(url).is_some_and(|ip| ip.is_loopback())
+}
+
+/// Loopback, private, link-local or unspecified addresses (and `localhost`).
+fn is_local(url: &Url) -> bool {
+    if url.host_str() == Some("localhost") {
+        return true;
+    }
+    match host_ip(url) {
+        Some(IpAddr::V4(ip)) => {
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+        }
+        Some(IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || first & 0xfe00 == 0xfc00
+                || first & 0xffc0 == 0xfe80
+        }
+        None => false,
+    }
+}
+
+/// Parses `text` and accepts only `https`, or `http` to a loopback host when the server being
+/// signed in to is itself local (`public` is false: development and tests), without credentials
+/// in the URL. When the server is public, an address that points at the local machine or a
+/// private network is refused too, so a public server cannot aim Imperium at one.
+fn secure_url(text: &str, what: &str, public: bool) -> Result<Url, OAuthError> {
     let url = Url::parse(text)
         .map_err(|error| OAuthError(format!("{what} ({text}) is not a URL: {error}")))?;
-    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-    let scheme_ok = url.scheme() == "https" || (url.scheme() == "http" && loopback);
+    let scheme_ok =
+        url.scheme() == "https" || (url.scheme() == "http" && !public && is_loopback(&url));
     if !scheme_ok {
         return fail(format!("{what} ({text}) must use https"));
+    }
+    if public && is_local(&url) {
+        return fail(format!(
+            "{what} ({text}) is a local or private address, which a public server may not name"
+        ));
     }
     if !url.username().is_empty() || url.password().is_some() {
         return fail(format!("{what} ({text}) must not carry credentials"));
@@ -249,6 +320,18 @@ fn http_client() -> Result<reqwest::Client, OAuthError> {
         .map_err(|error| OAuthError(format!("could not set up HTTP: {error}")))
 }
 
+/// The body of a response, refused once it passes [`MAX_BODY`] (checked as it arrives).
+async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if body.len() + chunk.len() > MAX_BODY {
+            return Err("answered with too much data".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 async fn fetch_json(http: &reqwest::Client, url: &str) -> Result<Value, OAuthError> {
     let response = http
         .get(url)
@@ -260,13 +343,9 @@ async fn fetch_json(http: &reqwest::Client, url: &str) -> Result<Value, OAuthErr
     if !status.is_success() {
         return fail(format!("{url} answered HTTP {status}"));
     }
-    let bytes = response
-        .bytes()
+    let bytes = read_limited(response)
         .await
         .map_err(|error| OAuthError(format!("could not read {url}: {error}")))?;
-    if bytes.len() > MAX_BODY {
-        return fail(format!("{url} answered with too much data"));
-    }
     serde_json::from_slice(&bytes)
         .map_err(|error| OAuthError(format!("{url} did not answer with JSON: {error}")))
 }
@@ -378,18 +457,24 @@ async fn probe(http: &reqwest::Client, url: &Url) -> Result<Challenge, OAuthErro
     Ok(Challenge::default())
 }
 
-/// The metadata must describe this server: same origin, and a path that covers it.
+/// Whether `path` is `prefix` or lies below it, segment by segment (`/mcp` covers `/mcp/x`, not
+/// `/mcpx`).
+fn path_covers(prefix: &str, path: &str) -> bool {
+    let prefix = prefix.trim_end_matches('/');
+    prefix.is_empty() || path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
+/// The metadata must name a `resource` and it must describe this server: same origin, and a
+/// path that covers it.
 fn check_resource(document: &Value, resource: &Url) -> Result<(), OAuthError> {
     let Some(claimed) = document.get("resource").and_then(Value::as_str) else {
-        return Ok(());
+        return fail("the protected resource metadata names no resource; refusing it");
     };
     let claimed = Url::parse(claimed).map_err(|_| {
         OAuthError("the protected resource metadata names a resource that is not a URL".into())
     })?;
-    let covers = origin_of(&claimed) == origin_of(resource)
-        && resource
-            .path()
-            .starts_with(claimed.path().trim_end_matches('/'));
+    let covers =
+        origin_of(&claimed) == origin_of(resource) && path_covers(claimed.path(), resource.path());
     if covers {
         Ok(())
     } else {
@@ -403,10 +488,11 @@ async fn discover(
     http: &reqwest::Client,
     resource: &Url,
     challenge: &Challenge,
+    public: bool,
 ) -> Result<Endpoints, OAuthError> {
     let candidates = match &challenge.resource_metadata {
         Some(location) => {
-            secure_url(location, "the resource metadata URL")?;
+            secure_url(location, "the resource metadata URL", public)?;
             vec![location.clone()]
         }
         None => well_known(resource, "oauth-protected-resource"),
@@ -441,11 +527,9 @@ async fn discover(
     }
     // Without resource metadata the server's own origin is taken to be the authorization server
     // (the earlier revision of the specification).
-    let issuer = match issuer {
-        Some(issuer) => secure_url(&issuer, "the authorization server")?,
-        None => secure_url(&origin_of(resource), "the authorization server")?,
-    };
-    let mut endpoints = authorization_server(http, &issuer).await?;
+    let issuer_text = issuer.unwrap_or_else(|| origin_of(resource));
+    let issuer = secure_url(&issuer_text, "the authorization server", public)?;
+    let mut endpoints = authorization_server(http, &issuer, &issuer_text, public).await?;
     endpoints.scope = scope;
     Ok(endpoints)
 }
@@ -453,8 +537,14 @@ async fn discover(
 async fn authorization_server(
     http: &reqwest::Client,
     issuer: &Url,
+    issuer_text: &str,
+    public: bool,
 ) -> Result<Endpoints, OAuthError> {
-    let issuer_text = issuer.as_str().trim_end_matches('/').to_string();
+    if issuer.query().is_some() || issuer.fragment().is_some() {
+        return fail(format!(
+            "the authorization server {issuer_text} carries a query or fragment; refusing it"
+        ));
+    }
     let origin = origin_of(issuer);
     let path = issuer.path().trim_end_matches('/');
     let candidates = if path.is_empty() {
@@ -474,19 +564,16 @@ async fn authorization_server(
     ));
     for candidate in &candidates {
         match fetch_json(http, candidate).await {
-            Ok(document) => return endpoints_from(&document, &issuer_text),
+            Ok(document) => return endpoints_from(&document, issuer_text, public),
             Err(error) => last = error,
         }
     }
     Err(last)
 }
 
-fn endpoints_from(document: &Value, issuer: &str) -> Result<Endpoints, OAuthError> {
-    let named = document
-        .get("issuer")
-        .and_then(Value::as_str)
-        .map(|named| named.trim_end_matches('/'));
-    if named != Some(issuer) {
+fn endpoints_from(document: &Value, issuer: &str, public: bool) -> Result<Endpoints, OAuthError> {
+    // The issuer the metadata names must be exactly the one it was fetched for (RFC 8414).
+    if document.get("issuer").and_then(Value::as_str) != Some(issuer) {
         return fail(format!(
             "the authorization server metadata does not name {issuer} as its issuer; refusing it"
         ));
@@ -502,7 +589,7 @@ fn endpoints_from(document: &Value, issuer: &str) -> Result<Endpoints, OAuthErro
     }
     let endpoint = |name: &str| -> Result<Option<String>, OAuthError> {
         match document.get(name).and_then(Value::as_str) {
-            Some(text) => Ok(Some(secure_url(text, name)?.to_string())),
+            Some(text) => Ok(Some(secure_url(text, name, public)?.to_string())),
             None => Ok(None),
         }
     };
@@ -552,15 +639,10 @@ async fn register(
             "the authorization server refused to register Imperium (HTTP {status})"
         ));
     }
-    let bytes = response
-        .bytes()
+    let bytes = read_limited(response)
         .await
         .map_err(|error| OAuthError(format!("could not read the registration: {error}")))?;
-    let document: Value = if bytes.len() <= MAX_BODY {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-    } else {
-        Value::Null
-    };
+    let document: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     let Some(client_id) = document
         .get("client_id")
         .and_then(Value::as_str)
@@ -636,16 +718,12 @@ async fn token_request(
         .await
         .map_err(|error| transient(format!("could not reach the token endpoint: {error}")))?;
     let status = response.status();
-    let bytes = response.bytes().await.map_err(|error| {
+    let bytes = read_limited(response).await.map_err(|error| {
         transient(format!(
             "could not read the token endpoint's answer: {error}"
         ))
     })?;
-    let body: Value = if bytes.len() <= MAX_BODY {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-    } else {
-        Value::Null
-    };
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     if !status.is_success() {
         let code = body
             .get("error")
@@ -725,6 +803,8 @@ pub struct PendingLogin {
     client_secret: Option<String>,
     scope: Option<String>,
     timeout: Duration,
+    /// The client registration was kept from an earlier sign-in; dropped again if this one fails.
+    reused_client: bool,
 }
 
 impl fmt::Debug for PendingLogin {
@@ -744,31 +824,68 @@ pub async fn begin(
     url: &str,
     store: Arc<dyn CredentialStore>,
 ) -> Result<PendingLogin, OAuthError> {
-    let resource_url = secure_url(url, "the server URL")?;
+    let resource_url = secure_url(url, "the server URL", false)?;
+    let public = !is_local(&resource_url);
     let http = http_client()?;
     let challenge = probe(&http, &resource_url).await?;
-    let endpoints = discover(&http, &resource_url, &challenge).await?;
-    let Some(registration) = endpoints.registration_endpoint.clone() else {
-        return fail(format!(
-            "{} does not offer dynamic client registration, and registering Imperium by hand is \
-             not supported yet",
-            endpoints.issuer
-        ));
+    let endpoints = discover(&http, &resource_url, &challenge, public).await?;
+    // A registration kept from an earlier sign-in is reused, on the port it was made for, when
+    // that port is free; otherwise Imperium registers again on a fresh random port.
+    let mut reused = None;
+    if let Some(record) =
+        load_client(store.as_ref(), server).filter(|record| record.issuer == endpoints.issuer)
+        && let Ok(listener) = TcpListener::bind(("127.0.0.1", record.port)).await
+    {
+        reused = Some((listener, record));
+    }
+    let reused_client = reused.is_some();
+    let (listener, port, registered) = match reused {
+        Some((listener, record)) => (
+            listener,
+            record.port,
+            Registered {
+                client_id: record.client_id,
+                client_secret: record.client_secret,
+            },
+        ),
+        None => {
+            let Some(registration) = endpoints.registration_endpoint.clone() else {
+                return fail(format!(
+                    "{} does not offer dynamic client registration, and registering Imperium by \
+                     hand is not supported yet",
+                    endpoints.issuer
+                ));
+            };
+            let listener = TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .map_err(|error| OAuthError(format!("could not listen on 127.0.0.1: {error}")))?;
+            let port = listener
+                .local_addr()
+                .map_err(|error| OAuthError(format!("could not read the listening port: {error}")))?
+                .port();
+            let redirect = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
+            let registered = register(&http, &registration, &redirect).await?;
+            let record = ClientRecord {
+                issuer: endpoints.issuer.clone(),
+                client_id: registered.client_id.clone(),
+                client_secret: registered.client_secret.clone(),
+                port,
+            };
+            if let Ok(text) = serde_json::to_string(&record) {
+                let _ = store.store(&key(server, "client"), &text);
+            }
+            (listener, port, registered)
+        }
     };
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .map_err(|error| OAuthError(format!("could not listen on 127.0.0.1: {error}")))?;
-    let port = listener
-        .local_addr()
-        .map_err(|error| OAuthError(format!("could not read the listening port: {error}")))?
-        .port();
     let redirect = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
-    let registered = register(&http, &registration, &redirect).await?;
     let verifier = random_token()?;
     let state = random_token()?;
     let resource = canonical(&resource_url);
-    let mut authorization =
-        secure_url(&endpoints.authorization_endpoint, "authorization_endpoint")?;
+    let mut authorization = secure_url(
+        &endpoints.authorization_endpoint,
+        "authorization_endpoint",
+        public,
+    )?;
     {
         let mut query = authorization.query_pairs_mut();
         query
@@ -801,6 +918,7 @@ pub async fn begin(
         client_secret: registered.client_secret,
         scope: endpoints.scope,
         timeout: LOGIN_TIMEOUT,
+        reused_client,
     })
 }
 
@@ -820,6 +938,15 @@ impl PendingLogin {
     /// Waits for the browser to come back to the loopback listener, checks the response, trades
     /// the code for tokens, and stores them. A response with the wrong `state` is refused.
     pub async fn finish(self) -> Result<(), OAuthError> {
+        let result = self.exchange().await;
+        if result.is_err() && self.reused_client {
+            // The authorization server may have forgotten the client; register afresh next time.
+            let _ = self.store.delete(&key(&self.server, "client"));
+        }
+        result
+    }
+
+    async fn exchange(&self) -> Result<(), OAuthError> {
         let deadline = Instant::now() + self.timeout;
         let code = wait_for_code(
             &self.listener,
@@ -851,7 +978,7 @@ impl PendingLogin {
                 revocation_endpoint: self.revocation_endpoint.clone(),
                 client_id: self.client_id.clone(),
                 client_secret: self.client_secret.clone(),
-                expires_at: now_secs() + response.expires_in,
+                expires_at: expiry(response.expires_in),
                 scope: response.scope.clone().or_else(|| self.scope.clone()),
             },
             access: Some(response.access_token),
@@ -862,8 +989,12 @@ impl PendingLogin {
 }
 
 enum Callback {
+    /// Not a request for the redirect address.
     Ignore,
+    /// A request for it with the wrong `state`: refused, and the listener goes on waiting.
+    Stray,
     Code(String),
+    /// The right `state`, but an error or no code: the sign-in ends.
     Refuse(String),
 }
 
@@ -885,6 +1016,14 @@ async fn wait_for_code(
         };
         match check_callback(&head, port, state) {
             Callback::Ignore => respond(&mut stream, "404 Not Found", "Not found").await,
+            Callback::Stray => {
+                respond(
+                    &mut stream,
+                    "400 Bad Request",
+                    "This sign-in response was not expected and was ignored.",
+                )
+                .await;
+            }
             Callback::Code(code) => {
                 respond(
                     &mut stream,
@@ -974,11 +1113,8 @@ fn check_callback(head: &str, port: u16, state: &str) -> Callback {
         .collect();
     let given = query.get("state").map_or("", String::as_str);
     if !same_secret(given, state) {
-        return Callback::Refuse(
-            "the sign-in response carried a different state than the one Imperium sent; it was \
-             refused"
-                .into(),
-        );
+        // Anything on the loopback address can send this; only the right state ends the flow.
+        return Callback::Stray;
     }
     if let Some(error) = query.get("error") {
         return Callback::Refuse(format!(
@@ -996,11 +1132,19 @@ fn check_callback(head: &str, port: u16, state: &str) -> Callback {
 
 /// The [`TokenSource`] for one server: reads its stored sign-in, refreshes it when it is about
 /// to expire, and never offers it to a URL other than the one it was issued for.
+///
+/// Keep one per server for the life of the daemon and share it between sessions: the refresh
+/// lock it holds is what stops two sessions from using a rotating refresh token twice.
 pub struct OAuthSource {
     server: String,
     store: Arc<dyn CredentialStore>,
     http: reqwest::Client,
+    /// Held while refreshing or signing out.
     refreshing: tokio::sync::Mutex<()>,
+    /// A refreshed sign-in the keychain refused to keep, used for as long as this source lives
+    /// (so a rotated refresh token is not lost); it is dropped as soon as the store takes a newer
+    /// one or is found empty.
+    fallback: std::sync::Mutex<Option<Stored>>,
 }
 
 impl fmt::Debug for OAuthSource {
@@ -1018,17 +1162,52 @@ impl OAuthSource {
             store,
             http: http_client().expect("an HTTP client without redirects builds"),
             refreshing: tokio::sync::Mutex::new(()),
+            fallback: std::sync::Mutex::new(None),
         }
     }
 
-    /// The stored sign-in, if it is for `resource`.
+    fn fallback(&self) -> std::sync::MutexGuard<'_, Option<Stored>> {
+        self.fallback.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The sign-in for `resource`: the stored one, or the in-memory one when it is newer (or the
+    /// keychain cannot be read).
     fn read(&self, resource: &str) -> Option<Stored> {
         match load(self.store.as_ref(), &self.server) {
-            Ok(Some(stored)) if stored.meta.resource == resource => Some(stored),
-            Ok(_) => None,
+            Ok(Some(stored)) if stored.meta.resource == resource => {
+                let mut fallback = self.fallback();
+                match fallback.take() {
+                    Some(kept)
+                        if kept.meta.resource == resource
+                            && kept.meta.expires_at > stored.meta.expires_at =>
+                    {
+                        *fallback = Some(kept.clone());
+                        Some(kept)
+                    }
+                    _ => Some(stored),
+                }
+            }
+            Ok(_) => {
+                *self.fallback() = None;
+                None
+            }
             Err(error) => {
                 tracing::warn!(server = %self.server, %error, "could not read an MCP sign-in");
-                None
+                self.fallback()
+                    .clone()
+                    .filter(|kept| kept.meta.resource == resource)
+            }
+        }
+    }
+
+    /// Writes a refreshed sign-in; if the keychain refuses, keeps it in memory and says so.
+    fn persist(&self, updated: &Stored) {
+        match save(self.store.as_ref(), &self.server, updated) {
+            Ok(()) => *self.fallback() = None,
+            Err(error) => {
+                tracing::warn!(server = %self.server, %error,
+                    "could not store a refreshed MCP token; keeping it in memory until the daemon restarts");
+                *self.fallback() = Some(updated.clone());
             }
         }
     }
@@ -1036,7 +1215,8 @@ impl OAuthSource {
     async fn current(&self, url: &str, force: bool) -> Option<String> {
         let resource = canonical(&Url::parse(url).ok()?);
         let usable = |stored: &Stored| {
-            stored.access.is_some() && stored.meta.expires_at > now_secs() + REFRESH_SKEW_SECS
+            stored.access.is_some()
+                && stored.meta.expires_at > now_secs().saturating_add(REFRESH_SKEW_SECS)
         };
         let stored = self.read(&resource)?;
         if !force && usable(&stored) {
@@ -1061,7 +1241,7 @@ impl OAuthSource {
         match token_request(&self.http, &stored.meta.token_endpoint, &params).await {
             Ok(response) => {
                 let mut meta = stored.meta.clone();
-                meta.expires_at = now_secs() + response.expires_in;
+                meta.expires_at = expiry(response.expires_in);
                 if response.scope.is_some() {
                     meta.scope = response.scope.clone();
                 }
@@ -1074,16 +1254,31 @@ impl OAuthSource {
                         .clone()
                         .or_else(|| Some(refresh_token.clone())),
                 };
-                if let Err(error) = save(self.store.as_ref(), &self.server, &updated) {
-                    tracing::warn!(server = %self.server, %error, "could not store a refreshed MCP token");
-                }
+                self.persist(&updated);
                 Some(response.access_token)
             }
             Err(failure) if failure.permanent => {
-                tracing::warn!(server = %self.server, reason = %failure.message,
-                    "an MCP server's refresh token was rejected; the sign-in was removed");
-                let _ = forget(self.store.as_ref(), &self.server);
-                None
+                // Another session (another process, even) may have used the refresh token a
+                // moment ago and stored the one that replaced it; look again before giving up,
+                // and remove the sign-in only if the refresh token stored is still the one sent.
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                match self.read(&resource) {
+                    Some(again) if again.refresh.as_deref() != Some(refresh_token.as_str()) => {
+                        if usable(&again) {
+                            again.access
+                        } else {
+                            None
+                        }
+                    }
+                    Some(_) => {
+                        tracing::warn!(server = %self.server, reason = %failure.message,
+                            "an MCP server's refresh token was rejected; the sign-in was removed");
+                        let _ = forget(self.store.as_ref(), &self.server);
+                        *self.fallback() = None;
+                        None
+                    }
+                    None => None,
+                }
             }
             Err(failure) => {
                 tracing::warn!(server = %self.server, reason = %failure.message,
@@ -1097,6 +1292,16 @@ impl OAuthSource {
             }
         }
     }
+
+    /// Signs out: waits for a refresh in progress, revokes the token where the authorization
+    /// server offers revocation (best effort), and forgets everything stored (keeping the client
+    /// registration for the next sign-in). Returns whether a sign-in existed.
+    pub async fn logout(&self) -> Result<bool, OAuthError> {
+        let _turn = self.refreshing.lock().await;
+        let kept = self.fallback().take().is_some();
+        let existed = logout(self.store.as_ref(), &self.server).await?;
+        Ok(existed || kept)
+    }
 }
 
 impl TokenSource for OAuthSource {
@@ -1107,6 +1312,7 @@ impl TokenSource for OAuthSource {
 
 /// Signs out of `server`: asks the authorization server to revoke the token where it offers
 /// revocation (best effort), then forgets everything stored. Returns whether a sign-in existed.
+/// Prefer [`OAuthSource::logout`], which also waits for a refresh in progress.
 pub async fn logout(store: &dyn CredentialStore, server: &str) -> Result<bool, OAuthError> {
     let stored = load(store, server).ok().flatten();
     if let Some(stored) = &stored {
@@ -1116,11 +1322,35 @@ pub async fn logout(store: &dyn CredentialStore, server: &str) -> Result<bool, O
     Ok(stored.is_some() || forgotten)
 }
 
+/// A sign-in taken out of the store because its server was removed, still to be revoked.
+pub struct Revocation(Stored);
+
+impl Revocation {
+    /// Asks the authorization server to revoke the token (best effort).
+    pub async fn send(self) {
+        revoke(&self.0).await;
+    }
+}
+
+/// Forgets everything stored for a server that is being removed (the client registration too)
+/// and returns what is needed to revoke its token, if there was a sign-in.
+pub fn forget_for_removal(
+    store: &dyn CredentialStore,
+    server: &str,
+) -> Result<Option<Revocation>, OAuthError> {
+    let stored = load(store, server).ok().flatten();
+    forget_all(store, server)?;
+    Ok(stored.map(Revocation))
+}
+
 async fn revoke(stored: &Stored) {
     let Some(endpoint) = &stored.meta.revocation_endpoint else {
         return;
     };
-    if secure_url(endpoint, "the revocation endpoint").is_err() {
+    let public = Url::parse(&stored.meta.resource)
+        .map(|resource| !is_local(&resource))
+        .unwrap_or(true);
+    if secure_url(endpoint, "the revocation endpoint", public).is_err() {
         return;
     }
     let (token, hint) = match (&stored.refresh, &stored.access) {
@@ -1183,10 +1413,31 @@ mod tests {
         assert_eq!(canonical(&url), "https://example.com/mcp");
         let bare = Url::parse("https://example.com").unwrap();
         assert_eq!(canonical(&bare), "https://example.com");
-        assert!(secure_url("https://example.com/x", "u").is_ok());
-        assert!(secure_url("http://127.0.0.1:9/x", "u").is_ok());
-        assert!(secure_url("http://example.com/x", "u").is_err());
-        assert!(secure_url("https://user:pw@example.com/x", "u").is_err());
+        assert!(secure_url("https://example.com/x", "u", true).is_ok());
+        assert!(secure_url("http://127.0.0.1:9/x", "u", false).is_ok());
+        assert!(secure_url("http://example.com/x", "u", false).is_err());
+        assert!(secure_url("https://user:pw@example.com/x", "u", true).is_err());
+        // A public server may not name loopback, private or link-local addresses, nor use http.
+        assert!(secure_url("http://127.0.0.1:9/x", "u", true).is_err());
+        for local in [
+            "https://127.0.0.1/x",
+            "https://localhost/x",
+            "https://10.1.2.3/x",
+            "https://192.168.0.9/x",
+            "https://169.254.169.254/x",
+            "https://[::1]/x",
+            "https://[fe80::1]/x",
+            "https://[fd00::1]/x",
+        ] {
+            assert!(secure_url(local, "u", true).is_err(), "{local}");
+            assert!(secure_url(local, "u", false).is_ok(), "{local}");
+        }
+        assert!(secure_url("https://93.184.216.34/x", "u", true).is_ok());
+        assert!(
+            path_covers("/mcp", "/mcp") && path_covers("/mcp/", "/mcp/x") && path_covers("", "/a")
+        );
+        assert!(!path_covers("/mcp", "/mcpx") && !path_covers("/mcp", "/other"));
+        assert!(expiry(u64::MAX) + 1 >= now_secs() + MAX_LIFETIME_SECS);
         assert_eq!(
             well_known(&url, "oauth-protected-resource"),
             [
@@ -1205,12 +1456,12 @@ mod tests {
         let wrong_state = head("/callback?code=abc&state=zzz", "127.0.0.1:5000");
         assert!(matches!(
             check_callback(&wrong_state, 5000, "s1"),
-            Callback::Refuse(_)
+            Callback::Stray
         ));
         let no_state = head("/callback?code=abc", "127.0.0.1:5000");
         assert!(matches!(
             check_callback(&no_state, 5000, "s1"),
-            Callback::Refuse(_)
+            Callback::Stray
         ));
         let denied = head("/callback?error=access_denied&state=s1", "127.0.0.1:5000");
         assert!(matches!(

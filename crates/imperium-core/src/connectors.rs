@@ -10,8 +10,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use imperium_config::{McpServerSettings, Paths, SecretName, SecretRef, SetError, Settings};
-use imperium_mcp::oauth::CredentialStore;
+use imperium_config::{
+    McpServerSettings, Paths, SecretName, SecretRef, SecretStore, SetError, Settings,
+};
+use imperium_mcp::oauth::{CredentialStore, OAuthSource};
 use imperium_mcp::{McpServers, NEEDS_SIGN_IN};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
@@ -43,7 +45,16 @@ pub struct StatusCache {
     statuses: Mutex<HashMap<String, McpStatus>>,
     sign_ins: Mutex<HashMap<String, SignIn>>,
     next_sign_in: AtomicU64,
+    /// One token source per server for the life of the daemon, so a refresh in one session
+    /// cannot race a refresh in another over a rotating refresh token.
+    sources: Mutex<HashMap<String, Arc<OAuthSource>>>,
+    /// Whether a server has a sign-in stored, kept for a few seconds: the list is polled while a
+    /// sign-in waits and each answer would otherwise read the keychain several times per server.
+    signed_in: Mutex<HashMap<String, (std::time::Instant, bool)>>,
 }
+
+/// How long a "signed in" answer for `mcp.list` is reused.
+const SIGNED_IN_TTL: Duration = Duration::from_secs(5);
 
 impl StatusCache {
     fn get(&self, name: &str) -> Option<McpStatus> {
@@ -68,6 +79,53 @@ impl StatusCache {
         self.sign_ins
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The shared token source of `name`.
+    pub(crate) fn oauth_source(
+        &self,
+        name: &str,
+        secrets: &Arc<dyn SecretStore>,
+    ) -> Arc<OAuthSource> {
+        let mut sources = self
+            .sources
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(sources.entry(name.to_string()).or_insert_with(|| {
+            let store: Arc<dyn CredentialStore> =
+                Arc::new(crate::mcp::KeychainCredentials(Arc::clone(secrets)));
+            Arc::new(OAuthSource::new(name, store))
+        }))
+    }
+
+    fn drop_source(&self, name: &str) {
+        self.sources
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(name);
+    }
+
+    /// `check()`'s answer for `name`, reused for [`SIGNED_IN_TTL`].
+    fn signed_in(&self, name: &str, check: impl FnOnce() -> bool) -> bool {
+        let mut cache = self
+            .signed_in
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, answer)) = cache.get(name)
+            && at.elapsed() < SIGNED_IN_TTL
+        {
+            return *answer;
+        }
+        let answer = check();
+        cache.insert(name.to_string(), (std::time::Instant::now(), answer));
+        answer
+    }
+
+    fn forget_signed_in(&self, name: &str) {
+        self.signed_in
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(name);
     }
 
     fn signing_in(&self, name: &str) -> bool {
@@ -284,7 +342,10 @@ fn sign_in_state(
         return Some("signing_in".into());
     }
     let store = crate::mcp::KeychainCredentials(Arc::clone(state.secrets()));
-    if imperium_mcp::oauth::is_signed_in(&store, name, url) {
+    let signed_in = state.connector_status().signed_in(name, || {
+        imperium_mcp::oauth::is_signed_in(&store, name, url)
+    });
+    if signed_in {
         return Some("signed_in".into());
     }
     if status
@@ -465,9 +526,20 @@ pub fn remove(
     };
     // A removed server's sign-in goes with it: its tokens are not kept for a server that is gone.
     state.connector_status().cancel_sign_in(&params.name);
+    state.connector_status().drop_source(&params.name);
+    state.connector_status().forget_signed_in(&params.name);
     let store = crate::mcp::KeychainCredentials(Arc::clone(state.secrets()));
-    if let Err(error) = imperium_mcp::oauth::forget(&store, &params.name) {
-        tracing::warn!(server = %params.name, %error, "could not delete a connector's sign-in");
+    match imperium_mcp::oauth::forget_for_removal(&store, &params.name) {
+        // The token is revoked in the background where the authorization server allows it.
+        Ok(Some(revocation)) => {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(revocation.send());
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(server = %params.name, %error, "could not delete a connector's sign-in");
+        }
     }
     if params.forget_secrets {
         for reference in secrets {
@@ -500,7 +572,11 @@ pub async fn test(
         let outcome = match spec {
             Err(reason) => Err(reason),
             Ok(spec) => {
-                let auths = crate::mcp::oauth_sources(std::slice::from_ref(&spec), state.secrets());
+                let auths = crate::mcp::oauth_sources(
+                    std::slice::from_ref(&spec),
+                    state.secrets(),
+                    state.connector_status(),
+                );
                 match tokio::time::timeout(
                     TEST_TIMEOUT,
                     McpServers::connect_with(vec![spec], auths),
@@ -598,6 +674,7 @@ pub async fn login(
                 Ok(()) => {
                     tracing::info!(server = %task_name, "signed in to an MCP server");
                     status.forget(&task_name);
+                    status.forget_signed_in(&task_name);
                 }
                 Err(error) => {
                     tracing::info!(server = %task_name, %error, "an MCP sign-in did not finish");
@@ -614,6 +691,7 @@ pub async fn login(
                     );
                 }
             }
+            status.forget_signed_in(&task_name);
             status.end_sign_in(&task_name, id);
         });
     Ok(McpLoginResult { authorization_url })
@@ -629,11 +707,16 @@ pub async fn logout(
         return Err(invalid(format!("{:?} is not a server name", params.name)));
     }
     let cancelled = state.connector_status().cancel_sign_in(&params.name);
-    let store = crate::mcp::KeychainCredentials(Arc::clone(state.secrets()));
-    let signed_out = imperium_mcp::oauth::logout(&store, &params.name)
+    // The same source the sessions use, so a refresh in progress finishes before the tokens go.
+    let source = state
+        .connector_status()
+        .oauth_source(&params.name, state.secrets());
+    let signed_out = source
+        .logout()
         .await
         .map_err(|error| ErrorObject::new(codes::INTERNAL_ERROR, error.to_string()))?;
     state.connector_status().forget(&params.name);
+    state.connector_status().forget_signed_in(&params.name);
     tracing::info!(server = %params.name, "signed out of an MCP server");
     Ok(McpLogoutResult {
         signed_out: signed_out || cancelled,

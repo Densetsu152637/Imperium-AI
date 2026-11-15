@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use imperium_config::{McpServerSettings, SecretError, SecretName, SecretStore, Settings};
-use imperium_mcp::oauth::{CredentialStore, OAuthSource};
+use imperium_mcp::oauth::CredentialStore;
 use imperium_mcp::{Launch, ServerSpec, TokenSource, mcp_json};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -108,18 +108,19 @@ pub fn takes_sign_in(name: &str, launch: &Launch) -> bool {
 }
 
 /// The OAuth token sources for the servers a session starts, by server name. A server nobody
-/// signed in to simply has no token to offer; starting a session never starts a sign-in.
+/// signed in to simply has no token to offer; starting a session never starts a sign-in. The
+/// sources are the daemon's, one per server, shared by every session (and `mcp.test`), so their
+/// refresh lock covers all of them.
 pub fn oauth_sources(
     specs: &[ServerSpec],
     secrets: &Arc<dyn SecretStore>,
+    cache: &crate::connectors::StatusCache,
 ) -> HashMap<String, Arc<dyn TokenSource>> {
-    let store: Arc<dyn CredentialStore> = Arc::new(KeychainCredentials(Arc::clone(secrets)));
     specs
         .iter()
         .filter(|spec| takes_sign_in(&spec.name, &spec.launch))
         .map(|spec| {
-            let source: Arc<dyn TokenSource> =
-                Arc::new(OAuthSource::new(&spec.name, Arc::clone(&store)));
+            let source: Arc<dyn TokenSource> = cache.oauth_source(&spec.name, secrets);
             (spec.name.clone(), source)
         })
         .collect()

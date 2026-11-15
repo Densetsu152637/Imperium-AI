@@ -42,6 +42,8 @@ struct Inner {
     auth_headers: Vec<Option<String>>,
     mcp_redirect: bool,
     prm_resource: Option<String>,
+    prm_omit_resource: bool,
+    issuer_override: Option<String>,
     // a third origin that must never see anything
     evil_hits: u32,
 }
@@ -91,6 +93,9 @@ async fn as_metadata(State(fake): State<Shared>) -> Json<Value> {
         "registration_endpoint": format!("{base}/register"),
         "code_challenge_methods_supported": ["S256"],
     });
+    if let Some(issuer) = &inner.issuer_override {
+        document["issuer"] = json!(issuer);
+    }
     if inner.no_s256 {
         document["code_challenge_methods_supported"] = json!(["plain"]);
     }
@@ -193,7 +198,11 @@ async fn mcp_protected_resource(State(fake): State<Shared>) -> Json<Value> {
         .prm_resource
         .clone()
         .unwrap_or_else(|| format!("{}/mcp", inner.mcp_base));
-    Json(json!({"resource": resource, "authorization_servers": [inner.as_base]}))
+    let mut document = json!({"resource": resource, "authorization_servers": [inner.as_base]});
+    if inner.prm_omit_resource {
+        document.as_object_mut().unwrap().remove("resource");
+    }
+    Json(document)
 }
 
 fn answer(request: &Value) -> Option<Value> {
@@ -389,6 +398,13 @@ impl Env {
             .unwrap()
     }
 
+    /// Whether none of the three token entries is stored (the client registration may be).
+    fn no_tokens(&self, server: &str) -> bool {
+        oauth::credential_keys(server)
+            .iter()
+            .all(|key| self.memory.load(key).unwrap().is_none())
+    }
+
     fn as_requests(&self) -> Vec<String> {
         self.fake.lock().as_requests.clone()
     }
@@ -464,28 +480,58 @@ async fn signing_in_stores_tokens_and_the_server_then_accepts_them() {
 }
 
 #[tokio::test]
-async fn a_response_with_the_wrong_state_is_refused() {
+async fn a_response_with_the_wrong_state_is_refused_and_the_listener_keeps_waiting() {
     let env = setup().await;
     env.fake.lock().tamper_state = true;
     let pending = oauth::begin("remote", &env.mcp_url, Arc::clone(&env.store))
         .await
         .unwrap();
     let address = pending.authorization_url().to_string();
-    let finishing = tokio::spawn(pending.finish());
+    let port = reqwest::Url::parse(&address)
+        .unwrap()
+        .query_pairs()
+        .find(|(name, _)| name == "redirect_uri")
+        .map(|(_, value)| reqwest::Url::parse(&value).unwrap().port().unwrap())
+        .unwrap();
+    let mut finishing = tokio::spawn(pending.finish());
+
+    // The forged response is answered 400 and gets no further.
     env.browser(&address).await;
-    let error = finishing.await.unwrap().unwrap_err();
-    assert!(error.0.contains("different state"), "{error}");
+    let waiting = tokio::time::timeout(Duration::from_millis(300), &mut finishing).await;
+    assert!(
+        waiting.is_err(),
+        "a forged response must not end the sign-in"
+    );
     assert!(
         !env.as_requests()
             .iter()
             .any(|request| request.starts_with("token:"))
     );
-    assert!(!oauth::is_signed_in(
+    assert!(env.no_tokens("remote"));
+
+    // A stray request does not end it either.
+    let stray = reqwest::get(format!("http://127.0.0.1:{port}/favicon.ico"))
+        .await
+        .unwrap();
+    assert_eq!(stray.status(), 404);
+    let waiting = tokio::time::timeout(Duration::from_millis(200), &mut finishing).await;
+    assert!(waiting.is_err());
+
+    // Only the response with the right state finishes it.
+    env.fake.lock().tamper_state = false;
+    env.browser(&address).await;
+    finishing.await.unwrap().unwrap();
+    assert!(oauth::is_signed_in(
         env.memory.as_ref(),
         "remote",
         &env.mcp_url
     ));
-    assert!(env.memory.0.lock().unwrap().is_empty());
+    let token_requests = env
+        .as_requests()
+        .iter()
+        .filter(|request| request.starts_with("token:"))
+        .count();
+    assert_eq!(token_requests, 1);
 }
 
 #[tokio::test]
@@ -516,6 +562,71 @@ async fn resource_metadata_for_another_server_is_refused() {
         .map(|_| ())
         .unwrap_err();
     assert!(error.0.contains("not this server"), "{error}");
+}
+
+#[tokio::test]
+async fn metadata_that_names_no_resource_or_the_wrong_issuer_is_refused() {
+    let env = setup().await;
+    env.fake.lock().prm_omit_resource = true;
+    let error = oauth::begin("remote", &env.mcp_url, Arc::clone(&env.store))
+        .await
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.0.contains("names no resource"), "{error}");
+
+    let env = setup().await;
+    env.fake.lock().issuer_override = Some("http://127.0.0.1:1".into());
+    let error = oauth::begin("remote", &env.mcp_url, Arc::clone(&env.store))
+        .await
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.0.contains("issuer"), "{error}");
+    assert!(
+        env.as_requests()
+            .iter()
+            .all(|request| request != "register")
+    );
+}
+
+#[tokio::test]
+async fn two_sessions_refreshing_at_once_both_get_a_token_and_the_sign_in_survives() {
+    let env = setup().await;
+    env.sign_in("remote").await;
+    env.expire("remote");
+    // Two separate sources over one store: what two processes (or two sessions of an older
+    // daemon) would be. The authorization server rotates the refresh token, so one of the two
+    // sends a token that was just replaced; it must look again, not sign the server out.
+    let a = OAuthSource::new("remote", Arc::clone(&env.store));
+    let b = OAuthSource::new("remote", Arc::clone(&env.store));
+    let (first, second) = tokio::join!(a.token(&env.mcp_url, false), b.token(&env.mcp_url, false));
+    assert_eq!(first.as_deref(), Some("at-2"));
+    assert_eq!(second.as_deref(), Some("at-2"));
+    assert!(oauth::is_signed_in(
+        env.memory.as_ref(),
+        "remote",
+        &env.mcp_url
+    ));
+    assert_eq!(env.stored("remote", "refresh").as_deref(), Some("rt-2"));
+}
+
+#[tokio::test]
+async fn one_shared_source_refreshes_once_for_concurrent_callers() {
+    let env = setup().await;
+    env.sign_in("remote").await;
+    env.expire("remote");
+    let source = Arc::new(OAuthSource::new("remote", Arc::clone(&env.store)));
+    let (first, second) = tokio::join!(
+        source.token(&env.mcp_url, false),
+        source.token(&env.mcp_url, false)
+    );
+    assert_eq!(first.as_deref(), Some("at-2"));
+    assert_eq!(second.as_deref(), Some("at-2"));
+    let refreshes = env
+        .as_requests()
+        .iter()
+        .filter(|request| request.as_str() == "token:refresh_token")
+        .count();
+    assert_eq!(refreshes, 1);
 }
 
 #[tokio::test]
@@ -576,7 +687,7 @@ async fn a_refresh_token_the_server_rejects_signs_the_server_out() {
         "remote",
         &env.mcp_url
     ));
-    assert!(env.memory.0.lock().unwrap().is_empty());
+    assert!(env.no_tokens("remote"));
 }
 
 #[tokio::test]
@@ -631,11 +742,25 @@ async fn tokens_are_never_offered_to_another_origin() {
 }
 
 #[tokio::test]
-async fn signing_out_revokes_the_token_and_forgets_everything() {
+async fn signing_out_revokes_the_token_forgets_the_tokens_and_keeps_the_registration() {
     let env = setup().await;
     env.sign_in("remote").await;
-    assert!(oauth::logout(env.store.as_ref(), "remote").await.unwrap());
+    let source = OAuthSource::new("remote", Arc::clone(&env.store));
+    assert!(source.logout().await.unwrap());
     assert_eq!(env.fake.lock().revoked, ["rt-1"]);
+    assert!(env.no_tokens("remote"));
+    assert!(!source.logout().await.unwrap());
+
+    // The next sign-in reuses the registration (on the port it was made for, when that is free).
+    env.sign_in("remote").await;
+    let registrations = env.fake.lock().registrations.len();
+    assert!(cfg!(windows) || registrations == 1, "{registrations}");
+
+    // Removing the server revokes and forgets everything, the registration too.
+    let revocation = oauth::forget_for_removal(env.memory.as_ref(), "remote")
+        .unwrap()
+        .unwrap();
+    revocation.send().await;
+    assert_eq!(env.fake.lock().revoked.len(), 2);
     assert!(env.memory.0.lock().unwrap().is_empty());
-    assert!(!oauth::logout(env.store.as_ref(), "remote").await.unwrap());
 }

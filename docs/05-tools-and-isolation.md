@@ -444,11 +444,17 @@ with `extensions.disabled_plugins`.
 A remote (HTTP) server that protects itself with OAuth answers 401 with a `WWW-Authenticate`
 challenge. Imperium follows the MCP authorization specification: it reads the server's protected
 resource metadata (RFC 9728, from the challenge's `resource_metadata` or the well-known
-locations; the metadata must describe this server, the same origin and a path that covers it),
-then the authorization server's metadata (RFC 8414, with the issuer checked). The authorization
+locations; the metadata must name a `resource`, and it must be this server: the same origin
+and a path that covers it segment by segment, so `/mcp` covers `/mcp/x` but not `/mcpx`), then
+the authorization server's metadata (RFC 8414; the issuer it names must equal, exactly, the one
+it was fetched for, and an issuer with a query or fragment is refused). A server that publishes
+no resource metadata at all is treated, as the earlier revision of the specification has it, as
+its own authorization server. The authorization
 server must advertise PKCE with `S256`, or Imperium refuses to sign in. It registers itself there
 as a public native client (RFC 7591 dynamic client registration; a server without a registration
-endpoint is not supported yet) and runs the authorization code flow:
+endpoint is not supported yet) and runs the authorization code flow. The registration is kept
+(with the port it was made for) and reused by the next sign-in to the same authorization server
+when that port is free, and dropped if a sign-in that used it fails:
 
 - **The user's own browser.** The daemon listens on `127.0.0.1` on a random port, builds the
   authorization URL (`response_type=code`, the client id, the loopback `redirect_uri`, a random
@@ -457,26 +463,39 @@ endpoint is not supported yet) and runs the authorization code flow:
   opens it with the system's browser; `imperium mcp login <server>` prints it. Imperium never
   drives a browser for this and learns nothing from it but the redirect.
 - **The redirect is checked.** The listener answers only `GET /callback` addressed to
-  `127.0.0.1:<port>` (so a page cannot reach it through a name it controls) and refuses, ending
-  the sign-in, a response whose `state` differs from the one sent, one that carries an error, or
-  one without a code. The code is exchanged with the PKCE verifier and the `resource` indicator.
-  A sign-in that is not finished within five minutes ends.
+  `127.0.0.1:<port>` (so a page cannot reach it through a name it controls). A request with
+  the wrong `state` is answered 400 and ignored, and so is any stray request: anything on the
+  machine can reach a loopback port, so only the response with the right `state` ends the flow
+  (an error or a missing code with the right `state` ends it as a failure). The code is
+  exchanged with the PKCE verifier and the `resource` indicator. A sign-in that is not finished
+  within five minutes ends.
 - **Storage.** The tokens and the registration go to the keychain through the daemon's secret
   store, never to a config file, a log, or a tool result: `mcp.<server>.oauth.meta` (client
   registration, endpoints, expiry, and the URL the tokens are for), `.access` and `.refresh`
-  (separate entries because a keychain entry may be small). They are bound to the server's URL:
-  a server whose URL changes is signed out, and a token is offered only to exactly the URL it
-  was issued for.
+  (separate entries because a keychain entry may be small), and `.client` (the kept client
+  registration, which signing out keeps and removing the server deletes). They are bound to the
+  server's URL: a server whose URL changes is signed out, and a token is offered only to exactly
+  the URL it was issued for. A lifetime longer than a year is clamped. If the keychain refuses a
+  refreshed token, it is kept in memory for the life of the daemon (and a warning logged) so a
+  rotated refresh token is not lost.
 - **Use.** Every request to the server carries `Authorization: Bearer <token>`, the header
-  marked sensitive. A token within a minute of expiring is refreshed first (one refresh at a
-  time; a rotated refresh token replaces the old one). When the server answers 401 to a token
+  marked sensitive. A token within a minute of expiring is refreshed first. The daemon keeps one
+  token source per server, shared by every session, and its lock makes the refresh single-flight
+  (a rotated refresh token replaces the old one and can be used once); signing out takes the
+  same lock. When the server answers 401 to a token
   it was just given, the token is refreshed once and the request repeated; after that the
   server needs a sign-in. A refresh token the authorization server rejects (`invalid_grant`)
-  signs the server out; a failure to reach it does not.
+  signs the server out, but only after a second look at the store: if the refresh token stored
+  is no longer the one that was sent, another session refreshed first and its token is used
+  instead. A failure to reach the authorization server does not sign anyone out.
 - **Redirects never carry credentials elsewhere.** The HTTP client for an MCP server follows a
   redirect only within the origin it came from, so neither the token nor a configured header
   is replayed to another origin; the authorization server's endpoints are not redirected at all.
-  Endpoints must be `https` (an `http` loopback address is accepted for development).
+  Endpoints must be `https`; `http` is accepted only to a loopback address and only when the
+  server being signed in to is itself local (development, tests). When the server is public,
+  an endpoint, issuer or metadata address that is a literal loopback, private, link-local or
+  unspecified IP address (or `localhost`) is refused, so a public server cannot aim Imperium at
+  the local machine or a private network. Hostnames are not resolved for this check.
 - **Unattended runs never start a sign-in.** Starting a session only reads what is stored. A
   server that needs a sign-in the user has not done (or that expired for good) is a session
   notice: `needs sign-in: run imperium mcp login <server> or use Sign in on the server in
@@ -485,11 +504,19 @@ endpoint is not supported yet) and runs the authorization code flow:
 - **Sign-out.** `mcp.logout` (or `imperium mcp logout <server>`) asks the authorization server to
   revoke the refresh token where it offers a revocation endpoint (best effort), forgets the
   three keychain entries, and cancels a sign-in still waiting for the browser. Removing a server
-  forgets its sign-in too.
+  revokes (in the background, best effort) and forgets its sign-in and its client registration.
 
-A server takes a sign-in only when it is an HTTP server of the user's config without a
-`bearer_token` and without an `Authorization` header of its own (those are fixed credentials and
-are sent as they are). In the desktop app a server row shows *Waiting for sign-in*, *Needs
+A server takes a sign-in only when it is an HTTP server of the user's own configuration
+(`[mcp.servers.<name>]`, including one set through an `IMPERIUM_MCP__SERVERS__*` environment
+variable) without a `bearer_token` and without an `Authorization` header of its own (those are
+fixed credentials and are sent as they are). A server only a repository's `.mcp.json` declares
+is not signed in to: a sign-in is started by name from the user's config.
+
+*Residual risk:* the authorization server is whatever the server's metadata names, and the user
+approves the sign-in in their browser at that address. A malicious MCP server could name a
+legitimate authorization server that ignores the `resource` indicator (RFC 8707); the token it
+issued would then not be limited to that server, though Imperium still sends it only to the URL
+it signed in for. Sign in only to servers you trust. In the desktop app a server row shows *Waiting for sign-in*, *Needs
 sign-in* or *Signed in*, with *Sign in*, *Cancel sign-in* and *Sign out* actions; a sign-in
 that is under way keeps its address on screen so it can be opened again or copied. From the
 command line, `imperium mcp login <server>` prints the address and waits for the result;

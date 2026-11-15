@@ -1897,7 +1897,7 @@ impl DaemonState {
         // Tool providers in the order their tools are offered (MCP tools always come first).
         let mut tools: Vec<Arc<dyn ToolProvider>> = Vec::new();
         if !mcp.is_empty() {
-            let auths = crate::mcp::oauth_sources(&mcp, &self.secrets);
+            let auths = crate::mcp::oauth_sources(&mcp, &self.secrets, self.connector_status());
             tools.push(Arc::new(McpTools::new(mcp).with_auth(auths)));
         }
         if let Some(media) = self.media() {
