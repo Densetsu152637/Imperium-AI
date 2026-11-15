@@ -22,7 +22,7 @@ use tokio::sync::broadcast;
 use crate::state::DaemonState;
 
 /// The source of calls that come through the OpenAI-compatible API server.
-pub const SOURCE_API: &str = "api";
+pub(crate) const SOURCE_API: &str = "api";
 
 /// How many days of usage are kept.
 const KEEP_DAYS: u64 = 400;
@@ -621,7 +621,7 @@ fn weekday(start: WeekStart) -> Weekday {
 }
 
 /// The window holding `today`: its first day and the day after its last.
-pub fn window(
+pub(crate) fn window(
     kind: BudgetWindow,
     today: NaiveDate,
     settings: &BudgetSettings,
@@ -651,7 +651,7 @@ pub fn window(
 // ---- the daemon side ----
 
 /// Records a session's model calls and sends the alerts they set off.
-pub fn watch_session(
+pub(crate) fn watch_session(
     state: &Arc<DaemonState>,
     session_id: String,
     environment_id: Option<String>,
@@ -690,7 +690,7 @@ pub fn watch_session(
 }
 
 /// Records a call today, sends its alerts, and tells clients the new standings.
-pub fn record(state: &DaemonState, call: &CallUsage, session_id: Option<&str>) {
+pub(crate) fn record(state: &DaemonState, call: &CallUsage, session_id: Option<&str>) {
     let today = Local::now().date_naive();
     let fired = state.budgets().record(today, call);
     for alert in fired {
@@ -765,7 +765,7 @@ fn environment_label(state: &DaemonState, id: &str) -> String {
 }
 
 /// The budgets and their standings, for `budgets.get` and `budgets.changed`.
-pub fn result(state: &DaemonState) -> wire::BudgetsResult {
+pub(crate) fn result(state: &DaemonState) -> wire::BudgetsResult {
     let book = state.budgets();
     let today = Local::now().date_naive();
     wire::BudgetsResult {
@@ -793,12 +793,12 @@ fn invalid(message: impl Into<String>) -> ErrorObject {
 }
 
 /// `budgets.get`.
-pub fn get(state: &DaemonState) -> Result<wire::BudgetsResult, ErrorObject> {
+pub(crate) fn get(state: &DaemonState) -> Result<wire::BudgetsResult, ErrorObject> {
     Ok(result(state))
 }
 
 /// `budgets.set`: gives new budgets ids, saves them, and applies them at once.
-pub fn set(
+pub(crate) fn set(
     state: &DaemonState,
     params: wire::BudgetSettings,
 ) -> Result<wire::BudgetsResult, ErrorObject> {
@@ -825,7 +825,7 @@ fn new_id(limits: &[Budget]) -> String {
 }
 
 /// `budgets.usage`.
-pub fn usage(
+pub(crate) fn usage(
     state: &DaemonState,
     params: wire::BudgetsUsageParams,
 ) -> Result<wire::UsageReport, ErrorObject> {
@@ -885,7 +885,11 @@ pub fn usage(
 /// The `-32008` error for a turn a used-up budget stops, unless every budget that stops it
 /// only asks and was confirmed. An approval is remembered for the session's later model calls
 /// ([`CallGate`]).
-pub fn check(state: &DaemonState, session_id: &str, confirmed: bool) -> Result<(), ErrorObject> {
+pub(crate) fn check(
+    state: &DaemonState,
+    session_id: &str,
+    confirmed: bool,
+) -> Result<(), ErrorObject> {
     let Some(session) = state.session(session_id) else {
         return Ok(());
     };

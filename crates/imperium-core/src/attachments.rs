@@ -24,7 +24,7 @@ use crate::state::DaemonState;
 const MAX_RECORDING_BYTES: usize = 25 * 1024 * 1024;
 
 /// A session's attachments folder.
-pub fn store_dir(data_dir: &Path, session_id: &str) -> PathBuf {
+pub(crate) fn store_dir(data_dir: &Path, session_id: &str) -> PathBuf {
     data_dir.join("attachments").join(session_id)
 }
 
@@ -60,7 +60,7 @@ fn invalid(error: AttachmentError) -> ErrorObject {
 }
 
 /// `session.attach`.
-pub fn attach(
+pub(crate) fn attach(
     state: &DaemonState,
     session: &Session,
     params: SessionAttachParams,
@@ -89,7 +89,7 @@ pub fn attach(
 
 /// The attachments of a `session.send`, checked again and marked with whether the session's
 /// model sees images.
-pub fn verify(
+pub(crate) fn verify(
     state: &DaemonState,
     session: &Session,
     sent: &[Attachment],
@@ -109,7 +109,7 @@ pub fn verify(
 
 /// `voice.transcribe`: through `[media.transcription]`, or, with `[voice] transcription =
 /// "local"`, the whisper.cpp server the daemon supervises ([`crate::voice`]).
-pub async fn transcribe(
+pub(crate) async fn transcribe(
     state: Arc<DaemonState>,
     params: VoiceTranscribeParams,
 ) -> Result<VoiceTranscribeResult, ErrorObject> {

@@ -61,7 +61,7 @@ fn browser_of(state: &DaemonState, session_id: &str) -> Result<BrowserSetup, Err
 }
 
 /// `session.browser_control`.
-pub async fn control(
+pub(crate) async fn control(
     state: Arc<DaemonState>,
     params: BrowserControlParams,
 ) -> Result<BrowserControlResult, ErrorObject> {
@@ -89,7 +89,7 @@ pub async fn control(
 }
 
 /// `session.browser_act`.
-pub async fn act(
+pub(crate) async fn act(
     state: Arc<DaemonState>,
     params: BrowserActParams,
 ) -> Result<BrowserActResult, ErrorObject> {

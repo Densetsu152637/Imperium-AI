@@ -97,7 +97,7 @@ fn record(state: &DaemonState, mut change: ConfigChange) -> ConfigChange {
 }
 
 /// The recorded changes, newest first.
-pub fn list(state: &DaemonState) -> Vec<ConfigChange> {
+pub(crate) fn list(state: &DaemonState) -> Vec<ConfigChange> {
     let _journal = state
         .config_journal
         .lock()
@@ -201,7 +201,7 @@ pub(crate) fn installed_by_agent(state: &DaemonState, kind: ExtensionKind, name:
 }
 
 /// `config.undo`: reverses change `id` and marks it undone.
-pub fn undo(state: &DaemonState, id: u64) -> Result<ConfigUndoResult, String> {
+pub(crate) fn undo(state: &DaemonState, id: u64) -> Result<ConfigUndoResult, String> {
     let change = {
         let _journal = state
             .config_journal

@@ -114,7 +114,7 @@ impl PermissionStore {
 
 // ---- conversions between the wire and the tools' shapes ----
 
-pub fn grant_from_wire(grant: &wire::PathGrant) -> PathGrant {
+pub(crate) fn grant_from_wire(grant: &wire::PathGrant) -> PathGrant {
     PathGrant {
         path: grant.path.trim().to_string(),
         mode: match grant.mode {
@@ -134,7 +134,7 @@ fn grant_to_wire(grant: &PathGrant) -> wire::PathGrant {
     }
 }
 
-pub fn rule_from_wire(rule: &wire::PermissionRule) -> PermissionRule {
+pub(crate) fn rule_from_wire(rule: &wire::PermissionRule) -> PermissionRule {
     PermissionRule {
         tool: rule.tool.trim().to_string(),
         pattern: rule.pattern.trim().to_string(),
@@ -159,7 +159,7 @@ fn rule_to_wire(rule: &PermissionRule) -> wire::PermissionRule {
 }
 
 /// A set as sent, trimmed and checked; an invalid grant or rule is refused with the reason.
-pub fn checked(set: &wire::PermissionSet) -> Result<wire::PermissionSet, String> {
+pub(crate) fn checked(set: &wire::PermissionSet) -> Result<wire::PermissionSet, String> {
     let mut grants: Vec<wire::PathGrant> = Vec::new();
     for grant in &set.grants {
         validate_grant(&grant_from_wire(grant))?;
@@ -182,7 +182,7 @@ pub fn checked(set: &wire::PermissionSet) -> Result<wire::PermissionSet, String>
 // ---- agent permission profiles ----
 
 /// The rules the tools enforce for a profile as the protocol carries it.
-pub fn profile_rules(permissions: &AgentPermissions) -> ProfileRules {
+pub(crate) fn profile_rules(permissions: &AgentPermissions) -> ProfileRules {
     let list = |access: ToolAccess, names: &[String]| match access {
         ToolAccess::All => Allowlist::All,
         ToolAccess::None => Allowlist::none(),
@@ -196,7 +196,7 @@ pub fn profile_rules(permissions: &AgentPermissions) -> ProfileRules {
 }
 
 /// The strictest profile there is: local files only, no servers, no plugins.
-pub fn strictest_agent_permissions() -> AgentPermissions {
+pub(crate) fn strictest_agent_permissions() -> AgentPermissions {
     AgentPermissions {
         mcp: ToolAccess::None,
         plugins: ToolAccess::None,
@@ -245,7 +245,7 @@ fn checked_list(
 }
 
 /// An agent's profile as sent, checked and normalised; an invalid one is refused with the reason.
-pub fn checked_agent_permissions(
+pub(crate) fn checked_agent_permissions(
     permissions: &AgentPermissions,
 ) -> Result<AgentPermissions, String> {
     let (mcp, mcp_servers) =
@@ -286,12 +286,12 @@ fn result(settings: &PermissionSettings) -> wire::PermissionsResult {
 }
 
 /// `permissions.get`.
-pub fn get(state: &DaemonState) -> Result<wire::PermissionsResult, ErrorObject> {
+pub(crate) fn get(state: &DaemonState) -> Result<wire::PermissionsResult, ErrorObject> {
     Ok(result(&saved(state)?))
 }
 
 /// `permissions.set`: saves the global grants and rules and applies the rules at once.
-pub fn set(
+pub(crate) fn set(
     state: &DaemonState,
     params: wire::PermissionSet,
 ) -> Result<wire::PermissionsResult, ErrorObject> {
@@ -315,7 +315,7 @@ pub fn set(
 
 /// `permissions.add_rule`: one rule into an environment (given, or the session's) or the global
 /// rules, replacing a rule for the same tool and pattern.
-pub fn add_rule(
+pub(crate) fn add_rule(
     state: &DaemonState,
     params: wire::PermissionAddRuleParams,
 ) -> Result<wire::PermissionAddRuleResult, ErrorObject> {
@@ -377,7 +377,7 @@ fn update_environment(
 
 /// Common caches and toolchains, resolved for this machine: writable for caches, read-only for
 /// toolchains. Paths in the home folder are written with `~` so the configuration travels.
-pub fn presets() -> Vec<wire::PathPreset> {
+pub(crate) fn presets() -> Vec<wire::PathPreset> {
     let home = home_dir().map(PathBuf::from);
     let env = |name: &str| {
         std::env::var(name)

@@ -92,7 +92,7 @@ pub(crate) fn destination(state: &DaemonState, repo: &str) -> std::path::PathBuf
 }
 
 /// `models.hf_files`.
-pub async fn files(
+pub(crate) async fn files(
     state: Arc<DaemonState>,
     params: HfFilesParams,
 ) -> Result<HfFilesResult, ErrorObject> {
@@ -143,7 +143,7 @@ pub async fn files(
 /// `models.download`: lists the repository, chooses the files, and starts a job downloading
 /// them. Problems with the request (a token needed, no such quantisation) are reported here
 /// rather than by the job.
-pub async fn start(
+pub(crate) async fn start(
     state: Arc<DaemonState>,
     params: ModelDownloadParams,
 ) -> Result<DownloadJob, ErrorObject> {

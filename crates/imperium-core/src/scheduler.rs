@@ -31,7 +31,7 @@ const MAX_SLEEP: Duration = Duration::from_secs(30);
 /// Longest summary kept for a run.
 const SUMMARY_CHARS: usize = 500;
 /// How long a `prefer_quiet` run waits for a quiet machine unless the schedule says otherwise.
-pub const DEFAULT_MAX_DEFER: Duration = Duration::from_secs(2 * 3600);
+pub(crate) const DEFAULT_MAX_DEFER: Duration = Duration::from_secs(2 * 3600);
 
 struct Entry {
     settings: ScheduleSettings,

@@ -911,7 +911,7 @@ fn notice(
 
 /// Starts looking for due reviews: every `initiative.poll_s` the daemon checks each persistent
 /// agent that has initiative. Between looks it does nothing.
-pub fn start(daemon: &Arc<DaemonState>) {
+pub(crate) fn start(daemon: &Arc<DaemonState>) {
     let weak = Arc::downgrade(daemon);
     tokio::spawn(async move {
         loop {
@@ -931,7 +931,7 @@ pub fn start(daemon: &Arc<DaemonState>) {
 
 /// One look at every agent: reviews those that have initiative, are due and may run now.
 /// Returns the agents reviewed, by agent id.
-pub async fn tick(daemon: &Arc<DaemonState>) -> Vec<String> {
+pub(crate) async fn tick(daemon: &Arc<DaemonState>) -> Vec<String> {
     let now = unix_ms();
     let mut reviewed = Vec::new();
     for env in daemon.environments().list() {

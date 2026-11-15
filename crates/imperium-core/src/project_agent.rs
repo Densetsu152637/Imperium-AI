@@ -242,7 +242,7 @@ pub(crate) struct PendingBrief {
 
 /// Starts an agent for every `[[projects]]` entry with `agent = true`, then sends the briefs that
 /// were waiting before a restart.
-pub fn start(daemon: &Arc<DaemonState>) {
+pub(crate) fn start(daemon: &Arc<DaemonState>) {
     let mut launchers = HashMap::new();
     for project in daemon.settings().projects.clone() {
         if !project.agent {
@@ -407,7 +407,7 @@ async fn answer_permissions(
 }
 
 /// Starts the persistent agents of every environment.
-pub fn start_environment_agents(daemon: &Arc<DaemonState>) {
+pub(crate) fn start_environment_agents(daemon: &Arc<DaemonState>) {
     for env in daemon.environments().list() {
         if !env.agents.is_empty() {
             sync_environment_agent(daemon, &env.id);
@@ -422,12 +422,12 @@ pub fn start_environment_agents(daemon: &Arc<DaemonState>) {
 ///
 /// One sync of an environment runs at a time, so agents added or changed from several places at
 /// once are started exactly once.
-pub fn sync_environment_agent(daemon: &Arc<DaemonState>, environment_id: &str) {
+pub(crate) fn sync_environment_agent(daemon: &Arc<DaemonState>, environment_id: &str) {
     sync_environment_agent_report(daemon, environment_id);
 }
 
 /// Like [`sync_environment_agent`], saying which agents could not start and why, by agent id.
-pub fn sync_environment_agent_report(
+pub(crate) fn sync_environment_agent_report(
     daemon: &Arc<DaemonState>,
     environment_id: &str,
 ) -> Vec<(String, String)> {
@@ -440,7 +440,7 @@ pub fn sync_environment_agent_report(
 /// with the environment as it is now, resuming their conversations. Their launchers stay, so
 /// what they started goes on reporting to them and their limits are not reset. The whole
 /// restart is one sync.
-pub fn restart_environment_agents(
+pub(crate) fn restart_environment_agents(
     daemon: &Arc<DaemonState>,
     environment_id: &str,
     only: Option<&str>,
@@ -497,7 +497,7 @@ pub(crate) fn agent_title(environment_name: &str, agent_name: &str) -> String {
 
 /// Titles the running sessions of an environment's agents after their names (after an agent or
 /// the environment was renamed).
-pub fn retitle_environment_agents(daemon: &Arc<DaemonState>, environment_id: &str) {
+pub(crate) fn retitle_environment_agents(daemon: &Arc<DaemonState>, environment_id: &str) {
     let Some(env) = daemon.environments().get(environment_id) else {
         return;
     };

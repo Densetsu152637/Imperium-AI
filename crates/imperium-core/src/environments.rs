@@ -32,7 +32,7 @@ pub enum EnvironmentError {
 
 /// The id of the built-in Home environment: fixed, and valid as a folder name
 /// ([`crate::workspaces::safe_id`]), since its working folder is named after it.
-pub const HOME_ID: &str = "home";
+pub(crate) const HOME_ID: &str = "home";
 
 /// The Home environment as first made: no project folders, on this machine. Its working
 /// folder holds its `Memory.md` and its sessions' scratch folders.

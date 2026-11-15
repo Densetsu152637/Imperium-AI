@@ -22,7 +22,7 @@ async fn run(runner: &dyn Runner, spec: ProcessSpec) -> Result<RunOutput, ToolEr
 }
 
 /// Checks `runtime` with `runner`; `windows` says whether WSL can exist here.
-pub async fn test(
+pub(crate) async fn test(
     runtime: &EnvironmentRuntime,
     runner: &dyn Runner,
     windows: bool,

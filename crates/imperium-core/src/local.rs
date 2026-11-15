@@ -54,7 +54,7 @@ fn set_server(
 
 /// Folders to scan: `models.folders`, plus the download folder when it exists and is not
 /// already inside one of them.
-pub fn scan_folders(paths: &Paths, settings: &Settings) -> Vec<PathBuf> {
+pub(crate) fn scan_folders(paths: &Paths, settings: &Settings) -> Vec<PathBuf> {
     let mut folders = settings.models.folders.clone();
     let downloads = settings.models.download_dir(paths.data_dir());
     if downloads.is_dir() && !folders.iter().any(|folder| downloads.starts_with(folder)) {
@@ -65,7 +65,7 @@ pub fn scan_folders(paths: &Paths, settings: &Settings) -> Vec<PathBuf> {
 
 /// The local models pinned to the CPU lane by `placement = "cpu"` rows of the model table, with
 /// how each is served.
-pub fn cpu_pins(settings: &Settings) -> HashMap<String, CpuLane> {
+pub(crate) fn cpu_pins(settings: &Settings) -> HashMap<String, CpuLane> {
     settings
         .models
         .catalog
@@ -448,12 +448,12 @@ fn placement_name(placement: Option<&Placement>, hardware: &Hardware) -> &'stati
 
 /// How a model of `size_bytes` not on disk yet would load within `budget`, for download
 /// choices: `gpu`, `partial`, `cpu`, or `none`. vLLM needs the GPU and Linux.
-pub fn fit(size_bytes: u64, weights: Weights, budget: Budget) -> &'static str {
+pub(crate) fn fit(size_bytes: u64, weights: Weights, budget: Budget) -> &'static str {
     imperium_local::suggest::fit(size_bytes, weights, budget).as_str()
 }
 
 /// The memory budget when no local runtime is running, from a fresh hardware probe.
-pub fn probed_budget(settings: &Settings) -> Budget {
+pub(crate) fn probed_budget(settings: &Settings) -> Budget {
     Budget::of(
         &probe(&settings.hardware),
         settings.runtime.llamacpp.ram_headroom_mb * 1024 * 1024,
@@ -461,7 +461,7 @@ pub fn probed_budget(settings: &Settings) -> Budget {
 }
 
 /// The listing when no folders are configured.
-pub fn disabled() -> LocalModelListResult {
+pub(crate) fn disabled() -> LocalModelListResult {
     LocalModelListResult {
         enabled: false,
         folders: Vec::new(),

@@ -14,7 +14,7 @@ use imperium_workflow::personality::Origin;
 use crate::state::DaemonState;
 
 /// Every setting as the daemon would load it now (user file and environment, no project).
-pub fn describe(state: &DaemonState) -> Result<ConfigDescribeResult, ErrorObject> {
+pub(crate) fn describe(state: &DaemonState) -> Result<ConfigDescribeResult, ErrorObject> {
     let paths = state.paths();
     let config = imperium_config::load(paths, None, std::env::vars())
         .map_err(|error| ErrorObject::new(codes::INTERNAL_ERROR, error.to_string()))?;
@@ -28,7 +28,10 @@ pub fn describe(state: &DaemonState) -> Result<ConfigDescribeResult, ErrorObject
 }
 
 /// Writes one setting to the user file; an invalid change is refused and nothing is saved.
-pub fn set(state: &DaemonState, params: ConfigSetParams) -> Result<ConfigSetResult, ErrorObject> {
+pub(crate) fn set(
+    state: &DaemonState,
+    params: ConfigSetParams,
+) -> Result<ConfigSetResult, ErrorObject> {
     // Changing the working folders' place moves them first; the move saves the setting.
     if params.key == crate::state::WORKSPACES_ROOT_SETTING {
         let path = match &params.value {
@@ -85,7 +88,7 @@ pub fn set(state: &DaemonState, params: ConfigSetParams) -> Result<ConfigSetResu
 }
 
 /// `personalities.list`: what `policy.personality` may name, each id as the file that wins.
-pub fn personalities(state: &DaemonState) -> PersonalitiesListResult {
+pub(crate) fn personalities(state: &DaemonState) -> PersonalitiesListResult {
     let mut warnings = Vec::new();
     let listed = state
         .personality_sources()

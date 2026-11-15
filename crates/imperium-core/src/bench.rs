@@ -229,7 +229,10 @@ fn save(state: &DaemonState, result: &BenchResult) -> std::io::Result<()> {
 }
 
 /// `models.bench_results`.
-pub fn results(state: &DaemonState, params: ModelBenchResultsParams) -> ModelBenchResultsResult {
+pub(crate) fn results(
+    state: &DaemonState,
+    params: ModelBenchResultsParams,
+) -> ModelBenchResultsResult {
     let saved = {
         let _guard = state
             .bench()
@@ -364,7 +367,10 @@ fn current_fingerprints(state: &DaemonState, runtime: &str) -> (String, String) 
 // ---- starting a run ----
 
 /// `models.bench`: chooses the models, starts the run, and returns it.
-pub fn start(state: Arc<DaemonState>, params: ModelBenchParams) -> Result<BenchRun, ErrorObject> {
+pub(crate) fn start(
+    state: Arc<DaemonState>,
+    params: ModelBenchParams,
+) -> Result<BenchRun, ErrorObject> {
     if state.local_runtime().is_none() {
         return Err(invalid(
             "No local models are set up; add a model folder first.",

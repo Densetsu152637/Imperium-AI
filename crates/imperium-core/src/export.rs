@@ -723,7 +723,7 @@ pub(crate) fn render(
 
 /// `session.export`: the session's transcript, or an error message when there is no such
 /// session. Works for running and archived sessions.
-pub fn export(
+pub(crate) fn export(
     state: &DaemonState,
     params: &SessionExportParams,
 ) -> Result<SessionExportResult, String> {

@@ -52,7 +52,7 @@ fn default_entry() -> String {
 /// Where mods shipped with Imperium may be: the resource folders, then the source tree. Debug
 /// builds look in the source tree first, since building the desktop app leaves a copy of
 /// `mods/` beside the daemon that goes stale as soon as a mod is rebuilt.
-pub fn bundled_roots() -> Vec<PathBuf> {
+pub(crate) fn bundled_roots() -> Vec<PathBuf> {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
     let mut roots = crate::state::bundled_dirs("mods");
     if cfg!(debug_assertions) {
@@ -65,7 +65,7 @@ pub fn bundled_roots() -> Vec<PathBuf> {
 
 /// Every mod in the user's folder, then in the bundled folders. A mod installed by the user wins
 /// over a bundled one with the same id; problems are reported per mod.
-pub fn list(user_dir: &Path, bundled: &[PathBuf]) -> ModListResult {
+pub(crate) fn list(user_dir: &Path, bundled: &[PathBuf]) -> ModListResult {
     let mut mods = Vec::new();
     let mut problems = Vec::new();
     let roots =

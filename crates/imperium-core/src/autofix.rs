@@ -23,7 +23,7 @@ const LOG_CHARS: usize = 6000;
 const FIX_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// Starts polling every watched repository. Returns immediately.
-pub fn start(daemon: &Arc<DaemonState>, github: Arc<dyn GitHub>) {
+pub(crate) fn start(daemon: &Arc<DaemonState>, github: Arc<dyn GitHub>) {
     let settings = daemon.settings();
     if !settings.github.autofix.enabled || settings.github.watch.is_empty() {
         return;
