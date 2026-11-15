@@ -44,7 +44,7 @@ import {
   Volume2,
   type LucideIcon,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import type {
   ConfigChange,
@@ -75,6 +75,7 @@ import { ShortcutsSection } from "./components/ShortcutsSection";
 import { Switch as Toggle } from "./components/Switch";
 import type { DaemonClient } from "./daemon/client";
 import { type Daemon, DaemonSettings } from "./DaemonControl";
+import { getFaults, subscribeFaults } from "./mods/faults";
 import { addModelFolder } from "./panels/ModelSetup";
 import { preview, testNotification } from "./notify";
 import { ACCENTS, DEFAULT_SETTINGS, BUNDLED_ON_BY_DEFAULT, modEnabled, reservedChords, type AppSettings } from "./settings";
@@ -1151,6 +1152,7 @@ function ModsSection({
   settings: AppSettings;
   onChange: (settings: AppSettings) => void;
 }) {
+  const faults = useSyncExternalStore(subscribeFaults, getFaults);
   if (!mods) return <p className="muted">Connect to imperiumd to see the mods it found.</p>;
   const toggle = (id: string, on: boolean) => onChange({ ...settings, enabledMods: { ...settings.enabledMods, [id]: on } });
   return (
@@ -1173,6 +1175,11 @@ function ModsSection({
           </Row>
         );
       })}
+      {faults.map((fault) => (
+        <p key={`${fault.modId}|${fault.at}|${fault.name}|${fault.reason}`} className="muted">
+          A behaviour of {fault.modId} was {fault.phase === "load" ? "refused" : "stopped"}: {fault.name} ({fault.reason}). The mod carries on without it.
+        </p>
+      ))}
       {mods.problems.map((problem) => (
         <p key={problem} className="muted">
           Could not load {problem}

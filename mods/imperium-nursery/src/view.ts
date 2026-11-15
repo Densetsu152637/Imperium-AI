@@ -393,6 +393,23 @@ export class Room {
   // script's pose drives it: walk to or away from the partner, face it, or sleep. Otherwise it
   // roams: pick a spot anywhere in the room, walk there, pause, repeat. A pet that draws no walk
   // strips glides in idle.
+  /**
+   * Lets the nursery's behaviour (if any, and still running for this pet) steer a free pet: its
+   * velocity moves the pet inside the room and a reaction it asks for goes to the pet's arbiter.
+   * False when there is none, so the built-in roaming takes over.
+   */
+  private guided(cell: Cell, entry: Entry, now: number, dt: number, b: Bounds, moved: (dx: number, dy: number) => void): boolean {
+    const director = this.nursery.director;
+    if (!director) return false;
+    const guide = director.guide(entry.key, { anim: "idle", quiet: 0, x: Math.round(cell.r.x), y: Math.round(cell.r.y), bounds: { minX: Math.round(b.minX), maxX: Math.round(b.maxX), minY: Math.round(b.minY), maxY: Math.round(b.maxY) } }, now);
+    if (!guide) return false;
+    const p = clampTo(b, { x: cell.r.x + (guide.vx * dt) / 1000, y: cell.r.y + (guide.vy * dt) / 1000 });
+    moved(p.x - cell.r.x, p.y - cell.r.y);
+    cell.r = { ...cell.r, x: p.x, y: p.y, tx: p.x, ty: p.y, nextAt: now + 1000 };
+    if (guide.shot) this.nursery.shot(entry.key, guide.shot, now);
+    return true;
+  }
+
   private move(cell: Cell, entry: Entry, pet: LoadedPet, idle: boolean, now: number, dt: number, b: Bounds): Moved {
     const walkAnim = (dir: number): string => resolveAnimation(pet.catalog, dir > 0 ? "walk-right" : "walk-left");
     const hasWalk = walkAnim(1) !== "idle" || walkAnim(-1) !== "idle";
@@ -422,6 +439,8 @@ export class Room {
         anim = "look";
         look = angleTo(at.x - cell.r.x, at.y - cell.r.y);
       } else if (info.pose.mode === "sleep" && resolveAnimation(pet.catalog, "sleeping") !== "idle") anim = resolveAnimation(pet.catalog, "sleeping");
+    } else if (this.guided(cell, entry, now, dt, b, (x, y) => { dx = x; dy = y; })) {
+      // A WebAssembly behaviour steers this pet; nothing else to do.
     } else {
       // Play just ended or was cut short: stand a while, then roam again.
       const r = wasPlaying ? { ...newRoamer(cell.r, now, Math.random), tx: cell.r.x, ty: cell.r.y } : cell.r;

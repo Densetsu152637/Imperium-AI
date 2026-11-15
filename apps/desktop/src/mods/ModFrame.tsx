@@ -15,6 +15,8 @@ import type { ModInfo, PetListResult, PetStripResult, SessionEventParams } from 
 import type { DaemonClient } from "../daemon/client";
 import { insideTauri } from "../daemon/connection";
 import { getDoc, setDoc } from "../store";
+import behaviourSource from "./behaviour.js?raw";
+import { recordFault } from "./faults";
 
 type Listener = (params: SessionEventParams) => void;
 
@@ -36,6 +38,12 @@ export class ModBus {
 // packages/mod-sdk, so bundled and unbundled mods behave the same.
 const SDK = "export function defineMod(definition) { globalThis.__imperiumDefine?.(definition); return definition; }";
 
+// What `import ... from "@imperium/behaviour"` resolves to inside a frame: the WebAssembly behaviour
+// host (behaviour.js), which runs where the module runs, in the frame. The frame page's policy allows
+// `wasm-unsafe-eval` for it (src-tauri/src/mod_frames.rs); the frame stays sandboxed.
+const BEHAVIOUR_START = `import { createHost } from "@imperium/behaviour";
+globalThis.__imperiumBehaviours = createHost({ report: (info) => { globalThis.__imperiumRequest("behaviours.report", info).catch(() => {}); } });`;
+
 // Receives events from the app, asks it for data, and builds the context `activate` gets.
 // Requests are `{ kind: "request", id, method, params }`; the app answers with
 // `{ kind: "response", id, result }` or `{ kind: "response", id, error }`.
@@ -50,6 +58,7 @@ const request = (method, params) => new Promise((resolve, reject) => {
   waiting.set(id, { resolve, reject });
   window.parent.postMessage({ kind: "request", id, method, params }, "*");
 });
+globalThis.__imperiumRequest = request;
 window.addEventListener("message", (message) => {
   if (message.source !== window.parent || !message.data) return;
   if (message.data.kind === "response") {
@@ -78,6 +87,10 @@ globalThis.__imperiumDefine = (definition) => {
     pets: {
       list: () => request("pets.list"),
       strip: (petId, animation) => request("pets.strip", { petId, animation }),
+    },
+    behaviours: globalThis.__imperiumBehaviours ?? {
+      load: () => ({ ok: false, error: "behaviours are unavailable here" }),
+      limits: {}, animations: [], shots: [],
     },
     storage: {
       get: (key) => request("storage.get", { key }),
@@ -112,10 +125,12 @@ const escapeScript = (text: string) => text.replace(/<\/script/gi, "<\\/script")
 
 function frameDocument(mod: ModInfo, panelId: string): string {
   const sdk = `data:text/javascript;base64,${btoa(SDK)}`;
+  const behaviour = `data:text/javascript;base64,${btoa(behaviourSource)}`;
   const config = JSON.stringify({ panelId, permissions: mod.permissions }).replace(/</g, "\\u003c");
   return `<!doctype html><html><head><meta charset="utf-8"><style>${themeCss()}</style>
-<script type="importmap">${JSON.stringify({ imports: { "@imperium/mod-sdk": sdk } })}</script>
+<script type="importmap">${JSON.stringify({ imports: { "@imperium/mod-sdk": sdk, "@imperium/behaviour": behaviour } })}</script>
 <script>${escapeScript(BRIDGE.replace("__CONFIG__", config))}</script>
+<script type="module">${BEHAVIOUR_START}</script>
 </head><body></body><script type="module">${escapeScript(mod.source)}</script></html>`;
 }
 
@@ -249,6 +264,12 @@ export function ModFrame({ mod, panelId, bus, host }: { mod: ModInfo; panelId: s
       const { id, method } = data;
       const params = (typeof data.params === "object" && data.params !== null ? data.params : {}) as Record<string, unknown>;
       const reply = (body: { result: unknown } | { error: string }) => target.postMessage({ kind: "response", id, ...body }, "*");
+      // A behaviour that was refused or stopped is reported by its frame; that needs no permission.
+      if (method === "behaviours.report") {
+        const fault = recordFault(mod.id, params);
+        if (fault) console.warn(`[mod ${mod.id}] behaviour ${fault.name} (${fault.phase}): ${fault.reason}`);
+        return reply({ result: null });
+      }
       const needs = Object.hasOwn(REQUEST_PERMISSION, method) ? REQUEST_PERMISSION[method] : undefined;
       if (!needs) return reply({ error: `unknown method ${method}` });
       if (!mod.permissions.includes(needs)) return reply({ error: `${method} needs the ${needs} permission` });
