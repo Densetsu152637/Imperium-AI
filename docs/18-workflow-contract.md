@@ -28,8 +28,9 @@ loaded. Subagents take their role from `spawn_agent`'s `role` (default `leaf`); 
 
 Not yet: front matter triggers (tools, paths, events), `depends_on`, budgets, suggested
 (semantic) items, intent classification by a local model, inline mode, re-resolution on tool
-use, `context.search`, the MCP server, `workflow validate/inspect`, Git-URL packs, a bundled
-default pack, and resolving `local-paths` values from settings.
+use, `context.search`, the MCP server, `workflow validate/inspect`, Git-URL packs as a live source (a pack fetched from a Git URL is
+reviewed and pinned by `imperium pack`, [08](08-agent-policy.md#pack-updates), and then loads
+like a folder), a bundled default pack, and resolving `local-paths` values from settings.
 
 ## Principles
 

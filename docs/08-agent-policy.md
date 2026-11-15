@@ -8,7 +8,8 @@ Agent-Custom-Workflow in `policy/agent-custom-workflow` (pinned commit in its `P
 MIT, shipped beside the daemon) is used; `workflow.default_pack = false` turns that off, and
 `workflow.enabled = false` turns off packs and project instruction files entirely. Root
 personality selection is implemented ([Personalities](#personalities)), with Marcus Aurelius as
-the default. Fetching updates and the diff-and-accept flow are later work.
+the default. Fetching updates and the diff-and-accept flow are implemented ([Pack updates](#pack-updates));
+the policy crate that layers packs into the prompt is later work.
 
 Imperium ships with [Agent-Custom-Workflow](https://github.com/Densetsu152637/Agent-Custom-Workflow)
 as its default **policy pack**: the root/manager/leaf roles, delegation defaults, validation,
@@ -21,6 +22,86 @@ git, research, debugging, and other workflows, plus personalities.
 - Upstream adds an **Imperium host adapter** section alongside its Claude Code and Codex
   adapters, mapping its concepts to Imperium tools (`spawn_agent`, `await_tasks`, routing
   hints, telemetry).
+
+## Pack updates
+
+**Status:** implemented (roadmap 31, stage 3a), as the `imperium pack` command. It needs no
+daemon and no protocol change: sources are read from the user's config folder, pins are files in
+the data folder, and a session reads the pins when it starts.
+
+- **Sources are the user's own.** A source is a name and a Git URL (`https://`, `ssh://`,
+  `git@host:path` or `file://`; never `http://`, never credentials in the address, never an
+  `ext::` helper), optionally a branch or tag. They live only in `<config>/pack-sources.toml`,
+  added with `imperium pack add-source <name> <url> [--revision <ref>]`. A project's files
+  (`.imperium/`), environment variables, a pack's own manifest and an agent's tool calls
+  cannot add or change one: the command reads that one file and nothing else. The pack store
+  (`<data>/packs/`) is on the safety floor's protected list, so an agent's write there is
+  always asked about.
+- **Fetching never applies anything.** `imperium pack check [name]` shallow-clones the source
+  with git hooks off, no prompts, no LFS downloads, no submodules and the `ext::` transport
+  refused, reads the files (leaving out `.git` and symbolic links, within 2000 files, 2 MiB per
+  file and 32 MiB), and stages them as a **pending update** next to the pinned version. Sessions
+  keep using the pinned version.
+- **The diff is in plain words.** Files are grouped as *rules and workflows* (the entry index,
+  workflows, guides), *prompts and personalities*, *lessons*, *pack settings* (the manifest:
+  which files each role must load, which of your settings a pack file is filled from) and
+  other files, each marked added, removed or changed with its line counts.
+  `imperium pack diff <name> --full` lists every changed line. A first version has nothing to
+  compare with, so it is shown as a full listing to read before accepting.
+- **An update cannot loosen quietly.** Changes that may reduce what agents are required or
+  allowed to do are listed first, marked `!`, and accepting an update that has any needs
+  `--allow-loosening` (or the longer phrase typed at a terminal) on top of the usual
+  confirmation. They are: a role's instruction file removed; a file dropped from a role's
+  required list; the entry index changed; a pack file newly filled from one of your settings;
+  an unreadable manifest; wording added that reduces asking or checking ("without asking",
+  "bypass", "force push" and similar); and a line removed that made agents ask or hold back
+  ("ask before", "explicit permission", "must not" and similar). The wording checks are a
+  floor for review, not a parser of meaning: they can miss a rewrite and they flag harmless
+  edits, which is why the full diff is always available and why they never decide for the user.
+  Tightening (a newly required file) is shown as a note.
+- **Accepting is explicit and bound to what was read.** At a terminal, `imperium pack accept
+  <name>` shows the diff and asks for `accept <hash12>` (`accept <hash12> loosening` when
+  loosening is present). Without a terminal it needs `--hash <at least 12 digits>`, and the hash
+  must match the staged version, so an update that changed since `check` is not accepted by
+  mistake. `imperium pack reject <name>` discards it. A pack that does not load as a pack (no
+  entry index, an unreadable manifest) is refused.
+- **Pinned by content hash.** The pin records the source, the commit and the SHA-256 of the
+  pack: every file path with the SHA-256 of its content, in path order. Every session start
+  checks the pinned files against that hash and skips the pack, with a notice, if they differ
+  (a pack edited on disk is never loaded under an old pin). Staged files are checked the same
+  way before accepting. The previous pinned version's files are removed on accept; the commit
+  is in Git.
+- **How a pinned pack is used.** Like a folder in `workflow.packs`, except its `@` imports stay
+  inside the pack (it is not trusted to reach other files) and its references are
+  `<source name>:<path>`. With a pinned pack present the bundled snapshot is not also loaded.
+  Pinned packs also supply personalities. Running sessions are unaffected until they restart.
+- **Removing a source** (`imperium pack remove-source`) also removes its pin and files.
+
+**Signatures: not supported, and why.** The pack format has no signature field, and verifying
+one needs a signing scheme and key distribution that Imperium does not have (and a new
+dependency). What protects an update is the transport (`https://` or `ssh://`, so a fetch is
+authenticated to the host), Git's own object hashes for the commit, the user's review of the
+diff, the explicit hash-bound accept, and the SHA-256 pin re-checked at every load. A pack
+author who wants detached signatures can add them later (Ed25519 over the content hash, public
+keys in the source entry); until then trust in a source is the user's choice and the pin makes
+any later change visible.
+
+**What a pack can and cannot do.** A pack is instructions: it ranks below the host's and the
+user's instructions and cannot widen the permission rules, the safety floor or the sandbox,
+which Imperium enforces whatever an agent is told. "Loosening" above therefore means loosening
+what the workflow asks of agents (asking, confirming, loading rules), which is what a changed
+pack can do; it is highlighted because a weaker workflow is still a weaker guard.
+
+**Not built:** scheduled or automatic checks (a check runs only when asked); a desktop screen
+for the diff (the CLI is the review surface for now); rolling back to a previous pin (re-fetch
+the old commit by pointing a new source at it); several sources layered by priority beyond
+list order; detached signatures; pinning a commit instead of a branch.
+
+**The policy crate.** `imperium-policy` ("pack layering and prompt assembly", planned in
+[02](02-architecture.md)) is deferred to the final cleanup: layering lives in `imperium-core`'s
+session setup and `imperium-workflow`, and moving it needs a stable interface (pack list in,
+instruction blocks out) that is easiest to cut once the remaining roadmap items stop touching
+those call sites.
 
 ## How a pack maps onto the engine
 

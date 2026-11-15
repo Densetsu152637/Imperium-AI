@@ -165,6 +165,27 @@ token never appearing in a reply. It also covers continuing a timed-out wait and
 permission answer from the returned cursor, a steering message's wait, and bad input (non-UTF-8
 bytes, a request with no method). The event-reading logic has unit tests of its own.
 
+## Exposing Imperium's own tools (design, not built)
+
+Roadmap 31 also lists a full server bridge. Only the design is settled; nothing below exists.
+
+- **Calls run inside a session.** An MCP client cannot be handed the file, search or memory code
+  directly: every call would go through a session (the caller's, or a bridge session the
+  caller creates in an environment), so the permission rules, the safety floor, the sandbox, the
+  budgets and the journal apply exactly as for the session's own agent. No second permission
+  path is added.
+- **Read-only by default.** The first version would list only read tools (`read_file`, `glob`,
+  `grep`, `memory_search`) as `imperium_<tool>`; anything that writes or runs commands appears
+  only when the user turns it on for that environment, and its calls still ask under the
+  session's mode. An ask cannot be answered by the MCP caller on its own authority: it surfaces
+  as a pending permission, answered with `respond_permission` or in the desktop, as it does for
+  sessions started through this server.
+- **Results are data.** Output returned over MCP is framed as untrusted for the caller, and an
+  Imperium MCP client never connects to this server (a loopback or self-referencing server is
+  refused), so tool calls cannot recurse through two daemons.
+- **Open questions:** whose budget a bridge session spends; how a caller names the session when
+  several are running; whether MCP resources (memory index, journal) are exposed too.
+
 ## Not built
 
 - Exposing Imperium's own tools (file, search, memory and so on) as MCP tools to other agents,

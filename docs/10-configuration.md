@@ -180,6 +180,7 @@ listed; edit them in the file.
 | `workflow.enabled` | `true` | Serve workflow packs and project instruction files to agents ([18](18-workflow-contract.md)) |
 | `workflow.packs` | none | Workflow folders, such as a clone of Agent-Custom-Workflow |
 | `workflow.default_pack` | `true` | With no `packs`, use the bundled Agent-Custom-Workflow snapshot |
+| `pack-sources.toml` (own file in the config folder, not a setting) | none | Update sources for policy packs, added with `imperium pack add-source`; read from this file only, never from a project or the environment ([08](08-agent-policy.md#pack-updates)) |
 | `policy.personality` | `marcus_aurelius` | The root agent's personality, by id: `<config>/personalities/<id>.md` wins over a workflow pack's `personalities/<id>.md`, then the bundled one. `none` (or empty) turns it off; an id that is not found falls back to `marcus_aurelius` with a notice in the session. Applies to new sessions without a restart ([personalities](08-agent-policy.md#personalities)) |
 | `workflow.enforce` | `warn` | `required-before-action` refuses writes and commands until required context is loaded; `warn` and `off` do not |
 | `<config>/mods/<id>/` | none | UI mods (folders with `mod.json`), shown as panels; see [UI mods](06-extensibility.md#ui-mods) |
