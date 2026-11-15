@@ -25,11 +25,12 @@ mod workspaces;
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use imperium_cli::client::{Client, read_endpoint};
+use imperium_cli::mcp_bridge::BridgeOptions;
 use imperium_config::{Paths, SecretName, SecretStore};
 use imperium_protocol::methods::{
     ModelDownloadParams, Peer, Ping, PingParams, Shutdown, ShutdownParams,
@@ -45,6 +46,9 @@ struct Cli {
     #[command(subcommand)]
     command: Command,
 }
+
+/// Set in the environment of every stdio MCP server a session starts (`imperium-mcp`).
+const MCP_CHILD_MARK: &str = "IMPERIUM_MCP_CHILD";
 
 static REMOTE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
@@ -176,8 +180,34 @@ enum Command {
     },
     /// Serve the Claude harness: an MCP server on standard input and output that lets an
     /// external agent such as Claude Code start sessions, follow them and answer their
-    /// permission requests through this daemon. Register it in `.mcp.json`.
-    McpServe,
+    /// permission requests through this daemon. Register it in `.mcp.json`. With `--tools` it
+    /// serves Imperium's own tools instead (files, search, web, memory), each run in an
+    /// Imperium session under the user's permission rules.
+    McpServe {
+        /// Serve Imperium's own tools to the caller instead of driving sessions.
+        #[arg(long)]
+        tools: bool,
+        /// With --tools: the environment (name or id) the tools work in; default Home.
+        #[arg(long, requires = "tools", conflicts_with_all = ["project_dir", "session"])]
+        environment: Option<String>,
+        /// With --tools: a folder to work in instead of an environment.
+        #[arg(long, requires = "tools", conflicts_with = "session")]
+        project_dir: Option<PathBuf>,
+        /// With --tools: run the calls in this existing session instead of starting one.
+        #[arg(long, requires = "tools")]
+        session: Option<String>,
+        /// With --tools: the model of the session this starts (the tools never call it).
+        #[arg(long, requires = "tools")]
+        model: Option<String>,
+        /// With --tools: also offer the tools that write files, run commands or save memory.
+        /// Each still asks under the session's permission mode.
+        #[arg(long, requires = "tools")]
+        allow_write: bool,
+        /// With --tools: seconds a permission request waits for you before it is refused; 0
+        /// refuses at once (use it when nobody is watching).
+        #[arg(long, requires = "tools", default_value_t = 120)]
+        approval_timeout_s: u64,
+    },
     /// Remote MCP servers that use OAuth: sign in and out.
     Mcp {
         #[command(subcommand)]
@@ -939,7 +969,39 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             command: RuntimeCommand::Use { path },
         } => local::use_server(path),
         Command::Resources { watch } => resources::show(watch),
-        Command::McpServe => mcp_serve(),
+        Command::McpServe {
+            tools,
+            environment,
+            project_dir,
+            session,
+            model,
+            allow_write,
+            approval_timeout_s,
+        } => {
+            // A server the daemon started for a session must not serve Imperium back to it. A
+            // remote daemon is another daemon, so `--remote` is not a loop.
+            if std::env::var_os(MCP_CHILD_MARK).is_some()
+                && REMOTE.get().and_then(Option::as_deref).is_none()
+            {
+                bail!(
+                    "imperium mcp-serve was started by an Imperium session as one of its MCP \
+                     servers: it is for outside agents, and serving this daemon to its own \
+                     sessions would loop"
+                );
+            }
+            if tools {
+                mcp_serve_tools(BridgeOptions {
+                    environment,
+                    project_dir: project_dir.map(|dir| dir.display().to_string()),
+                    session,
+                    model,
+                    allow_write,
+                    approval_timeout: Duration::from_secs(approval_timeout_s),
+                })
+            } else {
+                mcp_serve()
+            }
+        }
         Command::Mcp { command } => match command {
             McpCommand::Login { server } => mcp_login::login(server),
             McpCommand::Logout { server } => mcp_login::logout(server),
@@ -1039,6 +1101,20 @@ fn mcp_serve() -> anyhow::Result<()> {
             client,
             tokio::io::BufReader::new(tokio::io::stdin()),
             tokio::io::stdout(),
+        )
+        .await
+    })
+}
+
+/// Serves Imperium's own tools on standard input and output (`mcp-serve --tools`).
+fn mcp_serve_tools(options: BridgeOptions) -> anyhow::Result<()> {
+    block_on(async {
+        let (client, _) = connect().await?;
+        imperium_cli::mcp_serve::serve_tools(
+            client,
+            tokio::io::BufReader::new(tokio::io::stdin()),
+            tokio::io::stdout(),
+            options,
         )
         .await
     })

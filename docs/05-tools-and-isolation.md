@@ -429,8 +429,12 @@ trusted_projects = ["D:/Git Repositories/Imperium-AI"]
 **Imperium as an MCP server (implemented, session level).** `imperium mcp-serve` is an MCP
 server on stdio that lets an external agent such as Claude Code start sessions, follow them,
 read their tool logs and answer their permission requests through the daemon, with everything
-under the daemon's normal permission checks; see [20](20-claude-harness.md). Exposing Imperium's
-own tools as MCP tools is not built.
+under the daemon's normal permission checks; see [20](20-claude-harness.md). With `--tools` it
+serves Imperium's own tools (files, search, web, memory) as MCP tools instead, each call run
+inside a session under the same checks, read-only unless the user enables writes
+([20](20-claude-harness.md#exposing-imperiums-own-tools-implemented)). A session never starts
+`imperium mcp-serve` as one of its own MCP servers: that launch is refused, so a call cannot
+loop back into the daemon it came from.
 
 A stdio server's tokens go in `secret_env`, environment variables read from the keychain when
 the server starts, so the config file never holds them:

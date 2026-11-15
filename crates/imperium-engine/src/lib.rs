@@ -10,6 +10,7 @@ mod agents;
 mod artefacts;
 mod branch;
 mod breakdown;
+pub mod bridge;
 mod budget_gate;
 mod checkpoints;
 mod compact;
@@ -46,7 +47,9 @@ pub use model::{
 };
 pub use queue::QueueError;
 pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
-pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};
+pub use session::{
+    BridgeError, Session, SessionClosed, SessionConfig, SessionMemory, new_session_id,
+};
 pub use status::next_attempt;
 pub use title::task_title;
 

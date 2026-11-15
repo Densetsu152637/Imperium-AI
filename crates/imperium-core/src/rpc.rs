@@ -19,20 +19,22 @@ use imperium_protocol::initiative::{
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
-    ApprovalRespondParams, ApprovalRespondResult, Handshake, HandshakeParams, HandshakeResult,
-    LocalModelList, LocalModelListParams, Method, ModInspect, ModInspectParams, ModInstall,
-    ModInstallParams, ModList, ModListParams, ModelList, ModelListParams, Peer, PetInteract,
-    PetInteractParams, PetInteractResult, PetList, PetListParams, PetListResult, PetStrip,
-    PetStripParams, PetStripResult, PhoneDevices, PhoneDevicesParams, PhoneDevicesResult,
+    ApprovalRespondParams, ApprovalRespondResult, BridgedToolInfo, Handshake, HandshakeParams,
+    HandshakeResult, LocalModelList, LocalModelListParams, Method, ModInspect, ModInspectParams,
+    ModInstall, ModInstallParams, ModList, ModListParams, ModelList, ModelListParams, Peer,
+    PetInteract, PetInteractParams, PetInteractResult, PetList, PetListParams, PetListResult,
+    PetStrip, PetStripParams, PetStripResult, PhoneDevices, PhoneDevicesParams, PhoneDevicesResult,
     PhonePair, PhonePairParams, PhonePairResult, PhoneRevoke, PhoneRevokeParams, PhoneRevokeResult,
     Ping, PingParams, PingResult, ProjectAgentRow, ProjectList, ProjectListParams,
     ProjectListResult, ProjectMessage, ProjectMessageParams, ProjectMessageResult, ScheduleList,
     ScheduleListParams, ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult,
     SessionAnswer, SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult,
     SessionDelete, SessionDeleteParams, SessionExport, SessionExportParams, SessionList,
-    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSearch,
-    SessionSearchParams, SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
-    SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
+    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionRunTool,
+    SessionRunToolParams, SessionRunToolResult, SessionSearch, SessionSearchParams, SessionSend,
+    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult,
+    SessionToolResult, SessionToolResultParams, SessionToolResultResult, SessionTools,
+    SessionToolsParams, SessionToolsResult, Shutdown, ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::methods::{ApiGet, ApiGetParams, ApiSet, ApiToken};
 use imperium_protocol::methods::{
@@ -1066,6 +1068,75 @@ impl Connection {
                     Ok(Accepted {})
                 })
             }
+            SessionTools::NAME => call::<SessionTools>(request.params, |_: SessionToolsParams| {
+                Ok(SessionToolsResult {
+                    tools: imperium_engine::bridge::tools()
+                        .into_iter()
+                        .map(|tool| BridgedToolInfo {
+                            name: tool.name,
+                            description: tool.description,
+                            parameters: tool.parameters,
+                            writes: tool.writes,
+                        })
+                        .collect(),
+                })
+            }),
+            SessionRunTool::NAME => {
+                call::<SessionRunTool>(request.params, |params: SessionRunToolParams| {
+                    let arguments = match params.arguments {
+                        Value::Null => "{}".to_string(),
+                        arguments @ Value::Object(_) => arguments.to_string(),
+                        _ => {
+                            return Err(ErrorObject::new(
+                                codes::INVALID_PARAMS,
+                                "arguments must be an object",
+                            ));
+                        }
+                    };
+                    let call_id = self
+                        .session(&params.session_id)?
+                        .start_tool(&params.tool, arguments, params.allow_write)
+                        .map_err(|error| {
+                            ErrorObject::new(codes::INVALID_PARAMS, error.to_string())
+                        })?;
+                    Ok(SessionRunToolResult { call_id })
+                })
+            }
+            SessionToolResult::NAME => call_later::<SessionToolResult, _>(
+                request.params,
+                &mut later,
+                |params: SessionToolResultParams| {
+                    let session = self.session(&params.session_id);
+                    async move {
+                        let wait = std::time::Duration::from_millis(
+                            params.wait_ms.unwrap_or(0).min(TOOL_RESULT_WAIT_MS),
+                        );
+                        match session?.tool_result(&params.call_id, wait).await {
+                            imperium_engine::bridge::BridgeWait::Done(outcome) => {
+                                Ok(SessionToolResultResult {
+                                    done: true,
+                                    ok: outcome.ok,
+                                    output: outcome.output,
+                                })
+                            }
+                            imperium_engine::bridge::BridgeWait::Pending => {
+                                Ok(SessionToolResultResult {
+                                    done: false,
+                                    ok: false,
+                                    output: String::new(),
+                                })
+                            }
+                            imperium_engine::bridge::BridgeWait::Unknown => Err(ErrorObject::new(
+                                codes::INVALID_PARAMS,
+                                format!(
+                                    "no tool call {:?} in this session (or its result was                                          already collected)",
+                                    params.call_id
+                                ),
+                            )),
+                        }
+                    }
+                },
+            ),
             SessionRespond::NAME => {
                 call::<SessionRespond>(request.params, |params: SessionRespondParams| {
                     self.session(&params.session_id)?
@@ -1696,6 +1767,9 @@ fn incompatible(client: ProtocolVersion) -> ErrorObject {
         )
     }
 }
+
+/// The longest `session.tool_result` waits, in milliseconds.
+const TOOL_RESULT_WAIT_MS: u64 = 5_000;
 
 /// Decodes a method's params (absent params mean `{}`), runs it, and encodes its result.
 fn call<M: Method>(
