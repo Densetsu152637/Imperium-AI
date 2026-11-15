@@ -5,7 +5,7 @@
 
 use imperium_api::{PermissionMode, PermissionRule, RuleAction};
 use imperium_policy::permissions::{
-    CallKind, Decision, Permissions, Refusal, SharedRules, Target, decide_call, safety_floor,
+    CallKind, Decision, Permissions, Refusal, SharedRules, Target, decide_call,
 };
 
 const R: Decision = Decision::Run;
@@ -117,13 +117,8 @@ fn judged(
     kind: CallKind,
     floor: Option<bool>,
 ) -> (Decision, Option<RuleAction>, bool) {
-    let rule = permissions.evaluate(tool, target);
-    let floored = floor.unwrap_or_else(|| safety_floor(kind, target));
-    (
-        decide_call(permissions.mode(), kind, rule, floored),
-        rule,
-        floored,
-    )
+    let judgement = permissions.judge(tool, target, kind, floor);
+    (judgement.decision, judgement.rule, judgement.floored)
 }
 
 fn command(line: &str) -> Target {

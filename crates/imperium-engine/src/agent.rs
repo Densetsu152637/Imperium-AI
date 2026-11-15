@@ -16,9 +16,7 @@ use imperium_api::{
 use imperium_api::{PermissionMode, PermissionRule, RuleAction};
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatClient, ChatRequest, Endpoint};
-use imperium_policy::permissions::{
-    CallKind, Decision, Refusal, Target, decide_call, safety_floor, suggest,
-};
+use imperium_policy::permissions::{CallKind, Decision, Judgement, Refusal, Target, suggest};
 use imperium_policy::{SHELL_TOOLS, ToolSource};
 use imperium_protocol::patterns;
 use imperium_protocol::session::{
@@ -1771,11 +1769,6 @@ impl Agent {
         }
     }
 
-    /// What the global and environment permission rules say about a call.
-    fn rule_for(&self, tool: &str, target: &Target) -> Option<RuleAction> {
-        self.workspace.permissions().evaluate(tool, target)
-    }
-
     /// Asks the user to approve a call to `tool`, unless they allowed it for the session (and
     /// the session is not in ask-every-time mode).
     async fn approve(&self, tool: &str, summary: &str) -> bool {
@@ -1851,24 +1844,28 @@ impl Agent {
         };
         let summary = self.annotate(check.summary.clone());
         // A call that runs a command is judged as `run_command` on that command.
-        let (rule_tool, target, kind, floored) = match &check.command {
-            Some(command) => {
-                let target = Target::Command(command.clone());
-                let floored = safety_floor(CallKind::Execute, &target);
-                ("run_command", target, CallKind::Execute, floored)
-            }
+        let (rule_tool, target, kind, floor_override) = match &check.command {
+            Some(command) => (
+                "run_command",
+                Target::Command(command.clone()),
+                CallKind::Execute,
+                None,
+            ),
             // A call approved afresh each time is treated like the safety floor: it asks in every
             // mode, whatever allow rules, session approvals or pre-approval say.
             None => (
                 name,
                 Target::Other,
                 CallKind::Other { asks: check.ask },
-                provider.always_asks(name),
+                Some(provider.always_asks(name)),
             ),
         };
-        let rule = self.rule_for(rule_tool, &target);
-        let mode = self.workspace.permissions().mode();
-        let decision = decide_call(mode, kind, rule, floored);
+        let Judgement {
+            decision, floored, ..
+        } = self
+            .workspace
+            .permissions()
+            .judge(rule_tool, &target, kind, floor_override);
         if let Decision::Refuse(why) = decision {
             return finish(false, refused(why, &summary));
         }
@@ -2455,7 +2452,6 @@ impl Agent {
             (_, Some(path)) => self.workspace.rule_target(path),
             (_, None) => Target::Other,
         };
-        let rule = self.rule_for(tool, &target);
         let kind = match invocation.access() {
             Access::Read => CallKind::Read,
             Access::Write => CallKind::Edit,
@@ -2469,9 +2465,12 @@ impl Agent {
         {
             return finish(false, format!("error: {error}"));
         }
-        let mode = self.workspace.permissions().mode();
-        let floored = safety_floor(kind, &target);
-        let decision = decide_call(mode, kind, rule, floored);
+        let Judgement {
+            decision, floored, ..
+        } = self
+            .workspace
+            .permissions()
+            .judge(tool, &target, kind, None);
         if let Decision::Refuse(why) = decision {
             return finish(false, refused(why, &summary));
         }

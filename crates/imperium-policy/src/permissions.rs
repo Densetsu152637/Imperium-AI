@@ -158,6 +158,26 @@ impl Permissions {
         self.mode.get()
     }
 
+    /// Judges a call to `tool` on `target` of kind `kind`: what the rules say, whether the
+    /// safety floor covers it, and what the mode then makes of both ([`decide_call`]). The floor
+    /// is [`safety_floor`] of the call unless the caller knows better and gives `floor_override`
+    /// (a provider tool that asks every time is a floored call).
+    pub fn judge(
+        &self,
+        tool: &str,
+        target: &Target,
+        kind: CallKind,
+        floor_override: Option<bool>,
+    ) -> Judgement {
+        let rule = self.evaluate(tool, target);
+        let floored = floor_override.unwrap_or_else(|| safety_floor(kind, target));
+        Judgement {
+            decision: decide_call(self.mode(), kind, rule, floored),
+            rule,
+            floored,
+        }
+    }
+
     /// Changes the session's permission mode from its agents' next calls on.
     pub fn set_mode(&self, mode: PermissionMode) {
         self.mode.set(mode);
@@ -175,6 +195,17 @@ pub enum CallKind {
     Execute,
     /// Another tool (MCP, web, browser, media, app config): `asks` is whether it asks by default.
     Other { asks: bool },
+}
+
+/// How [`Permissions::judge`] judged a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Judgement {
+    /// What happens to the call.
+    pub decision: Decision,
+    /// What the rules said about it, if any matched.
+    pub rule: Option<RuleAction>,
+    /// Whether the safety floor covered it: its approval is asked for every time.
+    pub floored: bool,
 }
 
 /// What happens to a call.
