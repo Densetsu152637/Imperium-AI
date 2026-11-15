@@ -1,0 +1,20 @@
+{
+    "device_id": 1,
+    "device_level": [
+        {"metrics_type": "XPUM_STATS_POWER", "value": 17.68},
+        {"metrics_type": "XPUM_STATS_GPU_FREQUENCY", "value": 300},
+        {"metrics_type": "XPUM_STATS_GPU_CORE_TEMPERATURE", "value": 41.0},
+        {"metrics_type": "XPUM_STATS_MEMORY_USED", "value": 903.12},
+        {"metrics_type": "XPUM_STATS_MEMORY_UTILIZATION", "value": 5.29},
+        {"metrics_type": "XPUM_STATS_GPU_UTILIZATION", "value": 2.5},
+        {"metrics_type": "XPUM_STATS_MEMORY_BANDWIDTH", "value": null}
+    ],
+    "tile_level": [
+        {
+            "tile_id": 0,
+            "data_list": [
+                {"metrics_type": "XPUM_STATS_MEMORY_USED", "value": 903.12}
+            ]
+        }
+    ]
+}
