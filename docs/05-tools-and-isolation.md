@@ -24,6 +24,15 @@ from its `web.search` name by `SearchProviders`, so adding one is an implementat
 with their URLs and to treat web content as data. Searching runs without asking; `web_fetch` asks unless the host
 is in `web.allow_domains` (subdomains included) or the user allowed fetching for the session.
 
+**Threat model: exfiltration through web tools.** Because searching never asks, an agent steered
+by injected content can put anything it has read (file contents, memory, another agent's answer)
+into a `web_search` query, and so to the search provider; a `web_fetch` to an allowed domain can
+carry data in its URL the same way. Domain rules limit where fetches go, not what queries say.
+This applies to every agent with the web tools, including [knowledge-agent](21-knowledge-agents.md)
+forks, which may use the web by the user's decision. Mitigations available today: turn search
+off (`web.search` unset), a [permission profile](#agent-permission-profiles-implemented) with
+local files only, or an ask rule on `web_search`; query screening is not built.
+
 ### Fetch cache and robots.txt (implemented)
 
 **Search providers.** `kagi` (the Kagi Search API, `Authorization: Bot <token>`; its related-search

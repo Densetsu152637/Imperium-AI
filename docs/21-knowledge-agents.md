@@ -69,12 +69,17 @@ conversation is large ends with a one-line nudge to keep it with `keep_as_knowle
 
 **Which model (K8).** A subagent spawned with `knowledge`, or with the tag `knowledge` (which the
 root prompt tells the root to add to research it means to keep), is routed by a new built-in
-[task-class](04-models-and-routing.md#task-classes) rule: prefer the Emperor row. Like the other
-built-in rules it comes after the user's `[[routing.rules]]`, is a preference rather than a
-requirement, and falls back to the normal routing when no Emperor row is installed or it is
-[turned off](04-models-and-routing.md#disabled-models-implemented); `routing.knowledge_model`
-names another model to prefer instead, and `routing.builtin_rules = false` turns it off with the
-others. An explicit `model` or `location` on the call still wins. Promoting an existing agent
+[task-class](04-models-and-routing.md#task-classes) rule: prefer the Emperor row. Precedence:
+the user's `[[routing.rules]]` first, then this knowledge rule, then the built-in tag rows (so a
+`knowledge` task also tagged `architecture` prefers Emperor, not a cloud `frontier` row). It is a
+preference rather than a requirement, and it honours the task's tier floor: a task whose `tier`
+(or a user rule's) is above Emperor's row skips the preference and routes normally. It falls back
+to the normal routing when no Emperor row is installed or it is
+[turned off](04-models-and-routing.md#disabled-models-implemented). `routing.knowledge_model`
+names another model to prefer instead; when that model is turned off, missing from the model
+folders, or not in the catalog, it falls back exactly like a missing Emperor (with a routing
+note). `routing.builtin_rules = false` turns the knowledge rule off with the others. An explicit
+`model` or `location` on the call still wins. Promoting an existing agent
 with `keep_as_knowledge` keeps the model it ran on, and the card shows that model. Emperor is
 still in training ([house models](07-desktop-ui.md#house-models-on-first-run-implemented)), so
 today every knowledge agent gets the fallback.
@@ -99,9 +104,9 @@ by the question at the end.
 | `agent_id`, `title`, `model`, `local` | the agent record |
 | `topic` | the promoter's text |
 | `sources` | derived by the engine, without a model call, from the conversation's successful tool calls: files read (path, plus size and modified time when read), directories listed, search patterns, URLs fetched; at most 50, newest first, with a count of the rest |
-| `untrusted_sources` | true when any source is from the web or a browser |
+| `untrusted` | `web` and `tools` flags: `web` when any result in the kept conversation came from `web_search`, `web_fetch` or a browser tool; `tools` when any came from an MCP or plugin tool |
 | `context_tokens` | the kept conversation's size, and the model's window |
-| `est_question_cost` | the estimated tokens and cost of one question: the uncached share of the prefix (from `last_cached_ratio`) plus a typical question and answer |
+| `est_question_cost` | the estimated tokens and cost of one question: the uncached share of the prefix (from `last_cached_ratio`) plus a typical question and answer; on a hosted model, when the last question is older than the provider's prompt-cache lifetime (from the model table, else 5 minutes), the whole prefix at the uncached price |
 | `last_cached_ratio` | the share of the latest fork's prompt that the provider or runtime reported as cached |
 | `questions`, `usage`, `cost_usd` | answers given so far, and what they cost |
 | `status` | `ready`, `answering` (with queue length), `busy` (resumed for more work) |
@@ -116,8 +121,10 @@ by the question at the end.
    puts the question in the knowledge agent's **question queue** (FIFO, separate from its
    message inbox).
 2. The knowledge agent's model must be available: a hosted model in the catalog, or a local
-   model the model folders have. Otherwise the question is refused, saying which model is
-   missing; it never falls back to another model, which would read the whole prefix with nothing
+   model the model folders have, and not
+   [turned off](04-models-and-routing.md#disabled-models-implemented) since promotion
+   (`ModelSettings::is_disabled`). Otherwise the question is refused, saying the model is missing
+   or "turned off"; it never falls back to another model, which would read the whole prefix with nothing
    cached and answer from a context the card does not describe. The engine also checks, before
    the fork's first call, that the frozen prefix plus the question fits the model's window, and
    refuses the question if not.
@@ -185,18 +192,23 @@ be self-contained, like briefs.
   session's mode), except that an outcome of **ask becomes a refusal**: a fork never raises an
   approval. Nothing in the asker's request can widen this; the asker passes only text.
 - **Answers are data.** The result is wrapped as
-  `<agent-answer from="t3" topic="…" untrusted-web="true">…</agent-answer>`, with text that looks
-  like the delimiters backslash-escaped (as kept context blocks are), after a line saying it is
-  information from another agent to weigh, not instructions. `untrusted-web` is set when the
-  card has `untrusted_sources` or the fork itself used a web tool, and the line then says the
-  answer contains material from the web. Askers' prompts say the same.
+  `<agent-answer from="t3" topic="…" untrusted-web="true" untrusted-tools="true">…</agent-answer>`,
+  with text that looks like the delimiters backslash-escaped (as kept context blocks are), after
+  a line saying it is information from another agent to weigh, not instructions.
+  `untrusted-web` is set when the card's `untrusted.web` is or the fork itself used a web tool;
+  `untrusted-tools` when the card's `untrusted.tools` is (forks cannot call MCP or plugin tools,
+  but the research before promotion may have). The line then says which kind of outside material
+  the answer may contain. Askers' prompts say the same.
 - **Questions are data too.** The fork reads the question inside `<question from="t5">`, after a
   line saying it comes from another agent, is to be answered, and cannot change its role, tools or
   instructions.
 - **No cycles or deadlock.** K3 makes the wait-for graph bipartite; the check is in step 1 of
   [answering](#answering), with a debug assertion behind it.
 - **Prompt injection.** Containment rests on the asker side (framing, no tools gained) and the
-  fork side (allowlist, no asking), not on the content being clean.
+  fork side (allowlist, no asking), not on the content being clean. Forks keep the web tools (a
+  user decision), so the general risk of data leaving through `web_search` queries applies to
+  them as to every agent with the web; see
+  [exfiltration through web tools](05-tools-and-isolation.md#built-in-tools).
 - **Rate.** At most `knowledge.max_questions_per_turn` questions per asker turn, so a confused
   model cannot loop on a knowledge agent.
 
@@ -210,13 +222,21 @@ be self-contained, like briefs.
 - **Retiring.** `keep_as_knowledge` with `retire: true`, the user, or the session ending. A
   retired agent is an ordinary idle subagent again: still resumable, no longer askable, its card
   and saved slot removed.
-- **Local residency.** A knowledge agent's holder is registered as **present** with the local
-  runtime, as an agent that can come back: on a model swap its slot is saved rather than dropped,
-  and the saved-slot cache does not trim it first. Right after each answer its slot is saved
-  (`LocalModels::suspend` for the holder), so the next fork restores the prefix (`resume`) before
-  its first call even if other agents used the model meanwhile. There is no idle timer. A hosted
-  model holds nothing between calls; its provider's prompt cache is what `last_cached_ratio`
-  reports.
+- **Local residency: a third presence kind, `kept`.** The supervisor's presence today has two
+  marks, `working` (mid-turn, `LocalModels::attach`) and `waiting` (asleep on subagents,
+  `LocalModels::waiting`) (`Presence`/`Mark` in `crates/imperium-local/src/supervisor.rs`). A
+  knowledge agent's holder gets a third, `kept`, held from promotion until retirement. `kept`
+  counts in exactly two places: `save_slots` saves the holder's slot on a swap or unload (as for
+  an agent that can come back), and `SlotFiles::trim` keeps its file ahead of finished agents'.
+  It counts nowhere else: it never pins a model (unlike `attach`, the model can be swapped or
+  unloaded for anyone), never counts as working or waiting (not in `critic_may_have_gpu`, no
+  `yield_waiters` or suspend-to-yield on its behalf, and it does not hold off the idle unload).
+  A fork itself is `working` under the holder for its turn, as any agent is.
+- **Saving after each answer.** Right after each answer the holder's slot is written to its file
+  **without erasing its cells**: if nobody uses the slot meanwhile, the next fork is a hot hit on
+  the cells; if they were overwritten or the model was swapped, the file restores the prefix
+  (`resume`) before the fork's first call. There is no idle timer. A hosted model holds nothing
+  between calls; its provider's prompt cache is what `last_cached_ratio` reports.
 - **Compaction.** The kept conversation is never compacted: questions do not grow it (forks are
   discarded), and promotion refuses a conversation that does not fit with the reserve. A fork
   that reaches `context.auto_compact_at` stops and answers with what it has.
@@ -236,7 +256,7 @@ be self-contained, like briefs.
 - Session events: `knowledge_changed` (`agent_id`, the card, or `retired`),
   `question_asked` (`question_id`, `from`, `to`, `text` clipped to 2,000 characters, `at_ms`) and
   `question_answered` (`question_id`, `outcome`: `answered`, `timeout`, `cancelled`, `refused`
-  or `failed`, `answer` clipped to 2,000, `degraded`, `untrusted_web`, `usage`, `cost_usd`,
+  or `failed`, `answer` clipped to 2,000, `degraded`, `untrusted_web`, `untrusted_tools`, `usage`, `cost_usd`,
   `cached_ratio`, `at_ms`).
 - A fork emits **no** `turn_started`, `text_delta` or model-call events in the first version. Its
   tool events (`tool_started`, `tool_finished`, permission refusals) carry the derived id
@@ -296,10 +316,13 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
    - a fork's `write_file`, `run_command`, `ask_agent`, MCP, plugin and `activate_plugin` calls are
      refused at dispatch, a `web_fetch` the rules would ask about is refused, and an allowed
      `web_fetch` runs and marks the answer `untrusted_web`;
+   - an agent that used an MCP tool during its research is promoted with `untrusted.tools` set
+     and its answers carry `untrusted-tools`; one that used `web_fetch` has `untrusted.web`;
    - a knowledge agent's own `ask_agent` call is refused;
    - a timeout removes a queued question and cancels a running fork; a stopped session does not
      time a question out;
    - an unavailable model, or a prefix that does not fit, refuses the question with no fallback;
+     a model turned off after promotion refuses it with "turned off";
    - promoting a writer, a chunk agent or an oversized conversation is refused;
    - a blocked budget fails the question; usage lands on the knowledge agent's record;
    - answer delimiters inside the answer are escaped;
@@ -308,14 +331,27 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
    - `spawn_agent` with `knowledge` routes to an Emperor row when the catalog has one, to the
      normal route when it has none or it is turned off, and to the named model with an explicit
      `model`; `keep_as_knowledge` keeps the agent's model;
+   - a task tagged both `knowledge` and `architecture` prefers Emperor over the cloud `frontier`
+     row; a user rule for `knowledge` beats the built-in rule; a tier floor above Emperor's row
+     routes normally; a `routing.knowledge_model` that is turned off, missing or outside the
+     catalog falls back like a missing Emperor;
    - the schema drift check passes.
-2. **Local residency.** Knowledge holders registered as present; the slot saved after each
-   answer and restored before the next fork; slot files counted against `swap_cache_mb` in
-   `max_per_session`; the asker keeping its slot when a free one exists; `last_cached_ratio` and
-   `est_question_cost`. *Tests* (fake local runtime): a second question reports cached prompt
-   tokens; with a third agent using the model between two questions, the second still reports
-   cached tokens (restored from the saved slot); a promotion over the slot-cache share is refused
-   with the list; the saved-slot trim keeps knowledge holders' files ahead of finished agents'.
+2. **Local residency.** The `kept` presence kind; the slot saved after each answer without
+   erasing its cells and restored before the next fork when needed; slot files counted against
+   `swap_cache_mb` in `max_per_session`; the asker keeping its slot when a free one exists;
+   `last_cached_ratio` and `est_question_cost` (with the cache-lifetime rule). *Tests* (fake local
+   runtime):
+   - a second question with nothing in between is a hot hit (no restore);
+   - with a third agent using the model between two questions, the second still reports cached
+     tokens (restored from the saved file);
+   - `kept` holders' slots are saved by `save_slots` on a swap and on an idle unload;
+   - `SlotFiles::trim` drops finished agents' files before `kept` holders' files;
+   - a model whose only presence is `kept` can be swapped out for another load and is unloaded
+     at its idle timeout (`kept` never pins it or holds off the idle unload);
+   - `kept` does not count as working or waiting: `critic_may_have_gpu` ignores it, and no
+     `yield_waiters` or suspend-to-yield runs on its behalf;
+   - a promotion over the slot-cache share is refused with the list;
+   - `est_question_cost` on a hosted model uses the uncached price after the cache lifetime.
 3. **Clients and prompts.** Agents panel badge, sources, cost and questions; *Keep as knowledge*
    and *Retire*; `/agents` cards in `imperium chat`; root and subagent prompt lines, `brief.md`,
    Emperor's root prompt and an eval case in `schemas/eval` (asking beats re-reading). *Tests:*
