@@ -1339,8 +1339,8 @@ mod help_snapshot {
     fn collect(command: &clap::Command, out: &mut String) {
         let name = command.get_bin_name().unwrap_or_else(|| command.get_name());
         out.push_str(&format!("===== {name} =====\n"));
-        out.push_str(&command.clone().render_long_help().to_string());
-        out.push('\n');
+        out.push_str(command.clone().render_long_help().to_string().trim_end());
+        out.push_str("\n\n");
         for subcommand in command.get_subcommands() {
             collect(subcommand, out);
         }
@@ -1358,6 +1358,7 @@ mod help_snapshot {
         collect(&root, &mut text);
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("snapshots");
         std::fs::create_dir_all(&dir).expect("create snapshots");
+        let text = format!("{}\n", text.trim_end());
         std::fs::write(dir.join("help.txt"), text).expect("write the help snapshot");
     }
 }
