@@ -319,7 +319,9 @@ and macOS always use their keychain and never the file.
 The daemon makes the choice **once**, when it starts, keeps it, and records it in
 `secrets.backend` in the data folder; `imperium secret` follows that record (and detects for
 itself only when the daemon has recorded nothing, warning when a running daemon might use the
-other store). With a working keychain, every read, write and delete goes to it and a keychain
+other store). If the keychain disappears after the daemon recorded `keychain`, `imperium secret`
+writes fail (they never fall back to the file) until the daemon restarts and records `file`. With a
+working keychain, every read, write and delete goes to it and a keychain
 error (locked, unreachable) is reported as an error: it never makes a secret get written to the
 file, and a failed delete is never reported as "not stored". Only a daemon start that finds no
 keychain uses the file.
