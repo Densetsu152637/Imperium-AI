@@ -441,7 +441,7 @@ design left open, or differs from it:
 ## Stage 2 as built
 
 Local residency is built in `imperium-local` and used by the engine through five new defaulted
-methods of `LocalModels` (`keep`, `save_kept`, `drop_saved`, `fork_fits`, and the two readings
+methods of `LocalModels` (`keep`, `save_leased`, `save_kept`, `drop_saved`, `fork_fits`, and the two readings
 `swap_cache_bytes` and `kv_bytes_per_token`); no protocol type changed. Tests:
 `crates/imperium-local/tests/kept.rs`, the unit tests in `supervisor.rs` and `slot_files.rs`, and the
 local-runtime tests at the end of `crates/imperium-engine/tests/knowledge.rs`.
@@ -453,11 +453,14 @@ local-runtime tests at the end of `crates/imperium-engine/tests/knowledge.rs`.
   working nor waiting (`claims`, `critic_may_have_gpu`, `yield_waiters`, the idle unload and the
   swap policy look at those two only), and a model whose only presence is `kept` is swapped or
   unloaded as an idle one.
-- **Saving after every fork.** When a fork ends, whatever the outcome (answered, timed out,
-  cancelled or failed; a question refused before any call has nothing to save), the engine calls
-  `save_kept`: the holder's slot is written to its file with its cells left in place (reported as a
-  `save_slot` move with the reason `kept`). It is skipped when another agent has already taken the
-  slot, or slots are not saved.
+- **Saving after every fork.** The slot is written to its file with its cells left in place
+  (a `save_slot` move with the reason `kept`). A fork saves it **under its final lease**
+  (`save_leased`, called on the last call's lease before it is dropped), because once the lease is
+  released the slot's permit goes to the first queued call, which overwrites the prefix. A fork that
+  ends otherwise (cancelled, timed out, failed, or an error) saves after the fact with
+  `save_kept`, best effort: when the slot is already taken or the model is gone, the save is a
+  failed move with its reason, never a silent skip. A question refused before any call has nothing
+  to save.
 - **Restoring only when needed.** The slot table says whether the slot a lease got still holds its
   holder's own cells (it used the slot last and the slot was not reserved for a restore or erased).
   For a kept holder, `Supervisor::restore` does nothing in that case (no `RestoreSlot` move) and
@@ -465,14 +468,23 @@ local-runtime tests at the end of `crates/imperium-engine/tests/knowledge.rs`.
   behaviour.
 - **File lifetime.** A kept holder's file is removed by `drop_saved`, which the engine calls when the
   agent is retired and when it is resumed (its prefix changes), and by trim under its priority.
-- **Slot cache share.** Promoting a local agent is refused, with the list oldest asked first, when
+- **Slot cache share.** `knowledge.slot_cache_share` is a share **per session**: it bounds the saved
+  slots of that session's local knowledge agents against `swap_cache_mb`, which is the runtime's
+  global cap; several sessions can each take their share, and the cap's own trim then drops files
+  by the usual priority (finished agents' first, then the session holding the most). Promoting a
+  local agent is refused, with the list oldest asked first, when
   the saved slots of the session's local knowledge agents (each `context_tokens` times the
   model's KV bytes per token) would exceed `knowledge.slot_cache_share` of `swap_cache_mb`. The
   check is skipped when slots are not saved or the model's KV size is unknown.
 - **Asker keeps its slot.** An asker on a local model stays awake while the fork runs on a hosted
-  model, or on a loaded local model with a slot free for it (beside the asker's own when it is the
-  same model: `fork_fits`); otherwise it is marked asleep as in stage 1. The fit is judged when
-  the question starts.
+  model, or on a loaded local model with a free permit (`fork_fits`; the asker holds no slot while
+  it waits, so one is enough even on its own model); otherwise it is marked asleep as in stage 1.
+  The fit is judged when the question starts.
+- **Priority.** A fork never asks the runtime to restore its context ahead of its call
+  (`ensure_resident`, which is the user's priority): its next call restores it at the session's own
+  priority, so a background session's fork does not jump the user's calls.
+- **Session close.** When a session closes, the engine removes its local knowledge agents' saved
+  files and marks from the runtime.
 - **Cache lifetime.** On a hosted model, `est_question_cost` prices the whole prefix uncached when
   the last question is older than the model's cache lifetime: `cache_lifetime_s` on its row of the
   model table, else 5 minutes. A card never asked has no cached share to lose, so it is priced

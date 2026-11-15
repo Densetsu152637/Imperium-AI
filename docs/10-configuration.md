@@ -301,7 +301,7 @@ change applies to new sessions, not to running ones.
 | `knowledge.answer_max_steps` | `6` | Most model calls one answer may make |
 | `knowledge.max_questions_per_turn` | `20` | Most questions one agent may ask in one turn |
 | `knowledge.answer_reserve` | `0.25` | Share of its model's window a kept conversation must leave free for answers (a conversation is never compacted to make it fit) |
-| `knowledge.slot_cache_share` | `0.5` | Share of the saved-slot cache (`swap_cache_mb`) the saved slots of local knowledge agents may take together; promoting another is refused past it |
+| `knowledge.slot_cache_share` | `0.5` | Share of the saved-slot cache (`swap_cache_mb`) the saved slots of one session's local knowledge agents may take together; promoting another is refused past it. `swap_cache_mb` stays the global cap over all sessions |
 | `knowledge.stale_threshold` | `0.3` | Share of a card's file sources that changed since they were read, above which answers are marked degraded |
 | `knowledge.default_timeout_s` | `300` | How long a question waits for its answer unless the call asks for another time (at most 600); the wait pauses while the session is stopped |
 

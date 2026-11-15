@@ -1169,6 +1169,7 @@ async fn run(
 /// Starts the `session.end` hooks as the session's task finishes: `reason` is `closed` (every
 /// handle was dropped) or `stopped`. They run detached, so ending never waits for them.
 fn session_ended(shared: &Shared, session_id: &str, reason: &str) {
+    crate::knowledge::session_closed(shared);
     shared.observe_in(
         &shared.workspace,
         HookEvent::SessionEnd,

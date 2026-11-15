@@ -3346,26 +3346,53 @@ impl Supervisor {
     }
 
     /// Saves `holder`'s slot on the loaded model `model` to disk and leaves its cells where
-    /// they are, for a knowledge agent whose fork just ended (whatever the outcome): its prompt
-    /// is then restorable if another agent takes the slot. Nothing happens when slots are not
-    /// saved, the model is not loaded, or the holder's prompt is no longer in a free slot.
+    /// they are, for a knowledge agent whose fork just ended without a lease to save under (a
+    /// fork that was cancelled or failed): its prompt is then restorable if another agent takes
+    /// the slot. Best effort: a slot that is gone, or a model that is not loaded, is reported as a
+    /// failed move rather than skipped silently.
     pub async fn save_kept_slot(&self, model: &str, holder: &str) -> bool {
         let Some(files) = &self.slot_files else {
             return false;
         };
+        let action = Action::SaveSlot {
+            model: model.to_string(),
+            holder: holder.to_string(),
+        };
         let found = {
             let mut state = lock(&self.state);
-            let found = state.loaded.get(model).and_then(|entry| {
-                let key = entry.key?;
-                let permit = Arc::clone(&entry.pool.permits).try_acquire_owned().ok()?;
-                let slot = lock(&entry.pool.table).take_own(holder)?;
-                Some((
+            let Some(entry) = state.loaded.get(model) else {
+                drop(state);
+                self.record(Move::failed(
+                    action,
+                    Reason::Kept,
+                    "the model is not loaded",
+                ));
+                return false;
+            };
+            let Some(key) = entry.key else {
+                drop(state);
+                self.record(Move::failed(
+                    action,
+                    Reason::Kept,
+                    "the model's slots cannot be saved",
+                ));
+                return false;
+            };
+            let taken = Arc::clone(&entry.pool.permits)
+                .try_acquire_owned()
+                .ok()
+                .and_then(|permit| {
+                    let slot = lock(&entry.pool.table).take_own(holder)?;
+                    Some((permit, slot))
+                });
+            let found = taken.map(|(permit, slot)| {
+                (
                     Arc::clone(&entry.server),
                     Arc::clone(&entry.pool),
                     key,
                     slot,
                     permit,
-                ))
+                )
             });
             if found.is_some() {
                 state.saving.insert((model.to_string(), holder.to_string()));
@@ -3373,6 +3400,11 @@ impl Supervisor {
             found
         };
         let Some((server, pool, key, slot, _permit)) = found else {
+            self.record(Move::failed(
+                action,
+                Reason::Kept,
+                "its slot was taken by another agent, or every slot is busy",
+            ));
             return false;
         };
         let _saving = SavingMark {
@@ -3380,6 +3412,50 @@ impl Supervisor {
             model,
             holder,
         };
+        let saved = self
+            .write_kept(files, server.as_ref(), key, model, holder, slot)
+            .await;
+        // Its cells are untouched, so the slot is still the holder's prompt.
+        lock(&pool.table).give_back_suspended(slot, holder, false);
+        self.changed.notify_waiters();
+        saved
+    }
+
+    /// Saves `holder`'s slot `slot` on `model` while its lease on it is still held, so a call
+    /// queued for a slot cannot take it before the save; the cells stay.
+    pub async fn save_leased_slot(&self, model: &str, holder: &str, slot: u32) -> bool {
+        let Some(files) = &self.slot_files else {
+            return false;
+        };
+        let found = lock(&self.state)
+            .loaded
+            .get(model)
+            .and_then(|entry| Some((Arc::clone(&entry.server), entry.key?)));
+        let Some((server, key)) = found else {
+            self.record(Move::failed(
+                Action::SaveSlot {
+                    model: model.to_string(),
+                    holder: holder.to_string(),
+                },
+                Reason::Kept,
+                "the model is not loaded",
+            ));
+            return false;
+        };
+        self.write_kept(files, server.as_ref(), key, model, holder, slot)
+            .await
+    }
+
+    /// Writes a slot to its file and records it for `holder`; reports the move either way.
+    async fn write_kept(
+        &self,
+        files: &Mutex<SlotFiles>,
+        server: &dyn Server,
+        key: u64,
+        model: &str,
+        holder: &str,
+        slot: u32,
+    ) -> bool {
         let action = Action::SaveSlot {
             model: model.to_string(),
             holder: holder.to_string(),
@@ -3388,7 +3464,7 @@ impl Supervisor {
         let present: HashSet<String> = lock(&self.presence.users).keys().cloned().collect();
         let file = SlotFiles::file_name(key, holder);
         let unrecorded = Forget { files, holder, key };
-        let saved = match server.save_slot(slot, &file).await {
+        match server.save_slot(slot, &file).await {
             Ok(saved) => {
                 lock(files).record(
                     Saved {
@@ -3412,11 +3488,7 @@ impl Supervisor {
                 self.record(Move::failed(action, Reason::Kept, error));
                 false
             }
-        };
-        // Its cells are untouched, so the slot is still the holder's prompt.
-        lock(&pool.table).give_back_suspended(slot, holder, false);
-        self.changed.notify_waiters();
-        saved
+        }
     }
 
     /// Restores `holder`'s saved slot, if it has one for this server's model, into the slot it
@@ -3869,21 +3941,26 @@ impl LocalModels for Supervisor {
         })
     }
 
+    fn save_leased<'a>(&'a self, model: &'a str, holder: &'a str, slot: u32) -> SuspendFuture<'a> {
+        Box::pin(async move {
+            self.save_leased_slot(model, holder, slot).await;
+        })
+    }
+
     fn drop_saved(&self, holder: &str) {
         if let Some(files) = &self.slot_files {
             lock(files).forget_holder(holder);
         }
     }
 
-    fn fork_fits(&self, asker_model: &str, fork_model: &str) -> bool {
+    fn fork_fits(&self, _asker_model: &str, fork_model: &str) -> bool {
         let state = lock(&self.state);
         let Some(entry) = state.loaded.get(fork_model) else {
             return false;
         };
-        // The asker's own slot is free while it waits, so a fork on the same model needs one
-        // more beside it.
-        let needed = if asker_model == fork_model { 2 } else { 1 };
-        entry.pool.permits.available_permits() >= needed
+        // The asker holds no slot while it waits: one free permit is enough, even on its own
+        // model.
+        entry.pool.permits.available_permits() >= 1
     }
 
     fn swap_cache_bytes(&self) -> Option<u64> {

@@ -1616,6 +1616,10 @@ impl LocalModels for Local {
         Box::pin(async move { self.note(format!("save_kept {holder}")) })
     }
 
+    fn save_leased<'a>(&'a self, _model: &'a str, holder: &'a str, slot: u32) -> SuspendFuture<'a> {
+        Box::pin(async move { self.note(format!("save_leased {holder} {slot}")) })
+    }
+
     fn drop_saved(&self, holder: &str) {
         self.note(format!("drop_saved {holder}"));
     }
@@ -1654,13 +1658,16 @@ async fn a_local_knowledge_agent_is_kept_saved_after_every_fork_and_forgotten_wh
     assert!(kept.local);
     assert_eq!(runtime.count("keep s/t1"), 1, "kept from promotion");
 
-    // A fork that answers, and one the asker gave up on: both are saved.
+    // A fork that answers saves its slot under its last lease; one the asker gave up on is
+    // saved after the fact.
     say(&session, &mut events, &ask("t1", "plain")).await;
-    assert_eq!(runtime.count("save_kept s/t1"), 1);
+    assert_eq!(runtime.count("save_leased s/t1 0"), 1);
+    assert_eq!(runtime.count("save_kept s/t1"), 0);
     let slow = json!({"agent": "t1", "question": "slow", "timeout_s": 1});
     say(&session, &mut events, &format!("tool ask_agent {slow}")).await;
     assert_eq!(answers(&session)[1].0, QuestionOutcome::Timeout);
-    assert_eq!(runtime.count("save_kept s/t1"), 2, "a cancelled fork too");
+    assert_eq!(runtime.count("save_kept s/t1"), 1, "a cancelled fork too");
+    assert_eq!(runtime.count("save_leased s/t1 0"), 1);
 
     // Resuming it changes the prefix, so the saved file goes; retiring removes it and the mark.
     let resume = json!({"agent_id": "t1", "text": "read b.txt too"});

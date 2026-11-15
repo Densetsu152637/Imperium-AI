@@ -601,6 +601,20 @@ fn keep_resident(shared: &Shared, agent_id: &str, model: &ResolvedModel) {
         .or_insert_with(|| local.keep(&model.model, &holder));
 }
 
+/// The session ended: its knowledge agents' saved slots and marks go from the runtime, which
+/// would otherwise keep them (and their files) until it is restarted.
+pub(crate) fn session_closed(shared: &Shared) {
+    for card in shared
+        .agents
+        .knowledge_cards()
+        .iter()
+        .filter(|card| card.local)
+    {
+        drop_saved(shared, &card.agent_id);
+    }
+    lock(&shared.knowledge.kept).clear();
+}
+
 /// Removes a knowledge agent's saved slots from the runtime: it was retired, or resumed (its
 /// prefix changes).
 fn drop_saved(shared: &Shared, agent_id: &str) {
@@ -1230,6 +1244,8 @@ pub(crate) enum ForkEnd {
 
 /// What a fork did.
 pub(crate) struct ForkResult {
+    /// The slot was saved under the fork's last lease (see `LocalModels::save_leased`).
+    pub saved: bool,
     pub end: ForkEnd,
     pub usage: Usage,
     pub calls: u32,

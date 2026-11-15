@@ -44,6 +44,8 @@ pub(super) struct ForkInfo {
     /// Raised when the question times out or is cancelled.
     pub stop: watch::Receiver<Option<Stop>>,
     used_web: AtomicBool,
+    /// Its slot was saved under its last lease.
+    saved: AtomicBool,
 }
 
 impl ForkInfo {
@@ -135,13 +137,16 @@ pub(crate) async fn run_fork(shared: Arc<Shared>, request: ForkRequest) -> ForkR
         source: source_id,
         stop,
         used_web: AtomicBool::new(false),
+        saved: AtomicBool::new(false),
     });
     let result = agent.answer_loop(&tools, max_steps).await;
     shared.inboxes.close(&fork_id);
     drop(agent);
-    // The slot is saved with its cells in place, so the prefix can be restored if another
-    // agent takes the slot before the next question.
-    if let (Some(model), Some(local)) = (local_model, shared.local.as_deref()) {
+    // A fork that did not save its slot under its last lease (it was cancelled or failed, or
+    // ended on an error) saves it now, with its cells in place, if nobody has taken it.
+    if !result.saved
+        && let (Some(model), Some(local)) = (local_model, shared.local.as_deref())
+    {
         local.save_kept(&model, &holder).await;
     }
     result
@@ -161,6 +166,10 @@ impl Agent {
 
     fn ended(&self, end: ForkEnd, usage: Usage, calls: u32) -> ForkResult {
         ForkResult {
+            saved: self
+                .fork
+                .as_ref()
+                .is_some_and(|fork| fork.saved.load(Ordering::SeqCst)),
             end,
             usage,
             calls,
@@ -208,7 +217,7 @@ impl Agent {
             if let Some(why) = self.hold_unless_cancelled(&mut attached, &holder).await {
                 return self.ended(ForkEnd::Stopped(why), usage, calls);
             }
-            let (result, started, queue_wait) = loop {
+            let (result, started, queue_wait, lease) = loop {
                 // Every call is checked against the budgets, charged to the knowledge agent's
                 // model.
                 if let Some(message) = self.budget_stop().await {
@@ -237,15 +246,18 @@ impl Agent {
                     () = cancelled(&mut cancel) => Streamed::Paused,
                     Ok(_) = stop.wait_for(|stopped| *stopped) => Streamed::Stopped,
                 };
-                drop(lease);
                 match streamed {
-                    Streamed::Done(result) => break (result, started, queue_wait),
+                    // The lease is kept until the reply is read: a final reply saves the slot
+                    // under it.
+                    Streamed::Done(result) => break (result, started, queue_wait, lease),
                     Streamed::Paused => {
+                        drop(lease);
                         let why = self.stop_reason().unwrap_or(Stop::Cancelled);
                         return self.ended(ForkEnd::Stopped(why), usage, calls);
                     }
                     // The session was stopped: the request is sent again on resume.
                     Streamed::Stopped => {
+                        drop(lease);
                         if let Some(why) = self.hold_unless_cancelled(&mut attached, &holder).await
                         {
                             return self.ended(ForkEnd::Stopped(why), usage, calls);
@@ -287,6 +299,21 @@ impl Agent {
                     self.messages.len(),
                 ));
             }
+            // The slot of a fork's last call is saved while the fork still holds it: once it is
+            // released a call queued for a slot takes it and writes over the prefix. A call that
+            // goes on to tools, or a fork that is cancelled or fails, is saved after the fact,
+            // best effort.
+            if tool_calls.is_empty()
+                && let (Some(slot), Some(local), Some(fork)) = (
+                    lease.as_ref().and_then(|lease| lease.slot),
+                    self.local_models(),
+                    &self.fork,
+                )
+            {
+                local.save_leased(&self.model.model, &holder, slot).await;
+                fork.saved.store(true, Ordering::SeqCst);
+            }
+            drop(lease);
             if tool_calls.is_empty() {
                 let end = if text.trim().is_empty() {
                     ForkEnd::Failed("the model replied with nothing".into())

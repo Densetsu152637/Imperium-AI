@@ -356,12 +356,23 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     fn save_kept<'a>(&'a self, _model: &'a str, _holder: &'a str) -> SuspendFuture<'a> {
         Box::pin(async {})
     }
+    /// Saves `holder`'s slot `slot` on `model` while the caller still holds its lease on it, so
+    /// nobody queued for a slot can take it first; leaves the cells in place. For a fork's final
+    /// call (see [`LocalModels::save_kept`] for the best-effort save after the lease is gone).
+    fn save_leased<'a>(
+        &'a self,
+        _model: &'a str,
+        _holder: &'a str,
+        _slot: u32,
+    ) -> SuspendFuture<'a> {
+        Box::pin(async {})
+    }
     /// Removes `holder`'s saved slots from the disk, for a knowledge agent that was retired or
     /// resumed (its prefix changed).
     fn drop_saved(&self, _holder: &str) {}
-    /// Whether `fork_model` is loaded with a slot free for a fork beside the asker's own (the
-    /// asker's slot is not counted when both are the same model), so an asker waiting for the
-    /// fork's answer need not give up its slot.
+    /// Whether `fork_model` is loaded with a slot free for a fork: an asker waiting for the fork's
+    /// answer holds no slot, so one free permit is enough even on the asker's own model, and the
+    /// asker need not give up its cached prompt.
     fn fork_fits(&self, _asker_model: &str, _fork_model: &str) -> bool {
         false
     }

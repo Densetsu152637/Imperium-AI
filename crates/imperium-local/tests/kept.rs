@@ -13,6 +13,7 @@ use imperium_api::{LocalModels, LocalRequest, Priority};
 use imperium_config::LlamaCppSettings;
 use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
+use imperium_local::residency::{Move, Reason};
 use imperium_local::scan::{Format, LocalModel};
 use imperium_local::supervisor::{
     LaunchFuture, LaunchSpec, Launcher, Runtimes, Server, SlotFuture, SlotTransfer, StopFuture,
@@ -428,17 +429,116 @@ async fn the_saved_slot_cache_and_kv_size_are_reported() {
 }
 
 #[tokio::test]
-async fn a_fork_fits_beside_the_asker_only_when_a_slot_is_free_for_it() {
+async fn a_fork_fits_only_when_a_slot_is_free_for_it() {
     let (supervisor, _log) = start(1024);
     assert!(
         !supervisor.fork_fits("emperor", "emperor"),
         "not loaded yet"
     );
     call(&supervisor, "emperor", "session/asker").await;
-    // Two slots, both free while the asker waits: the fork has one beside the asker's.
+    // The asker holds no slot while it waits: even on its own model one free permit is enough.
     assert!(supervisor.fork_fits("emperor", "emperor"));
-    // The asker's slot and a busy one: nothing is left for the fork.
-    let busy = supervisor.acquire("emperor", "session/x").await.unwrap();
-    assert!(!supervisor.fork_fits("emperor", "emperor"));
-    drop(busy);
+    let small = LocalRequest {
+        priority: Priority::Interactive,
+        prompt_tokens: Some(16),
+        uncapped: false,
+    };
+    let busy = supervisor
+        .acquire_with("emperor", "session/x", small)
+        .await
+        .unwrap();
+    assert!(
+        supervisor.fork_fits("emperor", "emperor"),
+        "one of two is free"
+    );
+    let busier = supervisor
+        .acquire_with("emperor", "session/y", small)
+        .await
+        .unwrap();
+    assert!(!supervisor.fork_fits("emperor", "emperor"), "none is free");
+    drop((busy, busier));
+}
+
+/// Every move the supervisor reports.
+fn record_moves(supervisor: &Supervisor) -> Arc<Mutex<Vec<Move>>> {
+    let moves = Arc::new(Mutex::new(Vec::new()));
+    let mut receiver = supervisor.moves();
+    let sink = Arc::clone(&moves);
+    tokio::spawn(async move {
+        while let Ok(moved) = receiver.recv().await {
+            lock(&sink).push(moved);
+        }
+    });
+    moves
+}
+
+#[tokio::test]
+async fn a_fork_saves_its_slot_under_its_last_lease_before_a_queued_call_takes_it() {
+    let (supervisor, log) = start(1024);
+    let moves = record_moves(&supervisor);
+    let small = LocalRequest {
+        priority: Priority::Interactive,
+        prompt_tokens: Some(16),
+        uncapped: false,
+    };
+    let _kept = supervisor.keep("emperor", HOLDER);
+    // The fork holds one slot, another agent the other, and a third call is queued for a slot.
+    let fork = supervisor
+        .acquire_with("emperor", HOLDER, small)
+        .await
+        .unwrap();
+    let slot = fork.slot.unwrap();
+    let other = supervisor
+        .acquire_with("emperor", "session/x", small)
+        .await
+        .unwrap();
+    let queued = {
+        let supervisor = Arc::clone(&supervisor);
+        tokio::spawn(async move {
+            supervisor
+                .acquire_with("emperor", "session/y", small)
+                .await
+                .unwrap()
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Saved while the lease is still held: the queued call cannot have the slot yet.
+    supervisor.save_leased("emperor", HOLDER, slot).await;
+    assert_eq!(log.count("save"), 1);
+    drop(fork);
+    // It takes the slot the moment it is released, and writes over the prefix.
+    let taker = queued.await.unwrap();
+    assert_eq!(taker.slot, Some(slot));
+    drop((taker, other));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let saved = lock(&moves)
+        .iter()
+        .filter(|moved| moved.action.name() == "save_slot" && moved.ok)
+        .map(|moved| moved.reason)
+        .collect::<Vec<_>>();
+    assert_eq!(saved, [Reason::Kept]);
+
+    // The next question finds its slot overwritten and restores the saved prefix.
+    call(&supervisor, "emperor", HOLDER).await;
+    assert_eq!(log.count("restore"), 1);
+}
+
+#[tokio::test]
+async fn a_save_that_cannot_happen_is_a_failed_move_not_a_silent_skip() {
+    let (supervisor, log) = start(1024);
+    let moves = record_moves(&supervisor);
+    // The model is not loaded.
+    assert!(!supervisor.save_kept_slot("emperor", HOLDER).await);
+    // It is, but the holder's prompt is not in a free slot.
+    call(&supervisor, "emperor", "session/other").await;
+    assert!(!supervisor.save_kept_slot("emperor", HOLDER).await);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let failed: Vec<(Reason, bool)> = lock(&moves)
+        .iter()
+        .filter(|moved| moved.action.name() == "save_slot")
+        .map(|moved| (moved.reason, moved.ok))
+        .collect();
+    assert_eq!(failed, [(Reason::Kept, false), (Reason::Kept, false)]);
+    assert_eq!(log.count("save"), 0);
 }
