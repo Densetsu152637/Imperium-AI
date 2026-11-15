@@ -604,8 +604,9 @@ and `environments.agent_update` (protocol 0.28)
     other roadmap pull request has merged: tidy the repository, split oversized modules,
     remove duplicated helpers, route callers through proper interfaces, and build the policy
     crate deferred from item 31 ([08](08-agent-policy.md#default-policy-pack)), with no
-    behaviour or protocol change. The inventory, decisions, commit order, acceptance checks
-    and open questions are in the [cleanup plan](plans/cleanup.md).
+    protocol change and one named behaviour change (`imperium workflow resolve` loads packs
+    as sessions do). The inventory, decisions, commit order, acceptance checks and review
+    split are in the [cleanup plan](plans/cleanup.md).
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
