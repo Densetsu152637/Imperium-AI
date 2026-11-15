@@ -44,6 +44,7 @@ mod server;
 mod state;
 mod suggestions;
 mod token;
+mod voice;
 mod workspaces;
 mod worktrees;
 mod writers;

@@ -330,7 +330,7 @@ fn speculating_in(slots: &serde_json::Value) -> Option<bool> {
 
 /// Asks the OS for a free port. Another process could take it before the server binds; the
 /// launch then fails and is reported.
-fn free_port() -> Result<u16, String> {
+pub(crate) fn free_port() -> Result<u16, String> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
     listener
         .local_addr()

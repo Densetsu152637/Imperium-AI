@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use imperium_config::VoiceTranscription;
 use imperium_engine::Session;
 use imperium_media::attachments::{self, AttachmentError, Source, Staging};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
@@ -109,21 +110,30 @@ pub fn verify(
     attachments::verify_all(&staging, sent, session_vision(state, session)).map_err(invalid)
 }
 
-/// `voice.transcribe`: through `[media.transcription]`.
+/// `voice.transcribe`: through `[media.transcription]`, or, with `[voice] transcription =
+/// "local"`, the whisper.cpp server the daemon supervises ([`crate::voice`]).
 pub async fn transcribe(
     state: Arc<DaemonState>,
     params: VoiceTranscribeParams,
 ) -> Result<VoiceTranscribeResult, ErrorObject> {
-    let media = state
-        .media_backends()
-        .filter(|media| media.transcription.is_some())
-        .ok_or_else(|| {
-            ErrorObject::new(
-                codes::INVALID_PARAMS,
-                "speech-to-text is not set up: add [media.transcription] (an OpenAI-compatible \
-                 /audio/transcriptions endpoint) to the configuration",
-            )
-        })?;
+    let local = state.settings().voice.transcription == VoiceTranscription::Local;
+    let media = if local {
+        None
+    } else {
+        Some(
+            state
+                .media_backends()
+                .filter(|media| media.transcription.is_some())
+                .ok_or_else(|| {
+                    ErrorObject::new(
+                        codes::INVALID_PARAMS,
+                        "speech-to-text is not set up: add [media.transcription] (an \
+                         OpenAI-compatible /audio/transcriptions endpoint) to the \
+                         configuration, or set voice.transcription = \"local\"",
+                    )
+                })?,
+        )
+    };
     if params.audio.len() / 4 * 3 > MAX_RECORDING_BYTES {
         return Err(ErrorObject::new(
             codes::INVALID_PARAMS,
@@ -141,14 +151,14 @@ pub async fn transcribe(
             "the recording is empty",
         ));
     }
-    let text = media
-        .transcribe_bytes(
-            &reqwest::Client::new(),
-            audio,
-            imperium_media::recording_name(&params.mime),
-        )
-        .await
-        .map_err(|error| ErrorObject::new(codes::INTERNAL_ERROR, error.to_string()))?;
+    let name = imperium_media::recording_name(&params.mime);
+    let text = match media {
+        Some(media) => media
+            .transcribe_bytes(&reqwest::Client::new(), audio, name)
+            .await
+            .map_err(|error| ErrorObject::new(codes::INTERNAL_ERROR, error.to_string()))?,
+        None => crate::voice::transcribe(&state, audio, name).await?,
+    };
     Ok(VoiceTranscribeResult {
         text: text.trim().to_string(),
     })

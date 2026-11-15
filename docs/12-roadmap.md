@@ -114,8 +114,8 @@ and `environments.agent_update` (protocol 0.28)
    in the context breakdown. Push-to-talk (a held key or the mic button) transcribes into the
    composer through `[media.transcription]`
    ([07](07-desktop-ui.md#attachments-and-voice-input-implemented)). Describing images for models
-   without vision is done under item 34; rendering drawn PDF pages and a supervised local
-   whisper remain to do.
+   without vision, and a supervised local whisper for push-to-talk, are done under item 34;
+   rendering drawn PDF pages remains to do.
 6. **Review pane and checkpoints** (implemented). Diffs of an agent's changes with
    accept or reject per hunk, then commit or open a pull request; git-based checkpoints to
    rewind a session's files and conversation. Checkpoints: before each root turn that changes
@@ -410,7 +410,8 @@ and `environments.agent_update` (protocol 0.28)
     ([02](02-architecture.md#protocol), [05](05-tools-and-isolation.md#ssh-hosts),
     [10](10-configuration.md)). Protocol 0.26.
 34. **Desktop and platform gaps** (stages 1, 2a and 2b implemented: rebindable shortcuts; image
-    descriptions for models without vision; an encrypted secret store). A declarative
+    descriptions for models without vision; an encrypted secret store; a supervised local
+    whisper for push-to-talk). A declarative
     shortcut registry; Settings → Keyboard rebinds the palette, Settings and stop shortcuts with
     conflict detection (against each other, sending and the push-to-talk key); changed bindings
     are saved in the app settings and the palette shows the current ones
@@ -421,13 +422,19 @@ and `environments.agent_update` (protocol 0.28)
     ([07](07-desktop-ui.md#images-for-a-model-that-cannot-see-them-implemented)). Not built:
     drawn PDF pages (no renderer in the build; scans whose pages are not embedded JPEGs are
     reported as unreadable), the composer chip saying a description will be made instead of
-    *path only*, a supervised local whisper, and WASM pet behaviours ([10](10-configuration.md), [16](16-pets.md)); rebinding the
+    *path only*, and WASM pet behaviours ([10](10-configuration.md), [16](16-pets.md)); rebinding the
     push-to-talk key to an arbitrary combination, and making more actions (panel toggles,
     session switching) rebindable, are also not built. Where no OS keychain exists, secrets are
     kept in a file encrypted with XChaCha20-Poly1305 under a key file or an Argon2id passphrase
     key, with a warning that it is weaker, and move into a keychain when one appears
     ([10](10-configuration.md#encrypted-file-fallback-implemented)); not built: rekeying, a
-    desktop notice for the fallback.
+    desktop notice for the fallback. With `voice.transcription = "local"` push-to-talk is
+    transcribed by a whisper.cpp `whisper-server` the daemon supervises: started on demand,
+    health-checked, stopped when idle, its memory counted beside the language models (GPU when
+    it fits, else CPU) and given back when a model needs it, with an opt-in model download
+    ([07](07-desktop-ui.md#attachments-and-voice-input-implemented), [10](10-configuration.md));
+    not built: swapping an idle language model out for whisper, partial transcripts, and a
+    Local models panel row for the server.
 35. **Layouts** (implemented). Dragging a panel out into its own window and back, and a mod's
     panel into another panel as a module, each with a keyboard alternative in the panel's menu;
     per-environment layouts that fall back to the global one; and exportable, validated,
