@@ -9,9 +9,8 @@ implementer's window.
 
 This document is the design: decisions, the contracts they change, and the order to build them.
 It builds on [agent state](03-agent-engine.md#agent-state) (kept subagent conversations),
-[queueing and steering](03-agent-engine.md#queueing-and-steering),
-[parallel writers](03-agent-engine.md#parallel-writers-implemented), the local runtime's slots
-and residency ([04](04-models-and-routing.md)), [permissions](05-tools-and-isolation.md#permissions)
+[queueing and steering](03-agent-engine.md#queueing-and-steering), the local runtime's slots and
+[saved-slot cache](04-models-and-routing.md#runtimes), [permissions](05-tools-and-isolation.md#permissions)
 and [budgets](10-configuration.md#budgets).
 
 ## Starting point
@@ -20,7 +19,7 @@ What the code does today, and what limits the design:
 
 - Only the root delegates (`can_delegate`); subagents are depth 1 and get none of the delegation
   tools (`crates/imperium-engine/src/agent.rs`).
-- A finished subagent becomes `idle` and keeps its conversation in
+- A finished subagent becomes `idle` and keeps its conversation, system message included, in
   `<data>/sessions/<id>.agents/<agent-id>.json`; the root can `resume_agent` it with a follow-up,
   which appends a turn to that conversation and is collected with `await_tasks`. This is the
   baseline for "asking": only the root can do it, it is serial with the agent's other work, it
@@ -30,25 +29,24 @@ What the code does today, and what limits the design:
   refuses messages (`-32602`) until it is resumed.
 - Local models give each agent (a `holder`, such as `<session>/t3`) back the slot it used last,
   with its cached prompt, and can save a slot to disk and restore it (`LocalModels::suspend`,
-  `resume`, `waiting`; `crates/imperium-api/src/local.rs`, the residency controller in
-  `crates/imperium-local/src/residency.rs`).
+  `resume`, `waiting`; `crates/imperium-api/src/local.rs`). Only slots of agents that can come
+  back are saved on a swap; a finished subagent's is not, and the saved-slot cache
+  (`swap_cache_mb`, `crates/imperium-local/src/slot_files.rs`) trims the files of agents that
+  cannot come back first. Saved files do not survive a daemon restart.
 - Budgets are checked before every model call and every spawn (`BudgetGate`); per-task budgets
   do not exist yet ([budgets and limits](03-agent-engine.md#budgets-and-limits)).
-- Plan mode already defines a read-only tool set: reads run, everything that writes, runs
-  commands or asks is refused without asking
-  ([permission modes](05-tools-and-isolation.md#permission-modes-implemented)).
 
 ## Decisions
 
 | # | Decision | Why | Rejected |
 | --- | --- | --- | --- |
 | K1 | A knowledge agent is an ordinary idle subagent whose record carries a **knowledge card**; nothing new is spawned to hold context | Reuses agent state, persistence, resume and the Agents panel; a knowledge agent is a role, not a new kind of process | A separate "bank" process or store (duplicates agent state); writing findings to memory files only (loses the loaded context, needs foresight) |
-| K2 | Each question runs in an **ephemeral fork**: a copy of the knowledge agent's kept conversation plus the question, discarded after the answer | The bank stays exactly what was promoted: no pollution between askers, no leakage of one asker's question to another, no growth toward compaction, and answers do not depend on question order; on a local model the unchanged prefix is the cached prompt, so a fork re-reads only the question | Appending each question to the agent's own conversation (grows and drifts, needs compaction that destroys the detail the bank exists for, serialises everything, leaks askers' questions); the root relaying through `resume_agent` (today's baseline) |
-| K3 | Askers are the root and ordinary subagents; **knowledge agents and their forks never ask** | The wait-for graph is bipartite with depth 1, so a cycle or deadlock cannot form; no depth limit to tune | General peer-to-peer messaging (cycles, a large prompt-injection surface, no clear owner of an exchange) |
-| K4 | Forks answer under **plan mode, or the session's mode if stricter**, with no tool that asks the user, delegates, writes memory or starts sessions, and at most `knowledge.answer_max_steps` model calls | An answer can look things up again but never changes anything, never raises an approval in another agent's name, and is bounded | Full tools (a question becomes a way to act); no tools (an answer cannot check a detail it half remembers) |
-| K5 | Promotion is explicit: the root (`keep_as_knowledge`, or `spawn_agent` with `knowledge`) or the user; never automatic, never by the subagent itself | The root knows which context will be reused; automatic promotion would keep every research agent's context and cost | Promote every finished read-only subagent (unbounded residency and clutter) |
+| K2 | Each question runs in an **ephemeral fork**: the kept conversation, unchanged, plus the question; the fork is discarded after the answer, and nothing from it is kept | The bank stays exactly what was promoted: no pollution between askers, no leakage of one asker's question to another, no growth toward compaction, and answers do not depend on question order; on a local model the unchanged prefix is the cached prompt, so a fork reads only the question | Appending each question to the agent's own conversation (grows and drifts, needs compaction, serialises everything, leaks askers' questions); keeping a Q&A digest (user decision: keep nothing); the root relaying through `resume_agent` (today's baseline) |
+| K3 | Askers are the root and ordinary subagents; **knowledge agents and their forks never ask** | The wait-for graph is bipartite with depth 1, so no cycle or deadlock can form; no depth limit to tune | General peer-to-peer messaging (cycles, a large prompt-injection surface, no clear owner of an exchange) |
+| K4 | Forks may call only an **allowlist** of read tools and the web tools, checked when a call is dispatched; everything else, and anything that would ask the user, is refused; at most `knowledge.answer_max_steps` model calls | An answer can look things up again but never changes anything or raises an approval in another agent's name; enforcing at dispatch keeps the tool list, and so the cached prefix, unchanged | Hiding tools in the fork (changes the prefix, so a local fork re-reads everything); plan mode alone (lets MCP and plugin reads through); no tools (an answer cannot check a detail) |
+| K5 | Promotion is explicit: the root (`keep_as_knowledge`, or `spawn_agent` with `knowledge`) or the user; the root prompt nudges the root to keep large research reports | The root knows which context will be reused; automatic promotion would keep every research agent's context and its cost | Promote every finished read-only subagent (unbounded residency and clutter) |
 | K6 | An answer is **data from that agent**, framed and escaped, never instructions; the asker gains no tool, path or approval through it | Knowledge agents may have read untrusted pages; containment must not depend on the knowledge agent behaving | Trusting answers like the asker's own reasoning |
-| K7 | Knowledge agents are scoped to their **session** in the first version | Permissions, folders, worktrees and budgets are per session; cross-session sharing needs its own trust rules | Environment-wide banks (open question Q2) |
+| K7 | Knowledge agents serve **their own session only** | Permissions, folders, budgets and residency are per session; cross-session sharing needs its own trust rules (user decision) | Environment-wide banks |
 
 ## Tools
 
@@ -59,18 +57,27 @@ All three are defined in `imperium-protocol` like the other built-in tools
 | Tool | Who has it | Parameters | Result |
 | --- | --- | --- | --- |
 | `list_knowledge_agents` | root and ordinary subagents | `query?` | Each knowledge agent's card (below), best match to `query` first; empty when there are none |
-| `ask_agent` | root and ordinary subagents | `agent` (id or title), `question` (self-contained, at most 4,000 characters), `timeout_s?` (default 120, at most 600) | The answer, framed (see [safety](#safety)); or a tool error saying it timed out, was cancelled or refused |
+| `ask_agent` | root and ordinary subagents | `agent` (id or title), `question` (self-contained, at most 4,000 characters), `timeout_s?` (default 120, at most 600) | The answer, framed (see [safety](#safety)); or a tool error saying it timed out, was cancelled or was refused |
 | `keep_as_knowledge` | root only | `agent_id`, `topic` (at most 300 characters); or `agent_id`, `retire: true` | The card, or that it was retired |
 
 `spawn_agent` gains an optional `knowledge` (a topic string): the subagent is promoted with that
 topic when its first turn finishes successfully; its report still goes to `await_tasks` as
-usual. The root prompt and `brief.md` say when to use it: research whose results several later
-tasks will need.
+usual. The root prompt and `brief.md` say when to use it (research whose results several later
+tasks will need), and the result of `await_tasks` for a read-only subagent whose report or
+conversation is large ends with a one-line nudge to keep it with `keep_as_knowledge`.
 
-**What can be promoted:** an idle (finished, ok) subagent that had tools. A writer can be: it
-answers from its own worktree, read-only. Refused: a running, paused or failed subagent (finish
-or resume it first), a `single_call` subagent (its context is one reply), and `delegate_chunks`
-chunk and reduce agents (their context is an in-memory artefact; open question Q6).
+**What can be promoted:** an idle (finished, ok), read-only subagent that had tools, whose kept
+conversation plus `knowledge.answer_reserve` (25 % of its model's window) fits that window.
+Refused, with the reason: a running, paused or failed subagent (finish or resume it first); a
+writer (its worktree and branch outlive the question model; open question Q1); a `single_call`
+subagent (its context is one reply); `delegate_chunks` chunk and reduce agents (their context is
+an in-memory artefact); a conversation that does not fit (it is never compacted to make it fit,
+since compaction drops the detail the bank exists for).
+
+**What is frozen at promotion.** The kept conversation, its first (system) message included, and
+the `ToolSpec`s the agent was offered, exactly as last sent, are recorded with the card. Every
+fork sends them unchanged, so a fork's request differs from the last request the agent made only
+by the question at the end.
 
 **The knowledge card** (`KnowledgeCard`, kept on the agent record and in `AgentSummary`):
 
@@ -79,106 +86,134 @@ chunk and reduce agents (their context is an in-memory artefact; open question Q
 | `agent_id`, `title`, `model`, `local` | the agent record |
 | `topic` | the promoter's text |
 | `sources` | derived by the engine, without a model call, from the conversation's successful tool calls: files read (path, plus size and modified time when read), directories listed, search patterns, URLs fetched; at most 50, newest first, with a count of the rest |
-| `untrusted_sources` | true when any source is from the web, a browser or an MCP tool |
+| `untrusted_sources` | true when any source is from the web or a browser |
 | `context_tokens` | the kept conversation's size, and the model's window |
+| `est_question_cost` | the estimated tokens and cost of one question: the uncached share of the prefix (from `last_cached_ratio`) plus a typical question and answer |
+| `last_cached_ratio` | the share of the latest fork's prompt that the provider or runtime reported as cached |
 | `questions`, `usage`, `cost_usd` | answers given so far, and what they cost |
-| `status` | `ready`, `answering` (with queue length), `dormant` (slot saved, see [lifetime](#lifetime-and-memory)), `busy` (resumed for more work) |
-| `stale` | sources whose file changed since it was read (checked by size and modified time at each question) |
+| `status` | `ready`, `answering` (with queue length), `busy` (resumed for more work) |
+| `stale` | sources whose file changed since it was read (checked by size and modified time at each question), and the stale fraction of its file sources |
 
 ## Answering
 
-1. `ask_agent` checks the target is a knowledge agent of this session, that the asker is not a
-   knowledge agent or fork (K3), and that the asker has fewer than
+1. `ask_agent` checks that the target is a knowledge agent of this session, that the asker is
+   not a knowledge agent or a fork (K3; a debug assertion also checks the asker is not the
+   target and waits on nothing), and that the asker has fewer than
    `knowledge.max_questions_per_turn` (20) questions in this turn. It emits `question_asked` and
    puts the question in the knowledge agent's **question queue** (FIFO, separate from its
    message inbox).
-2. The asker waits like `await_tasks`: no model calls, and asleep to the local runtime
-   (`LocalModels::waiting`), so its model may be swapped out for the knowledge agent's. A steering
-   message to the root, a session stop or the timeout ends the wait.
-3. A free answer slot takes the question: at most `knowledge.parallel_answers` forks per
-   knowledge agent at once (default 2 on hosted models; always 1 on a local model, so forks reuse
-   the one holder slot whose cached prefix is the kept conversation).
-4. The fork is an `Agent` built like `resume_subagent` builds one (same instructions, model and
-   workspace, the kept conversation restored) but marked as a fork: its tool set is K4's, its
-   checkpoints are not saved, and it never commits a writer's worktree. Its turn is the question,
-   wrapped (see [safety](#safety)), with a note naming the changed sources when the card is
-   stale, and instructions to answer only from what it read or re-reads now, to cite paths and
-   lines, to say "not in what I read" instead of guessing, and to say what is missing when the
-   question is ambiguous (forks have no `request_clarification`).
-5. The reply, capped at 8,000 characters (as a report), returns to the asker; `question_answered`
-   is emitted with usage and cost; the fork is dropped.
+2. The knowledge agent's model must be available: a hosted model in the catalog, or a local
+   model the model folders have. Otherwise the question is refused, saying which model is
+   missing; it never falls back to another model, which would read the whole prefix with nothing
+   cached and answer from a context the card does not describe. The engine also checks, before
+   the fork's first call, that the frozen prefix plus the question fits the model's window, and
+   refuses the question if not.
+3. The asker waits like `await_tasks`, with no model calls. It keeps its local slot while the
+   knowledge agent's model has another free slot for the fork; only when the fork needs that
+   slot or a model swap is the asker marked asleep (`LocalModels::waiting`). A steering message to
+   the root, the asker's turn ending, or the timeout ends the wait.
+4. A free answer slot takes the question: at most `knowledge.parallel_answers` forks per
+   knowledge agent at once (default 2 on hosted models; always 1 on a local model, so every fork
+   uses the one holder whose cached prompt is the prefix).
+5. The fork is built from the frozen system message, conversation and tool specs, under a
+   derived id (`t3#q7`). Its turn is the question, wrapped (see [safety](#safety)), with a note
+   naming the changed sources when the card is stale, and instructions to answer only from what it
+   read or re-reads now, to cite paths, lines and URLs, to say "not in what I read" instead of
+   guessing, and to say what is missing when the question is ambiguous. Every tool call goes
+   through K4's check at dispatch. Its checkpoints are never saved.
+6. The reply, capped at 8,000 characters (as a report), returns to the asker; `question_answered`
+   is emitted with usage, cost and the cached share; the fork is dropped.
+
+**Degraded answers.** When the stale fraction of the card's file sources is over
+`knowledge.stale_threshold` (0.3), the answer's header says it is degraded, and the asker's result
+(and the root's, when the root did not ask) advises refreshing the agent with `resume_agent` or
+retiring it.
 
 **Timeouts and cancellation.** A question still queued when its timeout passes is removed; one
 being answered has its fork cancelled at the next safe point (a model request in flight is
 cancelled; a tool call finishes). The same happens when the asker's turn ends, fails or is
 cancelled, and when the asker is paused by a steering message to the root. The answer to a
 question nobody waits for any more is never delivered. A session stop halts forks like other
-agents (`hold_while_stopped`); their questions wait and go on at resume, if their askers still
-wait.
+agents (`hold_while_stopped`), and **timeouts do not run while the session is stopped**: the
+question waits and goes on at resume.
 
 **Resuming a knowledge agent.** `resume_agent` on a knowledge agent is the way to give it more to
-know: its status becomes `busy`, questions queue until the turn finishes, and that turn is
-appended to the kept conversation (so the card's sources and size are refreshed). This is the only
-way the kept conversation grows.
+know or refresh stale sources: its status becomes `busy`, questions queue until the turn
+finishes, and the turn is appended to the kept conversation; the frozen prefix, tool specs and
+card are then taken again (a conversation that no longer fits with the reserve retires it, saying
+so). This is the only way the kept conversation grows.
 
 **Who pays.** Every fork call is a model call of the session, so it counts in `usage.json` and
 every budget scope like any other, and the `BudgetGate` is checked before each call against the
 knowledge agent's model; a blocked budget fails the question with the budget message, and one
-that asks raises its single per-session prompt. The usage is recorded on the knowledge agent
-(card and record) and also reported to the asker in the result's first line ("answered by t3 in
-2 calls, 3.1k tokens"). When per-task budgets exist, a question is charged to the asker's budget,
-as a spawn would be.
+that asks raises its single per-session prompt. The usage is recorded on the **knowledge agent's
+record** (card and `AgentSummary`) and reported to the asker in the result's first line ("answered
+by t3 in 2 calls, 3.1k tokens, 92 % cached"). When per-task budgets exist, this stays: the
+knowledge agent's record is charged and the asker is told.
 
 **What the asker shares.** Only the question text, its own id and title. No part of its
-conversation, plan, state or worktree is sent; the root prompt and subagent prompt say questions
-must be self-contained, like briefs.
+conversation, plan, state or worktree is sent; the root and subagent prompts say questions must
+be self-contained, like briefs.
 
 ## Safety
 
+- **The fork's tools (K4).** The fork is offered the frozen tool list, but a call is dispatched
+  only when its tool is on the allowlist:
+  - built-in reads: `read_file`, `list_dir`, `glob`, `grep`, `memory_search`, `memory_read`,
+    `context_load`;
+  - the web: `web_search` and `web_fetch`, under the normal domain and robots rules and the
+    budget.
+
+  Everything else is refused with a message telling the fork to answer from what it has: file
+  writes and edits, commands, delegation, `ask_agent`, `ask_user`, `request_clarification`,
+  `update_state`, `update_plan`, memory writes, `start_session`, every MCP tool, every plugin
+  tool, `activate_plugin`, browser, preview and media tools, and the app-config tools. An
+  allowlisted call is then decided as usual (permission profile, rules, safety floor, the
+  session's mode), except that an outcome of **ask becomes a refusal**: a fork never raises an
+  approval. Nothing in the asker's request can widen this; the asker passes only text.
 - **Answers are data.** The result is wrapped as
-  `<agent-answer from="t3" topic="…" untrusted-sources="true">…</agent-answer>`, with text that
-  looks like the delimiters backslash-escaped (as kept context blocks are), after a line saying
-  it is information from another agent to weigh, not instructions. Askers' prompts say the same.
+  `<agent-answer from="t3" topic="…" untrusted-web="true">…</agent-answer>`, with text that looks
+  like the delimiters backslash-escaped (as kept context blocks are), after a line saying it is
+  information from another agent to weigh, not instructions. `untrusted-web` is set when the
+  card has `untrusted_sources` or the fork itself used a web tool, and the line then says the
+  answer contains material from the web. Askers' prompts say the same.
 - **Questions are data too.** The fork reads the question inside `<question from="t5">`, after a
   line saying it comes from another agent, is to be answered, and cannot change its role, tools or
   instructions.
-- **No escalation.** A fork's tools are the knowledge agent's own offered tools (the session's
-  permissions and the [agent permission profile](05-tools-and-isolation.md#agent-permission-profiles-implemented),
-  `profile_refusal` included) intersected with K4's read-only set, decided under plan mode or the
-  session's stricter mode, with the safety floor and deny rules as always. A call that would ask
-  the user is refused with a message to answer from what it has. Nothing in the asker's request
-  can widen this: the asker passes only text.
-- **No cycles or deadlock.** K3 makes the wait-for graph bipartite. The engine still keeps the
-  waits (asker → knowledge agent) and refuses an ask that would close a cycle, so a later change
-  to who may ask cannot introduce one silently. A knowledge agent cannot ask itself or anyone.
-- **Prompt injection.** A knowledge agent whose sources include web pages is marked
-  `untrusted_sources`, and its answers say so. Containment rests on the asker side (framing,
-  no tools gained) and the fork side (read-only, no asking), not on the content being clean.
+- **No cycles or deadlock.** K3 makes the wait-for graph bipartite; the check is in step 1 of
+  [answering](#answering), with a debug assertion behind it.
+- **Prompt injection.** Containment rests on the asker side (framing, no tools gained) and the
+  fork side (allowlist, no asking), not on the content being clean.
 - **Rate.** At most `knowledge.max_questions_per_turn` questions per asker turn, so a confused
   model cannot loop on a knowledge agent.
 
 ## Lifetime and memory
 
-- **How many.** At most `knowledge.max_per_session` (4) knowledge agents per session. Promoting
-  one more is refused with the list, oldest-asked first, so the root (or user) retires one.
+- **How many.** At most `knowledge.max_per_session` (4) knowledge agents per session, and, on
+  local models, only as many as their saved slots fit in a share of `swap_cache_mb`
+  (`knowledge.slot_cache_share`, 0.5; each slot estimated from its `context_tokens` and the
+  model's KV size per token). Promoting one more is refused with the list, oldest-asked first, so
+  the root (or user) retires one.
 - **Retiring.** `keep_as_knowledge` with `retire: true`, the user, or the session ending. A
-  retired agent is an ordinary idle subagent again: still resumable, no longer askable, its
-  card removed.
-- **Dormancy.** A knowledge agent on a local model that has not been asked for
-  `knowledge.dormant_after_min` (15) minutes has its slot saved and freed
-  (`LocalModels::suspend` for its holder), so it holds no KV cells; the next question restores it
-  (`resume`) before the fork's first call. A hosted model holds nothing between calls, so
-  dormancy only marks the card.
-- **Compaction.** The kept conversation is never compacted by questions (forks are discarded).
-  At promotion, when the conversation plus `knowledge.answer_reserve` (25 % of the window) would
-  not fit, it is compacted once, with the topic as the focus ("keep paths, line numbers,
-  signatures and quotes relevant to …"); the compactor gains an optional focus for this. A
-  promotion that still does not fit is refused, saying so. A fork that reaches
-  `context.auto_compact_at` stops and answers with what it has, without compacting.
-- **Restarts.** The card is part of the agent record, so with `sessions.agent_state_keep` on, a
-  resumed session keeps its knowledge agents (their KV cache is rebuilt on the first question).
-  Questions in flight at a restart are lost; their askers' turns were cut off anyway. With the
-  setting off, and in project-agent sessions, knowledge agents last as long as the daemon run.
+  retired agent is an ordinary idle subagent again: still resumable, no longer askable, its card
+  and saved slot removed.
+- **Local residency.** A knowledge agent's holder is registered as **present** with the local
+  runtime, as an agent that can come back: on a model swap its slot is saved rather than dropped,
+  and the saved-slot cache does not trim it first. Right after each answer its slot is saved
+  (`LocalModels::suspend` for the holder), so the next fork restores the prefix (`resume`) before
+  its first call even if other agents used the model meanwhile. There is no idle timer. A hosted
+  model holds nothing between calls; its provider's prompt cache is what `last_cached_ratio`
+  reports.
+- **Compaction.** The kept conversation is never compacted: questions do not grow it (forks are
+  discarded), and promotion refuses a conversation that does not fit with the reserve. A fork
+  that reaches `context.auto_compact_at` stops and answers with what it has.
+- **Restarts.** The card and the frozen prefix are part of the agent record, so with
+  `sessions.agent_state_keep` on, a resumed session keeps its knowledge agents; saved slot files
+  do not survive a restart, so the first question reads the prefix again. Questions in flight at
+  a restart are lost; their askers' turns were cut off anyway. With the setting off, and in
+  project-agent sessions, knowledge agents last as long as the daemon run.
+- **Branches and rewinds.** A session made by `session.branch` or `session.rewind` does not carry
+  knowledge agents: its copied agent records keep no card, so they are ordinary idle subagents.
 
 ## Visibility
 
@@ -188,43 +223,41 @@ must be self-contained, like briefs.
 - Session events: `knowledge_changed` (`agent_id`, the card, or `retired`),
   `question_asked` (`question_id`, `from`, `to`, `text` clipped to 2,000 characters, `at_ms`) and
   `question_answered` (`question_id`, `outcome`: `answered`, `timeout`, `cancelled`, `refused`
-  or `failed`, `answer` clipped to 2,000, `usage`, `cost_usd`, `at_ms`). A fork's streaming
-  events (`turn_started`, `text_delta`, tool events) carry the knowledge agent's id and a new
-  optional `question_id`, so clients group them under the question.
-- Methods: `session.agent_ask` (`session_id`, `agent_id`, `question`; returns the
-  `question_id`, the answer arrives as `question_answered`) for the user, and
-  `session.agent_knowledge` (`session_id`, `agent_id`, `topic` or `retire`) to promote or retire.
-  Phones may read cards; promoting and asking are desktop and CLI actions in the first version.
+  or `failed`, `answer` clipped to 2,000, `degraded`, `untrusted_web`, `usage`, `cost_usd`,
+  `cached_ratio`, `at_ms`).
+- A fork emits **no** `turn_started`, `text_delta` or model-call events in the first version. Its
+  tool events (`tool_started`, `tool_finished`, permission refusals) carry the derived id
+  (`t3#q7`), which the agent registry ignores, so no agent record is created for a fork.
+- Method: `session.agent_knowledge` (`session_id`, `agent_id`, `topic` or `retire`) for the user
+  to promote or retire.
 
-**Journal.** All three events are journalled, so replay rebuilds cards and the question history;
-fork conversations are not saved anywhere. Export includes questions and answers under the
-knowledge agent.
+**Journal.** `knowledge_changed`, `question_asked`, `question_answered` and the forks' tool events
+are journalled like every session event, so replay rebuilds cards and the question history. A
+fork's conversation is not saved as a conversation (no `.agents` record, no messages file), but
+its question, tool calls and answer are in the journal. Export and sharing
+([19](19-sharing-and-sync.md)) treat questions and answers like other transcript content,
+including redaction.
 
 **Desktop** ([07](07-desktop-ui.md#agents-panel-implemented)). The Agents panel marks knowledge
 agents with a *Knowledge* badge and the topic; the agent's view lists its sources (stale ones
-marked), its questions with asker, outcome and cost, and an *Ask* box; *Keep as knowledge* and
-*Retire* sit beside *Continue with…*. The task tree draws a dashed edge from asker to knowledge
-agent while a question waits.
+marked), its card's cost estimate and cached share, and its questions with asker, outcome and
+cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
 
-**CLI.** `imperium chat` gains `/ask <agent> <question>` and shows cards in `/agents`.
-
-**Claude harness** ([20](20-claude-harness.md)). `imperium mcp-serve` gains `list_knowledge_agents`
-and `ask_agent` tools over the same methods, so Claude Code can query a session's knowledge
-agents without reading transcripts.
+**CLI.** `imperium chat` shows cards in `/agents`.
 
 ## Interactions
 
-- **Parallel writers.** Writers ask like any subagent. A knowledge agent reads the folders it was
-  given (the session's, or its own worktree if it was a writer), not the asker's worktree; the
-  answer's header names them, so a writer knows its own edits are not reflected. The staleness
-  check catches files the root merged since.
+- **Parallel writers.** Writers ask like any subagent but cannot be knowledge agents in the first
+  version (see [what can be promoted](#tools)). A knowledge agent reads the session's folders, not the asker's worktree; the answer's
+  header names them, so a writer knows its own edits are not reflected. The staleness check
+  catches files the root merged since.
 - **Harness aids** ([03](03-agent-engine.md#harness-aids-for-small-models)). De-reference and
   state apply to the root's user messages only and are not applied to questions or forks. The
   root prompt tells the model to name concrete entities in questions (the state block helps it
-  do so). `ambiguity_patterns` gains one for "ask the knowledge agent about it": name which.
+  do so).
 - **Initiative and persistent agents** ([14](14-projects-and-automation.md#initiative-implemented)).
-  Reviews run in plan mode; `ask_agent` is read-only, so a review may ask its own session's
-  knowledge agents. Knowledge agents are not shared across a persistent agent's sessions (Q2).
+  Reviews may ask their own session's knowledge agents (asking changes nothing). Knowledge agents
+  are not shared across a persistent agent's sessions (K7).
 - **Unattended sessions.** Nothing in a fork asks the user, so questions never wait on an
   approval; local calls use the session's priority (`Background` for schedules and project
   agents), and budgets that ask pause as they do for any call.
@@ -236,57 +269,86 @@ agents without reading transcripts.
 
 1. **Engine core and contract (protocol 0.37).** Tool definitions and schemas
    (`ask_agent`, `list_knowledge_agents`, `keep_as_knowledge`, `spawn_agent.knowledge`); the card
-   on `AgentRecord`/`AgentSummary` with sources derived from the conversation; a `can_ask` flag
-   beside `can_delegate`; the question queue, forks with K4's tools under plan mode, timeouts,
-   cancellation with the asker's turn, budget gate per call, framing and escaping; events and
-   journal replay; `session.agent_ask` and `session.agent_knowledge`.
-   *Tests* (fake model server): a subagent asks a promoted agent and gets its answer; the kept
-   conversation is byte-identical after three questions; a fork's `write_file`, `run_command`,
-   `ask_agent` and asking `web_fetch` are refused; a knowledge agent is never offered
-   `ask_agent`; a timeout removes a queued question and cancels a running fork; a blocked budget
-   fails the question; answer delimiters inside the answer are escaped; replaying a journal
-   restores cards; schema drift check passes.
-2. **Residency and lifetime.** Single local holder per knowledge agent with prefix reuse;
-   dormancy through `suspend`/`resume`; `max_per_session`; compaction at promotion with a topic
-   focus; staleness by size and modified time; the cycle check on the wait map; restart
-   persistence. *Tests:* a second question on a local fake runtime reuses the holder and
-   reports cached prompt tokens; a dormant agent is restored before its fork's first call; a
-   fifth promotion is refused with the list; editing a source marks it stale and the fork gets
-   the note; a session restart keeps the card.
-3. **Clients and prompts.** Agents panel badge, sources, questions and *Ask*; task-tree edges;
-   `imperium chat /ask`; mcp-serve tools; root and subagent prompt lines and `brief.md`;
+   and the frozen prefix and tool specs on the agent record, `AgentSummary.knowledge`, sources from
+   the conversation; a `can_ask` flag beside `can_delegate`; the question queue; forks under a
+   derived id with K4's dispatch-time allowlist and ask-as-refusal; model availability and fit
+   checks; timeouts (paused while stopped) and cancellation with the asker's turn; the budget
+   gate per call; framing, escaping and the degraded and web markers; events and journal replay;
+   `session.agent_knowledge`; the `await_tasks` nudge.
+   *Tests* (fake model server):
+   - a subagent asks a promoted agent and gets its answer;
+   - the fork's request is byte-identical to the agent's last request up to the question (system
+     message, conversation and tools), and the kept conversation is unchanged after three
+     questions;
+   - a fork's `write_file`, `run_command`, `ask_agent`, MCP, plugin and `activate_plugin` calls are
+     refused at dispatch, a `web_fetch` the rules would ask about is refused, and an allowed
+     `web_fetch` runs and marks the answer `untrusted_web`;
+   - a knowledge agent's own `ask_agent` call is refused;
+   - a timeout removes a queued question and cancels a running fork; a stopped session does not
+     time a question out;
+   - an unavailable model, or a prefix that does not fit, refuses the question with no fallback;
+   - promoting a writer, a chunk agent or an oversized conversation is refused;
+   - a blocked budget fails the question; usage lands on the knowledge agent's record;
+   - answer delimiters inside the answer are escaped;
+   - replaying a journal restores cards and does not create records for `t3#q7`; a branched
+     session has no knowledge agents;
+   - the schema drift check passes.
+2. **Local residency.** Knowledge holders registered as present; the slot saved after each
+   answer and restored before the next fork; slot files counted against `swap_cache_mb` in
+   `max_per_session`; the asker keeping its slot when a free one exists; `last_cached_ratio` and
+   `est_question_cost`. *Tests* (fake local runtime): a second question reports cached prompt
+   tokens; with a third agent using the model between two questions, the second still reports
+   cached tokens (restored from the saved slot); a promotion over the slot-cache share is refused
+   with the list; the saved-slot trim keeps knowledge holders' files ahead of finished agents'.
+3. **Clients and prompts.** Agents panel badge, sources, cost and questions; *Keep as knowledge*
+   and *Retire*; `/agents` cards in `imperium chat`; root and subagent prompt lines, `brief.md`,
    Emperor's root prompt and an eval case in `schemas/eval` (asking beats re-reading). *Tests:*
-   desktop component tests for the badge, the question list and *Ask*; a browser-preview check
-   of the panel; mcp-serve tool tests against a fake daemon.
+   desktop component tests for the badge and the question list; a browser-preview check of the
+   panel.
 
-**Acceptance for the item:** a session where a research subagent reads a crate, is promoted,
-and two writer subagents implement against it answers their questions with cited paths, with
-fewer total prompt tokens than the same task where each writer reads the crate itself (measured
-on a recorded run, not assumed), and no answer ever caused a write, a command or an approval.
+**Later, not in the first version:** fork streaming events, an *Ask* box and
+`session.agent_ask` for the user, phone access, `ask_agent` in `imperium mcp-serve`
+([20](20-claude-harness.md)), task-tree edges for waiting questions, and a wait-for map for deeper
+asking.
+
+**Acceptance for the item.** One task (a research subagent reads a crate; two subagents then
+implement against it) run twice on the same model, once with the research agent kept as a
+knowledge agent and asked, and once with the baseline (the root relaying questions through
+`resume_agent`), on one local and one hosted model. Measured from the recorded runs, not assumed:
+uncached prompt tokens and cost, including the knowledge agent's original research; the askers'
+peak context; the number of read and search calls; and wall time. The item passes when the
+knowledge-agent run uses fewer uncached prompt tokens and smaller asker peak context than the
+baseline on both models, and no answer caused a write, a command or an approval.
 
 ## Settings
 
 Under `[knowledge]` ([10](10-configuration.md)): `enabled` (true), `max_per_session` (4),
 `parallel_answers` (2; local models always 1), `answer_max_steps` (6),
-`max_questions_per_turn` (20), `dormant_after_min` (15), `answer_reserve` (0.25),
-`default_timeout_s` (120).
+`max_questions_per_turn` (20), `answer_reserve` (0.25), `slot_cache_share` (0.5),
+`stale_threshold` (0.3), `default_timeout_s` (120).
+
+## Settled questions
+
+Decided by the user:
+
+- **Nothing is kept from questions** (K2): no Q&A digest is appended.
+- **Own session only** (K7).
+- **Forks may use the web** (`web_search`, `web_fetch`) under the normal rules and budget; answers
+  that used web material are marked.
+- **Explicit promotion**, with a nudge to the root for large research reports (K5).
+
+Decided as defaults, which the user may revisit:
+
+- 4 knowledge agents per session, a 120 s timeout, 6 steps per answer.
+- `delegate_chunks` chunk and reduce agents are not promotable.
+- Questions are charged to the knowledge agent's record and reported to the asker.
+- Branched and rewound sessions do not carry knowledge agents.
+- A stale fraction over `stale_threshold` marks answers degraded and advises a refresh.
+- Question timeouts pause while the session is stopped.
+- Export and sharing treat questions and answers like other transcript content.
 
 ## Open questions
 
-- **Q1. Keep nothing from questions?** Forks are discarded (K2), so a knowledge agent never
-  learns from what it looked up while answering. Alternative: append a short Q&A digest (question
-  and a two-line answer) to its kept conversation. Default: discard.
-- **Q2. Beyond the session?** Should a persistent agent's knowledge agents be askable from other
-  sessions of the same environment (with the stricter of both sessions' permissions)? Default:
-  no, session only.
-- **Q3. Web while answering?** Forks may use `web_search` and allowed-domain `web_fetch` (they
-  never ask). Should answering be limited to local files and what was already read, to keep
-  answers cheap and the injection surface small? Default: allowed, subject to the profile.
-- **Q4. Promotion.** Explicit only (K5), or should the root be nudged to promote any read-only
-  subagent whose report is longer than a threshold?
-- **Q5. Limits.** Are 4 knowledge agents per session, 120 s timeout and 6 steps per answer the
-  right defaults for small local models?
-- **Q6. Chunk agents as banks.** A `delegate_chunks` agent holding one chunk of a huge input is
-  a natural bank ("ask the agent with chunk 7"). Allow promotion once artefacts survive restarts?
-- **Q7. Charging.** When per-task budgets exist: charge the asker (as designed) or the knowledge
-  agent's own allowance?
+- **Q1. Writers as knowledge agents.** A writer that explored and changed a module would be a
+  good bank, but its worktree and branch must then outlive merges and cleanup. Allow promotion,
+  answering from its worktree read-only, once worktree lifetime is settled?

@@ -506,13 +506,16 @@ and `environments.agent_update` (protocol 0.28)
     subagent that has loaded context (files, specifications, pages) is kept as a knowledge agent
     with a card (topic, sources, size), and the root and other subagents call `ask_agent`
     instead of searching and reading the same material themselves. Each question runs in an
-    ephemeral, read-only fork of the knowledge agent's kept conversation (plan mode, no tool that
-    asks, a step cap), queued per knowledge agent with timeouts and cancellation; answers are
-    framed as data; knowledge agents never ask, so no cycle can form. Session-scoped, at most
-    four per session, dormant local slots saved and restored, kept across restarts with agent
-    state. Protocol 0.37 (`ask_agent`, `list_knowledge_agents`, `keep_as_knowledge`,
-    `question_asked`/`question_answered` events, `session.agent_ask`). Three stages: engine and
-    contract; residency and lifetime; clients and prompts
+    ephemeral fork that sends the kept conversation, system message and tool list unchanged and
+    may call only read and web tools (checked at dispatch; anything that would ask is refused),
+    queued per knowledge agent with timeouts and cancellation; nothing from a question is kept;
+    answers are framed as data; knowledge agents never ask, so no cycle can form. Own session
+    only, at most four per session, explicit promotion (no writers, chunk agents or oversized
+    conversations), local slots saved after each answer and restored before the next, the
+    knowledge agent's model or a refusal (no fallback), kept across restarts with agent state.
+    Protocol 0.37 (`ask_agent`, `list_knowledge_agents`, `keep_as_knowledge`,
+    `knowledge_changed`/`question_asked`/`question_answered` events, `session.agent_knowledge`).
+    Three stages: engine and contract; local residency; clients and prompts
     ([21](21-knowledge-agents.md), [03](03-agent-engine.md#knowledge-agents-designed)).
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
