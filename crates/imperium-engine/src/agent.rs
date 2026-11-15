@@ -53,10 +53,8 @@ use crate::harness::{self, SessionState, StateUpdate};
 use crate::instructions;
 use crate::queue::{Inbox, QueueError, steering_text};
 use crate::session::{SessionMemory, Shared, lock};
-use crate::{
-    LocalLease, LocalModels, LocalPresence, ResolvedModel, TaskRequest, escalate, route,
-    route_noted,
-};
+use crate::{ResolvedModel, TaskRequest, escalate, route, route_noted};
+use imperium_api::{LocalLease, LocalModels, LocalPresence};
 
 /// Longest tool output or report shown in events (the model receives the full text).
 const EVENT_OUTPUT_CHARS: usize = 2_000;
