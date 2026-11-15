@@ -412,8 +412,8 @@ and `environments.agent_update` (protocol 0.28)
     that need a model or delegate (`spawn_agent`, `ask_user`, MCP and plugin tools), an
     environment-level "writes allowed" setting (it is a flag of the server's registration),
     progress notifications and cancellation of a running call, and the per-call budget
-    (the tools spend none). *Remaining:* the policy crate (deferred to the final cleanup, see
-    08), and inserting MCP prompts as slash commands in the desktop and CLI.
+    (the tools spend none). *Remaining:* inserting MCP prompts as slash commands in the desktop and CLI. (The policy crate was built in
+    item 46, see [08](08-agent-policy.md).)
 32. **Web and browser** (implemented, stage 2: tabs and downloads). The browser pane the user
     can take over exists.
     Kagi and Exa join SearXNG, Brave and Tavily as search providers (keys only from the keychain);

@@ -296,8 +296,8 @@ Settings window, one file per section, the app settings and the shortcuts), `con
 Connectors window and its views and forms), `tour/` (the first-run tour and its hook), `review/`,
 and `shared/` (the connection banner, the daemon cache, the windows hook, notifications, the
 store, panel windows and the icon registry), beside `panels/`, `components/`, `layout/`, `mods/`,
-`commands/` and `daemon/`. Pure rules live in `.ts` files with a test of the same name under
-`apps/desktop/test/`; only those files are loaded by the tests.
+`commands/` and `daemon/`. Pure rules live in `.ts` files, tested under `apps/desktop/test/` (for example
+`models/spec.ts` by `modelSpec.test.ts`); only those files are loaded by the tests.
 
 ### The bundled daemon belongs to the app (implemented)
 

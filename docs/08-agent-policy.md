@@ -9,7 +9,7 @@ MIT, shipped beside the daemon) is used; `workflow.default_pack = false` turns t
 `workflow.enabled = false` turns off packs and project instruction files entirely. Root
 personality selection is implemented ([Personalities](#personalities)), with Marcus Aurelius as
 the default. Fetching updates and the diff-and-accept flow are implemented ([Pack updates](#pack-updates));
-the policy crate that layers packs into the prompt is later work.
+the policy crate that layers packs and decides permissions is implemented (see *The policy crate* below).
 
 Imperium ships with [Agent-Custom-Workflow](https://github.com/Densetsu152637/Agent-Custom-Workflow)
 as its default **policy pack**: the root/manager/leaf roles, delegation defaults, validation,
