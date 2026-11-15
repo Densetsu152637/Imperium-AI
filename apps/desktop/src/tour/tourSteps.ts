@@ -5,7 +5,7 @@
 // centred. Whether the user has seen the tour is kept in the app settings (`tour`), so it is
 // remembered per user and shows once. The tour needs no network.
 
-import type { AppSettings } from "./settings";
+import type { AppSettings } from "../settings/settings";
 
 export type TourStep = {
   id: string;

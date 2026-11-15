@@ -21,8 +21,8 @@ import {
   sourceLabel,
   topicProblem,
   usd,
-} from "../knowledge";
-import type { SessionState, TaskState } from "../sessions";
+} from "../sessions/knowledge";
+import type { SessionState, TaskState } from "../sessions/sessions";
 
 type Props = {
   session: SessionState;

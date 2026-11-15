@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 
 import { formatShortcut } from "../commands/registry";
-import { reservedChords, type AppSettings } from "../settings";
+import { reservedChords, type AppSettings } from "../settings/settings";
 import {
   SHORTCUT_ACTIONS,
   bindingFor,
@@ -16,7 +16,7 @@ import {
   withBinding,
   withoutBinding,
   type ShortcutId,
-} from "../shortcuts";
+} from "../settings/shortcuts";
 import { Row } from "./SettingsRow";
 
 /** Fixed shortcuts: listed for reference, not rebindable. */

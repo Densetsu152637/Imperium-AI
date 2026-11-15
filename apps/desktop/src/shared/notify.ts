@@ -11,7 +11,7 @@ import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 
 import { deliveryFor, type Attention, type Notice } from "./attention";
-import type { AppSettings } from "./settings";
+import type { AppSettings } from "../settings/settings";
 
 export type { Attention, Notice } from "./attention";
 

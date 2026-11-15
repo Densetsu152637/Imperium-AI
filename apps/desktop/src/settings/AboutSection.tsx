@@ -2,7 +2,7 @@
 
 import { Row } from "../components/SettingsRow";
 import type { DaemonClient } from "../daemon/client";
-import type { Updates } from "../UpdateControl";
+import type { Updates } from "../shared/UpdateControl";
 
 export function AboutSection({ updates, client, onStartTour }: { updates: Updates | null; client: DaemonClient | null; onStartTour: () => void }) {
   const daemon = client?.daemon;

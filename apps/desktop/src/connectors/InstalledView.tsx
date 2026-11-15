@@ -5,9 +5,9 @@ import { useState } from "react";
 import type { CatalogServer, McpListResult, McpServerInfo, McpStatus, PluginInfo } from "@imperium/protocol";
 import { RowMenu } from "../components/RowMenu";
 import { Switch } from "../components/Switch";
-import { installedByAgent, sourceLabel } from "../configChanges";
-import { ConnectorIcon } from "../connectorIcons";
-import { openExternal } from "../openExternal";
+import { installedByAgent, sourceLabel } from "../settings/configChanges";
+import { ConnectorIcon } from "./connectorIcons";
+import { openExternal } from "../shared/openExternal";
 import { matches, count } from "./common";
 
 function relative(at: number | null): string {

@@ -14,7 +14,7 @@ import {
   formatCount,
   type ContextBreakdown as Breakdown,
   type SessionState,
-} from "../sessions";
+} from "../sessions/sessions";
 import { ModelName } from "../components/ModelName";
 
 const METHODS: Record<TokenCountMethod, string> = {

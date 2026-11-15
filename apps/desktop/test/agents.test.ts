@@ -1,4 +1,4 @@
-// Environment agent names and session titles (src/agents.ts).
+// Environment agent names and session titles (src/sessions/agents.ts).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -23,7 +23,7 @@ import {
   permissionsChanged,
   permissionsOfDraft,
   startedByNote,
-} from "../src/agents.ts";
+} from "../src/sessions/agents.ts";
 
 const state = (change: Record<string, unknown>) =>
   ({

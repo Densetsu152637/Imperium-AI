@@ -2,7 +2,7 @@
 
 import { Check, Plus } from "lucide-react";
 import type { CatalogServer } from "@imperium/protocol";
-import { ConnectorIcon } from "../connectorIcons";
+import { ConnectorIcon } from "./connectorIcons";
 import { matches } from "./common";
 
 export function BrowseView({

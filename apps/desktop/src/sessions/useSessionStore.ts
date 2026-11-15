@@ -4,7 +4,7 @@
 import { useMemo, useRef, useState } from "react";
 
 import { cachedSessions } from "../shared/cache";
-import type { SessionState } from "../sessions";
+import type { SessionState } from "./sessions";
 
 /** `initialSelected`: the session the layout last had open, when it is restored. */
 export function useSessionStore(initialSelected: string | null) {

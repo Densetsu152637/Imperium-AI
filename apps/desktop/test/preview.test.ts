@@ -1,4 +1,4 @@
-// The Preview panel's URL rule and the takeover state (src/preview.ts). Run with `pnpm test`.
+// The Preview panel's URL rule and the takeover state (src/sessions/preview.ts). Run with `pnpm test`.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -11,7 +11,7 @@ import {
   keyAction,
   previewUrl,
   shownTab,
-} from "../src/preview.ts";
+} from "../src/sessions/preview.ts";
 
 test("loopback http(s) addresses are previewed", () => {
   for (const input of [

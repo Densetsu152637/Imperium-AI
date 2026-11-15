@@ -6,14 +6,14 @@
 import { BookOpen, CircleX, PanelTop, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { RESUME_TEXT, formatElapsed, taskElapsed } from "../agentView";
+import { RESUME_TEXT, formatElapsed, taskElapsed } from "../sessions/agentView";
 import { RowMenu, type RowMenuItem } from "../components/RowMenu";
-import { canKeep, rowNote } from "../knowledge";
-import { modelName, useModelNames } from "../modelNames";
+import { canKeep, rowNote } from "../sessions/knowledge";
+import { modelName, useModelNames } from "../models/modelNames";
 import type { KnowledgeCard } from "@imperium/protocol";
 
-import { formatCost, type SessionState, type TaskState } from "../sessions";
-import { isStopped, shownTaskStatus } from "../stop";
+import { formatCost, type SessionState, type TaskState } from "../sessions/sessions";
+import { isStopped, shownTaskStatus } from "../sessions/stop";
 
 
 type Actions = {

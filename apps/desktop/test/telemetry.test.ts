@@ -1,11 +1,11 @@
-// Live telemetry rows and their formatting (src/telemetry.ts). Run with `pnpm test` (node's test runner).
+// Live telemetry rows and their formatting (src/models/telemetry.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ModelRow } from "@imperium/protocol";
 
-import type { ModelCall, SessionState, TaskState } from "../src/sessions.ts";
+import type { ModelCall, SessionState, TaskState } from "../src/sessions/sessions.ts";
 import {
   LINGER_MS,
   formatSpeed,
@@ -18,7 +18,7 @@ import {
   withLingering,
   type Lingering,
   type TelemetryRow,
-} from "../src/telemetry.ts";
+} from "../src/models/telemetry.ts";
 
 const tableRow = (id: string, spec: string, location: "local" | "cloud"): ModelRow => ({
   id,

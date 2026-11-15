@@ -1,4 +1,4 @@
-// The shortcut registry (src/shortcuts.ts): parsing, matching, conflicts, and sanitising saved
+// The shortcut registry (src/settings/shortcuts.ts): parsing, matching, conflicts, and sanitising saved
 // bindings. Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
@@ -20,7 +20,7 @@ import {
   triggers,
   withBinding,
   withoutBinding,
-} from "../src/shortcuts.ts";
+} from "../src/settings/shortcuts.ts";
 
 const key = (k: string, mods: Partial<{ ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean }> = {}) => ({
   key: k,

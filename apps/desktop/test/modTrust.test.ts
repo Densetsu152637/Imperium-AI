@@ -1,9 +1,9 @@
-// Which mods may leave the sandbox (src/modTrust.ts). Run with `pnpm test` (node's test runner).
+// Which mods may leave the sandbox (src/settings/modTrust.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { mayRunInMainContext } from "../src/modTrust.ts";
+import { mayRunInMainContext } from "../src/settings/modTrust.ts";
 
 const trusted = { main_context: true, trusted: true, modified: false };
 

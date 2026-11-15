@@ -5,8 +5,8 @@
 
 import type { LocalModelRow, ModelRow } from "@imperium/protocol";
 
-import type { SelectOption } from "./components/Select";
-import { rowById, rowBySpecOrId } from "./models/spec.ts";
+import type { SelectOption } from "../components/Select";
+import { rowById, rowBySpecOrId } from "./spec.ts";
 import { chooserModels, type ModelGroup, type ModelMarks } from "./modelPrefs.ts";
 
 const RUNTIMES: Record<LocalModelRow["runtime"], string> = { llamacpp: "llama.cpp", vllm: "vLLM" };

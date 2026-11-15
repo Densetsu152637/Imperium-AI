@@ -1,4 +1,4 @@
-// The loading screen's removal logic and fallback (src/boot.ts). Run with `pnpm test`.
+// The loading screen's removal logic and fallback (src/shared/boot.ts). Run with `pnpm test`.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -16,7 +16,7 @@ import {
   THEME_KEY,
   type SplashParts,
   type SplashTimers,
-} from "../src/boot.ts";
+} from "../src/shared/boot.ts";
 
 function fixture() {
   const timers: { id: number; ms: number; run: () => void; live: boolean }[] = [];
@@ -141,7 +141,7 @@ test("the boot theme is the remembered one, else the system's", () => {
 });
 
 // The remembered theme: public/boot.js (a plain script linked from index.html, which sets the theme
-// before the first paint) and src/boot.ts (which remembers it) must use the same storage key, or
+// before the first paint) and src/shared/boot.ts (which remembers it) must use the same storage key, or
 // the first paint would ignore what the app saved.
 
 const bootScript = readFileSync(new URL("../public/boot.js", import.meta.url), "utf8");

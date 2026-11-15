@@ -1,5 +1,5 @@
 // A subagent opened in the main panel: its title, how long it has run, and how a message typed
-// to it is delivered (src/agentView.ts). Run with `pnpm test` (node's test runner).
+// to it is delivered (src/sessions/agentView.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -14,7 +14,7 @@ import {
   formatElapsed,
   taskElapsed,
   taskTitle,
-} from "../src/agentView.ts";
+} from "../src/sessions/agentView.ts";
 
 test("a subagent is named by its title, else by the first line of its brief", () => {
   assert.equal(taskTitle("Fix login redirect test", "anything"), "Fix login redirect test");

@@ -1,11 +1,11 @@
-// Model display aliases (src/modelNames.ts). Run with `pnpm test` (node's test runner).
+// Model display aliases (src/models/modelNames.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { LocalModelRow, ModelRow } from "@imperium/protocol";
 
-import { aliasMap, modelAliases, modelName, modelTitle, setModelAliases } from "../src/modelNames.ts";
+import { aliasMap, modelAliases, modelName, modelTitle, setModelAliases } from "../src/models/modelNames.ts";
 
 const row = (id: string, spec: string, alias: string | null = null) => ({ id, spec, alias }) as ModelRow;
 const local = (id: string, alias: string | null = null, runtime: "llamacpp" | "vllm" = "llamacpp") =>

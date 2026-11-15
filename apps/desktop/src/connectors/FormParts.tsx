@@ -2,7 +2,7 @@
 
 import { ArrowLeft, LoaderCircle } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
-import { ConnectorIcon } from "../connectorIcons";
+import { ConnectorIcon } from "./connectorIcons";
 
 export function FormShell({
   title,

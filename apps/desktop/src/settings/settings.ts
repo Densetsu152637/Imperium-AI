@@ -5,12 +5,12 @@
 
 import { createContext, useContext } from "react";
 
-import { toggleMark, type ModelMark, type ModelMarks } from "./modelPrefs";
-import { rememberTheme } from "./boot";
-import { getDoc, setDoc, takeLegacy } from "./store";
+import { toggleMark, type ModelMark, type ModelMarks } from "../models/modelPrefs";
+import { rememberTheme } from "../shared/boot";
+import { getDoc, setDoc, takeLegacy } from "../shared/store";
 import { sanitizeOverrides, type ShortcutOverrides } from "./shortcuts";
-import { migrateTour, type TourState } from "./tourSteps";
-import type { PttKey } from "./voice";
+import { migrateTour, type TourState } from "../tour/tourSteps";
+import type { PttKey } from "../sessions/voice";
 
 export type Density = "compact" | "comfortable" | "spacious";
 export type Accent =

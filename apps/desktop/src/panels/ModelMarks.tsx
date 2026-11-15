@@ -3,7 +3,7 @@
 
 import { ChevronDown, ChevronRight, Eye, EyeOff, Star } from "lucide-react";
 
-import type { ModelMark } from "../modelPrefs";
+import type { ModelMark } from "../models/modelPrefs";
 
 /** A star (favourite) and an eye (hide / show again) for one model. */
 export function ModelMarkButtons({

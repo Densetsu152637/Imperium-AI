@@ -6,7 +6,7 @@ import { useMemo, useRef, useState } from "react";
 import type { EnvironmentInfo } from "@imperium/protocol";
 
 import { cachedEnvironments } from "../shared/cache";
-import { environmentIcon, sameFolder, type ProjectIcons } from "../projectIcons";
+import { environmentIcon, sameFolder, type ProjectIcons } from "./projectIcons";
 import { environmentById } from "./byId";
 
 /** The saved selection, when it is restored: `initialEnvId`, and whether the Sessions list shows only its sessions. */

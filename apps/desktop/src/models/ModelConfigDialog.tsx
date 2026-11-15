@@ -11,15 +11,15 @@
 import { Boxes, Cpu, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { LocalModelConfig, ModelConfigResult, ModelSetConfigParams, TableModelConfig, TableModelSettings, LocalLaunchSettings } from "@imperium/protocol";
-import { matches, ModalNavGroup, ModalNavItem, SettingsModal } from "./components/SettingsModal";
-import type { DaemonClient } from "./daemon/client";
+import { matches, ModalNavGroup, ModalNavItem, SettingsModal } from "../components/SettingsModal";
+import type { DaemonClient } from "../daemon/client";
 import { defaultTurnedOff, disabledToSave, offSpecs, replacementDefaults, type AvailabilityInput, type Switches } from "./modelAvailability";
 import { EMPTY_LOCAL, EMPTY_TABLE, localDraft, localSettings, normLocal, normTable, same, tableDraft, tableSettings, type LocalDraft, type TableDraft } from "./modelConfigDrafts";
 import { arrangeModels, markOf } from "./modelPrefs";
-import { useSettings } from "./settings";
+import { useSettings } from "../settings/settings";
 import "./modelConfig.css";
-import { LocalForm } from "./models/LocalForm";
-import { TableForm } from "./models/TableForm";
+import { LocalForm } from "./LocalForm";
+import { TableForm } from "./TableForm";
 
 export type ModelDialogTarget = { tab: "local" | "table"; id?: string };
 

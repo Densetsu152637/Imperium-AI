@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Row } from "../components/SettingsRow";
-import { testNotification } from "../notify";
+import { testNotification } from "../shared/notify";
 
 /** Sends a sample system notification, asking for permission first where the system wants it. */
 export function TestNotificationRow() {

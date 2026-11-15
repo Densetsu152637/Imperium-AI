@@ -14,7 +14,7 @@ import type { ModInfo, PetListResult, PetStripResult, SessionEventParams } from 
 
 import type { DaemonClient } from "../daemon/client";
 import { insideTauri } from "../daemon/connection";
-import { getDoc, setDoc } from "../store";
+import { getDoc, setDoc } from "../shared/store";
 import behaviourSource from "./behaviour.js?raw";
 import { recordFault } from "./faults";
 

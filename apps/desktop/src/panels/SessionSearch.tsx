@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { SessionSearchHit } from "@imperium/protocol";
 
-import { highlightSegments, hitKindLabel, searchSessions, type SearchClient } from "../sessionSearch";
+import { highlightSegments, hitKindLabel, searchSessions, type SearchClient } from "../sessions/sessionSearch";
 
 /** Wait this long after typing stops before searching. */
 const DEBOUNCE_MS = 250;

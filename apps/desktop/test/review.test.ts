@@ -1,11 +1,11 @@
-// The review pane's wording and counting (src/review.ts). Run with `pnpm test`.
+// The review pane's wording and counting (src/review/review.ts). Run with `pnpm test`.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ReviewFile, SessionCheckpoint } from "@imperium/protocol";
 
-import { checkpointLabel, filesIn, lineCounts, lineKind, repoName } from "../src/review.ts";
+import { checkpointLabel, filesIn, lineCounts, lineKind, repoName } from "../src/review/review.ts";
 
 const turn: SessionCheckpoint = {
   number: 1,

@@ -3,10 +3,10 @@
 
 import { useEffect, useState } from "react";
 
-import type { ModelDialogTarget } from "../ModelConfigDialog";
-import type { AppSettings } from "../settings";
-import { isCapturing, triggers } from "../shortcuts";
-import { anyModalOpen } from "../tourSteps";
+import type { ModelDialogTarget } from "../models/ModelConfigDialog";
+import type { AppSettings } from "../settings/settings";
+import { isCapturing, triggers } from "../settings/shortcuts";
+import { anyModalOpen } from "../tour/tourSteps";
 
 export function useWindows(isDetached: boolean, shortcuts: AppSettings["shortcuts"]) {
   /** The environment window: which environment it edits (null id: a new one). */

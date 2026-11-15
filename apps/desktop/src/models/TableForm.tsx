@@ -2,9 +2,9 @@
 
 import { Fragment, type ReactNode } from "react";
 import type { LocalModelConfig, TableModelConfig } from "@imperium/protocol";
-import { MAX_ALIAS_CHARS, MAX_CARD_CHARS, TIERS, type TableDraft } from "../modelConfigDrafts";
-import { rowEstimate, summaryLine } from "../modelMemory";
-import { groupedSettings, TABLE_GROUPS, TABLE_SETTINGS } from "../modelSettingsTable";
+import { MAX_ALIAS_CHARS, MAX_CARD_CHARS, TIERS, type TableDraft } from "./modelConfigDrafts";
+import { rowEstimate, summaryLine } from "./modelMemory";
+import { groupedSettings, TABLE_GROUPS, TABLE_SETTINGS } from "./modelSettingsTable";
 import { GroupTable, SettingRow, MemoryTable, UseRow } from "./ConfigParts";
 
 export function TableForm({

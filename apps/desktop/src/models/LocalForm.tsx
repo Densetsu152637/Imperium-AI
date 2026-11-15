@@ -2,9 +2,9 @@
 
 import { Fragment, type ReactNode } from "react";
 import type { LocalModelConfig, ModelConfigResult } from "@imperium/protocol";
-import { FLASH, MAX_ALIAS_CHARS, MAX_CARD_CHARS, type LocalDraft } from "../modelConfigDrafts";
-import { localEstimate } from "../modelMemory";
-import { groupedSettings, LOCAL_GROUPS, LOCAL_SETTINGS } from "../modelSettingsTable";
+import { FLASH, MAX_ALIAS_CHARS, MAX_CARD_CHARS, type LocalDraft } from "./modelConfigDrafts";
+import { localEstimate } from "./modelMemory";
+import { groupedSettings, LOCAL_GROUPS, LOCAL_SETTINGS } from "./modelSettingsTable";
 import { GroupTable, SettingRow, MemoryTable, UseRow } from "./ConfigParts";
 
 export function LocalForm({

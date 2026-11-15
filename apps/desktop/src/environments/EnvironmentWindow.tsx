@@ -39,12 +39,12 @@ import type {
   WorkspacesWhereResult,
 } from "@imperium/protocol";
 
-import { PermissionsEditor, samePermissions } from "./components/PermissionsEditor";
-import { Select } from "./components/Select";
-import { ModalNavGroup, ModalNavItem, SettingsModal } from "./components/SettingsModal";
-import { Row, RowNote } from "./components/SettingsRow";
-import type { DaemonClient } from "./daemon/client";
-import { pickFolder } from "./daemon/connection";
+import { PermissionsEditor, samePermissions } from "../components/PermissionsEditor";
+import { Select } from "../components/Select";
+import { ModalNavGroup, ModalNavItem, SettingsModal } from "../components/SettingsModal";
+import { Row, RowNote } from "../components/SettingsRow";
+import type { DaemonClient } from "../daemon/client";
+import { pickFolder } from "../daemon/connection";
 import {
   closeAction,
   environmentDirty,
@@ -55,10 +55,10 @@ import {
   sectionsFor,
   type EnvironmentSectionId,
 } from "./environmentSections";
-import { searchIcons } from "./icons";
-import { EnvironmentAgents, type EnvironmentAgentsHandle } from "./panels/EnvironmentAgents";
-import { EnvironmentConfigSection } from "./panels/EnvironmentConfigSection";
-import { EnvironmentRuntimeFields, draftOf, isRemote, runtimeOf, sameRuntime } from "./panels/EnvironmentRuntimeFields";
+import { searchIcons } from "../shared/icons";
+import { EnvironmentAgents, type EnvironmentAgentsHandle } from "../panels/EnvironmentAgents";
+import { EnvironmentConfigSection } from "../panels/EnvironmentConfigSection";
+import { EnvironmentRuntimeFields, draftOf, isRemote, runtimeOf, sameRuntime } from "../panels/EnvironmentRuntimeFields";
 import { GlyphSvg, ICON_COLORS, ProjectIcon, environmentIcon, sameFolder, type ProjectIconChoice } from "./projectIcons";
 
 type Props = {

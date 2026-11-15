@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import type { DaemonClient, DaemonConnection } from "../daemon/client";
 import { insideTauri } from "../daemon/connection";
-import type { Daemon } from "../DaemonControl";
+import type { Daemon } from "./DaemonControl";
 
 export type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
 

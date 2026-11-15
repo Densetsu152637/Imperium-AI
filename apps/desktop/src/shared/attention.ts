@@ -4,7 +4,7 @@
 
 import type { DownloadJob, InitiativeNotice, SessionEvent } from "@imperium/protocol";
 
-import type { AppSettings } from "./settings";
+import type { AppSettings } from "../settings/settings";
 
 /** What a notice is about; each kind has its own switch in Settings → Notifications. */
 export type Attention = "approval" | "finished" | "failed" | "budget" | "download" | "update" | "initiative";

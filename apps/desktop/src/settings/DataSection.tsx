@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { Row } from "../components/SettingsRow";
-import type { Daemon } from "../DaemonControl";
+import type { Daemon } from "../shared/DaemonControl";
 import { DEFAULT_SETTINGS, type AppSettings } from ".";
-import { storeFolder } from "../store";
+import { storeFolder } from "../shared/store";
 
 export function DataSection({
   userFile,

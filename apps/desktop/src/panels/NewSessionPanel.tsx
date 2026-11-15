@@ -13,10 +13,10 @@ import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import type { DaemonClient } from "../daemon/client";
 import { environmentById } from "../environments/byId";
-import { houseModelSuggestion } from "../houseModels";
-import { useChangeSettings, useSettings } from "../settings";
+import { houseModelSuggestion } from "../models/houseModels";
+import { useChangeSettings, useSettings } from "../settings/settings";
 import { HouseModelCard } from "./HouseModelCard";
-import { modelIsOff } from "../modelAvailability";
+import { modelIsOff } from "../models/modelAvailability";
 import { asSpec, modelOptions } from "./ModelSelect";
 import { ModelSetup } from "./ModelSetup";
 

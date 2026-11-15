@@ -1,12 +1,12 @@
 // The session's model in the list when it was switched off after the session started
-// (src/modelOptions.ts). Run with `pnpm test` (node's test runner).
+// (src/models/modelOptions.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { LocalModelRow, ModelRow } from "@imperium/protocol";
 
-import { modelOptions } from "../src/modelOptions.ts";
+import { modelOptions } from "../src/models/modelOptions.ts";
 
 const row = (id: string, spec: string, enabled: boolean, alias: string | null = null) =>
   ({ id, spec, alias, enabled, endpoint_configured: true, location: "cloud", tier: "standard" }) as ModelRow;

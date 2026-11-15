@@ -3,8 +3,8 @@
 import { Undo2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { ConfigChange, ConfigChangesResult, ConfigUndoResult } from "@imperium/protocol";
-import { formatAgo } from "../ago";
-import { changeDetails, undoLabel } from "../configChanges";
+import { formatAgo } from "../shared/ago";
+import { changeDetails, undoLabel } from "./configChanges";
 import { Row } from "../components/SettingsRow";
 import type { DaemonClient } from "../daemon/client";
 

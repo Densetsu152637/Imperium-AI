@@ -9,7 +9,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { RowMenu } from "../components/RowMenu";
 import { insideTauri } from "../daemon/connection";
-import { emitPanelEvent, listenPanelEvents } from "../panelWindows";
+import { emitPanelEvent, listenPanelEvents } from "../shared/panelWindows";
 import type { PanelSpec } from "./Columns";
 import { getLayout } from "./state";
 

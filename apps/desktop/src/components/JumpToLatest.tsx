@@ -4,8 +4,8 @@
 
 import { ArrowDown } from "lucide-react";
 
-import { jumpLabel } from "../follow";
-import type { FollowScroll } from "../useFollowScroll";
+import { jumpLabel } from "../sessions/follow";
+import type { FollowScroll } from "../sessions/useFollowScroll";
 
 export function JumpToLatest({ follow }: { follow: FollowScroll }) {
   if (!follow.showJump) return null;

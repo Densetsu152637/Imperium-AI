@@ -4,7 +4,7 @@
 import { Folder } from "lucide-react";
 import { useCallback, useState } from "react";
 
-import { iconFor, iconName } from "./icons";
+import { iconFor, iconName } from "../shared/icons";
 
 /** A saved icon name from the app's icon registry (icons.ts). */
 export type Glyph = string;

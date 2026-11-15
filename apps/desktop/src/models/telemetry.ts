@@ -12,9 +12,9 @@
 import type { ModelRow } from "@imperium/protocol";
 
 import type { ModelAliases } from "./modelNames";
-import { rowBySpecOrId } from "./models/spec.ts";
+import { rowBySpecOrId } from "./spec.ts";
 
-import type { ModelCall, SessionState } from "./sessions";
+import type { ModelCall, SessionState } from "../sessions/sessions";
 
 /** How long a model stays listed after its work ends. */
 export const LINGER_MS = 60_000;

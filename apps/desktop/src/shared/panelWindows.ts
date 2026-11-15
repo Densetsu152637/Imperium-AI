@@ -8,9 +8,9 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { availableMonitors } from "@tauri-apps/api/window";
 
 import { BOOT_BACKGROUND } from "./boot";
-import { insideTauri } from "./daemon/connection";
-import type { DetachedPanel } from "./layout/state";
-import { loadSettings, resolvedTheme } from "./settings";
+import { insideTauri } from "../daemon/connection";
+import type { DetachedPanel } from "../layout/state";
+import { loadSettings, resolvedTheme } from "../settings/settings";
 
 export type PanelWindowEvent =
   | { kind: "pinned"; id: string; pinned: boolean }

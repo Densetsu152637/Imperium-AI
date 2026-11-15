@@ -1,11 +1,11 @@
-// The local model benchmark helpers (src/bench.ts). Run with `pnpm test` (node's test runner).
+// The local model benchmark helpers (src/models/bench.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { BenchResult, BenchRun } from "@imperium/protocol";
 
-import { activeRun, gibibytes, history, latestHere, mergeRun, millis, seconds, tokensPerSecond } from "../src/bench.ts";
+import { activeRun, gibibytes, history, latestHere, mergeRun, millis, seconds, tokensPerSecond } from "../src/models/bench.ts";
 
 const result = (model_id: string, hardware_fingerprint: string, extra: Partial<BenchResult> = {}): BenchResult => ({
   model_id,

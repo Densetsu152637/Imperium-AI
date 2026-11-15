@@ -1,10 +1,10 @@
-// Session search in the app (src/sessionSearch.ts): the call, highlighted snippets, and which
+// Session search in the app (src/sessions/sessionSearch.ts): the call, highlighted snippets, and which
 // transcript entry a hit opens at.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { entryForEvent, highlightSegments, hitKindLabel, searchSessions } from "../src/sessionSearch.ts";
+import { entryForEvent, highlightSegments, hitKindLabel, searchSessions } from "../src/sessions/sessionSearch.ts";
 
 test("searchSessions calls session.search with the query and options", async () => {
   const calls: [string, unknown][] = [];

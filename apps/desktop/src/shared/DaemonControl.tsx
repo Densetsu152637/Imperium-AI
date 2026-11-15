@@ -6,9 +6,9 @@ import { Play, RefreshCw, RotateCw, ScrollText, Square } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { Row, RowNote } from "./components/SettingsRow";
-import { Switch } from "./components/Switch";
-import { insideTauri } from "./daemon/connection";
+import { Row, RowNote } from "../components/SettingsRow";
+import { Switch } from "../components/Switch";
+import { insideTauri } from "../daemon/connection";
 
 export type DaemonStatus = {
   running: boolean;

@@ -17,10 +17,10 @@ import {
   standouts,
   togglePicked,
   type BranchRun,
-} from "../branches";
+} from "../sessions/branches";
 import { ModelName } from "../components/ModelName";
-import { formatCost, formatTokens } from "../sessions";
-import { formatElapsed } from "../agentView";
+import { formatCost, formatTokens } from "../sessions/sessions";
+import { formatElapsed } from "../sessions/agentView";
 
 /** The models a comparison can use: enabled table rows, then local models found in the model folders. */
 function choices(models: ModelRow[], local: LocalModelRow[]): { spec: string; label: string }[] {

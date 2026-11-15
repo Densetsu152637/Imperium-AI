@@ -4,8 +4,8 @@ import { Info } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { Switch } from "../components/Switch";
 import { matches } from "../components/SettingsModal";
-import { estimateValue, type MemoryEstimate } from "../modelMemory";
-import { affectsText, ASPECT_LABELS, ESTIMATE_ROWS, type SettingGroup, type SettingSpec } from "../modelSettingsTable";
+import { estimateValue, type MemoryEstimate } from "./modelMemory";
+import { affectsText, ASPECT_LABELS, ESTIMATE_ROWS, type SettingGroup, type SettingSpec } from "./modelSettingsTable";
 
 /**
  * The (i) icon beside a setting: a keyboard-focusable button whose popover says in plain words

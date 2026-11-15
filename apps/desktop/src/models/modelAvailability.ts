@@ -5,7 +5,7 @@
 // off the default (`models.set_config`), so the dialog asks for another default first. Pure
 // (test/modelAvailability.test.ts).
 
-import { rowById } from "./models/spec.ts";
+import { rowById } from "./spec.ts";
 
 /** What the dialog needs of the daemon's `models.config` result. */
 export type AvailabilityInput = {

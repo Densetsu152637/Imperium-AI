@@ -29,7 +29,7 @@ import {
   permissionsChanged,
   permissionsOfDraft,
   suggestionsLabel,
-} from "../agents";
+} from "../sessions/agents";
 import { Select } from "../components/Select";
 import { Row, RowNote } from "../components/SettingsRow";
 import { Switch } from "../components/Switch";

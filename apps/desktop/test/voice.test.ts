@@ -1,4 +1,4 @@
-// Push-to-talk (src/voice.ts): the state machine, the shortcuts, and where the words go. Run
+// Push-to-talk (src/sessions/voice.ts): the state machine, the shortcuts, and where the words go. Run
 // with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
@@ -12,7 +12,7 @@ import {
   isPttRelease,
   pttStep,
   type PttState,
-} from "../src/voice.ts";
+} from "../src/sessions/voice.ts";
 
 const idle: PttState = { phase: "idle" };
 

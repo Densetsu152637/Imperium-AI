@@ -8,7 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 
-import { insideTauri } from "./daemon/connection";
+import { insideTauri } from "../daemon/connection";
 
 export type DocName = "settings" | "layout" | "cache" | "mods";
 

@@ -3,8 +3,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { AppSettings, ChangeSettings } from "../settings";
-import { anyModalOpen, autoStartReady, recordOutcome, shouldAutoStart, type TourOutcome } from "../tourSteps";
+import type { AppSettings, ChangeSettings } from "../settings/settings";
+import { anyModalOpen, autoStartReady, recordOutcome, shouldAutoStart, type TourOutcome } from "./tourSteps";
 
 /** How long the tour waits for the composer to appear before starting without it. */
 const TOUR_COMPOSER_WAIT_MS = 8000;

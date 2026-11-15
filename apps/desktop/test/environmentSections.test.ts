@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { agentDraftDirty, draftOfPermissions, suggestionsLabel } from "../src/agents.ts";
+import { agentDraftDirty, draftOfPermissions, suggestionsLabel } from "../src/sessions/agents.ts";
 import {
   closeAction,
   environmentDirty,
@@ -16,7 +16,7 @@ import {
   saveTarget,
   sectionsFor,
   type EnvironmentSectionId,
-} from "../src/environmentSections.ts";
+} from "../src/environments/environmentSections.ts";
 
 const ids = (kind: { creating: boolean; builtin: boolean }) => sectionsFor(kind).map((section) => section.id);
 const read = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
@@ -82,7 +82,7 @@ test("switching sections only hides the Agents pane, so its state is kept", () =
   const all: EnvironmentSectionId[] = ["general", "folders", "agents", "permissions"];
   assert.equal(paneHidden("agents", "agents"), false);
   for (const other of all.filter((id) => id !== "agents")) assert.equal(paneHidden(other, "agents"), true);
-  const source = read("EnvironmentWindow.tsx");
+  const source = read("environments/EnvironmentWindow.tsx");
   assert.ok(/<div hidden=\{paneHidden\(current\.id, "agents"\)\}>\s*<EnvironmentAgents/.test(source));
   assert.ok(!source.includes('current.id === "agents"'));
 });
@@ -108,11 +108,11 @@ test("suggestions waiting show as a badge", () => {
 /** The controls each section holds (accessible names or text) and the source that renders them. */
 const SECTION_CONTROLS: Record<EnvironmentSectionId, { file: string; controls: string[] }> = {
   general: {
-    file: "EnvironmentWindow.tsx",
+    file: "environments/EnvironmentWindow.tsx",
     controls: ["Environment name", "Search icons", 'aria-label="Icon"', 'aria-label="Colour"', 'aria-label="Pet"'],
   },
   folders: {
-    file: "EnvironmentWindow.tsx",
+    file: "environments/EnvironmentWindow.tsx",
     controls: ["Add folder", "Folder inside the runtime", "Add path", "Remove ${folder}", "<EnvironmentRuntimeFields"],
   },
   agents: {
@@ -128,10 +128,10 @@ const SECTION_CONTROLS: Record<EnvironmentSectionId, { file: string; controls: s
       "Save agent",
     ],
   },
-  memory: { file: "EnvironmentWindow.tsx", controls: ["Open Memory.md", "Open folder"] },
+  memory: { file: "environments/EnvironmentWindow.tsx", controls: ["Open Memory.md", "Open folder"] },
   config: { file: "panels/EnvironmentConfigSection.tsx", controls: ["Reload", "Applied", "Refused"] },
-  permissions: { file: "EnvironmentWindow.tsx", controls: ["<PermissionsEditor"] },
-  danger: { file: "EnvironmentWindow.tsx", controls: ["Delete environment", "Keep"] },
+  permissions: { file: "environments/EnvironmentWindow.tsx", controls: ["<PermissionsEditor"] },
+  danger: { file: "environments/EnvironmentWindow.tsx", controls: ["Delete environment", "Keep"] },
 };
 
 test("every section lists controls, and each control is rendered by its source", () => {
@@ -145,7 +145,7 @@ test("every section lists controls, and each control is rendered by its source",
 });
 
 test("the window is built on the shared modal and asks before discarding", () => {
-  const source = read("EnvironmentWindow.tsx");
+  const source = read("environments/EnvironmentWindow.tsx");
   assert.ok(source.includes("<SettingsModal"));
   assert.ok(!source.includes("createPortal"));
   assert.ok(source.includes("Discard changes?"));

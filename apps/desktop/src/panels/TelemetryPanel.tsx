@@ -7,9 +7,9 @@ import remarkGfm from "remark-gfm";
 
 import type { ModelRow } from "@imperium/protocol";
 
-import { useModelNames } from "../modelNames";
-import type { SessionState } from "../sessions";
-import { LINGER_MS, liveTelemetry, telemetryTable, withLingering, type Lingering, type TelemetryRow } from "../telemetry";
+import { useModelNames } from "../models/modelNames";
+import type { SessionState } from "../sessions/sessions";
+import { LINGER_MS, liveTelemetry, telemetryTable, withLingering, type Lingering, type TelemetryRow } from "../models/telemetry";
 
 export function TelemetryPanel({ sessions, models }: { sessions: SessionState[]; models: ModelRow[] }) {
   const aliases = useModelNames();

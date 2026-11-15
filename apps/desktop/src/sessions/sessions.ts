@@ -20,9 +20,9 @@ import type {
 import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
 import { taskTitle } from "./agentView";
-import { environmentById } from "./environments/byId";
+import { environmentById } from "../environments/byId";
 import { applyKnowledge, emptyKnowledge, type KnowledgeState } from "./knowledge";
-import { modelAliases, modelName } from "./modelNames";
+import { modelAliases, modelName } from "../models/modelNames";
 import { applyBrowserView, applyPreviewEvent, type BrowserDriver, type BrowserMirror } from "./preview";
 import { applySent, applyWait, type Sent, type Waits } from "./waits";
 

@@ -499,7 +499,7 @@ sandbox exists to stop, so the manifest alone never grants it:
   `main_context` is installed sandboxed: trusting it takes a fresh install.
 - It is revocable: turning the mod off in Settings → Mods stops it, and installing it afresh
   without confirming returns it to the sandbox. The app's gate is `mayRunInMainContext`
-  (`apps/desktop/src/modTrust.ts`): asked, trusted, intact, and on.
+  (`apps/desktop/src/settings/modTrust.ts`): asked, trusted, intact, and on.
 - The warning says, in plain words: it runs inside the app's own window, where it can read and
   change everything the app can, including the daemon connection and its token, and act as
   the user; trust it only after reading its code; the confirmation is for exactly this content;

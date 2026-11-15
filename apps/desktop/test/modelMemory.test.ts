@@ -1,4 +1,4 @@
-// The memory estimate shown in the model configuration dialog (src/modelMemory.ts). Run with
+// The memory estimate shown in the model configuration dialog (src/models/modelMemory.ts). Run with
 // `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import type { LocalModelConfig } from "@imperium/protocol";
 
-import { approx, estimateValue, formatBytes, localEstimate, placementText, rowEstimate, summaryLine } from "../src/modelMemory.ts";
+import { approx, estimateValue, formatBytes, localEstimate, placementText, rowEstimate, summaryLine } from "../src/models/modelMemory.ts";
 
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;

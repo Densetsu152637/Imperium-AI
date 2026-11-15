@@ -7,8 +7,8 @@ import { useMemo, useState } from "react";
 
 import type { ModelListResult, ModelRow } from "@imperium/protocol";
 
-import { arrangeModels, markOf } from "../modelPrefs";
-import { useModelMarks } from "../settings";
+import { arrangeModels, markOf } from "../models/modelPrefs";
+import { useModelMarks } from "../settings/settings";
 import { HiddenGroupRow, ModelMarkButtons } from "./ModelMarks";
 
 type SortKey = "id" | "location" | "tier" | "price";

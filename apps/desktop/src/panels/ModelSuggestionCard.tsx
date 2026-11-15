@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import type { DownloadJob, SessionControlResult, SuggestionRespondResult } from "@imperium/protocol";
 
 import type { DaemonClient } from "../daemon/client";
-import type { SuggestionEntry } from "../sessions";
+import type { SuggestionEntry } from "../sessions/sessions";
 
 const GIB = 1024 * 1024 * 1024;
 const gib = (bytes: number): string => `${(bytes / GIB).toFixed(1)} GiB`;

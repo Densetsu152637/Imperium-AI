@@ -1,7 +1,7 @@
 // A model named in the interface: its alias when it has one, with the real id or spec on hover
 // (modelNames.ts).
 
-import { modelName, modelTitle, useModelNames } from "../modelNames";
+import { modelName, modelTitle, useModelNames } from "../models/modelNames";
 
 export function ModelName({ name, className }: { name: string; className?: string }) {
   const aliases = useModelNames();

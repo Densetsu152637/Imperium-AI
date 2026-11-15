@@ -125,7 +125,7 @@ kind count as *used 2 other tools*, or *Used 4 tools* when none has one). While 
 runs the line shows a spinner and the latest running call's summary; once all have ended it
 shows a cross when any failed, otherwise a check. Opening it lists the calls as the rows above,
 each still opening on its own. A lone call stays its own row. A subagent's log folds its calls the same way, and a session search hit on a folded call lands on its group's
-line (`apps/desktop/src/toolCalls.ts`, `components/ToolGroup.tsx`).
+line (`apps/desktop/src/sessions/toolCalls.ts`, `components/ToolGroup.tsx`).
 
 ### Free scroll while streaming (implemented)
 
@@ -138,7 +138,7 @@ pill with a down arrow floats over the bottom of the transcript while it is not 
 shows how many items arrived since following stopped, or a dot when only streamed text did.
 Choosing it, scrolling back to within 32 px of the bottom, sending a message, or opening another
 session or subagent follows again. A session search hit stops following so the hit stays in view.
-The rules are pure functions in `apps/desktop/src/follow.ts` (tested in `test/follow.test.ts`);
+The rules are pure functions in `apps/desktop/src/sessions/follow.ts` (tested in `test/follow.test.ts`);
 `useFollowScroll.ts` wires them to the transcript for both views, and
 `components/JumpToLatest.tsx` draws the pill.
 
@@ -150,7 +150,7 @@ under the sent message says what, with an elapsed timer and the action that ends
 wait; it clears on the first output. A message this window sent shows at once, dimmed, until
 its `turn_started` adds it to the transcript (or `message_queued` puts it in the queue, or the
 session turns out to need a model). The line reads, from the session's events
-(`apps/desktop/src/waits.ts`):
+(`apps/desktop/src/sessions/waits.ts`):
 
 - `local_model_waiting` by reason, one sentence naming the model by its alias: *Loading
   Qwen 3…*, *Growing Qwen 3's context pool…*, *Waiting for room in Qwen 3's context cache…*,
@@ -226,7 +226,7 @@ the others and follow the open session.
   takes an address the user types, which wins until the agent opens a different page. Only
   `localhost` and `127.0.0.1` (http or https, no user name or password; not `[::1]`, which the
   window's content security policy cannot name) are shown: the page runs scripts inside the
-  app window, so `previewUrl` (`src/preview.ts`) refuses anything else with the reason (and
+  app window, so `previewUrl` (`src/sessions/preview.ts`) refuses anything else with the reason (and
   checks every page it frames, including the one an agent opened), the daemon applies the same
   rule to agents' URLs, and the window's content security policy allows frames from those
   origins only, so a redirect cannot load a remote site either. A development build is served
@@ -532,7 +532,7 @@ takes a moment) nothing shows white:
 - **Loading screen:** `index.html` carries a themed screen with the Imperium mark and a
   spinner, styled by the linked `public/boot.css` (never an inline `<style>`: Tauri would add a
   style nonce to the release CSP and turn off `'unsafe-inline'` for every other inline style). `aria-busy` is set on `<body>` and the
-  screen is `role="status"`. `src/boot.ts` fades it out (180 ms) once `App` has mounted and the
+  screen is `role="status"`. `src/shared/boot.ts` fades it out (180 ms) once `App` has mounted and the
   panels have rendered, not merely when the script loads; an 8 s fallback removes it regardless,
   so it can never stick. With reduced motion the spinner is static and the fade is instant.
 - **Theme before the daemon (or settings) is read:** `settings.ts` remembers the chosen theme in
@@ -643,7 +643,7 @@ for actions that no longer exist, that do not parse, or that now clash are dropp
 defaults. The palette shows each command's current binding, and the Settings button's tooltip
 follows it.
 
-**Registry:** `src/shortcuts.ts` declares the actions (id, label, description, default) and holds
+**Registry:** `src/settings/shortcuts.ts` declares the actions (id, label, description, default) and holds
 the pure logic (parsing, matching an event, conflict detection, sanitising what was saved);
 `useSettings().shortcuts` is read by the handlers in `App.tsx`, `commands/CommandPalette.tsx` and
 `panels/SessionPanel.tsx`. A command that has a shortcut names its action (`shortcutAction`) rather
@@ -671,8 +671,8 @@ and approvals, memory, and Settings. Each step is a small card beside a highligh
   goes on, Left Arrow goes back, Esc skips, and each step after the first is announced, with its
   text, in a polite live region. Focus returns to where
   it was when the tour closes. It uses no animation.
-- **No network and no library.** The tour is `src/Tour.tsx` (the card and highlight, on the
-  app's theme tokens) over `src/tourSteps.ts` (the steps and pure logic); it adds no dependency.
+- **No network and no library.** The tour is `src/tour/Tour.tsx` (the card and highlight, on the
+  app's theme tokens) over `src/tour/tourSteps.ts` (the steps and pure logic); it adds no dependency.
 - **Declarative steps.** `TOUR_STEPS` in `tourSteps.ts` is a list of `{ id, title, body, target? }`,
   where `target` is a CSS selector (panels have `data-panel`, and the title bar's Edit layout and
   Settings buttons `data-tour`). A step whose target is not on screen (no session open for the
@@ -820,8 +820,8 @@ session.
 
 Notifications come from the main window only, so detached panel windows do not repeat them.
 Other parts of the app send their own through one internal entry point, `notify(notice,
-settings)` in `apps/desktop/src/notify.ts`, which applies these settings; budget alerts use it
-([budgets](#budgets-and-usage-implemented)). Which events notify is decided in `apps/desktop/src/attention.ts` and covered by
+settings)` in `apps/desktop/src/shared/notify.ts`, which applies these settings; budget alerts use it
+([budgets](#budgets-and-usage-implemented)). Which events notify is decided in `apps/desktop/src/shared/attention.ts` and covered by
 `apps/desktop/test/attention.test.ts`.
 
 ## API settings (implemented)
@@ -1150,7 +1150,7 @@ its alias, tokens in and out, cost, and model time for the turn, and its reply a
 `session.compare_pick`, which keeps that branch and archives the others (they stay in the
 archive); *Open* shows a column's branch as an ordinary session, whose note links back to the
 side-by-side view. The column state, standouts and form rules are in
-`apps/desktop/src/branches.ts` (tested in `test/branches.test.ts`).
+`apps/desktop/src/sessions/branches.ts` (tested in `test/branches.test.ts`).
 
 ### Exporting transcripts (implemented)
 
@@ -1182,7 +1182,7 @@ how many more matches the session has, and *related* for a match found by meanin
 its words. Choosing a result opens the session scrolled to that point of the conversation, the
 entry outlined for a moment: each transcript entry remembers the index of the history event it
 started at, and the hit's `event_index` picks the entry holding it. The search call is exported
-as `searchSessions` (`apps/desktop/src/sessionSearch.ts`) for the command palette. How the index
+as `searchSessions` (`apps/desktop/src/sessions/sessionSearch.ts`) for the command palette. How the index
 is built and ranked is in [17](17-memory.md#session-search-implemented).
 
 ### Attachments and voice input (implemented)
@@ -1448,7 +1448,7 @@ model folders, no default), the new-session view shows a card above the model se
 Emperor (the root agent and planner, on a base of about 4B) and Consul (its critic and reviewer,
 which checks Emperor's plans and delegated work and can reject them, on a base of about 9B),
 Imperium's own fine-tuned open-weight models, each with a role blurb and an approximate size
-(placeholders until the models are published). The catalogue is `apps/desktop/src/houseModels.ts`; an entry with no download
+(placeholders until the models are published). The catalogue is `apps/desktop/src/models/houseModels.ts`; an entry with no download
 source (both, today) reads *not yet available — still in training* and has no button. An entry
 with a Hugging Face source gets a *Download* button that runs the same `models.hf_files` and
 `models.download` calls as the Local models panel's form. The × dismisses the card for good (the

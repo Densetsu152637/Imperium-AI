@@ -2,8 +2,8 @@
 
 import type { EnvironmentInfo, SessionSummary } from "@imperium/protocol";
 
-import { newSession, type SessionState } from "../sessions";
-import { getDoc } from "../store";
+import { newSession, type SessionState } from "../sessions/sessions";
+import { getDoc } from "./store";
 
 /** Sessions and environments as last seen, shown until the daemon answers. */
 export type Cache = { sessions: SessionSummary[]; environments?: EnvironmentInfo[]; savedAt: number };

@@ -8,13 +8,13 @@ import { CircleAlert, Plug, Search, X } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { CatalogServer, ConfigSetResult, McpCatalogResult, McpListResult, McpLoginResult, McpLogoutResult, McpRemoveResult, McpSaveResult, McpServerInfo, McpStatus, PluginInfo } from "@imperium/protocol";
-import type { DaemonClient } from "./daemon/client";
-import { openExternal } from "./openExternal";
-import { message } from "./connectors/common";
-import { BrowseView } from "./connectors/BrowseView";
-import { InstalledView } from "./connectors/InstalledView";
-import { AddForm } from "./connectors/AddForm";
-import { CustomForm } from "./connectors/CustomForm";
+import type { DaemonClient } from "../daemon/client";
+import { openExternal } from "../shared/openExternal";
+import { message } from "./common";
+import { BrowseView } from "./BrowseView";
+import { InstalledView } from "./InstalledView";
+import { AddForm } from "./AddForm";
+import { CustomForm } from "./CustomForm";
 
 type Tab = "installed" | "browse";
 

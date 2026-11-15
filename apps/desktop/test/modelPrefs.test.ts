@@ -1,9 +1,9 @@
-// Favourite and hidden models (src/modelPrefs.ts). Run with `pnpm test` (node's test runner).
+// Favourite and hidden models (src/models/modelPrefs.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { arrangeModels, chooserModels, hiddenSpecs, markOf, toggleMark, withMark, type ModelMarks } from "../src/modelPrefs.ts";
+import { arrangeModels, chooserModels, hiddenSpecs, markOf, toggleMark, withMark, type ModelMarks } from "../src/models/modelPrefs.ts";
 
 const specs = ["openai:gpt", "llamacpp:qwen", "anthropic:claude", "llamacpp:gemma", "vllm:mistral"];
 const self = (spec: string) => spec;

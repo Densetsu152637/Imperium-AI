@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { ModListResult } from "@imperium/protocol";
-import { installedByAgent, sourceLabel } from "../configChanges";
+import { installedByAgent, sourceLabel } from "./configChanges";
 import { Row } from "../components/SettingsRow";
 import { Switch as Toggle } from "../components/Switch";
 import { getFaults, subscribeFaults } from "../mods/faults";

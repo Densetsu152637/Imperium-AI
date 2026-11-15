@@ -7,11 +7,11 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import { Row, RowNote } from "./components/SettingsRow";
-import { Select } from "./components/Select";
-import { Switch } from "./components/Switch";
-import { insideTauri } from "./daemon/connection";
-import type { AppSettings, UpdateInterval } from "./settings";
+import { Row, RowNote } from "../components/SettingsRow";
+import { Select } from "../components/Select";
+import { Switch } from "../components/Switch";
+import { insideTauri } from "../daemon/connection";
+import type { AppSettings, UpdateInterval } from "../settings/settings";
 
 export type Channel = "main" | "experimental";
 

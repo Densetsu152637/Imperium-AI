@@ -4,8 +4,8 @@
 
 import type { Budget, BudgetAlert, BudgetStatus, BudgetStop, ModelRow } from "@imperium/protocol";
 
-import type { Notice } from "./attention";
-import { rowById } from "./models/spec.ts";
+import type { Notice } from "../shared/attention";
+import { rowById } from "./spec.ts";
 
 /** `-32008`: a used-up budget asks before, or blocks, a new turn (jsonrpc.rs `BUDGET_EXCEEDED`). */
 export const BUDGET_EXCEEDED = -32008;

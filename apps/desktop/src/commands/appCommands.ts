@@ -30,7 +30,7 @@ import {
 
 import type { EnvironmentInfo, LocalModelRow, ModelRow } from "@imperium/protocol";
 
-import { chooserModels, type ModelMarks } from "../modelPrefs";
+import { chooserModels, type ModelMarks } from "../models/modelPrefs";
 import type { Command } from "./registry";
 
 /** What the palette needs from the app: its state, and the handlers it already has. */

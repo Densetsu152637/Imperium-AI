@@ -60,9 +60,9 @@ import { applyMove, panelMoves } from "./layout/moves";
 import { activeModules, canHost, dropPanel, sameModules, type Modules } from "./layout/placement";
 import { makePreset, missingMods, parsePreset, presetFileName, presetText, type LayoutPreset } from "./layout/presets";
 import { activeShape, clearOverride, DEFAULT_SHAPE, editShape, hasOverride, saveOverride, type Shapes } from "./layout/shapes";
-import { downloadNotice, initiativeNotice, sessionNotice, updateNotice } from "./attention";
-import { budgetNotice, budgetStop } from "./budgets";
-import { focusMainWindow, notify, onNoticeOpened } from "./notify";
+import { downloadNotice, initiativeNotice, sessionNotice, updateNotice } from "./shared/attention";
+import { budgetNotice, budgetStop } from "./models/budgets";
+import { focusMainWindow, notify, onNoticeOpened } from "./shared/notify";
 import {
   EnvironmentsPanel,
   SessionSortSelect,
@@ -71,17 +71,17 @@ import {
   type EnvironmentActions,
   type SessionSort,
 } from "./panels/NavigationPanels";
-import { exportSession, saveTextFile } from "./exportSession";
+import { exportSession, saveTextFile } from "./sessions/exportSession";
 import { SessionPanel } from "./panels/SessionPanel";
 import { ComparePanel } from "./panels/ComparePanel";
-import { branchRun, comparisonMembers, comparisonOpen } from "./branches";
+import { branchRun, comparisonMembers, comparisonOpen } from "./sessions/branches";
 import type { Effort, PermissionMode } from "./panels/ModelSelect";
 import { NewSessionPanel, type NewSessionOptions } from "./panels/NewSessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { ReviewPanel } from "./panels/ReviewPanel";
 import { AgentView } from "./panels/AgentView";
-import { agentDelivery, finishedMeanwhile, followUpText } from "./agentView";
-import { queueParams, type QueueChange } from "./queue";
+import { agentDelivery, finishedMeanwhile, followUpText } from "./sessions/agentView";
+import { queueParams, type QueueChange } from "./sessions/queue";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
 import { BrowserPanel } from "./panels/BrowserPanel";
@@ -91,10 +91,10 @@ import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { ResourcesPanel } from "./panels/ResourcesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
-import { cleanName } from "./agents";
+import { cleanName } from "./sessions/agents";
 import { environmentById } from "./environments/byId";
 import { useEnvironments } from "./environments/useEnvironments";
-import { projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./projectIcons";
+import { projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./environments/projectIcons";
 import {
   applyEvent,
   DEFAULT_RESUME_POLICY,
@@ -106,7 +106,7 @@ import {
   snapshotSessions,
   updateSent,
   type SessionState,
-} from "./sessions";
+} from "./sessions/sessions";
 import {
   applySettings,
   ChangeSettingsContext,
@@ -117,27 +117,27 @@ import {
   SettingsContext,
   type AppSettings,
   type ChangeSettings,
-} from "./settings";
-import { SettingsWindow } from "./SettingsWindow";
+} from "./settings/settings";
+import { SettingsWindow } from "./settings/SettingsWindow";
 import type { LayoutNotice } from "./settings/LayoutRows";
 import { PANELS_ICON, SETTINGS_SECTIONS } from "./settings/sections";
 import { appCommands } from "./commands/appCommands";
 import { formatShortcut } from "./commands/registry";
-import { bindingFor } from "./shortcuts";
+import { bindingFor } from "./settings/shortcuts";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
-import { splashDone } from "./boot";
-import { Tour } from "./Tour";
+import { splashDone } from "./shared/boot";
+import { Tour } from "./tour/Tour";
 import { useTour } from "./tour/useTour";
-import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
-import { ConnectorsWindow } from "./ConnectorsWindow";
-import { EnvironmentWindow } from "./EnvironmentWindow";
-import { setDoc, subscribeDoc } from "./store";
-import { useDaemon } from "./DaemonControl";
-import { ModelConfigDialog } from "./ModelConfigDialog";
-import { setModelAliases } from "./modelNames";
-import { applyResidency, type Residency } from "./waits";
-import { hiddenSpecs } from "./modelPrefs";
-import { UpdateControl, useUpdates } from "./UpdateControl";
+import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./shared/panelWindows";
+import { ConnectorsWindow } from "./connectors/ConnectorsWindow";
+import { EnvironmentWindow } from "./environments/EnvironmentWindow";
+import { setDoc, subscribeDoc } from "./shared/store";
+import { useDaemon } from "./shared/DaemonControl";
+import { ModelConfigDialog } from "./models/ModelConfigDialog";
+import { setModelAliases } from "./models/modelNames";
+import { applyResidency, type Residency } from "./sessions/waits";
+import { hiddenSpecs } from "./models/modelPrefs";
+import { UpdateControl, useUpdates } from "./shared/UpdateControl";
 import type { Cache } from "./shared/cache";
 import { ConnectionBanner, type Status } from "./shared/ConnectionBanner";
 import { useSessionStore } from "./sessions/useSessionStore";
