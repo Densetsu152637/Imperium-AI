@@ -8,8 +8,8 @@ use imperium_config::RoutingSettings;
 use imperium_protocol::methods::SessionHold;
 use imperium_protocol::session::{
     AgentEvent, AgentSummary, Attachment, ExtensionKind, KnowledgeCard, PauseCause,
-    PermissionDecision, QuestionOutcome, QueuedMessage, ROOT_AGENT, ResumePolicy, SendMode,
-    SessionEvent, SessionStatus,
+    PermissionDecision, QueuedMessage, ROOT_AGENT, ResumePolicy, SendMode, SessionEvent,
+    SessionStatus,
 };
 use imperium_tools::Workspace;
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
