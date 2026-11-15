@@ -5,6 +5,7 @@
 mod chat;
 mod effort;
 pub mod encoding;
+pub mod framing;
 pub mod fs;
 mod load;
 mod local;

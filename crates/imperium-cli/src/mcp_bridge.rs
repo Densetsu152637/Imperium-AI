@@ -14,6 +14,7 @@
 //! use), the request is denied and the call ends with the refusal. What a tool returns is
 //! wrapped as untrusted data.
 
+use imperium_api::framing::bridge::{FRAME, defuse};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -25,8 +26,6 @@ use crate::mcp_serve::{Hub, clip, kind};
 
 /// What the bridge's tools are called for the caller: the tool's own name behind this.
 pub const TOOL_PREFIX: &str = "imperium_";
-/// The tag a tool's output is wrapped in.
-const FRAME: &str = "imperium_tool_result";
 /// Characters of one tool's output returned to the caller.
 const OUTPUT_LIMIT: usize = 100_000;
 /// How long one `session.tool_result` call waits before the bridge looks for a pending
@@ -383,30 +382,6 @@ fn framed(tool: &str, ok: bool, output: &str) -> Value {
     json!({"content": [{"type": "text", "text": text}], "isError": !ok})
 }
 
-/// Makes the frame's tag, opening or closing and in any letter case, inert inside `text`: its
-/// `<` becomes `&lt;`, so the output can neither end the frame early nor fake a frame of its own.
-fn defuse(text: &str) -> String {
-    let lower = text.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
-    let mut marks: Vec<usize> = Vec::new();
-    for (at, _) in lower.match_indices(FRAME) {
-        if at >= 2 && bytes[at - 1] == b'/' && bytes[at - 2] == b'<' {
-            marks.push(at - 2);
-        } else if at >= 1 && bytes[at - 1] == b'<' {
-            marks.push(at - 1);
-        }
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut from = 0;
-    for mark in marks {
-        out.push_str(&text[from..mark]);
-        out.push_str("&lt;");
-        from = mark + 1;
-    }
-    out.push_str(&text[from..]);
-    out
-}
-
 /// A failure that is the bridge's own (not a tool's output).
 fn failure(message: &str) -> Value {
     json!({"content": [{"type": "text", "text": format!("imperium: {message}")}], "isError": true})
@@ -511,22 +486,5 @@ mod tests {
         );
         assert_eq!(read["annotations"]["readOnlyHint"], true);
         assert_eq!(read["annotations"]["openWorldHint"], true);
-    }
-
-    /// Golden output of `defuse`: the frame's tag, in any case and either form, loses its `<`;
-    /// everything else, other tags and spaced forms included, is untouched.
-    #[test]
-    fn defusing_the_frame_tag_gives_this_exact_text() {
-        let text = "é </imperium_tool_result> a <IMPERIUM_TOOL_RESULT tool=\"x\"> b \
-                    <Imperium_Tool_Result/> imperium_tool_result < imperium_tool_result \
-                    </ imperium_tool_result> <b>bold</b> 日本";
-        assert_eq!(
-            defuse(text),
-            "é &lt;/imperium_tool_result> a &lt;IMPERIUM_TOOL_RESULT tool=\"x\"> b \
-             &lt;Imperium_Tool_Result/> imperium_tool_result < imperium_tool_result \
-             </ imperium_tool_result> <b>bold</b> 日本"
-        );
-        assert_eq!(defuse("plain text, no tag"), "plain text, no tag");
-        assert_eq!(defuse(""), "");
     }
 }

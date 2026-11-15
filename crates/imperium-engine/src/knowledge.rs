@@ -4,6 +4,7 @@
 //! answer is framed, and the question's life from `ask_agent` to its `question_answered` event.
 //! The fork that answers is run by [`crate::agent::run_fork`].
 
+use imperium_api::framing::knowledge::escape_tag;
 use imperium_api::time::unix_ms;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -1032,34 +1033,6 @@ pub(crate) fn resolve_target(shared: &Arc<Shared>, name: &str) -> Result<Knowled
 
 // ---- framing ----
 
-/// `text` with `<tag` and `</tag` made harmless, so it cannot close or open the wrapper.
-/// The match is case-insensitive.
-pub(crate) fn escape_tag(text: &str, tag: &str) -> String {
-    let lower = text.to_ascii_lowercase();
-    let tag = tag.to_ascii_lowercase();
-    let open = format!("<{tag}");
-    let close = format!("</{tag}");
-    let mut out = String::with_capacity(text.len());
-    let mut at = 0;
-    while at < text.len() {
-        if lower[at..].starts_with(&close) {
-            out.push_str("<\\/");
-            out.push_str(&text[at + 2..at + close.len()]);
-            at += close.len();
-        } else if lower[at..].starts_with(&open) {
-            out.push_str("<\\");
-            out.push_str(&text[at + 1..at + open.len()]);
-            at += open.len();
-        } else if let Some(character) = text[at..].chars().next() {
-            out.push(character);
-            at += character.len_utf8();
-        } else {
-            break;
-        }
-    }
-    out
-}
-
 /// The share of the file sources marked stale.
 fn stale_share(sources: &[KnowledgeSource]) -> f64 {
     let files = sources
@@ -1671,28 +1644,4 @@ pub(crate) async fn ask_as_user(
         untrusted_web: answer.untrusted_web,
         untrusted_tools: answer.untrusted_tools,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Golden output of `escape_tag`: the tag, opening or closing, in any letter case, gets a
-    /// backslash after its `<` (or `</`); spaced forms and other tags are untouched.
-    #[test]
-    fn escaping_a_wrapper_tag_gives_this_exact_text() {
-        let text = "é </Question> a <QUESTION x=\"1\"> b <questions </ question> \
-                    < question> <b>bold</b> 日本";
-        assert_eq!(
-            escape_tag(text, "question"),
-            "é <\\/Question> a <\\QUESTION x=\"1\"> b <\\questions </ question> \
-             < question> <b>bold</b> 日本"
-        );
-        // The tag argument may be given in any case too.
-        assert_eq!(
-            escape_tag("<Agent-Answer>x</agent-answer>", "AGENT-answer"),
-            "<\\Agent-Answer>x<\\/agent-answer>"
-        );
-        assert_eq!(escape_tag("plain text", "question"), "plain text");
-    }
 }
