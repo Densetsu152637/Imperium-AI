@@ -227,16 +227,26 @@ be self-contained, like briefs.
   `LocalModels::waiting`) (`Presence`/`Mark` in `crates/imperium-local/src/supervisor.rs`). A
   knowledge agent's holder gets a third, `kept`, held from promotion until retirement. `kept`
   counts in exactly two places: `save_slots` saves the holder's slot on a swap or unload (as for
-  an agent that can come back), and `SlotFiles::trim` keeps its file ahead of finished agents'.
-  It counts nowhere else: it never pins a model (unlike `attach`, the model can be swapped or
+  an agent that can come back), and `SlotFiles::trim` keeps its file ahead of finished agents'
+  (plus the restore rule below, which keys on the holder being a knowledge holder). It counts
+  nowhere else: it never pins a model (unlike `attach`, the model can be swapped or
   unloaded for anyone), never counts as working or waiting (not in `critic_may_have_gpu`, no
   `yield_waiters` or suspend-to-yield on its behalf, and it does not hold off the idle unload).
   A fork itself is `working` under the holder for its turn, as any agent is.
-- **Saving after each answer.** Right after each answer the holder's slot is written to its file
-  **without erasing its cells**: if nobody uses the slot meanwhile, the next fork is a hot hit on
-  the cells; if they were overwritten or the model was swapped, the file restores the prefix
-  (`resume`) before the fork's first call. There is no idle timer. A hosted model holds nothing
-  between calls; its provider's prompt cache is what `last_cached_ratio` reports.
+- **Saving after every fork.** When a fork ends, whatever the outcome (answered, timed out,
+  cancelled, refused or failed), the holder's slot is written to its file **without erasing its
+  cells**. There is no idle timer. A hosted model holds nothing between calls; its provider's
+  prompt cache is what `last_cached_ratio` reports.
+- **Restoring only when needed.** Today `Supervisor::restore` (called on every lease) restores
+  whenever the holder has a saved file and then forgets the file (the `Forget` guard), which
+  would make a saved-but-unerased slot never a hot hit and protect it for one restore only. For
+  `kept` holders it changes in two ways:
+  - it restores only when the leased slot's last holder is not this holder, or its cells were
+    freed (erased, or the model was restarted or swapped) since; otherwise the lease goes ahead on
+    the cells as they are, recording no `RestoreSlot` move;
+  - the file is kept after it is read, and removed only when the agent is retired or resumed
+    (`resume_agent` grows the conversation, so the prefix and its file are made again) or by
+    `SlotFiles::trim` under its priority. Other holders keep today's behaviour.
 - **Compaction.** The kept conversation is never compacted: questions do not grow it (forks are
   discarded), and promotion refuses a conversation that does not fit with the reserve. A fork
   that reaches `context.auto_compact_at` stops and answers with what it has.
@@ -336,14 +346,21 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
      routes normally; a `routing.knowledge_model` that is turned off, missing or outside the
      catalog falls back like a missing Emperor;
    - the schema drift check passes.
-2. **Local residency.** The `kept` presence kind; the slot saved after each answer without
-   erasing its cells and restored before the next fork when needed; slot files counted against
+2. **Local residency.** The `kept` presence kind; the slot saved after every fork, whatever its
+   outcome, without erasing its cells; for `kept` holders, `Supervisor::restore` restoring only
+   when the leased slot's last holder is someone else or its cells were freed, and keeping the
+   file after reading it (removed on retirement or resume); slot files counted against
    `swap_cache_mb` in `max_per_session`; the asker keeping its slot when a free one exists;
    `last_cached_ratio` and `est_question_cost` (with the cache-lifetime rule). *Tests* (fake local
    runtime):
-   - a second question with nothing in between is a hot hit (no restore);
+   - a second question with nothing in between is a hot hit: it reports cached tokens and records
+     no `RestoreSlot` move;
    - with a third agent using the model between two questions, the second still reports cached
-     tokens (restored from the saved file);
+     tokens (restored from the saved file), and the file still exists after that restore, so a
+     third question after more interference is restored again;
+   - a fork cancelled mid-answer, then another agent using the model: the next question still
+     reports cached tokens (the cancelled fork's slot was saved);
+   - retiring or resuming the knowledge agent removes its file;
    - `kept` holders' slots are saved by `save_slots` on a swap and on an idle unload;
    - `SlotFiles::trim` drops finished agents' files before `kept` holders' files;
    - a model whose only presence is `kept` can be swapped out for another load and is unloaded
