@@ -205,4 +205,53 @@ mod tests {
             "{notices:?}"
         );
     }
+
+    /// Pins a pack called `name` under `data_dir` the way `imperium pack accept` does.
+    fn pin(data_dir: &Path, name: &str) {
+        let store = PackStore::new(data_dir);
+        let snapshot = imperium_workflow::update::Snapshot::from_files([(
+            "AGENTS.md",
+            "# Pinned
+",
+        )]);
+        store
+            .stage(name, "https://example.com/pack.git", "abc123", &snapshot)
+            .unwrap();
+        store.accept(name, &snapshot.hash(), true).unwrap();
+    }
+
+    #[test]
+    fn pinned_packs_follow_the_listed_ones_and_replace_the_bundled_pack() {
+        let base = tempfile::tempdir().unwrap();
+        let data = base.path().join("data");
+        pin(&data, "acw");
+        pin(&data, "other");
+        let listed = [pack(base.path(), "acw")];
+        let mut inputs = PackInputs {
+            enabled: true,
+            listed: &listed,
+            default_pack: true,
+            data_dir: &data,
+            config_dir: &base.path().join("config"),
+            bundled: Some(pack(base.path(), "bundled")),
+        };
+        // A pinned pack cannot take a listed pack's name; the others follow, not trusted.
+        let (packs, notices) = layers(&inputs);
+        assert_eq!(
+            packs,
+            Some(vec![("acw".into(), true), ("other".into(), false)])
+        );
+        assert_eq!(
+            notices,
+            vec!["pinned pack acw skipped: another pack already has that name".to_string()]
+        );
+        // With nothing listed, the pinned packs stand in for the bundled one.
+        inputs.listed = &[];
+        let (packs, notices) = layers(&inputs);
+        assert_eq!(
+            packs,
+            Some(vec![("acw".into(), false), ("other".into(), false)])
+        );
+        assert!(notices.is_empty(), "{notices:?}");
+    }
 }
