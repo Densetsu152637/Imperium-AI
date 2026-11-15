@@ -531,6 +531,41 @@ mod tests {
         connection
     }
 
+    /// Every method the protocol defines reaches its own handler: a number is no method's
+    /// params, so each answers "invalid params for <method>", never "unknown method". A method
+    /// missing from the dispatch (or sent to the wrong group) fails here.
+    #[test]
+    fn every_protocol_method_is_routed_to_a_handler() {
+        let names = include_str!("../../imperium-protocol/snapshots/methods.txt");
+        let methods: Vec<&str> = names
+            .lines()
+            .filter_map(|line| line.strip_prefix("method "))
+            .filter(|name| *name != Handshake::NAME)
+            .collect();
+        assert!(methods.len() > 100, "{} methods", methods.len());
+        let mut connection = handshaken();
+        for name in methods {
+            let handled = connection.handle_text(&request(2, name, json!(1)));
+            let response = handled.response.as_ref().expect("an immediate reply");
+            let Outcome::Error(error) = &response.outcome else {
+                panic!("{name} accepted a bare number as its params");
+            };
+            assert_eq!(
+                error.code,
+                codes::INVALID_PARAMS,
+                "{name}: {}",
+                error.message
+            );
+            assert!(
+                error
+                    .message
+                    .starts_with(&format!("invalid params for {name}")),
+                "{name}: {}",
+                error.message
+            );
+        }
+    }
+
     #[test]
     fn methods_other_than_handshake_require_a_handshake_first() {
         let mut connection = connection();
