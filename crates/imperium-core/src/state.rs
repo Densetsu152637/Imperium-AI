@@ -30,6 +30,7 @@ use imperium_tools::{ProcessRunner, Remote, Runner, Sandbox, Workspace};
 use imperium_web::{
     BrowserSetup, FetchOptions, PreviewTools, SearchConfig, SearchProviders, Web, WebTools,
 };
+use imperium_workflow::update::PackStore;
 use imperium_workflow::{ContextIndex, Pack, personality};
 use tokio::sync::broadcast;
 
@@ -160,13 +161,15 @@ struct Placement {
 
 /// Asks the safety floor to guard the folders whose files the daemon runs or vouches for: the
 /// installed mods (an approval vouches for their files) and the plugin folders (the user's own
-/// can carry hooks that rewrite calls), `<config>/plugins` and `extensions.plugin_dirs` of the
+/// can carry hooks that rewrite calls), the pinned policy packs in `<data>/packs`, `<config>/plugins` and `extensions.plugin_dirs` of the
 /// user's settings. A writer agent that can reach one of those folders could otherwise plant a
 /// plugin, so a write there is always asked about.
 fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     use imperium_tools::permissions::protect_dir;
     protect_dir(&paths.config_dir().join("mods"));
     protect_dir(&paths.config_dir().join("plugins"));
+    // Pinned policy packs: agents read their files as instructions, so a write is always asked.
+    protect_dir(&paths.data_dir().join("packs"));
     for dir in &settings.extensions.plugin_dirs {
         protect_dir(dir);
     }
@@ -2682,10 +2685,16 @@ impl DaemonState {
         if !workflow.enabled {
             return None;
         }
-        let builtin = (workflow.packs.is_empty() && workflow.default_pack)
-            .then(bundled_pack)
-            .flatten();
-        let packs = workflow
+        // Versions the user accepted from a pack update source, whose files still match the
+        // hash they were pinned at (`imperium pack`). They are not trusted like listed folders:
+        // their `@` imports stay inside the pack.
+        let pinned = PackStore::new(self.paths.data_dir()).pinned();
+        notices.extend(pinned.notices);
+        let builtin =
+            (workflow.packs.is_empty() && pinned.packs.is_empty() && workflow.default_pack)
+                .then(bundled_pack)
+                .flatten();
+        let mut packs: Vec<Pack> = workflow
             .packs
             .iter()
             .chain(builtin.as_ref())
@@ -2699,6 +2708,24 @@ impl DaemonState {
                 }
             })
             .collect();
+        for found in pinned.packs {
+            // A reference is `<pack name>:<path>`, so a pinned pack may not take the name of
+            // another loaded pack or of the project's own files.
+            if found.name == "project" || packs.iter().any(|pack| pack.name == found.name) {
+                notices.push(format!(
+                    "pinned pack {} skipped: another pack already has that name",
+                    found.name
+                ));
+                continue;
+            }
+            match Pack::load(&found.dir) {
+                Ok(mut pack) => {
+                    pack.name = found.name;
+                    packs.push(pack);
+                }
+                Err(error) => notices.push(format!("pinned pack {} skipped: {error}", found.name)),
+            }
+        }
         Some(Arc::new(ContextIndex::new(packs, project_dir)))
     }
 
@@ -2708,6 +2735,12 @@ impl DaemonState {
         personality::Sources {
             config_dir: Some(self.paths.config_dir().to_path_buf()),
             packs: self.settings().workflow.packs.clone(),
+            confined: PackStore::new(self.paths.data_dir())
+                .pinned()
+                .packs
+                .into_iter()
+                .map(|found| (found.name, found.dir))
+                .collect(),
             built_in: bundled_pack(),
         }
     }

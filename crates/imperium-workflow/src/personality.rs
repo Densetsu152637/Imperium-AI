@@ -109,24 +109,49 @@ pub struct Sources {
     pub packs: Vec<PathBuf>,
     /// The bundled pack, when it is on disk.
     pub built_in: Option<PathBuf>,
+    /// Packs pinned from an update source, by source name, after `packs`. Their files must
+    /// resolve inside the pack's folder, so a link in a pack cannot read another file.
+    pub confined: Vec<(String, PathBuf)>,
+}
+
+/// Reads `path`; with a `root`, only if it resolves inside it.
+fn read_text(path: &Path, root: Option<&Path>) -> std::io::Result<String> {
+    let Some(root) = root else {
+        return std::fs::read_to_string(path);
+    };
+    let real = path.canonicalize()?;
+    if !real.starts_with(root.canonicalize()?) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the file resolves outside its pack",
+        ));
+    }
+    std::fs::read_to_string(real)
 }
 
 impl Sources {
     /// Every personality folder with the origin it gives, in precedence order.
-    fn folders(&self) -> Vec<(PathBuf, Origin)> {
+    fn folders(&self) -> Vec<(PathBuf, Origin, Option<PathBuf>)> {
         let mut folders = Vec::new();
         if let Some(config) = &self.config_dir {
-            folders.push((config.join(FOLDER), Origin::Local));
+            folders.push((config.join(FOLDER), Origin::Local, None));
         }
         for pack in &self.packs {
             let name = pack
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "workflow".into());
-            folders.push((pack.join(FOLDER), Origin::Pack(name)));
+            folders.push((pack.join(FOLDER), Origin::Pack(name), None));
+        }
+        for (name, pack) in &self.confined {
+            folders.push((
+                pack.join(FOLDER),
+                Origin::Pack(name.clone()),
+                Some(pack.clone()),
+            ));
         }
         if let Some(built_in) = &self.built_in {
-            folders.push((built_in.join(FOLDER), Origin::BuiltIn));
+            folders.push((built_in.join(FOLDER), Origin::BuiltIn, None));
         }
         folders
     }
@@ -141,7 +166,7 @@ impl Sources {
     /// as UTF-8 text (it is still listed, under its id).
     pub fn list_with_warnings(&self, warnings: &mut Vec<String>) -> Vec<PersonalityInfo> {
         let mut found: Vec<PersonalityInfo> = Vec::new();
-        for (folder, origin) in self.folders() {
+        for (folder, origin, root) in self.folders() {
             for id in ids_in(&folder) {
                 if let Some(winner) = found.iter_mut().find(|info| info.id == id) {
                     if winner.origin == Origin::Local {
@@ -150,9 +175,13 @@ impl Sources {
                     continue;
                 }
                 let path = folder.join(format!("{id}.md"));
-                let name = match std::fs::read_to_string(&path) {
+                let name = match read_text(&path, root.as_deref()) {
                     Ok(text) => display_name(&text, &id),
                     Err(error) => {
+                        if root.is_some() {
+                            // A confined pack's file that resolves elsewhere is not offered.
+                            continue;
+                        }
                         if origin == Origin::Local {
                             warnings.push(unreadable_warning(&path, &error));
                         }
@@ -189,9 +218,9 @@ impl Sources {
             return None;
         }
         let mut found: Option<Personality> = None;
-        for (folder, origin) in self.folders() {
+        for (folder, origin, root) in self.folders() {
             let path = folder.join(format!("{id}.md"));
-            let text = match std::fs::read_to_string(&path) {
+            let text = match read_text(&path, root.as_deref()) {
                 Ok(text) => text,
                 Err(error) => {
                     if origin == Origin::Local && error.kind() != std::io::ErrorKind::NotFound {
@@ -342,6 +371,28 @@ mod tests {
         std::fs::write(dir.join(FOLDER).join(format!("{id}.md")), text).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_confined_pack_cannot_serve_a_personality_through_a_link() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.md"), "# Leak\n\nsecret\n").unwrap();
+        let pack = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(pack.path().join("personalities")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.md"),
+            pack.path().join("personalities/leak.md"),
+        )
+        .unwrap();
+        std::fs::write(pack.path().join("personalities/ok.md"), "# Ok\n\nfine\n").unwrap();
+        let sources = Sources {
+            confined: vec![("acw".into(), pack.path().to_path_buf())],
+            ..Sources::default()
+        };
+        assert!(sources.find("leak").is_none());
+        let ok = sources.find("ok").unwrap();
+        assert_eq!(ok.info.origin, Origin::Pack("acw".into()));
+    }
+
     #[test]
     fn with_no_sources_the_default_is_marcus_aurelius() {
         let selection = Sources::default().select(DEFAULT_PERSONALITY);
@@ -393,6 +444,7 @@ mod tests {
             config_dir: Some(config.path().to_path_buf()),
             packs: vec![pack.path().to_path_buf()],
             built_in: None,
+            confined: Vec::new(),
         };
         let luxion = sources.find("luxion").unwrap();
         assert_eq!(luxion.info.origin, Origin::Local);
@@ -431,6 +483,7 @@ Pack voice.
             config_dir: Some(config.path().to_path_buf()),
             packs: vec![pack.path().to_path_buf()],
             built_in: None,
+            confined: Vec::new(),
         };
         let selection = sources.select("luxion");
         let personality = selection.personality.unwrap();

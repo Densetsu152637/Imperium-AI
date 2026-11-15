@@ -369,10 +369,21 @@ and `environments.agent_update` (protocol 0.28)
     "needs sign-in". Tests run a fake authorization server and a fake MCP server on loopback
     ([05](05-tools-and-isolation.md#oauth-for-remote-servers-implemented)). *Not built in
     stage 2:* pre-registered client ids, step-up authorization after a 403, signing in to
-    servers a plugin or `.mcp.json` declares. *Remaining:* pack update diffs, the policy crate,
-    the full server bridge (`imperium mcp-serve` already bridges sessions,
-    [20](20-claude-harness.md); exposing Imperium's own tools is not built), and inserting MCP
-    prompts as slash commands in the desktop and CLI.
+    servers a plugin or `.mcp.json` declares.
+    *Stage 3a (policy pack updates) is implemented* (no protocol change): `imperium pack
+    add-source/check/diff/accept/reject` fetch a pack from a Git source the user added (kept
+    only in `<config>/pack-sources.toml`), stage it beside the pinned version and show a diff of
+    rules, prompts and pack settings in plain words. Nothing is applied until the user accepts
+    with the new version's hash; changes that may loosen what agents must do are highlighted and
+    need `--allow-loosening`; accepted versions are pinned by SHA-256 of their content, checked
+    again at every session start. Tests fetch from a local Git repository
+    ([08](08-agent-policy.md#pack-updates)). *Not built in stage 3a:* signatures (no format
+    support; decision recorded in 08), scheduled checks, a desktop review screen and rollback.
+    *Remaining:* the policy crate (deferred to the final cleanup, see 08), the full server
+    bridge (`imperium mcp-serve` already bridges sessions, [20](20-claude-harness.md); the
+    design for exposing Imperium's own tools is in
+    [20](20-claude-harness.md#exposing-imperiums-own-tools-design-not-built), not built), and
+    inserting MCP prompts as slash commands in the desktop and CLI.
 32. **Web and browser** (implemented, stage 2: tabs and downloads). The browser pane the user
     can take over exists.
     Kagi and Exa join SearXNG, Brave and Tavily as search providers (keys only from the keychain);
