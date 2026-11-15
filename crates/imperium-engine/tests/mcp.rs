@@ -155,6 +155,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

@@ -253,6 +253,7 @@ async fn run(options: Options) -> Outcome {
         attachments: Default::default(),
         harness: Default::default(),
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

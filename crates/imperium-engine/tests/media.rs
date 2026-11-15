@@ -134,6 +134,7 @@ async fn agents_generate_images_and_audio() {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

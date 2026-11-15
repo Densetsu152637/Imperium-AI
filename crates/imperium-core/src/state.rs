@@ -2066,6 +2066,12 @@ impl DaemonState {
             harness: self.settings().harness.clone(),
             attachments: self.settings().attachments.clone(),
             keep_agent_state: remember && self.settings().sessions.agent_state_keep,
+            knowledge: imperium_engine::KnowledgeConfig {
+                settings: self.settings().knowledge.clone(),
+                models: Some(Arc::new(crate::knowledge::ModelSwitch::new(
+                    self.me.clone(),
+                ))),
+            },
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
         // Ordinary sessions are remembered so they continue after a restart; project agents

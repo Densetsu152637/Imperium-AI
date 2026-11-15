@@ -89,6 +89,7 @@ fn start(dir: &std::path::Path, base_url: String) -> Session {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.join(".journal/notice.jsonl"),
     })
     .unwrap()

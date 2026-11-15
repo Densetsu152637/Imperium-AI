@@ -150,6 +150,7 @@ fn start_with(
         budget_gate: None,
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),
     })
     .unwrap()

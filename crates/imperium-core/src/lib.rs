@@ -19,6 +19,7 @@ mod events;
 mod export;
 mod extension_install;
 mod initiative;
+mod knowledge;
 mod llama_runtime;
 mod load;
 mod local;

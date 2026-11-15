@@ -198,6 +198,7 @@ fn start_with(
         harness: Default::default(),
         keep_agent_state: false,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.join(format!(".journal-{number}.jsonl")),
     })
     .unwrap()

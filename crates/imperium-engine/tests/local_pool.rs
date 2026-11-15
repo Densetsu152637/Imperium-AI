@@ -164,6 +164,7 @@ fn start(pool: &Arc<Pool>, script: &Arc<Script>, dir: &std::path::Path) -> Sessi
         },
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.join("journal.jsonl"),
     })
     .unwrap()

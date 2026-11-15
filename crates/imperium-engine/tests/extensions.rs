@@ -135,6 +135,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: project.path().join(".journal.jsonl"),
     })
     .unwrap();
@@ -294,6 +295,7 @@ async fn lifecycle_events_reach_http_hooks_with_their_payloads() {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: project.path().join(".journal.jsonl"),
     })
     .unwrap();
@@ -459,6 +461,7 @@ async fn hooked_turn(event: &str, answer: Value) -> Rewrite {
         attended: true,
         attachments: Default::default(),
         harness: Default::default(),
+        knowledge: Default::default(),
         journal_path: project.path().join(".journal.jsonl"),
     })
     .unwrap();

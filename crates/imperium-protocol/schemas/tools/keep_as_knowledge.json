@@ -1,0 +1,25 @@
+{
+  "description": "Keep a finished, read-only subagent as a knowledge agent: other agents can then ask it questions with ask_agent and it answers from the context it already loaded. Use it for research whose results several later tasks will need. The agent's conversation is kept exactly as it is (it is never compacted), and each question runs in a discarded fork. Refused for a running, failed or paused subagent, a writer, a single_call subagent, a chunk agent, or a conversation too large to leave room for answers. With retire: true (and no topic), turn a knowledge agent back into an ordinary idle subagent.",
+  "name": "keep_as_knowledge",
+  "parameters": {
+    "properties": {
+      "agent_id": {
+        "description": "The subagent's task id, such as t1",
+        "type": "string"
+      },
+      "retire": {
+        "description": "Stop keeping the agent as a knowledge agent instead",
+        "type": "boolean"
+      },
+      "topic": {
+        "description": "What it knows about, up to 300 characters; required unless retiring",
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent_id"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

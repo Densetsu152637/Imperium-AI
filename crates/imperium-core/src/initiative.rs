@@ -72,6 +72,8 @@ pub(crate) const REVIEW_TOOLS: &[&str] = &[
     "spawn_agent",
     "await_tasks",
     "list_agents",
+    "list_knowledge_agents",
+    "ask_agent",
     "suggest_work",
     "work_digest",
     "start_session",

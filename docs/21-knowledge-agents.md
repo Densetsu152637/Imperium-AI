@@ -1,6 +1,7 @@
 # 21 — Knowledge agents
 
-**Designed, not built** ([roadmap item 45](12-roadmap.md#next-in-order)). Agents of a session can
+**Stage 1 implemented** (engine core and contract, protocol 0.38); stages 2 and 3 are designed,
+not built ([roadmap item 45](12-roadmap.md#next-in-order)). Agents of a session can
 ask questions of other agents that keep context they already loaded. A research subagent that
 read a module, a specification or a set of pages stays available as a **knowledge agent**: the
 root and other subagents ask it (`ask_agent`) instead of searching and reading the same material
@@ -8,6 +9,8 @@ again, so context that has been paid for once is reused rather than reloaded int
 implementer's window.
 
 This document is the design: decisions, the contracts they change, and the order to build them.
+Each stage below says whether it is built, and [stage 1 as built](#stage-1-as-built) lists where
+the code differs from, or settles, what the design left open.
 It builds on [agent state](03-agent-engine.md#agent-state) (kept subagent conversations),
 [queueing and steering](03-agent-engine.md#queueing-and-steering), the local runtime's slots and
 [saved-slot cache](04-models-and-routing.md#runtimes), [permissions](05-tools-and-isolation.md#permissions)
@@ -53,7 +56,7 @@ What the code does today, and what limits the design:
 
 All three are defined in `imperium-protocol` like the other built-in tools
 ([D25](13-decisions.md), [dispatch contract](03-agent-engine.md#dispatch-contract)), exported to
-`schemas/tools/` (status `planned` until built), so Emperor is trained on the same schemas.
+`schemas/tools/` (status `available`: stage 1 builds them), so Emperor is trained on the same schemas.
 
 | Tool | Who has it | Parameters | Result |
 | --- | --- | --- | --- |
@@ -260,7 +263,7 @@ be self-contained, like briefs.
 
 ## Visibility
 
-**Protocol 0.37** (additive):
+**Protocol 0.38** (additive):
 
 - `AgentSummary.knowledge: Option<KnowledgeCard>`.
 - Session events: `knowledge_changed` (`agent_id`, the card, or `retired`),
@@ -310,7 +313,7 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
 
 ## Implementation plan
 
-1. **Engine core and contract (protocol 0.37).** Tool definitions and schemas
+1. **Engine core and contract (protocol 0.38) (implemented).** Tool definitions and schemas
    (`ask_agent`, `list_knowledge_agents`, `keep_as_knowledge`, `spawn_agent.knowledge`); the card
    and the frozen prefix and tool specs on the agent record, `AgentSummary.knowledge`, sources from
    the conversation; a `can_ask` flag beside `can_delegate`; the question queue; forks under a
@@ -346,7 +349,7 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
      routes normally; a `routing.knowledge_model` that is turned off, missing or outside the
      catalog falls back like a missing Emperor;
    - the schema drift check passes.
-2. **Local residency.** The `kept` presence kind; the slot saved after every fork, whatever its
+2. **Local residency (not built).** The `kept` presence kind; the slot saved after every fork, whatever its
    outcome, without erasing its cells; for `kept` holders, `Supervisor::restore` restoring only
    when the leased slot's last holder is someone else or its cells were freed, and keeping the
    file after reading it (removed on retirement or resume); slot files counted against
@@ -369,7 +372,7 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
      `yield_waiters` or suspend-to-yield runs on its behalf;
    - a promotion over the slot-cache share is refused with the list;
    - `est_question_cost` on a hosted model uses the uncached price after the cache lifetime.
-3. **Clients and prompts.** Agents panel badge, sources, cost and questions; *Keep as knowledge*
+3. **Clients and prompts (not built).** Agents panel badge, sources, cost and questions; *Keep as knowledge*
    and *Retire*; `/agents` cards in `imperium chat`; root and subagent prompt lines, `brief.md`,
    Emperor's root prompt and an eval case in `schemas/eval` (asking beats re-reading). *Tests:*
    desktop component tests for the badge and the question list; a browser-preview check of the
@@ -389,9 +392,56 @@ peak context; the number of read and search calls; and wall time. The item passe
 knowledge-agent run uses fewer uncached prompt tokens and smaller asker peak context than the
 baseline on both models, and no answer caused a write, a command or an approval.
 
+## Stage 1 as built
+
+Everything in the stage 1 list above is built and covered by `crates/imperium-engine/tests/knowledge.rs`
+and the routing tests in `crates/imperium-engine/src/model.rs`. Where the code settles a detail the
+design left open, or differs from it:
+
+- **Model-call events.** A fork emits no `turn_started`, `text_delta`, context breakdown or turn
+  events, but each of its model calls is reported as a `model_call_completed` under the **knowledge
+  agent's** id: that is what budgets, `usage.json` and the resource view count, and what charges the
+  knowledge agent's record.
+- **Which tools are offered.** `keep_as_knowledge` is offered to the root whenever
+  `knowledge.enabled`. `ask_agent` and `list_knowledge_agents` are offered to the root and to
+  ordinary subagents while the session has at least one knowledge agent (a subagent sees them from
+  its next turn), so a session without knowledge agents keeps its tool list, and its cached prefix,
+  as it was. A call to them from any agent that may not ask (a chunk or `single_call` agent, a
+  knowledge agent resumed for more work, a fork) is refused.
+- **Frozen prefix.** A subagent notes its system message, the tools it was offered and the reasoning
+  effort its request carried (forks use the same effort) at every safe point, in memory; promotion records them with the card. A subagent that finished before a
+  daemon restart has none, so it must be resumed once (any follow-up) before it can be kept.
+- **Emperor's row** is a catalog row tagged `emperor` or with the table id `emperor` (any case),
+  and the first such row that can take the task is used.
+- **Escaping** of the answer and question delimiters ignores case.
+- **Settings** under `[knowledge]` and `routing.knowledge_model` are read when a session starts, so
+  a change applies to new sessions.
+- **Writers** are recognised by the `access: write` it was spawned with, whether or not a worktree
+  could be made (the kind is kept in the record).
+- **Sources** are read from the successful tool calls of the kept conversation when it is
+  promoted. A file's size and modified time are those it has at promotion, and a file modified
+  after its agent's last turn started is marked stale at once (it may have changed after it was
+  read), so an edit between the research and `keep_as_knowledge` gives a stale note, a stale share
+  on the card and degraded answers. The mark stays until the agent is refreshed with
+  `resume_agent`.
+- **Staleness note to the root.** A degraded answer's header advises the asker; when the asker is
+  not the root, the user also gets a notice (the root's context is not changed).
+- **Cost estimate.** `est_question_cost` counts the uncached share of the prefix from
+  `last_cached_ratio` plus a typical question and answer; the provider cache-lifetime rule is
+  stage 2.
+- **Asker and local slots.** An asker on a local model sleeps (`LocalModels::waiting`) while it
+  waits, as in `await_tasks`; keeping its slot when a free one exists is stage 2. A fork already
+  uses the knowledge agent's holder, and a local model answers one question at a time.
+- **No usage-limit waits in a fork.** A fork that hits a provider usage limit fails the question
+  rather than waiting for the reset; the asker's budget and limits are the ordinary ones.
+- **Not built, by design of the stages:** the `kept` presence kind, saving the slot after each fork
+  and the restore rule, `knowledge.slot_cache_share` (stored, not read), the Agents panel, the
+  `/agents` cards, the root and subagent prompt lines, `brief.md`, Emperor's root prompt and the
+  eval case.
+
 ## Settings
 
-Under `[knowledge]` ([10](10-configuration.md)): `enabled` (true), `max_per_session` (4),
+Under `[knowledge]` ([10](10-configuration.md#knowledge-agents)): `enabled` (true), `max_per_session` (4),
 `parallel_answers` (2; local models always 1), `answer_max_steps` (6),
 `max_questions_per_turn` (20), `answer_reserve` (0.25), `slot_cache_share` (0.5),
 `stale_threshold` (0.3), `default_timeout_s` (300; a call may ask for at most 600), and under

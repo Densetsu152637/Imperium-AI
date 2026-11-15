@@ -86,7 +86,8 @@ use imperium_protocol::methods::{
     SystemResourcesSubscribe, SystemResourcesSubscribeParams, SystemResourcesSubscribeResult,
 };
 use imperium_protocol::methods::{
-    SessionAgentCancel, SessionAgentCancelParams, SessionAgentCancelResult, SessionAgentResume,
+    SessionAgentCancel, SessionAgentCancelParams, SessionAgentCancelResult, SessionAgentKnowledge,
+    SessionAgentKnowledgeParams, SessionAgentKnowledgeResult, SessionAgentResume,
     SessionAgentResumeParams, SessionAgentResumeResult, SessionAgents, SessionAgentsParams,
     SessionAgentsResult,
 };
@@ -947,6 +948,19 @@ impl Connection {
                 |params: SessionReviewPullRequestParams| {
                     let state = Arc::clone(&self.state);
                     async move { blocking(move || crate::review::pull_request(&state, &params)).await }
+                },
+            ),
+            SessionAgentKnowledge::NAME => call::<SessionAgentKnowledge>(
+                request.params,
+                |params: SessionAgentKnowledgeParams| {
+                    let card = self
+                        .session(&params.session_id)?
+                        .agent_knowledge(&params.agent_id, params.topic.as_deref(), params.retire)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+                    Ok(SessionAgentKnowledgeResult {
+                        agent_id: params.agent_id,
+                        card,
+                    })
                 },
             ),
             SessionAgentCancel::NAME => {

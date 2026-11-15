@@ -1,0 +1,14 @@
+{
+  "description": "List the knowledge agents of this session: subagents kept after their research so that you can ask them questions with ask_agent instead of reading the same material again. Each card gives the agent id, its topic, what it read (stale sources marked), its model, what a question costs, and whether it is ready. With query, the best match to it comes first. Empty when there are none.",
+  "name": "list_knowledge_agents",
+  "parameters": {
+    "properties": {
+      "query": {
+        "description": "What you need to know about, to order the agents by",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "status": "available"
+}

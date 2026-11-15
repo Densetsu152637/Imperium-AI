@@ -110,6 +110,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: data.join(format!("{id}.jsonl")),
     })
     .unwrap()

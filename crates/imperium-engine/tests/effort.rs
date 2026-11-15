@@ -148,6 +148,7 @@ fn start(
         attachments: Default::default(),
         harness: Default::default(),
         keep_agent_state: false,
+        knowledge: Default::default(),
         journal_path: dir.join("journal.jsonl"),
     })
     .unwrap();

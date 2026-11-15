@@ -112,6 +112,7 @@ async fn attachments_reach_the_model_and_the_journal() {
         harness: Default::default(),
         keep_agent_state: false,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: journal.clone(),
     })
     .unwrap();

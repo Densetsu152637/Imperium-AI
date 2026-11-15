@@ -7,8 +7,9 @@ use imperium_api::{Effort, PermissionMode, ToolProvider};
 use imperium_config::RoutingSettings;
 use imperium_protocol::methods::SessionHold;
 use imperium_protocol::session::{
-    AgentEvent, AgentSummary, Attachment, ExtensionKind, PauseCause, PermissionDecision,
-    QueuedMessage, ROOT_AGENT, ResumePolicy, SendMode, SessionEvent, SessionStatus,
+    AgentEvent, AgentSummary, Attachment, ExtensionKind, KnowledgeCard, PauseCause,
+    PermissionDecision, QueuedMessage, ROOT_AGENT, ResumePolicy, SendMode, SessionEvent,
+    SessionStatus,
 };
 use imperium_tools::Workspace;
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
@@ -113,6 +114,8 @@ pub struct SessionConfig {
     /// Asked before every model call and subagent spawn, so a used-up budget stops a turn
     /// that is already running (`None`: no budgets).
     pub budget_gate: Option<Arc<dyn crate::BudgetGate>>,
+    /// Knowledge agents: their settings, and a check of their models (`[knowledge]`).
+    pub knowledge: crate::KnowledgeConfig,
 }
 
 /// The answer to a model switch or a compaction.
@@ -646,6 +649,28 @@ impl Session {
         Ok(model)
     }
 
+    /// Keeps a finished, read-only subagent as a knowledge agent under `topic`, or (`retire`)
+    /// makes a knowledge agent an ordinary idle subagent again, as the root agent does with
+    /// `keep_as_knowledge`. Returns the card after the change, or `None` once retired.
+    pub fn agent_knowledge(
+        &self,
+        agent_id: &str,
+        topic: Option<&str>,
+        retire: bool,
+    ) -> Result<Option<KnowledgeCard>, String> {
+        let shared = self
+            .shared
+            .0
+            .get()
+            .ok_or("the session is still starting; try again in a moment")?;
+        if retire {
+            crate::knowledge::retire(shared, agent_id)?;
+            return Ok(None);
+        }
+        let topic = topic.ok_or("a topic is required to keep an agent as knowledge")?;
+        crate::knowledge::promote(shared, agent_id, topic).map(Some)
+    }
+
     /// Ends a paused (or otherwise finished) subagent without resuming it.
     pub fn cancel_agent(&self, agent_id: &str) -> Result<(), String> {
         let shared = self
@@ -745,6 +770,8 @@ pub(crate) struct Shared {
     pub chunk_agents: AtomicUsize,
     /// The session's reasoning effort, as it is now.
     pub effort: SessionEffort,
+    /// Knowledge agents' questions and limits.
+    pub knowledge: crate::knowledge::Knowledge,
     next_task: AtomicU32,
 }
 
@@ -863,6 +890,7 @@ async fn run(
         chunk_gate: Arc::new(Semaphore::new(MAX_PARALLEL_CHUNKS)),
         chunk_agents: AtomicUsize::new(0),
         effort,
+        knowledge: crate::knowledge::Knowledge::new(config.knowledge),
         inboxes,
         // Task ids continue after those of earlier runs, whose state is kept.
         next_task: AtomicU32::new(agents.last_task_number()),

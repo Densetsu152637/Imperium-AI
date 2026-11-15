@@ -150,6 +150,7 @@ async fn agents_research_and_cite_sources() {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();
@@ -298,6 +299,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();
@@ -476,6 +478,7 @@ async fn agents_use_tabs_and_save_downloads_after_approval() {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();
@@ -675,6 +678,7 @@ async fn a_download_is_approved_afresh_every_time() {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

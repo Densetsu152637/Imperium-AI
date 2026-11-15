@@ -25,6 +25,18 @@
       "status": "available"
     },
     {
+      "name": "list_knowledge_agents",
+      "status": "available"
+    },
+    {
+      "name": "ask_agent",
+      "status": "available"
+    },
+    {
+      "name": "keep_as_knowledge",
+      "status": "available"
+    },
+    {
       "name": "update_plan",
       "status": "available"
     },

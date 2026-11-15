@@ -122,6 +122,7 @@ listed; edit them in the file.
 | `routing.builtin_rules` | `true` | Whether the built-in [task-class rules](04-models-and-routing.md#task-classes) (hard tags prefer cloud `frontier` rows, menial tags prefer local rows at the task's own tier) apply when none of `routing.rules` matched |
 | `routing.builtin_cpu_lane` | `true` | Whether the built-in rules sending `critique`, `review`, `verify` and `proof-check` tasks to a CPU-lane row that can take them now apply (after `routing.rules` and the task-class rules; needs `routing.builtin_rules` too) ([routing extras](04-models-and-routing.md#routing-extras-implemented)) |
 | `routing.max_queue_wait_s` | `120` | A local model whose expected wait for a slot is longer than this many seconds is skipped for the next eligible route, with a notice; `0` turns the check off. CPU-lane rows and local models outside the table (reached only by a rule or a name) are exempt; a task confined to a location stays in it even when every row there is backed up |
+| `routing.knowledge_model` | empty | The model a subagent meant to be kept as a [knowledge agent](21-knowledge-agents.md) (spawned with `knowledge`, or tagged `knowledge`) prefers: a model table id or `<endpoint>:<model>`. Empty prefers Emperor when a row of the table is tagged `emperor` or has the table id `emperor`. A preference: it gives way to an explicit `model` or `location`, a task tier above the row's, a rule of yours, and a row that cannot take the task now; a model that is turned off, missing from the model folders or not in the catalog falls back to normal routing, with a note. Turned off with `routing.builtin_rules` |
 | `routing.long_context_tokens` | `100000` | Context window (tokens) a model needs to count as long-context for a task tagged `long-context` or a rule with `require = ["long_context"]`; an unknown window does not qualify |
 | `routing.escalation_attempts` | `0` | Times a failed (or, as the report's first line, `CONFIDENCE: LOW`) subagent is retried on a stronger route: the matching rule's `escalate` ids in order, else the tier above the model that ran last. Off by default because each retry is another model run charged to its budget; an unsure local model is never retried on a hosted one, writer subagents are not retried, and initiative turns never escalate ([routing extras](04-models-and-routing.md#routing-extras-implemented)) |
 | `models.default` | none | Model for new sessions, as `<endpoint>:<model>` (split at the first `:`, so `ollama:qwen3:8b` works); applies without a restart; *Use* in the Local models panel and `imperium models use` set it |
@@ -285,6 +286,27 @@ limits = [
 `budgets.get` returns the budgets and where each stands, `budgets.set` replaces them (applied at
 once; budgets without an id get one), and `budgets.usage` returns usage by day with the top
 environments, endpoints, and models for the Usage panel ([07](07-desktop-ui.md#budgets-and-usage-implemented)).
+
+## Knowledge agents
+
+`[knowledge]` controls [knowledge agents](21-knowledge-agents.md): finished read-only subagents kept
+so that other agents can ask them questions. Stage 1 is implemented; `slot_cache_share` is stored
+and not read until local residency is built. The settings are read when a session starts: a
+change applies to new sessions, not to running ones.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `knowledge.enabled` | `true` | Offer `keep_as_knowledge` to the root, `spawn_agent`'s `knowledge` and the question tools; `false` turns the feature off |
+| `knowledge.max_per_session` | `4` | Most knowledge agents one session keeps; promoting another is refused with the list, oldest asked first |
+| `knowledge.parallel_answers` | `2` | Forks answering one knowledge agent's questions at once on a hosted model; a local model always answers one at a time |
+| `knowledge.answer_max_steps` | `6` | Most model calls one answer may make |
+| `knowledge.max_questions_per_turn` | `20` | Most questions one agent may ask in one turn |
+| `knowledge.answer_reserve` | `0.25` | Share of its model's window a kept conversation must leave free for answers (a conversation is never compacted to make it fit) |
+| `knowledge.slot_cache_share` | `0.5` | Share of the saved-slot cache local knowledge agents' slots may take (not read yet) |
+| `knowledge.stale_threshold` | `0.3` | Share of a card's file sources that changed since they were read, above which answers are marked degraded |
+| `knowledge.default_timeout_s` | `300` | How long a question waits for its answer unless the call asks for another time (at most 600); the wait pauses while the session is stopped |
+
+`routing.knowledge_model` (above) names the model such agents prefer.
 
 ## Secrets
 

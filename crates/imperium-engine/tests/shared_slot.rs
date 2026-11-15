@@ -187,6 +187,7 @@ fn start(index: usize, local: Arc<dyn LocalModels>, dir: &std::path::Path) -> Se
         },
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.join(".journal.jsonl"),
     })
     .unwrap()

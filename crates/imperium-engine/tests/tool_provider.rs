@@ -156,6 +156,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();
@@ -212,7 +213,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
         .map(|tool| tool["function"]["name"].as_str().unwrap())
         .collect();
     assert_eq!(
-        names[names.len() - 10..],
+        names[names.len() - 11..],
         [
             "update_plan",
             "note_add",
@@ -222,6 +223,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
             "queue_agent",
             "list_agents",
             "resume_agent",
+            "keep_as_knowledge",
             "delegate_chunks",
             "ask_user"
         ]
@@ -378,6 +380,7 @@ async fn a_root_only_provider_is_not_offered_to_subagents() {
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

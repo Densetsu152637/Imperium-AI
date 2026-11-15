@@ -9,7 +9,9 @@ use axum::Router;
 use axum::routing::post;
 use imperium_core::{Connection, DaemonState};
 use imperium_protocol::jsonrpc::{Outcome, Response, codes};
-use imperium_protocol::methods::{SessionAgentResumeResult, SessionAgentsResult};
+use imperium_protocol::methods::{
+    SessionAgentKnowledgeResult, SessionAgentResumeResult, SessionAgentsResult,
+};
 use imperium_protocol::session::{AgentEvent, AgentStatus, SessionEvent};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
@@ -160,6 +162,50 @@ async fn subagents_are_listed_resumed_and_deleted_with_the_session() {
 
     for (agent, text) in [("root", "hi"), ("t7", "hi"), ("t1", "")] {
         let refused = call(&mut connection, "session.agent_resume", resume(agent, text));
+        assert_eq!(error_code(refused), codes::INVALID_PARAMS, "{agent}");
+    }
+
+    // The user keeps the finished subagent as a knowledge agent, and retires it again.
+    let knowledge = |agent: &str, extra: Value| {
+        let mut params = json!({"session_id": session_id, "agent_id": agent});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        params
+    };
+    let card: SessionAgentKnowledgeResult = result(call(
+        &mut connection,
+        "session.agent_knowledge",
+        knowledge("t1", json!({"topic": "the surroundings"})),
+    ));
+    assert_eq!(
+        card.card.as_ref().map(|card| card.topic.as_str()),
+        Some("the surroundings")
+    );
+    let listed: SessionAgentsResult = result(call(
+        &mut connection,
+        "session.agents",
+        json!({"session_id": session_id}),
+    ));
+    assert!(listed.agents[1].knowledge.is_some());
+    let retired: SessionAgentKnowledgeResult = result(call(
+        &mut connection,
+        "session.agent_knowledge",
+        knowledge("t1", json!({"retire": true})),
+    ));
+    assert!(retired.card.is_none());
+    for (agent, extra) in [
+        ("root", json!({"topic": "x"})),
+        ("t7", json!({"topic": "x"})),
+        ("t1", json!({})),
+        ("t1", json!({"retire": true})),
+    ] {
+        let refused = call(
+            &mut connection,
+            "session.agent_knowledge",
+            knowledge(agent, extra),
+        );
         assert_eq!(error_code(refused), codes::INVALID_PARAMS, "{agent}");
     }
 
