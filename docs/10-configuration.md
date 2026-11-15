@@ -289,7 +289,8 @@ environments, endpoints, and models for the Usage panel ([07](07-desktop-ui.md#b
 ## Secrets
 
 API keys, OAuth tokens, and pairing keys are stored in the OS keychain (Windows Credential
-Manager, macOS Keychain, Secret Service on Linux) through the `keyring` crate. Config files
+Manager, macOS Keychain, Secret Service on Linux) through the `keyring` crate; Linux without a
+Secret Service uses [an encrypted file](#encrypted-file-fallback-implemented). Config files
 reference secrets by name only:
 
 ```toml
@@ -311,30 +312,48 @@ prompt without echo) and `imperium secret delete <name>` write the secret store 
 
 ### Encrypted file fallback (implemented)
 
-Where there is no OS keychain (headless Linux without a Secret Service, or a locked or
-unreachable one), the daemon and `imperium secret` keep secrets in `secrets.enc` in the data
-folder instead. The whole file is one XChaCha20-Poly1305 message with a fresh random nonce per
-write, so neither values nor names are readable and the header (format version, key derivation)
-is authenticated; writes take a lock, reread, and replace the file atomically, with mode `0600`
-on Unix. The key comes from one of two places:
+On **Linux only**, where there is no usable keychain (headless without a Secret Service), the
+daemon and `imperium secret` keep secrets in `secrets.enc` in the data folder instead. Windows
+and macOS always use their keychain and never the file.
+
+The choice is made **once**, when the daemon or the CLI starts, and kept. With a working keychain
+at start, every read, write and delete goes to it and a keychain error (locked, unreachable) is
+reported as an error: it never makes a secret get written to the file, and a failed delete is
+never reported as "not stored". Only a start that finds no keychain uses the file.
+
+The whole file is one XChaCha20-Poly1305 message with a fresh random nonce per write, so neither
+values nor names are readable, and the header (format version, key derivation) is authenticated
+and parsed strictly (unknown or extra fields are refused, and a recorded Argon2id cost outside
+8 MiB to 1 GiB, 1 to 10 passes and 1 to 8 lanes is refused before anything is derived). Writes
+take a lock, reread, and replace the file atomically through a new random-named temporary file,
+with mode `0600` on Unix, and the data folder is made `0700` when created. The key comes from one
+of two places:
 
 - **A key file** (the default): `secrets.key`, 32 random bytes made with mode `0600` on first
-  use. It needs no prompt, so an unattended daemon can start, and the file is refused when other
-  users can read it. It protects the secrets file when only that file leaks (a backup, a synced
-  folder); anyone who can read both files as you can decrypt everything. It is never recreated
-  next to existing secrets, since a new key could not open them.
-- **A passphrase**: set `IMPERIUM_SECRETS_PASSPHRASE` in the environment of the daemon and the
-  CLI. The key is derived with Argon2id (64 MiB, 3 passes; the file records its own cost and
-  salt). Without the passphrase nothing can be decrypted. A file made one way is not opened
-  the other way, and the error says which is needed.
+  use. It needs no prompt, so an unattended daemon can start. It is refused if it is a symbolic
+  link or other users can read it, and it is never recreated next to existing secrets, since a
+  new key could not open them. It protects the secrets file when only that file leaks (a backup,
+  a synced folder). **Any program running as you, including an agent's shell commands and file
+  reads, can read the key file and so decrypt everything**: the safety floor asks before an
+  agent *writes* these files, but cannot stop reads.
+- **A passphrase**: set `IMPERIUM_SECRETS_PASSPHRASE_FILE` to the path of a file (private to
+  you; on Unix mode `0600`) holding it, in the environment of the daemon and the CLI. The
+  variable holds a path, never the passphrase: an environment variable is inherited by every
+  program the daemon starts for an agent. The key is derived with Argon2id (64 MiB, 3 passes;
+  the file records its own cost and salt). Keep the passphrase file somewhere agents are not
+  given access to, ideally on a separate or removable volume; without the file nothing can be
+  decrypted. A file made one way is not opened the other way, and the error says which is needed.
 
-This is **weaker than a keychain**: a keychain also stops other programs running as you, and
-this file does not. The daemon logs a warning at start and `imperium secret set` prints one
-whenever the fallback is in use. When a keychain later becomes available, each secret moves into
-it when first read and the rest move at the next daemon start; the file is deleted once empty
-(the key file is left, and may be deleted by hand). Passphrase changes, rekeying, and Windows
-or macOS fallbacks are not built; a Windows or macOS machine with a working keychain never uses
-the file.
+This is **weaker than a keychain**: a keychain also stops other programs running as you, and this
+file does not. The daemon logs a warning at start and `imperium secret set` prints one whenever
+the fallback is in use. When a later start finds a keychain, each leftover secret moves into it
+when first read and the rest move at that start; a value the keychain already holds is never
+overwritten (the file's copy is dropped as stale), an unreadable leftover file is logged and its
+secrets treated as absent, and the file is deleted once empty (the key file is left, and may be
+deleted by hand). On Windows the key file has no owner-only access list of its own; it inherits
+the folder's, so do not point `IMPERIUM_HOME` at a shared drive or share the data folder. Not
+built: rekeying or changing the passphrase, a passphrase prompt, an owner-only Windows access
+list, and a desktop notice for the fallback.
 
 Secrets are never written to logs, transcripts, telemetry, or exported sessions,
 and the protocol exposes `secret.set` / `secret.delete` but no read.

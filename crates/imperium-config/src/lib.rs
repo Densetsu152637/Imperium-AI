@@ -52,7 +52,7 @@ pub use secrets::{
     load_secret, store_secret,
 };
 pub use secrets_file::{
-    AutoSecrets, FileSecrets, KeySource, MigrationReport, PASSPHRASE_ENV, SecretBackend,
+    AutoSecrets, FileSecrets, KeySource, MigrationReport, PASSPHRASE_FILE_ENV, SecretBackend,
 };
 pub use settings::{
     ActionSettings, AgentSettings, ApiSettings, AttachmentSettings, AutofixSettings, Capability,

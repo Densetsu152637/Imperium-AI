@@ -337,6 +337,11 @@ const FLOOR_PATHS: &[&str] = &[
     ".netrc",
     // The daemon's record of which mod permissions the user approved.
     "mod-approvals.json",
+    // The encrypted secret file used where there is no OS keychain, and its scratch files
+    // (`secrets.key` is already covered by `*.key`).
+    "secrets.enc",
+    "secrets.*.tmp",
+    "secrets.lock",
 ];
 
 /// Whether the built-in safety floor covers a call: a destructive command (see
@@ -932,6 +937,19 @@ mod tests {
             CallKind::Edit,
             &path("mod-approvals.json.md")
         ));
+        // The encrypted secret file, its key, lock and scratch files.
+        for file in [
+            "secrets.enc",
+            "secrets.key",
+            "secrets.lock",
+            "secrets.0a1b2c3d4e5f6071.tmp",
+        ] {
+            assert!(
+                safety_floor(CallKind::Edit, &path(&format!("data/imperium/{file}"))),
+                "{file}"
+            );
+        }
+        assert!(!safety_floor(CallKind::Edit, &path("src/secrets.rs")));
         assert!(!safety_floor(CallKind::Edit, &path("src/main.rs")));
         assert!(!safety_floor(CallKind::Read, &path(".env")));
         assert!(!safety_floor(

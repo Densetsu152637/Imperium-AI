@@ -79,7 +79,7 @@ async fn run() -> anyhow::Result<()> {
 
     let (stop, _) = watch::channel(false);
     let local = imperium_core::LocalRuntime::start(&paths, &settings);
-    let auto_secrets = AutoSecrets::open(&paths);
+    let auto_secrets = AutoSecrets::open(&paths).context("could not open the secret store")?;
     match auto_secrets.backend() {
         SecretBackend::Keychain => match auto_secrets.migrate() {
             Ok(report) if report.moved > 0 => tracing::info!(

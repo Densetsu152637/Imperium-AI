@@ -8,9 +8,10 @@
 //!   mode `0600` on Unix. It needs no prompt, so an unattended daemon can start. It protects the
 //!   secrets file when only that file leaks (a backup, a synced folder, a pasted listing), but
 //!   anyone who can read both files as the same user can decrypt everything.
-//! - **A passphrase**, from `IMPERIUM_SECRETS_PASSPHRASE`, stretched with Argon2id. Without the
-//!   passphrase nothing can be decrypted, so it is the stronger choice; it needs the variable in
-//!   the daemon's and the CLI's environment.
+//! - **A passphrase**, read from the file named by `IMPERIUM_SECRETS_PASSPHRASE_FILE` and
+//!   stretched with Argon2id. Without the passphrase nothing can be decrypted, so it is the
+//!   stronger choice. The environment holds only the path: a passphrase in the environment would
+//!   be inherited by every program the daemon starts for an agent.
 //!
 //! Either way this is weaker than an OS keychain, which also guards against other processes of
 //! the same user; [`AutoSecrets`] says so when it falls back.
@@ -33,13 +34,21 @@ use zeroize::Zeroizing;
 use crate::paths::Paths;
 use crate::secrets::{KeychainSecrets, SecretError, SecretName, SecretStore};
 
-/// The environment variable that selects passphrase mode.
-pub const PASSPHRASE_ENV: &str = "IMPERIUM_SECRETS_PASSPHRASE";
+/// The environment variable naming a file that holds the passphrase, which selects passphrase
+/// mode. The variable holds a path, never the passphrase itself: a passphrase in the
+/// environment would be inherited by every program the daemon starts for an agent.
+pub const PASSPHRASE_FILE_ENV: &str = "IMPERIUM_SECRETS_PASSPHRASE_FILE";
 
 const FORMAT_VERSION: u32 = 1;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 24;
 const SALT_LEN: usize = 16;
+/// What a file's recorded Argon2id cost may be, checked before deriving anything: a hostile or
+/// corrupt file must not be able to ask for 4 TiB of memory.
+const MIN_MEMORY_KIB: u32 = 8 * 1024;
+const MAX_MEMORY_KIB: u32 = 1024 * 1024;
+const MAX_ITERATIONS: u32 = 10;
+const MAX_LANES: u32 = 8;
 /// Argon2id cost for new passphrase files (the cost of an existing file is read from it).
 const DEFAULT_KDF: KdfCost = KdfCost {
     memory_kib: 64 * 1024,
@@ -67,6 +76,7 @@ enum KdfHeader {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Envelope {
     version: u32,
     kdf: KdfHeader,
@@ -125,15 +135,49 @@ impl fmt::Debug for FileSecrets {
 
 impl FileSecrets {
     /// The store for these paths: `secrets.enc` and `secrets.key` in the data directory, in
-    /// passphrase mode when [`PASSPHRASE_ENV`] is set and not empty.
-    pub fn for_paths(paths: &Paths) -> Self {
-        let source = match std::env::var(PASSPHRASE_ENV) {
-            Ok(passphrase) if !passphrase.is_empty() => {
-                KeySource::Passphrase(Arc::new(Zeroizing::new(passphrase)))
+    /// passphrase mode when [`PASSPHRASE_FILE_ENV`] names a file holding the passphrase.
+    pub fn for_paths(paths: &Paths) -> Result<Self, SecretError> {
+        let passphrase_file = std::env::var_os(PASSPHRASE_FILE_ENV)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        FileSecrets::for_paths_with(paths, passphrase_file.as_deref())
+    }
+
+    /// Like [`FileSecrets::for_paths`] with the passphrase file given rather than read from the
+    /// environment.
+    pub fn for_paths_with(
+        paths: &Paths,
+        passphrase_file: Option<&Path>,
+    ) -> Result<Self, SecretError> {
+        let source = match passphrase_file {
+            Some(file) => {
+                let bytes = read_private_file(file)?.ok_or_else(|| {
+                    file_error(format!(
+                        "the passphrase file {} does not exist",
+                        file.display()
+                    ))
+                })?;
+                let text = std::str::from_utf8(&bytes).map_err(|_| {
+                    file_error(format!(
+                        "the passphrase file {} is not UTF-8",
+                        file.display()
+                    ))
+                })?;
+                let passphrase = text.trim_end_matches(['\r', '\n']);
+                if passphrase.is_empty() {
+                    return Err(file_error(format!(
+                        "the passphrase file {} is empty",
+                        file.display()
+                    )));
+                }
+                KeySource::Passphrase(Arc::new(Zeroizing::new(passphrase.to_string())))
             }
-            _ => KeySource::KeyFile(paths.data_dir().join("secrets.key")),
+            None => KeySource::KeyFile(paths.data_dir().join("secrets.key")),
         };
-        FileSecrets::new(paths.data_dir().join("secrets.enc"), source)
+        Ok(FileSecrets::new(
+            paths.data_dir().join("secrets.enc"),
+            source,
+        ))
     }
 
     pub fn new(path: PathBuf, source: KeySource) -> Self {
@@ -149,7 +193,7 @@ impl FileSecrets {
     #[cfg(test)]
     fn with_test_cost(mut self) -> Self {
         self.cost = KdfCost {
-            memory_kib: 8,
+            memory_kib: MIN_MEMORY_KIB,
             iterations: 1,
             lanes: 1,
         };
@@ -180,11 +224,25 @@ impl FileSecrets {
         let _guard = self.lock()?;
         let mut map = self.read()?;
         let mut moved = 0;
+        let mut dropped = false;
         let mut failure = None;
         for (name, value) in map.clone() {
             let Ok(secret_name) = name.parse::<SecretName>() else {
                 continue;
             };
+            // A value the target already holds is newer than this copy: keep it, drop ours.
+            let stale = match target.load(&secret_name) {
+                Ok(held) => held.is_some(),
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            };
+            if stale {
+                map.remove(&name);
+                dropped = true;
+                continue;
+            }
             match target.store(&secret_name, &value) {
                 Ok(()) => {
                     map.remove(&name);
@@ -196,7 +254,7 @@ impl FileSecrets {
                 }
             }
         }
-        if moved > 0 {
+        if moved > 0 || dropped {
             self.commit(&map)?;
         }
         match failure {
@@ -210,10 +268,14 @@ impl FileSecrets {
             create_private_dir(parent)?;
         }
         let lock_path = self.path.with_extension("lock");
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
+        let mut options = fs::OpenOptions::new();
+        options.create(true).truncate(false).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
             .open(&lock_path)
             .map_err(|error| io_error("lock", &lock_path, &error))?;
         file.lock()
@@ -229,12 +291,7 @@ impl FileSecrets {
             }
             Err(error) => return Err(io_error("read", &self.path, &error)),
         };
-        let envelope: Envelope = serde_json::from_str(&text).map_err(|error| {
-            file_error(format!(
-                "{} is not a valid secret file: {error}",
-                self.path.display()
-            ))
-        })?;
+        let envelope = parse_envelope(&text, &self.path)?;
         if envelope.version != FORMAT_VERSION {
             return Err(file_error(format!(
                 "{} has format version {}, which this build cannot read",
@@ -315,8 +372,7 @@ impl FileSecrets {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(io_error("read", &self.path, &error)),
         };
-        let envelope: Envelope = serde_json::from_str(&text)
-            .map_err(|error| file_error(format!("the secret file is not valid: {error}")))?;
+        let envelope = parse_envelope(&text, &self.path)?;
         Ok(Some(envelope.kdf))
     }
 
@@ -361,10 +417,10 @@ impl FileSecrets {
                 Ok(key)
             }
             (KeySource::KeyFile(_), KdfHeader::Argon2id { .. }) => Err(file_error(format!(
-                "the secret file is encrypted with a passphrase; set {PASSPHRASE_ENV} to open it"
+                "the secret file is encrypted with a passphrase; set {PASSPHRASE_FILE_ENV} to open it"
             ))),
             (KeySource::Passphrase(_), KdfHeader::Keyfile) => Err(file_error(format!(
-                "the secret file is encrypted with a key file; unset {PASSPHRASE_ENV} to open it"
+                "the secret file is encrypted with a key file; unset {PASSPHRASE_FILE_ENV} to open it"
             ))),
         }
     }
@@ -383,11 +439,40 @@ impl FileSecrets {
     }
 }
 
+/// Parses the file strictly: no unknown or extra fields anywhere, including the KDF header (a
+/// key-file header carries nothing, a passphrase header carries exactly a salt and a cost).
+fn parse_envelope(text: &str, path: &Path) -> Result<Envelope, SecretError> {
+    let invalid = |error: &dyn fmt::Display| {
+        file_error(format!(
+            "{} is not a valid secret file: {error}",
+            path.display()
+        ))
+    };
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|e| invalid(&e))?;
+    let envelope: Envelope = serde_json::from_value(value.clone()).map_err(|e| invalid(&e))?;
+    let canonical = serde_json::to_value(&envelope.kdf).map_err(|e| invalid(&e))?;
+    if value.get("kdf") != Some(&canonical) {
+        return Err(invalid(
+            &"the key derivation header has missing or extra fields",
+        ));
+    }
+    Ok(envelope)
+}
+
 fn derive_key(
     passphrase: &[u8],
     salt: &[u8],
     cost: KdfCost,
 ) -> Result<Zeroizing<[u8; KEY_LEN]>, SecretError> {
+    let in_bounds = (MIN_MEMORY_KIB..=MAX_MEMORY_KIB).contains(&cost.memory_kib)
+        && (1..=MAX_ITERATIONS).contains(&cost.iterations)
+        && (1..=MAX_LANES).contains(&cost.lanes)
+        && (8..=64).contains(&salt.len());
+    if !in_bounds {
+        return Err(file_error(
+            "the secret file's key settings are outside the allowed range (memory 8 MiB to 1 GiB, 1 to 10 passes, 1 to 8 lanes)",
+        ));
+    }
     let params = Params::new(cost.memory_kib, cost.iterations, cost.lanes, Some(KEY_LEN)).map_err(
         |error| {
             file_error(format!(
@@ -403,9 +488,8 @@ fn derive_key(
 }
 
 fn read_key_file(path: &Path, may_create: bool) -> Result<Zeroizing<[u8; KEY_LEN]>, SecretError> {
-    match fs::read(path).map(Zeroizing::new) {
-        Ok(bytes) => {
-            check_private(path)?;
+    match read_private_file(path)? {
+        Some(bytes) => {
             let key: [u8; KEY_LEN] = bytes[..].try_into().map_err(|_| {
                 file_error(format!(
                     "{} is not a valid key file (expected {KEY_LEN} bytes)",
@@ -414,19 +498,17 @@ fn read_key_file(path: &Path, may_create: bool) -> Result<Zeroizing<[u8; KEY_LEN
             })?;
             Ok(Zeroizing::new(key))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if !may_create {
-                return Err(file_error(format!(
-                    "the key file {} is missing, so the existing secrets cannot be decrypted; restore it from a backup",
-                    path.display()
-                )));
-            }
+        None if !may_create => Err(file_error(format!(
+            "the key file {} is missing, so the existing secrets cannot be decrypted; restore it from a backup",
+            path.display()
+        ))),
+        None => {
             let mut key = Zeroizing::new([0u8; KEY_LEN]);
             OsRng.fill_bytes(&mut key[..]);
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|e| io_error("create", parent, &e))?;
+                create_private_dir(parent)?;
             }
-            match open_private(path, true) {
+            match open_private(path) {
                 Ok(mut file) => {
                     file.write_all(&key[..])
                         .and_then(|()| file.sync_all())
@@ -440,22 +522,58 @@ fn read_key_file(path: &Path, may_create: bool) -> Result<Zeroizing<[u8; KEY_LEN
                 Err(error) => Err(io_error("create", path, &error)),
             }
         }
-        Err(error) => Err(io_error("read", path, &error)),
     }
 }
 
-/// Refuses a key file other users can read (like ssh does for private keys). Windows has no
-/// mode bits; the key file inherits the per-user profile folder's access list.
+/// Reads a small file that must be private: not a symbolic link, a regular file, and (on Unix)
+/// unreadable by other users, judged on the opened handle rather than the path so it cannot be
+/// swapped in between. `None` when it does not exist.
+fn read_private_file(path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, SecretError> {
+    use std::io::Read as _;
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(file_error(format!(
+                "{} is a symbolic link; refusing to follow it",
+                path.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error("inspect", path, &error)),
+    }
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error("read", path, &error)),
+    };
+    let meta = file
+        .metadata()
+        .map_err(|error| io_error("inspect", path, &error))?;
+    if !meta.is_file() {
+        return Err(file_error(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    check_private(path, &meta)?;
+    let mut bytes = Zeroizing::new(Vec::new());
+    (&mut file)
+        .take(4096)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error("read", path, &error))?;
+    Ok(Some(bytes))
+}
+
+/// Refuses a file other users can read (like ssh does for private keys). Windows has no mode
+/// bits; there the file inherits the per-user profile folder's access list (see the docs for
+/// shared `IMPERIUM_HOME` folders).
 #[cfg(unix)]
-fn check_private(path: &Path) -> Result<(), SecretError> {
+fn check_private(path: &Path, meta: &fs::Metadata) -> Result<(), SecretError> {
     use std::os::unix::fs::PermissionsExt;
-    let mode = fs::metadata(path)
-        .map_err(|error| io_error("inspect", path, &error))?
-        .permissions()
-        .mode();
+    let mode = meta.permissions().mode();
     if mode & 0o077 != 0 {
         return Err(file_error(format!(
-            "the key file {} has mode {:o}, so other users could read it; run `chmod 600` on it",
+            "{} has mode {:o}, so other users could read it; run `chmod 600` on it",
             path.display(),
             mode & 0o777
         )));
@@ -464,19 +582,15 @@ fn check_private(path: &Path) -> Result<(), SecretError> {
 }
 
 #[cfg(not(unix))]
-fn check_private(_path: &Path) -> Result<(), SecretError> {
+fn check_private(_path: &Path, _meta: &fs::Metadata) -> Result<(), SecretError> {
     Ok(())
 }
 
-/// Opens a file only its owner can read (mode `0600` on Unix).
-fn open_private(path: &Path, must_be_new: bool) -> std::io::Result<fs::File> {
+/// Creates a new file only its owner can read (mode `0600` on Unix), failing if the path
+/// exists, symbolic links included.
+fn open_private(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
-    options.write(true);
-    if must_be_new {
-        options.create_new(true);
-    } else {
-        options.create(true).truncate(true);
-    }
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -485,13 +599,26 @@ fn open_private(path: &Path, must_be_new: bool) -> std::io::Result<fs::File> {
     options.open(path)
 }
 
+/// Replaces `path` with `bytes` through a new, randomly named, owner-only temporary file, and
+/// syncs the folder so the rename survives a crash.
 fn write_private_atomically(path: &Path, bytes: &[u8]) -> Result<(), SecretError> {
-    let temp = path.with_extension("tmp");
+    let mut suffix = [0u8; 8];
+    OsRng.fill_bytes(&mut suffix);
+    let suffix: String = suffix.iter().map(|byte| format!("{byte:02x}")).collect();
+    let temp = path.with_extension(format!("{suffix}.tmp"));
     let write = || -> std::io::Result<()> {
-        let mut file = open_private(&temp, false)?;
+        let mut file = open_private(&temp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        fs::rename(&temp, path)
+        drop(file);
+        fs::rename(&temp, path)?;
+        #[cfg(unix)]
+        {
+            if let Some(parent) = path.parent() {
+                fs::File::open(parent)?.sync_all()?;
+            }
+        }
+        Ok(())
     };
     write().map_err(|error| {
         let _ = fs::remove_file(&temp);
@@ -499,8 +626,18 @@ fn write_private_atomically(path: &Path, bytes: &[u8]) -> Result<(), SecretError
     })
 }
 
+/// Creates the folder (and parents) owner-only on Unix when it does not exist yet.
 fn create_private_dir(path: &Path) -> Result<(), SecretError> {
-    fs::create_dir_all(path).map_err(|error| io_error("create", path, &error))
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(path)
+        .map_err(|error| io_error("create", path, &error))
 }
 
 fn decode(text: &str, what: &str) -> Result<Vec<u8>, SecretError> {
@@ -543,7 +680,9 @@ impl SecretStore for FileSecrets {
     }
 }
 
-/// Which store is holding secrets right now.
+/// Which store is holding secrets. Decided once when the store is opened and then kept: a
+/// keychain that fails later is an error to report, never a reason to start writing secrets to
+/// a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretBackend {
     /// The OS keychain.
@@ -560,29 +699,60 @@ pub struct MigrationReport {
 }
 
 /// The secret store the daemon and the CLI use: the OS keychain when there is one, otherwise the
-/// encrypted file. When the keychain appears later, secrets in the file move into it, one at a
+/// encrypted file. The choice is made once, at [`AutoSecrets::open`], and only on Linux (the only
+/// platform where a keychain can be missing); everywhere else the keychain is the only store.
+/// When a keychain is there at a later start, secrets left in the file move into it, one at a
 /// time as they are read and all at once at [`AutoSecrets::migrate`].
 pub struct AutoSecrets {
     keychain: Arc<dyn SecretStore>,
     file: FileSecrets,
+    backend: SecretBackend,
 }
 
 impl fmt::Debug for AutoSecrets {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AutoSecrets")
+            .field("backend", &self.backend)
             .field("file", &self.file)
             .finish_non_exhaustive()
     }
 }
 
+/// Decides which store to use: on Linux, the keychain when reading a name nobody writes does not
+/// report the keychain as missing; on every other platform, always the keychain.
+pub fn detect_backend(keychain: &dyn SecretStore) -> SecretBackend {
+    if !cfg!(target_os = "linux") {
+        return SecretBackend::Keychain;
+    }
+    match keychain.load(&SecretName::from_valid("imperium.keychain-probe")) {
+        Err(error) if error.is_keychain_unavailable() => SecretBackend::EncryptedFile,
+        _ => SecretBackend::Keychain,
+    }
+}
+
 impl AutoSecrets {
-    /// The OS keychain with the encrypted file for these paths as the fallback.
-    pub fn open(paths: &Paths) -> Self {
-        AutoSecrets::with_parts(Arc::new(KeychainSecrets), FileSecrets::for_paths(paths))
+    /// The OS keychain with the encrypted file for these paths as the fallback, decided now.
+    /// Fails when passphrase mode is asked for and the passphrase file cannot be read.
+    pub fn open(paths: &Paths) -> Result<Self, SecretError> {
+        let keychain = Arc::new(KeychainSecrets);
+        let backend = detect_backend(keychain.as_ref());
+        Ok(AutoSecrets::with_parts(
+            keychain,
+            FileSecrets::for_paths(paths)?,
+            backend,
+        ))
     }
 
-    pub fn with_parts(keychain: Arc<dyn SecretStore>, file: FileSecrets) -> Self {
-        AutoSecrets { keychain, file }
+    pub fn with_parts(
+        keychain: Arc<dyn SecretStore>,
+        file: FileSecrets,
+        backend: SecretBackend,
+    ) -> Self {
+        AutoSecrets {
+            keychain,
+            file,
+            backend,
+        }
     }
 
     /// The encrypted file's location.
@@ -590,17 +760,16 @@ impl AutoSecrets {
         self.file.path()
     }
 
-    /// Whether the keychain works, found by reading a name no one writes.
+    /// The store in use, as decided at open.
     pub fn backend(&self) -> SecretBackend {
-        match self.keychain.load(&probe_name()) {
-            Err(error) if error.is_keychain_unavailable() => SecretBackend::EncryptedFile,
-            _ => SecretBackend::Keychain,
-        }
+        self.backend
     }
 
-    /// Moves every secret in the encrypted file into the keychain, when the keychain is there.
+    /// Moves every secret in the encrypted file into the keychain, when the keychain is the
+    /// store in use. A secret the keychain already holds is never overwritten: the file's copy
+    /// is stale and is dropped.
     pub fn migrate(&self) -> Result<MigrationReport, SecretError> {
-        if !self.file.exists() || self.backend() == SecretBackend::EncryptedFile {
+        if self.backend != SecretBackend::Keychain || !self.file.exists() {
             return Ok(MigrationReport::default());
         }
         let moved = self.file.drain_into(self.keychain.as_ref())?;
@@ -609,62 +778,66 @@ impl AutoSecrets {
 
     /// The warning to show wherever the fallback is in use.
     pub fn fallback_warning(&self) -> String {
-        let how = if std::env::var_os(PASSPHRASE_ENV).is_some_and(|value| !value.is_empty()) {
-            format!("under a key derived from ${PASSPHRASE_ENV} (Argon2id)")
+        let how = if std::env::var_os(PASSPHRASE_FILE_ENV).is_some_and(|value| !value.is_empty()) {
+            "under a key derived from the passphrase file (Argon2id)"
         } else {
-            "under a key file next to it, which anyone who can read your files can use".to_string()
+            "under a key file next to it, which any program running as you can read"
         };
         format!(
-            "no OS keychain is available, so secrets are kept in {} encrypted {how}; this is weaker than a keychain. Secrets move into the keychain by themselves once one is available",
+            "no OS keychain is available, so secrets are kept in {} encrypted {how}; this is weaker than a keychain. They move into the keychain at the next start once one is available",
             self.file.path().display()
         )
     }
 }
 
-fn probe_name() -> SecretName {
-    SecretName::from_valid("imperium.keychain-probe")
-}
-
 impl SecretStore for AutoSecrets {
     fn load(&self, name: &SecretName) -> Result<Option<String>, SecretError> {
-        match self.keychain.load(name) {
-            Ok(Some(value)) => Ok(Some(value)),
-            Ok(None) if self.file.exists() => {
-                // The keychain works but this secret is still in the file: move it across.
-                let Some(value) = self.file.load(name)? else {
-                    return Ok(None);
-                };
-                if self.keychain.store(name, &value).is_ok() {
-                    let _ = self.file.delete(name);
+        if self.backend == SecretBackend::EncryptedFile {
+            return self.file.load(name);
+        }
+        match self.keychain.load(name)? {
+            Some(value) => Ok(Some(value)),
+            None if self.file.exists() => match self.file.load(name) {
+                Ok(Some(value)) => {
+                    // Left over from before the keychain: move it across.
+                    if self.keychain.store(name, &value).is_ok()
+                        && let Err(error) = self.file.delete(name)
+                    {
+                        tracing::warn!(%error, secret = %name, "could not remove a secret from the encrypted file after moving it to the keychain");
+                    }
+                    Ok(Some(value))
                 }
-                Ok(Some(value))
-            }
-            Ok(None) => Ok(None),
-            Err(error) if error.is_keychain_unavailable() => self.file.load(name),
-            Err(error) => Err(error),
+                Ok(None) => Ok(None),
+                Err(error) => {
+                    // The keychain is the store in use; an unreadable leftover file does not
+                    // make a secret that is not in the keychain exist.
+                    tracing::warn!(%error, secret = %name, "the encrypted secret file could not be read, so the secret is treated as absent");
+                    Ok(None)
+                }
+            },
+            None => Ok(None),
         }
     }
 
     fn store(&self, name: &SecretName, value: &str) -> Result<(), SecretError> {
-        match self.keychain.store(name, value) {
-            Ok(()) => {
-                // Drop an older copy in the file so it cannot come back after a delete.
-                if self.file.exists() {
-                    let _ = self.file.delete(name);
-                }
-                Ok(())
-            }
-            Err(error) if error.is_keychain_unavailable() => self.file.store(name, value),
-            Err(error) => Err(error),
+        if self.backend == SecretBackend::EncryptedFile {
+            return self.file.store(name, value);
         }
+        self.keychain.store(name, value)?;
+        // Drop an older copy in the file so it cannot come back after a delete.
+        if self.file.exists()
+            && let Err(error) = self.file.delete(name)
+        {
+            tracing::warn!(%error, secret = %name, "a stale copy of this secret is still in the encrypted file and could not be removed");
+        }
+        Ok(())
     }
 
     fn delete(&self, name: &SecretName) -> Result<bool, SecretError> {
-        let in_keychain = match self.keychain.delete(name) {
-            Ok(existed) => existed,
-            Err(error) if error.is_keychain_unavailable() => false,
-            Err(error) => return Err(error),
-        };
+        if self.backend == SecretBackend::EncryptedFile {
+            return self.file.delete(name);
+        }
+        let in_keychain = self.keychain.delete(name)?;
         let in_file = if self.file.exists() {
             self.file.delete(name)?
         } else {
@@ -705,7 +878,7 @@ mod tests {
         )))
     }
 
-    /// A keychain that is absent until switched on, as headless Linux gaining a Secret Service.
+    /// A keychain that fails every call until switched on.
     #[derive(Debug, Default)]
     struct FakeKeychain {
         on: AtomicBool,
@@ -740,13 +913,13 @@ mod tests {
         }
     }
 
-    fn fake(dir: &Path) -> (Arc<FakeKeychain>, AutoSecrets) {
-        let keychain = Arc::new(FakeKeychain::default());
-        let auto = AutoSecrets::with_parts(
+    /// Opens a store over the fake keychain with the backend pinned, as a daemon start would.
+    fn open(dir: &Path, keychain: &Arc<FakeKeychain>, backend: SecretBackend) -> AutoSecrets {
+        AutoSecrets::with_parts(
             Arc::new(SharedKeychain(keychain.clone())),
             key_file_store(dir),
-        );
-        (keychain, auto)
+            backend,
+        )
     }
 
     #[test]
@@ -780,33 +953,47 @@ mod tests {
             again.store(&name("x"), ""),
             Err(SecretError::EmptyValue)
         ));
+        // No temporary file is left behind.
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|file| file.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[cfg(unix)]
     #[test]
-    fn the_key_and_secret_files_are_owner_only() {
+    fn the_key_secret_and_lock_files_are_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        key_file_store(dir.path())
-            .store(&name("a"), "value")
-            .unwrap();
-        for file in ["secrets.key", "secrets.enc"] {
-            let mode = fs::metadata(dir.path().join(file))
-                .unwrap()
-                .permissions()
-                .mode();
+        let data = dir.path().join("data");
+        key_file_store(&data).store(&name("a"), "value").unwrap();
+        for file in ["secrets.key", "secrets.enc", "secrets.lock"] {
+            let mode = fs::metadata(data.join(file)).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "{file}");
         }
-        fs::set_permissions(
-            dir.path().join("secrets.key"),
-            fs::Permissions::from_mode(0o644),
-        )
-        .unwrap();
-        let error = key_file_store(dir.path())
+        let mode = fs::metadata(&data).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "a data folder made for the secrets");
+        fs::set_permissions(data.join("secrets.key"), fs::Permissions::from_mode(0o644)).unwrap();
+        let error = key_file_store(&data)
             .load(&name("a"))
             .unwrap_err()
             .to_string();
         assert!(error.contains("chmod 600"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_key_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = key_file_store(dir.path());
+        store.store(&name("a"), "value").unwrap();
+        let real = dir.path().join("real.key");
+        fs::rename(dir.path().join("secrets.key"), &real).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("secrets.key")).unwrap();
+        let error = store.load(&name("a")).unwrap_err().to_string();
+        assert!(error.contains("symbolic link"), "{error}");
     }
 
     #[test]
@@ -853,6 +1040,28 @@ mod tests {
     }
 
     #[test]
+    fn the_passphrase_comes_from_a_file_never_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let phrase = dir.path().join("phrase");
+        fs::write(&phrase, "correct horse\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&phrase, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let store = FileSecrets::for_paths_with(&paths, Some(&phrase)).unwrap();
+        assert!(matches!(store.source, KeySource::Passphrase(_)));
+        let default = FileSecrets::for_paths_with(&paths, None).unwrap();
+        assert!(matches!(default.source, KeySource::KeyFile(_)));
+        // The passphrase itself is never in the debug output.
+        assert!(!format!("{store:?}").contains("correct horse"));
+        fs::write(&phrase, "\n").unwrap();
+        assert!(FileSecrets::for_paths_with(&paths, Some(&phrase)).is_err());
+        assert!(FileSecrets::for_paths_with(&paths, Some(&dir.path().join("none"))).is_err());
+    }
+
+    #[test]
     fn the_wrong_kind_of_key_is_explained() {
         let dir = tempfile::tempdir().unwrap();
         passphrase_store(dir.path(), "pw")
@@ -862,7 +1071,7 @@ mod tests {
             .load(&name("a"))
             .unwrap_err()
             .to_string();
-        assert!(error.contains(PASSPHRASE_ENV), "{error}");
+        assert!(error.contains(PASSPHRASE_FILE_ENV), "{error}");
         let other = tempfile::tempdir().unwrap();
         key_file_store(other.path()).store(&name("a"), "v").unwrap();
         let error = passphrase_store(other.path(), "pw")
@@ -898,6 +1107,70 @@ mod tests {
     }
 
     #[test]
+    fn a_hostile_key_derivation_cost_is_refused_before_deriving() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = passphrase_store(dir.path(), "pw");
+        store.store(&name("a"), "v").unwrap();
+        let path = dir.path().join("secrets.enc");
+        let original: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        for (field, value) in [
+            ("memory_kib", 4_294_967_295u64),
+            ("memory_kib", 1024),
+            ("iterations", 1000),
+            ("iterations", 0),
+            ("lanes", 100),
+        ] {
+            let mut envelope = original.clone();
+            envelope["kdf"][field] = value.into();
+            fs::write(&path, envelope.to_string()).unwrap();
+            // A fresh store has no cached key, so this would otherwise derive.
+            let started = std::time::Instant::now();
+            let error = passphrase_store(dir.path(), "pw")
+                .load(&name("a"))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("allowed range"), "{field}={value}: {error}");
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        }
+    }
+
+    #[test]
+    fn a_key_file_header_with_extra_fields_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = key_file_store(dir.path());
+        store.store(&name("a"), "v").unwrap();
+        let path = dir.path().join("secrets.enc");
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        envelope["kdf"]["salt"] = "AAAAAAAAAAAAAAAAAAAAAA==".into();
+        fs::write(&path, envelope.to_string()).unwrap();
+        let error = store.load(&name("a")).unwrap_err().to_string();
+        assert!(error.contains("extra fields"), "{error}");
+        // So are extra fields on the file itself.
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        envelope["kdf"].as_object_mut().unwrap().remove("salt");
+        envelope["surprise"] = 1.into();
+        fs::write(&path, envelope.to_string()).unwrap();
+        assert!(store.load(&name("a")).is_err());
+        // A passphrase header missing its salt is rejected too.
+        let other = tempfile::tempdir().unwrap();
+        let pass = passphrase_store(other.path(), "pw");
+        pass.store(&name("a"), "v").unwrap();
+        let path = other.path().join("secrets.enc");
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        envelope["kdf"].as_object_mut().unwrap().remove("salt");
+        fs::write(&path, envelope.to_string()).unwrap();
+        assert!(
+            passphrase_store(other.path(), "pw")
+                .load(&name("a"))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn each_write_uses_a_fresh_nonce() {
         let dir = tempfile::tempdir().unwrap();
         let store = key_file_store(dir.path());
@@ -910,54 +1183,120 @@ mod tests {
     }
 
     #[test]
-    fn auto_secrets_fall_back_to_the_file_without_a_keychain() {
+    fn the_backend_is_decided_once_and_only_on_linux() {
+        let keychain = SharedKeychain(Arc::new(FakeKeychain::default()));
+        let expected = if cfg!(target_os = "linux") {
+            SecretBackend::EncryptedFile
+        } else {
+            SecretBackend::Keychain
+        };
+        assert_eq!(detect_backend(&keychain), expected);
+        keychain.0.on.store(true, Ordering::SeqCst);
+        assert_eq!(detect_backend(&keychain), SecretBackend::Keychain);
+    }
+
+    #[test]
+    fn a_file_backed_store_works_without_touching_the_keychain() {
         let dir = tempfile::tempdir().unwrap();
-        let (_keychain, auto) = fake(dir.path());
-        assert_eq!(auto.backend(), SecretBackend::EncryptedFile);
+        let keychain = Arc::new(FakeKeychain::default());
+        let auto = open(dir.path(), &keychain, SecretBackend::EncryptedFile);
         auto.store(&name("a"), "value").unwrap();
         assert_eq!(auto.load(&name("a")).unwrap().as_deref(), Some("value"));
         assert!(auto.fallback_warning().contains("weaker than a keychain"));
         assert!(auto.delete(&name("a")).unwrap());
+        assert!(!auto.delete(&name("a")).unwrap());
         assert_eq!(auto.load(&name("a")).unwrap(), None);
         assert_eq!(auto.migrate().unwrap(), MigrationReport::default());
     }
 
     #[test]
-    fn secrets_move_into_a_keychain_that_appears_later() {
+    fn a_failing_keychain_is_an_error_and_never_a_reason_to_write_the_file() {
         let dir = tempfile::tempdir().unwrap();
-        let (keychain, auto) = fake(dir.path());
-        auto.store(&name("a"), "one").unwrap();
-        auto.store(&name("b"), "two").unwrap();
-        auto.store(&name("c"), "three").unwrap();
-        assert!(auto.file.exists());
+        let keychain = Arc::new(FakeKeychain::default());
+        let auto = open(dir.path(), &keychain, SecretBackend::Keychain);
+        // The keychain fails (locked, say) after the backend was decided.
+        assert!(auto.store(&name("a"), "value").is_err());
+        assert!(auto.load(&name("a")).is_err());
+        assert!(!dir.path().join("secrets.enc").exists());
+        assert!(!dir.path().join("secrets.key").exists());
+        // A delete during the error reports it rather than "not stored".
+        assert!(auto.delete(&name("a")).is_err());
+    }
+
+    #[test]
+    fn secrets_move_into_a_keychain_found_at_a_later_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let keychain = Arc::new(FakeKeychain::default());
+        let before = open(dir.path(), &keychain, SecretBackend::EncryptedFile);
+        before.store(&name("a"), "one").unwrap();
+        before.store(&name("b"), "two").unwrap();
+        before.store(&name("c"), "three").unwrap();
+        assert!(before.file.exists());
 
         keychain.on.store(true, Ordering::SeqCst);
-        assert_eq!(auto.backend(), SecretBackend::Keychain);
+        // Still file-backed until the next start: nothing moves behind its back.
+        assert_eq!(before.load(&name("a")).unwrap().as_deref(), Some("one"));
+        assert_eq!(keychain.inner.load(&name("a")).unwrap(), None);
+
+        let after = open(dir.path(), &keychain, SecretBackend::Keychain);
         // One secret moves as it is read.
-        assert_eq!(auto.load(&name("a")).unwrap().as_deref(), Some("one"));
+        assert_eq!(after.load(&name("a")).unwrap().as_deref(), Some("one"));
         assert_eq!(
             keychain.inner.load(&name("a")).unwrap().as_deref(),
             Some("one")
         );
-        assert_eq!(auto.file.load(&name("a")).unwrap(), None);
+        assert_eq!(after.file.load(&name("a")).unwrap(), None);
         // The rest move together.
-        assert_eq!(auto.migrate().unwrap(), MigrationReport { moved: 2 });
-        assert!(!auto.file.exists(), "the emptied file is removed");
+        assert_eq!(after.migrate().unwrap(), MigrationReport { moved: 2 });
+        assert!(!after.file.exists(), "the emptied file is removed");
         assert_eq!(
             keychain.inner.load(&name("c")).unwrap().as_deref(),
             Some("three")
         );
+        assert_eq!(after.migrate().unwrap().moved, 0);
+    }
+
+    #[test]
+    fn migration_never_overwrites_a_value_the_keychain_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let keychain = Arc::new(FakeKeychain::default());
+        open(dir.path(), &keychain, SecretBackend::EncryptedFile)
+            .store(&name("a"), "stale")
+            .unwrap();
+        keychain.on.store(true, Ordering::SeqCst);
+        keychain.inner.store(&name("a"), "current").unwrap();
+        let auto = open(dir.path(), &keychain, SecretBackend::Keychain);
         assert_eq!(auto.migrate().unwrap().moved, 0);
+        assert_eq!(
+            keychain.inner.load(&name("a")).unwrap().as_deref(),
+            Some("current")
+        );
+        assert!(!auto.file.exists(), "the stale copy is dropped");
+    }
+
+    #[test]
+    fn an_unreadable_leftover_file_makes_a_missing_secret_absent_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let keychain = Arc::new(FakeKeychain::default());
+        keychain.on.store(true, Ordering::SeqCst);
+        keychain.inner.store(&name("here"), "v").unwrap();
+        fs::write(dir.path().join("secrets.enc"), "not json").unwrap();
+        let auto = open(dir.path(), &keychain, SecretBackend::Keychain);
+        assert_eq!(auto.load(&name("here")).unwrap().as_deref(), Some("v"));
+        assert_eq!(auto.load(&name("missing")).unwrap(), None);
     }
 
     #[test]
     fn a_keychain_write_replaces_a_stale_file_copy() {
         let dir = tempfile::tempdir().unwrap();
-        let (keychain, auto) = fake(dir.path());
-        auto.store(&name("a"), "old").unwrap();
+        let keychain = Arc::new(FakeKeychain::default());
+        open(dir.path(), &keychain, SecretBackend::EncryptedFile)
+            .store(&name("a"), "old")
+            .unwrap();
         keychain.on.store(true, Ordering::SeqCst);
+        let auto = open(dir.path(), &keychain, SecretBackend::Keychain);
         auto.store(&name("a"), "new").unwrap();
-        assert_eq!(auto.file.load(&name("a")).unwrap(), None);
+        assert!(!auto.file.exists());
         assert_eq!(auto.load(&name("a")).unwrap().as_deref(), Some("new"));
         assert!(auto.delete(&name("a")).unwrap());
         assert_eq!(auto.load(&name("a")).unwrap(), None);

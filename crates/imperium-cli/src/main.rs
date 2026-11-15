@@ -1076,7 +1076,7 @@ fn explain(key: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
 }
 
 fn open_secrets() -> anyhow::Result<imperium_config::AutoSecrets> {
-    Ok(imperium_config::AutoSecrets::open(&Paths::from_env()?))
+    Ok(imperium_config::AutoSecrets::open(&Paths::from_env()?)?)
 }
 
 /// Says so when secrets went to the encrypted file because the OS has no keychain.
