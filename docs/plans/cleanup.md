@@ -480,4 +480,3 @@ Where the pull request differs from the plan above, or settled something the pla
   first narrowing commits fail clippy while still compiling, and the desktop section split and
   regroup became green with the fix after them. There was no rebase or force-push. One macOS run
   failed once on a timing assertion in `model_bench`, unrelated to the changes.
-
