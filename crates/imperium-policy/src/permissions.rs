@@ -604,7 +604,9 @@ fn prefix_matches(pattern: &str, words: &[String]) -> bool {
         .all(|(want, word)| glob(want, word, false))
 }
 
-/// The home folder, for `~` in grants and patterns.
+/// The home folder, for `~` in grants and patterns: `HOME`, else `USERPROFILE`, as text; a value
+/// that is blank after trimming counts as unset and non-UTF-8 values are ignored. Not the same as
+/// the workflow crate's `home_dir`, which returns a path and only treats an empty value as unset.
 pub fn home_dir() -> Option<String> {
     ["HOME", "USERPROFILE"]
         .iter()
