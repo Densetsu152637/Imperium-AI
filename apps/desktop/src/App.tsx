@@ -22,7 +22,9 @@ import type {
   ResumePolicy,
   SendMode,
   SessionControlParams,
+  SessionAgentAskParams,
   SessionAgentCancelParams,
+  SessionAgentKnowledgeParams,
   SessionAgentResumeParams,
   SessionSendParams,
   SessionControlResult,
@@ -915,6 +917,29 @@ export function App() {
     });
   };
 
+  /** Keeps a finished subagent as a knowledge agent, or (`topic` null) retires one. */
+  const keepAgent = (agentId: string, topic: string | null): Promise<unknown> => {
+    if (!client || !selected) return Promise.reject(new Error("Not connected to imperium-core."));
+    const params: SessionAgentKnowledgeParams =
+      topic === null
+        ? { session_id: selected, agent_id: agentId, retire: true }
+        : { session_id: selected, agent_id: agentId, topic, retire: false };
+    return client.call("session.agent_knowledge", params).catch((error: unknown) => {
+      report(error);
+      throw error;
+    });
+  };
+
+  /** Asks a knowledge agent a question as the user; the question and its answer arrive as events. */
+  const askAgent = (agentId: string, question: string): Promise<unknown> => {
+    if (!client || !selected) return Promise.reject(new Error("Not connected to imperium-core."));
+    const params: SessionAgentAskParams = { session_id: selected, agent_id: agentId, question };
+    return client.call("session.agent_ask", params).catch((error: unknown) => {
+      report(error);
+      throw error;
+    });
+  };
+
   const respond = (requestId: number, decision: PermissionDecision) => {
     if (!client || !selected) return;
     setSessions((all) => ({ ...all, [selected]: markAnswered(all[selected], requestId) }));
@@ -1227,6 +1252,9 @@ export function App() {
         onAnswer={answer}
         onResume={client ? resumeAgent : undefined}
         onCancel={client ? cancelAgent : undefined}
+        onKeep={client ? keepAgent : undefined}
+        onRetire={client ? (agentId) => keepAgent(agentId, null) : undefined}
+        onAsk={client ? askAgent : undefined}
         onStop={client ? () => stopSession(true) : undefined}
         client={client}
         runtimeInstall={runtimeInstall}
@@ -1294,6 +1322,7 @@ export function App() {
           onOpen={selected ? (agentId) => showAgent(agentId === openAgent ? null : agentId) : undefined}
           onResume={client && selected ? resumeAgent : undefined}
           onCancel={client && selected ? cancelAgent : undefined}
+          onRetire={client && selected ? (agentId) => keepAgent(agentId, null) : undefined}
         />
       ),
     },

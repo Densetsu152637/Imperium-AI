@@ -205,6 +205,44 @@ pub struct SessionAgentKnowledgeResult {
     pub card: Option<crate::session::KnowledgeCard>,
 }
 
+// `session.agent_ask`: the user asks a knowledge agent a question (docs/21-knowledge-agents.md),
+// as an agent does with `ask_agent`: it runs in a fork, may time out (`timeout_s`, default 300, at
+// most 600), is journalled as `question_asked` and `question_answered`, and answers with the
+// outcome and the answer text (the reason when it was not answered).
+#[derive(Debug)]
+pub struct SessionAgentAsk;
+
+impl Method for SessionAgentAsk {
+    const NAME: &'static str = "session.agent_ask";
+    type Params = SessionAgentAskParams;
+    type Result = SessionAgentAskResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentAskParams {
+    pub session_id: String,
+    // A knowledge agent's id or title.
+    pub agent_id: String,
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub timeout_s: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentAskResult {
+    pub question_id: String,
+    pub outcome: crate::session::QuestionOutcome,
+    pub answer: String,
+    // The marks the answer carries: its sources changed since they were read, and it may hold
+    // web material or tool results.
+    pub degraded: bool,
+    pub untrusted_web: bool,
+    pub untrusted_tools: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionAgentsParams {

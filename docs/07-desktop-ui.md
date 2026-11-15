@@ -68,6 +68,19 @@ subagent, the context breakdown's agent list, and "Continued <title> on …" not
 title. While the session is stopped, running subagents show as `paused`. A paused subagent's ⋯
 menu also has **Resume** and **Cancel** (`session.agent_cancel`); archived sessions offer neither.
 
+A subagent kept as a [knowledge agent](21-knowledge-agents.md) shows a **Knowledge** badge after its
+title (its topic and status on hover), and its ⋯ menu has **Retire knowledge agent**; a finished one
+that is not kept has **Keep as knowledge…**, which opens its view. In the view
+(`panels/KnowledgeSection.tsx`) a finished subagent offers **Keep as knowledge**, which asks what it
+knows about and then keeps it (the daemon refuses writers, single-call and chunk agents and
+conversations that leave no room for answers, and the reason is shown). A kept agent's view lists
+its card (topic, model, what it read with the changed files marked, the share of its files that
+changed, its context, what one question costs, how much of the last one was cached, and any web
+pages or tool results in its context), its questions newest first with who asked, how each ended,
+what it cost and the answer (marked when degraded or possibly holding outside material), an
+**Ask** box that asks it as you (`session.agent_ask`; the question and answer appear in the list),
+and **Retire**. The cards and questions come from the session's events (`knowledge.ts`).
+
 Choosing a line (or the subagent's title in the transcript) opens its log in the main session
 panel in place of the root's transcript; choosing it again, the breadcrumb's **←
 <session title>**, or Escape outside a text field goes back (`panels/AgentView.tsx`). The log is

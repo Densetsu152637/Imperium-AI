@@ -7047,3 +7047,129 @@ button.select.open .select-chevron {
   gap: 0.15rem;
   font-size: 0.8rem;
 }
+
+/* Knowledge agents (docs/21-knowledge-agents.md): the badge on an agent's row and the section in its view. */
+.badge.knowledge {
+  flex: none;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.badge.answered {
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  color: var(--ok);
+}
+
+.badge.timeout,
+.badge.cancelled,
+.badge.refused {
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  color: var(--danger);
+}
+
+.knowledge {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.5rem 1rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 0.85rem;
+}
+
+.knowledge-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.knowledge-topic {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+}
+
+.knowledge-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.75rem;
+  margin: 0;
+}
+
+.knowledge-facts > div {
+  display: contents;
+}
+
+.knowledge-facts dt {
+  color: var(--muted);
+}
+
+.knowledge-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-sources ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.knowledge-sources li.stale {
+  color: var(--warn);
+}
+
+.knowledge-questions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.knowledge-questions-title {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.knowledge-question-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.knowledge-question-text,
+.knowledge-answer {
+  margin: 0.15rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-answer {
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--border);
+}
+
+.knowledge-ask,
+.knowledge-keep {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.knowledge-ask input,
+.knowledge-keep input {
+  flex: 1;
+  min-width: 0;
+}
+
+.knowledge-keep label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}

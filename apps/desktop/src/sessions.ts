@@ -20,6 +20,7 @@ import type {
 import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
 import { taskTitle } from "./agentView";
+import { applyKnowledge, emptyKnowledge, type KnowledgeState } from "./knowledge";
 import { modelAliases, modelName } from "./modelNames";
 import { applyBrowserView, applyPreviewEvent, type BrowserDriver, type BrowserMirror } from "./preview";
 import { applySent, applyWait, type Sent, type Waits } from "./waits";
@@ -176,6 +177,8 @@ export type SessionState = {
   waits: Waits;
   /** A message this window sent that has not started a turn yet. */
   sent: Sent | null;
+  /** Knowledge agents' cards and the questions asked of them (knowledge.ts). */
+  knowledge: KnowledgeState;
 };
 
 /** The daemon's default, for sessions this window creates before their summary arrives. */
@@ -207,6 +210,7 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   eventCount: 0,
   waits: {},
   sent: null,
+  knowledge: emptyKnowledge,
 });
 
 /** A pause time as `HH:MM`, with the weekday when it is not today. */
@@ -579,6 +583,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     eventCount: eventIndex + 1,
     waits: applyWait(state.waits ?? {}, agentEvent, now),
     sent: applySent(state.sent ?? null, agentEvent),
+    knowledge: applyKnowledge(state.knowledge ?? emptyKnowledge, event),
   };
 }
 

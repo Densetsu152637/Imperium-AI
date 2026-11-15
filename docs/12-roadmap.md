@@ -517,7 +517,7 @@ and `environments.agent_update` (protocol 0.28)
     machine's hardware, download progress and resume on the card itself, checksum verification,
     making the downloaded model the default (or assigning Emperor and Consul to their roles),
     and offering the suggestion again from the Local models panel.
-45. **Knowledge agents** (stages 1 and 2 implemented). Subagents ask questions of other subagents: a research
+45. **Knowledge agents** (implemented). Subagents ask questions of other subagents: a research
     subagent that has loaded context (files, specifications, pages) is kept as a knowledge agent
     with a card (topic, sources, size), and the root and other subagents call `ask_agent`
     instead of searching and reading the same material themselves. Each question runs in an
@@ -534,12 +534,15 @@ and `environments.agent_update` (protocol 0.28)
     Protocol 0.38 (`ask_agent`, `list_knowledge_agents`, `keep_as_knowledge`,
     `knowledge_changed`/`question_asked`/`question_answered` events, `session.agent_knowledge`).
     Three stages: engine and contract; local residency; clients and prompts
-    ([21](21-knowledge-agents.md), [03](03-agent-engine.md#knowledge-agents-stages-1-and-2-implemented)).
+    ([21](21-knowledge-agents.md), [03](03-agent-engine.md#knowledge-agents-implemented)).
     Stage 1 is built (protocol 0.38, the tools, forks, framing, events, `session.agent_knowledge`,
     the K8 routing preference and the `[knowledge]` settings). Stage 2, local residency, is built
     too (the `kept` presence, the slot saved after every fork, the restore rule, the slot cache
-    share, an asker keeping its slot, and the hosted cache-lifetime rule); the clients, prompts and
-    eval case are not.
+    share, an asker keeping its slot, and the hosted cache-lifetime rule), and so is stage 3 (protocol
+    0.39: the Agents panel's badge, card details, question list, *Ask* box, *Keep as knowledge* and
+    *Retire*; `/agents`, `/ask`, `/keep` and `/retire` in `imperium chat`; the prompt lines, `brief.md`,
+    Emperor's root prompt and the evaluation cases). Not built: the acceptance measurement, phone
+    access, fork streaming events and `ask_agent` in `mcp-serve`.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
