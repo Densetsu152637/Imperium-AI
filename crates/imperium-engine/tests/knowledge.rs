@@ -96,12 +96,14 @@ fn last_content(body: &Value) -> &str {
 
 fn is_fork(body: &Value) -> bool {
     is_subagent(body)
-        && messages(body).last().is_some_and(|message| {
-            message["role"] == "user"
-                && message["content"]
+        && messages(body)
+            .iter()
+            .rfind(|message| message["role"] == "user")
+            .is_some_and(|message| {
+                message["content"]
                     .as_str()
                     .is_some_and(|content| content.starts_with("This question comes from"))
-        })
+            })
 }
 
 /// The tool results after the last user message, in order.
@@ -171,6 +173,10 @@ async fn reply(lab: &Lab, body: &Value) -> String {
                 None => call(&id, "ask_agent", &arguments),
                 Some(result) => text(&format!("asker heard: {result}")),
             };
+        }
+        // A single_call subagent is offered no tools and makes its one reply.
+        if body["tools"].as_array().is_none_or(Vec::is_empty) {
+            return text("one reply");
         }
         // A research subagent, or a chunk agent.
         let mut steps = vec![("read_file", json!({"path": "a.txt"}))];
@@ -479,6 +485,23 @@ fn ask(agent: &str, question: &str) -> String {
         "tool ask_agent {}",
         json!({"agent": agent, "question": question})
     )
+}
+
+/// A table with an ordinary row first and Emperor second: ranking alone would pick the first.
+fn catalog_with_emperor(url: &str) -> Vec<CatalogModel> {
+    let row = |id: &str, spec: &str, name: &str| CatalogModel {
+        id: id.into(),
+        model: model(url, spec, name, None),
+        tier: imperium_config::Tier::Standard,
+        location: imperium_config::Location::Cloud,
+        tags: Vec::new(),
+        named_only: false,
+        cpu_lane: false,
+    };
+    vec![
+        row("plain", "fake:m", "m"),
+        row("emperor", "fake:emperor", "emperor"),
+    ]
 }
 
 // ---- the tests ----
@@ -1190,8 +1213,8 @@ async fn a_chunk_agent_is_not_kept() {
 struct Shut(AtomicBool);
 
 impl BudgetGate for Shut {
-    fn check(&self, _spec: &str) -> BudgetVerdict {
-        if self.0.load(Ordering::SeqCst) {
+    fn check(&self, spec: &str) -> BudgetVerdict {
+        if spec == "fake:emperor" && self.0.load(Ordering::SeqCst) {
             BudgetVerdict::Blocked("the daily budget is used up".into())
         } else {
             BudgetVerdict::Go
@@ -1213,6 +1236,7 @@ async fn a_blocked_budget_fails_the_question_and_usage_lands_on_the_knowledge_ag
         dir.path(),
         Options {
             gate: Some(Arc::clone(&shut) as Arc<dyn BudgetGate>),
+            catalog: catalog_with_emperor(&url),
             ..Options::default()
         },
     );
@@ -1315,6 +1339,8 @@ async fn knowledge_agents_survive_a_restart_and_forks_leave_no_records() {
             ..Options::default()
         },
     );
+    let mut events = resumed.subscribe();
+    say(&resumed, &mut events, "hello").await;
     let restored = card(&resumed, "t1").expect("the card comes back with the session");
     assert_eq!(
         (restored.topic.as_str(), restored.questions),
@@ -1342,20 +1368,11 @@ async fn a_subagent_spawned_with_knowledge_goes_to_emperor_and_keeps_its_model()
     let url = serve(Arc::clone(&lab)).await;
     let dir = tempfile::tempdir().unwrap();
     files(dir.path());
-    let emperor = CatalogModel {
-        id: "emperor".into(),
-        model: model(&url, "fake:emperor", "emperor", None),
-        tier: imperium_config::Tier::Standard,
-        location: imperium_config::Location::Cloud,
-        tags: Vec::new(),
-        named_only: false,
-        cpu_lane: false,
-    };
     let session = start(
         &url,
         dir.path(),
         Options {
-            catalog: vec![emperor],
+            catalog: catalog_with_emperor(&url),
             ..Options::default()
         },
     );
