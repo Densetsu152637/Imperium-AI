@@ -21,7 +21,7 @@ and [budgets](10-configuration.md#budgets).
 What the code does today, and what limits the design:
 
 - Only the root delegates (`can_delegate`); subagents are depth 1 and get none of the delegation
-  tools (`crates/imperium-engine/src/agent.rs`).
+  tools (`crates/imperium-engine/src/agent/specs.rs` offers them, `agent/delegation.rs` runs them).
 - A finished subagent becomes `idle` and keeps its conversation, system message included, in
   `<data>/sessions/<id>.agents/<agent-id>.json`; the root can `resume_agent` it with a follow-up,
   which appends a turn to that conversation and is collected with `await_tasks`. This is the
@@ -505,7 +505,7 @@ local-runtime tests at the end of `crates/imperium-engine/tests/knowledge.rs`.
 
 Clients and prompts. Tests: `apps/desktop/test/knowledge.test.ts` (the cards, the question list,
 the details and the checks), the `/agents`, `/ask`, `/keep` and `/retire` tests in
-`crates/imperium-cli/src/chat.rs`, the prompt tests in `agent.rs` and `tools.rs`, the evaluation's
+`crates/imperium-cli/src/chat.rs`, the prompt tests in `agent.rs` and `crates/imperium-protocol/src/tools.rs`, the evaluation's
 tests in `crates/imperium-protocol/src/knowledge_eval.rs`, and the engine tests for the user's
 questions and for a fork finishing after its session closed.
 
@@ -515,7 +515,7 @@ questions and for a fork finishing after its session closed.
   `from` is `user`, the events are the root's (the user is no agent of the session), and the
   question waits like any other, with its timeout paused while the session is stopped.
 - **Agents panel.** A *Knowledge* badge and the topic on a kept agent's row (its status on hover),
-  and in its view (`panels/KnowledgeSection.tsx`, the rules in `knowledge.ts`): the card (topic,
+  and in its view (`panels/KnowledgeSection.tsx`, the rules in `sessions/knowledge.ts`): the card (topic,
   model, what it read with changed files marked, the stale share, what a question costs, the share
   of the last one that was cached, outside material in its context), the questions asked of it
   with asker, outcome, cost and answer (newest first), an *Ask* box, and *Retire*. A finished

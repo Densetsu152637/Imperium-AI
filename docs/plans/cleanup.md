@@ -1,6 +1,8 @@
 # Final cleanup: plan
 
-**Status:** planned, revised after the first plan review. This is the last roadmap item
+**Status:** implemented as one pull request (see [as built](#as-built)); the text below is the plan
+as it was approved, with the two wording points of decision 1 settled when the work started.
+Revised after the first plan review. This is the last roadmap item
 ([12](../12-roadmap.md), item 46). It is **one pull request** against `experimental`, opened
 after every other roadmap pull request has merged, and merged with a **merge commit** (not
 squashed) so its commit structure survives. This document is the plan for that pull request:
@@ -437,3 +439,45 @@ Root assigns one independent critic per group, after that group's CI is green:
 
 None left from round 1; the decisions are recorded [above](#decisions-already-made). Anything
 new found while implementing goes to root before it changes scope.
+
+## As built
+
+Where the pull request differs from the plan above, or settled something the plan left open:
+
+- **Group 0** pins today's behaviour first: the defusing functions' golden output, the pack
+  layering of `DaemonState::context`, the decision matrix, `imperium workflow resolve` as it was
+  (the tests named `today_*`, rewritten in D4), and the snapshots of the CLI help and the method
+  names, which `scripts/check-rust.sh` checks. Review added the layering cases for unreadable,
+  changed and `project`-named pins.
+- **Group B.** `replace_file` replaces 10 of the 13 temp-then-rename sites; `config_changes`,
+  `model_config` and the pack store name the failed step in their errors and keep their two
+  calls. No `text::clip` was added: `truncate_chars` is the shared clip and the identical copies
+  call it (web page text, the harness, search lines, the CLI's change and checkpoint lists). The
+  four defusing functions moved first under their old names, one submodule each (two were called
+  `defuse`), then became `defuse_tool_frame`, `defuse_harness_tags`, `escape_instruction_tags` and
+  `escape_wrapper_tag`.
+- **Group C.** The type is `ModelError`, not `ChatError`. `QueueError`'s `Display` is written by
+  hand, since thiserror cannot name a constant next to a field.
+- **Group D.** Split in two for compilation: D1a moves the files, D1b drops the compatibility
+  re-exports. `packs::resolve(inputs, project_dir)` and `packs::personality_sources(inputs)` are two
+  functions; `PackInputs` has no project folder. `DaemonState::context` returns early when the
+  workflow is off. `imperium workflow resolve` sends its notices to standard error and keeps `--pack`
+  exclusive. The `project` check in `packs::resolve` is unreachable (the pin store refuses that
+  name) and kept.
+- **Group E.** `rpc.rs` is not a pure move: `Connection::handle` keeps the handshake and device
+  checks and hands the rest to `Connection::dispatch`, which asks nine groups in turn; the arms
+  read their params, the deferred-reply slot and the subscription from a `Dispatch` value
+  instead of locals. `methods/` modules are cut by line range, so a few hold their neighbour's
+  helper types. `unreachable_pub` is a `#![warn]` in each library crate's `lib.rs` (clippy makes it
+  an error); about 230 items became `pub(crate)`.
+- **Group F.** `environmentById` replaces 7 copies, not 8 (`EnvironmentWindow`'s lookup is a
+  different one). `currentOption` now uses the spec-first lookup for the whole table, where the
+  old code took the first row matching either spec or id. `App.tsx` keeps the daemon connection
+  (`connect` and its notification handler) inline: moving it would pass a dozen setters between
+  hooks. The desktop regroup and the component split have not been checked in a browser.
+- **History.** Commits `e14e467` to `92515df` do not build one by one (the engine's `agent.rs`
+  imported the local-model types from `crate::` until `a9523ed`), the `unreachable_pub` probe and its
+  first narrowing commits fail clippy while still compiling, and the desktop section split and
+  regroup became green with the fix after them. There was no rebase or force-push. One macOS run
+  failed once on a timing assertion in `model_bench`, unrelated to the changes.
+

@@ -563,7 +563,7 @@ and `environments.agent_update` (protocol 0.28)
     (no hosted endpoint, no local model, no default), the new-session view suggests Emperor and
     Consul, Imperium's own fine-tuned open-weight models (Emperor plans, on a base of about 4B;
     Consul is its critic and reviewer, on about 9B), above the model setup. A small
-    catalogue (`houseModels.ts`) gives each model a name, a role blurb, an approximate size and
+    catalogue (`models/houseModels.ts`) gives each model a name, a role blurb, an approximate size and
     an optional Hugging Face source. Neither model has a source yet, so the card says *not yet
     available — still in training* and offers no download button; once a source is set, the
     button lists the repository's files and starts the ordinary `models.download`. The card is
@@ -600,7 +600,7 @@ and `environments.agent_update` (protocol 0.28)
     *Retire*; `/agents`, `/ask`, `/keep` and `/retire` in `imperium chat`; the prompt lines, `brief.md`,
     Emperor's root prompt and the evaluation cases). Not built: the acceptance measurement, phone
     access, fork streaming events and `ask_agent` in `mcp-serve`.
-46. **Final cleanup** (planned; the last roadmap item). One pull request, opened after every
+46. **Final cleanup** (implemented; the last roadmap item). One pull request, opened after every
     other roadmap pull request has merged: tidy the repository, split oversized modules,
     remove duplicated helpers, route callers through proper interfaces, and build the policy
     crate deferred from item 31 ([08](08-agent-policy.md#default-policy-pack)), with no
