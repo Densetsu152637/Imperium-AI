@@ -199,6 +199,7 @@ impl AgentStore {
     /// A store writing to `dir` (when given), with the agents `history` describes and, for a
     /// resumed session (`load`), the records kept in `dir`. Kept records win over the journal:
     /// they hold the conversations, and are written at least as often.
+    #[cfg(test)]
     pub fn open(dir: Option<PathBuf>, history: &[AgentEvent], load: bool) -> Self {
         let timed: Vec<(u64, AgentEvent)> =
             history.iter().map(|event| (0, event.clone())).collect();
