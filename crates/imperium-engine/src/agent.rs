@@ -1103,7 +1103,7 @@ impl Agent {
                 if self.model.local && !uncapped && capped {
                     let cut = match &result {
                         Ok(completion) => completion.finish_reason.as_deref() == Some("length"),
-                        Err(error) => error.to_string().contains("Context size has been exceeded"),
+                        Err(error) => error.is_context_overflow(),
                     };
                     if cut {
                         uncapped = true;
