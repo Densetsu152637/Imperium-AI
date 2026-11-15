@@ -204,7 +204,7 @@ Their descriptions and schemas are the ones models are offered (`session.tools`)
 `readOnlyHint` and `openWorldHint` annotations. Delegation (`spawn_agent`), questions to the
 user (`ask_user`), starting sessions, and MCP and plugin tools are never bridged.
 
-### How it works
+### How the bridge works
 
 - **Calls run inside a session.** The server starts one session when the first tool is called
   (in the environment named, read-only unless writes are on, titled "MCP bridge", archived

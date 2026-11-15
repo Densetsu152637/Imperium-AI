@@ -15,7 +15,6 @@
 //! wrapped as untrusted data.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
