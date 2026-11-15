@@ -184,6 +184,7 @@ fn start_with(endpoint: Endpoint, dir: &std::path::Path, options: Options) -> Se
         harness: options.harness,
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.join(".journal/test.jsonl"),
     })
     .unwrap()

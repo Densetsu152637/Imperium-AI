@@ -5,11 +5,13 @@ import type { ContextCategory } from "./ContextCategory";
 import type { ContextItem } from "./ContextItem";
 import type { ContextPointer } from "./ContextPointer";
 import type { ExtensionKind } from "./ExtensionKind";
+import type { KnowledgeCard } from "./KnowledgeCard";
 import type { LocalWaitReason } from "./LocalWaitReason";
 import type { PauseCause } from "./PauseCause";
 import type { PermissionRule } from "./PermissionRule";
 import type { Plan } from "./Plan";
 import type { Question } from "./Question";
+import type { QuestionOutcome } from "./QuestionOutcome";
 import type { QueuedMessage } from "./QueuedMessage";
 import type { SessionStatus } from "./SessionStatus";
 import type { TokenCountMethod } from "./TokenCountMethod";
@@ -182,4 +184,4 @@ mmproj: boolean, } | { "type": "model_suggestion_update", id: string,
  * `message`), `dismissed` (not now), or `disabled` (don't ask again: suggestions are
  * off).
  */
-state: "downloading" | "ready" | "failed" | "cancelled" | "dismissed" | "disabled", job_id: string | null, model: string | null, message: string | null, } | { "type": "questions_asked", request_id: number, questions: Array<Question>, } | { "type": "questions_answered", request_id: number, } | { "type": "compaction_started", model: string, };
+state: "downloading" | "ready" | "failed" | "cancelled" | "dismissed" | "disabled", job_id: string | null, model: string | null, message: string | null, } | { "type": "questions_asked", request_id: number, questions: Array<Question>, } | { "type": "questions_answered", request_id: number, } | { "type": "compaction_started", model: string, } | { "type": "knowledge_changed", agent_id: string, card: KnowledgeCard | null, retired: boolean, } | { "type": "question_asked", question_id: string, from: string, to: string, text: string, at_ms: number, } | { "type": "question_answered", question_id: string, outcome: QuestionOutcome, answer: string, degraded: boolean, untrusted_web: boolean, untrusted_tools: boolean, usage: TokenUsage, cost_usd: number | null, cached_ratio: number | null, at_ms: number, };

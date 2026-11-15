@@ -697,6 +697,7 @@ async fn a_session_parked_on_an_approval_holds_no_claim() {
         },
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

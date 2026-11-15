@@ -168,6 +168,10 @@ pub struct Settings {
     /// `[harness]`: aids for small models (see docs/03-agent-engine.md#harness-aids-for-small-models).
     #[serde(default)]
     pub harness: HarnessSettings,
+    /// `[knowledge]`: knowledge agents, subagents kept so others can ask them questions (see
+    /// docs/21-knowledge-agents.md).
+    #[serde(default)]
+    pub knowledge: KnowledgeSettings,
     /// `[attachments]`: describing images for models that cannot see them (see docs/07).
     #[serde(default)]
     pub attachments: AttachmentSettings,
@@ -462,6 +466,49 @@ impl Default for ContextSettings {
     fn default() -> Self {
         ContextSettings {
             auto_compact_at: 0.85,
+        }
+    }
+}
+
+/// `[knowledge]`: knowledge agents (see docs/21-knowledge-agents.md#settings).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct KnowledgeSettings {
+    /// Whether agents may keep subagents as knowledge agents and ask them questions.
+    pub enabled: bool,
+    /// Most knowledge agents one session keeps.
+    pub max_per_session: u32,
+    /// Forks answering one knowledge agent's questions at once; a local model always uses 1.
+    pub parallel_answers: u32,
+    /// Most model calls one answer may make.
+    pub answer_max_steps: u32,
+    /// Most questions one agent may ask in one turn.
+    pub max_questions_per_turn: u32,
+    /// Share of the model's window kept free for answers when an agent is promoted (0.25 is
+    /// 25%).
+    pub answer_reserve: f64,
+    /// Share of a local model's saved-slot cache the knowledge agents' slots may take (stage 2).
+    pub slot_cache_share: f64,
+    /// Share of a card's file sources that changed since they were read above which answers are
+    /// marked degraded.
+    pub stale_threshold: f64,
+    /// Seconds a question waits for its answer unless the call asks for another time; a call
+    /// may ask for at most 600.
+    pub default_timeout_s: u32,
+}
+
+impl Default for KnowledgeSettings {
+    fn default() -> Self {
+        KnowledgeSettings {
+            enabled: true,
+            max_per_session: 4,
+            parallel_answers: 2,
+            answer_max_steps: 6,
+            max_questions_per_turn: 20,
+            answer_reserve: 0.25,
+            slot_cache_share: 0.5,
+            stale_threshold: 0.3,
+            default_timeout_s: 300,
         }
     }
 }
@@ -1814,6 +1861,11 @@ pub struct RoutingSettings {
     /// off. Default 0 (off): a retry costs another model run.
     #[serde(default = "default_escalation_attempts")]
     pub escalation_attempts: u32,
+    /// The model knowledge agents prefer (a model table id or `<endpoint>:<model>`); empty
+    /// prefers Emperor when it is installed. A model that is turned off, missing or not in the
+    /// catalog falls back like a missing Emperor.
+    #[serde(default)]
+    pub knowledge_model: String,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -1846,6 +1898,7 @@ impl Default for RoutingSettings {
             max_queue_wait_s: default_max_queue_wait_s(),
             long_context_tokens: default_long_context_tokens(),
             escalation_attempts: default_escalation_attempts(),
+            knowledge_model: String::new(),
         }
     }
 }

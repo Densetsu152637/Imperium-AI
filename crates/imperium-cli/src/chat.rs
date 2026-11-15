@@ -886,6 +886,31 @@ impl Chat {
             SessionEvent::CompactionStarted { model } => {
                 println!("\n{tag}· compacting the conversation for {model}");
             }
+            SessionEvent::KnowledgeChanged {
+                agent_id,
+                card,
+                retired,
+            } => match card {
+                Some(card) if !retired && card.questions == 0 && card.usage.prompt_tokens == 0 => {
+                    println!(
+                        "\n{tag}· {agent_id} is kept as a knowledge agent: {}",
+                        card.topic
+                    );
+                }
+                None if retired => println!("\n{tag}· {agent_id} is no longer kept as knowledge"),
+                _ => {}
+            },
+            SessionEvent::QuestionAsked { from, to, text, .. } => {
+                println!(
+                    "\n{tag}· {from} asks {to}: {}",
+                    text.lines().next().unwrap_or_default()
+                );
+            }
+            SessionEvent::QuestionAnswered {
+                outcome,
+                question_id,
+                ..
+            } => println!("\n{tag}· question {question_id} ended: {outcome:?}"),
             // This client prints the result of its own /model and /compact, and lists the
             // queue on /queue.
             SessionEvent::ModelChanged { .. }

@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use imperium_models::ChatMessage;
 use imperium_protocol::session::{
-    AgentEvent, AgentStatus, AgentSummary, ROOT_AGENT, SessionEvent, TokenUsage,
+    AgentEvent, AgentStatus, AgentSummary, KnowledgeCard, ROOT_AGENT, SessionEvent, TokenUsage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,73 @@ struct Record {
     /// The root's is kept in `<session>.messages.json` instead.
     #[serde(default)]
     conversation: Vec<ChatMessage>,
+    /// What kind of agent it is, which decides whether it can be kept as a knowledge agent.
+    #[serde(default)]
+    kind: AgentKind,
+    /// A knowledge agent's system message and tool specs as its last request sent them,
+    /// recorded at promotion (see docs/21-knowledge-agents.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frozen: Option<Frozen>,
+}
+
+/// What kind of agent a record describes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentKind {
+    /// A subagent with the tools a subagent has (or the root).
+    #[default]
+    Ordinary,
+    /// A `single_call` subagent: no tools, one reply.
+    SingleCall,
+    /// A `delegate_chunks` chunk or reduce agent.
+    Chunk,
+    /// A subagent spawned with `access: write`.
+    Writer,
+}
+
+/// One tool as the agent was offered it; `ToolSpec` itself is not serialisable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct FrozenTool {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+impl FrozenTool {
+    pub fn of(spec: &imperium_models::ToolSpec) -> Self {
+        FrozenTool {
+            name: spec.name.clone(),
+            description: spec.description.clone(),
+            parameters: spec.parameters.clone(),
+        }
+    }
+
+    pub fn spec(&self) -> imperium_models::ToolSpec {
+        imperium_models::ToolSpec {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            parameters: self.parameters.clone(),
+        }
+    }
+}
+
+/// The part of a request that does not change between a knowledge agent's questions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Frozen {
+    pub system: String,
+    pub tools: Vec<FrozenTool>,
+}
+
+/// What a fork needs from a knowledge agent's record, taken under one lock.
+pub(crate) struct ForkSource {
+    pub frozen: Frozen,
+    pub conversation: Vec<ChatMessage>,
+    pub card: KnowledgeCard,
+}
+
+/// The id of an ephemeral question fork, such as `t3#q7`: no record is ever made for one.
+pub(crate) fn is_fork_id(id: &str) -> bool {
+    id.contains('#')
 }
 
 #[derive(Debug, Default)]
@@ -43,6 +110,9 @@ struct State {
     models: HashMap<String, ResolvedModel>,
     /// Replaying a journal: records change in memory only.
     replaying: bool,
+    /// What each agent's latest request began with (its system message and tools), kept in
+    /// memory for promotion to a knowledge agent.
+    prefixes: HashMap<String, Frozen>,
 }
 
 /// Every agent's state in a session.
@@ -110,8 +180,11 @@ fn new_record(id: &str, parent: Option<String>, role: &str, task: &str, model: &
             plan: None,
             last_report: None,
             updated_at_ms: now_ms(),
+            knowledge: None,
         },
         conversation: Vec::new(),
+        kind: AgentKind::Ordinary,
+        frozen: None,
     }
 }
 
@@ -149,6 +222,14 @@ impl AgentStore {
                     }
                     _ => tracing::warn!(path = %path.display(), "could not read an agent's state"),
                 }
+            }
+        }
+        // A card needs the frozen prefix and the kept conversation, which only a record kept on
+        // disk has: a session branched from another, or restarted with agent state off, has
+        // ordinary idle subagents only.
+        for record in state.records.values_mut() {
+            if record.frozen.is_none() {
+                record.summary.knowledge = None;
             }
         }
         drop(state);
@@ -317,11 +398,117 @@ impl AgentStore {
         }
     }
 
+    /// Notes what kind of agent `id` is and what its latest request began with.
+    pub fn note_run(&self, id: &str, kind: AgentKind, prefix: Frozen) {
+        let mut state = lock(&self.state);
+        if let Some(record) = state.records.get_mut(id) {
+            record.kind = kind;
+        }
+        state.prefixes.insert(id.to_string(), prefix);
+    }
+
+    pub fn kind(&self, id: &str) -> AgentKind {
+        lock(&self.state)
+            .records
+            .get(id)
+            .map_or(AgentKind::Ordinary, |record| record.kind)
+    }
+
+    /// What `id`'s latest request began with, when it ran in this daemon.
+    pub fn latest_prefix(&self, id: &str) -> Option<Frozen> {
+        lock(&self.state).prefixes.get(id).cloned()
+    }
+
+    pub fn summary(&self, id: &str) -> Option<AgentSummary> {
+        lock(&self.state)
+            .records
+            .get(id)
+            .map(|record| record.summary.clone())
+    }
+
+    /// Keeps `id` as a knowledge agent with `card` and its frozen prefix.
+    pub fn set_knowledge(&self, id: &str, card: KnowledgeCard, frozen: Frozen) {
+        let mut state = lock(&self.state);
+        if let Some(record) = state.records.get_mut(id) {
+            record.summary.knowledge = Some(card);
+            record.frozen = Some(frozen);
+            record.summary.updated_at_ms = now_ms();
+            self.write(record);
+        }
+    }
+
+    /// Makes `id` an ordinary idle subagent again; whether it was a knowledge agent.
+    pub fn clear_knowledge(&self, id: &str) -> bool {
+        let mut state = lock(&self.state);
+        let Some(record) = state.records.get_mut(id) else {
+            return false;
+        };
+        let was = record.summary.knowledge.take().is_some();
+        record.frozen = None;
+        record.summary.updated_at_ms = now_ms();
+        self.write(record);
+        was
+    }
+
+    /// Changes `id`'s card; returns it as it is afterwards (`None` when `id` has none).
+    pub fn update_knowledge(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut KnowledgeCard),
+    ) -> Option<KnowledgeCard> {
+        let mut state = lock(&self.state);
+        let record = state.records.get_mut(id)?;
+        let card = record.summary.knowledge.as_mut()?;
+        change(card);
+        let card = card.clone();
+        record.summary.updated_at_ms = now_ms();
+        self.write(record);
+        Some(card)
+    }
+
+    /// Replaces a knowledge agent's frozen prefix (after it was resumed and finished).
+    pub fn refreeze(&self, id: &str, frozen: Frozen) {
+        let mut state = lock(&self.state);
+        if let Some(record) = state.records.get_mut(id)
+            && record.summary.knowledge.is_some()
+        {
+            record.frozen = Some(frozen);
+            self.write(record);
+        }
+    }
+
+    /// The session's knowledge agents' cards, in the order the agents started.
+    pub fn knowledge_cards(&self) -> Vec<KnowledgeCard> {
+        let mut cards: Vec<KnowledgeCard> = lock(&self.state)
+            .records
+            .values()
+            .filter_map(|record| record.summary.knowledge.clone())
+            .collect();
+        cards.sort_by_key(|card| task_number(&card.agent_id));
+        cards
+    }
+
+    /// What a fork of knowledge agent `id` starts from.
+    pub fn fork_source(&self, id: &str) -> Option<ForkSource> {
+        let state = lock(&self.state);
+        let record = state.records.get(id)?;
+        Some(ForkSource {
+            frozen: record.frozen.clone()?,
+            conversation: record.conversation.clone(),
+            card: record.summary.knowledge.clone()?,
+        })
+    }
+
     /// Follows an event into the agent records it changes.
     pub fn observe(&self, event: &AgentEvent) {
+        let agent = event.agent_id.as_str();
+        // A question's fork is not an agent: its tool events carry a derived id and make no
+        // record.
+        if is_fork_id(agent) {
+            return;
+        }
         let mut state = lock(&self.state);
         let replaying = state.replaying;
-        let agent = event.agent_id.as_str();
         let records = &mut state.records;
         let root = || new_record(ROOT_AGENT, None, "root", "", "");
         let changed = match &event.event {
@@ -424,6 +611,13 @@ impl AgentStore {
                 record.summary.plan = Some(plan.clone());
                 agent
             }),
+            // Cards follow the journal when it is replayed; otherwise the store is the source.
+            SessionEvent::KnowledgeChanged { agent_id, card, .. } if replaying => {
+                records.get_mut(agent_id).map(|record| {
+                    record.summary.knowledge = card.clone();
+                    agent_id.as_str()
+                })
+            }
             SessionEvent::ModelChanged { to, .. } => {
                 let record = records.entry(agent.to_string()).or_insert_with(root);
                 record.summary.model = to.clone();

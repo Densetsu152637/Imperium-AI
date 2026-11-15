@@ -147,6 +147,13 @@ pub struct CatalogModel {
     pub cpu_lane: bool,
 }
 
+/// Whether a catalog row is Emperor, Imperium's house root model: tagged `emperor`, or named so.
+fn is_emperor(row: &CatalogModel) -> bool {
+    row.tags.iter().any(|tag| tag == "emperor")
+        || row.id.to_ascii_lowercase().contains("emperor")
+        || row.model.model.to_ascii_lowercase().contains("emperor")
+}
+
 /// What a delegating agent asked for.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TaskRequest<'a> {
@@ -365,6 +372,48 @@ pub fn route_noted(
         return finish(chosen.model.clone(), None, false);
     }
     let mut note = None;
+    // Knowledge agents prefer Emperor (or `routing.knowledge_model`): after the user's rules and
+    // before the built-in tag rows. A preference: it gives way to the task's tier, an explicit
+    // location, and a row that cannot take the task now.
+    if request.tags.iter().any(|tag| tag == "knowledge")
+        && user_rule.is_none()
+        && routing.builtin_rules
+    {
+        let wanted = routing.knowledge_model.trim();
+        let row = if wanted.is_empty() {
+            catalog.iter().find(|c| is_emperor(c))
+        } else {
+            catalog
+                .iter()
+                .find(|c| c.id == wanted || c.model.spec == wanted)
+        };
+        match row {
+            Some(chosen) if usable(&chosen) && chosen.tier >= tier && in_location(chosen) => {
+                return finish(
+                    chosen.model.clone(),
+                    Some(format!(
+                        "knowledge agents prefer {}: the task was sent to it",
+                        chosen.id
+                    )),
+                    false,
+                );
+            }
+            None if !wanted.is_empty() => {
+                note = Some(format!(
+                    "routing.knowledge_model {wanted} is not available (turned off, missing from \
+                     the model folders, or not in the model table), so the knowledge task was \
+                     routed normally"
+                ));
+            }
+            Some(_) if !wanted.is_empty() => {
+                note = Some(format!(
+                    "routing.knowledge_model {wanted} cannot take the knowledge task now (queue, \
+                     tier or location), so it was routed normally"
+                ));
+            }
+            _ => {}
+        }
+    }
     if let Some(rule) = rule {
         let preferred = rule
             .use_models

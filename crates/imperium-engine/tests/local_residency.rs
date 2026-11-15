@@ -164,6 +164,7 @@ fn start(local: Arc<dyn LocalModels>, dir: &std::path::Path) -> Session {
         },
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.join(".journal.jsonl"),
     })
     .unwrap()

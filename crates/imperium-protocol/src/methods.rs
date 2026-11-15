@@ -173,6 +173,38 @@ impl Method for SessionAgentResume {
     type Result = SessionAgentResumeResult;
 }
 
+// `session.agent_knowledge`: the user keeps a finished, read-only subagent as a knowledge agent
+// (`topic`) or retires one (`retire`), as the root agent does with `keep_as_knowledge`
+// (docs/21-knowledge-agents.md). Refused with the reason when the agent cannot be kept.
+#[derive(Debug)]
+pub struct SessionAgentKnowledge;
+
+impl Method for SessionAgentKnowledge {
+    const NAME: &'static str = "session.agent_knowledge";
+    type Params = SessionAgentKnowledgeParams;
+    type Result = SessionAgentKnowledgeResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentKnowledgeParams {
+    pub session_id: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub retire: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentKnowledgeResult {
+    pub agent_id: String,
+    // The card after the change; absent once the agent is retired.
+    pub card: Option<crate::session::KnowledgeCard>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionAgentsParams {

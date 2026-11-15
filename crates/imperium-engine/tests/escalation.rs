@@ -265,6 +265,7 @@ async fn run(scenario: Scenario) -> (usize, usize, Vec<String>) {
         },
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join(".journal/test.jsonl"),
     })
     .unwrap();

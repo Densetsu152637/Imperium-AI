@@ -390,6 +390,41 @@ pub enum SessionEvent {
     /// For the root this can come before the turn's `turn_started`, since a message is fitted
     /// before it is added.
     CompactionStarted { model: String },
+    /// An agent became a knowledge agent (with its card), the card changed (a question was
+    /// asked or answered, its sources went stale), or it was retired (`retired`, no card).
+    /// Emitted under the knowledge agent's id; a replayed journal rebuilds the cards from these.
+    KnowledgeChanged {
+        agent_id: String,
+        card: Option<KnowledgeCard>,
+        retired: bool,
+    },
+    /// An agent asked a knowledge agent a question (`ask_agent`). `text` is clipped to 2,000
+    /// characters. Emitted under the asker's id.
+    QuestionAsked {
+        question_id: String,
+        from: String,
+        to: String,
+        text: String,
+        #[ts(type = "number")]
+        at_ms: u64,
+    },
+    /// A question ended. `answer` is clipped to 2,000 characters (the asker got the whole
+    /// reply, up to 8,000); `usage` and `cost_usd` are what answering cost the knowledge agent,
+    /// and `cached_ratio` the share of the prompt the provider or runtime reported as cached.
+    /// Emitted under the asker's id.
+    QuestionAnswered {
+        question_id: String,
+        outcome: QuestionOutcome,
+        answer: String,
+        degraded: bool,
+        untrusted_web: bool,
+        untrusted_tools: bool,
+        usage: TokenUsage,
+        cost_usd: Option<f64>,
+        cached_ratio: Option<f64>,
+        #[ts(type = "number")]
+        at_ms: u64,
+    },
 }
 
 /// A message waiting for an agent.
@@ -606,6 +641,110 @@ pub struct AgentSummary {
     /// When its state last changed, in milliseconds since the Unix epoch.
     #[ts(type = "number")]
     pub updated_at_ms: u64,
+    // Set while the agent is kept as a knowledge agent (protocol 0.37).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub knowledge: Option<KnowledgeCard>,
+}
+
+// A knowledge agent's card (docs/21-knowledge-agents.md): an idle subagent kept so other agents
+// can ask it questions instead of reading what it read again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct KnowledgeCard {
+    pub agent_id: String,
+    pub title: String,
+    pub model: String,
+    pub local: bool,
+    // What the promoter said it knows about.
+    pub topic: String,
+    // What the agent read, newest first, at most 50; `more_sources` counts the rest.
+    pub sources: Vec<KnowledgeSource>,
+    pub more_sources: u32,
+    pub untrusted: KnowledgeUntrusted,
+    // The kept conversation's size and the model's window, in tokens.
+    #[ts(type = "number")]
+    pub context_tokens: u64,
+    #[ts(type = "number | null")]
+    pub context_window: Option<u64>,
+    // What one question is expected to cost; absent when it cannot be told.
+    pub est_question_cost: Option<QuestionCost>,
+    // The share of the latest fork's prompt that was reported as cached.
+    pub last_cached_ratio: Option<f64>,
+    // Answers given so far, and what they cost.
+    pub questions: u32,
+    pub usage: TokenUsage,
+    pub cost_usd: Option<f64>,
+    pub status: KnowledgeStatus,
+    // Questions waiting for a free answer slot.
+    pub queued: u32,
+    // The share of the file sources that changed since they were read.
+    pub stale_fraction: f64,
+}
+
+// One thing a knowledge agent read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct KnowledgeSource {
+    pub kind: KnowledgeSourceKind,
+    // A path, a search pattern, or a URL.
+    pub target: String,
+    // For a file: its size and modified time when it was read.
+    #[ts(type = "number | null")]
+    pub size: Option<u64>,
+    #[ts(type = "number | null")]
+    pub modified_ms: Option<u64>,
+    // The file changed since it was read (checked at each question).
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum KnowledgeSourceKind {
+    File,
+    Dir,
+    Search,
+    Url,
+}
+
+// Where outside material may be in a knowledge agent's context: `web` for web search and fetch
+// results (or a browser tool's), `tools` for MCP and plugin tool results.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct KnowledgeUntrusted {
+    pub web: bool,
+    pub tools: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QuestionCost {
+    #[ts(type = "number")]
+    pub tokens: u64,
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum KnowledgeStatus {
+    Ready,
+    // Forks are answering questions.
+    Answering,
+    // Resumed for more work: questions wait until its turn finishes.
+    Busy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum QuestionOutcome {
+    Answered,
+    Timeout,
+    Cancelled,
+    Refused,
+    Failed,
 }
 
 /// A goal and the steps toward it, kept by an agent with the `update_plan` tool.

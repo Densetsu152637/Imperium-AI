@@ -155,6 +155,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         checkpoints: None,
         budget_gate: None,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),
     })
     .unwrap()

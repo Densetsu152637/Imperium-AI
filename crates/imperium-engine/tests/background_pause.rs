@@ -193,6 +193,7 @@ fn start(local: Arc<OneSlot>, load: Arc<Manual>, dir: &std::path::Path) -> Sessi
         },
         keep_agent_state: true,
         effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.join(".journal.jsonl"),
     })
     .unwrap()

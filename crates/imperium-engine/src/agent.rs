@@ -38,8 +38,11 @@ use imperium_memory::{NewEntry, Scope};
 use imperium_protocol::methods::{Compaction, ContextFit};
 
 mod attachments;
+mod fork;
 
-use crate::agents::task_number;
+pub(crate) use fork::run_fork;
+
+use crate::agents::{AgentKind, Frozen, FrozenTool, task_number};
 use crate::artefacts::{self, handle_message};
 use crate::breakdown::{
     Call, Category, LOAD_SKILL, Measured, Request, Spans, TokenCounter, estimate_tokens,
@@ -134,6 +137,9 @@ enum AgentTool {
     StartSession,
     ListAgents,
     ResumeAgent,
+    KeepAsKnowledge,
+    AskAgent,
+    ListKnowledgeAgents,
 }
 
 pub(crate) struct TaskReport {
@@ -238,6 +244,18 @@ pub struct Agent {
     /// The harness paragraph in the system prompt, for the model the agent has now: it is
     /// rewritten when the model is switched, so the prompt and the tools offered always agree.
     harness_text: String,
+    /// May ask knowledge agents questions: the root and ordinary subagents, never a
+    /// `single_call` or chunk agent, a knowledge agent, or a fork (docs/21-knowledge-agents.md).
+    can_ask: bool,
+    /// What kind of agent this is, for promotion to a knowledge agent.
+    kind: AgentKind,
+    /// Questions this agent asked in its current turn.
+    asked_this_turn: u32,
+    /// The tools offered on this agent's latest turn, kept for promotion.
+    last_tools: Vec<ToolSpec>,
+    /// Set for the ephemeral fork that answers a question: it only reads, never asks, and
+    /// leaves no record.
+    fork: Option<fork::ForkInfo>,
 }
 
 impl Agent {
@@ -376,19 +394,45 @@ impl Agent {
         let inbox = shared.inboxes.open(&id);
         shared.agents.register(&id, &role, &model);
         Agent {
+            spans: HashMap::from([(0, spans)]),
+            can_delegate,
+            role,
+            harness_text,
+            ..Agent::bare(
+                id,
+                inbox,
+                shared,
+                workspace,
+                model,
+                vec![ChatMessage::System { content: system }],
+            )
+        }
+    }
+
+    /// An agent with nothing of its own yet: the given conversation and no tasks, plan, state
+    /// or record (the caller registers one when the agent is a subagent of the session).
+    fn bare(
+        id: String,
+        inbox: Arc<Inbox>,
+        shared: Arc<Shared>,
+        workspace: Workspace,
+        model: ResolvedModel,
+        messages: Vec<ChatMessage>,
+    ) -> Self {
+        Agent {
             id,
             inbox,
             shared,
             workspace,
             writer: false,
             model,
-            messages: vec![ChatMessage::System { content: system }],
-            spans: HashMap::from([(0, spans)]),
-            can_delegate,
+            messages,
+            spans: HashMap::new(),
+            can_delegate: false,
             tasks: HashMap::new(),
             pausable_tasks: HashSet::new(),
             pause: None,
-            role,
+            role: "leaf".into(),
             unloaded: Mutex::new(Vec::new()),
             last_call: None,
             last_reported: None,
@@ -406,7 +450,12 @@ impl Agent {
             rewritten_from: Mutex::new(None),
             ran_rewritten: Mutex::new(None),
             state: SessionState::default(),
-            harness_text,
+            harness_text: String::new(),
+            can_ask: true,
+            kind: AgentKind::Ordinary,
+            asked_this_turn: 0,
+            last_tools: Vec::new(),
+            fork: None,
         }
     }
 
@@ -660,6 +709,8 @@ impl Agent {
         self.messages = vec![ChatMessage::System { content: system }];
         self.spans = HashMap::from([(0, spans)]);
         self.single_call = true;
+        self.can_ask = false;
+        self.kind = AgentKind::SingleCall;
         self
     }
 
@@ -685,13 +736,29 @@ impl Agent {
     }
 
     fn emit(&self, event: SessionEvent) {
+        // A question's fork shows its tool calls and nothing else of its turn.
+        if self.fork.is_some() && !fork::forwarded(&event) {
+            return;
+        }
         self.shared.emitter.emit(&self.id, event);
     }
 
     /// Saves a subagent's conversation, so it can be resumed later (after a restart too). The
-    /// root's conversation is saved by its session after every turn.
+    /// root's conversation is saved by its session after every turn. What its request began
+    /// with (the system message and the tools offered) is noted too, for promotion to a
+    /// knowledge agent.
     fn checkpoint(&self) {
-        if !self.can_delegate {
+        if !self.can_delegate && self.fork.is_none() {
+            if let Some(ChatMessage::System { content }) = self.messages.first() {
+                self.shared.agents.note_run(
+                    &self.id,
+                    self.kind,
+                    Frozen {
+                        system: content.clone(),
+                        tools: self.last_tools.iter().map(FrozenTool::of).collect(),
+                    },
+                );
+            }
             self.shared
                 .agents
                 .save_conversation(&self.id, &self.messages);
@@ -795,15 +862,25 @@ impl Agent {
                 queue_agent_spec(),
                 list_agents_spec(),
                 resume_agent_spec(),
-                delegate_chunks_spec(),
-                ask_user_spec(),
             ]);
+            if self.shared.knowledge.enabled() {
+                tools.push(keep_as_knowledge_spec());
+            }
+            tools.extend([delegate_chunks_spec(), ask_user_spec()]);
             if self.harness_on(self.shared.harness.clarify) {
                 tools.push(request_clarification_spec());
             }
             if self.harness_on(self.shared.harness.state) {
                 tools.push(update_state_spec());
             }
+        }
+        // Questions are offered while the session has a knowledge agent to ask.
+        if self.can_ask
+            && self.fork.is_none()
+            && self.shared.knowledge.enabled()
+            && !self.shared.agents.knowledge_cards().is_empty()
+        {
+            tools.extend([list_knowledge_agents_spec(), ask_agent_spec()]);
         }
         (
             tools,
@@ -905,6 +982,8 @@ impl Agent {
         });
         self.checkpoint();
         let (mut tools, mut tool_texts) = self.offered_tools();
+        self.last_tools.clone_from(&tools);
+        self.asked_this_turn = 0;
         self.compact_stalled = false;
         let mut total = Usage::default();
         let mut reply = String::new();
@@ -1179,6 +1258,7 @@ impl Agent {
             // A plugin activated in this round offers its tools from the next call.
             if activates {
                 (tools, tool_texts) = self.offered_tools();
+                self.last_tools.clone_from(&tools);
             }
             // A safe point: every tool call has its result.
             self.checkpoint();
@@ -1770,6 +1850,9 @@ impl Agent {
         if let Decision::Refuse(why) = decision {
             return finish(false, refused(why, &summary));
         }
+        if matches!(decision, Decision::Ask { .. }) && self.fork.is_some() {
+            return finish(false, fork::ask_refusal(&summary));
+        }
         match self.before_tool(name, arguments).await {
             Hooked::Run => {}
             Hooked::Blocked(blocked) => return finish(false, blocked),
@@ -1838,6 +1921,9 @@ impl Agent {
         started: Option<Instant>,
     ) -> String {
         self.last_tool_ok.store(ok, Ordering::SeqCst);
+        if ok && let Some(fork) = &self.fork {
+            fork.note_tool(tool);
+        }
         self.emit(SessionEvent::ToolFinished {
             call_id: call.id.clone(),
             ok,
@@ -1879,7 +1965,10 @@ impl Agent {
 
     /// This agent's name to a local model.
     fn holder(&self) -> String {
-        imperium_api::holder(&self.shared.session_id, &self.id)
+        // A question's fork works under its knowledge agent's name, so a local model gives it
+        // the slot whose cached prompt is the agent's conversation.
+        let name = self.fork.as_ref().map_or(&self.id, |fork| &fork.source);
+        imperium_api::holder(&self.shared.session_id, name)
     }
 
     /// Tokens the next call's prompt is expected to take, for a local model's reservation: the
@@ -2153,6 +2242,13 @@ impl Agent {
     async fn run_tool_once(&mut self, call: &ToolCall) -> String {
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
+        // A question's fork may read and search, and nothing else: checked here, where a call
+        // is dispatched, so the tool list it was given (and its cached prefix) stays as it was.
+        if self.fork.is_some()
+            && let Some(why) = fork::refusal(name)
+        {
+            return self.tool_finished(call, name, false, why, None);
+        }
         // A turn the daemon limits (an initiative review) may use only the tools it lists.
         if let Some(why) = self
             .shared
@@ -2182,6 +2278,13 @@ impl Agent {
             "queue_agent" if self.can_delegate => AgentTool::QueueAgent,
             "list_agents" if self.can_delegate => AgentTool::ListAgents,
             "resume_agent" if self.can_delegate => AgentTool::ResumeAgent,
+            "keep_as_knowledge" if self.can_delegate && self.shared.knowledge.enabled() => {
+                AgentTool::KeepAsKnowledge
+            }
+            "ask_agent" if self.shared.knowledge.enabled() => AgentTool::AskAgent,
+            "list_knowledge_agents" if self.shared.knowledge.enabled() => {
+                AgentTool::ListKnowledgeAgents
+            }
             "delegate_chunks" if self.can_delegate => AgentTool::DelegateChunks,
             "ask_user" if self.can_delegate => AgentTool::AskUser,
             "request_clarification"
@@ -2220,6 +2323,9 @@ impl Agent {
             AgentTool::QueueAgent => "queue a message for a subagent",
             AgentTool::ListAgents => "list subagents",
             AgentTool::ResumeAgent => "resume a subagent",
+            AgentTool::KeepAsKnowledge => "keep a subagent as a knowledge agent",
+            AgentTool::AskAgent => "ask a knowledge agent",
+            AgentTool::ListKnowledgeAgents => "list knowledge agents",
             AgentTool::DelegateChunks => "split an artefact across subagents",
             AgentTool::AskUser => "ask the user",
             AgentTool::RequestClarification => "ask the user to clarify",
@@ -2255,6 +2361,9 @@ impl Agent {
             AgentTool::QueueAgent => self.message_agent(arguments, false),
             AgentTool::ListAgents => Ok(self.list_agents()),
             AgentTool::ResumeAgent => self.resume_agent(arguments),
+            AgentTool::KeepAsKnowledge => self.keep_as_knowledge(arguments),
+            AgentTool::AskAgent => self.ask_agent(arguments).await,
+            AgentTool::ListKnowledgeAgents => self.list_knowledge_agents(arguments),
             AgentTool::DelegateChunks => self.delegate_chunks(arguments),
             AgentTool::AskUser => self.ask_user(arguments).await,
             AgentTool::RequestClarification => self.request_clarification(arguments).await,
@@ -2312,6 +2421,9 @@ impl Agent {
         let decision = decide_call(mode, kind, rule, floored);
         if let Decision::Refuse(why) = decision {
             return finish(false, refused(why, &summary));
+        }
+        if matches!(decision, Decision::Ask { .. }) && self.fork.is_some() {
+            return finish(false, fork::ask_refusal(&summary));
         }
         match self.before_tool(tool, &hook_arguments).await {
             Hooked::Run => {}
@@ -2392,10 +2504,41 @@ impl Agent {
             effort: Option<String>,
             #[serde(default)]
             access: Option<String>,
+            #[serde(default)]
+            knowledge: Option<String>,
         }
         let args: Args = parse(arguments)?;
         if args.brief.trim().is_empty() {
             return Err("brief must not be empty".into());
+        }
+        // A subagent kept as knowledge when its first turn succeeds, and routed to Emperor
+        // (or `routing.knowledge_model`) by the `knowledge` tag.
+        let knowledge = args
+            .knowledge
+            .as_deref()
+            .map(str::trim)
+            .filter(|topic| !topic.is_empty());
+        if let Some(topic) = knowledge {
+            if !self.shared.knowledge.enabled() {
+                return Err("knowledge agents are turned off (knowledge.enabled)".into());
+            }
+            if topic.chars().count() > crate::knowledge::MAX_TOPIC_CHARS {
+                return Err(format!(
+                    "knowledge must be a topic of at most {} characters",
+                    crate::knowledge::MAX_TOPIC_CHARS
+                ));
+            }
+            if args.single_call || args.access.as_deref() == Some("write") {
+                return Err(
+                    "knowledge needs a read-only subagent with tools: a writer's worktree outlives \
+                     a question and a single_call subagent's context is one reply"
+                        .into(),
+                );
+            }
+        }
+        let mut tags = args.tags.clone();
+        if knowledge.is_some() && !tags.iter().any(|tag| tag == "knowledge") {
+            tags.push("knowledge".into());
         }
         let writes = match args.access.as_deref() {
             None | Some("read") => false,
@@ -2445,7 +2588,7 @@ impl Agent {
                 named: args.model.as_deref(),
                 tier,
                 location,
-                tags: &args.tags,
+                tags: &tags,
                 session: Some(&self.shared.session_id),
                 needs_tools: !args.single_call,
             },
@@ -2541,11 +2684,11 @@ impl Agent {
                 TaskRequest {
                     tier,
                     location,
-                    tags: &args.tags,
+                    tags: &tags,
                     ..TaskRequest::default()
                 },
             ),
-            tags: args.tags.clone(),
+            tags: tags.clone(),
             role: role.clone(),
             workspace: workspace.clone(),
             effort,
@@ -2564,11 +2707,20 @@ impl Agent {
         if isolated {
             agent = agent.writing();
         }
+        if writes && !args.single_call {
+            agent.kind = AgentKind::Writer;
+        }
         if args.single_call {
             agent = agent.single_call();
         }
+        if let Some(topic) = knowledge {
+            self.shared.knowledge.expect(&task_id, topic.to_string());
+        }
         self.launch_subagent(agent.pausable(), args.brief, &task_id, retry);
         let mut started = format!("started {task_id}; call await_tasks to collect its report");
+        if knowledge.is_some() {
+            started.push_str("; it is kept as a knowledge agent when it finishes");
+        }
         if let Some(notice) = notice {
             self.emit(SessionEvent::Notice {
                 message: format!("{task_id}: {notice}"),
@@ -2621,6 +2773,8 @@ impl Agent {
         );
         let spawned = json!({"task_id": task_id, "brief": &shown, "model": agent.model.spec});
         agent.shown = Some(shown);
+        agent.can_ask = false;
+        agent.kind = AgentKind::Chunk;
         let handle = tokio::spawn(async move {
             let _permit = match gate {
                 Some(gate) => gate.acquire_owned().await.ok(),
@@ -3286,7 +3440,18 @@ impl Agent {
                 self.pausable_tasks.remove(&id);
             }
             reports.push(match joined {
-                Ok(task) => task.render(usize::MAX),
+                Ok(task) => {
+                    let mut text = task.render(usize::MAX);
+                    // A subagent that read a lot may be worth keeping for the tasks after it.
+                    if task.ok
+                        && !task.paused
+                        && let Some(nudge) =
+                            crate::knowledge::nudge(&self.shared, &task.task_id, task.report.len())
+                    {
+                        text.push_str(&format!("\n\n{nudge}"));
+                    }
+                    text
+                }
                 Err(error) => format!("## {id}\nthe subagent crashed: {error}"),
             });
         }
@@ -4377,6 +4542,18 @@ fn resume_agent_spec() -> ToolSpec {
     tool_spec(contract::resume_agent())
 }
 
+fn keep_as_knowledge_spec() -> ToolSpec {
+    tool_spec(contract::keep_as_knowledge())
+}
+
+fn ask_agent_spec() -> ToolSpec {
+    tool_spec(contract::ask_agent())
+}
+
+fn list_knowledge_agents_spec() -> ToolSpec {
+    tool_spec(contract::list_knowledge_agents())
+}
+
 fn delegate_chunks_spec() -> ToolSpec {
     tool_spec(contract::delegate_chunks())
 }
@@ -4395,7 +4572,7 @@ fn update_state_spec() -> ToolSpec {
 
 /// The window to plan with: a hosted model's table value; a local model's planned value; the
 /// default when neither is known.
-fn effective_window(table: Option<u64>, local: bool, reported: Option<u64>) -> u64 {
+pub(crate) fn effective_window(table: Option<u64>, local: bool, reported: Option<u64>) -> u64 {
     match table {
         Some(window) if !local => window,
         _ => reported.or(table).unwrap_or(DEFAULT_WINDOW_TOKENS),
@@ -4672,6 +4849,12 @@ async fn run_subagent(
             at_ms: Some(crate::agents::now_ms()),
         },
     );
+    // A knowledge agent resumed for more work takes its new prefix, or is retired; a subagent
+    // spawned with `knowledge` is kept now that its first turn succeeded.
+    crate::knowledge::finished(&shared, &id, outcome.ok);
+    if outcome.ok {
+        crate::knowledge::promote_pending(&shared, &id);
+    }
     TaskReport {
         task_id: id,
         model: spec,
@@ -4796,6 +4979,11 @@ pub(crate) fn resume_subagent(
         agent = agent.writing();
     }
     agent.restore(shared.agents.conversation(agent_id));
+    agent.kind = shared.agents.kind(agent_id);
+    if before.knowledge.is_some() {
+        agent.can_ask = false;
+        crate::knowledge::resumed(shared, agent_id);
+    }
     let agent = agent.pausable();
     shared.emitter.emit(
         ROOT_AGENT,
@@ -5020,6 +5208,12 @@ mod tests {
             (queue_agent_spec(), contract::queue_agent()),
             (list_agents_spec(), contract::list_agents()),
             (resume_agent_spec(), contract::resume_agent()),
+            (keep_as_knowledge_spec(), contract::keep_as_knowledge()),
+            (ask_agent_spec(), contract::ask_agent()),
+            (
+                list_knowledge_agents_spec(),
+                contract::list_knowledge_agents(),
+            ),
             (delegate_chunks_spec(), contract::delegate_chunks()),
             (ask_user_spec(), contract::ask_user()),
             (

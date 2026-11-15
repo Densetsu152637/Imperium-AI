@@ -24,6 +24,10 @@
         ],
         "type": "string"
       },
+      "knowledge": {
+        "description": "A topic (up to 300 characters) that keeps this read-only subagent as a knowledge agent when its first turn finishes, so you and other subagents can ask it questions with ask_agent instead of reading what it read again. Use it for research whose results several later tasks will need, such as reading a module, a specification or a set of pages; it runs on Emperor when that model is installed. Not for writers or single_call subagents.",
+        "type": "string"
+      },
       "location": {
         "description": "Restrict to models on this machine or at hosted providers",
         "enum": [
