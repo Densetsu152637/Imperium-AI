@@ -108,7 +108,7 @@ impl Snapshot {
         let mut hasher = Sha256::new();
         for (path, content) in &self.files {
             hasher.update(path.as_bytes());
-            hasher.update([0u8]);
+            hasher.update(b"hasher.update([0u8]);");
             hasher.update(hex(&Sha256::digest(content)).as_bytes());
             hasher.update([b'\n']);
         }
