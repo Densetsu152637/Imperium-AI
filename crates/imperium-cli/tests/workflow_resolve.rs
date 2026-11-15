@@ -52,6 +52,62 @@ impl Env {
     }
 }
 
+fn git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .stdout(Stdio::null())
+        .status()
+        .expect("git is installed");
+    assert!(status.success(), "git {args:?}");
+}
+
+impl Env {
+    fn imperium(&self, args: &[&str]) -> String {
+        let output = Command::new(env!("CARGO_BIN_EXE_imperium"))
+            .env("IMPERIUM_HOME", self.home.path())
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("the imperium binary runs");
+        assert!(
+            output.status.success(),
+            "imperium {args:?}: {}",
+            text(&output.stderr)
+        );
+        text(&output.stdout)
+    }
+
+    /// Pins a pack called `name` from a local Git repository, the way `imperium pack` does.
+    fn pin(&self, name: &str) {
+        let repo = self.folders.path().join(format!("{name}-source"));
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        std::fs::write(repo.join("AGENTS.md"), "# Pinned index\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "v1"]);
+        let path = repo.to_string_lossy().replace('\\', "/");
+        let url = format!("file:///{}", path.trim_start_matches('/'));
+        self.imperium(&["pack", "add-source", name, &url]);
+        let checked = self.imperium(&["pack", "check", name]);
+        let hash = checked
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("new      sha256:"))
+            .expect("the output names the new hash")
+            .trim()
+            .to_string();
+        self.imperium(&["pack", "accept", name, "--hash", &hash[..16]]);
+    }
+}
+
 fn listing(packs: &[&Path]) -> String {
     let quoted: Vec<String> = packs
         .iter()
@@ -139,4 +195,45 @@ fn today_the_workflow_switch_does_not_stop_the_command() {
         "{}",
         text(&output.stdout)
     );
+}
+
+#[test]
+fn today_a_pinned_pack_follows_the_configured_ones() {
+    let env = Env::new();
+    let pack = env.pack("mine");
+    env.configure(&listing(&[&pack]));
+    env.pin("acw");
+    let output = env.resolve(&[]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let printed = text(&output.stdout);
+    let mine = printed.find("- mine:AGENTS.md").expect("the listed pack");
+    let pinned = printed.find("- acw:AGENTS.md").expect("the pinned pack");
+    assert!(mine < pinned, "{printed}");
+}
+
+#[test]
+fn today_a_pinned_pack_with_a_listed_pack_s_name_loads_beside_it() {
+    let env = Env::new();
+    let same = env.pack("acw");
+    env.configure(&listing(&[&same]));
+    env.pin("acw");
+    let output = env.resolve(&[]);
+    // Both are indexed (the daemon would skip the pinned one); the manifest names a reference
+    // once, so one line shows.
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let printed = text(&output.stdout);
+    assert_eq!(printed.matches("- acw:AGENTS.md").count(), 1, "{printed}");
+}
+
+#[test]
+fn an_explicit_pack_shows_only_that_pack_with_the_switch_off_or_a_pinned_pack_present() {
+    let env = Env::new();
+    let wanted = env.pack("wanted");
+    env.configure("[workflow]\nenabled = false\n");
+    env.pin("acw");
+    let output = env.resolve(&[&wanted]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let printed = text(&output.stdout);
+    assert!(printed.contains("- wanted:AGENTS.md"), "{printed}");
+    assert!(!printed.contains("acw:"), "{printed}");
 }

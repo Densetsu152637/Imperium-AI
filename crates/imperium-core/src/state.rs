@@ -3472,6 +3472,122 @@ mod tests {
             ))
         );
     }
+
+    /// Writes pack `name` with `files` where `imperium pack` keeps pinned packs, and pins it
+    /// (without the checks `accept` makes, so a pack that cannot load can be pinned). Returns
+    /// its folder and hash.
+    fn pin_files(home: &Path, name: &str, files: &[(&str, &str)]) -> (PathBuf, String) {
+        let data = imperium_config::Paths::under(home).data_dir().to_path_buf();
+        let snapshot = imperium_workflow::update::Snapshot::from_files(files.iter().copied());
+        let hash = snapshot.hash();
+        let dir = data.join("packs").join(name).join(&hash);
+        snapshot.write(&dir).unwrap();
+        let pins = data.join("packs/pins.toml");
+        let mut text = std::fs::read_to_string(&pins).unwrap_or_default();
+        text.push_str(&format!(
+            "[packs.{name}]\nurl = \"https://example.com/p.git\"\nhash = \"{hash}\"\ncommit = \"abc\"\naccepted = 1\n"
+        ));
+        std::fs::create_dir_all(pins.parent().unwrap()).unwrap();
+        std::fs::write(&pins, text).unwrap();
+        (dir, hash)
+    }
+
+    /// The notice for a pinned pack whose files no longer match its hash.
+    fn changed_notice(name: &str, hash: &str) -> String {
+        format!(
+            "pack {name} skipped: the files of pack {name} no longer match the hash you \
+             accepted ({}); run imperium pack check to fetch it again",
+            &hash[..12]
+        )
+    }
+
+    #[test]
+    fn listed_packs_that_cannot_be_read_leave_no_pack_and_no_bundled_fallback() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        let missing = folders.path().join("missing");
+        assert_eq!(
+            layers(home.path(), &listing(&[&missing])),
+            Some((
+                vec![],
+                vec![format!(
+                    "workflow pack skipped: {} has no AGENTS.md",
+                    missing.display()
+                )]
+            ))
+        );
+    }
+
+    #[test]
+    fn a_pinned_pack_whose_files_changed_is_skipped_and_the_bundled_pack_takes_over() {
+        let home = tempfile::tempdir().unwrap();
+        let (dir, hash) = pin_files(home.path(), "acw", &[("AGENTS.md", "# Pinned\n")]);
+        std::fs::write(dir.join("AGENTS.md"), "# Changed\n").unwrap();
+        let bundled = Pack::load(&bundled_pack().unwrap()).unwrap().name;
+        assert_eq!(
+            layers(home.path(), ""),
+            Some((vec![bundled], vec![changed_notice("acw", &hash)]))
+        );
+    }
+
+    #[test]
+    fn a_pinned_pack_that_cannot_load_is_skipped_but_still_replaces_the_bundled_pack() {
+        let home = tempfile::tempdir().unwrap();
+        let (dir, _) = pin_files(home.path(), "acw", &[("README.md", "no entry file\n")]);
+        assert_eq!(
+            layers(home.path(), ""),
+            Some((
+                vec![],
+                vec![format!(
+                    "pinned pack acw skipped: {} has no AGENTS.md",
+                    dir.display()
+                )]
+            ))
+        );
+    }
+
+    #[test]
+    fn a_pin_named_project_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        pin_files(home.path(), "project", &[("AGENTS.md", "# Pinned\n")]);
+        let bundled = Pack::load(&bundled_pack().unwrap()).unwrap().name;
+        assert_eq!(
+            layers(home.path(), ""),
+            Some((
+                vec![bundled],
+                vec![
+                    "pack project skipped: \"project\" cannot name a pack source: use 1-40 \
+                     letters, digits, '-', '_' or '.', not starting with '.'"
+                        .into()
+                ]
+            ))
+        );
+    }
+
+    #[test]
+    fn notices_come_in_the_order_pinned_check_then_listed_then_pinned_load() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        pin_files(home.path(), "acw", &[("AGENTS.md", "# Pinned\n")]);
+        let (dir, hash) = pin_files(home.path(), "bad", &[("AGENTS.md", "# Pinned\n")]);
+        std::fs::write(dir.join("AGENTS.md"), "# Changed\n").unwrap();
+        let missing = folders.path().join("missing");
+        let same = pack_folder(folders.path(), "acw");
+        assert_eq!(
+            layers(home.path(), &listing(&[&missing, &same])),
+            Some((
+                vec!["acw+".into()],
+                vec![
+                    changed_notice("bad", &hash),
+                    format!(
+                        "workflow pack skipped: {} has no AGENTS.md",
+                        missing.display()
+                    ),
+                    "pinned pack acw skipped: another pack already has that name".into(),
+                ]
+            ))
+        );
+    }
 }
 
 #[cfg(test)]

@@ -203,6 +203,9 @@ fn a_floor_given_by_the_caller_replaces_the_computed_one() {
         (E, allow, true)
     );
     // A tool that always asks (a provider's `always_asks`) is a given floor on another kind.
+    // A provider's command call is not: like the built-in `run_command` it takes the computed
+    // floor (`safety_floor(Execute, command)`, the first test above), so the given floor is for
+    // non-command provider calls only.
     let provider = vec![rule("mcp__srv__do", "", RuleAction::Allow)];
     let provider_call = |floor| {
         judged(

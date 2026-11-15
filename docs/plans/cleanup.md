@@ -271,6 +271,11 @@ open pull request against `experimental` touches `crates/` or `apps/desktop/src/
    on Linux only so platform-specific arguments cannot make it flaky; and the list of protocol
    method names. The first CI run prints the files; they are committed from the log.
 
+4. `crates/imperium-cli/tests/workflow_resolve.rs` pins how `imperium workflow resolve`
+   behaves today (listed, explicit, pinned and unreadable packs, the `enabled` switch, no
+   bundled pack). Tests named `today_*` describe behaviour that D4 changes and are rewritten
+   there; the others must pass unchanged.
+
 ### Group A: hygiene
 
 1. Remove the unused dependencies confirmed by `cargo machete`; `Cargo.lock` follows.
