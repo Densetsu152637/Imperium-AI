@@ -291,7 +291,11 @@ async fn an_overwritten_slot_is_restored_and_its_file_stays_for_the_next_time() 
     interfere(&supervisor, "emperor").await;
     call(&supervisor, "emperor", HOLDER).await;
     assert_eq!(log.count("restore"), 1);
-    assert_eq!(log.files(), [file.clone()], "the file survives its restore");
+    assert_eq!(
+        log.files(),
+        std::slice::from_ref(&file),
+        "the file survives its restore"
+    );
 
     // After more interference it is restored again.
     interfere(&supervisor, "emperor").await;
