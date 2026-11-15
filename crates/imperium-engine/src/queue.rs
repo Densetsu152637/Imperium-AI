@@ -37,22 +37,40 @@ mod wording {
 }
 
 /// Why a message could not be queued, edited, or removed.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueError {
-    #[error("the session has stopped")]
     Closed,
-    #[error(
-        "{} {0:?} in this session",
-        imperium_protocol::errors::NO_RUNNING_AGENT
-    )]
     UnknownAgent(String),
-    #[error("no queued message {0:?}; it may have been delivered already")]
     UnknownMessage(String),
-    #[error("the message is empty")]
     Empty,
-    #[error("message {0:?} is steering the running turn and can no longer be edited")]
     Steering(String),
 }
+
+// By hand, not derived: the unknown-agent wording is shared with clients that match on it
+// (`imperium_protocol::errors::NO_RUNNING_AGENT`), and an attribute cannot name a constant.
+impl std::fmt::Display for QueueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueueError::Closed => write!(f, "the session has stopped"),
+            QueueError::UnknownAgent(id) => write!(
+                f,
+                "{} {id:?} in this session",
+                imperium_protocol::errors::NO_RUNNING_AGENT
+            ),
+            QueueError::UnknownMessage(id) => write!(
+                f,
+                "no queued message {id:?}; it may have been delivered already"
+            ),
+            QueueError::Empty => write!(f, "the message is empty"),
+            QueueError::Steering(id) => write!(
+                f,
+                "message {id:?} is steering the running turn and can no longer be edited"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for QueueError {}
 
 /// One agent's waiting messages.
 #[derive(Debug)]
