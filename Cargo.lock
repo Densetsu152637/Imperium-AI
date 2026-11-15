@@ -2425,6 +2425,7 @@ dependencies = [
  "directories",
  "imperium-api",
  "keyring",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

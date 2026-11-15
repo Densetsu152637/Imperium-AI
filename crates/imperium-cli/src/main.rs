@@ -1081,6 +1081,9 @@ fn open_secrets() -> anyhow::Result<imperium_config::AutoSecrets> {
 
 /// Says so when secrets went to the encrypted file because the OS has no keychain.
 fn warn_if_weaker(secrets: &imperium_config::AutoSecrets) {
+    if let Some(notice) = secrets.notice() {
+        eprintln!("warning: {notice}");
+    }
     if secrets.backend() == imperium_config::SecretBackend::EncryptedFile {
         eprintln!("warning: {}", secrets.fallback_warning());
     }

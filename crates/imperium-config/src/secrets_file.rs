@@ -43,6 +43,7 @@ const FORMAT_VERSION: u32 = 1;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 24;
 const SALT_LEN: usize = 16;
+const MAX_PRIVATE_FILE_LEN: usize = 4096;
 /// What a file's recorded Argon2id cost may be, checked before deriving anything: a hostile or
 /// corrupt file must not be able to ask for 4 TiB of memory.
 const MIN_MEMORY_KIB: u32 = 8 * 1024;
@@ -140,6 +141,17 @@ impl FileSecrets {
         let passphrase_file = std::env::var_os(PASSPHRASE_FILE_ENV)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
+        // Off Linux the OS keychain is the only store and this file is never used.
+        let passphrase_file = if cfg!(target_os = "linux") {
+            passphrase_file
+        } else {
+            if passphrase_file.is_some() {
+                tracing::warn!(
+                    "{PASSPHRASE_FILE_ENV} is ignored: this platform always uses its OS keychain"
+                );
+            }
+            None
+        };
         FileSecrets::for_paths_with(paths, passphrase_file.as_deref())
     }
 
@@ -224,25 +236,12 @@ impl FileSecrets {
         let _guard = self.lock()?;
         let mut map = self.read()?;
         let mut moved = 0;
-        let mut dropped = false;
         let mut failure = None;
         for (name, value) in map.clone() {
             let Ok(secret_name) = name.parse::<SecretName>() else {
                 continue;
             };
-            // A value the target already holds is newer than this copy: keep it, drop ours.
-            let stale = match target.load(&secret_name) {
-                Ok(held) => held.is_some(),
-                Err(error) => {
-                    failure = Some(error);
-                    break;
-                }
-            };
-            if stale {
-                map.remove(&name);
-                dropped = true;
-                continue;
-            }
+            // The file's copy is the newer one, so it replaces whatever the target holds.
             match target.store(&secret_name, &value) {
                 Ok(()) => {
                     map.remove(&name);
@@ -254,7 +253,7 @@ impl FileSecrets {
                 }
             }
         }
-        if moved > 0 || dropped {
+        if moved > 0 {
             self.commit(&map)?;
         }
         match failure {
@@ -541,7 +540,15 @@ fn read_private_file(path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, SecretEr
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(io_error("inspect", path, &error)),
     }
-    let mut file = match fs::File::open(path) {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Fails rather than follows a symbolic link swapped in after the check above.
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = match options.open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(io_error("read", path, &error)),
@@ -558,9 +565,15 @@ fn read_private_file(path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, SecretEr
     check_private(path, &meta)?;
     let mut bytes = Zeroizing::new(Vec::new());
     (&mut file)
-        .take(4096)
+        .take(MAX_PRIVATE_FILE_LEN as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| io_error("read", path, &error))?;
+    if bytes.len() > MAX_PRIVATE_FILE_LEN {
+        return Err(file_error(format!(
+            "{} is larger than {MAX_PRIVATE_FILE_LEN} bytes, which a key or passphrase file never is",
+            path.display()
+        )));
+    }
     Ok(Some(bytes))
 }
 
@@ -699,14 +712,16 @@ pub struct MigrationReport {
 }
 
 /// The secret store the daemon and the CLI use: the OS keychain when there is one, otherwise the
-/// encrypted file. The choice is made once, at [`AutoSecrets::open`], and only on Linux (the only
+/// encrypted file. The daemon makes the choice once, at [`AutoSecrets::open_daemon`], records it,
+/// and the CLI follows the record; it is made only on Linux (the only
 /// platform where a keychain can be missing); everywhere else the keychain is the only store.
-/// When a keychain is there at a later start, secrets left in the file move into it, one at a
-/// time as they are read and all at once at [`AutoSecrets::migrate`].
+/// When the daemon finds a keychain at a later start, secrets left in the file move into it
+/// ([`AutoSecrets::migrate`]); until then a copy still in the file is the one read.
 pub struct AutoSecrets {
     keychain: Arc<dyn SecretStore>,
     file: FileSecrets,
     backend: SecretBackend,
+    notice: Option<String>,
 }
 
 impl fmt::Debug for AutoSecrets {
@@ -730,17 +745,98 @@ pub fn detect_backend(keychain: &dyn SecretStore) -> SecretBackend {
     }
 }
 
+/// Who is opening the store. The daemon decides the backend and records it; every other process
+/// follows the record, so the CLI and the daemon cannot keep secrets in different places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opener {
+    Daemon,
+    Client,
+}
+
+/// The backend to use: the daemon's own detection; a client follows the daemon's record when
+/// there is one and detects for itself only when there is none.
+fn choose_backend(
+    opener: Opener,
+    recorded: Option<SecretBackend>,
+    detected: SecretBackend,
+) -> SecretBackend {
+    match opener {
+        Opener::Daemon => detected,
+        Opener::Client => recorded.unwrap_or(detected),
+    }
+}
+
+fn read_backend_record(path: &Path) -> Option<SecretBackend> {
+    match fs::read_to_string(path).ok()?.trim() {
+        "file" => Some(SecretBackend::EncryptedFile),
+        "keychain" => Some(SecretBackend::Keychain),
+        _ => None,
+    }
+}
+
+fn write_backend_record(path: &Path, backend: SecretBackend) -> std::io::Result<()> {
+    let text = match backend {
+        SecretBackend::Keychain => "keychain\n",
+        SecretBackend::EncryptedFile => "file\n",
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Not a secret: just which store the daemon is using.
+    fs::write(path, text)
+}
+
 impl AutoSecrets {
-    /// The OS keychain with the encrypted file for these paths as the fallback, decided now.
-    /// Fails when passphrase mode is asked for and the passphrase file cannot be read.
+    /// For the daemon: decides the backend now, records it in the data folder (`secrets.backend`)
+    /// for the CLI to follow, and keeps it. Fails when passphrase mode is asked for and the
+    /// passphrase file cannot be read.
+    pub fn open_daemon(paths: &Paths) -> Result<Self, SecretError> {
+        AutoSecrets::open_as(paths, Opener::Daemon)
+    }
+
+    /// For every other process: follows the daemon's recorded backend, or detects one when the
+    /// daemon has not recorded any.
     pub fn open(paths: &Paths) -> Result<Self, SecretError> {
+        AutoSecrets::open_as(paths, Opener::Client)
+    }
+
+    fn open_as(paths: &Paths, opener: Opener) -> Result<Self, SecretError> {
         let keychain = Arc::new(KeychainSecrets);
-        let backend = detect_backend(keychain.as_ref());
-        Ok(AutoSecrets::with_parts(
-            keychain,
-            FileSecrets::for_paths(paths)?,
-            backend,
-        ))
+        let detected = detect_backend(keychain.as_ref());
+        let record_path = paths.data_dir().join("secrets.backend");
+        // Only Linux can lack a keychain, so only Linux has anything to record or follow.
+        let recorded = if cfg!(target_os = "linux") {
+            read_backend_record(&record_path)
+        } else {
+            None
+        };
+        let backend = choose_backend(opener, recorded, detected);
+        let mut notice = None;
+        if opener == Opener::Daemon && cfg!(target_os = "linux") {
+            if let Err(error) = write_backend_record(&record_path, backend) {
+                tracing::warn!(%error, "could not record which secret store the daemon uses; the CLI will detect one itself");
+            }
+        } else if opener == Opener::Client && cfg!(target_os = "linux") {
+            if let Some(recorded) = recorded {
+                if recorded != detected {
+                    notice = Some(format!(
+                        "the daemon uses the {} for secrets but this process would pick the {}; following the daemon",
+                        backend_name(recorded),
+                        backend_name(detected)
+                    ));
+                }
+            } else if backend == SecretBackend::EncryptedFile
+                && paths.daemon_endpoint_file().exists()
+            {
+                notice = Some(
+                    "a daemon may be running that uses the OS keychain, which would not see secrets saved to the encrypted file until it restarts"
+                        .to_string(),
+                );
+            }
+        }
+        let mut auto = AutoSecrets::with_parts(keychain, FileSecrets::for_paths(paths)?, backend);
+        auto.notice = notice;
+        Ok(auto)
     }
 
     pub fn with_parts(
@@ -752,6 +848,7 @@ impl AutoSecrets {
             keychain,
             file,
             backend,
+            notice: None,
         }
     }
 
@@ -765,9 +862,14 @@ impl AutoSecrets {
         self.backend
     }
 
+    /// A warning about this process and the daemon using different stores, when they would.
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
     /// Moves every secret in the encrypted file into the keychain, when the keychain is the
-    /// store in use. A secret the keychain already holds is never overwritten: the file's copy
-    /// is stale and is dropped.
+    /// store in use; run by the daemon at start, and only there. The file's copy wins: it is the
+    /// newer one, since a write that reaches the keychain removes any file copy first or fails.
     pub fn migrate(&self) -> Result<MigrationReport, SecretError> {
         if self.backend != SecretBackend::Keychain || !self.file.exists() {
             return Ok(MigrationReport::default());
@@ -784,9 +886,16 @@ impl AutoSecrets {
             "under a key file next to it, which any program running as you can read"
         };
         format!(
-            "no OS keychain is available, so secrets are kept in {} encrypted {how}; this is weaker than a keychain. They move into the keychain at the next start once one is available",
+            "no OS keychain is available, so secrets are kept in {} encrypted {how}; this is weaker than a keychain. They move into the keychain at the daemon's next start once one is available",
             self.file.path().display()
         )
+    }
+}
+
+fn backend_name(backend: SecretBackend) -> &'static str {
+    match backend {
+        SecretBackend::Keychain => "OS keychain",
+        SecretBackend::EncryptedFile => "encrypted file",
     }
 }
 
@@ -795,28 +904,19 @@ impl SecretStore for AutoSecrets {
         if self.backend == SecretBackend::EncryptedFile {
             return self.file.load(name);
         }
-        match self.keychain.load(name)? {
-            Some(value) => Ok(Some(value)),
-            None if self.file.exists() => match self.file.load(name) {
-                Ok(Some(value)) => {
-                    // Left over from before the keychain: move it across.
-                    if self.keychain.store(name, &value).is_ok()
-                        && let Err(error) = self.file.delete(name)
-                    {
-                        tracing::warn!(%error, secret = %name, "could not remove a secret from the encrypted file after moving it to the keychain");
-                    }
-                    Ok(Some(value))
-                }
-                Ok(None) => Ok(None),
+        // A copy still in the file is the newer one (see `migrate`); reading never moves it.
+        if self.file.exists() {
+            match self.file.load(name) {
+                Ok(Some(value)) => return Ok(Some(value)),
+                Ok(None) => {}
                 Err(error) => {
                     // The keychain is the store in use; an unreadable leftover file does not
                     // make a secret that is not in the keychain exist.
-                    tracing::warn!(%error, secret = %name, "the encrypted secret file could not be read, so the secret is treated as absent");
-                    Ok(None)
+                    tracing::warn!(%error, secret = %name, "the encrypted secret file could not be read, so it is ignored for this secret");
                 }
-            },
-            None => Ok(None),
+            }
         }
+        self.keychain.load(name)
     }
 
     fn store(&self, name: &SecretName, value: &str) -> Result<(), SecretError> {
@@ -824,11 +924,10 @@ impl SecretStore for AutoSecrets {
             return self.file.store(name, value);
         }
         self.keychain.store(name, value)?;
-        // Drop an older copy in the file so it cannot come back after a delete.
-        if self.file.exists()
-            && let Err(error) = self.file.delete(name)
-        {
-            tracing::warn!(%error, secret = %name, "a stale copy of this secret is still in the encrypted file and could not be removed");
+        // An older copy in the file would be read in preference to this one, so the write has
+        // not taken effect until it is gone: report a failure to remove it.
+        if self.file.exists() {
+            self.file.delete(name)?;
         }
         Ok(())
     }
@@ -1239,39 +1338,92 @@ mod tests {
         assert_eq!(keychain.inner.load(&name("a")).unwrap(), None);
 
         let after = open(dir.path(), &keychain, SecretBackend::Keychain);
-        // One secret moves as it is read.
+        // Reading before the move finds the file's copy and moves nothing.
         assert_eq!(after.load(&name("a")).unwrap().as_deref(), Some("one"));
-        assert_eq!(
-            keychain.inner.load(&name("a")).unwrap().as_deref(),
-            Some("one")
-        );
-        assert_eq!(after.file.load(&name("a")).unwrap(), None);
-        // The rest move together.
-        assert_eq!(after.migrate().unwrap(), MigrationReport { moved: 2 });
+        assert_eq!(keychain.inner.load(&name("a")).unwrap(), None);
+        assert!(after.file.exists());
+        // The daemon's migration moves them all.
+        assert_eq!(after.migrate().unwrap(), MigrationReport { moved: 3 });
         assert!(!after.file.exists(), "the emptied file is removed");
         assert_eq!(
             keychain.inner.load(&name("c")).unwrap().as_deref(),
             Some("three")
         );
+        assert_eq!(after.load(&name("a")).unwrap().as_deref(), Some("one"));
         assert_eq!(after.migrate().unwrap().moved, 0);
     }
 
     #[test]
-    fn migration_never_overwrites_a_value_the_keychain_holds() {
+    fn migration_lets_the_newer_file_copy_replace_the_keychain_value() {
         let dir = tempfile::tempdir().unwrap();
         let keychain = Arc::new(FakeKeychain::default());
-        open(dir.path(), &keychain, SecretBackend::EncryptedFile)
-            .store(&name("a"), "stale")
-            .unwrap();
         keychain.on.store(true, Ordering::SeqCst);
-        keychain.inner.store(&name("a"), "current").unwrap();
+        keychain.inner.store(&name("a"), "v1").unwrap();
+        open(dir.path(), &keychain, SecretBackend::EncryptedFile)
+            .store(&name("a"), "v2")
+            .unwrap();
         let auto = open(dir.path(), &keychain, SecretBackend::Keychain);
-        assert_eq!(auto.migrate().unwrap().moved, 0);
+        // Until migrated, the file's newer value is the one read.
+        assert_eq!(auto.load(&name("a")).unwrap().as_deref(), Some("v2"));
+        assert_eq!(auto.migrate().unwrap().moved, 1);
         assert_eq!(
             keychain.inner.load(&name("a")).unwrap().as_deref(),
-            Some("current")
+            Some("v2")
         );
-        assert!(!auto.file.exists(), "the stale copy is dropped");
+        assert!(!auto.file.exists());
+    }
+
+    #[test]
+    fn a_store_that_cannot_remove_the_older_file_copy_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let keychain = Arc::new(FakeKeychain::default());
+        keychain.on.store(true, Ordering::SeqCst);
+        fs::write(dir.path().join("secrets.enc"), "not json").unwrap();
+        let auto = open(dir.path(), &keychain, SecretBackend::Keychain);
+        assert!(auto.store(&name("a"), "new").is_err());
+    }
+
+    #[test]
+    fn a_client_follows_the_daemons_recorded_backend() {
+        use SecretBackend::{EncryptedFile, Keychain};
+        for detected in [Keychain, EncryptedFile] {
+            // The daemon always uses what it detected.
+            assert_eq!(
+                choose_backend(Opener::Daemon, Some(EncryptedFile), detected),
+                detected
+            );
+            // A client follows the record, and detects only when there is none.
+            for recorded in [Keychain, EncryptedFile] {
+                assert_eq!(
+                    choose_backend(Opener::Client, Some(recorded), detected),
+                    recorded
+                );
+            }
+            assert_eq!(choose_backend(Opener::Client, None, detected), detected);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("data").join("secrets.backend");
+        assert_eq!(read_backend_record(&record), None);
+        write_backend_record(&record, EncryptedFile).unwrap();
+        assert_eq!(read_backend_record(&record), Some(EncryptedFile));
+        write_backend_record(&record, Keychain).unwrap();
+        assert_eq!(read_backend_record(&record), Some(Keychain));
+        fs::write(&record, "nonsense").unwrap();
+        assert_eq!(read_backend_record(&record), None);
+    }
+
+    #[test]
+    fn key_and_passphrase_files_over_the_size_limit_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big");
+        fs::write(&big, vec![b'x'; MAX_PRIVATE_FILE_LEN + 1]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&big, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let error = read_private_file(&big).unwrap_err().to_string();
+        assert!(error.contains("larger than"), "{error}");
     }
 
     #[test]
