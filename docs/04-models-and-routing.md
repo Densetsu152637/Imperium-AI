@@ -941,24 +941,43 @@ and passing it to `Supervisor::with_backends`.
     (the PyPI build targets CUDA); it runs `uv venv --python 3.12` and `uv pip install
     vllm==<version>` under `<data dir>/runtimes/vllm/<version>/venv`, then `vllm --version`. Docker
     mode (`--docker`) needs Docker and, for NVIDIA GPUs, the NVIDIA Container Toolkit, runs `docker
-    pull <image>` (about 10 to 20 GiB), and starts each model in a container of its own
-    (`docker run --rm --gpus all --ipc=host`, the model folder mounted read-only, the port
-    published on the loopback only, `--entrypoint vllm`), which is removed when the model stops.
-    For AMD or Intel GPUs set `runtime.vllm.docker_image` to a build for them.
+    pull <image>` (about 10 to 20 GiB), and starts each model in a container of its own:
+    `docker run --rm --pull=never --security-opt no-new-privileges --gpus all --ipc=host`, the
+    model folder mounted read-only, the port published on the loopback only, `--entrypoint vllm`.
+    `--pull=never` means only the image setup pulled is used; a start that finds it missing says
+    to run `imperium runtime vllm setup --docker`. `--gpus all` and `--ipc=host` are what
+    vLLM's own instructions use: the container sees every GPU (not only the one the planner
+    chose) and the host's shared memory, and runs as the image's user (usually root) inside its
+    container; `--cap-drop=ALL` is not used because it is not known to work with the NVIDIA
+    runtime and vLLM. For AMD or Intel GPUs set `runtime.vllm.docker_image` to a build for them.
+    The container's name holds the daemon's pid, a counter and the port. It is removed when the
+    model stops, when a start fails or is cancelled, and when the daemon drops the server; a
+    container a killed daemon left behind (its owner pid no longer running) is removed when the
+    next daemon starts. The server's pid in the resource monitor is the `docker run` client's,
+    so its CPU, RAM and GPU figures are the client's, not the container's.
   - The version and image are pinned in `runtimes/vllm.env` and overridden by
     `runtime.vllm.version` and `runtime.vllm.docker_image` (or `--version`); both are checked
     against the characters a version or image reference uses before they reach a command.
     Everything runs without a shell; output is shown line by line with URL credentials and
     Hugging Face tokens masked, and no secret is put on a command line or in the record
-    (`managed.json`, written last, so an interrupted setup records nothing). A failure removes
-    the unfinished environment and shows the end of the failing command's output; setting up the
-    version already recorded changes nothing, and another version needs `remove` first.
+    (`managed.json`, written last, so an interrupted setup records nothing; a record naming a
+    version or image setup could not have written is ignored and refused by `remove`). `uv`
+    and `docker` inherit the caller's environment, so `UV_*`, `PIP_*` and proxy variables apply
+    (setup lists the names of those set, never their values), and `uv` may download a Python of
+    its own. vLLM is started with `VLLM_NO_USAGE_STATS=1` and `DO_NOT_TRACK=1`. A command
+    that runs over an hour is killed. A failure removes the unfinished environment and shows the
+    end of the failing command's output; setting up what is already recorded changes nothing,
+    and another version, mode or image needs `remove` first. `--version` applies to the virtual
+    environment only; with `--docker` the image names the release.
   - `imperium runtime vllm status` shows the mode, version, folder and size and which `vllm` the
     daemon starts; `imperium runtime vllm remove` deletes the version's folder (and nothing else)
-    or runs `docker rmi`, after asking.
-  - The daemon uses it when it starts: a `runtime.vllm.command` other than the default `vllm`
-    wins; else the managed environment's `vllm` (venv) or its container (Docker); else `vllm` on
-    PATH. Restart the daemon after setup or removal.
+    or runs `docker rmi`, after asking, and warns when the daemon is running (models loaded
+    from the environment fail once it is gone). An agent's shell command `imperium runtime vllm
+    setup|remove` is left to a person to approve, as the other commands that install or remove
+    software are.
+  - The daemon uses it when it starts: a `runtime.vllm.command` that is set wins, `vllm`
+    included (which forces the one on PATH); else the managed environment's `vllm` (venv) or its
+    container (Docker); else `vllm` on PATH. Restart the daemon after setup or removal.
   - Tested with a fake command runner (no `uv`, `pip`, Docker or vLLM runs in tests); not yet
     verified on hardware, so the first real setup, the container arguments and the free-space
     check (none: the requirements are shown, the disk is not measured) are the things to watch.

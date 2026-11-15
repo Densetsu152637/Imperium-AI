@@ -456,7 +456,9 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
 /// decides that too. `imperium pack add-source|accept|remove-source …` adds a pack source,
 /// pins a pack the agents will then be instructed by, or drops one (an agent could `--hash` its
 /// own accept), so a person decides those as well; `check`, `diff` and `reject` change nothing
-/// that is in force.
+/// that is in force. `imperium runtime vllm setup|remove …` downloads and installs software
+/// (a package environment or a Docker image) or deletes it, so a person decides that too;
+/// `status` changes nothing.
 fn changes_agents(args: &[String]) -> bool {
     // Global options such as `--remote <name>` may sit between the words, so the subcommand is
     // looked for anywhere after the group word (a false alarm only asks a person).
@@ -471,6 +473,23 @@ fn changes_agents(args: &[String]) -> bool {
     };
     if after("pack", &["add-source", "accept", "remove-source"])
         || after("mods", &["install", "update"])
+    {
+        return true;
+    }
+    // `runtime [--remote x] vllm setup|remove`: the group word, then `vllm`, then the verb.
+    if args
+        .iter()
+        .position(|word| word == "runtime")
+        .is_some_and(|at| {
+            let rest = &args[at + 1..];
+            rest.iter()
+                .position(|word| word == "vllm")
+                .is_some_and(|v| {
+                    rest[v + 1..]
+                        .iter()
+                        .any(|word| matches!(word.as_str(), "setup" | "remove"))
+                })
+        })
     {
         return true;
     }
@@ -615,6 +634,11 @@ mod tests {
             "imperium --remote=box pack add-source a https://example.com/p.git",
             "imperium mods --remote x install ./demo",
             "imperium --remote mods mods update demo",
+            "imperium runtime vllm setup",
+            "imperium runtime vllm setup --docker --yes",
+            "imperium.exe runtime vllm remove --yes",
+            "imperium --remote box runtime vllm setup",
+            "imperium runtime --remote x vllm remove",
         ] {
             assert!(dangerous_command(line), "{line}");
         }
@@ -628,6 +652,11 @@ mod tests {
             "imperium pack check acw",
             "imperium pack diff acw --full",
             "imperium pack reject acw",
+            "imperium runtime vllm status",
+            "imperium runtime vllm",
+            "imperium runtime status",
+            "imperium runtime install",
+            "imperium vllm setup",
         ] {
             assert!(!dangerous_command(line), "{line}");
         }

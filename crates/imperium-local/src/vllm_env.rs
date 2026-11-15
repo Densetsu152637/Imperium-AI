@@ -12,13 +12,19 @@
 //! are shown with URL credentials and Hugging Face tokens masked ([`redact`]). No secret is
 //! passed on a command line or written to `managed.json`.
 //!
-//! The daemon asks [`resolve`] which `vllm` to start: a `runtime.vllm.command` other than the
-//! default wins, then the managed environment, then `vllm` on `PATH`. Docker mode starts each
-//! model in its own container ([`docker_run_args`]) that is removed when the model stops.
+//! The daemon asks [`resolve`] which `vllm` to start: a `runtime.vllm.command` that is set (even
+//! to `vllm`, which forces `PATH`) wins, then the managed environment, then `vllm` on `PATH`.
+//! Docker mode starts each model in its own container ([`docker_run_args`]) that is removed when
+//! the model stops, and containers a killed daemon left are swept at the next start
+//! ([`sweep_stale_containers`]). The commands inherit the caller's environment, so `UV_*`,
+//! `PIP_*` and proxy variables apply to the install (and `uv` may download a Python of its own).
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use imperium_config::VllmSettings;
 use serde::{Deserialize, Serialize};
@@ -91,6 +97,8 @@ impl Plan {
                 .unwrap_or(pinned)
                 .to_string()
         };
+        // `--version` is for the virtual environment; the image names a Docker setup's release.
+        let version = if mode == Mode::Docker { None } else { version };
         let plan = Plan {
             mode,
             version: pick(version, &settings.version, pinned_version()),
@@ -107,8 +115,8 @@ impl Plan {
         match self.mode {
             Mode::Venv => vec![
                 format!(
-                    "creates a Python {} environment with vLLM {} (installed by uv from PyPI)",
-                    self.python, self.version
+                    "creates a Python {} environment with vLLM {} (installed by uv from PyPI; uv may also download Python {})",
+                    self.python, self.version, self.python
                 ),
                 "downloads and uses about 10 to 15 GiB of disk: PyTorch, CUDA libraries and vLLM"
                     .into(),
@@ -185,10 +193,23 @@ pub struct Managed {
     pub image: Option<String>,
 }
 
-/// What is recorded as set up; `None` when nothing is or the record is unreadable.
-pub fn managed(data_dir: &Path) -> Option<Managed> {
+/// The record as written, whatever it says; `None` when there is none or it is unreadable.
+fn read_record(data_dir: &Path) -> Option<Managed> {
     let text = std::fs::read_to_string(state_path(data_dir)).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// What is recorded as set up; `None` when nothing is, the record is unreadable, or it names a
+/// version or image that could not have been written by setup (a record edited by hand to point
+/// out of the managed folder or to inject an option).
+pub fn managed(data_dir: &Path) -> Option<Managed> {
+    read_record(data_dir).filter(|record| {
+        valid_version(&record.version).is_ok()
+            && record
+                .image
+                .as_deref()
+                .is_none_or(|image| valid_image(image).is_ok())
+    })
 }
 
 fn write_managed(data_dir: &Path, managed: &Managed) -> Result<(), String> {
@@ -210,10 +231,11 @@ pub enum Launch {
     Docker { docker: PathBuf, image: String },
 }
 
-/// The `vllm` to start: a `configured` command other than the default is the user's choice and
-/// wins; else the managed environment when its executable is there; else `vllm` on `PATH`.
+/// The `vllm` to start: a `configured` command (`runtime.vllm.command`) that is not empty is the
+/// user's choice and wins, `vllm` included, which forces the one on `PATH`; else the managed
+/// environment when its executable is there; else `vllm` on `PATH`.
 pub fn resolve(data_dir: &Path, configured: &str) -> Launch {
-    if configured != DEFAULT_COMMAND {
+    if !configured.trim().is_empty() {
         return Launch::Command(PathBuf::from(configured));
     }
     match managed(data_dir) {
@@ -239,7 +261,7 @@ pub fn resolve(data_dir: &Path, configured: &str) -> Launch {
         }
         _ => {}
     }
-    Launch::Command(PathBuf::from(configured))
+    Launch::Command(PathBuf::from(DEFAULT_COMMAND))
 }
 
 /// Masks what must not be shown or logged: credentials in URLs (`https://user:pass@host`) and
@@ -304,9 +326,20 @@ pub trait Runner {
     fn run(&self, program: &str, args: &[String], on_line: &mut dyn FnMut(&str)) -> RunResult;
 }
 
-/// The real [`Runner`].
-#[derive(Debug, Default)]
-pub struct SystemRunner;
+/// The real [`Runner`]. A command that runs longer than `timeout` is killed.
+#[derive(Debug)]
+pub struct SystemRunner {
+    pub timeout: Duration,
+}
+
+impl Default for SystemRunner {
+    fn default() -> Self {
+        SystemRunner {
+            // A first install downloads gigabytes; an hour is slow, not stuck.
+            timeout: Duration::from_secs(60 * 60),
+        }
+    }
+}
 
 impl Runner for SystemRunner {
     fn run(&self, program: &str, args: &[String], on_line: &mut dyn FnMut(&str)) -> RunResult {
@@ -330,13 +363,30 @@ impl Runner for SystemRunner {
         let spawned = command.spawn();
         // The pipe's write ends live in `command`; the reader sees the end only when they close.
         drop(command);
-        let mut child = match spawned {
-            Ok(child) => child,
+        let child = match spawned {
+            Ok(child) => Arc::new(Mutex::new(child)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return RunResult::Missing;
             }
             Err(error) => return RunResult::Failed(format!("could not start: {error}")),
         };
+        // A watchdog kills the command at the deadline, which also ends the output.
+        let done = Arc::new(AtomicBool::new(false));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        {
+            let (child, done, timed_out) = (child.clone(), done.clone(), timed_out.clone());
+            let (started, timeout) = (Instant::now(), self.timeout);
+            std::thread::spawn(move || {
+                while !done.load(Ordering::SeqCst) {
+                    if started.elapsed() >= timeout {
+                        timed_out.store(true, Ordering::SeqCst);
+                        let _ = child.lock().unwrap_or_else(PoisonError::into_inner).kill();
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            });
+        }
         let mut pending = Vec::new();
         let mut buffer = [0u8; 8192];
         while let Ok(read) = reader.read(&mut buffer) {
@@ -353,10 +403,28 @@ impl Runner for SystemRunner {
             }
         }
         emit(&mut pending, on_line);
-        match child.wait() {
-            Ok(status) if status.success() => RunResult::Ok,
-            Ok(status) => RunResult::Failed(format!("exited with {status}")),
-            Err(error) => RunResult::Failed(error.to_string()),
+        let status = loop {
+            let polled = child
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .try_wait();
+            match polled {
+                Ok(Some(status)) => break status,
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(error) => {
+                    done.store(true, Ordering::SeqCst);
+                    return RunResult::Failed(error.to_string());
+                }
+            }
+        };
+        done.store(true, Ordering::SeqCst);
+        if timed_out.load(Ordering::SeqCst) {
+            return RunResult::Failed(format!("timed out after {:?}", self.timeout));
+        }
+        if status.success() {
+            RunResult::Ok
+        } else {
+            RunResult::Failed(format!("exited with {status}"))
         }
     }
 }
@@ -435,6 +503,37 @@ fn step(
     }
 }
 
+/// Whether what is already set up stops `plan`: a different environment is made only after the
+/// old one is removed, so none is left behind. The same one is not a conflict (setup then does
+/// nothing).
+pub fn check_existing(data_dir: &Path, plan: &Plan) -> Result<(), SetupError> {
+    let Some(existing) = read_record(data_dir) else {
+        return Ok(());
+    };
+    let same = existing.mode == plan.mode
+        && match plan.mode {
+            Mode::Venv => existing.version == plan.version,
+            Mode::Docker => existing.image.as_deref() == Some(plan.image.as_str()),
+        };
+    if same {
+        return Ok(());
+    }
+    Err(SetupError {
+        step: "checking the existing environment".into(),
+        message: format!(
+            "vLLM {} ({}{}) is already set up; run `imperium runtime vllm remove` first to change it",
+            existing.version,
+            existing.mode.name(),
+            existing
+                .image
+                .as_deref()
+                .map(|image| format!(", {image}"))
+                .unwrap_or_default()
+        ),
+        tail: Vec::new(),
+    })
+}
+
 /// Sets up the environment of `plan` (the caller has shown [`Plan::requirements`] and asked).
 /// An environment already set up at this version is left as it is. A failure removes what this
 /// run made.
@@ -444,6 +543,7 @@ pub fn setup(
     plan: &Plan,
     on: &mut dyn FnMut(Event),
 ) -> Result<Managed, SetupError> {
+    check_existing(data_dir, plan)?;
     match plan.mode {
         Mode::Venv => setup_venv(runner, data_dir, plan, on),
         Mode::Docker => setup_docker(runner, data_dir, plan, on),
@@ -656,12 +756,27 @@ pub fn remove(
     data_dir: &Path,
     on: &mut dyn FnMut(Event),
 ) -> Result<Option<Managed>, String> {
-    let Some(record) = managed(data_dir) else {
+    let Some(record) = read_record(data_dir) else {
         return Ok(None);
     };
+    // The record is a file anyone with access to the data folder could edit: what it names is
+    // checked before anything is deleted or run.
+    valid_version(&record.version).map_err(|error| {
+        format!(
+            "{error}; {} was not written by setup, so nothing was removed (delete it by hand if it is wrong)",
+            state_path(data_dir).display()
+        )
+    })?;
+    if let Some(image) = &record.image {
+        valid_image(image).map_err(|error| {
+            format!(
+                "{error}; {} was not written by setup, so nothing was removed",
+                state_path(data_dir).display()
+            )
+        })?;
+    }
     match record.mode {
         Mode::Venv => {
-            valid_version(&record.version)?;
             let version_dir = root(data_dir).join(&record.version);
             on(Event::Step(format!("removing {}", version_dir.display())));
             if version_dir.exists() {
@@ -671,12 +786,12 @@ pub fn remove(
             }
         }
         Mode::Docker => {
-            if let Some(image) = record.image.as_deref().filter(|i| valid_image(i).is_ok()) {
+            if let Some(image) = record.image.as_deref() {
+                on(Event::Step(format!("removing the image {image}")));
                 let outcome =
                     runner.run("docker", &["rmi".into(), image.to_string()], &mut |line| {
                         on(Event::Output(line.to_string()));
                     });
-                on(Event::Step(format!("removing the image {image}")));
                 if outcome != RunResult::Ok {
                     on(Event::Warning(format!(
                         "docker could not remove {image} ({outcome:?}); remove it with `docker rmi {image}`"
@@ -710,14 +825,26 @@ pub fn docker_run_args(
     if folder.contains(',') || folder.contains('\n') {
         return Err(format!("{folder:?} cannot be mounted into a container"));
     }
+    // `--pull=never`: only the image `setup --docker` pulled is used, never one fetched while a
+    // model loads. `--gpus all` and `--ipc=host` are what vLLM's own instructions use (they give
+    // the container every GPU and the host's shared memory); `no-new-privileges` keeps the
+    // process from gaining more. Dropping capabilities (`--cap-drop=ALL`) is not done: it is not
+    // known to work with the NVIDIA runtime and vLLM.
     let mut args: Vec<String> = [
         "run",
         "--rm",
+        "--pull=never",
         "--name",
         name,
         "--gpus",
         "all",
         "--ipc=host",
+        "--security-opt",
+        "no-new-privileges",
+        "-e",
+        "VLLM_NO_USAGE_STATS=1",
+        "-e",
+        "DO_NOT_TRACK=1",
         "-p",
     ]
     .map(String::from)
@@ -743,9 +870,80 @@ pub fn docker_run_args(
     Ok(args)
 }
 
-/// A container name for a model server on `port`.
-pub fn container_name(port: u16) -> String {
-    format!("imperium-vllm-{port}")
+/// The prefix of every container name, for finding the ones a killed daemon left.
+pub const CONTAINER_PREFIX: &str = "imperium-vllm-";
+
+/// A container name: this process's id, a counter and the port, so two daemons or two starts on
+/// one port never share one.
+pub fn container_name(pid: u32, seq: u64, port: u16) -> String {
+    format!("{CONTAINER_PREFIX}{pid}-{seq}-{port}")
+}
+
+/// A name no other container of this process has had.
+pub fn fresh_container_name(port: u16) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    container_name(
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+        port,
+    )
+}
+
+/// The process id in a container name made by [`container_name`].
+fn container_owner(name: &str) -> Option<u32> {
+    name.strip_prefix(CONTAINER_PREFIX)?
+        .split('-')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Removes the containers a daemon that was killed left behind: those named like ours whose
+/// owner process (`is_alive`) is gone and is not `own_pid`. Returns the names removed. Failures
+/// (no Docker, no permission) remove nothing.
+pub fn sweep_stale_containers(
+    docker: &Path,
+    own_pid: u32,
+    is_alive: &dyn Fn(u32) -> bool,
+) -> Vec<String> {
+    let listed = Command::new(docker)
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("name=^{CONTAINER_PREFIX}"),
+            "--format",
+            "{{.Names}}",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let Ok(listed) = listed else {
+        return Vec::new();
+    };
+    if !listed.status.success() {
+        return Vec::new();
+    }
+    let mut removed = Vec::new();
+    for name in String::from_utf8_lossy(&listed.stdout).lines().take(256) {
+        let name = name.trim();
+        let Some(owner) = container_owner(name) else {
+            continue;
+        };
+        if owner == own_pid || is_alive(owner) {
+            continue;
+        }
+        let status = Command::new(docker)
+            .args(["rm", "-f", name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if status.is_ok_and(|status| status.success()) {
+            removed.push(name.to_string());
+        }
+    }
+    removed
 }
 
 #[cfg(test)]
@@ -895,7 +1093,7 @@ mod tests {
         // The record and the executable are there, and resolve picks them.
         assert_eq!(managed(dir.path()), Some(record));
         assert_eq!(
-            resolve(dir.path(), "vllm"),
+            resolve(dir.path(), ""),
             Launch::Command(venv_program(&venv, "vllm"))
         );
         // A command the user chose wins over the managed environment.
@@ -935,7 +1133,7 @@ mod tests {
         assert!(log.borrow().iter().any(|e| matches!(e, Event::Warning(_))));
         // Nothing is recorded, so resolve keeps using `vllm` on PATH.
         assert_eq!(
-            resolve(dir.path(), "vllm"),
+            resolve(dir.path(), ""),
             Launch::Command(PathBuf::from("vllm"))
         );
     }
@@ -966,7 +1164,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            resolve(dir.path(), "vllm"),
+            resolve(dir.path(), ""),
             Launch::Docker {
                 docker: PathBuf::from("docker"),
                 image: pinned_image().into()
@@ -1016,7 +1214,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            resolve(dir.path(), "vllm"),
+            resolve(dir.path(), ""),
             Launch::Command(PathBuf::from("vllm"))
         );
         assert!(!status(dir.path()).present);
@@ -1034,7 +1232,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            resolve(dir.path(), "vllm"),
+            resolve(dir.path(), ""),
             Launch::Command(PathBuf::from("vllm"))
         );
     }
@@ -1075,7 +1273,7 @@ mod tests {
         .to_vec();
         let args = docker_run_args(
             "vllm/vllm-openai:v0.11.0",
-            &container_name(8123),
+            &container_name(77, 3, 8123),
             8123,
             &serve,
         )
@@ -1083,7 +1281,7 @@ mod tests {
         let text = args.join(" ");
         assert!(
             text.starts_with(
-                "run --rm --name imperium-vllm-8123 --gpus all --ipc=host -p 127.0.0.1:8123:8123 "
+                "run --rm --pull=never --name imperium-vllm-77-3-8123 --gpus all --ipc=host --security-opt no-new-privileges -e VLLM_NO_USAGE_STATS=1 -e DO_NOT_TRACK=1 -p 127.0.0.1:8123:8123 "
             ),
             "{text}"
         );
@@ -1109,7 +1307,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_real_runner_reads_a_commands_output_in_lines_and_tells_failure_and_absence() {
-        let runner = SystemRunner;
+        let runner = SystemRunner::default();
         let mut lines = Vec::new();
         let args = [
             "-c".to_string(),
@@ -1148,5 +1346,214 @@ mod tests {
             "{}",
             seen[0].len()
         );
+    }
+
+    #[test]
+    fn an_explicit_vllm_command_forces_the_one_on_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan(Mode::Venv);
+        let fake = Fake::new(venv_dir(dir.path(), &plan.version));
+        setup(&fake, dir.path(), &plan, &mut |_| {}).unwrap();
+        // Unset: the managed environment. Set to `vllm`: the user asked for PATH.
+        assert!(
+            matches!(resolve(dir.path(), ""), Launch::Command(p) if p != PathBuf::from("vllm"))
+        );
+        assert_eq!(
+            resolve(dir.path(), "vllm"),
+            Launch::Command(PathBuf::from("vllm"))
+        );
+    }
+
+    #[test]
+    fn a_record_edited_to_point_elsewhere_is_ignored_and_never_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("runtimes").join("x");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), "").unwrap();
+        for version in ["../x", "..", "a/b", "-rf", ""] {
+            std::fs::create_dir_all(root(dir.path())).unwrap();
+            std::fs::write(
+                state_path(dir.path()),
+                format!(r#"{{"mode":"venv","version":"{version}"}}"#),
+            )
+            .unwrap();
+            assert_eq!(managed(dir.path()), None, "{version:?}");
+            assert_eq!(
+                resolve(dir.path(), ""),
+                Launch::Command(PathBuf::from("vllm"))
+            );
+            assert!(!status(dir.path()).present);
+            let runner = Fake::new(dir.path().join("unused"));
+            let error = remove(&runner, dir.path(), &mut |_| {}).unwrap_err();
+            assert!(error.contains("nothing was removed"), "{error}");
+            assert!(runner.calls.borrow().is_empty());
+            assert!(outside.join("keep").exists(), "{version:?}");
+            assert!(
+                state_path(dir.path()).exists(),
+                "the record is left for the user"
+            );
+        }
+        // An image that could be an option is refused too, and no `docker` runs.
+        std::fs::write(
+            state_path(dir.path()),
+            r#"{"mode":"docker","version":"0.11.0","image":"--privileged"}"#,
+        )
+        .unwrap();
+        let runner = Fake::new(dir.path().join("unused"));
+        assert!(remove(&runner, dir.path(), &mut |_| {}).is_err());
+        assert!(runner.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn image_references_are_checked() {
+        let long_image = "a".repeat(201);
+        let long_version = "1".repeat(65);
+        for good in [
+            "vllm/vllm-openai:v0.11.0",
+            "vllm/vllm-openai",
+            "registry.example.com:5000/team/vllm_rocm:6.4-rc1",
+            "ghcr.io/org/img@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "a--b",
+            "a__b",
+        ] {
+            assert!(valid_image(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "--",
+            "-v",
+            "--privileged",
+            "a b",
+            "img;rm",
+            "img$(x)",
+            "img\nx",
+            "img`x`",
+            "img'x",
+            "img\"x",
+            long_image.as_str(),
+        ] {
+            assert!(valid_image(bad).is_err(), "{bad:?}");
+        }
+        for good in ["0.11.0", "0.10.2.post1", "1.0.0rc1", "0.11.0+cu126"] {
+            assert!(valid_version(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "-1",
+            ".1",
+            "1 2",
+            "1/2",
+            "1;2",
+            "../x",
+            long_version.as_str(),
+        ] {
+            assert!(valid_version(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn setting_up_something_else_needs_the_old_one_removed_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let venv_plan = plan(Mode::Venv);
+        let fake = Fake::new(venv_dir(dir.path(), &venv_plan.version));
+        setup(&fake, dir.path(), &venv_plan, &mut |_| {}).unwrap();
+        // The same one is fine; another version or mode is not, and nothing runs.
+        assert!(check_existing(dir.path(), &venv_plan).is_ok());
+        let settings = VllmSettings::default();
+        let other = Plan::new(Mode::Venv, &settings, Some("0.9.0")).unwrap();
+        let docker = plan(Mode::Docker);
+        for plan in [&other, &docker] {
+            let runner = Fake::new(dir.path().join("unused"));
+            let error = setup(&runner, dir.path(), plan, &mut |_| {}).unwrap_err();
+            assert!(error.message.contains("vllm remove"), "{error}");
+            assert!(runner.calls.borrow().is_empty());
+        }
+        // A Docker setup with another image is refused the same way.
+        let other_dir = tempfile::tempdir().unwrap();
+        let runner = Fake::new(other_dir.path().join("unused"));
+        setup(&runner, other_dir.path(), &docker, &mut |_| {}).unwrap();
+        let rocm = VllmSettings {
+            docker_image: "registry.example/vllm:rocm".into(),
+            ..VllmSettings::default()
+        };
+        let changed = Plan::new(Mode::Docker, &rocm, None).unwrap();
+        assert!(check_existing(other_dir.path(), &changed).is_err());
+        // `--version` does not apply to Docker.
+        let flagged = Plan::new(Mode::Docker, &settings, Some("0.9.0")).unwrap();
+        assert_eq!(flagged.version, pinned_version());
+        assert!(check_existing(other_dir.path(), &flagged).is_ok());
+    }
+
+    #[test]
+    fn container_names_are_unique_and_name_their_owner() {
+        let a = fresh_container_name(8000);
+        let b = fresh_container_name(8000);
+        assert_ne!(a, b);
+        assert_eq!(container_owner(&a), Some(std::process::id()));
+        assert_eq!(container_name(7, 2, 9), "imperium-vllm-7-2-9");
+        assert_eq!(container_owner("imperium-vllm-7-2-9"), Some(7));
+        assert_eq!(container_owner("imperium-vllm-x-2-9"), None);
+        assert_eq!(container_owner("other"), None);
+    }
+
+    /// A `docker` that lists the given names for `ps` and appends the arguments of any other call
+    /// to `log`.
+    #[cfg(unix)]
+    pub(crate) fn fake_docker(dir: &Path, names: &[&str], log: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let listing: String = names.iter().map(|name| format!("echo {name}\n")).collect();
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = ps ]; then\n{listing}exit 0\nfi\necho \"$@\" >> {}\n",
+            log.display()
+        );
+        let path = dir.join("docker");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_containers_of_dead_daemons_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let docker = fake_docker(
+            dir.path(),
+            &[
+                "imperium-vllm-999999999-0-8000",
+                "imperium-vllm-555-1-8001",
+                "imperium-vllm-4242-0-8002",
+                "imperium-vllm-x-1-1",
+                "unrelated",
+            ],
+            &log,
+        );
+        // 555 is this process, 4242 is another daemon that is still running.
+        let removed = sweep_stale_containers(&docker, 555, &|pid| pid == 4242);
+        assert_eq!(removed, vec!["imperium-vllm-999999999-0-8000".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().trim(),
+            "rm -f imperium-vllm-999999999-0-8000"
+        );
+        // No Docker, nothing swept.
+        assert!(sweep_stale_containers(&dir.path().join("none"), 1, &|_| false).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_over_its_timeout_is_killed() {
+        let runner = SystemRunner {
+            timeout: Duration::from_millis(300),
+        };
+        let args = ["-c".to_string(), "echo started; exec sleep 30".to_string()];
+        let mut lines = Vec::new();
+        let started = Instant::now();
+        let result = runner.run("sh", &args, &mut |l| lines.push(l.to_string()));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(
+            matches!(&result, RunResult::Failed(why) if why.contains("timed out")),
+            "{result:?}"
+        );
+        assert!(lines.contains(&"started".to_string()), "{lines:?}");
     }
 }

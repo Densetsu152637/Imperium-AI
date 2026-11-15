@@ -161,7 +161,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("runtime.llamacpp.idle_unload_s", "Idle unload (seconds)", Integer, "Seconds an unused model stays loaded."),
     def("runtime.llamacpp.ram_headroom_mb", "RAM headroom (MB)", Integer, "System memory kept free when placing models."),
     def("runtime.llamacpp.extra_args", "Extra llama-server arguments", StringList, "Arguments added to every llama-server, such as --flash-attn on."),
-    def("runtime.vllm.command", "vLLM command", STRING, "The vllm executable for Hugging Face model folders (Linux and WSL2)."),
+    def("runtime.vllm.command", "vLLM command", STRING, "The vllm executable for Hugging Face model folders (Linux and WSL2). Empty uses the managed environment (`imperium runtime vllm setup`) when there is one, else `vllm` on PATH; `vllm` forces the one on PATH."),
     def("runtime.vllm.max_gpu_memory_utilization", "vLLM GPU memory share", Number, "Upper bound for vLLM's share of GPU memory (0-1)."),
     def("runtime.vllm.extra_args", "Extra vLLM arguments", StringList, "Arguments added to vllm serve."),
     def("runtime.vllm.version", "vLLM version", STRING, "The vLLM release the managed environment installs (`imperium runtime vllm setup`); empty is the one Imperium pins."),

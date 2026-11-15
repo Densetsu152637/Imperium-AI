@@ -1159,6 +1159,21 @@ async fn connect() -> anyhow::Result<(Client, String)> {
     Ok((client, endpoint.url))
 }
 
+/// Whether the daemon of this machine answers (never a `--remote` one).
+async fn local_daemon_running() -> bool {
+    let Ok(paths) = Paths::from_env() else {
+        return false;
+    };
+    let Ok(endpoint) = read_endpoint(&paths.daemon_endpoint_file()) else {
+        return false;
+    };
+    let me = Peer {
+        name: "imperium-cli".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+    };
+    Client::connect(&endpoint, me).await.is_ok()
+}
+
 fn explain(key: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let config = imperium_config::load(&paths, project.as_deref(), std::env::vars())?;

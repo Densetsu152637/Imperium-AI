@@ -11,28 +11,50 @@ use imperium_local::vllm_env::{
     self, Event, Launch, Mode, Plan, SystemRunner, pinned_image, pinned_version,
 };
 
+use crate::block_on;
+
 fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }
 
-/// Asks `question` at a terminal; `--yes` answers it, and without a terminal there is no way to.
-fn confirm(question: &str, yes: bool) -> anyhow::Result<bool> {
+/// Whether `question` is approved: by `--yes`, or by `yes` typed at a terminal. Without a
+/// terminal there is no way to ask, which is an error rather than a silent no. `ask` shows the
+/// question and reads the answer.
+fn approve(
+    question: &str,
+    yes: bool,
+    interactive: bool,
+    ask: &mut dyn FnMut(&str) -> std::io::Result<String>,
+) -> anyhow::Result<bool> {
     if yes {
         return Ok(true);
     }
-    if !std::io::stdin().is_terminal() {
+    if !interactive {
         bail!(
-            "this needs your approval: run it in a terminal, or pass --yes to approve what is listed above"
+            "this needs your approval: run it in a terminal, or pass --yes to approve what is \
+             listed above"
         );
     }
-    print!("{question} [y/N] ");
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
+    let answer = ask(question)?;
     Ok(matches!(
         answer.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
     ))
+}
+
+fn confirm(question: &str, yes: bool) -> anyhow::Result<bool> {
+    approve(
+        question,
+        yes,
+        std::io::stdin().is_terminal(),
+        &mut |question| {
+            print!("{question} [y/N] ");
+            std::io::stdout().flush()?;
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer)?;
+            Ok(answer)
+        },
+    )
 }
 
 fn print_event(event: Event) {
@@ -41,6 +63,18 @@ fn print_event(event: Event) {
         Event::Output(line) => println!("    {line}"),
         Event::Warning(text) => println!("warning: {text}"),
     }
+}
+
+/// Names (never values) of the `UV_*` and `PIP_*` variables set here: they change where `uv`
+/// installs from and apply to the setup.
+fn installer_variables(vars: impl Iterator<Item = (String, String)>) -> Vec<String> {
+    let mut names: Vec<String> = vars
+        .map(|(name, _)| name)
+        .filter(|name| name.starts_with("UV_") || name.starts_with("PIP_"))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 pub fn setup(docker: bool, yes: bool, version: Option<String>) -> anyhow::Result<()> {
@@ -53,17 +87,15 @@ pub fn setup(docker: bool, yes: bool, version: Option<String>) -> anyhow::Result
         );
     }
     let mode = if docker { Mode::Docker } else { Mode::Venv };
-    let plan =
-        Plan::new(mode, &settings.runtime.vllm, version.as_deref()).map_err(anyhow::Error::msg)?;
-    if let Some(existing) = vllm_env::managed(paths.data_dir())
-        && (existing.mode != plan.mode || existing.version != plan.version)
-    {
-        bail!(
-            "vLLM {} ({}) is set up; run `imperium runtime vllm remove` first to change it",
-            existing.version,
-            existing.mode.name()
+    if docker && version.is_some() {
+        println!(
+            "note: --version applies to the virtual environment; with --docker the image \
+             (runtime.vllm.docker_image) names the release"
         );
     }
+    let plan =
+        Plan::new(mode, &settings.runtime.vllm, version.as_deref()).map_err(anyhow::Error::msg)?;
+    vllm_env::check_existing(paths.data_dir(), &plan)?;
     println!(
         "Managed vLLM ({}), pinned {} / {}",
         mode.name(),
@@ -91,12 +123,19 @@ pub fn setup(docker: bool, yes: bool, version: Option<String>) -> anyhow::Result
              runtime.vllm.docker_image set to a build for your GPU"
         );
     }
+    let variables = installer_variables(std::env::vars());
+    if mode == Mode::Venv && !variables.is_empty() {
+        println!(
+            "  - these variables are set here and apply to the install: {}",
+            variables.join(", ")
+        );
+    }
     println!("  - where: {}", vllm_env::root(paths.data_dir()).display());
     if !confirm("Download and set this up now?", yes)? {
         println!("Nothing was changed.");
         return Ok(());
     }
-    let runner = SystemRunner;
+    let runner = SystemRunner::default();
     match vllm_env::setup(&runner, paths.data_dir(), &plan, &mut print_event) {
         Ok(record) => {
             println!(
@@ -155,8 +194,15 @@ pub fn status() -> anyhow::Result<()> {
 pub fn remove(yes: bool) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let Some(record) = vllm_env::managed(paths.data_dir()) else {
-        println!("No managed vLLM environment to remove.");
-        return Ok(());
+        // A record that is not setup's is reported by `remove` itself.
+        let runner = SystemRunner::default();
+        return match vllm_env::remove(&runner, paths.data_dir(), &mut print_event) {
+            Ok(_) => {
+                println!("No managed vLLM environment to remove.");
+                Ok(())
+            }
+            Err(error) => bail!("{error}"),
+        };
     };
     println!(
         "This removes the managed vLLM {} ({}) {}.",
@@ -167,13 +213,74 @@ pub fn remove(yes: bool) -> anyhow::Result<()> {
             _ => format!("under {}", vllm_env::root(paths.data_dir()).display()),
         }
     );
+    if block_on(async { Ok(crate::local_daemon_running().await) }).unwrap_or(false) {
+        println!(
+            "warning: the Imperium daemon is running and may have vLLM models loaded; they fail \
+             once their files or image are gone. Unload them (or stop the daemon) first, and \
+             restart the daemon afterwards."
+        );
+    }
     if !confirm("Remove it?", yes)? {
         println!("Nothing was changed.");
         return Ok(());
     }
-    vllm_env::remove(&SystemRunner, paths.data_dir(), &mut print_event)
+    vllm_env::remove(&SystemRunner::default(), paths.data_dir(), &mut print_event)
         .map_err(anyhow::Error::msg)
         .context("could not remove the managed vLLM environment")?;
     println!("Removed. Restart the Imperium daemon so it stops using it.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asked(answer: &str) -> impl FnMut(&str) -> std::io::Result<String> + '_ {
+        move |_| Ok(answer.to_string())
+    }
+
+    #[test]
+    fn yes_approves_without_asking() {
+        let mut never = |_: &str| -> std::io::Result<String> { panic!("must not ask") };
+        assert!(approve("Go?", true, false, &mut never).unwrap());
+        assert!(approve("Go?", true, true, &mut never).unwrap());
+    }
+
+    #[test]
+    fn without_a_terminal_and_without_yes_it_is_an_error_not_a_no() {
+        let mut never = |_: &str| -> std::io::Result<String> { panic!("must not ask") };
+        let error = approve("Go?", false, false, &mut never).unwrap_err();
+        assert!(error.to_string().contains("--yes"), "{error}");
+    }
+
+    #[test]
+    fn at_a_terminal_only_yes_approves() {
+        for answer in ["y", "Y", "yes", " YES \n"] {
+            assert!(
+                approve("Go?", false, true, &mut asked(answer)).unwrap(),
+                "{answer:?}"
+            );
+        }
+        for answer in ["", "n", "no", "yep", "sure", "\n"] {
+            assert!(
+                !approve("Go?", false, true, &mut asked(answer)).unwrap(),
+                "{answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_names_of_installer_variables_are_listed() {
+        let vars = [
+            ("UV_INDEX_URL", "https://user:secret@example/simple"),
+            ("PIP_EXTRA_INDEX_URL", "x"),
+            ("PATH", "/bin"),
+            ("UV_INDEX_URL", "dup"),
+            ("HF_TOKEN", "hf_secret"),
+        ]
+        .map(|(name, value)| (name.to_string(), value.to_string()));
+        let names = installer_variables(vars.into_iter());
+        assert_eq!(names, vec!["PIP_EXTRA_INDEX_URL", "UV_INDEX_URL"]);
+        assert!(!names.join(",").contains("secret"));
+    }
 }
