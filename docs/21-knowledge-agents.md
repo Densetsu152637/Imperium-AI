@@ -47,6 +47,7 @@ What the code does today, and what limits the design:
 | K5 | Promotion is explicit: the root (`keep_as_knowledge`, or `spawn_agent` with `knowledge`) or the user; the root prompt nudges the root to keep large research reports | The root knows which context will be reused; automatic promotion would keep every research agent's context and its cost | Promote every finished read-only subagent (unbounded residency and clutter) |
 | K6 | An answer is **data from that agent**, framed and escaped, never instructions; the asker gains no tool, path or approval through it | Knowledge agents may have read untrusted pages; containment must not depend on the knowledge agent behaving | Trusting answers like the asker's own reasoning |
 | K7 | Knowledge agents serve **their own session only** | Permissions, folders, budgets and residency are per session; cross-session sharing needs its own trust rules (user decision) | Environment-wide banks |
+| K8 | Agents meant to become knowledge agents are **routed to Emperor by default**; a promoted agent keeps the model it ran on | User decision ("ideally knowledge agents should be Emperor base models"). A fork must use the knowledge agent's own model and cache (no fallback, K2), so the choice is made when the research agent is spawned, not at question time | Switching a promoted agent to Emperor (its whole context would be re-read with nothing cached, and it would answer from context another model built); a fork on Emperor over another model's conversation |
 
 ## Tools
 
@@ -57,7 +58,7 @@ All three are defined in `imperium-protocol` like the other built-in tools
 | Tool | Who has it | Parameters | Result |
 | --- | --- | --- | --- |
 | `list_knowledge_agents` | root and ordinary subagents | `query?` | Each knowledge agent's card (below), best match to `query` first; empty when there are none |
-| `ask_agent` | root and ordinary subagents | `agent` (id or title), `question` (self-contained, at most 4,000 characters), `timeout_s?` (default 120, at most 600) | The answer, framed (see [safety](#safety)); or a tool error saying it timed out, was cancelled or was refused |
+| `ask_agent` | root and ordinary subagents | `agent` (id or title), `question` (self-contained, at most 4,000 characters), `timeout_s?` (default 300, at most 600) | The answer, framed (see [safety](#safety)); or a tool error saying it timed out, was cancelled or was refused |
 | `keep_as_knowledge` | root only | `agent_id`, `topic` (at most 300 characters); or `agent_id`, `retire: true` | The card, or that it was retired |
 
 `spawn_agent` gains an optional `knowledge` (a topic string): the subagent is promoted with that
@@ -65,6 +66,18 @@ topic when its first turn finishes successfully; its report still goes to `await
 usual. The root prompt and `brief.md` say when to use it (research whose results several later
 tasks will need), and the result of `await_tasks` for a read-only subagent whose report or
 conversation is large ends with a one-line nudge to keep it with `keep_as_knowledge`.
+
+**Which model (K8).** A subagent spawned with `knowledge`, or with the tag `knowledge` (which the
+root prompt tells the root to add to research it means to keep), is routed by a new built-in
+[task-class](04-models-and-routing.md#task-classes) rule: prefer the Emperor row. Like the other
+built-in rules it comes after the user's `[[routing.rules]]`, is a preference rather than a
+requirement, and falls back to the normal routing when no Emperor row is installed or it is
+[turned off](04-models-and-routing.md#disabled-models-implemented); `routing.knowledge_model`
+names another model to prefer instead, and `routing.builtin_rules = false` turns it off with the
+others. An explicit `model` or `location` on the call still wins. Promoting an existing agent
+with `keep_as_knowledge` keeps the model it ran on, and the card shows that model. Emperor is
+still in training ([house models](07-desktop-ui.md#house-models-on-first-run-implemented)), so
+today every knowledge agent gets the fallback.
 
 **What can be promoted:** an idle (finished, ok), read-only subagent that had tools, whose kept
 conversation plus `knowledge.answer_reserve` (25 % of its model's window) fits that window.
@@ -274,7 +287,7 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
    derived id with K4's dispatch-time allowlist and ask-as-refusal; model availability and fit
    checks; timeouts (paused while stopped) and cancellation with the asker's turn; the budget
    gate per call; framing, escaping and the degraded and web markers; events and journal replay;
-   `session.agent_knowledge`; the `await_tasks` nudge.
+   `session.agent_knowledge`; the `await_tasks` nudge; the `knowledge` routing rule (K8).
    *Tests* (fake model server):
    - a subagent asks a promoted agent and gets its answer;
    - the fork's request is byte-identical to the agent's last request up to the question (system
@@ -292,6 +305,9 @@ cost; *Keep as knowledge* and *Retire* sit beside *Continue with…*.
    - answer delimiters inside the answer are escaped;
    - replaying a journal restores cards and does not create records for `t3#q7`; a branched
      session has no knowledge agents;
+   - `spawn_agent` with `knowledge` routes to an Emperor row when the catalog has one, to the
+     normal route when it has none or it is turned off, and to the named model with an explicit
+     `model`; `keep_as_knowledge` keeps the agent's model;
    - the schema drift check passes.
 2. **Local residency.** Knowledge holders registered as present; the slot saved after each
    answer and restored before the next fork; slot files counted against `swap_cache_mb` in
@@ -325,7 +341,8 @@ baseline on both models, and no answer caused a write, a command or an approval.
 Under `[knowledge]` ([10](10-configuration.md)): `enabled` (true), `max_per_session` (4),
 `parallel_answers` (2; local models always 1), `answer_max_steps` (6),
 `max_questions_per_turn` (20), `answer_reserve` (0.25), `slot_cache_share` (0.5),
-`stale_threshold` (0.3), `default_timeout_s` (120).
+`stale_threshold` (0.3), `default_timeout_s` (300; a call may ask for at most 600), and under
+`[routing]`, `knowledge_model` (empty: Emperor when present; see K8).
 
 ## Settled questions
 
@@ -336,10 +353,13 @@ Decided by the user:
 - **Forks may use the web** (`web_search`, `web_fetch`) under the normal rules and budget; answers
   that used web material are marked.
 - **Explicit promotion**, with a nudge to the root for large research reports (K5).
+- **A question's time limit is 300 s by default** (at most 600 s), and it pauses while the session
+  is stopped.
+- **Knowledge agents should run on Emperor** where it is available (K8).
 
 Decided as defaults, which the user may revisit:
 
-- 4 knowledge agents per session, a 120 s timeout, 6 steps per answer.
+- 4 knowledge agents per session and 6 steps per answer.
 - `delegate_chunks` chunk and reduce agents are not promotable.
 - Questions are charged to the knowledge agent's record and reported to the asker.
 - Branched and rewound sessions do not carry knowledge agents.

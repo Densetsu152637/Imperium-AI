@@ -513,6 +513,9 @@ and `environments.agent_update` (protocol 0.28)
     only, at most four per session, explicit promotion (no writers, chunk agents or oversized
     conversations), local slots saved after each answer and restored before the next, the
     knowledge agent's model or a refusal (no fallback), kept across restarts with agent state.
+    Research meant to be kept is routed to Emperor by default (falling back to normal routing
+    while Emperor is in training or turned off); a promoted agent keeps its model. A question's
+    time limit is 300 s by default (600 at most), paused while the session is stopped.
     Protocol 0.37 (`ask_agent`, `list_knowledge_agents`, `keep_as_knowledge`,
     `knowledge_changed`/`question_asked`/`question_answered` events, `session.agent_knowledge`).
     Three stages: engine and contract; local residency; clients and prompts
