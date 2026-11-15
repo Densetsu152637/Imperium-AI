@@ -147,11 +147,10 @@ pub struct CatalogModel {
     pub cpu_lane: bool,
 }
 
-/// Whether a catalog row is Emperor, Imperium's house root model: tagged `emperor`, or named so.
+/// Whether a catalog row is Emperor, Imperium's house root model: tagged `emperor`, or with the
+/// table id `emperor` (no looser match: another model's name may contain the word).
 fn is_emperor(row: &CatalogModel) -> bool {
-    row.tags.iter().any(|tag| tag == "emperor")
-        || row.id.to_ascii_lowercase().contains("emperor")
-        || row.model.model.to_ascii_lowercase().contains("emperor")
+    row.tags.iter().any(|tag| tag == "emperor") || row.id.eq_ignore_ascii_case("emperor")
 }
 
 /// What a delegating agent asked for.
@@ -381,7 +380,11 @@ pub fn route_noted(
     {
         let wanted = routing.knowledge_model.trim();
         let row = if wanted.is_empty() {
-            catalog.iter().find(|c| is_emperor(c))
+            // The first Emperor row that can take the task, not the first Emperor row.
+            catalog
+                .iter()
+                .filter(|c| is_emperor(c))
+                .find(|c| usable(c) && c.tier >= tier && in_location(c))
         } else {
             catalog
                 .iter()
@@ -1852,7 +1855,7 @@ mod knowledge_routing_tests {
             row("frontier", Tier::Frontier, Location::Cloud, 3.0),
         ];
         if let Some(tier) = emperor {
-            rows.push(row("Emperor-4B", tier, Location::Cloud, 9.0));
+            rows.push(row("emperor", tier, Location::Cloud, 9.0));
         }
         rows
     }
@@ -1881,7 +1884,7 @@ mod knowledge_routing_tests {
             &["knowledge"],
             Tier::Standard,
         );
-        assert_eq!(routed.model.model, "Emperor-4B");
+        assert_eq!(routed.model.model, "emperor");
         assert!(!routed.fell_back);
         // Without the tag it ranks as usual; without a row (none installed, or turned off,
         // which takes it out of the catalog) the normal route is used, quietly.
@@ -1923,7 +1926,7 @@ mod knowledge_routing_tests {
         );
         // The local row cannot run without a runtime, so the session's model carries on; what
         // matters is that the cloud Emperor was not chosen against the call's location.
-        assert_ne!(confined.model.model, "Emperor-4B");
+        assert_ne!(confined.model.model, "emperor");
     }
 
     #[test]
@@ -1940,7 +1943,7 @@ mod knowledge_routing_tests {
             &["architecture", "knowledge"],
             Tier::Standard,
         );
-        assert_eq!(both.model.model, "Emperor-4B");
+        assert_eq!(both.model.model, "emperor");
         // A rule of the user's for the tag decides first.
         let ruled = RoutingSettings {
             rules: vec![RoutingRule {
@@ -1977,7 +1980,7 @@ mod knowledge_routing_tests {
             &["knowledge"],
             Tier::Strong,
         );
-        assert_eq!(lifted.model.model, "Emperor-4B");
+        assert_eq!(lifted.model.model, "emperor");
     }
 
     #[test]

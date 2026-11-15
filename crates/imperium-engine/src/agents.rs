@@ -40,6 +40,9 @@ struct Record {
     /// recorded at promotion (see docs/21-knowledge-agents.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     frozen: Option<Frozen>,
+    /// When the agent's latest turn started, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    turn_started_ms: u64,
 }
 
 /// What kind of agent a record describes.
@@ -88,6 +91,9 @@ impl FrozenTool {
 pub(crate) struct Frozen {
     pub system: String,
     pub tools: Vec<FrozenTool>,
+    /// The reasoning effort its last request carried (`None`: none was sent).
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 /// What a fork needs from a knowledge agent's record, taken under one lock.
@@ -185,6 +191,7 @@ fn new_record(id: &str, parent: Option<String>, role: &str, task: &str, model: &
         conversation: Vec::new(),
         kind: AgentKind::Ordinary,
         frozen: None,
+        turn_started_ms: 0,
     }
 }
 
@@ -407,6 +414,14 @@ impl AgentStore {
         state.prefixes.insert(id.to_string(), prefix);
     }
 
+    /// When `id`'s latest turn started (0 when unknown).
+    pub fn turn_started_ms(&self, id: &str) -> u64 {
+        lock(&self.state)
+            .records
+            .get(id)
+            .map_or(0, |record| record.turn_started_ms)
+    }
+
     pub fn kind(&self, id: &str) -> AgentKind {
         lock(&self.state)
             .records
@@ -574,6 +589,7 @@ impl AgentStore {
                     }
                 };
                 record.summary.turns += 1;
+                record.turn_started_ms = now_ms();
                 record.summary.status = AgentStatus::Running;
                 Some(agent)
             }
@@ -784,13 +800,17 @@ mod tests {
         let frozen = Frozen {
             system: "system".into(),
             tools: Vec::new(),
+            effort: Some("high".into()),
         };
         first.set_knowledge("t1", card("t1"), frozen);
         let reopened = AgentStore::open(Some(kept), &journal(), true);
         let cards = reopened.knowledge_cards();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].topic, "the alpha module");
-        assert!(reopened.fork_source("t1").is_some());
+        assert_eq!(
+            reopened.fork_source("t1").unwrap().frozen.effort.as_deref(),
+            Some("high")
+        );
         assert!(
             reopened
                 .list()

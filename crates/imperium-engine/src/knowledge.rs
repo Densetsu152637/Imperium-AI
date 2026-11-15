@@ -274,10 +274,13 @@ pub(crate) fn untrusted_of(conversation: &[ChatMessage]) -> KnowledgeUntrusted {
 }
 
 /// What the agent read, from the conversation's successful tool calls, newest first, at most
-/// 50; and how many more there were. Files carry the size and modified time they have now.
+/// 50; and how many more there were. Files carry the size and modified time they have now; one
+/// modified after `since_ms` (when the agent's last turn started) may have changed after it was
+/// read, so it is marked stale from the start.
 pub(crate) fn sources_of(
     workspace: &Workspace,
     conversation: &[ChatMessage],
+    since_ms: u64,
 ) -> (Vec<KnowledgeSource>, u32) {
     let mut found: Vec<KnowledgeSource> = Vec::new();
     for (name, arguments, worked) in tool_calls(conversation).into_iter().rev() {
@@ -315,12 +318,13 @@ pub(crate) fn sources_of(
         } else {
             (None, None)
         };
+        let stale = modified_ms.is_some_and(|modified| modified > since_ms);
         found.push(KnowledgeSource {
             kind,
             target,
             size,
             modified_ms,
-            stale: false,
+            stale,
         });
     }
     let more = u32::try_from(found.len().saturating_sub(MAX_SOURCES)).unwrap_or(u32::MAX);
@@ -354,13 +358,16 @@ fn check_stale(workspace: &Workspace, sources: &mut [KnowledgeSource]) -> (Vec<S
     {
         files += 1;
         let now = file_stamp(workspace, &source.target);
-        source.stale = match (now, source.size, source.modified_ms) {
+        // A source marked stale when it was promoted (modified after the agent's turn began)
+        // stays stale until the agent is refreshed.
+        let changed = match (now, source.size, source.modified_ms) {
             (Some((size, modified)), Some(was_size), Some(was_modified)) => {
                 size != was_size || modified != was_modified
             }
             (None, _, _) => true,
             _ => false,
         };
+        source.stale = source.stale || changed;
         if source.stale {
             stale.push(source.target.clone());
         }
@@ -520,7 +527,12 @@ pub(crate) fn promote(
             model.spec
         ));
     }
-    let (sources, more_sources) = sources_of(&shared.workspace, &conversation);
+    let (sources, more_sources) = sources_of(
+        &shared.workspace,
+        &conversation,
+        shared.agents.turn_started_ms(agent_id),
+    );
+    let stale_fraction = stale_share(&sources);
     let card = KnowledgeCard {
         agent_id: agent_id.to_string(),
         title: summary.title.clone(),
@@ -539,7 +551,7 @@ pub(crate) fn promote(
         cost_usd: None,
         status: KnowledgeStatus::Ready,
         queued: 0,
-        stale_fraction: 0.0,
+        stale_fraction,
     };
     shared.agents.set_knowledge(agent_id, card.clone(), frozen);
     shared.knowledge.lane(agent_id, model.local);
@@ -649,7 +661,12 @@ pub(crate) fn finished(shared: &Arc<Shared>, agent_id: &str, ok: bool) {
         ));
         return;
     }
-    let (sources, more_sources) = sources_of(&shared.workspace, &conversation);
+    let (sources, more_sources) = sources_of(
+        &shared.workspace,
+        &conversation,
+        shared.agents.turn_started_ms(agent_id),
+    );
+    let stale_fraction = stale_share(&sources);
     let untrusted = untrusted_of(&conversation);
     shared.agents.refreeze(agent_id, frozen);
     lane.busy.send_replace(false);
@@ -659,7 +676,7 @@ pub(crate) fn finished(shared: &Arc<Shared>, agent_id: &str, ok: bool) {
         card.untrusted = untrusted;
         card.context_tokens = context;
         card.context_window = Some(window);
-        card.stale_fraction = 0.0;
+        card.stale_fraction = stale_fraction;
         card.est_question_cost = question_cost(context, card.last_cached_ratio, &model);
         card.status = lane.status();
         card.queued = lane.waiting.load(Ordering::SeqCst);
@@ -863,9 +880,41 @@ pub(crate) fn resolve_target(shared: &Arc<Shared>, name: &str) -> Result<Knowled
 // ---- framing ----
 
 /// `text` with `<tag` and `</tag` made harmless, so it cannot close or open the wrapper.
+/// The match is case-insensitive.
 pub(crate) fn escape_tag(text: &str, tag: &str) -> String {
-    text.replace(&format!("</{tag}"), &format!("<\\/{tag}"))
-        .replace(&format!("<{tag}"), &format!("<\\{tag}"))
+    let lower = text.to_ascii_lowercase();
+    let tag = tag.to_ascii_lowercase();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}");
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while at < text.len() {
+        if lower[at..].starts_with(&close) {
+            out.push_str("<\\/");
+            out.push_str(&text[at + 2..at + close.len()]);
+            at += close.len();
+        } else if lower[at..].starts_with(&open) {
+            out.push_str("<\\");
+            out.push_str(&text[at + 1..at + open.len()]);
+            at += open.len();
+        } else if let Some(character) = text[at..].chars().next() {
+            out.push(character);
+            at += character.len_utf8();
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// The share of the file sources marked stale.
+fn stale_share(sources: &[KnowledgeSource]) -> f64 {
+    let files = sources
+        .iter()
+        .filter(|source| source.kind == KnowledgeSourceKind::File)
+        .count();
+    let stale = sources.iter().filter(|source| source.stale).count();
+    stale as f64 / files.max(1) as f64
 }
 
 /// An attribute value on one line without quotes or angle brackets.

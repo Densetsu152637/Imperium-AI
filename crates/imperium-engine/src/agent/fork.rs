@@ -97,6 +97,7 @@ async fn cancelled(stop: &mut watch::Receiver<Option<Stop>>) {
 /// Answers one question in a fork of a knowledge agent: its frozen system message, tools and
 /// conversation, unchanged, then the question. Nothing of it is kept.
 pub(crate) async fn run_fork(shared: Arc<Shared>, request: ForkRequest) -> ForkResult {
+    let effort = request.frozen.effort.clone();
     let ForkRequest {
         fork_id,
         source_id,
@@ -125,6 +126,8 @@ pub(crate) async fn run_fork(shared: Arc<Shared>, request: ForkRequest) -> ForkR
     );
     agent.can_ask = false;
     agent.role = "knowledge".into();
+    // The reasoning effort the agent's own last request carried.
+    agent.effort = effort.and_then(|effort| effort.parse::<imperium_api::Effort>().ok());
     agent.fork = Some(ForkInfo {
         source: source_id,
         stop,
