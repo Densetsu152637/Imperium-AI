@@ -444,6 +444,7 @@ mod tests {
             config_dir: Some(config.path().to_path_buf()),
             packs: vec![pack.path().to_path_buf()],
             built_in: None,
+            confined: Vec::new(),
         };
         let luxion = sources.find("luxion").unwrap();
         assert_eq!(luxion.info.origin, Origin::Local);
@@ -482,6 +483,7 @@ Pack voice.
             config_dir: Some(config.path().to_path_buf()),
             packs: vec![pack.path().to_path_buf()],
             built_in: None,
+            confined: Vec::new(),
         };
         let selection = sources.select("luxion");
         let personality = selection.personality.unwrap();
