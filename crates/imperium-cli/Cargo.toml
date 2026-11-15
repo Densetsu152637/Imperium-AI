@@ -20,6 +20,7 @@ imperium-client = { version = "0.1.0", path = "../imperium-client" }
 imperium-config = { version = "0.1.0", path = "../imperium-config" }
 imperium-local = { version = "0.1.0", path = "../imperium-local" }
 imperium-memory = { version = "0.1.0", path = "../imperium-memory" }
+imperium-policy = { version = "0.1.0", path = "../imperium-policy" }
 imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
 imperium-workflow = { version = "0.1.0", path = "../imperium-workflow" }
 reqwest = "0.13.5"

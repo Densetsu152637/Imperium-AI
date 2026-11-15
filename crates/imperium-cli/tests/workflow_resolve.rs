@@ -1,8 +1,8 @@
-//! `imperium workflow resolve` as it behaves before it is aligned with the daemon's pack loader
-//! (docs/plans/cleanup.md, decision 1): packs come from `workflow.packs` or `--pack`, a pack
-//! that cannot be read fails the command, and neither the `workflow.enabled` switch nor a
-//! bundled default pack plays a part. The commit that aligns the command replaces the tests
-//! marked "today" with its new behaviour; the others stay.
+//! `imperium workflow resolve`, aligned with the daemon's pack loader (docs/plans/cleanup.md,
+//! decision 1): without `--pack` the packs are layered as the daemon layers them (the workflow
+//! switch is honoured, an unreadable pack is skipped with a notice, a pinned pack cannot take a
+//! listed pack's name, the bundled pack stands in and is named), and `--pack` stays exclusive.
+//! Diagnostics go to standard error; standard output is the manifest.
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -11,6 +11,8 @@ struct Env {
     home: tempfile::TempDir,
     project: tempfile::TempDir,
     folders: tempfile::TempDir,
+    /// `IMPERIUM_RESOURCE_DIR` for the command, when set.
+    resources: Option<std::path::PathBuf>,
 }
 
 impl Env {
@@ -19,6 +21,7 @@ impl Env {
             home: tempfile::tempdir().unwrap(),
             project: tempfile::tempdir().unwrap(),
             folders: tempfile::tempdir().unwrap(),
+            resources: None,
         };
         std::fs::create_dir_all(env.home.path().join("config")).unwrap();
         env
@@ -42,6 +45,9 @@ impl Env {
             .env("IMPERIUM_HOME", self.home.path())
             .args(["workflow", "resolve", "fix the bug", "--project"])
             .arg(self.project.path());
+        if let Some(resources) = &self.resources {
+            command.env("IMPERIUM_RESOURCE_DIR", resources);
+        }
         for pack in extra {
             command.arg("--pack").arg(pack);
         }
@@ -155,34 +161,70 @@ fn an_explicit_pack_replaces_the_configured_ones_and_the_config_is_not_read() {
 }
 
 #[test]
-fn today_a_pack_that_cannot_be_read_fails_the_command() {
+fn a_pack_that_cannot_be_read_is_skipped_with_a_notice() {
     let env = Env::new();
     let good = env.pack("good");
     let missing = env.folders.path().join("missing");
     env.configure(&listing(&[&missing, &good]));
     let output = env.resolve(&[]);
-    assert!(!output.status.success());
-    assert!(text(&output.stdout).is_empty(), "{}", text(&output.stdout));
+    assert!(output.status.success(), "{}", text(&output.stderr));
     assert!(
-        text(&output.stderr).contains("workflow pack"),
+        text(&output.stdout).contains("- good:AGENTS.md (required: entry index"),
+        "{}",
+        text(&output.stdout)
+    );
+    assert!(
+        text(&output.stderr).contains("workflow pack skipped: "),
         "{}",
         text(&output.stderr)
     );
 }
 
 #[test]
-fn today_no_bundled_pack_is_used_or_named() {
+fn the_bundled_pack_stands_in_and_is_named() {
     let env = Env::new();
+    // A resource folder as the desktop lays it out: its bundled pack is found first.
+    let resources = env.folders.path().join("resources");
+    let bundled = resources.join("policy/agent-custom-workflow");
+    std::fs::create_dir_all(&bundled).unwrap();
+    std::fs::write(bundled.join("AGENTS.md"), "# Bundled\n").unwrap();
+    let mut env = env;
+    env.resources = Some(resources);
     let output = env.resolve(&[]);
     assert!(output.status.success(), "{}", text(&output.stderr));
-    let printed = text(&output.stdout);
-    // No pack lines at all, and no line naming a bundled pack.
-    assert!(!printed.contains("entry index"), "{printed}");
-    assert!(!printed.to_lowercase().contains("bundled"), "{printed}");
+    assert!(
+        text(&output.stdout).contains("- agent-custom-workflow:AGENTS.md (required: entry index"),
+        "{}",
+        text(&output.stdout)
+    );
+    let notes = text(&output.stderr);
+    assert!(
+        notes.contains("using the bundled workflow pack ")
+            && notes.contains("agent-custom-workflow"),
+        "{notes}"
+    );
 }
 
 #[test]
-fn today_the_workflow_switch_does_not_stop_the_command() {
+fn without_the_default_pack_nothing_bundled_is_used_or_named() {
+    let env = Env::new();
+    env.configure("[workflow]\ndefault_pack = false\n");
+    let output = env.resolve(&[]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        !text(&output.stdout).contains("entry index"),
+        "{}",
+        text(&output.stdout)
+    );
+    assert!(
+        !text(&output.stderr).contains("bundled"),
+        "{}",
+        text(&output.stderr)
+    );
+}
+
+#[test]
+fn a_workflow_that_is_switched_off_resolves_nothing() {
     let env = Env::new();
     let pack = env.pack("mine");
     let mut config = listing(&[&pack]);
@@ -190,15 +232,16 @@ fn today_the_workflow_switch_does_not_stop_the_command() {
     env.configure(&config);
     let output = env.resolve(&[]);
     assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(text(&output.stdout).is_empty(), "{}", text(&output.stdout));
     assert!(
-        text(&output.stdout).contains("- mine:AGENTS.md"),
+        text(&output.stderr).contains("workflow.enabled = false"),
         "{}",
-        text(&output.stdout)
+        text(&output.stderr)
     );
 }
 
 #[test]
-fn today_a_pinned_pack_follows_the_configured_ones() {
+fn a_pinned_pack_follows_the_configured_ones() {
     let env = Env::new();
     let pack = env.pack("mine");
     env.configure(&listing(&[&pack]));
@@ -212,18 +255,22 @@ fn today_a_pinned_pack_follows_the_configured_ones() {
 }
 
 #[test]
-fn today_a_pinned_pack_with_a_listed_pack_s_name_loads_beside_it() {
+fn a_pinned_pack_cannot_take_a_listed_packs_name() {
     let env = Env::new();
     let same = env.pack("acw");
     // The command refuses a source name a listed pack already has, so pin before listing.
     env.pin("acw");
     env.configure(&listing(&[&same]));
     let output = env.resolve(&[]);
-    // Both are indexed (the daemon would skip the pinned one); the manifest names a reference
-    // once, so one line shows.
     assert!(output.status.success(), "{}", text(&output.stderr));
     let printed = text(&output.stdout);
     assert_eq!(printed.matches("- acw:AGENTS.md").count(), 1, "{printed}");
+    assert!(
+        text(&output.stderr)
+            .contains("pinned pack acw skipped: another pack already has that name"),
+        "{}",
+        text(&output.stderr)
+    );
 }
 
 #[test]
