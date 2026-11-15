@@ -52,11 +52,9 @@ fn apply(key: &str, value: Json) -> anyhow::Result<()> {
                 && let Some(settings) = imperium_config::load(&paths, None, std::env::vars())
                     .ok()
                     .and_then(|config| config.settings().ok())
-                && settings.models.default_is_disabled()
+                && let Some(warning) = default_disabled_warning(&settings.models)
             {
-                eprintln!(
-                    "warning: that model is switched off (\"Use this model\" in Settings → Models),                      so new sessions cannot start on it until it is switched on or another default                      is chosen"
-                );
+                eprintln!("{warning}");
             }
             (state.value, state.def.restart)
         }
@@ -66,6 +64,19 @@ fn apply(key: &str, value: Json) -> anyhow::Result<()> {
         println!("Restart imperium-core for the change to apply.");
     }
     Ok(())
+}
+
+/// What the offline `settings set models.default` says after saving when the model it was set to
+/// is switched off: the daemon would have refused, but offline only the saved settings know.
+fn default_disabled_warning(models: &imperium_config::ModelSettings) -> Option<String> {
+    models.default_is_disabled().then(|| {
+        concat!(
+            "warning: that model is switched off (\"Use this model\" in Settings -> Models), ",
+            "so new sessions cannot start on it until it is switched on or another default is ",
+            "chosen"
+        )
+        .to_string()
+    })
 }
 
 /// The JSON value `config.set` takes for `values` given the setting's kind.
@@ -126,5 +137,20 @@ mod tests {
         );
         assert!(of("pets.enabled", &["maybe"]).is_err());
         assert!(of("policy.personality", &["a", "b"]).is_err());
+    }
+
+    #[test]
+    fn a_default_that_is_switched_off_is_warned_about_after_saving() {
+        let mut models = imperium_config::ModelSettings::default();
+        assert!(default_disabled_warning(&models).is_none());
+        models.default = Some("llamacpp:gemma".into());
+        assert!(default_disabled_warning(&models).is_none());
+        models.disabled = vec!["llamacpp:gemma".into()];
+        let warning = default_disabled_warning(&models).unwrap();
+        assert!(warning.starts_with("warning: that model is switched off"));
+        assert!(warning.contains("another default"));
+        // Naming a different default that is on gives no warning.
+        models.default = Some("llamacpp:other".into());
+        assert!(default_disabled_warning(&models).is_none());
     }
 }

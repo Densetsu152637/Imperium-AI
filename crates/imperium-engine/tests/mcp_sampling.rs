@@ -121,6 +121,9 @@ struct Options {
     calls: usize,
     /// A budget that is used up for the second model call (the sampled one).
     budget_blocks: bool,
+    /// What the budgets leave to spend, in dollars, when the gate says; the model is priced
+    /// then, so the request has a cost ceiling to compare.
+    remaining_usd: Option<f64>,
 }
 
 impl Options {
@@ -132,6 +135,7 @@ impl Options {
             pre_approved: Vec::new(),
             calls: 1,
             budget_blocks: false,
+            remaining_usd: None,
         }
     }
 }
@@ -153,6 +157,22 @@ impl imperium_engine::BudgetGate for BlockAfterApproval {
     fn confirm(&self, _key: &str) {}
 }
 
+/// A gate that lets every call go and says how much the budgets have left.
+#[derive(Debug)]
+struct Room(f64);
+
+impl imperium_engine::BudgetGate for Room {
+    fn check(&self, _spec: &str) -> imperium_engine::BudgetVerdict {
+        imperium_engine::BudgetVerdict::Go
+    }
+
+    fn confirm(&self, _key: &str) {}
+
+    fn remaining_usd(&self, _spec: &str) -> Option<f64> {
+        Some(self.0)
+    }
+}
+
 /// Runs one turn that calls `work`, answering any approval as the options say.
 async fn run(options: Options) -> Outcome {
     let Options {
@@ -162,6 +182,7 @@ async fn run(options: Options) -> Outcome {
         pre_approved,
         calls,
         budget_blocks,
+        remaining_usd,
     } = options;
     let samples = Arc::new(AtomicUsize::new(0));
     let armed = Arc::new(AtomicBool::new(false));
@@ -178,7 +199,11 @@ async fn run(options: Options) -> Outcome {
                 api_key: None,
             },
             model: "model".into(),
-            pricing: None,
+            pricing: remaining_usd.map(|_| imperium_api::Pricing {
+                input_usd_per_mtok: 1.0,
+                output_usd_per_mtok: 10.0,
+                cached_input_usd_per_mtok: None,
+            }),
             local: false,
             context_window: None,
             kind: "openai".into(),
@@ -213,9 +238,14 @@ async fn run(options: Options) -> Outcome {
         max_steps: 5,
         background: None,
         checkpoints: None,
-        budget_gate: budget_blocks.then(|| {
-            Arc::new(BlockAfterApproval(Arc::clone(&armed))) as Arc<dyn imperium_engine::BudgetGate>
-        }),
+        budget_gate: match (budget_blocks, remaining_usd) {
+            (true, _) => Some(Arc::new(BlockAfterApproval(Arc::clone(&armed)))
+                as Arc<dyn imperium_engine::BudgetGate>),
+            (false, Some(room)) => {
+                Some(Arc::new(Room(room)) as Arc<dyn imperium_engine::BudgetGate>)
+            }
+            (false, None) => None,
+        },
         auto_compact: false,
         auto_compact_at: None,
         keep_agent_state: true,
@@ -361,4 +391,27 @@ async fn a_used_up_budget_refuses_an_approved_request() {
     assert_eq!(outcome.replies[0]["error"]["code"], -1);
     let message = outcome.replies[0]["error"]["message"].as_str().unwrap();
     assert!(message.contains("budget is used up"), "{message}");
+}
+
+#[tokio::test]
+async fn a_request_that_could_cost_more_than_the_budget_has_left_is_refused_unasked() {
+    // 20 tokens out at $10 per million is about $0.0002, more than the $0.0001 left.
+    let mut options = Options::new(true, PermissionDecision::Allow);
+    options.remaining_usd = Some(0.0001);
+    let outcome = run(options).await;
+    assert!(outcome.approvals.is_empty(), "{:?}", outcome.approvals);
+    assert_eq!(outcome.samples, 0);
+    assert_eq!(outcome.replies[0]["error"]["code"], -1);
+    let message = outcome.replies[0]["error"]["message"].as_str().unwrap();
+    assert!(message.contains("budget has left"), "{message}");
+}
+
+#[tokio::test]
+async fn a_request_within_what_the_budget_has_left_is_asked_as_usual() {
+    let mut options = Options::new(true, PermissionDecision::Allow);
+    options.remaining_usd = Some(5.0);
+    let outcome = run(options).await;
+    assert_eq!(outcome.approvals.len(), 1);
+    assert_eq!(outcome.samples, 1);
+    assert_eq!(outcome.replies[0]["result"]["content"]["text"], "teal");
 }

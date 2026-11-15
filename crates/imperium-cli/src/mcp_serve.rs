@@ -584,7 +584,7 @@ async fn start_session(hub: &Hub, args: &Value) -> Result<Value, String> {
         "cursor": 0,
     });
     if let Some(prompt) = raw_arg(args, "prompt") {
-        let cursor = send(hub, &session_id, prompt, false).await?;
+        let cursor = send(hub, &session_id, prompt, false).await?.cursor;
         started["cursor"] = json!(cursor);
         if let Some(limit) = wait_arg(args, "wait_timeout_s") {
             started["turn"] = wait_turn(hub, &session_id, Some(cursor), limit).await?;
@@ -598,28 +598,105 @@ async fn start_session(hub: &Hub, args: &Value) -> Result<Value, String> {
 /// message joins the running turn, so its cursor is that turn's start.
 ///
 /// A steering message can race the turn's end: the turn may finish between reading the history
-/// and `session.send`, in which case the message starts a new turn that the cursor (the old
-/// turn's start) also covers. The caller should check the status after sending.
-async fn send(hub: &Hub, session_id: &str, text: &str, steer: bool) -> Result<usize, String> {
+/// and `session.send`, in which case the message starts a new turn instead of joining one. After
+/// sending, the history is polled briefly ([`STEER_LOOK`]) for what became of the message
+/// ([`steer_outcome`], by the message id `session.send` returned). When it started a new turn,
+/// the cursor is that turn's start and the result says so; when nothing shows either within the
+/// time, the result is as before, so a miss can still go unnoticed.
+async fn send(hub: &Hub, session_id: &str, text: &str, steer: bool) -> Result<Sent, String> {
     let history = hub.history(session_id).await?;
-    let cursor = if steer {
-        open_turn_start(&history).unwrap_or(history.len())
-    } else {
-        history.len()
-    };
+    let open = steer.then(|| open_turn_start(&history)).flatten();
+    let cursor = open.unwrap_or(history.len());
     let mut params = json!({"session_id": session_id, "text": text});
     if steer {
         params["mode"] = json!("steer");
     }
-    hub.call("session.send", params).await?;
-    Ok(cursor)
+    let sent = hub.call("session.send", params).await?;
+    if open.is_some()
+        && let Some(id) = sent["id"].as_str()
+    {
+        let deadline = Instant::now() + STEER_LOOK;
+        loop {
+            let Ok(after) = hub.history(session_id).await else {
+                break;
+            };
+            match steer_outcome(&after, history.len(), id, text) {
+                SteerOutcome::Joined => break,
+                SteerOutcome::NewTurn(started) => {
+                    return Ok(Sent {
+                        cursor: started,
+                        note: Some(STEER_RACE_NOTE),
+                    });
+                }
+                SteerOutcome::Unknown => {}
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(STEER_STEP).await;
+        }
+    }
+    Ok(Sent { cursor, note: None })
+}
+
+/// How long a steering send looks for what became of its message, and how often.
+const STEER_LOOK: Duration = Duration::from_millis(500);
+const STEER_STEP: Duration = Duration::from_millis(50);
+
+/// What `send_message` says when a steering message did not find a running turn to join.
+const STEER_RACE_NOTE: &str = "the turn had already finished when the message arrived, so it \
+    started a new turn instead of joining it; wait_for_turn from this cursor reports that new turn";
+
+/// A sent message and where to wait from.
+struct Sent {
+    cursor: usize,
+    /// Set when a steering message found no running turn to join.
+    note: Option<&'static str>,
+}
+
+/// What the history shows of a steering message sent when it held `before` events.
+#[derive(Debug, PartialEq, Eq)]
+enum SteerOutcome {
+    /// A `steered` or `message_queued` event carries the message's id: it joined the running
+    /// turn (or waits behind it).
+    Joined,
+    /// A root turn began after the send, started by this very message (its text is the one
+    /// sent), with no such event: the turn had ended, and the message started this one (its
+    /// `turn_started` index).
+    NewTurn(usize),
+    /// Neither is in the history yet.
+    Unknown,
+}
+
+/// Decides from `history` what became of the message with `id`, looking only at events from
+/// index `before` on. The id is the one `session.send` returned; a message that joined carries
+/// it in `steered` or `message_queued`, which is written before any turn it could start. A
+/// turn that another message started does not count as this message's: only a `turn_started`
+/// whose text is `text` does, and any other leaves the outcome unknown.
+fn steer_outcome(history: &[Value], before: usize, id: &str, text: &str) -> SteerOutcome {
+    let mut new_turn = None;
+    for (index, event) in history.iter().enumerate().skip(before) {
+        match kind(event) {
+            "steered" | "message_queued" if event["event"]["id"] == id => {
+                return SteerOutcome::Joined;
+            }
+            "turn_started" if is_root(event) && event["event"]["text"] == text => {
+                new_turn.get_or_insert(index);
+            }
+            _ => {}
+        }
+    }
+    new_turn.map_or(SteerOutcome::Unknown, SteerOutcome::NewTurn)
 }
 
 async fn send_message(hub: &Hub, args: &Value) -> Result<Value, String> {
     let session_id = required(args, "session_id")?;
     let text = raw_arg(args, "text").ok_or("text is required")?;
-    let cursor = send(hub, session_id, text, flag(args, "steer")).await?;
+    let Sent { cursor, note } = send(hub, session_id, text, flag(args, "steer")).await?;
     let mut sent = json!({"session_id": session_id, "cursor": cursor});
+    if let Some(note) = note {
+        sent["note"] = json!(note);
+    }
     if let Some(limit) = wait_arg(args, "wait_timeout_s") {
         sent["turn"] = wait_turn(hub, session_id, Some(cursor), limit).await?;
     }
@@ -1122,7 +1199,7 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "send_message",
-            "Send a message to a session. It starts a turn when the agent is idle and queues behind the running one otherwise (steer: true joins the running turn instead).",
+            "Send a message to a session. It starts a turn when the agent is idle and queues behind the running one otherwise (steer: true joins the running turn instead; if that turn had already finished, the message starts a new one and the result carries a note saying so).",
             json!({
                 "session_id": session,
                 "text": {"type": "string"},
@@ -1231,6 +1308,71 @@ mod tests {
 
     fn run(history: &[Value], since: Option<usize>) -> Turn {
         analyze(history, since, &HashSet::new(), true)
+    }
+
+    fn steered(id: &str) -> Value {
+        event("root", json!({"type": "steered", "id": id, "text": "t"}))
+    }
+
+    fn queued(id: &str) -> Value {
+        event(
+            "root",
+            json!({"type": "message_queued", "id": id, "text": "t", "steer": true}),
+        )
+    }
+
+    #[test]
+    fn a_steering_message_that_joined_the_turn_is_known_by_its_id() {
+        // The history held two events before the send.
+        let before = [started(), finished()];
+        let mut joined = before.to_vec();
+        joined.push(queued("m1"));
+        assert_eq!(steer_outcome(&joined, 2, "m1", "go"), SteerOutcome::Joined);
+        joined.push(steered("m1"));
+        joined.push(completed());
+        joined.push(started());
+        // A later turn does not make a joined message a missed one.
+        assert_eq!(steer_outcome(&joined, 2, "m1", "go"), SteerOutcome::Joined);
+    }
+
+    #[test]
+    fn a_steering_message_that_started_a_new_turn_is_found_after_the_send() {
+        let mut raced = vec![started(), finished()];
+        // The turn ended before the message arrived; the message started the next one.
+        raced.push(completed());
+        raced.push(started());
+        assert_eq!(
+            steer_outcome(&raced, 2, "m1", "go"),
+            SteerOutcome::NewTurn(3)
+        );
+        // Another message queued behind the turn starts the next turn with its own text: that
+        // turn is not this message's, so nothing is decided until this message's id shows up
+        // (or its own turn starts).
+        let mut other = vec![started(), finished(), queued("m0"), completed()];
+        other.push(event(
+            "root",
+            json!({"type": "turn_started", "text": "the other one"}),
+        ));
+        assert_eq!(steer_outcome(&other, 2, "m1", "go"), SteerOutcome::Unknown);
+        other.push(steered("m1"));
+        assert_eq!(steer_outcome(&other, 2, "m1", "go"), SteerOutcome::Joined);
+    }
+
+    #[test]
+    fn a_steering_message_with_nothing_yet_in_the_history_is_unknown() {
+        assert_eq!(
+            steer_outcome(&[started(), finished()], 2, "m1", "go"),
+            SteerOutcome::Unknown
+        );
+        // Events from before the send are never read.
+        assert_eq!(
+            steer_outcome(&[queued("m1"), started()], 2, "m1", "go"),
+            SteerOutcome::Unknown
+        );
+        assert_eq!(
+            steer_outcome(&[started(), completed()], 0, "m1", "go"),
+            SteerOutcome::NewTurn(0)
+        );
     }
 
     #[test]
