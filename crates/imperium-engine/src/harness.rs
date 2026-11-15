@@ -130,12 +130,26 @@ fn clean(text: &str, max: usize) -> String {
 /// `text` with the harness's tag names defused (`<tag` becomes `< tag`), so text from a tool
 /// result or a file cannot close or open a block. Other text, angle brackets included, stays.
 pub(crate) fn defuse(text: &str) -> String {
-    let mut out = text.to_string();
-    for name in TAG_NAMES {
-        out = out
-            .replace(&format!("<{name}"), &format!("< {name}"))
-            .replace(&format!("</{name}"), &format!("</ {name}"));
+    // The match is ASCII case-insensitive; lowering keeps every byte offset, and the original
+    // letters stay.
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut copied = 0;
+    for (at, _) in lower.match_indices('<') {
+        let after = &lower[at + 1..];
+        let name_at = if after.starts_with('/') {
+            at + 2
+        } else {
+            at + 1
+        };
+        let tail = &lower[name_at..];
+        if TAG_NAMES.iter().any(|name| tail.starts_with(name)) {
+            out.push_str(&text[copied..name_at]);
+            out.push(' ');
+            copied = name_at;
+        }
     }
+    out.push_str(&text[copied..]);
     out
 }
 
@@ -605,6 +619,15 @@ mod tests {
         assert!(!safe.contains("<session-state") && !safe.contains("</session-state"));
         assert!(!safe.contains("<resolved-request"));
         assert!(safe.contains("Vec<String> <b>"));
+    }
+
+    #[test]
+    fn defusing_ignores_letter_case_and_keeps_unicode() {
+        let safe = defuse("é </SESSION-State> <Resolved-Request x> 日本 <ATTACHMENTS");
+        assert_eq!(
+            safe,
+            "é </ SESSION-State> < Resolved-Request x> 日本 < ATTACHMENTS"
+        );
     }
 
     #[test]
