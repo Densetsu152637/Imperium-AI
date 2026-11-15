@@ -8,8 +8,8 @@ repository.workspace = true
 description = "What agents may do: permission rules and modes, the safety floor, and agent profiles"
 
 [dependencies]
-imperium-api = { version = "0.1.0", path = "../imperium-api" }
-imperium-workflow = { version = "0.1.0", path = "../imperium-workflow" }
+imperium-api = { version = "0.2.0", path = "../imperium-api" }
+imperium-workflow = { version = "0.2.0", path = "../imperium-workflow" }
 
 [lints]
 workspace = true

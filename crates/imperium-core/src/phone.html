@@ -103,7 +103,7 @@ function connect() {
   socket = new WebSocket(`${scheme}://${location.host}/rpc`, ["imperium.v0", "imperium.token." + token]);
   socket.onopen = async () => {
     try {
-      await call("system.handshake", { client: { name: "imperium-phone", version: "0.1.0" }, protocol: { major: 0, minor: 2 } });
+      await call("system.handshake", { client: { name: "imperium-phone", version: "0.2.0" }, protocol: { major: 0, minor: 2 } });
       status("Connected", "ok");
       for (const approval of (await call("approvals.list")).approvals) approvals.set(approval.id, approval);
       renderApprovals();

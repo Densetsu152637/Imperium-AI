@@ -8,9 +8,9 @@ repository.workspace = true
 description = "Skills, hooks, slash commands, and Claude Code plugin compatibility for Imperium"
 
 [dependencies]
-imperium-api = { version = "0.1.0", path = "../imperium-api" }
-imperium-mcp = { version = "0.1.0", path = "../imperium-mcp" }
-imperium-tools = { version = "0.1.0", path = "../imperium-tools" }
+imperium-api = { version = "0.2.0", path = "../imperium-api" }
+imperium-mcp = { version = "0.2.0", path = "../imperium-mcp" }
+imperium-tools = { version = "0.2.0", path = "../imperium-tools" }
 reqwest = "0.13.5"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

@@ -8,8 +8,8 @@ repository.workspace = true
 description = "Built-in agent tools (files, commands) confined to a workspace"
 
 [dependencies]
-imperium-api = { version = "0.1.0", path = "../imperium-api" }
-imperium-policy = { version = "0.1.0", path = "../imperium-policy" }
+imperium-api = { version = "0.2.0", path = "../imperium-api" }
+imperium-policy = { version = "0.2.0", path = "../imperium-policy" }
 # Walks folders for glob and grep the way ripgrep does, honouring .gitignore and .ignore files.
 ignore = "0.4.23"
 regex = "1.13.1"
