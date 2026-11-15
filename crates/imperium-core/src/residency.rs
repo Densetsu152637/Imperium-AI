@@ -104,8 +104,9 @@ pub fn plan(loaded: &[LoadedStatus], idle_unload: Duration) -> Vec<Planned> {
 
 /// The budget to plan against after reading `fresh`, or `None` when it stays as it is.
 ///
-/// VRAM is what is free now plus what the loaded models hold (they are Imperium's own), so it
-/// follows what other programs take or give back. RAM is read only while nothing is loaded:
+/// VRAM is what is free now plus what the loaded models hold, and what the local whisper holds
+/// beside them (`side_vram`): they are Imperium's own, so it follows what other programs take
+/// or give back. RAM is read only while nothing is loaded:
 /// weights are memory-mapped and prompt caches fill lazily, so the free RAM beside a loaded
 /// model says little about what it will use. A reading with no GPU where the start found one
 /// (a failed `nvidia-smi`) leaves the VRAM as it is. Changes under [`BUDGET_STEP`] are noise.
@@ -115,9 +116,14 @@ pub fn refreshed_budget(
     fresh: &Hardware,
     ram_headroom_bytes: u64,
     loaded: &[LoadedStatus],
+    side_vram: u64,
 ) -> Option<Budget> {
     let measured = Budget::of(fresh, ram_headroom_bytes);
-    let held_vram: u64 = loaded.iter().map(|model| model.vram_bytes).sum();
+    let held_vram: u64 = loaded
+        .iter()
+        .map(|model| model.vram_bytes)
+        .sum::<u64>()
+        .saturating_add(side_vram);
     let vram = if fresh.gpus.is_empty() && start.vram_bytes > 0 {
         current.vram_bytes
     } else {
@@ -239,11 +245,12 @@ impl ResidencyController {
         };
         let loaded = supervisor.loaded();
         let Some(budget) = refreshed_budget(
-            supervisor.budget(),
+            supervisor.raw_budget(),
             supervisor.start_budget(),
             &fresh,
             self.ram_headroom_bytes,
             &loaded,
+            supervisor.side_load().0,
         ) else {
             return false;
         };
@@ -392,13 +399,13 @@ mod tests {
         let fresh = machine(4, 30);
         let loaded = [status("ours")];
         assert_eq!(
-            refreshed_budget(start, start, &fresh, 0, &loaded),
+            refreshed_budget(start, start, &fresh, 0, &loaded, 0),
             // VRAM: 4 free + 4 ours. RAM is not read while a model is loaded.
             Some(budget(8, 40))
         );
         // It gave the memory back and our model unloaded: both come back.
         assert_eq!(
-            refreshed_budget(budget(8, 40), start, &machine(14, 40), 0, &[]),
+            refreshed_budget(budget(8, 40), start, &machine(14, 40), 0, &[], 0),
             Some(start)
         );
         // Noise under the step changes nothing.
@@ -409,7 +416,7 @@ mod tests {
             }],
             ..machine(0, 40)
         };
-        assert_eq!(refreshed_budget(start, start, &noisy, 0, &[]), None);
+        assert_eq!(refreshed_budget(start, start, &noisy, 0, &[], 0), None);
     }
 
     #[test]
@@ -421,7 +428,7 @@ mod tests {
         };
         // RAM moved (nothing loaded), VRAM stays.
         assert_eq!(
-            refreshed_budget(start, start, &no_gpu, 0, &[]),
+            refreshed_budget(start, start, &no_gpu, 0, &[], 0),
             Some(budget(14, 20))
         );
     }

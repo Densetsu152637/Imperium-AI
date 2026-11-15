@@ -1280,8 +1280,40 @@ Recording uses the browser's MediaRecorder (Opus in WebM where supported), the s
 and a browser. The audio goes to the daemon (`voice.transcribe`), which sends it to the
 OpenAI-compatible `/audio/transcriptions` endpoint configured as `[media.transcription]` (see
 [media](09-media-generation.md)); without one the status line says speech-to-text is not set up.
-A local whisper.cpp server works when it is configured as that endpoint; the local runtime has
-no whisper slot of its own yet, so starting one for you is follow-up work.
+
+**Local whisper (implemented).** With `[voice] transcription = "local"` (default `hosted`) the
+daemon transcribes on this machine instead: it runs whisper.cpp's `whisper-server` as a
+supervised child process and sends the recording to its OpenAI-compatible
+`/v1/audio/transcriptions` route on a loopback port. Nothing leaves the computer.
+
+- **Setup.** `voice.local.binary` names the `whisper-server` (found on `PATH` when empty) and
+  `voice.local.model` a ggml model file such as `ggml-base.en.bin`. With no model, turning on
+  `voice.local.download` fetches `voice.local.model_file` from `voice.local.model_repo` the first
+  time, through the same Hugging Face path model downloads use, into the models download folder;
+  it is off by default so nothing downloads unasked. The app's WebM/Opus recordings are decoded
+  by ffmpeg (`voice.local.convert`, on by default), which must be installed.
+- **Lifecycle.** The server starts on the first recording (loading the model takes a few
+  seconds, shown as *Transcribing…*), is checked until it answers (`/health`, else its start
+  page) and abandoned after `voice.local.start_timeout_s`, stays up while recordings come, and
+  stops after `voice.local.idle_stop_s` of no use (never during a transcription). One that exits
+  on its own, or whose last request failed, is replaced by the next recording. Its output is
+  `<data>/logs/whisper.log`.
+- **Memory beside the language models.** Before starting, the server's footprint (the model file
+  plus a quarter and 256 MiB) is planned against the room left beside the loaded models: on
+  the GPU when it fits there and `voice.local.gpu` is `auto`, else on the CPU (`--no-gpu`) in
+  RAM, else the recording fails saying how much memory is missing. While it runs, its memory is
+  taken from the budget the residency controller plans language-model loads against (and counted
+  with the loaded models when the budget follows the machine), so models are planned around it.
+  It never makes a language model leave. When a language model cannot load only because of the
+  memory it holds, the server stops as soon as no transcription is running and the model loads;
+  the next recording starts it again, on the CPU if the GPU is taken.
+- **Failures** (no binary, no model, no room, a server that did not start or answered with an
+  error) reach the push-to-talk status line as its error, naming the setting to change or the
+  log to read.
+
+Not built: swapping an idle language model out to give whisper the GPU (it falls back to the
+CPU instead), streaming partial transcripts while still recording, and a status row for the
+server in the Local models panel (`model.residency` events do not carry it).
 
 The microphone needs the operating system's permission. macOS asks the first time (the app's
 `Info.plist` carries the usage description); on Windows, WebView2 asks; a refusal shows how to

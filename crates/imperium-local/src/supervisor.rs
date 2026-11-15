@@ -1114,6 +1114,23 @@ struct Load {
     why: Reason,
 }
 
+/// Something that holds memory beside the models and can give it back when a model needs the
+/// room (the supervised local whisper, [`crate::speech::SpeechServer`]).
+pub trait SideLoad: Send + Sync + fmt::Debug {
+    /// A model cannot load because of the memory this holds: release it as soon as it is not
+    /// in use, then lower the reservation ([`Supervisor::set_side_load`]) so waiting calls
+    /// plan again. Called on every look while the model waits, so it must be cheap to repeat.
+    fn yield_now(&self);
+}
+
+/// What is held beside the models ([`Supervisor::set_side_load`]).
+#[derive(Debug, Default)]
+struct Side {
+    vram_bytes: u64,
+    ram_bytes: u64,
+    yielder: Option<Weak<dyn SideLoad>>,
+}
+
 /// Supervises local model servers. Cheap to share: hand out `Arc<Supervisor>`.
 pub struct Supervisor {
     /// Replaced when the folders are scanned again, such as after a download.
@@ -1128,6 +1145,9 @@ pub struct Supervisor {
     start_budget: Budget,
     /// The budget loads are planned against now; the residency controller refreshes it.
     budget_now: Mutex<Budget>,
+    /// Memory held by something that is not a model (the local whisper) and who to ask to give
+    /// it back ([`Supervisor::set_side_load`]).
+    side: Mutex<Side>,
     /// Decides how to make room for a call ([`Supervisor::set_policy`]).
     policy: Mutex<Arc<dyn ResidencyPolicy>>,
     state: Mutex<State>,
@@ -1265,6 +1285,7 @@ impl Supervisor {
             launcher,
             start_budget: budget,
             budget_now: Mutex::new(budget),
+            side: Mutex::new(Side::default()),
             policy: Mutex::new(Arc::new(Standard)),
             state: Mutex::new(State::default()),
             presence: Arc::default(),
@@ -1300,7 +1321,85 @@ impl Supervisor {
     /// The memory loads are planned against now: measured when the supervisor started, and
     /// replaced by the residency controller's live readings ([`Action::SetBudget`]).
     pub fn budget(&self) -> Budget {
+        let raw = *lock(&self.budget_now);
+        let side = lock(&self.side);
+        Budget {
+            vram_bytes: raw.vram_bytes.saturating_sub(side.vram_bytes),
+            ram_bytes: raw.ram_bytes.saturating_sub(side.ram_bytes),
+            unified: raw.unified,
+        }
+    }
+
+    /// The budget before what [`Supervisor::set_side_load`] holds is taken from it: what the
+    /// residency controller's readings replace.
+    pub fn raw_budget(&self) -> Budget {
         *lock(&self.budget_now)
+    }
+
+    /// Memory held beside the models by something that is not one: `(vram, ram)` bytes. The
+    /// budget loads are planned against is smaller by that much, and a load that does not fit
+    /// only because of it asks the holder to give it back ([`SideLoad`]).
+    pub fn set_side_load(&self, vram_bytes: u64, ram_bytes: u64) {
+        {
+            let mut side = lock(&self.side);
+            if side.vram_bytes == vram_bytes && side.ram_bytes == ram_bytes {
+                return;
+            }
+            tracing::info!(
+                vram_mib = vram_bytes / MIB,
+                ram_mib = ram_bytes / MIB,
+                "memory held beside the local models changed"
+            );
+            side.vram_bytes = vram_bytes;
+            side.ram_bytes = ram_bytes;
+        }
+        self.changed.notify_waiters();
+    }
+
+    /// What [`Supervisor::set_side_load`] holds now: `(vram, ram)` bytes.
+    pub fn side_load(&self) -> (u64, u64) {
+        let side = lock(&self.side);
+        (side.vram_bytes, side.ram_bytes)
+    }
+
+    /// Who is asked to give the side load back when a model needs the room.
+    pub fn set_side_yielder(&self, yielder: Weak<dyn SideLoad>) {
+        lock(&self.side).yielder = Some(yielder);
+    }
+
+    /// The holder of the side load, when a model that cannot load now would fit without it.
+    fn side_yielder_for(
+        &self,
+        decider: &dyn ResidencyPolicy,
+        ask: &LoadAsk<'_>,
+    ) -> Option<Arc<dyn SideLoad>> {
+        let (yielder, vram, ram) = {
+            let side = lock(&self.side);
+            if side.vram_bytes == 0 && side.ram_bytes == 0 {
+                return None;
+            }
+            (
+                side.yielder.as_ref()?.upgrade()?,
+                side.vram_bytes,
+                side.ram_bytes,
+            )
+        };
+        let wider = Budget {
+            vram_bytes: ask.budget.vram_bytes.saturating_add(vram),
+            ram_bytes: ask.budget.ram_bytes.saturating_add(ram),
+            unified: ask.budget.unified,
+        };
+        let retry = decider.decide(&LoadAsk {
+            model: ask.model,
+            holder: ask.holder,
+            priority: ask.priority,
+            place: ask.place,
+            budget: wider,
+            residents: ask.residents,
+            waited: ask.waited,
+            limits: ask.limits,
+        });
+        matches!(retry, Decision::Load { .. }).then_some(yielder)
     }
 
     /// The memory measured when the supervisor started. Context ceilings are sized against it,
@@ -2738,6 +2837,25 @@ impl Supervisor {
             })
         };
         let decision = ask(&residents);
+        // A model that does not fit only because of what is held beside the models (the local
+        // whisper) neither waits for room nor swaps another model out: the holder is asked to
+        // give the memory back, and the call plans again once it has.
+        if !matches!(decision, Decision::Load { .. }) {
+            let again = LoadAsk {
+                model: &model.id,
+                holder,
+                priority,
+                place: &place,
+                budget,
+                residents: &residents,
+                waited: ticket.since.elapsed(),
+                limits: policy,
+            };
+            if let Some(yielder) = self.side_yielder_for(&*decider, &again) {
+                yielder.yield_now();
+                return Ok(Plan::Wait { yielded: false });
+            }
+        }
         let (evict, placement, why) = match decision {
             Decision::TooBig => return Err(no_room()),
             Decision::SwapsOff => {
