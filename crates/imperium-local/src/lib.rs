@@ -1,6 +1,8 @@
 //! Local models: GGUF discovery, Hugging Face downloads, hardware probe, memory planning,
 //! runtime packs, and the supervised llama.cpp and vLLM servers that serve them.
 
+#![warn(unreachable_pub)]
+
 pub mod arbiter;
 pub mod backend;
 pub mod calibration;

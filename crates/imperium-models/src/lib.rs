@@ -3,6 +3,8 @@
 //! agent loop reaches it through the [`ChatClient`] trait, built by endpoint kind from
 //! [`ChatClients`], so clients for other APIs can be added.
 
+#![warn(unreachable_pub)]
+
 mod chat;
 mod client;
 pub mod llamacpp;

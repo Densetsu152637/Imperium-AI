@@ -2,6 +2,8 @@
 //! vocabulary without depending on its implementation. This crate depends on no other
 //! Imperium crate; everything else may depend on it.
 
+#![warn(unreachable_pub)]
+
 mod chat;
 mod effort;
 pub mod encoding;

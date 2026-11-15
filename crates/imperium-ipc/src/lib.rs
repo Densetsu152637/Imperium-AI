@@ -7,6 +7,8 @@
 //! nobody else, and refuses remote clients. A local connection is not trusted for being local;
 //! the daemon still asks for its token.
 
+#![warn(unreachable_pub)]
+
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]

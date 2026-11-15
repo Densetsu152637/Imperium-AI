@@ -1,6 +1,8 @@
 //! Schedules: when a task should run (cron, interval, or one-shot triggers), what to do about
 //! runs missed while the computer was off, and the record of past runs that survives restarts.
 
+#![warn(unreachable_pub)]
+
 pub mod cron;
 
 use std::collections::BTreeMap;

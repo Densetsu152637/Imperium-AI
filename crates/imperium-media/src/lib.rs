@@ -3,6 +3,8 @@
 //! OpenAI-compatible transcription API (LocalAI, whisper.cpp front-ends, or hosted services).
 //! Results are files in the project's `media/` folder with a provenance file beside each.
 
+#![warn(unreachable_pub)]
+
 pub mod attachments;
 pub mod image;
 mod tools;

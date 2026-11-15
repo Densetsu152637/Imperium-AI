@@ -2,6 +2,8 @@
 //! persistent agent. The tools in `imperium-tools` ask this crate before they act, and the
 //! engine and the daemon use the same decisions.
 
+#![warn(unreachable_pub)]
+
 mod floor;
 pub mod packs;
 pub mod permissions;

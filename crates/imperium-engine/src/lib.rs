@@ -5,6 +5,8 @@
 //! CPU. Callers talk to a [`Session`] over channels and receive its
 //! [`AgentEvent`](imperium_protocol::session::AgentEvent)s by subscribing.
 
+#![warn(unreachable_pub)]
+
 mod agent;
 mod agents;
 mod artefacts;

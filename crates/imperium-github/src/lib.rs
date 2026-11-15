@@ -2,6 +2,8 @@
 //! their logs (through the `gh` CLI, using its login), and a worktree per pull request where a
 //! fix is made, committed, and pushed (never forced).
 
+#![warn(unreachable_pub)]
+
 pub mod git;
 
 use std::fmt;

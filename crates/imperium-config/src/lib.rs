@@ -10,6 +10,8 @@
 //! A session's settings add one more step: an environment's own `.imperium/config.toml` is
 //! checked against the user's settings and can only narrow them ([`EnvironmentConfig`]).
 
+#![warn(unreachable_pub)]
+
 mod budgets;
 mod endpoints;
 mod environment;

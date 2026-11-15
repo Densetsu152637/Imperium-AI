@@ -4,6 +4,8 @@
 //! (`mcp__<server>__resources_list`, `resources_read`, `prompts_list`, `prompts_get`). A server
 //! may also ask the session's model for a reply (sampling) when the user's config allows it.
 
+#![warn(unreachable_pub)]
+
 pub mod client;
 mod extras;
 pub mod mcp_json;

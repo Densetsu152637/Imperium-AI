@@ -2,6 +2,8 @@
 //! a policy check, not an OS sandbox — commands run with the user's full rights). A remote
 //! workspace runs them inside a Docker container, WSL, or over SSH ([`runtime`]).
 
+#![warn(unreachable_pub)]
+
 mod exec;
 mod files;
 mod invocation;

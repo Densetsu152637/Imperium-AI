@@ -4,6 +4,8 @@
 //! exported to `packages/protocol/src/generated/` when the crate's tests run, so TypeScript
 //! clients share the same definitions.
 
+#![warn(unreachable_pub)]
+
 pub mod agents;
 pub mod budgets;
 pub mod clarification;

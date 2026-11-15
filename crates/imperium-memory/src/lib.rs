@@ -5,6 +5,8 @@
 //! makes past sessions searchable, and the model cards agents search when they choose a model
 //! ([`models`]), on the same retrieval primitives ([`retrieval`]).
 
+#![warn(unreachable_pub)]
+
 pub mod environment;
 pub mod migrate;
 pub mod models;
