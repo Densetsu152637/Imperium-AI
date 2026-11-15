@@ -2461,6 +2461,7 @@ dependencies = [
  "imperium-memory",
  "imperium-models",
  "imperium-pets",
+ "imperium-policy",
  "imperium-protocol",
  "imperium-tools",
  "imperium-web",
@@ -2517,6 +2518,7 @@ dependencies = [
  "imperium-media",
  "imperium-memory",
  "imperium-models",
+ "imperium-policy",
  "imperium-protocol",
  "imperium-tools",
  "imperium-web",
@@ -2667,6 +2669,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "imperium-policy"
+version = "0.1.0"
+dependencies = [
+ "imperium-api",
+ "tempfile",
+]
+
+[[package]]
 name = "imperium-protocol"
 version = "0.1.0"
 dependencies = [
@@ -2681,6 +2691,7 @@ version = "0.1.0"
 dependencies = [
  "ignore",
  "imperium-api",
+ "imperium-policy",
  "regex",
  "serde",
  "serde_json",
@@ -2697,6 +2708,7 @@ dependencies = [
  "axum",
  "futures-util",
  "imperium-api",
+ "imperium-policy",
  "imperium-protocol",
  "imperium-tools",
  "reqwest",

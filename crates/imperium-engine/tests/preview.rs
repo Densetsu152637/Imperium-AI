@@ -11,9 +11,9 @@ use axum::Router;
 use axum::routing::post;
 use imperium_engine::{ResolvedModel, Session, SessionConfig, ToolProvider};
 use imperium_models::Endpoint;
+use imperium_policy::permissions::{Permissions, SharedRules};
 use imperium_protocol::session::{PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
-use imperium_tools::permissions::{Permissions, SharedRules};
 use imperium_web::{BrowserSetup, PreviewTools, USER_DRIVING, Web, WebTools};
 use serde_json::{Value, json};
 

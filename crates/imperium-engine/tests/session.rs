@@ -6,11 +6,11 @@ use axum::Router;
 use axum::routing::post;
 use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::{Endpoint, Pricing};
-use imperium_protocol::session::{AgentEvent, PermissionDecision, SessionEvent};
-use imperium_tools::Workspace;
-use imperium_tools::permissions::{
+use imperium_policy::permissions::{
     PermissionMode, PermissionRule, Permissions, RuleAction, SharedRules,
 };
+use imperium_protocol::session::{AgentEvent, PermissionDecision, SessionEvent};
+use imperium_tools::Workspace;
 use tokio::sync::broadcast;
 
 /// A fake endpoint that replays one scripted SSE body per request.

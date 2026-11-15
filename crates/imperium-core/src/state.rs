@@ -165,7 +165,7 @@ struct Placement {
 /// user's settings. A writer agent that can reach one of those folders could otherwise plant a
 /// plugin, so a write there is always asked about.
 fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
-    use imperium_tools::permissions::protect_dir;
+    use imperium_policy::permissions::protect_dir;
     protect_dir(&paths.config_dir().join("mods"));
     protect_dir(&paths.config_dir().join("plugins"));
     // Pinned policy packs: agents read their files as instructions, so a write is always asked.
@@ -547,7 +547,7 @@ impl DaemonState {
                     .map(|env| (env.id.as_str(), env.permissions.rules.as_slice())),
             )
             .with_fixed_rules(fixed_rules);
-        let mut grants: Vec<imperium_tools::permissions::PathGrant> = env
+        let mut grants: Vec<imperium_policy::permissions::PathGrant> = env
             .iter()
             .flat_map(|env| &env.permissions.grants)
             .map(crate::permissions::grant_from_wire)
@@ -565,7 +565,7 @@ impl DaemonState {
         folders: &[String],
         runtime: &EnvironmentRuntime,
         isolation: &IsolationSettings,
-        grants: &mut Vec<imperium_tools::permissions::PathGrant>,
+        grants: &mut Vec<imperium_policy::permissions::PathGrant>,
     ) -> Result<Workspace, CreateError> {
         let remote = match runtime {
             EnvironmentRuntime::Local
@@ -618,7 +618,7 @@ impl DaemonState {
         agent_id: &str,
         recorded: Option<&imperium_protocol::agents::AgentPermissions>,
     ) -> (
-        imperium_tools::AgentProfile,
+        imperium_policy::AgentProfile,
         imperium_protocol::agents::AgentPermissions,
     ) {
         let live = environment_id
@@ -1722,7 +1722,7 @@ impl DaemonState {
         let mut notices: Vec<String> = Vec::new();
         let mut fixed_rules = Vec::new();
         for rule in &env_config.permission_rules {
-            match imperium_tools::permissions::validate_rule(rule) {
+            match imperium_policy::permissions::validate_rule(rule) {
                 Ok(()) => fixed_rules.push(rule.clone()),
                 Err(error) => notices.push(format!(
                     "The environment's configuration has a permission rule that was ignored: \
@@ -1879,9 +1879,9 @@ impl DaemonState {
         let workspace = if workspace.runtime().is_none() {
             let store = crate::attachments::store_dir(self.paths.data_dir(), &id);
             match std::fs::create_dir_all(&store) {
-                Ok(()) => workspace.with_grants(&[imperium_tools::permissions::PathGrant {
+                Ok(()) => workspace.with_grants(&[imperium_policy::permissions::PathGrant {
                     path: store.display().to_string(),
-                    mode: imperium_tools::permissions::PathMode::Read,
+                    mode: imperium_policy::permissions::PathMode::Read,
                 }]),
                 Err(error) => {
                     tracing::warn!(%error, "could not create the session's attachments folder");
@@ -2768,7 +2768,7 @@ impl DaemonState {
         &self,
         project_dir: &Path,
         settings: &Settings,
-        profile: Option<&imperium_tools::AgentProfile>,
+        profile: Option<&imperium_policy::AgentProfile>,
     ) -> Extensions {
         let settings = if profile.is_some_and(|profile| profile.local_files_only()) {
             // Not the environment's narrowed settings.

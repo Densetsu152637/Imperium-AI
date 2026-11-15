@@ -12,9 +12,9 @@ use imperium_api::{PermissionRule, RuleAction};
 use imperium_config::{Enforce, RoutingSettings};
 use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
+use imperium_policy::permissions::{Permissions, SharedRules};
 use imperium_protocol::session::SessionEvent;
 use imperium_tools::Workspace;
-use imperium_tools::permissions::{Permissions, SharedRules};
 use imperium_workflow::ContextIndex;
 use serde_json::{Value, json};
 

@@ -11,8 +11,8 @@ use imperium_api::{
     BrowserTabView, ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolProvider, ToolSpec,
     parse_arguments,
 };
+use imperium_policy::permissions::{CallKind, Target, safety_floor};
 use imperium_protocol::methods::BrowserAction;
-use imperium_tools::permissions::{CallKind, Target, safety_floor};
 use imperium_tools::{Workspace, plain_path};
 use serde::Deserialize;
 use serde_json::json;

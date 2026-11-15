@@ -8,15 +8,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError, RwLock};
 
 use imperium_config::PermissionSettings;
+use imperium_policy::permissions::{
+    PathGrant, PathMode, PermissionRule, Permissions, RuleAction, SharedRules, home_dir,
+    validate_grant, validate_rule,
+};
+use imperium_policy::{AgentProfile, Allowlist, ProfileRules};
 use imperium_protocol::agents::{AgentPermissions, ToolAccess};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::EnvironmentUpdateParams;
 use imperium_protocol::permissions as wire;
-use imperium_tools::permissions::{
-    PathGrant, PathMode, PermissionRule, Permissions, RuleAction, SharedRules, home_dir,
-    validate_grant, validate_rule,
-};
-use imperium_tools::{AgentProfile, Allowlist, ProfileRules};
 
 use crate::state::DaemonState;
 
@@ -677,7 +677,7 @@ mod tests {
             action: wire::RuleAction::Deny,
         }];
         let session = store.for_session(Some(("env1", &saved)));
-        let target = imperium_tools::permissions::Target::Command("make all".into());
+        let target = imperium_policy::permissions::Target::Command("make all".into());
         assert_eq!(
             session.evaluate("run_command", &target),
             Some(RuleAction::Deny)

@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
-use crate::permissions::{RuleAction, glob};
 use crate::{ToolError, Workspace};
+use imperium_policy::permissions::{RuleAction, glob};
 
 /// Default and largest number of results one call returns.
 pub(crate) const DEFAULT_RESULTS: usize = 100;
@@ -364,7 +364,7 @@ pub fn grep_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::{PermissionRule, Permissions, SharedRules};
+    use imperium_policy::permissions::{PermissionRule, Permissions, SharedRules};
 
     fn scope(path: &str) -> Scope {
         Scope {

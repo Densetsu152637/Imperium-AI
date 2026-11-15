@@ -418,7 +418,7 @@ impl Invocation {
 
     pub async fn execute(&self, workspace: &Workspace) -> Result<String, ToolError> {
         // An agent limited to local files runs no commands, whatever offered or approved the call.
-        if crate::profile::SHELL_TOOLS.contains(&self.tool_name())
+        if imperium_policy::SHELL_TOOLS.contains(&self.tool_name())
             && !workspace.profile().allows_shell()
         {
             return Err(ToolError::Invalid(

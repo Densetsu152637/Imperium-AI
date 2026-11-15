@@ -14,12 +14,12 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use imperium_policy::permissions::{RuleAction, Target};
 use imperium_protocol::methods::{
     ReviewAction, ReviewFile, ReviewHunk, SessionReviewCommitParams, SessionReviewCommitResult,
     SessionReviewHunkParams, SessionReviewHunkResult, SessionReviewParams,
     SessionReviewPullRequestParams, SessionReviewPullRequestResult, SessionReviewResult,
 };
-use imperium_tools::permissions::{RuleAction, Target};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use similar::{ChangeTag, TextDiff};

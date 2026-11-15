@@ -6,7 +6,7 @@ use std::path::Path;
 
 use imperium_config::{Config, Layer, Paths};
 use imperium_core::DaemonState;
-use imperium_tools::permissions::{CallKind, Target, safety_floor};
+use imperium_policy::permissions::{CallKind, Target, safety_floor};
 
 fn floored(path: &Path) -> bool {
     safety_floor(

@@ -657,7 +657,7 @@ fn path_matches(pattern: &str, absolute: &str, relative: Option<&str>) -> bool {
 }
 
 /// Glob matching: `**` matches anything, `*` anything but `/`, `?` one character but `/`.
-pub(crate) fn glob(pattern: &str, text: &str, fold: bool) -> bool {
+pub fn glob(pattern: &str, text: &str, fold: bool) -> bool {
     let normalize = |s: &str| -> Vec<char> {
         if fold {
             s.chars().flat_map(char::to_lowercase).collect()

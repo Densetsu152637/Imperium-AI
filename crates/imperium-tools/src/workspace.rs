@@ -2,13 +2,13 @@ use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use crate::permissions::{PathGrant, PathMode, Permissions, Target, expand_home};
 use crate::processes::Processes;
-use crate::profile::AgentProfile;
 use crate::project_worktrees::ProjectWorktrees;
 use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
 use crate::writer_trees::{WriterHandle, WriterStart};
 use crate::{Sandbox, ToolError, WriterTrees};
+use imperium_policy::AgentProfile;
+use imperium_policy::permissions::{PathGrant, PathMode, Permissions, Target, expand_home};
 
 /// The folders an agent works in: an environment's folders, the first of which is the working
 /// directory (the root). Relative paths given to tools resolve against the root; absolute paths
@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn remote_grants_are_paths_inside_the_runtime() {
-        use crate::permissions::{PathGrant, PathMode};
+        use imperium_policy::permissions::{PathGrant, PathMode};
         let workspace = Workspace::remote(
             Remote::Ssh { host: "box".into() },
             &["/home/me/project".to_string()],
@@ -1340,7 +1340,7 @@ mod tests {
     fn local_files_only_keeps_files_to_the_folders_and_the_scratch_folder() {
         let layout = layout();
         let locked = layout.workspace.clone().with_profile(AgentProfile::new(
-            crate::profile::ProfileRules {
+            imperium_policy::profile::ProfileRules {
                 local_files_only: true,
                 ..Default::default()
             },
@@ -1402,14 +1402,14 @@ mod tests {
                 mode: PathMode::Read,
             }]);
         for rules in [
-            crate::profile::ProfileRules::default(),
-            crate::profile::ProfileRules {
+            imperium_policy::profile::ProfileRules::default(),
+            imperium_policy::profile::ProfileRules {
                 local_files_only: true,
                 ..Default::default()
             },
-            crate::profile::ProfileRules {
-                mcp: crate::profile::Allowlist::All,
-                plugins: crate::profile::Allowlist::All,
+            imperium_policy::profile::ProfileRules {
+                mcp: imperium_policy::profile::Allowlist::All,
+                plugins: imperium_policy::profile::Allowlist::All,
                 local_files_only: false,
             },
         ] {
@@ -1432,7 +1432,7 @@ mod tests {
         let workspace = layout.workspace.clone().with_profile(profile.clone());
         let granted = at(&layout.grant, "g.txt");
         assert!(workspace.resolve(&granted).is_ok());
-        profile.set(crate::profile::ProfileRules {
+        profile.set(imperium_policy::profile::ProfileRules {
             local_files_only: true,
             ..Default::default()
         });
@@ -1459,10 +1459,11 @@ mod tests {
                 .resolve_remote("/opt/toolchains/bin/go", false)
                 .is_ok()
         );
-        let locked = workspace.with_profile(AgentProfile::new(crate::profile::ProfileRules {
-            local_files_only: true,
-            ..Default::default()
-        }));
+        let locked =
+            workspace.with_profile(AgentProfile::new(imperium_policy::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
         assert!(locked.resolve_remote("src/main.rs", true).is_ok());
         assert!(matches!(
             locked.resolve_remote("/opt/toolchains/bin/go", false),
@@ -1489,10 +1490,11 @@ mod tests {
         let settings = config.join("config.toml").to_string_lossy().to_string();
         // Without the lock the folder is the agent's like any other.
         assert!(workspace.resolve(&settings).is_ok());
-        let locked = workspace.with_profile(AgentProfile::new(crate::profile::ProfileRules {
-            local_files_only: true,
-            ..Default::default()
-        }));
+        let locked =
+            workspace.with_profile(AgentProfile::new(imperium_policy::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
         for path in [
             settings,
             "fake-config/config.toml".to_string(),
@@ -1517,12 +1519,12 @@ mod tests {
         std::fs::create_dir_all(project.path().join(".imperium")).unwrap();
         std::fs::write(project.path().join(".imperium/config.toml"), "x = 1").unwrap();
         let open = Workspace::new(project.path()).unwrap();
-        let locked = open
-            .clone()
-            .with_profile(AgentProfile::new(crate::profile::ProfileRules {
-                local_files_only: true,
-                ..Default::default()
-            }));
+        let locked =
+            open.clone()
+                .with_profile(AgentProfile::new(imperium_policy::profile::ProfileRules {
+                    local_files_only: true,
+                    ..Default::default()
+                }));
         for file in [
             ".imperium/config.toml",
             ".imperium/config.local.toml",
@@ -1554,7 +1556,7 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         let locked = Workspace::new(project.path())
             .unwrap()
-            .with_profile(AgentProfile::new(crate::profile::ProfileRules {
+            .with_profile(AgentProfile::new(imperium_policy::profile::ProfileRules {
                 local_files_only: true,
                 ..Default::default()
             }));
@@ -1611,7 +1613,7 @@ mod tests {
         let tree = tempfile::tempdir().unwrap();
         let moved = workspace.with_roots(&[tree.path()]).unwrap();
         assert_eq!(moved.profile(), &profile);
-        profile.set(crate::profile::ProfileRules {
+        profile.set(imperium_policy::profile::ProfileRules {
             local_files_only: true,
             ..Default::default()
         });

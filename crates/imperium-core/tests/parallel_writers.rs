@@ -15,11 +15,11 @@ use axum::routing::post;
 use imperium_core::{Connection, DaemonState, GitWriterTrees};
 use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
-use imperium_protocol::jsonrpc::{Outcome, Response};
-use imperium_protocol::session::SessionEvent;
-use imperium_tools::permissions::{
+use imperium_policy::permissions::{
     PermissionMode, PermissionRule, Permissions, RuleAction, SharedRules, Target,
 };
+use imperium_protocol::jsonrpc::{Outcome, Response};
+use imperium_protocol::session::SessionEvent;
 use imperium_tools::{Invocation, Workspace, WriterTrees};
 use serde_json::{Value, json};
 
