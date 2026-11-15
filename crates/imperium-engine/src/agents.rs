@@ -654,3 +654,152 @@ impl AgentStore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use imperium_protocol::session::{KnowledgeStatus, KnowledgeUntrusted};
+
+    fn card(agent: &str) -> KnowledgeCard {
+        KnowledgeCard {
+            agent_id: agent.into(),
+            title: "Reader".into(),
+            model: "fake:m".into(),
+            local: false,
+            topic: "the alpha module".into(),
+            sources: Vec::new(),
+            more_sources: 0,
+            untrusted: KnowledgeUntrusted::default(),
+            context_tokens: 100,
+            context_window: Some(1000),
+            est_question_cost: None,
+            last_cached_ratio: None,
+            questions: 0,
+            usage: TokenUsage::default(),
+            cost_usd: None,
+            status: KnowledgeStatus::Ready,
+            queued: 0,
+            stale_fraction: 0.0,
+        }
+    }
+
+    fn event(agent: &str, event: SessionEvent) -> AgentEvent {
+        AgentEvent {
+            agent_id: agent.into(),
+            event,
+        }
+    }
+
+    /// The journal of a session whose t1 was kept, asked once (the fork `t1#q1` read a file),
+    /// and whose t2 asked.
+    fn journal() -> Vec<AgentEvent> {
+        vec![
+            event(
+                ROOT_AGENT,
+                SessionEvent::TaskSpawned {
+                    task_id: "t1".into(),
+                    brief: "read the module".into(),
+                    model: "fake:m".into(),
+                    title: "Reader".into(),
+                    at_ms: None,
+                },
+            ),
+            event(
+                "t1",
+                SessionEvent::TaskFinished {
+                    task_id: "t1".into(),
+                    ok: true,
+                    report: "read".into(),
+                    usage: TokenUsage::default(),
+                    cost_usd: None,
+                    at_ms: None,
+                },
+            ),
+            event(
+                "t1",
+                SessionEvent::KnowledgeChanged {
+                    agent_id: "t1".into(),
+                    card: Some(Box::new(card("t1"))),
+                    retired: false,
+                },
+            ),
+            event(
+                "t1#q1",
+                SessionEvent::ToolStarted {
+                    call_id: "c".into(),
+                    tool: "read_file".into(),
+                    summary: "read a.txt".into(),
+                    arguments: None,
+                },
+            ),
+            event(
+                "t1#q1",
+                SessionEvent::TurnStarted {
+                    text: "never emitted by a fork, but never an agent either".into(),
+                    attachments: Vec::new(),
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_fork_of_a_journal_makes_no_agent_record() {
+        let store = AgentStore::open(None, &journal(), true);
+        let ids: Vec<String> = store
+            .list()
+            .into_iter()
+            .map(|agent| agent.agent_id)
+            .collect();
+        assert_eq!(ids, ["t1"]);
+        assert!(is_fork_id("t1#q1") && !is_fork_id("t1"));
+    }
+
+    #[test]
+    fn cards_come_back_from_kept_records_and_not_from_a_journal_alone() {
+        // A session branched from another, or restarted with agent state off, has the journal
+        // and no record on disk: its subagents are ordinary, idle ones.
+        let replayed = AgentStore::open(None, &journal(), true);
+        assert!(replayed.summary("t1").unwrap().knowledge.is_none());
+        assert!(replayed.knowledge_cards().is_empty());
+
+        // With the records kept, the card (and the frozen prefix it needs) is restored.
+        let dir = tempfile::tempdir().unwrap();
+        let kept = dir.path().join("s.agents");
+        let first = AgentStore::open(Some(kept.clone()), &[], false);
+        let model = crate::ResolvedModel {
+            spec: "fake:m".into(),
+            endpoint: imperium_models::Endpoint {
+                base_url: String::new(),
+                api_key: None,
+            },
+            model: "m".into(),
+            pricing: None,
+            local: false,
+            context_window: None,
+            kind: "openai".into(),
+            reasoning: None,
+        };
+        first.register("t1", "leaf", &model);
+        first.save_conversation("t1", &[ChatMessage::user("read it")]);
+        let frozen = Frozen {
+            system: "system".into(),
+            tools: Vec::new(),
+        };
+        first.set_knowledge("t1", card("t1"), frozen);
+        let reopened = AgentStore::open(Some(kept), &journal(), true);
+        let cards = reopened.knowledge_cards();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].topic, "the alpha module");
+        assert!(reopened.fork_source("t1").is_some());
+        assert!(
+            reopened
+                .list()
+                .iter()
+                .all(|agent| !agent.agent_id.contains('#'))
+        );
+        // Retiring clears the card and the frozen prefix, and it stays cleared after a reopen.
+        assert!(reopened.clear_knowledge("t1"));
+        assert!(reopened.fork_source("t1").is_none());
+        assert!(!reopened.clear_knowledge("t1"));
+    }
+}
