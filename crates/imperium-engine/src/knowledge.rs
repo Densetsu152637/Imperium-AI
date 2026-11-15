@@ -4,6 +4,7 @@
 //! answer is framed, and the question's life from `ask_agent` to its `question_answered` event.
 //! The fork that answers is run by [`crate::agent::run_fork`].
 
+use imperium_api::time::unix_ms;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,7 +22,7 @@ use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
 
 use crate::ResolvedModel;
-use crate::agents::{AgentKind, Frozen, now_ms};
+use crate::agents::{AgentKind, Frozen};
 use crate::breakdown::estimate_tokens;
 use crate::session::{Shared, lock};
 
@@ -707,7 +708,7 @@ pub(crate) fn refresh_estimate(shared: &Shared, card: &mut KnowledgeCard) {
     let expired = !model.local
         && lock(&shared.knowledge.last_asked)
             .get(&card.agent_id)
-            .is_some_and(|at| now_ms().saturating_sub(*at) >= lifetime_ms);
+            .is_some_and(|at| unix_ms().saturating_sub(*at) >= lifetime_ms);
     card.est_question_cost =
         question_cost(card.context_tokens, card.last_cached_ratio, &model, expired);
 }
@@ -1265,10 +1266,10 @@ pub(crate) fn start_question(
             from: job.asker.id.clone(),
             to: job.target.agent_id.clone(),
             text: clip(&job.text, EVENT_CHARS),
-            at_ms: now_ms(),
+            at_ms: unix_ms(),
         },
     );
-    lock(&shared.knowledge.last_asked).insert(job.target.agent_id.clone(), now_ms());
+    lock(&shared.knowledge.last_asked).insert(job.target.agent_id.clone(), unix_ms());
     let (stop, receiver) = watch::channel(None);
     let id = job.question_id.clone();
     let handle = tokio::spawn(run_question(Arc::clone(shared), job, number, receiver));
@@ -1411,7 +1412,7 @@ async fn run_question(
             },
             cost_usd: cost,
             cached_ratio,
-            at_ms: now_ms(),
+            at_ms: unix_ms(),
         },
     );
     tracing::debug!(question = %job.question_id, ?outcome, took_ms = started.elapsed().as_millis() as u64, "question ended");

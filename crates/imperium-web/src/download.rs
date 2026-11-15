@@ -334,9 +334,7 @@ fn mark_platform(path: &Path, source: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn mark_platform(path: &Path, _source: &str) -> Result<(), String> {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
+    let seconds = imperium_api::time::unix_secs();
     let value = format!("0083;{seconds:x};Imperium;");
     let status = std::process::Command::new("xattr")
         .args(["-w", "com.apple.quarantine", value.as_str()])

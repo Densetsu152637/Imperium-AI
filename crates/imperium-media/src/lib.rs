@@ -9,7 +9,7 @@ mod tools;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use imperium_api::ToolSpec;
 use serde_json::{Value, json};
@@ -266,9 +266,7 @@ fn save(
         .take(6)
         .collect::<Vec<_>>()
         .join("-");
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis());
+    let stamp = imperium_api::time::unix_ms();
     let dir = root.join("media");
     std::fs::create_dir_all(&dir)
         .map_err(|error| MediaError::Io(dir.display().to_string(), error))?;
@@ -280,7 +278,7 @@ fn save(
     std::fs::write(&path, bytes)
         .map_err(|error| MediaError::Io(path.display().to_string(), error))?;
     let mut provenance = provenance;
-    provenance["created_unix_ms"] = json!(stamp as u64);
+    provenance["created_unix_ms"] = json!(stamp);
     provenance["bytes"] = json!(bytes.len());
     let meta = dir.join(format!("{file_name}.json"));
     std::fs::write(

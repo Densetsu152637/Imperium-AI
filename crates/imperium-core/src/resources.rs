@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use imperium_config::{LLAMACPP_ENDPOINT, VLLM_ENDPOINT};
 use imperium_local::monitor::{Probe, Sample, SystemProbe};
@@ -345,9 +345,7 @@ pub(crate) fn assemble(inputs: &Inputs<'_>) -> ResourceSnapshot {
         .collect();
 
     ResourceSnapshot {
-        taken_at_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, millis),
+        taken_at_ms: imperium_api::time::unix_ms(),
         cpu: CpuUsage {
             total_percent: sample.cpu_percent,
             per_core: sample.per_core.clone(),

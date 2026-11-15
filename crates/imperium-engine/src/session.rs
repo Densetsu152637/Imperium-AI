@@ -1054,7 +1054,7 @@ async fn run(
                         .into(),
                     usage: Default::default(),
                     cost_usd: None,
-                    at_ms: Some(crate::agents::now_ms()),
+                    at_ms: Some(imperium_api::time::unix_ms()),
                 },
             );
         }

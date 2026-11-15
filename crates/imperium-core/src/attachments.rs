@@ -7,7 +7,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use imperium_config::VoiceTranscription;
@@ -32,9 +31,7 @@ pub fn store_dir(data_dir: &Path, session_id: &str) -> PathBuf {
 /// A fresh attachment id, unique in the daemon's lifetime and across restarts.
 fn next_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis());
+    let millis = imperium_api::time::unix_ms();
     format!("a{millis:x}{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 

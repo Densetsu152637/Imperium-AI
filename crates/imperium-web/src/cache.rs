@@ -10,6 +10,7 @@
 //! authorization header, and no credentials in the URL or in a query parameter that looks like
 //! one (`token`, `key`, `sig`, `auth`, ...).
 
+use imperium_api::time::unix_ms;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -59,12 +60,6 @@ struct Entry {
     expires_at: u64,
     #[serde(flatten)]
     page: Page,
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 /// The cache folder with its lifetime and size cap.
@@ -122,7 +117,7 @@ impl FetchCache {
         let file = self.file(key);
         let bytes = fs::read(&file).ok()?;
         match serde_json::from_slice::<Entry>(&bytes) {
-            Ok(entry) if entry.url == key && entry.expires_at > now() => Some(entry.page),
+            Ok(entry) if entry.url == key && entry.expires_at > unix_ms() => Some(entry.page),
             // A hash collision keeps the other URL's entry.
             Ok(entry) if entry.url != key => None,
             _ => {
@@ -141,7 +136,7 @@ impl FetchCache {
         }
         let entry = Entry {
             url: key.to_string(),
-            expires_at: now() + (lifetime.as_millis() as u64).max(1),
+            expires_at: unix_ms() + (lifetime.as_millis() as u64).max(1),
             page: page.clone(),
         };
         let Ok(bytes) = serde_json::to_vec(&entry) else {

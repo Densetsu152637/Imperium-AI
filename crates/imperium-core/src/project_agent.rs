@@ -19,11 +19,12 @@
 //! at once but gets its brief only when the machine is quiet, or after `max_defer`. The waiting
 //! brief is kept with the session, so a restart resumes the wait instead of losing it.
 
+use imperium_api::time::unix_ms;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use chrono::{Local, NaiveDate};
 use imperium_automation::parse_duration;
@@ -303,14 +304,6 @@ pub fn start(daemon: &Arc<DaemonState>) {
             launcher.map(|launcher| launcher.claim()),
         );
     }
-}
-
-fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 /// Starts the agent of one `[[projects]]` entry: for its folder, or for the environment

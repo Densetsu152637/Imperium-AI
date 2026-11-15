@@ -104,9 +104,7 @@ impl axum::serve::Listener for IpcListener {
         loop {
             match self.0.accept().await {
                 Ok(stream) => {
-                    let accepted_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |elapsed| elapsed.as_secs());
+                    let accepted_at = imperium_api::time::unix_secs();
                     let peer =
                         PeerPid(imperium_ipc::peer_pid(&stream).map(|pid| (pid, accepted_at)));
                     return (stream, peer);

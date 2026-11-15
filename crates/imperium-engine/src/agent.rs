@@ -2716,7 +2716,7 @@ impl Agent {
             brief: args.brief.clone(),
             model: model.spec.clone(),
             title: crate::title::task_title(args.title.as_deref(), &args.brief),
-            at_ms: Some(crate::agents::now_ms()),
+            at_ms: Some(imperium_api::time::unix_ms()),
         });
         // Why routing chose as it did, or passed models over: shown where the task starts.
         for note in route_notes {
@@ -2813,7 +2813,7 @@ impl Agent {
             brief: shown.clone(),
             model: model.spec.clone(),
             title: crate::title::task_title(None, &shown),
-            at_ms: Some(crate::agents::now_ms()),
+            at_ms: Some(imperium_api::time::unix_ms()),
         });
         let mut agent = Agent::new(
             task_id.clone(),
@@ -4879,7 +4879,7 @@ async fn run_subagent(
             SessionEvent::TaskPaused {
                 task_id: id.clone(),
                 progress: truncate(&outcome.text, EVENT_OUTPUT_CHARS),
-                at_ms: Some(crate::agents::now_ms()),
+                at_ms: Some(imperium_api::time::unix_ms()),
             },
         );
         return TaskReport {
@@ -4927,7 +4927,7 @@ async fn run_subagent(
             report: truncate(&outcome.text, EVENT_OUTPUT_CHARS),
             usage: token_usage(&outcome.usage),
             cost_usd: outcome.cost_usd,
-            at_ms: Some(crate::agents::now_ms()),
+            at_ms: Some(imperium_api::time::unix_ms()),
         },
     );
     // A knowledge agent resumed for more work takes its new prefix, or is retired; a subagent
@@ -4982,7 +4982,7 @@ pub(crate) fn cancel_subagent(shared: &Arc<Shared>, agent_id: &str) -> Result<()
             report: "Cancelled before it finished.".into(),
             usage: TokenUsage::default(),
             cost_usd: None,
-            at_ms: Some(crate::agents::now_ms()),
+            at_ms: Some(imperium_api::time::unix_ms()),
         },
     );
     Ok(())
@@ -5072,7 +5072,7 @@ pub(crate) fn resume_subagent(
             task_id: agent_id.to_string(),
             text: text.clone(),
             model: spec.clone(),
-            at_ms: Some(crate::agents::now_ms()),
+            at_ms: Some(imperium_api::time::unix_ms()),
         },
     );
     let text = match before.status {

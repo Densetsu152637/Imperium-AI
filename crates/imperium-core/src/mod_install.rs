@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
+use imperium_api::time::unix_ms;
 use imperium_protocol::methods::{
     InstallSource, ModInspectParams, ModInstallParams, ModInstallResult, ModInstalled,
     ModListResult, ModPreview,
@@ -35,7 +36,7 @@ use sha2::{Digest, Sha256};
 
 use crate::extension_install::{
     self, ExtensionKind, Fetched, InstallRequest, SOURCE_FILE, Source, Staging, check_name,
-    check_subdir, move_tree, remove_tree, unix_ms, write_source,
+    check_subdir, move_tree, remove_tree, write_source,
 };
 use crate::state::DaemonState;
 

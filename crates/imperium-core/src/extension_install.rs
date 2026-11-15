@@ -15,9 +15,10 @@
 //!
 //! An uninstall moves the folder aside to `<data>/config-trash/`, so undoing it puts it back.
 
+use imperium_api::time::unix_ms;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use imperium_protocol::methods::InstallSource;
 
@@ -154,13 +155,6 @@ pub(crate) struct Installed {
     pub disabled: bool,
     /// What the agent and the user are told about it.
     pub notes: Vec<String>,
-}
-
-pub(crate) fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
 }
 
 /// Installs `request` into the config folder.

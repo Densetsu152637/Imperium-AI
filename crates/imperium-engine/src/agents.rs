@@ -7,10 +7,10 @@
 //! subagents save their conversation at every safe point. When kept, each record is written
 //! atomically to `<session>.agents/<agent-id>.json` beside the session's journal.
 
+use imperium_api::time::unix_ms;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use imperium_models::ChatMessage;
 use imperium_protocol::session::{
@@ -134,14 +134,6 @@ pub fn agents_dir(journal: &Path) -> PathBuf {
     journal.with_extension("agents")
 }
 
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 /// The number in a task id such as `t12`; 0 for anything else.
 pub(crate) fn task_number(id: &str) -> u32 {
     id.strip_prefix('t')
@@ -185,7 +177,7 @@ fn new_record(id: &str, parent: Option<String>, role: &str, task: &str, model: &
             cost_usd: None,
             plan: None,
             last_report: None,
-            updated_at_ms: now_ms(),
+            updated_at_ms: unix_ms(),
             knowledge: None,
         },
         conversation: Vec::new(),
@@ -283,7 +275,7 @@ impl AgentStore {
         for id in ids {
             if let Some(record) = state.records.get_mut(id) {
                 record.summary.status = AgentStatus::Interrupted;
-                record.summary.updated_at_ms = now_ms();
+                record.summary.updated_at_ms = unix_ms();
                 self.write(record);
             }
         }
@@ -316,7 +308,7 @@ impl AgentStore {
         record.summary.role = role.to_string();
         record.summary.model = model.spec.clone();
         record.summary.local = model.local;
-        record.summary.updated_at_ms = now_ms();
+        record.summary.updated_at_ms = unix_ms();
         self.write(record);
     }
 
@@ -338,7 +330,7 @@ impl AgentStore {
             record.conversation = earlier;
             record.summary.resumable = true;
         }
-        record.summary.updated_at_ms = now_ms();
+        record.summary.updated_at_ms = unix_ms();
         self.write(record);
     }
 
@@ -378,7 +370,7 @@ impl AgentStore {
         }
         let before = record.summary.clone();
         record.summary.status = AgentStatus::Running;
-        record.summary.updated_at_ms = now_ms();
+        record.summary.updated_at_ms = unix_ms();
         self.write(record);
         Ok(before)
     }
@@ -400,7 +392,7 @@ impl AgentStore {
             ));
         }
         record.summary.status = AgentStatus::Failed;
-        record.summary.updated_at_ms = now_ms();
+        record.summary.updated_at_ms = unix_ms();
         self.write(record);
         Ok(())
     }
@@ -456,7 +448,7 @@ impl AgentStore {
         if let Some(record) = state.records.get_mut(id) {
             record.summary.knowledge = Some(card);
             record.frozen = Some(frozen);
-            record.summary.updated_at_ms = now_ms();
+            record.summary.updated_at_ms = unix_ms();
             self.write(record);
         }
     }
@@ -469,7 +461,7 @@ impl AgentStore {
         };
         let was = record.summary.knowledge.take().is_some();
         record.frozen = None;
-        record.summary.updated_at_ms = now_ms();
+        record.summary.updated_at_ms = unix_ms();
         self.write(record);
         was
     }
@@ -485,7 +477,7 @@ impl AgentStore {
         let card = record.summary.knowledge.as_mut()?;
         change(card);
         let card = card.clone();
-        record.summary.updated_at_ms = now_ms();
+        record.summary.updated_at_ms = unix_ms();
         self.write(record);
         Some(card)
     }
@@ -525,7 +517,7 @@ impl AgentStore {
 
     /// Follows an event into the agent records it changes.
     pub fn observe(&self, event: &AgentEvent) {
-        self.observe_at(event, now_ms());
+        self.observe_at(event, unix_ms());
     }
 
     /// [`AgentStore::observe`] for an event that happened at `at_ms` (0: unknown).
@@ -659,7 +651,7 @@ impl AgentStore {
         let Some(record) = state.records.get_mut(id) else {
             return;
         };
-        record.summary.updated_at_ms = now_ms();
+        record.summary.updated_at_ms = unix_ms();
         if !replaying {
             self.write(record);
         }

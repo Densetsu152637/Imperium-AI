@@ -5,11 +5,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::PoisonError;
 
+use imperium_api::time::unix_ms;
 use imperium_protocol::methods::{ConfigChange, ConfigUndoResult};
 use serde::{Deserialize, Serialize};
 
 use crate::extension_install::{
-    self, ExtensionKind, InstallRequest, move_tree, read_source, remove_tree, unix_ms,
+    self, ExtensionKind, InstallRequest, move_tree, read_source, remove_tree,
 };
 use crate::model_config::{self, CardKind};
 use crate::state::DaemonState;

@@ -9,6 +9,7 @@ mod local;
 pub mod markdown;
 mod permissions;
 mod pricing;
+pub mod time;
 mod tools;
 
 pub use chat::{ChatMessage, FunctionCall, ToolCall, ToolSpec, Usage};

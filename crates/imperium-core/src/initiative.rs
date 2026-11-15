@@ -23,11 +23,12 @@
 mod prompt;
 mod tools;
 
+use imperium_api::time::unix_ms;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use chrono::{Local, TimeZone};
 use imperium_engine::Load;
@@ -78,14 +79,6 @@ pub(crate) const REVIEW_TOOLS: &[&str] = &[
     "work_digest",
     "start_session",
 ];
-
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
-}
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -231,7 +224,7 @@ impl Ticket {
                     .or_default()
                     .started
                     .push(Started {
-                        at: now_ms(),
+                        at: unix_ms(),
                         session_id: session_id.to_string(),
                     });
             }
@@ -418,7 +411,7 @@ impl InitiativeBook {
         self.change(agent_id, |agent| {
             agent.reports.push(Report {
                 message_id: message_id.to_string(),
-                at: now_ms(),
+                at: unix_ms(),
             });
         });
     }
@@ -436,7 +429,7 @@ impl InitiativeBook {
     /// Forgets the reports that were answered: those neither in `keep` (the agent's queue and
     /// the message it is handling) nor registered within the grace period.
     fn keep_reports(&self, agent_id: &str, keep: &[String]) {
-        let now = now_ms();
+        let now = unix_ms();
         let changed = {
             let mut book = lock(&self.inner.book);
             book.agents.get_mut(agent_id).is_some_and(|agent| {
@@ -479,7 +472,7 @@ impl InitiativeBook {
         lock(&self.inner.live)
             .chats
             .get(agent_id)
-            .is_some_and(|at| now_ms().saturating_sub(*at) < within_ms)
+            .is_some_and(|at| unix_ms().saturating_sub(*at) < within_ms)
     }
 
     /// Records how a review ended. Nothing is written for an agent that was deleted.
@@ -543,7 +536,7 @@ impl InitiativeBook {
             }
             review.added += 1;
         }
-        let now = now_ms();
+        let now = unix_ms();
         let result = self.change(agent_id, |agent| {
             let key = normal(&title);
             let repeated = agent.suggestions.iter().any(|known| {
@@ -607,7 +600,7 @@ impl InitiativeBook {
         }
         self.change(agent_id, |agent| {
             agent.digest = Some(WorkDigest {
-                created_at: now_ms(),
+                created_at: unix_ms(),
                 summary,
                 items,
             });
@@ -940,7 +933,7 @@ pub fn start(daemon: &Arc<DaemonState>) {
 /// One look at every agent: reviews those that have initiative, are due and may run now.
 /// Returns the agents reviewed, by agent id.
 pub async fn tick(daemon: &Arc<DaemonState>) -> Vec<String> {
-    let now = now_ms();
+    let now = unix_ms();
     let mut reviewed = Vec::new();
     for env in daemon.environments().list() {
         for agent in &env.agents {
@@ -985,7 +978,7 @@ pub(crate) async fn run_review(
         return Err(stop.message);
     }
     let settings = daemon.settings();
-    let now = now_ms();
+    let now = unix_ms();
     let mut tasks = due(daemon, &agent.id, now);
     if trigger == Trigger::User {
         tasks.review = true;
@@ -1134,7 +1127,7 @@ fn conclude_review(
     if let Some((env, agent)) = daemon.environments().find_agent_anywhere(agent_id) {
         // A failed review waits out the interval like a finished one, so it does not retry in
         // a loop.
-        book.finish_review(agent_id, now_ms(), review.digest_attempted, error.clone());
+        book.finish_review(agent_id, unix_ms(), review.digest_attempted, error.clone());
         announce(daemon, agent_id);
         if review.added > 0 {
             notice(
@@ -1185,7 +1178,7 @@ fn facts(
 ) -> prompt::Facts {
     let book = daemon.initiative();
     let data = book.snapshot(&agent.id);
-    let now = now_ms();
+    let now = unix_ms();
     let mut sessions: Vec<(u64, String)> = Vec::new();
     for session in daemon.sessions() {
         let summary = daemon.summary(&session);
@@ -1382,7 +1375,7 @@ pub(crate) fn watch_agent(
                         book.mark_review_started(&agent_id);
                     } else if !follow_up_turn(&daemon, &agent_id) {
                         // Not the daemon's: the user is talking to the agent.
-                        book.note_user_chat(&agent_id, now_ms());
+                        book.note_user_chat(&agent_id, unix_ms());
                     }
                 }
                 SessionEvent::TextDelta { text } if root => book.push_review_text(&agent_id, &text),
@@ -1816,7 +1809,7 @@ mod tests {
             .unwrap()
             .reports
             .iter_mut()
-            .for_each(|report| report.at = now_ms().saturating_sub(REPORT_GRACE_MS + 1));
+            .for_each(|report| report.at = unix_ms().saturating_sub(REPORT_GRACE_MS + 1));
         book.keep_reports("e", &["q2".to_string()]);
         assert!(!book.is_report("e", "q1"));
         assert!(book.is_report("e", "q2"), "still queued");
@@ -1879,10 +1872,10 @@ mod tests {
     fn user_chat_counts_for_a_while() {
         let book = book();
         assert!(!book.chatted_within("e", 60_000));
-        book.note_user_chat("e", now_ms());
+        book.note_user_chat("e", unix_ms());
         assert!(book.chatted_within("e", 60_000));
         assert!(!book.chatted_within("e", 0));
-        book.note_user_chat("e", now_ms().saturating_sub(120_000));
+        book.note_user_chat("e", unix_ms().saturating_sub(120_000));
         assert!(!book.chatted_within("e", 60_000));
     }
 

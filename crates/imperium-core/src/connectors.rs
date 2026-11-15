@@ -4,11 +4,12 @@
 //! The catalogue of servers to browse is data: `catalog/connectors.json`, built in, extended or
 //! overridden by id from `<config>/connectors.json`.
 
+use imperium_api::time::unix_ms;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use imperium_config::{
     McpServerSettings, Paths, SecretName, SecretRef, SecretStore, SetError, Settings,
@@ -195,14 +196,6 @@ fn set_error(error: SetError) -> ErrorObject {
         _ => codes::INVALID_PARAMS,
     };
     ErrorObject::new(code, error.to_string())
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 // ---- mcp.list ----
@@ -608,7 +601,7 @@ pub async fn test(
                 state: "connected".into(),
                 tools,
                 error: None,
-                checked_at: Some(now_ms()),
+                checked_at: Some(unix_ms()),
                 missing_secrets: Vec::new(),
                 sign_in: None,
             },
@@ -616,7 +609,7 @@ pub async fn test(
                 state: "error".into(),
                 tools: Vec::new(),
                 error: Some(error),
-                checked_at: Some(now_ms()),
+                checked_at: Some(unix_ms()),
                 missing_secrets: Vec::new(),
                 sign_in: None,
             },
@@ -698,7 +691,7 @@ pub async fn login(
                             state: "error".into(),
                             tools: Vec::new(),
                             error: Some(format!("sign-in failed: {error}")),
-                            checked_at: Some(now_ms()),
+                            checked_at: Some(unix_ms()),
                             missing_secrets: Vec::new(),
                             sign_in: None,
                         },

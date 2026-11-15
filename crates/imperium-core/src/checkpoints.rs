@@ -14,6 +14,7 @@
 //! the conversation can be rewound too ([`rewind`]). Folders outside git, and sessions whose
 //! folders are on another machine, have no checkpoints.
 
+use imperium_api::time::unix_ms;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -475,14 +476,6 @@ pub(crate) struct SessionCheckpoints {
     daemon: Weak<DaemonState>,
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 /// The folder a session's checkpoint records are kept in.
 pub(crate) fn records_dir(data_dir: &Path, session_id: &str) -> PathBuf {
     data_dir
@@ -672,7 +665,7 @@ impl SessionCheckpoints {
         let offset = std::fs::metadata(&self.journal).map_or(0, |meta| meta.len());
         let taken = Pending {
             prompt: String::new(),
-            at_unix_ms: now_ms(),
+            at_unix_ms: unix_ms(),
             journal_offset: offset,
             messages: None,
             snapshots,
@@ -760,7 +753,7 @@ impl imperium_engine::TurnCheckpoints for SessionCheckpoints {
         let messages = std::fs::read(imperium_engine::messages_path(&self.journal)).ok();
         inner.pending = Some(Pending {
             prompt: prompt.to_string(),
-            at_unix_ms: now_ms(),
+            at_unix_ms: unix_ms(),
             journal_offset,
             messages,
             snapshots,

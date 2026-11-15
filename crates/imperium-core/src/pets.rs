@@ -2,9 +2,10 @@
 //! pet in the same state. State changes go to clients as `pet.state` notifications. Pets see
 //! agent status only, never transcript content, and never call a model.
 
+use imperium_api::time::unix_ms;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use imperium_pets::{Arbiter, Pet, PetEvent, Shown, discover};
 use imperium_protocol::methods::{PET_STATE, PetInfo, PetStateInfo};
@@ -178,14 +179,6 @@ pub fn pet_events(event: &SessionEvent) -> Vec<PetEvent> {
         SessionEvent::MemorySaved { .. } => vec![once("eating")],
         _ => Vec::new(),
     }
-}
-
-fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 fn info(pet_id: &str, shown: &Shown, started: Instant, epoch: u64) -> PetStateInfo {

@@ -863,7 +863,7 @@ impl DaemonState {
             }
             let recent = self
                 .session_activity_ms(session.id())
-                .is_some_and(|at| crate::initiative::now_ms().saturating_sub(at) < idle_ms(idle));
+                .is_some_and(|at| imperium_api::time::unix_ms().saturating_sub(at) < idle_ms(idle));
             if recent {
                 return true;
             }

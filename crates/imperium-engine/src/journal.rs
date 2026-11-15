@@ -1,7 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use imperium_protocol::session::AgentEvent;
 use serde::{Deserialize, Serialize};
@@ -14,7 +13,7 @@ pub struct Journal {
 
 #[derive(Serialize)]
 struct Line<'a> {
-    at_ms: u128,
+    at_ms: u64,
     #[serde(flatten)]
     event: &'a AgentEvent,
 }
@@ -29,9 +28,7 @@ impl Journal {
     }
 
     pub fn record(&mut self, event: &AgentEvent) -> std::io::Result<()> {
-        let at_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_millis());
+        let at_ms = imperium_api::time::unix_ms();
         let mut line = serde_json::to_vec(&Line { at_ms, event })?;
         line.push(b'\n');
         self.file.write_all(&line)

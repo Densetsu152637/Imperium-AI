@@ -26,11 +26,12 @@
 //! sign-in and goes on. Only [`begin`], called for a user's explicit request, starts a flow.
 //! Tokens never appear in errors or logs.
 
+use imperium_api::time::unix_secs;
 use std::collections::HashMap;
 use std::fmt;
 use std::net::IpAddr;
 use std::sync::{Arc, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -209,15 +210,9 @@ pub fn is_signed_in(store: &dyn CredentialStore, server: &str, url: &str) -> boo
     }
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
-}
-
 /// When a token that lives `expires_in` seconds expires (clamped, never overflowing).
 fn expiry(expires_in: u64) -> u64 {
-    now_secs().saturating_add(expires_in.min(MAX_LIFETIME_SECS))
+    unix_secs().saturating_add(expires_in.min(MAX_LIFETIME_SECS))
 }
 
 // ---- URLs ----
@@ -1225,7 +1220,7 @@ impl OAuthSource {
         let resource = canonical(&Url::parse(url).ok()?);
         let usable = |stored: &Stored| {
             stored.access.is_some()
-                && stored.meta.expires_at > now_secs().saturating_add(REFRESH_SKEW_SECS)
+                && stored.meta.expires_at > unix_secs().saturating_add(REFRESH_SKEW_SECS)
         };
         let stored = self.read(&resource)?;
         if !force && usable(&stored) {
@@ -1293,7 +1288,7 @@ impl OAuthSource {
                 tracing::warn!(server = %self.server, reason = %failure.message,
                     "could not refresh an MCP token");
                 // The server may still accept the old token for a little while.
-                if !force && stored.meta.expires_at > now_secs() {
+                if !force && stored.meta.expires_at > unix_secs() {
                     stored.access
                 } else {
                     None
@@ -1465,7 +1460,7 @@ mod tests {
             path_covers("/mcp", "/mcp") && path_covers("/mcp/", "/mcp/x") && path_covers("", "/a")
         );
         assert!(!path_covers("/mcp", "/mcpx") && !path_covers("/mcp", "/other"));
-        assert!(expiry(u64::MAX) + 1 >= now_secs() + MAX_LIFETIME_SECS);
+        assert!(expiry(u64::MAX) + 1 >= unix_secs() + MAX_LIFETIME_SECS);
         assert_eq!(
             well_known(&url, "oauth-protected-resource"),
             [

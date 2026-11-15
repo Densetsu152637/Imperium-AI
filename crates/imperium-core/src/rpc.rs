@@ -1339,7 +1339,7 @@ impl Connection {
                         if initiative == imperium_protocol::initiative::Initiative::Act {
                             self.state
                                 .initiative()
-                                .postpone_review(&agent.id, crate::initiative::now_ms());
+                                .postpone_review(&agent.id, imperium_api::time::unix_ms());
                         }
                     }
                     let agent = match &permissions {
@@ -1431,7 +1431,7 @@ impl Connection {
                         {
                             self.state
                                 .initiative()
-                                .postpone_review(&agent.id, crate::initiative::now_ms());
+                                .postpone_review(&agent.id, imperium_api::time::unix_ms());
                         }
                         crate::initiative::announce(&self.state, &agent.id);
                     }
