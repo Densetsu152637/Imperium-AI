@@ -24,7 +24,14 @@ in a `<context-manifest>` block; agents load items with the `context_load` tool;
 reports `context_manifest` and `context_loaded` events. `workflow.enforce =
 "required-before-action"` refuses writes, commands, and MCP calls until the required items are
 loaded. Subagents take their role from `spawn_agent`'s `role` (default `leaf`); the root is
-`root`. `imperium workflow resolve [--role] [--pack] "<task>"` prints a manifest.
+`root`. `imperium workflow resolve [--role] [--pack] "<task>"` prints a manifest. Without `--pack`
+it layers the packs as a session does: `workflow.enabled` off resolves nothing, a pack that cannot
+be read is skipped with a notice on standard error, pinned packs follow the listed ones and cannot
+take a listed pack's name, and the bundled pack stands in when nothing is listed or pinned; the
+pack used is named on standard error. The command looks for the bundled pack by itself
+(`IMPERIUM_RESOURCE_DIR`, beside the executable, one level up, the source tree), so it can find a
+different copy than the daemon. `--pack` uses only the folders given: no pinned or bundled pack,
+the `enabled` switch is not consulted, and a folder that cannot be read fails the command.
 
 Not yet: front matter triggers (tools, paths, events), `depends_on`, budgets, suggested
 (semantic) items, intent classification by a local model, inline mode, re-resolution on tool

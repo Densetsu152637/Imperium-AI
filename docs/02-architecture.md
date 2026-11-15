@@ -144,13 +144,13 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-engine`     | Agent engine library: sessions, agent loop, delegation, task graph, event bus |
 | `imperium-models`     | Endpoint clients behind `ChatClient`, model registry, router, cost accounting |
 | `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, runtime supervision (llama.cpp, vLLM); carries out residency decisions, decides none on its own |
-| `imperium-tools`      | Built-in tools: files, commands, isolation tiers (implemented)         |
+| `imperium-tools`      | Built-in tools: files, commands, isolation tiers; confines paths to a workspace and asks `imperium-policy` before it acts (implemented) |
 | `imperium-web`        | Web search providers, page fetching, and a CDP browser (implemented)   |
 | `imperium-mcp`        | MCP client (stdio, streamable HTTP; implemented) and the Imperium MCP server (`imperium mcp-serve`, the session-level [Claude harness](20-claude-harness.md) and its `--tools` bridge for Imperium's own tools) lives in `imperium-cli`; the engine side of the bridge is `imperium-engine`'s `bridge` module |
 | `imperium-sandbox`    | Isolation tiers: policy guard, container driver, SSH transport         |
 | `imperium-extensions` | Plugin, skill, hook, and slash-command loading; Claude Code plugin compatibility (implemented) |
 | `imperium-workflow`   | Workflow packs, context retrieval, load manifests, documentation pointers (implemented) |
-| `imperium-policy`     | Policy pack layering and prompt assembly (planned)                      |
+| `imperium-policy`     | What agents may do: permission rules and modes, the safety floor, agent profiles, and the layering of workflow packs (implemented); prompt assembly stays in `imperium-engine` |
 | `imperium-memory`     | Global memory and environment `Memory.md`: entries, index, search, redaction, migration of older project memory (implemented) |
 | `imperium-config`     | Layered config, schema validation, secret store (keychain, encrypted file, in-memory)  |
 | `imperium-telemetry`  | Metrics, traces, cost ledger, OpenTelemetry export                     |
@@ -170,8 +170,10 @@ and `imperium-local` implements its `LocalModels` trait without depending on `im
 Likewise `imperium-web`, `imperium-media`, and `imperium-mcp` implement its `ToolProvider` trait,
 so `imperium-engine` does not depend on them (it reaches `imperium-mcp` only through
 `imperium-extensions`, for plugins' server definitions); the daemon builds the providers.
-`imperium-models`, `imperium-engine`, and `imperium-extensions` re-export the moved items at their
-old paths.
+The moved items are imported from `imperium-api` directly; no crate re-exports them at an old
+path. `imperium-policy` depends on `imperium-api` and `imperium-workflow` (and on no other
+Imperium crate, `imperium-config` included: it takes plain inputs); `imperium-tools`,
+`imperium-engine`, `imperium-core`, `imperium-web` and `imperium-cli` depend on it.
 
 Secrets go through the `SecretStore` trait in `imperium-config` (`load`, `store`, `delete`):
 `KeychainSecrets` uses the OS keychain, `FileSecrets` keeps them in an encrypted file,

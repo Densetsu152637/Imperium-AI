@@ -117,12 +117,16 @@ for the diff (the CLI is the review surface for now); rolling back to a previous
 the old commit by pointing a new source at it); several sources layered by priority beyond
 list order; detached signatures; pinning a commit instead of a branch.
 
-**The policy crate.** `imperium-policy` ("pack layering and prompt assembly", planned in
-[02](02-architecture.md)) is deferred to the final cleanup: layering lives in `imperium-core`'s
-session setup and `imperium-workflow`, and moving it needs a stable interface (pack list in,
-instruction blocks out) that is easiest to cut once the remaining roadmap items stop touching
-those call sites. The [cleanup plan](plans/cleanup.md#decision-the-policy-crate) sets out its
-scope and interface.
+**The policy crate (implemented).** `imperium-policy` holds the permission rules, modes, safety
+floor and agent profiles that used to live in `imperium-tools`, and the layering of workflow
+packs that used to live in `imperium-core`'s session setup. `packs::resolve` takes the workflow
+switches, the listed folders, the data and config folders, the project folder and the path of the
+bundled pack, and returns the context index, the personality sources and a notice for each pack it
+skipped; `Permissions::judge` composes the rules, the floor and the mode into one decision. The
+daemon finds the bundled pack itself; the command line has its own lookup of the same order, so
+`imperium workflow resolve` can find a different copy and says which it used. Prompt assembly
+stays in `imperium-engine`, where it is tied to the agent's state. The
+[cleanup plan](plans/cleanup.md#decision-the-policy-crate) records the decisions.
 
 ## How a pack maps onto the engine
 

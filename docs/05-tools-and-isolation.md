@@ -227,7 +227,8 @@ loopback `url` or a `command` and the `port` it listens on (`preview_close` clos
   floor, and modes are the `run_command` ones; hooks are not rerouted.
 - The dev server's own hot reload keeps the page current; Imperium only shows it.
 
-Implemented in phase 1 (`imperium-tools`): paths resolve inside the project folder and may not
+Implemented in phase 1 (`imperium-tools`, with the rules, modes, safety floor and agent profiles
+in `imperium-policy`): paths resolve inside the project folder and may not
 escape it through `..`, absolute paths, or symbolic links (tier 0). Reads and listings run
 without asking; writes, edits, and commands ask the user, who can allow once, allow that tool
 for the rest of the session, or deny. [Path grants and rules](#permissions) open paths outside
