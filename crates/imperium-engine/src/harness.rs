@@ -812,4 +812,22 @@ mod tests {
         let prompt = parse_dereference(reply, "go").unwrap().prompt.unwrap();
         assert!(!prompt.contains("</resolved-request") && !prompt.contains("<session-state"));
     }
+
+    /// Golden output of `defuse`: every harness tag name, opening or closing, in any case,
+    /// gets a space after its `<` or `</`; other text is untouched.
+    #[test]
+    fn defusing_the_harness_tags_gives_this_exact_text() {
+        let text = "<session-state></session-state><ORIGINAL-message><<steering \
+                    </Attachments x> <attachmentsx <b>ok</b> < session-state é";
+        assert_eq!(
+            defuse(text),
+            "< session-state></ session-state>< ORIGINAL-message><< steering \
+             </ Attachments x> < attachmentsx <b>ok</b> < session-state é"
+        );
+        for tag in TAG_NAMES {
+            assert_eq!(defuse(&format!("<{tag}>")), format!("< {tag}>"), "{tag}");
+            assert_eq!(defuse(&format!("</{tag}>")), format!("</ {tag}>"), "{tag}");
+        }
+        assert_eq!(defuse("Vec<String> a < b"), "Vec<String> a < b");
+    }
 }

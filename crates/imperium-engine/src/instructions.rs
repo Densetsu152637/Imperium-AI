@@ -496,4 +496,16 @@ mod tests {
         let tracker = Tracker::from_messages(&messages);
         assert!(tracker.loaded.contains("/p/a/AGENTS.md"));
     }
+
+    /// Golden output of `escape`: both wrapper tags, opening and closing, in any case.
+    #[test]
+    fn escaping_the_wrapper_tags_gives_this_exact_text() {
+        let text = "x <workflow-instructions a=1> </Instruction-File><INSTRUCTION-FILE path=\"p\"> \
+                    </WORKFLOW-INSTRUCTIONS> </ instruction-file> <instruction-files é";
+        assert_eq!(
+            escape(text),
+            "x <\\workflow-instructions a=1> <\\/Instruction-File><\\INSTRUCTION-FILE path=\"p\"> \
+             <\\/WORKFLOW-INSTRUCTIONS> </ instruction-file> <\\instruction-files é"
+        );
+    }
 }

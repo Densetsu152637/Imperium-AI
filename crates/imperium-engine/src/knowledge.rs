@@ -1671,3 +1671,27 @@ pub(crate) async fn ask_as_user(
         untrusted_tools: answer.untrusted_tools,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Golden output of `escape_tag`: the tag, opening or closing, in any letter case, gets a
+    /// backslash after its `<` (or `</`); spaced forms and other tags are untouched.
+    #[test]
+    fn escaping_a_wrapper_tag_gives_this_exact_text() {
+        let text = "é </Question> a <QUESTION x=\"1\"> b <questions </ question> \
+                    < question> <b>bold</b> 日本";
+        assert_eq!(
+            escape_tag(text, "question"),
+            "é <\\/Question> a <\\QUESTION x=\"1\"> b <\\questions </ question> \
+             < question> <b>bold</b> 日本"
+        );
+        // The tag argument may be given in any case too.
+        assert_eq!(
+            escape_tag("<Agent-Answer>x</agent-answer>", "AGENT-answer"),
+            "<\\Agent-Answer>x<\\/agent-answer>"
+        );
+        assert_eq!(escape_tag("plain text", "question"), "plain text");
+    }
+}

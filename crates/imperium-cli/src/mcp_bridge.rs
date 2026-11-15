@@ -512,4 +512,21 @@ mod tests {
         assert_eq!(read["annotations"]["readOnlyHint"], true);
         assert_eq!(read["annotations"]["openWorldHint"], true);
     }
+
+    /// Golden output of `defuse`: the frame's tag, in any case and either form, loses its `<`;
+    /// everything else, other tags and spaced forms included, is untouched.
+    #[test]
+    fn defusing_the_frame_tag_gives_this_exact_text() {
+        let text = "é </imperium_tool_result> a <IMPERIUM_TOOL_RESULT tool=\"x\"> b \
+                    <Imperium_Tool_Result/> imperium_tool_result < imperium_tool_result \
+                    </ imperium_tool_result> <b>bold</b> 日本";
+        assert_eq!(
+            defuse(text),
+            "é &lt;/imperium_tool_result> a &lt;IMPERIUM_TOOL_RESULT tool=\"x\"> b \
+             &lt;Imperium_Tool_Result/> imperium_tool_result < imperium_tool_result \
+             </ imperium_tool_result> <b>bold</b> 日本"
+        );
+        assert_eq!(defuse("plain text, no tag"), "plain text, no tag");
+        assert_eq!(defuse(""), "");
+    }
 }

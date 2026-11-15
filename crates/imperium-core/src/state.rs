@@ -3349,6 +3349,129 @@ mod tests {
         assert!(loaded.roles.contains_key("root") && loaded.roles.contains_key("leaf"));
         assert!(!loaded.candidates.is_empty());
     }
+
+    /// The packs `DaemonState::context` layers for a session, as names (a trailing `+` marks a
+    /// pack the user listed, which is trusted), and the notices it left. `None` when the
+    /// workflow is off.
+    fn layers(home: &Path, extra: &str) -> Option<(Vec<String>, Vec<String>)> {
+        let project = tempfile::tempdir().unwrap();
+        let state = state_with(home, extra);
+        let mut notices = Vec::new();
+        let index = state.context(project.path(), &mut notices)?;
+        let packs = index
+            .packs()
+            .iter()
+            .map(|pack| format!("{}{}", pack.name, if pack.trusted { "+" } else { "" }))
+            .collect();
+        Some((packs, notices))
+    }
+
+    /// A readable pack folder named `name` under `base`.
+    fn pack_folder(base: &Path, name: &str) -> PathBuf {
+        let dir = base.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENTS.md"), "# Index\n").unwrap();
+        dir
+    }
+
+    /// `[workflow]` settings listing `folders`.
+    fn listing(folders: &[&Path]) -> String {
+        let quoted: Vec<String> = folders
+            .iter()
+            .map(|folder| format!("{:?}", folder.display().to_string()))
+            .collect();
+        format!("[workflow]\npacks = [{}]\n", quoted.join(", "))
+    }
+
+    /// Pins a pack called `name` the way `imperium pack accept` does.
+    fn pin(home: &Path, name: &str) {
+        let store = PackStore::new(imperium_config::Paths::under(home).data_dir());
+        let snapshot =
+            imperium_workflow::update::Snapshot::from_files([("AGENTS.md", "# Pinned\n")]);
+        store
+            .stage(name, "https://example.com/pack.git", "abc123", &snapshot)
+            .unwrap();
+        store.accept(name, &snapshot.hash(), true).unwrap();
+    }
+
+    #[test]
+    fn the_workflow_switch_and_the_default_pack_decide_whether_a_session_has_packs() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(layers(home.path(), "[workflow]\nenabled = false\n"), None);
+        assert_eq!(
+            layers(home.path(), "[workflow]\ndefault_pack = false\n"),
+            Some((vec![], vec![]))
+        );
+        // The bundled pack is not trusted.
+        let bundled = Pack::load(&bundled_pack().unwrap()).unwrap().name;
+        assert_eq!(layers(home.path(), ""), Some((vec![bundled], vec![])));
+    }
+
+    #[test]
+    fn listed_packs_are_trusted_and_replace_the_bundled_one() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        let (one, two) = (
+            pack_folder(folders.path(), "one"),
+            pack_folder(folders.path(), "two"),
+        );
+        assert_eq!(
+            layers(home.path(), &listing(&[&one, &two])),
+            Some((vec!["one+".into(), "two+".into()], vec![]))
+        );
+    }
+
+    #[test]
+    fn a_listed_pack_that_cannot_be_read_is_skipped_with_a_notice() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        let good = pack_folder(folders.path(), "good");
+        let missing = folders.path().join("missing");
+        let (packs, notices) = layers(home.path(), &listing(&[&missing, &good])).unwrap();
+        assert_eq!(packs, vec!["good+".to_string()]);
+        assert_eq!(
+            notices,
+            vec![format!(
+                "workflow pack skipped: {} has no AGENTS.md",
+                missing.display()
+            )]
+        );
+    }
+
+    #[test]
+    fn pinned_packs_follow_the_listed_ones_and_are_not_trusted() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        pin(home.path(), "acw");
+        // A pinned pack stands in for the bundled one, with or without the default switch.
+        for extra in ["", "[workflow]\ndefault_pack = false\n"] {
+            assert_eq!(
+                layers(home.path(), extra),
+                Some((vec!["acw".into()], vec![])),
+                "{extra:?}"
+            );
+        }
+        let listed = pack_folder(folders.path(), "mine");
+        assert_eq!(
+            layers(home.path(), &listing(&[&listed])),
+            Some((vec!["mine+".into(), "acw".into()], vec![]))
+        );
+    }
+
+    #[test]
+    fn a_pinned_pack_cannot_take_the_name_of_a_listed_one() {
+        let home = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        pin(home.path(), "acw");
+        let same = pack_folder(folders.path(), "acw");
+        assert_eq!(
+            layers(home.path(), &listing(&[&same])),
+            Some((
+                vec!["acw+".into()],
+                vec!["pinned pack acw skipped: another pack already has that name".into()]
+            ))
+        );
+    }
 }
 
 #[cfg(test)]
