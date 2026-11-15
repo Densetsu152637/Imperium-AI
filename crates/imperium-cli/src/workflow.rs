@@ -65,7 +65,11 @@ fn configured(project: &Path) -> anyhow::Result<Option<Arc<ContextIndex>>> {
         && index.packs().iter().any(|pack| &pack.root == bundled)
     {
         eprintln!("using the bundled workflow pack {}", bundled.display());
-    } else if index.packs().is_empty() && workflow.packs.is_empty() && workflow.default_pack {
+    } else if bundled.is_none()
+        && index.packs().is_empty()
+        && workflow.packs.is_empty()
+        && workflow.default_pack
+    {
         eprintln!(
             "no bundled workflow pack was found (set IMPERIUM_RESOURCE_DIR to a resource folder)"
         );

@@ -206,6 +206,40 @@ fn the_bundled_pack_stands_in_and_is_named() {
 }
 
 #[test]
+fn a_bundled_pack_that_cannot_load_is_skipped_without_saying_it_was_not_found() {
+    let mut env = Env::new();
+    let resources = env.folders.path().join("resources");
+    let bundled = resources.join("policy/agent-custom-workflow");
+    std::fs::create_dir_all(&bundled).unwrap();
+    std::fs::write(
+        bundled.join("AGENTS.md"),
+        "# Bundled
+",
+    )
+    .unwrap();
+    // Found, but its manifest is not valid TOML, so it does not load.
+    std::fs::write(
+        bundled.join("imperium-workflow.toml"),
+        "this is = = not toml",
+    )
+    .unwrap();
+    env.resources = Some(resources);
+    let output = env.resolve(&[]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let notes = text(&output.stderr);
+    assert!(notes.contains("workflow pack skipped: "), "{notes}");
+    assert!(
+        !notes.contains("no bundled workflow pack was found"),
+        "{notes}"
+    );
+    assert!(
+        !text(&output.stdout).contains("entry index"),
+        "{}",
+        text(&output.stdout)
+    );
+}
+
+#[test]
 fn without_the_default_pack_nothing_bundled_is_used_or_named() {
     let env = Env::new();
     env.configure("[workflow]\ndefault_pack = false\n");
