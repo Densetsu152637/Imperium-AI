@@ -949,17 +949,26 @@ that is not installed is remembered for the life of the daemon; one that fails i
 after three failures in a row, so a broken driver cannot slow every refresh. Every figure is
 range-checked, and a GPU whose memory in use is not reported counts as half free for planning
 (neither all of it nor none). The AMD and Intel formats were written from the vendors'
-documentation and are tested on captured sample output (`tests/fixtures/gpu`: `rocm-smi`,
-`xpu-smi`, DRM `fdinfo`, the Windows counters), not yet on hardware.
-On Windows, AMD and Intel (Arc, Flex, Data Center) GPUs come from one PowerShell run
-(`Get-CimInstance Win32_VideoController`, the display class registry key's
-`HardwareInformation.qwMemorySize` for the real size, since `AdapterRAM` saturates below 4 GiB,
-and the `GPU Adapter Memory` counters), at most every 5 s and without `unsafe` (reading DXGI
-would need it). Accuracy limits: the counters are named by adapter LUID, so the memory in use is
-filled in only when the machine has a single PCI display adapter and otherwise stays unknown
-(half free for planning); utilisation and temperature are not read; counter names are English,
-so a localised Windows gives no memory in use; an integrated Intel GPU is not listed, as on
-Linux. A runtime build drives one vendor's GPUs, so the budget counts NVIDIA's when there
+documentation and are tested on synthetic samples laid out as the vendors document them
+(`tests/fixtures/gpu`: `rocm-smi`, `xpu-smi`, DRM `fdinfo`, the Windows adapter and counter
+output), not yet verified on hardware.
+On Windows, AMD and Intel GPUs come from PowerShell (run from the system folder, without
+`unsafe`, which reading DXGI would need): `Get-CimInstance Win32_VideoController` and the display
+class registry key's `HardwareInformation.qwMemorySize` for the real size (`AdapterRAM`
+saturates below 4 GiB), once per daemon, and the language-independent
+`Win32_PerfFormattedData_GPUPerformanceCounters_*` WMI classes for memory in use. Cost: a machine
+with no AMD or Intel PCI display adapter (NVIDIA-only, say) spawns PowerShell once and never
+again for the GPU list; with one, the counters run at most every 5 s while the GPU list is read
+(the 30 s budget refresh) or the resource monitor wants a process's GPU memory. A run that
+fails or prints something unreadable is retried after 30 s, doubling up to 15 min. Accuracy
+limits: the counters are named by adapter LUID, so the memory in use is filled in only when the
+machine has a single PCI display adapter and it is not above the adapter's size, and otherwise
+stays unknown (half free for planning); utilisation and temperature are not read; only discrete
+Intel GPUs (Arc A/B/C/S series, Flex, Data Center) are listed, not the integrated "Arc Graphics" or
+Arc `140V` of Core Ultra processors, as on Linux; the output is decoded lossily, so a non-ASCII
+adapter name may be garbled. Because the budget follows the machine's free memory and counts
+what the loaded models hold, a total above the planned GPUs' size (possible when the memory in
+use is unknown) is cut to that size. A runtime build drives one vendor's GPUs, so the budget counts NVIDIA's when there
 are any, else the first AMD or Intel GPU's vendor, and only a GPU with at least 4 GiB (an
 integrated GPU's carve-out is not worth offloading to); the others are shown in the monitor, not
 planned on, and with no usable GPU models run on the CPU. Because the GPU names are part of the
@@ -992,7 +1001,9 @@ higher ratio counts in full: a quiet run does not lower what a busy one showed.
 A reading is used only when a benchmark run answered all its prompts, from the server process
 that loaded the model (a restart resets the peak), for a llama.cpp model without a draft that is
 wholly on the GPU, wholly in RAM, or in unified memory. Split placements and vLLM models are not
-calibrated, and a lane whose figure is unknown (no per-process VRAM from `nvidia-smi`, `fdinfo` or the Windows counters) is skipped. A ratio
+calibrated, and a lane whose figure is unknown (no per-process VRAM from `nvidia-smi`, `fdinfo` or the Windows counters) is skipped; Windows
+counters now give such a figure under WDDM, so NVIDIA models there are calibrated too, from the
+counters' dedicated memory (the ratio check guards a wrong process). A ratio
 outside 0.7 to 2.0 is a bad measurement (the wrong process, a failed load) and is discarded, not
 clamped.
 
@@ -1021,8 +1032,8 @@ unsubscribes it), so an idle daemon reads nothing. A snapshot holds:
   in `/proc/<pid>/fdinfo` (`amdgpu`'s `drm-memory-vram`, `xe`'s and `i915`'s `drm-resident-vram*`
   / `drm-total-local*`; each client once, readable for the daemon's own user's processes only),
   added to NVIDIA's; on Windows, where `nvidia-smi` gives none under WDDM, the `GPU Process
-  Memory` counters' dedicated memory (on every adapter together, not one vendor's). A process
-  no source reports shows none, never zero.
+  Memory` counters' dedicated memory (on every adapter together, not one vendor's), asked for
+  only those processes. A process no source reports shows none, never zero.
 - **Local models:** every model the supervisor holds, in use or idle (cached until it
   unloads): runtime, placement (`gpu`, `partial` with its GPU layers, or `cpu`), whether it is
   pinned to the CPU lane, the context one session may use, its KV pool and the tokens running

@@ -238,4 +238,76 @@ mod tests {
         fs::write(other.join("0"), "pos:\t0\n").expect("write");
         assert_eq!(process_vram(dir.path(), 77), None);
     }
+
+    #[test]
+    fn sizes_are_read_in_bytes_kib_mib_and_gib() {
+        let vram = |value: &str| {
+            parse_fdinfo(&format!(
+                "drm-driver: amdgpu
+drm-client-id: 1
+drm-memory-vram: {value}
+"
+            ))
+            .map(|info| info.vram_bytes)
+        };
+        assert_eq!(vram("4096"), Some(4096));
+        assert_eq!(vram("4096 KiB"), Some(4 * 1024 * 1024));
+        assert_eq!(vram("3 MiB"), Some(3 * 1024 * 1024));
+        assert_eq!(vram("2 GiB"), Some(2 * 1024 * 1024 * 1024));
+        assert_eq!(vram("0"), Some(0));
+        assert_eq!(vram("3 MB"), None);
+        assert_eq!(vram("-3 KiB"), None);
+        assert_eq!(vram("3 KiB extra"), None);
+    }
+
+    #[test]
+    fn at_most_max_fds_descriptors_are_looked_at() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let fdinfo = dir.path().join("5").join("fdinfo");
+        fs::create_dir_all(&fdinfo).expect("dirs");
+        for fd in 0..MAX_FDS + 20 {
+            let text = format!(
+                "drm-driver: amdgpu
+drm-pdev: 0000:03:00.0
+drm-client-id: {fd}
+drm-memory-vram: 1 KiB
+"
+            );
+            fs::write(fdinfo.join(fd.to_string()), text).expect("write");
+        }
+        assert_eq!(process_vram(dir.path(), 5), Some(MAX_FDS as u64 * KIB));
+    }
+
+    #[test]
+    fn only_the_first_max_file_bytes_of_a_descriptor_are_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let fdinfo = dir.path().join("6").join("fdinfo");
+        fs::create_dir_all(&fdinfo).expect("dirs");
+        let head = "drm-driver: amdgpu
+drm-client-id: 1
+";
+        let padding = "pad: 0
+"
+        .repeat(MAX_FILE_BYTES as usize / 7);
+        // The memory key sits past the limit: it is not seen, so there is no figure.
+        fs::write(
+            fdinfo.join("1"),
+            format!(
+                "{head}{padding}drm-memory-vram: 5 KiB
+"
+            ),
+        )
+        .expect("write");
+        assert_eq!(process_vram(dir.path(), 6), None);
+        // The same key within the limit is.
+        fs::write(
+            fdinfo.join("1"),
+            format!(
+                "{head}drm-memory-vram: 5 KiB
+{padding}"
+            ),
+        )
+        .expect("write");
+        assert_eq!(process_vram(dir.path(), 6), Some(5 * KIB));
+    }
 }

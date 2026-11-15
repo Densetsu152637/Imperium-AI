@@ -314,7 +314,8 @@ and `environments.agent_update` (protocol 0.28)
     already a supervised runtime (item 7). Follow-up: probes for AMD and Intel on Windows (a
     PowerShell run of `Win32_VideoController` and the GPU memory counters; see the accuracy
     limits in 04) and per-process GPU memory for AMD and Intel (Linux DRM `fdinfo`, Windows GPU
-    process counters), both tested on captured sample outputs. Not built: a managed `uv`
+    process counters), both tested on synthetic samples laid out as the vendors document them, not yet verified on
+    hardware. Not built: a managed `uv`
     environment or the Docker image for vLLM; GPU utilisation and temperature on Windows
     (`intel_gpu_top` and the engine counters); and checks on real hardware.
 29. **Routing extras** (implemented). Queue-delay handling, capability filters, escalation, and built-in

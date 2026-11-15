@@ -14,13 +14,13 @@
 //! - Apple Silicon: `sysctl` for the chip's name and the unified memory, which the GPU shares
 //!   with the CPU.
 //!
-//! - Windows (AMD, Intel Arc): one PowerShell run of `Win32_VideoController`, the display class
-//!   registry key and the `GPU Adapter Memory` counters ([`crate::gpu_windows`], with its accuracy
+//! - Windows (AMD, Intel Arc): PowerShell runs of `Win32_VideoController`, the display class
+//!   registry key and the GPU memory WMI counters ([`crate::gpu_windows`], with its accuracy
 //!   limits). Per-process memory comes from `/proc/<pid>/fdinfo` on Linux
-//!   ([`crate::gpu_fdinfo`]) and the `GPU Process Memory` counters on Windows.
+//!   ([`crate::gpu_fdinfo`]) and the GPU process memory counters on Windows.
 //!
-//! The formats are written from the vendors' documentation and checked against sample output
-//! (`tests/fixtures/gpu`), not read from hardware. Every
+//! The formats are written from the vendors' documentation and checked against synthetic samples
+//! laid out as the vendors document them (`tests/fixtures/gpu`); not yet verified on hardware. Every
 //! number is range-checked, and a GPU whose memory in use is not reported has it unknown
 //! ([`Reading::vram_used_bytes`] is `None`), never zero.
 //!
@@ -118,10 +118,12 @@ pub(crate) fn run_tool_for(program: &str, args: &[&str], timeout: Duration) -> T
     };
     // Read on a thread so a full pipe cannot stop the child, and give up on a hung driver.
     let reader = std::thread::spawn(move || {
-        let mut text = String::new();
+        // Bytes, decoded lossily: a tool's output in a legacy code page (PowerShell's, with a
+        // non-ASCII adapter name) is garbled in that spot rather than dropped whole.
+        let mut raw = Vec::new();
         let mut limited = std::io::Read::take(stdout, MAX_OUTPUT_BYTES);
-        let _ = std::io::Read::read_to_string(&mut limited, &mut text);
-        text
+        let _ = std::io::Read::read_to_end(&mut limited, &mut raw);
+        String::from_utf8_lossy(&raw).into_owned()
     });
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -201,7 +203,7 @@ impl VendorProbe {
                 .collect();
         }
         if cfg!(windows) {
-            return gpu_windows::snapshot().gpus;
+            return gpu_windows::gpus();
         }
         if !cfg!(target_os = "linux") {
             return Vec::new();
@@ -217,11 +219,7 @@ impl VendorProbe {
     /// adapter together ([`gpu_windows`]). A process with no figure is left out.
     pub fn process_vram(&mut self, pids: &[u32]) -> Vec<(u32, u64)> {
         if cfg!(windows) {
-            return gpu_windows::snapshot()
-                .process_vram
-                .into_iter()
-                .filter(|(pid, _)| pids.contains(pid))
-                .collect();
+            return gpu_windows::process_vram(pids);
         }
         if !cfg!(target_os = "linux") {
             return Vec::new();

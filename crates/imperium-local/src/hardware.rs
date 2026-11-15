@@ -70,6 +70,11 @@ impl Hardware {
         self.planned_gpus().map(|gpu| gpu.vram_free_bytes).sum()
     }
 
+    /// Total memory of the GPUs models are planned on.
+    pub fn vram_total_bytes(&self) -> u64 {
+        self.planned_gpus().map(|gpu| gpu.vram_total_bytes).sum()
+    }
+
     /// The runtime pack that suits this machine, for `runtime.llamacpp.backend = "auto"`.
     pub fn suggested_pack(&self) -> String {
         format!("{}-{}", platform(), self.backend_chain()[0])

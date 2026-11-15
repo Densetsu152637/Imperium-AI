@@ -168,7 +168,14 @@ impl Probe for SystemProbe {
         self.system.refresh_memory();
         let cores = self.system.cpus().len().max(1);
         let (gpus, apps) = self.gpus();
-        let vendor_apps = self.vendor_apps(pids);
+        // On Windows the counters cover every adapter, NVIDIA's included, so they are asked only
+        // about processes `nvidia-smi` has no figure for (it has none under WDDM).
+        let unknown: Vec<u32> = pids
+            .iter()
+            .copied()
+            .filter(|pid| !cfg!(windows) || figure_for(&apps, *pid).is_none())
+            .collect();
+        let vendor_apps = self.vendor_apps(&unknown);
         let processes = wanted
             .iter()
             .filter_map(|pid| {
