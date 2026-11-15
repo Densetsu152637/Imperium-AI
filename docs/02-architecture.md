@@ -158,7 +158,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-github`     | Failing pull request checks through `gh`, auto-fix worktrees, commit and push (implemented) |
 | `imperium-remote`     | Device pairing, encrypted remote transport, relay client               |
 | `imperium-media`      | Image (OpenAI-compatible, ComfyUI), speech, and transcription tools (implemented) |
-| `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours (planned) |
+| `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours run in the desktop's mod frames, not here ([16](16-pets.md)) |
 | `imperium-core`       | The daemon (`imperium-core` binary, formerly `imperiumd`), also a library for tests |
 | `imperium-cli`        | `imperium` binary: CLI and TUI client, and `imperium mcp-serve` ([20](20-claude-harness.md)) |
 

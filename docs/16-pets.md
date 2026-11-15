@@ -22,7 +22,7 @@ the metadata (with each pet's drawn animations and raw `pet.json`) and strips; b
 `pet_id`, defaulting to the selected pet). Pets are found in `pets.folders`, `<config>/pets`, `~/.claude/pets`,
 and a `pets/` folder next to the daemon; Pixel Clawd ships in the repository's `pets/` with the
 Pixel Pets licence and notice. Not yet: the `look` glance, the `imperium` bindings, WASM
-behaviours, scopes other than global, the floating overlay, TUI drawing, `pet.install`/
+behaviours loaded from a pet package (a mod's are implemented, below), scopes other than global, the floating overlay, TUI drawing, `pet.install`/
 `pet.select`, approval and schedule events, and the Codex importer.
 
 ## Compatibility
@@ -96,7 +96,9 @@ Pixel Pets ignores unknown top-level fields, so Imperium adds an optional `imper
 - **`bindings`** remap or add triggers for any hook or telemetry event, including custom
   animations (rows 22+).
 - **`behaviour`**: an optional sandboxed WASM module (no I/O beyond the pet API) for moods,
-  growth, or mini-interactions.
+  growth, or mini-interactions. Not built for pet packages: a pet package is not covered by a
+  mod's approval, so nothing binds its bytes to one. WASM behaviours are implemented for
+  mods ([WebAssembly behaviours](#webassembly-behaviours-implemented)).
 - **`scope`**: `global` (one pet for everything, default), `project`, `session`, or `agent`
   (a small pet per agent in the agent tree).
 
@@ -137,6 +139,18 @@ first walking across the room to each other when they are far apart; two pets th
 pass close may greet. Pets at work stop where they are and never play, any real event or a pat
 ends a play at once, and with `prefers-reduced-motion` nothing walks or plays and the pets
 stand spread out. A "Play" checkbox in each panel switches play off (the `play` setting). See the mod's `README.md` for the details.
+
+## WebAssembly behaviours (implemented)
+
+A mod ships a behaviour as a small WebAssembly module and the host runs it sandboxed in the mod's
+frame; the bundled Nursery uses one (`wander`) when its **Roaming** setting says so, to move free
+pets and have them wave or jump now and then, instead of the built-in roaming. The module gets a
+pet's state and a seeded random number through a few words of its own memory and answers with a
+velocity and an optional one-shot; it cannot reach anything else, runs a provably bounded number
+of instructions per tick, is deterministic for a seed, and is stopped and reported if it traps,
+runs long or answers badly (the pet then roams the built-in way). The rules, the memory layout
+and why it runs in the webview are in
+[06](06-extensibility.md#webassembly-pet-behaviours-implemented).
 
 ## Creating pets
 

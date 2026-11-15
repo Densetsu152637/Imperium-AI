@@ -11,8 +11,12 @@ use tauri::http::{Request, Response, header};
 
 pub const SCHEME: &str = "imperium-mod";
 
-/// What a mod frame may load: its own inline scripts, styles and `data:` modules and images.
-const POLICY: &str = "default-src 'none'; script-src 'unsafe-inline' data:; \
+/// What a mod frame may load: its own inline scripts, styles and `data:` modules and images, and
+/// WebAssembly (`wasm-unsafe-eval`, for pet behaviours). That makes WebAssembly available to all of
+/// a mod's JavaScript, not only to behaviours, and adds the engine as attack surface; the frame still
+/// has no network and an opaque origin. The behaviour host's checks guard against runaway
+/// behaviours, not against a malicious mod, which can already run any JavaScript here.
+const POLICY: &str = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' data:; \
     style-src 'unsafe-inline'; img-src data: blob:; font-src data:";
 
 /// Waits for the document from the app (only from the window that embeds it), then becomes it.
@@ -47,7 +51,8 @@ mod tests {
         let policy = response.headers()[header::CONTENT_SECURITY_POLICY]
             .to_str()
             .unwrap();
-        assert!(policy.contains("script-src 'unsafe-inline' data:"));
+        assert!(policy.contains("script-src 'unsafe-inline' 'wasm-unsafe-eval' data:"));
+        assert!(!policy.contains("connect-src"), "the frame has no network");
         assert!(policy.starts_with("default-src 'none'"));
         assert!(
             std::str::from_utf8(response.body())

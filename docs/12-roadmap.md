@@ -439,9 +439,9 @@ and `environments.agent_update` (protocol 0.28)
     names one, and `imperium remote connect --socket` forwards the host's socket over SSH
     ([02](02-architecture.md#protocol), [05](05-tools-and-isolation.md#ssh-hosts),
     [10](10-configuration.md)). Protocol 0.26.
-34. **Desktop and platform gaps** (stages 1, 2a and 2b implemented: rebindable shortcuts; image
-    descriptions for models without vision; an encrypted secret store; a supervised local
-    whisper for push-to-talk). A declarative
+34. **Desktop and platform gaps** (implemented: rebindable shortcuts; image descriptions for
+    models without vision; an encrypted secret store; a supervised local whisper for
+    push-to-talk; WebAssembly pet behaviours). A declarative
     shortcut registry; Settings → Keyboard rebinds the palette, Settings and stop shortcuts with
     conflict detection (against each other, sending and the push-to-talk key); changed bindings
     are saved in the app settings and the palette shows the current ones
@@ -452,7 +452,7 @@ and `environments.agent_update` (protocol 0.28)
     ([07](07-desktop-ui.md#images-for-a-model-that-cannot-see-them-implemented)). Not built:
     drawn PDF pages (no renderer in the build; scans whose pages are not embedded JPEGs are
     reported as unreadable), the composer chip saying a description will be made instead of
-    *path only*, and WASM pet behaviours ([10](10-configuration.md), [16](16-pets.md)); rebinding the
+    *path only*, and WASM behaviours loaded from a pet package ([16](16-pets.md)); rebinding the
     push-to-talk key to an arbitrary combination, and making more actions (panel toggles,
     session switching) rebindable, are also not built. Where no OS keychain exists, secrets are
     kept in a file encrypted with XChaCha20-Poly1305 under a key file or an Argon2id passphrase
@@ -464,7 +464,15 @@ and `environments.agent_update` (protocol 0.28)
     it fits, else CPU) and given back when a model needs it, with an opt-in model download
     ([07](07-desktop-ui.md#attachments-and-voice-input-implemented), [10](10-configuration.md));
     not built: swapping an idle language model out for whisper, partial transcripts, and a
-    Local models panel row for the server.
+    Local models panel row for the server. A mod can steer pets with a WebAssembly behaviour that
+    runs sandboxed in its frame: one import (a seeded random number), a few words of memory for
+    pet state in and a velocity and a one-shot out, loops and recursion refused so every tick has
+    a proved instruction bound, memory capped, and a module that traps, runs long or answers
+    badly stopped and reported in Settings → Mods; the Nursery's *Roaming* setting uses a bundled
+    example ([06](06-extensibility.md#webassembly-pet-behaviours-implemented),
+    [16](16-pets.md#webassembly-behaviours-implemented)). Not built: a behaviour in a pet package
+    (`imperium.behaviour`) or a file beside the mod, loops with fuel metering, and running
+    behaviours in the daemon (no WebAssembly runtime is a dependency).
 35. **Layouts** (implemented). Dragging a panel out into its own window and back, and a mod's
     panel into another panel as a module, each with a keyboard alternative in the panel's menu;
     per-environment layouts that fall back to the global one; and exportable, validated,
