@@ -113,7 +113,7 @@ export function SessionModelSelect({
         aria-label="Model"
         className="model-select-button"
         value={value}
-        options={modelOptions(models, local, current, settings.modelMarks)}
+        options={modelOptions(models, local, current, settings.modelMarks, true)}
         placeholder="No model"
         disabled={disabled || switching}
         onChange={choose}

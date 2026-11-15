@@ -217,11 +217,27 @@ fn is_link(meta: &std::fs::Metadata) -> bool {
     meta.file_type().is_symlink()
 }
 
-/// Makes `dir` if needed and returns its canonical path, refusing a folder that is itself a link
-/// or that resolves anywhere but where its own name puts it inside its parent: a downloads
-/// folder swapped for a link to somewhere else (the home folder, a startup folder) must not
-/// receive files.
-async fn secure_dir(dir: &Path) -> Result<PathBuf, WebError> {
+/// A downloads folder that passed [`secure_dir`]: its canonical path and its identity on disk
+/// (device and inode, or volume and file index), which a swapped folder does not share.
+struct Secured {
+    path: PathBuf,
+    id: same_file::Handle,
+}
+
+/// The identity of the file or folder at `path`, read off the async threads.
+async fn identity(path: &Path) -> std::io::Result<same_file::Handle> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || same_file::Handle::from_path(path))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+/// Makes `dir` if needed and returns it canonical with its identity, refusing a folder that is
+/// itself a link, that resolves anywhere but into its own parent, or that is not the folder its
+/// canonical path names: a downloads folder swapped for a link to somewhere else (the home
+/// folder, a startup folder) must not receive files. Names are never compared as text, so case
+/// and 8.3 short names need no special handling: both sides are resolved by the file system.
+async fn secure_dir(dir: &Path) -> Result<Secured, WebError> {
     let fail = |message: String| WebError::Http(message);
     tokio::fs::create_dir_all(dir)
         .await
@@ -236,59 +252,34 @@ async fn secure_dir(dir: &Path) -> Result<PathBuf, WebError> {
                 .into(),
         ));
     }
-    let canonical = tokio::fs::canonicalize(dir)
-        .await
-        .map_err(|error| fail(format!("could not resolve the downloads folder: {error}")))?;
+    let resolve =
+        |error: std::io::Error| fail(format!("could not resolve the downloads folder: {error}"));
+    let canonical = tokio::fs::canonicalize(dir).await.map_err(resolve)?;
     let parent = match dir.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    let expected_parent = tokio::fs::canonicalize(&parent)
-        .await
-        .map_err(|error| fail(format!("could not resolve the downloads folder: {error}")))?;
-    if !resolves_in_place(
-        &canonical,
-        &expected_parent,
-        dir.file_name().unwrap_or_default(),
-    ) {
+    let expected_parent = tokio::fs::canonicalize(&parent).await.map_err(resolve)?;
+    let id = identity(&canonical).await.map_err(resolve)?;
+    let given = identity(dir).await.map_err(resolve)?;
+    if canonical.parent() != Some(expected_parent.as_path()) || id != given {
         return Err(fail(
             "the downloads folder resolves to another place than where it is, so nothing is \
              saved in it"
                 .into(),
         ));
     }
-    Ok(canonical)
+    Ok(Secured {
+        path: canonical,
+        id,
+    })
 }
 
-/// Whether two paths are the same place by name: case-insensitively on Windows and macOS, whose
-/// file systems ignore case, exactly elsewhere.
-fn same_path(a: &Path, b: &Path) -> bool {
-    if cfg!(any(windows, target_os = "macos")) {
-        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-    } else {
-        a == b
-    }
-}
-
-/// Whether `canonical` (a folder's resolved path) is the folder called `name` inside
-/// `canonical_parent`. Case is ignored where the file system ignores it, and on Windows a short
-/// 8.3 name (`PROGRA~1`) is accepted because canonicalisation turns it into the long one; a link
-/// is refused before this is asked, so the name itself need not match there.
-fn resolves_in_place(canonical: &Path, canonical_parent: &Path, name: &std::ffi::OsStr) -> bool {
-    let Some(resolved_parent) = canonical.parent() else {
-        return false;
-    };
-    if !same_path(resolved_parent, canonical_parent) {
-        return false;
-    }
-    let resolved_name = canonical.file_name().unwrap_or_default();
-    same_path(Path::new(resolved_name), Path::new(name))
-        || (cfg!(windows) && name.to_string_lossy().contains('~'))
-}
-
-/// Refuses to go on when the folder being written to no longer resolves to `secured` (the path
-/// `secure_dir` returned): the folder was swapped for a link after the check.
-async fn still_secured(secured: &Path, written: &Path) -> Result<(), WebError> {
+/// Refuses to go on when the folder `written` is in no longer is `secured` (its canonical path
+/// and its identity): the folder was swapped after the check. This narrows the window in which a
+/// swap can redirect a file; it does not close it, since the folder can still change between
+/// this check and the next operation.
+async fn still_secured(secured: &Secured, written: &Path) -> Result<(), WebError> {
     let moved = || {
         WebError::Http(
             "the downloads folder changed while the file was being saved, so it was not kept"
@@ -297,7 +288,8 @@ async fn still_secured(secured: &Path, written: &Path) -> Result<(), WebError> {
     };
     let parent = written.parent().ok_or_else(moved)?;
     let now = tokio::fs::canonicalize(parent).await.map_err(|_| moved())?;
-    if same_path(&now, secured) {
+    let id = identity(&now).await.map_err(|_| moved())?;
+    if now == secured.path && id == secured.id {
         Ok(())
     } else {
         Err(moved())
@@ -322,8 +314,13 @@ impl Drop for Partial {
 /// stream on Windows (zone 3, the internet), the quarantine attribute on macOS. The mark is made
 /// on the `.part` file, so it travels with the rename and the finished file never exists
 /// unmarked. Returns why it could not.
-fn mark_from_web(path: &Path, source: &str) -> Result<(), String> {
-    mark_platform(path, source)
+async fn mark_from_web(path: &Path, source: &str) -> Result<(), String> {
+    let (path, source) = (path.to_path_buf(), source.to_string());
+    tokio::task::spawn_blocking(move || mark_platform(&path, &source))
+        .await
+        .map_err(|error| {
+            format!("it could not be marked as downloaded from the internet ({error})")
+        })?
 }
 
 #[cfg(windows)]
@@ -479,7 +476,8 @@ impl Web {
                     .to_string(),
             );
         }
-        let dir = secure_dir(dir).await?;
+        let secured = secure_dir(dir).await?;
+        let dir = secured.path.clone();
         if let Some(why) = refuse(&dir.join(&name)) {
             return Err(WebError::Http(why));
         }
@@ -528,20 +526,27 @@ impl Web {
         };
         transfer.await?;
         drop(file);
+        // The folder was checked before the file was made; check again that it still is that
+        // folder before anything more is done to the part file, and again once it is in place.
+        still_secured(&secured, &part).await?;
         // The mark goes on the part file so the finished file is never there without it. On
-        // Windows a file that cannot be marked is not kept; elsewhere it is saved with a note.
-        if let Err(why) = mark_from_web(&part, final_url.as_str()) {
+        // Windows a file that cannot be marked (a folder on FAT, exFAT or some network shares
+        // cannot hold the stream) is not kept; elsewhere it is saved with a note.
+        if let Err(why) = mark_from_web(&part, final_url.as_str()).await {
             if cfg!(windows) {
                 return Err(WebError::Http(format!("the file was not kept: {why}")));
             }
             notes.push(why);
         }
-        // The folder was checked before the file was made; check again that it still is that
-        // folder just before the file is put in place.
-        still_secured(&dir, &part).await?;
+        still_secured(&secured, &part).await?;
         tokio::fs::rename(&part, &path)
             .await
             .map_err(|error| WebError::Http(format!("could not finish the file: {error}")))?;
+        if let Err(error) = still_secured(&secured, &path).await {
+            // It landed where it should not have: take it back.
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(error);
+        }
         guard.paths.clear();
         if path.file_name().and_then(|file| file.to_str()) != Some(name.as_str()) {
             notes.push("a file with that name already existed, so this one has another".into());
@@ -1118,38 +1123,6 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
-    #[test]
-    fn a_folder_is_in_place_when_its_resolved_parent_and_name_match() {
-        let parent = Path::new("/base/parent");
-        let dir = Path::new("/base/parent/downloads");
-        assert!(resolves_in_place(dir, parent, "downloads".as_ref()));
-        // Somewhere else entirely, or under another name, is not in place.
-        assert!(!resolves_in_place(
-            Path::new("/base/other/downloads"),
-            parent,
-            "downloads".as_ref()
-        ));
-        assert!(!resolves_in_place(
-            Path::new("/base/parent/elsewhere"),
-            parent,
-            "downloads".as_ref()
-        ));
-        // Case differences count only where the file system ignores case.
-        let ignores_case = cfg!(any(windows, target_os = "macos"));
-        assert_eq!(
-            resolves_in_place(
-                Path::new("/BASE/Parent/Downloads"),
-                parent,
-                "downloads".as_ref()
-            ),
-            ignores_case
-        );
-        assert_eq!(
-            same_path(Path::new("/A/b"), Path::new("/a/B")),
-            ignores_case
-        );
-    }
-
     #[cfg(windows)]
     #[tokio::test]
     async fn a_folder_named_in_another_case_is_accepted_on_windows() {
@@ -1158,27 +1131,35 @@ mod tests {
         std::fs::create_dir(&long).unwrap();
         let shout = root.path().join("A LONG DOWNLOADS FOLDER");
         let secured = secure_dir(&shout).await.unwrap();
-        assert_eq!(
-            secured.canonicalize().unwrap(),
-            long.canonicalize().unwrap()
-        );
+        assert_eq!(secured.path, long.canonicalize().unwrap());
     }
 
     #[tokio::test]
     async fn the_folder_is_checked_again_before_the_file_is_put_in_place() {
         let root = tempfile::tempdir().unwrap();
         let secured = secure_dir(&root.path().join("downloads")).await.unwrap();
-        let part = secured.join("f.txt.part");
+        let part = secured.path.join("f.txt.part");
         assert!(still_secured(&secured, &part).await.is_ok());
         // Another folder than the secured one is refused, as is one that has gone.
         let other = secure_dir(&root.path().join("other")).await.unwrap();
-        let error = still_secured(&secured, &other.join("f.txt.part"))
+        let error = still_secured(&secured, &other.path.join("f.txt.part"))
             .await
             .unwrap_err()
             .to_string();
         assert!(error.contains("changed while"), "{error}");
-        std::fs::remove_dir(&secured).unwrap();
+        std::fs::remove_dir(&secured.path).unwrap();
         assert!(still_secured(&secured, &part).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_folder_has_the_identity_of_the_place_it_names() {
+        let root = tempfile::tempdir().unwrap();
+        let first = secure_dir(&root.path().join("a")).await.unwrap();
+        let second = secure_dir(&root.path().join("b")).await.unwrap();
+        assert!(first.id != second.id);
+        let again = secure_dir(&root.path().join("a")).await.unwrap();
+        assert!(first.id == again.id);
+        assert_eq!(first.path, again.path);
     }
 
     #[tokio::test]

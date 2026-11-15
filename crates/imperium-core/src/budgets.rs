@@ -388,14 +388,15 @@ impl BudgetBook {
             .collect()
     }
 
-    /// The room left in the cost limits of the budgets over a call from `origin` that ask or
-    /// block (a budget that only warns stops nothing), the smallest of them; `None` when none
-    /// has a cost limit.
+    /// The room left in the cost limits of the budgets over a call from `origin` that block,
+    /// the smallest of them; `None` when none has a cost limit. A budget that asks or warns is
+    /// left out: the person can approve going past an ask budget (and may already have), so it
+    /// is no ceiling, and calls in flight are not counted.
     pub fn remaining_cost_usd(&self, today: NaiveDate, origin: Origin<'_>) -> Option<f64> {
         self.standings(today)
             .into_iter()
             .filter(|standing| {
-                standing.budget.action != BudgetAction::Warn && applies(&standing.budget, origin)
+                standing.budget.action == BudgetAction::Block && applies(&standing.budget, origin)
             })
             .filter_map(|standing| {
                 let limit = standing.budget.cost_usd.filter(|limit| *limit > 0.0)?;
@@ -1444,7 +1445,7 @@ mod tests {
     }
 
     #[test]
-    fn the_room_left_is_the_smallest_cost_limit_that_asks_or_blocks() {
+    fn the_room_left_is_the_smallest_cost_limit_that_blocks() {
         let cost_budget = |id: &str, usd: f64, action: BudgetAction| Budget {
             id: id.into(),
             window: BudgetWindow::Daily,
@@ -1461,7 +1462,7 @@ mod tests {
                 settings(vec![
                     cost_budget("wide", 10.0, BudgetAction::Ask),
                     cost_budget("tight", 2.0, BudgetAction::Block),
-                    // Only warns, so it stops nothing and leaves no "room".
+                    // Only warns, or asks (which the person may have approved): no ceiling.
                     cost_budget("warns", 0.5, BudgetAction::Warn),
                     // A token limit has no dollar room.
                     Budget {
@@ -1485,7 +1486,21 @@ mod tests {
         assert_eq!(book.remaining_cost_usd(today, here), Some(0.0));
         // The next day the limits are whole again.
         assert_eq!(book.remaining_cost_usd(date("2026-11-11"), here), Some(2.0));
-        // With no cost limit that asks or blocks there is nothing to compare against.
+        // An ask budget that is used up (and approved) is no ceiling for sampling; only a
+        // blocking one is.
+        let asks = BudgetBook {
+            path: None,
+            reserved: Mutex::new(Vec::new()),
+            environment_limits: Mutex::default(),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
+            inner: Mutex::new((
+                settings(vec![cost_budget("asks", 1.0, BudgetAction::Ask)]),
+                Ledger::default(),
+            )),
+        };
+        asks.record(today, &call(None, "a:small", 10, Some(5.0)));
+        assert_eq!(asks.remaining_cost_usd(today, here), None);
+        // With no blocking cost limit there is nothing to compare against.
         let none = BudgetBook {
             path: None,
             reserved: Mutex::new(Vec::new()),

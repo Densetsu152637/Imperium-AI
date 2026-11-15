@@ -20,9 +20,10 @@ pub trait BudgetGate: std::fmt::Debug + Send + Sync {
     fn check(&self, spec: &str) -> BudgetVerdict;
     /// The person approved a [`BudgetVerdict::Ask`]: later calls under `key` go ahead.
     fn confirm(&self, key: &str);
-    /// The most a call to the model `spec` can still cost before a budget that asks or blocks
-    /// is used up, in US dollars: the smallest room left in the cost limits that apply. `None`
-    /// when no such limit applies or the gate does not know.
+    /// The most a call to the model `spec` can still cost before a budget that blocks is used
+    /// up, in US dollars: the smallest room left in the blocking cost limits that apply. A
+    /// budget that asks is not counted (the person may approve going past it). `None` when no
+    /// such limit applies or the gate does not know.
     fn remaining_usd(&self, _spec: &str) -> Option<f64> {
         None
     }

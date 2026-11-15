@@ -598,9 +598,11 @@ async fn start_session(hub: &Hub, args: &Value) -> Result<Value, String> {
 /// message joins the running turn, so its cursor is that turn's start.
 ///
 /// A steering message can race the turn's end: the turn may finish between reading the history
-/// and `session.send`, in which case the message starts a new turn instead of joining one. The
-/// history is read again after sending ([`steer_race`]); when the message did not join the turn
-/// it was aimed at, the cursor is moved to the turn it started and the result says so.
+/// and `session.send`, in which case the message starts a new turn instead of joining one. After
+/// sending, the history is polled briefly ([`STEER_LOOK`]) for what became of the message
+/// ([`steer_outcome`], by the message id `session.send` returned). When it started a new turn,
+/// the cursor is that turn's start and the result says so; when nothing shows either within the
+/// time, the result is as before, so a miss can still go unnoticed.
 async fn send(hub: &Hub, session_id: &str, text: &str, steer: bool) -> Result<Sent, String> {
     let history = hub.history(session_id).await?;
     let open = steer.then(|| open_turn_start(&history)).flatten();
@@ -609,18 +611,37 @@ async fn send(hub: &Hub, session_id: &str, text: &str, steer: bool) -> Result<Se
     if steer {
         params["mode"] = json!("steer");
     }
-    hub.call("session.send", params).await?;
+    let sent = hub.call("session.send", params).await?;
     if open.is_some()
-        && let Ok(after) = hub.history(session_id).await
-        && let Some(started) = steer_race(&after, cursor, text)
+        && let Some(id) = sent["id"].as_str()
     {
-        return Ok(Sent {
-            cursor: started,
-            note: Some(STEER_RACE_NOTE),
-        });
+        let deadline = Instant::now() + STEER_LOOK;
+        loop {
+            let Ok(after) = hub.history(session_id).await else {
+                break;
+            };
+            match steer_outcome(&after, history.len(), id) {
+                SteerOutcome::Joined => break,
+                SteerOutcome::NewTurn(started) => {
+                    return Ok(Sent {
+                        cursor: started,
+                        note: Some(STEER_RACE_NOTE),
+                    });
+                }
+                SteerOutcome::Unknown => {}
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(STEER_STEP).await;
+        }
     }
     Ok(Sent { cursor, note: None })
 }
+
+/// How long a steering send looks for what became of its message, and how often.
+const STEER_LOOK: Duration = Duration::from_millis(500);
+const STEER_STEP: Duration = Duration::from_millis(50);
 
 /// What `send_message` says when a steering message did not find a running turn to join.
 const STEER_RACE_NOTE: &str = "the turn had already finished when the message arrived, so it \
@@ -633,24 +654,36 @@ struct Sent {
     note: Option<&'static str>,
 }
 
-/// Whether a steering message sent at the turn that began at `from` missed it: another root
-/// turn began after it and no `steered` or `message_queued` event carries the message, which
-/// means the turn had ended and the message started the next one. Returns the index of that
-/// turn's start. The history may not yet hold every event of a message just sent, so a message
-/// that did join the turn is never reported as missed, and one that missed it may go unnoticed.
-fn steer_race(history: &[Value], from: usize, text: &str) -> Option<usize> {
-    let mut starts = history
-        .iter()
-        .enumerate()
-        .skip(from)
-        .filter(|(_, event)| is_root(event) && kind(event) == "turn_started")
-        .map(|(index, _)| index);
-    let _first = starts.next()?;
-    let next = starts.next()?;
-    let joined = history.iter().skip(from).any(|event| {
-        matches!(kind(event), "steered" | "message_queued") && event["event"]["text"] == text
-    });
-    (!joined).then_some(next)
+/// What the history shows of a steering message sent when it held `before` events.
+#[derive(Debug, PartialEq, Eq)]
+enum SteerOutcome {
+    /// A `steered` or `message_queued` event carries the message's id: it joined the running
+    /// turn (or waits behind it).
+    Joined,
+    /// A root turn began after the send with no such event: the turn had ended, and the message
+    /// started this one (its `turn_started` index).
+    NewTurn(usize),
+    /// Neither is in the history yet.
+    Unknown,
+}
+
+/// Decides from `history` what became of the message with `id`, looking only at events from
+/// index `before` on. The id is the one `session.send` returned; a message that joined carries
+/// it in `steered` or `message_queued`, which is written before any turn it could start.
+fn steer_outcome(history: &[Value], before: usize, id: &str) -> SteerOutcome {
+    let mut new_turn = None;
+    for (index, event) in history.iter().enumerate().skip(before) {
+        match kind(event) {
+            "steered" | "message_queued" if event["event"]["id"] == id => {
+                return SteerOutcome::Joined;
+            }
+            "turn_started" if is_root(event) => {
+                new_turn.get_or_insert(index);
+            }
+            _ => {}
+        }
+    }
+    new_turn.map_or(SteerOutcome::Unknown, SteerOutcome::NewTurn)
 }
 
 async fn send_message(hub: &Hub, args: &Value) -> Result<Value, String> {
@@ -1274,38 +1307,61 @@ mod tests {
         analyze(history, since, &HashSet::new(), true)
     }
 
-    fn steered(text: &str) -> Value {
-        event("root", json!({"type": "steered", "id": "m1", "text": text}))
+    fn steered(id: &str) -> Value {
+        event("root", json!({"type": "steered", "id": id, "text": "t"}))
+    }
+
+    fn queued(id: &str) -> Value {
+        event(
+            "root",
+            json!({"type": "message_queued", "id": id, "text": "t", "steer": true}),
+        )
     }
 
     #[test]
-    fn a_steering_message_that_started_a_new_turn_is_noticed() {
-        // The turn at 0 ended before the message arrived, which then started a second turn.
-        let raced = vec![started(), completed(), started()];
-        assert_eq!(steer_race(&raced, 0, "and be brief"), Some(2));
-        // A message that joined the turn (steered, or queued behind it) did not miss it, even
-        // when another turn began afterwards.
-        let joined = vec![started(), steered("and be brief"), completed(), started()];
-        assert_eq!(steer_race(&joined, 0, "and be brief"), None);
-        let queued = vec![
-            started(),
-            event(
-                "root",
-                json!({"type": "message_queued", "id": "m1", "text": "and be brief", "steer": true}),
-            ),
-            completed(),
-            started(),
-        ];
-        assert_eq!(steer_race(&queued, 0, "and be brief"), None);
-        // Another message's steering does not count for this one.
-        let other = vec![started(), steered("something else"), completed(), started()];
-        assert_eq!(steer_race(&other, 0, "and be brief"), Some(3));
-        // Still one turn, or the new turn not in the history yet: nothing to report.
-        assert_eq!(steer_race(&[started()], 0, "x"), None);
-        assert_eq!(steer_race(&[started(), completed()], 0, "x"), None);
-        // Only turns from the cursor on count.
-        let earlier = vec![started(), completed(), started(), steered("x"), completed()];
-        assert_eq!(steer_race(&earlier, 2, "x"), None);
+    fn a_steering_message_that_joined_the_turn_is_known_by_its_id() {
+        // The history held two events before the send.
+        let before = [started(), finished()];
+        let mut joined = before.to_vec();
+        joined.push(queued("m1"));
+        assert_eq!(steer_outcome(&joined, 2, "m1"), SteerOutcome::Joined);
+        joined.push(steered("m1"));
+        joined.push(completed());
+        joined.push(started());
+        // A later turn does not make a joined message a missed one.
+        assert_eq!(steer_outcome(&joined, 2, "m1"), SteerOutcome::Joined);
+    }
+
+    #[test]
+    fn a_steering_message_that_started_a_new_turn_is_found_after_the_send() {
+        let mut raced = vec![started(), finished()];
+        // The turn ended before the message arrived; the message started the next one.
+        raced.push(completed());
+        raced.push(started());
+        assert_eq!(steer_outcome(&raced, 2, "m1"), SteerOutcome::NewTurn(3));
+        // Another message's events do not count for this one: a turn after them is still this
+        // message's new turn only when nothing carries its id.
+        let mut other = vec![started(), finished(), queued("m0"), completed(), started()];
+        assert_eq!(steer_outcome(&other, 2, "m1"), SteerOutcome::NewTurn(4));
+        other.push(steered("m1"));
+        assert_eq!(steer_outcome(&other, 2, "m1"), SteerOutcome::Joined);
+    }
+
+    #[test]
+    fn a_steering_message_with_nothing_yet_in_the_history_is_unknown() {
+        assert_eq!(
+            steer_outcome(&[started(), finished()], 2, "m1"),
+            SteerOutcome::Unknown
+        );
+        // Events from before the send are never read.
+        assert_eq!(
+            steer_outcome(&[queued("m1"), started()], 2, "m1"),
+            SteerOutcome::Unknown
+        );
+        assert_eq!(
+            steer_outcome(&[started(), completed()], 0, "m1"),
+            SteerOutcome::NewTurn(0)
+        );
     }
 
     #[test]

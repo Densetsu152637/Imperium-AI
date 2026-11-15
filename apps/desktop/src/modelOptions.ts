@@ -71,9 +71,17 @@ export function localDescription(row: LocalModelRow): string {
  * are listed but cannot be chosen), then local models the table does not already list. With
  * `marks` ([`chooserModels`]), favourites come first under "Favourites" and hidden models are
  * left out unless one is `current`. A `current` model outside both is listed as is, so the list
- * always shows it.
+ * always shows it. A `current` model that is switched off is kept (marked off) only with
+ * `liveSession`, the picker of an open session; a new-session picker leaves it out, so a model
+ * that is off cannot be chosen.
  */
-export function modelOptions(models: ModelRow[], local: LocalModelRow[], current: string | null, marks?: ModelMarks): SelectOption[] {
+export function modelOptions(
+  models: ModelRow[],
+  local: LocalModelRow[],
+  current: string | null,
+  marks?: ModelMarks,
+  liveSession = false,
+): SelectOption[] {
   const all = allModelOptions(models, local);
   const chosen = chooserModels(all, (option) => option.value, marks, current);
   const grouped = chosen.some((entry) => entry.group !== "normal");
@@ -81,7 +89,8 @@ export function modelOptions(models: ModelRow[], local: LocalModelRow[], current
     grouped ? { ...item, group: GROUP_LABELS[group], dimmed: group === "hidden" } : item,
   );
   if (current && !options.some((option) => option.value === current)) {
-    options.unshift(currentOption(models, local, current));
+    const entry = currentOption(models, local, current, liveSession);
+    if (entry) options.unshift(entry);
   }
   return options;
 }
@@ -96,11 +105,19 @@ export const OFF_LABEL = "off";
  * off ("Use this model") after the session started is shown by its name with "off" beside it
  * and dimmed, not as a bare spec; a model the settings do not know at all is listed as it is.
  */
-export function currentOption(models: ModelRow[], local: LocalModelRow[], current: string): SelectOption {
-  const row = models.find((candidate) => candidate.spec === current);
-  const localRow = local.find((candidate) => localSpec(candidate) === current);
+export function currentOption(
+  models: ModelRow[],
+  local: LocalModelRow[],
+  current: string,
+  liveSession = true,
+): SelectOption | null {
+  // The session's model is a spec or a model table id.
+  const row = models.find((candidate) => candidate.spec === current || candidate.id === current);
+  const localRow = local.find((candidate) => localSpec(candidate) === current || candidate.id === current);
   const off = (row != null && !row.enabled) || (localRow != null && !localRow.enabled);
   if (!off) return { value: current, label: current };
+  // Off: shown for the open session that is on it, never offered to a new one.
+  if (!liveSession) return null;
   const name = row?.alias ?? localRow?.alias ?? row?.id ?? localRow?.id ?? current;
   return {
     value: current,
