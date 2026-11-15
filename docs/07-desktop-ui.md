@@ -1471,7 +1471,8 @@ model (`llamacpp:` or `vllm:`) shows that model's estimate; a hosted row says it
 
 **Use this model.** The switch turns a model off without forgetting its settings. Off, the model
 is greyed in the dialog's navigation (with an *off* badge) and its tables, dimmed with an *off*
-badge in the Models and Local models panels, left out of the session model selector, the new-session
+badge in the Models and Local models panels, left out of the session model selector (except for a session already on it, whose selector keeps
+showing it by its name with *(off)* and dimmed until another model is chosen), the new-session
 chooser and the command palette, never chosen by routing or by an escalation retry, not offered to
 agents (`list_models`) or the OpenAI-compatible API, and cannot start a session or be made the default
 model; turning it on again restores all of that. A local model's switch is saved as its spec in

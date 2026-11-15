@@ -243,11 +243,14 @@ async fn secure_dir(dir: &Path) -> Result<PathBuf, WebError> {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    let expected = tokio::fs::canonicalize(&parent)
+    let expected_parent = tokio::fs::canonicalize(&parent)
         .await
-        .map_err(|error| fail(format!("could not resolve the downloads folder: {error}")))?
-        .join(dir.file_name().unwrap_or_default());
-    if canonical != expected {
+        .map_err(|error| fail(format!("could not resolve the downloads folder: {error}")))?;
+    if !resolves_in_place(
+        &canonical,
+        &expected_parent,
+        dir.file_name().unwrap_or_default(),
+    ) {
         return Err(fail(
             "the downloads folder resolves to another place than where it is, so nothing is \
              saved in it"
@@ -255,6 +258,50 @@ async fn secure_dir(dir: &Path) -> Result<PathBuf, WebError> {
         ));
     }
     Ok(canonical)
+}
+
+/// Whether two paths are the same place by name: case-insensitively on Windows and macOS, whose
+/// file systems ignore case, exactly elsewhere.
+fn same_path(a: &Path, b: &Path) -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
+}
+
+/// Whether `canonical` (a folder's resolved path) is the folder called `name` inside
+/// `canonical_parent`. Case is ignored where the file system ignores it, and on Windows a short
+/// 8.3 name (`PROGRA~1`) is accepted because canonicalisation turns it into the long one; a link
+/// is refused before this is asked, so the name itself need not match there.
+fn resolves_in_place(canonical: &Path, canonical_parent: &Path, name: &std::ffi::OsStr) -> bool {
+    let Some(resolved_parent) = canonical.parent() else {
+        return false;
+    };
+    if !same_path(resolved_parent, canonical_parent) {
+        return false;
+    }
+    let resolved_name = canonical.file_name().unwrap_or_default();
+    same_path(Path::new(resolved_name), Path::new(name))
+        || (cfg!(windows) && name.to_string_lossy().contains('~'))
+}
+
+/// Refuses to go on when the folder being written to no longer resolves to `secured` (the path
+/// `secure_dir` returned): the folder was swapped for a link after the check.
+async fn still_secured(secured: &Path, written: &Path) -> Result<(), WebError> {
+    let moved = || {
+        WebError::Http(
+            "the downloads folder changed while the file was being saved, so it was not kept"
+                .into(),
+        )
+    };
+    let parent = written.parent().ok_or_else(moved)?;
+    let now = tokio::fs::canonicalize(parent).await.map_err(|_| moved())?;
+    if same_path(&now, secured) {
+        Ok(())
+    } else {
+        Err(moved())
+    }
 }
 
 /// Removes the files of an unfinished download when dropped, which includes the download being
@@ -271,29 +318,25 @@ impl Drop for Partial {
     }
 }
 
-/// Marks a saved file as coming from the web where the platform has a way to: the
-/// `Zone.Identifier` stream on Windows (zone 3, the internet), the quarantine attribute on
-/// macOS. Returns a note when it could not.
-fn mark_from_web(path: &Path, source: &str) -> Option<String> {
+/// Marks a file as coming from the web where the platform has a way to: the `Zone.Identifier`
+/// stream on Windows (zone 3, the internet), the quarantine attribute on macOS. The mark is made
+/// on the `.part` file, so it travels with the rename and the finished file never exists
+/// unmarked. Returns why it could not.
+fn mark_from_web(path: &Path, source: &str) -> Result<(), String> {
     mark_platform(path, source)
 }
 
 #[cfg(windows)]
-fn mark_platform(path: &Path, source: &str) -> Option<String> {
+fn mark_platform(path: &Path, source: &str) -> Result<(), String> {
     let stream = format!("{}:Zone.Identifier", path.display());
-    let text = format!(
-        "[ZoneTransfer]
-ZoneId=3
-HostUrl={source}
-"
-    );
-    std::fs::write(stream, text)
-        .err()
-        .map(|error| format!("it could not be marked as downloaded from the internet ({error})"))
+    let text = format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={source}\r\n");
+    std::fs::write(stream, text).map_err(|error| {
+        format!("it could not be marked as downloaded from the internet ({error})")
+    })
 }
 
 #[cfg(target_os = "macos")]
-fn mark_platform(path: &Path, _source: &str) -> Option<String> {
+fn mark_platform(path: &Path, _source: &str) -> Result<(), String> {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
@@ -305,14 +348,14 @@ fn mark_platform(path: &Path, _source: &str) -> Option<String> {
         .stderr(std::process::Stdio::null())
         .status();
     match status {
-        Ok(status) if status.success() => None,
-        _ => Some("it could not be marked as downloaded from the internet".into()),
+        Ok(status) if status.success() => Ok(()),
+        _ => Err("it could not be marked as downloaded from the internet".into()),
     }
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn mark_platform(_path: &Path, _source: &str) -> Option<String> {
-    None
+fn mark_platform(_path: &Path, _source: &str) -> Result<(), String> {
+    Ok(())
 }
 
 impl Web {
@@ -356,6 +399,27 @@ impl Web {
         follow: &(dyn Fn(&Url) -> bool + Sync),
         refuse: &(dyn Fn(&Path) -> Option<String> + Sync),
         deadline: Duration,
+    ) -> Result<Downloaded, WebError> {
+        let all = self.download_unbounded(url, dir, name_hint, max_bytes, follow, refuse);
+        match tokio::time::timeout(deadline, all).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(WebError::Http(format!(
+                "the download took longer than {} seconds and was stopped",
+                deadline.as_secs()
+            ))),
+        }
+    }
+
+    /// The whole download, from the request through the redirects and headers to the rename;
+    /// [`Self::download_within`] bounds all of it.
+    async fn download_unbounded(
+        &self,
+        url: &str,
+        dir: &Path,
+        name_hint: Option<&str>,
+        max_bytes: u64,
+        follow: &(dyn Fn(&Url) -> bool + Sync),
+        refuse: &(dyn Fn(&Path) -> Option<String> + Sync),
     ) -> Result<Downloaded, WebError> {
         let parsed = Url::parse(url)
             .ok()
@@ -462,23 +526,23 @@ impl Web {
                 .await
                 .map_err(|error| WebError::Http(format!("could not write the file: {error}")))
         };
-        match tokio::time::timeout(deadline, transfer).await {
-            Ok(outcome) => outcome?,
-            Err(_) => {
-                return Err(WebError::Http(format!(
-                    "the download took longer than {} seconds and was stopped",
-                    deadline.as_secs()
-                )));
-            }
-        }
+        transfer.await?;
         drop(file);
+        // The mark goes on the part file so the finished file is never there without it. On
+        // Windows a file that cannot be marked is not kept; elsewhere it is saved with a note.
+        if let Err(why) = mark_from_web(&part, final_url.as_str()) {
+            if cfg!(windows) {
+                return Err(WebError::Http(format!("the file was not kept: {why}")));
+            }
+            notes.push(why);
+        }
+        // The folder was checked before the file was made; check again that it still is that
+        // folder just before the file is put in place.
+        still_secured(&dir, &part).await?;
         tokio::fs::rename(&part, &path)
             .await
             .map_err(|error| WebError::Http(format!("could not finish the file: {error}")))?;
         guard.paths.clear();
-        if let Some(note) = mark_from_web(&path, final_url.as_str()) {
-            notes.push(note);
-        }
         if path.file_name().and_then(|file| file.to_str()) != Some(name.as_str()) {
             notes.push("a file with that name already existed, so this one has another".into());
         }
@@ -1022,6 +1086,99 @@ mod tests {
             .to_string();
         assert!(error.contains("took longer"), "{error}");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_deadline_covers_a_server_slow_to_answer() {
+        let base = serve(Router::new().route(
+            "/late.bin",
+            get(|| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                "x"
+            }),
+        ))
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let error = web()
+            .download_within(
+                &format!("{base}/late.bin"),
+                dir.path(),
+                None,
+                10_000,
+                &|_| true,
+                &|_| None,
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("took longer"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_folder_is_in_place_when_its_resolved_parent_and_name_match() {
+        let parent = Path::new("/base/parent");
+        let dir = Path::new("/base/parent/downloads");
+        assert!(resolves_in_place(dir, parent, "downloads".as_ref()));
+        // Somewhere else entirely, or under another name, is not in place.
+        assert!(!resolves_in_place(
+            Path::new("/base/other/downloads"),
+            parent,
+            "downloads".as_ref()
+        ));
+        assert!(!resolves_in_place(
+            Path::new("/base/parent/elsewhere"),
+            parent,
+            "downloads".as_ref()
+        ));
+        // Case differences count only where the file system ignores case.
+        let ignores_case = cfg!(any(windows, target_os = "macos"));
+        assert_eq!(
+            resolves_in_place(
+                Path::new("/BASE/Parent/Downloads"),
+                parent,
+                "downloads".as_ref()
+            ),
+            ignores_case
+        );
+        assert_eq!(
+            same_path(Path::new("/A/b"), Path::new("/a/B")),
+            ignores_case
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_folder_named_in_another_case_is_accepted_on_windows() {
+        let root = tempfile::tempdir().unwrap();
+        let long = root.path().join("a long downloads folder");
+        std::fs::create_dir(&long).unwrap();
+        let shout = root.path().join("A LONG DOWNLOADS FOLDER");
+        let secured = secure_dir(&shout).await.unwrap();
+        assert_eq!(
+            secured.canonicalize().unwrap(),
+            long.canonicalize().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_folder_is_checked_again_before_the_file_is_put_in_place() {
+        let root = tempfile::tempdir().unwrap();
+        let secured = secure_dir(&root.path().join("downloads")).await.unwrap();
+        let part = secured.join("f.txt.part");
+        assert!(still_secured(&secured, &part).await.is_ok());
+        // Another folder than the secured one is refused, as is one that has gone.
+        let other = secure_dir(&root.path().join("other")).await.unwrap();
+        let error = still_secured(&secured, &other.join("f.txt.part"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("changed while"), "{error}");
+        std::fs::remove_dir(&secured).unwrap();
+        assert!(still_secured(&secured, &part).await.is_err());
     }
 
     #[tokio::test]

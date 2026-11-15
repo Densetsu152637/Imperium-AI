@@ -388,6 +388,22 @@ impl BudgetBook {
             .collect()
     }
 
+    /// The room left in the cost limits of the budgets over a call from `origin` that ask or
+    /// block (a budget that only warns stops nothing), the smallest of them; `None` when none
+    /// has a cost limit.
+    pub fn remaining_cost_usd(&self, today: NaiveDate, origin: Origin<'_>) -> Option<f64> {
+        self.standings(today)
+            .into_iter()
+            .filter(|standing| {
+                standing.budget.action != BudgetAction::Warn && applies(&standing.budget, origin)
+            })
+            .filter_map(|standing| {
+                let limit = standing.budget.cost_usd.filter(|limit| *limit > 0.0)?;
+                Some((limit - standing.cost_usd).max(0.0))
+            })
+            .reduce(f64::min)
+    }
+
     /// The used-up budget, among those over a call from `origin`, that has the strongest action
     /// (block over ask); `None` when new turns may start.
     pub fn gate(&self, today: NaiveDate, origin: Origin<'_>) -> Option<Stop> {
@@ -966,6 +982,22 @@ impl imperium_engine::BudgetGate for CallGate {
             state.confirm_budget(key);
         }
     }
+
+    fn remaining_usd(&self, spec: &str) -> Option<f64> {
+        let state = self.state.upgrade()?;
+        let environment = state
+            .session(&self.session_id)
+            .and_then(|session| state.summary(&session).environment_id);
+        let spec = (!spec.is_empty()).then(|| resolve_spec(&state, spec));
+        state.budgets().remaining_cost_usd(
+            state.budget_today(),
+            Origin {
+                environment: environment.as_deref(),
+                spec: spec.as_deref(),
+                source: None,
+            },
+        )
+    }
 }
 
 /// An admitted API call's claim on the budgets: what it is expected to use counts against them,
@@ -1409,6 +1441,62 @@ mod tests {
             book.gate(date("2026-11-16"), origin(Some("e1"), Some("a:small")))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn the_room_left_is_the_smallest_cost_limit_that_asks_or_blocks() {
+        let cost_budget = |id: &str, usd: f64, action: BudgetAction| Budget {
+            id: id.into(),
+            window: BudgetWindow::Daily,
+            cost_usd: Some(usd),
+            action,
+            ..Budget::default()
+        };
+        let book = BudgetBook {
+            path: None,
+            reserved: Mutex::new(Vec::new()),
+            environment_limits: Mutex::default(),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
+            inner: Mutex::new((
+                settings(vec![
+                    cost_budget("wide", 10.0, BudgetAction::Ask),
+                    cost_budget("tight", 2.0, BudgetAction::Block),
+                    // Only warns, so it stops nothing and leaves no "room".
+                    cost_budget("warns", 0.5, BudgetAction::Warn),
+                    // A token limit has no dollar room.
+                    Budget {
+                        id: "tokens".into(),
+                        window: BudgetWindow::Daily,
+                        tokens: Some(100),
+                        action: BudgetAction::Block,
+                        ..Budget::default()
+                    },
+                ]),
+                Ledger::default(),
+            )),
+        };
+        let today = date("2026-11-10");
+        let here = origin(None, Some("a:small"));
+        assert_eq!(book.remaining_cost_usd(today, here), Some(2.0));
+        book.record(today, &call(None, "a:small", 10, Some(1.5)));
+        assert_eq!(book.remaining_cost_usd(today, here), Some(0.5));
+        // Spent past the limit: no room, never negative.
+        book.record(today, &call(None, "a:small", 10, Some(9.0)));
+        assert_eq!(book.remaining_cost_usd(today, here), Some(0.0));
+        // The next day the limits are whole again.
+        assert_eq!(book.remaining_cost_usd(date("2026-11-11"), here), Some(2.0));
+        // With no cost limit that asks or blocks there is nothing to compare against.
+        let none = BudgetBook {
+            path: None,
+            reserved: Mutex::new(Vec::new()),
+            environment_limits: Mutex::default(),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
+            inner: Mutex::new((
+                settings(vec![cost_budget("warns", 1.0, BudgetAction::Warn)]),
+                Ledger::default(),
+            )),
+        };
+        assert_eq!(none.remaining_cost_usd(today, here), None);
     }
 
     #[test]

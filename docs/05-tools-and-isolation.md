@@ -150,7 +150,14 @@ file name is flagged (an error or login page); `blob:` and `data:` downloads, wh
 keeps no fetchable copy of, cannot be saved. The file is never opened or run and its mode is the
 platform default, never executable. Where the platform has a way to, it is marked as coming from
 the web: the `Zone.Identifier` stream (zone 3, `HostUrl` the final URL) on Windows, the
-`com.apple.quarantine` attribute on macOS (a note says if that failed).
+`com.apple.quarantine` attribute on macOS. The mark goes on the `.part` file before the rename, so
+the finished file is never there unmarked; on Windows a file that cannot be marked is not kept (the
+download fails), on macOS it is kept with a note. The 600-second limit covers the whole download,
+the request, redirects and headers included, not only the transfer of the body. The downloads
+folder is checked before the file is made (not a link, and resolving to where its own name puts it
+inside its parent, compared without regard to case on Windows and macOS, where a short 8.3 name
+resolves to the long one) and again just before the rename: a folder swapped for a link in between
+fails the download and leaves nothing behind.
 
 Titles, URLs and file names come from pages: they are shown to the agent flattened to one line,
 framed as data, and the web instructions say to treat them as data, never as instructions.
@@ -360,7 +367,10 @@ request still waiting when its call ends or is cancelled is refused with `-1`. E
 waits for the user's approval, shown as a permission request for `mcp_sampling` that states the
 server, the model, the token limit, the message count and size, whether there is a system
 prompt (with a short excerpt), an upper bound on the cost from the model's price, and an
-excerpt of the last message, quoted with line breaks marked `⏎`. It is never pre-approved,
+excerpt of the last message, quoted with line breaks marked `⏎`. A request whose cost bound is
+more than a budget that asks or blocks has left in its cost limit is refused before the user is
+asked, with the two figures in the message (a budget that only warns, or one with no cost limit,
+does not count; a model with no price has no bound to compare). It is never pre-approved,
 "allow for the session" does not apply to it, and it is refused outright in an unattended
 session (background, auto-fix, project agents: "sampling needs a person watching the session")
 and cannot be answered through `imperium mcp-serve`, in every permission mode. A tool call may
