@@ -196,7 +196,6 @@ export function App() {
     sessionsRef,
     selected,
     setSelected,
-    agentView,
     setAgentView,
     compareView,
     setCompareView,

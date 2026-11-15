@@ -4,7 +4,7 @@
 // and written through the daemon's config.describe / config.set into its config file. Both
 // persist across versions.
 
-import { FolderPlus, Keyboard, Plug, Search, SlidersHorizontal, Volume2 } from "lucide-react";
+import { FolderPlus, Plug, Search, SlidersHorizontal, Volume2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ConfigDescribeResult, ConfigEntry, ConfigSetResult, ModListResult } from "@imperium/protocol";
 import { ApiSection } from "../components/ApiSection";

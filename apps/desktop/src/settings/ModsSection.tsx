@@ -6,7 +6,7 @@ import { installedByAgent, sourceLabel } from "./configChanges";
 import { Row } from "../components/SettingsRow";
 import { Switch as Toggle } from "../components/Switch";
 import { getFaults, subscribeFaults } from "../mods/faults";
-import { BUNDLED_ON_BY_DEFAULT, modEnabled, type AppSettings } from ".";
+import { BUNDLED_ON_BY_DEFAULT, modEnabled, type AppSettings } from "./settings";
 
 /** Mods the daemon found: installed ones and the nursery are on until turned off, other bundled ones are opt-in. */
 export function ModsSection({

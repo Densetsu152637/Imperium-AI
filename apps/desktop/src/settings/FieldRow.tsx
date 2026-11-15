@@ -4,7 +4,7 @@ import type { CSSProperties } from "react";
 import { Select } from "../components/Select";
 import { Row } from "../components/SettingsRow";
 import { Switch as Toggle } from "../components/Switch";
-import { DEFAULT_SETTINGS, type AppSettings } from ".";
+import { DEFAULT_SETTINGS, type AppSettings } from "./settings";
 import type { Field } from "./fields";
 
 export function FieldRow({

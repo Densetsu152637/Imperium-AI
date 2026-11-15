@@ -1,6 +1,6 @@
 // The settings the window shows as plain fields, by section.
 
-import { ACCENTS, type AppSettings } from ".";
+import { ACCENTS, type AppSettings } from "./settings";
 
 type Control =
   | { type: "toggle" }
