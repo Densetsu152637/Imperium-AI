@@ -683,7 +683,10 @@ impl Connection {
                                 if params.trusted {
                                     return Err(ErrorObject::new(
                                         codes::INVALID_PARAMS,
-                                        format!("trust was not granted: {why}"),
+                                        format!(
+                                            "{}: {why}",
+                                            imperium_protocol::errors::TRUST_NOT_GRANTED
+                                        ),
                                     ));
                                 }
                                 params.interactive = false;
@@ -2724,7 +2727,9 @@ mod tests {
             panic!("trust should be refused: {response:?}");
         };
         assert!(
-            error.message.contains("trust was not granted"),
+            error
+                .message
+                .contains(imperium_protocol::errors::TRUST_NOT_GRANTED),
             "{}",
             error.message
         );

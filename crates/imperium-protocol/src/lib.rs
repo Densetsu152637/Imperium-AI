@@ -8,6 +8,7 @@ pub mod agents;
 pub mod budgets;
 pub mod clarification;
 pub mod discovery;
+pub mod errors;
 pub mod initiative;
 pub mod jsonrpc;
 pub mod knowledge_eval;

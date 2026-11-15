@@ -89,7 +89,12 @@ pub fn install(
         let done = match client.call::<ModInstall>(request(trusted)).await {
             // The daemon decides who may grant trust; when it does not count this process, the
             // mod still installs, in its sandbox.
-            Err(error) if trusted && error.to_string().contains("trust was not granted") => {
+            Err(error)
+                if trusted
+                    && error
+                        .to_string()
+                        .contains(imperium_protocol::errors::TRUST_NOT_GRANTED) =>
+            {
                 println!("Note: {error}\nInstalling it in the sandbox instead.");
                 client.call::<ModInstall>(request(false)).await?
             }
@@ -190,7 +195,12 @@ pub fn update(id: String, sha256: Option<String>, yes: bool) -> anyhow::Result<(
         let done = match client.call::<ModInstall>(request(trusted)).await {
             // When the daemon does not count this process, the update still goes ahead, in the
             // sandbox.
-            Err(error) if trusted && error.to_string().contains("trust was not granted") => {
+            Err(error)
+                if trusted
+                    && error
+                        .to_string()
+                        .contains(imperium_protocol::errors::TRUST_NOT_GRANTED) =>
+            {
                 println!("Note: {error}\nUpdating it in the sandbox instead.");
                 client.call::<ModInstall>(request(false)).await?
             }

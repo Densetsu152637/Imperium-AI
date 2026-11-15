@@ -48,11 +48,15 @@ export function agentDelivery(status: TaskState["status"], mode: SendMode): Agen
   return status === "running" ? { kind: "send", mode } : { kind: "resume" };
 }
 
+/** What the daemon's error says when a message went to a subagent that is no longer running
+ * (`NO_RUNNING_AGENT` in crates/imperium-protocol/src/errors.rs; a test pins the two together). */
+export const NO_RUNNING_AGENT = "no running agent";
+
 /** Whether the daemon refused a message because the subagent is no longer running, so it is
  * sent again as a follow-up (it finished between the click and the call). */
 export function finishedMeanwhile(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return message.includes("no running agent");
+  return message.includes(NO_RUNNING_AGENT);
 }
 
 /** A follow-up's text with the files attached to it named, since follow-ups carry no files. */

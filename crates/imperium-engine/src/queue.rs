@@ -19,12 +19,32 @@ use tokio::sync::watch;
 use crate::breakdown::PART_SEPARATOR;
 use crate::session::{Emitter, lock};
 
+#[cfg(test)]
+mod wording {
+    use super::QueueError;
+
+    #[test]
+    fn an_unknown_agent_is_reported_with_the_shared_wording() {
+        let text = QueueError::UnknownAgent("t1".into()).to_string();
+        assert_eq!(
+            text,
+            format!(
+                "{} \"t1\" in this session",
+                imperium_protocol::errors::NO_RUNNING_AGENT
+            )
+        );
+    }
+}
+
 /// Why a message could not be queued, edited, or removed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QueueError {
     #[error("the session has stopped")]
     Closed,
-    #[error("no running agent {0:?} in this session")]
+    #[error(
+        "{} {0:?} in this session",
+        imperium_protocol::errors::NO_RUNNING_AGENT
+    )]
     UnknownAgent(String),
     #[error("no queued message {0:?}; it may have been delivered already")]
     UnknownMessage(String),

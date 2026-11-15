@@ -2,12 +2,14 @@
 // to it is delivered (src/agentView.ts). Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
   agentComposerHint,
   agentDelivery,
   finishedMeanwhile,
+  NO_RUNNING_AGENT,
   followUpText,
   formatElapsed,
   taskElapsed,
@@ -63,4 +65,13 @@ test("the composer says what sending does for the subagent", () => {
   assert.match(agentComposerHint("Audit auth", "running", true), /^Enter queues for Audit auth/);
   assert.match(agentComposerHint("Audit auth", "paused", false), /resume it \(Ctrl\+Enter\)/);
   assert.match(agentComposerHint("Audit auth", "finished", true), /follow-up/);
+});
+
+test("the not-running wording is the one the daemon sends", () => {
+  assert.equal(NO_RUNNING_AGENT, "no running agent");
+  const daemon = readFileSync(
+    new URL("../../../crates/imperium-protocol/src/errors.rs", import.meta.url),
+    "utf8",
+  );
+  assert.ok(daemon.includes(`NO_RUNNING_AGENT: &str = "${NO_RUNNING_AGENT}";`));
 });
