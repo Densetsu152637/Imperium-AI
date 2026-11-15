@@ -2374,7 +2374,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2395,7 +2394,6 @@ dependencies = [
  "imperium-workflow",
  "reqwest",
  "rpassword",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -2554,9 +2552,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2656,7 +2652,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2723,7 +2718,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
- "tracing",
 ]
 
 [[package]]
