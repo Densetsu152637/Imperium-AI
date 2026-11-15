@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, PoisonError, RwLock};
 
-use imperium_api::{PathGrant, PathMode, PermissionMode, PermissionRule, RuleAction};
+use imperium_api::{PathGrant, PermissionMode, PermissionRule, RuleAction};
 
 /// The tool whose rule patterns are command prefixes.
 pub const COMMAND_TOOL: &str = "run_command";
@@ -818,6 +818,7 @@ pub fn validate_grant(grant: &PathGrant) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imperium_api::PathMode;
 
     const ASK: Decision = Decision::Ask { sticky: true };
     const ASK_EVERY_TIME: Decision = Decision::Ask { sticky: false };
