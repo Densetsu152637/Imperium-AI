@@ -17,6 +17,7 @@ use imperium_local::supervisor::SwapDirection;
 use imperium_mcp::McpTools;
 use imperium_media::{ImageConfig, ImageGenerators, Media, MediaTools, Service};
 use imperium_memory::Store;
+use imperium_policy::packs;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
     EnvironmentConfigResult, EnvironmentRuntime, LocalModelListResult, MODEL_RESIDENCY,
@@ -30,8 +31,7 @@ use imperium_tools::{ProcessRunner, Remote, Runner, Sandbox, Workspace};
 use imperium_web::{
     BrowserSetup, FetchOptions, PreviewTools, SearchConfig, SearchProviders, Web, WebTools,
 };
-use imperium_workflow::update::PackStore;
-use imperium_workflow::{ContextIndex, Pack, personality};
+use imperium_workflow::{ContextIndex, personality};
 use tokio::sync::broadcast;
 
 use crate::approvals::Approvals;
@@ -2681,67 +2681,29 @@ impl DaemonState {
     /// Workflow packs and the project's instructions and documentation, unless the workflow is
     /// turned off. Packs that cannot be read are reported in `notices`.
     fn context(&self, project_dir: &Path, notices: &mut Vec<String>) -> Option<Arc<ContextIndex>> {
-        let workflow = &self.settings().workflow;
-        if !workflow.enabled {
-            return None;
-        }
-        // Versions the user accepted from a pack update source, whose files still match the
-        // hash they were pinned at (`imperium pack`). They are not trusted like listed folders:
-        // their `@` imports stay inside the pack.
-        let pinned = PackStore::new(self.paths.data_dir()).pinned();
-        notices.extend(pinned.notices);
-        let builtin =
-            (workflow.packs.is_empty() && pinned.packs.is_empty() && workflow.default_pack)
-                .then(bundled_pack)
-                .flatten();
-        let mut packs: Vec<Pack> = workflow
-            .packs
-            .iter()
-            .chain(builtin.as_ref())
-            .filter_map(|root| match Pack::load(root) {
-                // Folders the user configured are trusted; the bundled snapshot is not.
-                Ok(pack) if workflow.packs.contains(root) => Some(pack.trusted()),
-                Ok(pack) => Some(pack),
-                Err(error) => {
-                    notices.push(format!("workflow pack skipped: {error}"));
-                    None
-                }
-            })
-            .collect();
-        for found in pinned.packs {
-            // A reference is `<pack name>:<path>`, so a pinned pack may not take the name of
-            // another loaded pack or of the project's own files.
-            if found.name == "project" || packs.iter().any(|pack| pack.name == found.name) {
-                notices.push(format!(
-                    "pinned pack {} skipped: another pack already has that name",
-                    found.name
-                ));
-                continue;
-            }
-            match Pack::load(&found.dir) {
-                Ok(mut pack) => {
-                    pack.name = found.name;
-                    packs.push(pack);
-                }
-                Err(error) => notices.push(format!("pinned pack {} skipped: {error}", found.name)),
-            }
-        }
-        Some(Arc::new(ContextIndex::new(packs, project_dir)))
+        let settings = self.settings();
+        let resolved = packs::resolve(&self.pack_inputs(&settings.workflow), project_dir);
+        notices.extend(resolved.notices);
+        resolved.index
     }
 
     /// Where personalities are looked up: `<config>/personalities/`, the workflow folders,
     /// then the bundled pack (with the default compiled in as the last resort).
     pub(crate) fn personality_sources(&self) -> personality::Sources {
-        personality::Sources {
-            config_dir: Some(self.paths.config_dir().to_path_buf()),
-            packs: self.settings().workflow.packs.clone(),
-            confined: PackStore::new(self.paths.data_dir())
-                .pinned()
-                .packs
-                .into_iter()
-                .map(|found| (found.name, found.dir))
-                .collect(),
-            built_in: bundled_pack(),
+        packs::personality_sources(&self.pack_inputs(&self.settings().workflow))
+    }
+
+    fn pack_inputs<'a>(
+        &'a self,
+        workflow: &'a imperium_config::WorkflowSettings,
+    ) -> packs::PackInputs<'a> {
+        packs::PackInputs {
+            enabled: workflow.enabled,
+            listed: &workflow.packs,
+            default_pack: workflow.default_pack,
+            data_dir: self.paths.data_dir(),
+            config_dir: self.paths.config_dir(),
+            bundled: bundled_pack(),
         }
     }
 
@@ -3236,6 +3198,8 @@ pub fn answer_with_recommendations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imperium_workflow::Pack;
+    use imperium_workflow::update::PackStore;
 
     #[test]
     fn downloads_follow_the_settings() {

@@ -9,6 +9,7 @@ description = "What agents may do: permission rules and modes, the safety floor,
 
 [dependencies]
 imperium-api = { version = "0.1.0", path = "../imperium-api" }
+imperium-workflow = { version = "0.1.0", path = "../imperium-workflow" }
 
 [lints]
 workspace = true

@@ -3,6 +3,7 @@
 //! engine and the daemon use the same decisions.
 
 mod floor;
+pub mod packs;
 pub mod permissions;
 pub mod profile;
 

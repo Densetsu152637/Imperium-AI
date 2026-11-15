@@ -2673,6 +2673,7 @@ name = "imperium-policy"
 version = "0.1.0"
 dependencies = [
  "imperium-api",
+ "imperium-workflow",
  "tempfile",
 ]
 
