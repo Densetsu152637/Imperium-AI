@@ -882,6 +882,20 @@ mod prompt_tests {
         assert!(!root.contains("  ") && !subagent.contains("  "));
     }
 
+    /// The Emperor root prompt the training repository vendors carries the engine's proverb,
+    /// word for word, on a line of its own near the top.
+    #[test]
+    fn the_emperor_root_prompt_mirrors_the_proverb() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../imperium-protocol/schemas/prompts/emperor-root.md");
+        let text = std::fs::read_to_string(&path).expect("emperor-root.md");
+        let line = text
+            .lines()
+            .position(|line| line.trim() == PROVERB)
+            .expect("the proverb on a line of its own in emperor-root.md");
+        assert!(line < 12, "the proverb is near the top (line {line})");
+    }
+
     #[test]
     fn base_prompts_have_no_runs_of_spaces_and_subagents_report_briefly() {
         let root = root_prompt("/work", true);

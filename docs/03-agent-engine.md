@@ -873,3 +873,133 @@ that resumes from the copied files, and it keeps its own index, so it can be bra
 Transcripts, the subagent task tree, and the files agents attached or made export from the
 journal as Markdown or JSON, running or archived (`session.export`,
 [07](07-desktop-ui.md#exporting-transcripts-implemented)).
+
+## Running evals through the harness (implemented)
+
+`imperium run` runs one task through the real agent loop with no daemon and no desktop, against
+any OpenAI-compatible endpoint, and prints the result as JSON. It exists so a model (Emperor,
+Consul, a baseline) is evaluated inside the same harness it ships in: the engine's own root
+prompt (`crates/imperium-engine/src/agent/prompts.rs`), its real tool schemas and its loop, not a
+copy of them. The session is an ordinary `Session`; the command wraps its model client to keep
+what is sent and received, and answers permission asks and `ask_user` batches itself, because no
+one is there. (The `imperium run --ephemeral` of [02](02-architecture.md) is a different idea
+that was never built: a CLI that starts a daemon of its own. This command starts no daemon.)
+
+```sh
+imperium run --headless --json \
+  --task task.json --workspace ./scratch-copy \
+  --root-model 'http://127.0.0.1:8080/v1#emperor-2b' --context-tokens 32768 \
+  --subagent-replay recordings.json --variant lean --flag max_steps=30 \
+  --cost-ceiling 0.50 --price-in 0.3 --price-out 1.2 > result.json
+
+imperium run --print-prompt --variant lean --context-tokens 32768 > prompt.json
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--task <file.json \| text>` | A JSON file with a `prompt` string (also read: `user_prompt`, `input`, `message`; the id from `id`, `task_id` or `name`), or the prompt itself. Every other field of a file is kept in the output as `task.raw`. |
+| `--workspace <dir>` | The folder the agent works in. Point it at a copy: the tools can change it where the permission mode lets them. |
+| `--root-model <url>[#<id>]`, `--model-id <id>` | The endpoint's OpenAI-compatible base URL and the model id there. `--api-key-env VAR` names the environment variable with the key; it is never printed. |
+| `--context-tokens N` | The model's context window: it drives compaction and fills `{context_tokens}` and `{context_k}` in variant text. |
+| `--effort`, `--thinking on\|off`, `--chat-template-kwargs '<json>'` | Reasoning passthrough: `reasoning_effort`, and `chat_template_kwargs` (`enable_thinking`, anything else a chat template reads) merged into every request body of the root model. |
+| `--variant <name\|path>`, `--prompt-overlay <file>`, `--flag k=v` | See [variants](#harness-variants). |
+| `--subagent-replay <file>` | Answer subagents from recordings, with no model call for them. |
+| `--cost-ceiling USD`, `--token-ceiling N`, `--price-in`, `--price-out` | Prices are per million tokens. A ceiling is checked before each model call (the root's and any real subagent's), so the last call can pass it by its own size. A cost ceiling needs prices. |
+| `--permission-mode` | Default `default`. A call that would ask is always denied (recorded under `permission_requests`); `plan` and `ask` are stricter, `accept_edits` lets edits through, `full` runs everything the rules and the safety floor do not stop (including `web_fetch`). |
+| `--timeout-s`, `--journal <file>` | A wall-clock limit (default 1800) and a place to keep the session journal. |
+| `--print-prompt` | Print the resolved system prompt (with `{workspace}` where the working folder goes) and tool schemas as JSON and stop. No model is called: the session is built as for a run and answered by a stand-in model, so the output is what a run would first send. |
+
+The root agent has the engine's own tools, plus `web_search` and `web_fetch`: the schemas and
+citation rules are the real ones, search returns an error ("turned off in headless evals"), and
+`web_fetch` asks, so it is denied unless the mode is `full`. Harness aids that talk to a person
+(`request_clarification`, rewrites, hints) are off unless `--flag attended=true`. No memory,
+skills, hooks, MCP servers, or project instructions are loaded: the prompt is the base prompt.
+
+**Output (schema version 1).** Keys: `schema_version`, `mode` (`run` or `print_prompt`),
+`engine` (`imperium_version`, `protocol_version`), `task` (`id`, `source`, `prompt`, `raw`),
+`model` (`base_url`, `model_id`, `context_tokens`, `effort`, `chat_template_kwargs`, prices),
+`variant` (`id`, `description`, `source`, `config_hash`, `flags`, `overlay`, `warnings`),
+`prompt_hash`, `system_prompt` (exactly as sent), `tools` (the schemas, OpenAI `tools` shape),
+`transcript` (the root conversation as the model last read it, then its last reply: `system`,
+`user`, `assistant` with `tool_calls`, `tool` messages; a model's reasoning text is not kept),
+`final_reply`, `plan` (the last `update_plan`), `subagents` (`task_id`, `brief`, `model`,
+`source` `replay` or `model`, `recording` (index into the file), `ok`, `report`), `replay`
+(`replies`, `unused` indexes), `ledger` (`total`, `root`, `subagents`: `model_calls`,
+`prompt_tokens`, `completion_tokens`, `cached_tokens`, `cost_usd` (null without prices); also
+`calls_without_reported_usage` (counted from text length), `priced`, the ceilings), `wall_time_ms`,
+`exit_reason`, `error`, `root_tool_calls`, `failed_tool_calls`, `permission_requests`,
+`questions_asked`, `compactions`, `notices`, `endpoint_errors`. `prompt_hash` is
+`sha256:` over the system prompt (working folder replaced by `{workspace}`, so a run in any
+folder hashes the same as `--print-prompt`) and the tool schemas, after the variant's edits.
+
+`exit_reason` is `completed`, `step_limit` (`max_steps` model calls), `cost_ceiling`,
+`token_ceiling`, `timeout`, `rate_limited` (the endpoint refused for a usage limit; a headless
+run does not wait it out), `model_error` (the endpoint failed) or `error`. The exit code is 0 for
+`completed` (and for `--print-prompt`), 3 for any other reason, 1 when the run could not start
+(bad arguments, a missing file); the JSON is printed in the first two cases.
+
+### Harness variants
+
+A variant is a TOML file, `<config>/harness-variants/<name>.toml` or any path, that changes what
+the **root** agent is given; subagents and how tools run are untouched. Every edit is exact,
+and an edit that finds nothing to change is listed in `variant.warnings` (and on stderr) while
+the run goes on, so a misspelt edit is visible and a script can reject a run with warnings.
+
+```toml
+name = "lean"                      # the variant id; the file name by default
+description = "no knowledge line, terse"
+
+[prompt]                           # applied in this order: replace, remove, prepend, append
+replace = [{ find = "Act through the tools", with = "Use the tools" }]   # first match
+remove  = ["Research that several later tasks"]   # drops each paragraph containing the text
+prepend = "Context budget: {context_k}K tokens."
+append  = "Answer in one line."    # {context_tokens} and {context_k} are filled in
+
+[tools]                            # by the engine's tool names
+drop = ["delegate_chunks"]         # not offered
+rename = { ask_user = "ask_the_user" }   # offered under another name, still run by the engine
+[tools.description]
+update_plan = "Keep the checklist."
+
+[flags]                            # as --flag k=v; the command line wins
+max_steps = 30
+```
+
+`--prompt-overlay <file>` appends a file's text last. The flags are `max_steps` (default 50),
+`effort`, `auto_compact` (default false), `auto_compact_at` (0 to 1), `knowledge` (default
+true), `attended` (default false) and `harness` (`on`, `off`, `auto`; the aids need
+`attended=true`). An unknown flag is an error. The variant id and a `config_hash` (over the
+edits, flags and overlay, not the name) are in the output next to the prompt hash.
+
+### Subagent recordings
+
+```json
+{"replies": [
+  {"task_id": "t1", "report": "The parser rejects empty input in tokenize()."},
+  {"brief_contains": "run the tests", "report": "3 failed, 41 passed.", "ok": true},
+  {"brief": "Summarise the failures.", "report": "All three fail on empty input."}
+]}
+```
+
+Every subagent a run starts (`spawn_agent`, `resume_agent`, the chunk and reduce agents of
+`delegate_chunks`) is answered by the first reply whose keys all match: `task_id` (`t1`, `t2`, ...
+in spawn order), `brief` (exact, blank space ignored), `brief_contains` (case-insensitive); a
+reply needs at least one key. `ok: false` makes the root read a failed task. No key matching gives
+the root `replay error: no recording matches task t3 ...` as the report, with `ok` false, and the
+run goes on. A task file may hold the recordings under `subagent_replay` instead. `replay.unused`
+lists the replies nothing asked for.
+
+### A task file
+
+```json
+{
+  "id": "heldout-001",
+  "prompt": "The parser tests fail. Find out why and fix it.",
+  "expected_routing": "delegate",
+  "must_mention": ["tokenize"],
+  "subagent_replay": {"replies": [{"task_id": "t1", "report": "tokenize() panics on empty input."}]}
+}
+```
+
+The harness reads `prompt` and `subagent_replay` and echoes the rest back as `task.raw` for the
+scorer to use. The prompt is sent as the one user message of the run.

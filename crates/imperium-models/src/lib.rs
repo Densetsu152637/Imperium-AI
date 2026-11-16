@@ -10,7 +10,9 @@ mod client;
 pub mod llamacpp;
 mod sse;
 
-pub use chat::{ChatRequest, Completion, Endpoint, ModelError, ReasoningStyle, stream_chat};
+pub use chat::{
+    ChatRequest, Completion, Endpoint, ModelError, ReasoningStyle, stream_chat, stream_chat_with,
+};
 pub use client::{
     ChatClient, ChatClientBuilder, ChatClients, ChatFuture, DEFAULT_KIND, LlamaCpp,
     OpenAiCompatible, TokenFuture, Tokenizer,

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::chat::{ChatRequest, Completion, Endpoint, ModelError, stream_chat};
+use crate::chat::{ChatRequest, Completion, Endpoint, ModelError, stream_chat_with};
 use crate::llamacpp;
 
 /// A streamed completion: its text, tool calls, and the usage the provider reported.
@@ -59,11 +59,28 @@ pub trait Tokenizer: Send + Sync {
 pub struct OpenAiCompatible {
     http: reqwest::Client,
     endpoint: Endpoint,
+    /// Fields merged into every request body (such as `chat_template_kwargs`), over what the
+    /// client writes itself.
+    extra_body: Option<Value>,
 }
 
 impl OpenAiCompatible {
     pub fn new(http: reqwest::Client, endpoint: Endpoint) -> Self {
-        OpenAiCompatible { http, endpoint }
+        OpenAiCompatible {
+            http,
+            endpoint,
+            extra_body: None,
+        }
+    }
+
+    /// The same client with the fields of the JSON object `extra` added to every request body
+    /// (a field the client writes itself is replaced), for server options this client does not
+    /// know, such as llama.cpp's `chat_template_kwargs`. Anything that is not an object is
+    /// ignored.
+    #[must_use]
+    pub fn with_extra_body(mut self, extra: Value) -> Self {
+        self.extra_body = extra.is_object().then_some(extra);
+        self
     }
 }
 
@@ -73,7 +90,13 @@ impl ChatClient for OpenAiCompatible {
         request: ChatRequest<'a>,
         on_text: &'a mut (dyn FnMut(&str) + Send),
     ) -> ChatFuture<'a> {
-        Box::pin(stream_chat(&self.http, &self.endpoint, request, on_text))
+        Box::pin(stream_chat_with(
+            &self.http,
+            &self.endpoint,
+            request,
+            self.extra_body.as_ref(),
+            on_text,
+        ))
     }
 }
 

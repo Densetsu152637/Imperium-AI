@@ -1234,6 +1234,30 @@ pub(super) async fn run_subagent(
     let shared = Arc::clone(&agent.shared);
     let id = agent.id.clone();
     let spec = agent.model.spec.clone();
+    // An evaluation harness answers subagents from recordings: no model call, no tools.
+    if let Some(replay) = shared.replay.clone() {
+        let brief = agent.shown.clone().unwrap_or_else(|| text.clone());
+        let answer = replay.answer(&id, &brief);
+        shared.inboxes.close(&id);
+        shared.emitter.emit(
+            &id,
+            SessionEvent::TaskFinished {
+                task_id: id.clone(),
+                ok: answer.ok,
+                report: truncate(&answer.report, EVENT_OUTPUT_CHARS),
+                usage: TokenUsage::default(),
+                cost_usd: None,
+                at_ms: Some(imperium_api::time::unix_ms()),
+            },
+        );
+        return TaskReport {
+            task_id: id,
+            model: spec,
+            ok: answer.ok,
+            paused: false,
+            report: truncate(&answer.report, REPORT_CHARS),
+        };
+    }
     if let Some(payload) = spawned {
         shared
             .hook_in(&agent.workspace, HookEvent::AgentSpawn, None, payload)

@@ -633,6 +633,21 @@ and `environments.agent_update` (protocol 0.28)
     ([06](06-extensibility.md#named-agents-implemented),
     [03](03-agent-engine.md#named-agents-implemented)).
 
+53. **Headless eval mode** (implemented). `imperium run --headless --json` runs one task through
+    the real agent loop (the engine's own root prompt, tool schemas and loop) with no daemon and
+    no desktop, against any OpenAI-compatible root model endpoint, and prints a JSON result: the
+    transcript in OpenAI chat shape with the exact system prompt sent, the final plan, a token and
+    cost ledger, wall time, an exit reason, and the variant id with a hash of the resolved prompt
+    and tool schemas. Subagents (`spawn_agent`, `await_tasks`, `delegate_chunks`) answer from a
+    recordings file with no model call, and an unknown key is an error result, not a wait. Named
+    variants (a TOML file that edits the prompt, drops, renames or redescribes tools and sets loop
+    flags), `--prompt-overlay`, a cost and a token ceiling, `chat_template_kwargs` and reasoning
+    passthrough, and `imperium run --print-prompt` (the resolved prompt and tools without calling a
+    model) serve the Imperium-Models evaluations. No protocol change. A subagent-replay hook in the
+    engine (`Session::spawn_with`), `OpenAiCompatible::with_extra_body`, and the proverb line in
+    the vendored Emperor root prompt, with a test that it matches the engine's
+    ([03](03-agent-engine.md#running-evals-through-the-harness-implemented)).
+
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
 rather than a separate snapshot store.

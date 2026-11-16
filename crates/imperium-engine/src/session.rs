@@ -120,6 +120,14 @@ pub struct SessionConfig {
     pub knowledge: crate::KnowledgeConfig,
 }
 
+/// Hooks beyond [`SessionConfig`] that only an evaluation harness uses.
+#[derive(Debug, Clone, Default)]
+pub struct SessionOptions {
+    /// Answers every subagent from recordings instead of running it (no model calls for
+    /// subagents).
+    pub replay: Option<Arc<dyn crate::SubagentReplay>>,
+}
+
 /// The answer to a model switch or a compaction.
 type FitReply = oneshot::Sender<Result<ContextFit, SwitchError>>;
 
@@ -267,6 +275,11 @@ fn reset_after_restart(emitter: &Emitter, history: &History) {
 impl Session {
     /// Starts the session's root agent task. Must be called from within a Tokio runtime.
     pub fn spawn(config: SessionConfig) -> std::io::Result<Self> {
+        Self::spawn_with(config, SessionOptions::default())
+    }
+
+    /// [`Session::spawn`] with [`SessionOptions`]: hooks only an evaluation harness uses.
+    pub fn spawn_with(config: SessionConfig, options: SessionOptions) -> std::io::Result<Self> {
         let timed = if config.resume {
             crate::journal::read_timed_events(&config.journal_path)
         } else {
@@ -325,6 +338,7 @@ impl Session {
                 slot: shared.clone(),
                 effort: effort.clone(),
                 bridge: Arc::clone(&bridge),
+                replay: options.replay,
             },
             Arc::clone(&model),
         ));
@@ -873,6 +887,8 @@ pub(crate) struct Shared {
     pub effort: SessionEffort,
     /// Knowledge agents' questions and limits.
     pub knowledge: crate::knowledge::Knowledge,
+    /// Answers subagents from recordings (an evaluation harness), when set.
+    pub replay: Option<Arc<dyn crate::SubagentReplay>>,
     next_task: AtomicU32,
 }
 
@@ -922,6 +938,7 @@ struct Started {
     agents: Arc<AgentStore>,
     slot: SharedSlot,
     effort: SessionEffort,
+    replay: Option<Arc<dyn crate::SubagentReplay>>,
 }
 
 /// The root agent's task: one turn at a time, in message order, while
@@ -939,6 +956,7 @@ async fn run(
         agents,
         slot,
         effort,
+        replay,
     } = started;
     let checkpoints = config.checkpoints.clone();
     for message in config.notices {
@@ -994,6 +1012,7 @@ async fn run(
         chunk_agents: AtomicUsize::new(0),
         effort,
         knowledge: crate::knowledge::Knowledge::new(config.knowledge),
+        replay,
         inboxes,
         // Task ids continue after those of earlier runs, whose state is kept.
         next_task: AtomicU32::new(agents.last_task_number()),
