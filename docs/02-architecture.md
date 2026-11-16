@@ -84,7 +84,11 @@ service) is **persistent** and never exits for want of clients.
   desktop app).
 - **Children.** What the daemon starts ends with it, however it dies. On Windows it puts itself
   in a kill-on-close job at start (jobs nest, so the jobs background commands make for
-  themselves still work), and the installer's `taskkill` ends the whole tree. Elsewhere a
+  themselves still work), and the installer's `taskkill` ends the whole tree. The job allows
+  breakaway, and what the daemon launches for the user rather than for an agent (`workspaces.open`
+  showing a folder or `Memory.md` in Explorer or an editor) starts with
+  `CREATE_BREAKAWAY_FROM_JOB`, so it stays open when the daemon exits; model servers, MCP
+  servers, the speech server, the browser and agents' commands stay in the job. Elsewhere a
   killed daemon cannot take its children down without unsafe code, so every `llama-server` or
   `vllm` it starts is written to `<data>/logs/children.txt` with its start time and name, and
   the next daemon ends what is still running under that id, start time and name before it

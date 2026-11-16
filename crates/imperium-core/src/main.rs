@@ -206,6 +206,9 @@ fn end_children_with_daemon() {
     {
         let mut limits = win32job::ExtendedLimitInfo::new();
         limits.limit_kill_on_job_close();
+        // What the daemon opens for the user (a folder in Explorer) breaks away from the job
+        // with `CREATE_BREAKAWAY_FROM_JOB` and outlives the daemon; everything else stays in.
+        limits.limit_breakaway_ok();
         match win32job::Job::create_with_limit_info(&limits)
             .and_then(|job| job.assign_current_process().map(|()| job))
         {
