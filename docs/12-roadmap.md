@@ -651,6 +651,26 @@ and `environments.agent_update` (protocol 0.28)
     `notice` event, so it is journalled and shown to clients. Protocol 0.43 (`auto` among the
     permission-mode values); `auto` is in the CLI's `/mode` and the desktop's mode selector
     ([05](05-tools-and-isolation.md#auto-mode-implemented)).
+<!-- markdownlint-disable-next-line MD029 -->
+51. **Shared daemon lifetime** (implemented). One `imperium-core` per user, shared like a
+    reference-counted pointer. The desktop app, every `imperium` command and the MCP bridge
+    (`imperium mcp-serve`) find the daemon through `daemon.json` and start
+    `imperium-core --exit-when-idle`, detached from the caller's console, when none answers; the single-instance lock decides a
+    simultaneous start (one daemon, the rest attach). Each client holds a **lease**
+    (`system.lease`) on the connection that carries its kind, label and process id, dropped when
+    the connection closes and, for a hung or crashed client whose socket lingers, when the
+    daemon's once-a-second check finds the process gone (or its id reused). Background work
+    holds the daemon too: running turns, enabled schedules with a run to come, persistent agents
+    with initiative, and GitHub responders. With no lease and no work for a grace period (10 s,
+    `IMPERIUM_DAEMON_IDLE_SECS`) the daemon exits through the `system.shutdown` path; a client
+    that races the exit is told `-32009` and starts a new one. A daemon started by hand, by
+    autostart or over SSH stays persistent. The desktop app becomes an ordinary lease holder (no
+    more kill-on-close job object, no stop on quit; **Keep running** makes the daemon persistent
+    through `system.lifetime`). `imperium daemon status` shows leases, work and the idle timer;
+    `IMPERIUM_NO_DAEMON_SPAWN` opts out. Protocol 0.44 (`system.lease`, `system.lifetime`,
+    `-32009`)
+    ([02](02-architecture.md#shared-daemon-lifetime-implemented),
+    [07](07-desktop-ui.md#the-app-shares-the-daemon-implemented)).
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based

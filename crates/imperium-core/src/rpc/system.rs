@@ -50,6 +50,34 @@ impl Connection {
                     pid: std::process::id(),
                 })
             }),
+            SystemLease::NAME => {
+                call::<SystemLease>(c.params.take(), |params: SystemLeaseParams| {
+                    // One lease per connection: asking again returns the one held.
+                    if let Some(held) = &self.lease {
+                        return Ok(SystemLeaseResult { id: held.id() });
+                    }
+                    let held = self
+                        .state
+                        .acquire_lease(params.kind, params.pid, &params.label)
+                        .map_err(|_| {
+                            ErrorObject::new(
+                                codes::DAEMON_STOPPING,
+                                "imperium-core is exiting because nothing uses it; start a new one",
+                            )
+                        })?;
+                    let id = held.id();
+                    self.lease = Some(held);
+                    Ok(SystemLeaseResult { id })
+                })
+            }
+            SystemLifetime::NAME => {
+                call::<SystemLifetime>(c.params.take(), |params: SystemLifetimeParams| {
+                    if let Some(persistent) = params.persistent {
+                        self.state.set_persistent(persistent);
+                    }
+                    Ok(self.state.lifetime_status())
+                })
+            }
             Ping::NAME => call::<Ping>(c.params.take(), |_: PingParams| {
                 Ok(PingResult {
                     uptime_ms: self.state.uptime_ms(),

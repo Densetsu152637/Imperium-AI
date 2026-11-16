@@ -323,25 +323,29 @@ fails when the count differs, so every cleanup lowers its budget in the same cha
 it also checks that every `var(--name)` is defined and counts native `<select>` elements
 (`// style-budget: native-select=N` in a component file).
 
-### The bundled daemon belongs to the app (implemented)
+### The app shares the daemon (implemented)
 
-The app starts the bundled `imperium-core` as its own child process, so Windows Task Manager
-shows it under Imperium rather than as a separate background process. When the app opens and
-finds a bundled daemon it did not start (left by an earlier run, or the previous version's
-`imperiumd`), it asks it to stop (`system.shutdown`) and starts it again as its child. A daemon
-started some other way (from a terminal, or installed elsewhere) is used as it is. In a
-development build the "bundled" daemon is the `imperium-core` next to the app in `target/`, so a
-daemon started by hand from there is restarted too; turn on keep running to keep it.
+The app attaches to whichever `imperium-core` is running, one an `imperium` command started,
+one left by an earlier run, or one started by hand, and starts the bundled one only when none
+answers. The one it starts is its own child process, so Windows Task Manager shows it under
+Imperium. Only the previous version's `imperiumd` found beside the app is stopped and replaced.
 
-**Lifetime:** by default the daemon exits with the app (**Settings → Daemon → Keep running after
-Imperium closes** is off). Sessions are saved as they go and resume when the app starts the
-daemon again. On Windows the child is also placed in a job object with kill-on-close, so even a
-crash or an app ended from Task Manager never leaves it orphaned. With keep running on, the job
-no longer ends it: the daemon outlives the app (schedules, project agents, and auto-fix keep
-working) and then shows as its own process; when the app opens again it uses that daemon as it
-is. The choice can be changed while the daemon runs. (On macOS and Linux the app stops the daemon
-as it quits; there is no job object.) Settings → Daemon says whether the running daemon was
-started by Imperium, left from an earlier run, or started outside the app.
+**Lifetime:** the app is one client among others ([02](02-architecture.md#shared-daemon-lifetime-implemented)).
+From its native process (not the window's WebSocket, whose process is the web view) it holds a
+lease on the daemon for as long as it runs, and takes it again when the daemon restarts. The
+daemon the app starts is `imperium-core --exit-when-idle`: it exits once the app and every
+other program using it (an `imperium chat` in a terminal, an MCP bridge) are gone and it has
+no work (a running turn, an enabled schedule, an agent with initiative, auto-fix), so closing
+the app never ends a daemon a terminal or a schedule still needs, and nothing is left behind
+when the app was the last user. The app no longer stops the daemon as it quits, and there is no
+Windows job object: the lease ends with the app's process, a crash included. Sessions are saved
+as they go and resume when a daemon starts again. With **Settings → Daemon → Keep running after
+Imperium closes** on, the daemon is started persistent (and made so at once if it is running,
+by `system.lifetime`): it outlives everything and then shows as its own process. Turning it off
+makes this install's own daemon shared again; a daemon started outside the app keeps the
+choice its owner made. Settings → Daemon says whether the running daemon was started by
+Imperium, left from an earlier run, or started outside the app. **Stop** and **Restart** still
+act at once whatever holds the daemon.
 
 ## Panels
 

@@ -53,6 +53,7 @@ mod branch;
 mod create;
 mod environments;
 mod extensions;
+mod lifetime;
 mod memory_migration;
 mod model_awareness;
 mod session_search;
@@ -238,6 +239,8 @@ pub struct DaemonState {
     pending_briefs: Mutex<Vec<PendingBrief>>,
     /// Archived sessions, which no longer run, as lists show them, by session id.
     archived: Mutex<HashMap<String, SessionSummary>>,
+    /// Who holds the daemon open, and whether it exits when nothing does.
+    lifetime: Arc<crate::lifetime::Lifetime>,
     /// Signalled when a client asks the daemon to stop.
     shutdown: tokio::sync::Notify,
     /// What `mcp.test` last learned about each connector.
@@ -352,6 +355,7 @@ impl DaemonState {
             load_override: OnceLock::new(),
             pending_briefs: Mutex::new(Vec::new()),
             archived: Mutex::new(HashMap::new()),
+            lifetime: crate::lifetime::Lifetime::new(),
             shutdown: tokio::sync::Notify::new(),
             connectors: crate::connectors::StatusCache::default(),
             suggestions: Suggestions::new(suggest),

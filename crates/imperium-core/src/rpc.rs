@@ -40,6 +40,9 @@ use imperium_protocol::methods::{ApiGet, ApiGetParams, ApiSet, ApiToken};
 use imperium_protocol::methods::{
     EventsSubscribe, EventsSubscribeParams, EventsUnsubscribe, EventsUnsubscribeParams,
 };
+use imperium_protocol::methods::{
+    SystemLease, SystemLeaseParams, SystemLeaseResult, SystemLifetime, SystemLifetimeParams,
+};
 use imperium_protocol::permissions::{
     PermissionsAddRule, PermissionsGet, PermissionsGetParams, PermissionsSet,
 };
@@ -206,6 +209,8 @@ pub struct Connection {
     resources: Option<crate::resources::Watch>,
     /// The topics chosen with `events.subscribe`; narrows what `receives` lets through.
     events: crate::events::EventFilter,
+    /// Held from `system.lease` until the connection ends.
+    lease: Option<crate::lifetime::LeaseGuard>,
 }
 
 impl Connection {
@@ -222,6 +227,7 @@ impl Connection {
             peer: None,
             resources: None,
             events: crate::events::EventFilter::default(),
+            lease: None,
         }
     }
 
@@ -242,6 +248,7 @@ impl Connection {
             peer: None,
             resources: None,
             events: crate::events::EventFilter::default(),
+            lease: None,
         }
     }
 

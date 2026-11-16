@@ -7,6 +7,7 @@ mod changes;
 mod chat;
 mod env;
 mod initiative;
+mod lifetime;
 mod local;
 mod mcp_login;
 mod memory;
@@ -31,11 +32,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use imperium_cli::client::{Client, read_endpoint};
+use imperium_cli::client::launch::{Launch, LeaseRequest, attach, find_daemon};
+use imperium_cli::client::{Client, ClientError, read_endpoint};
 use imperium_cli::mcp_bridge::BridgeOptions;
 use imperium_config::{Paths, SecretName, SecretStore};
 use imperium_protocol::methods::{
-    ModelDownloadParams, Peer, Ping, PingParams, Shutdown, ShutdownParams,
+    LeaseKind, ModelDownloadParams, Peer, Ping, PingParams, Shutdown, ShutdownParams,
 };
 
 /// Command-line client for the Imperium daemon.
@@ -341,6 +343,8 @@ enum DaemonCommand {
     Start,
     /// Stop the running imperium-core gracefully.
     Stop,
+    /// Show what keeps the running imperium-core up: the programs using it, and its own work.
+    Status,
     /// Print the running daemon's endpoint as JSON (used by `imperium remote connect`).
     Endpoint,
 }
@@ -1105,6 +1109,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             command: DaemonCommand::Stop,
         } => stop_daemon(),
         Command::Daemon {
+            command: DaemonCommand::Status,
+        } => lifetime::status(),
+        Command::Daemon {
             command: DaemonCommand::Endpoint,
         } => remote::print_endpoint(),
         Command::Daemon {
@@ -1168,7 +1175,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 /// protocol messages go to standard output; errors go to standard error.
 fn mcp_serve() -> anyhow::Result<()> {
     block_on(async {
-        let (client, _) = connect().await?;
+        let (client, _) = connect_as(LeaseKind::Tool, true).await?;
         imperium_cli::mcp_serve::serve(
             client,
             tokio::io::BufReader::new(tokio::io::stdin()),
@@ -1181,7 +1188,7 @@ fn mcp_serve() -> anyhow::Result<()> {
 /// Serves Imperium's own tools on standard input and output (`mcp-serve --tools`).
 fn mcp_serve_tools(options: BridgeOptions) -> anyhow::Result<()> {
     block_on(async {
-        let (client, _) = connect().await?;
+        let (client, _) = connect_as(LeaseKind::Tool, true).await?;
         imperium_cli::mcp_serve::serve_tools(
             client,
             tokio::io::BufReader::new(tokio::io::stdin()),
@@ -1194,7 +1201,7 @@ fn mcp_serve_tools(options: BridgeOptions) -> anyhow::Result<()> {
 
 fn ping() -> anyhow::Result<()> {
     block_on(async {
-        let (mut client, url) = connect().await?;
+        let (mut client, url) = connect_existing().await?;
         let sent = Instant::now();
         let pong = client.call::<Ping>(PingParams {}).await?;
         let round_trip = sent.elapsed();
@@ -1213,7 +1220,7 @@ fn ping() -> anyhow::Result<()> {
 
 fn stop_daemon() -> anyhow::Result<()> {
     block_on(async {
-        let (mut client, url) = connect().await?;
+        let (mut client, url) = connect_existing().await?;
         let stopped = client.call::<Shutdown>(ShutdownParams {}).await?;
         println!("imperium-core (pid {}) at {url} is stopping", stopped.pid);
         Ok(())
@@ -1229,26 +1236,94 @@ fn block_on<T>(future: impl std::future::Future<Output = anyhow::Result<T>>) -> 
         .block_on(future)
 }
 
-/// Connects to the running daemon and returns the client and the daemon's URL.
+/// Set to anything but `0`, `false`, `no` or `off` to stop `imperium` commands from starting
+/// `imperium-core` when none runs (for CI and tests).
+const NO_SPAWN_ENV: &str = "IMPERIUM_NO_DAEMON_SPAWN";
+/// How many seconds a daemon an `imperium` command starts waits with no client and no work
+/// before it exits (the daemon's own default is 10).
+const IDLE_SECS_ENV: &str = "IMPERIUM_DAEMON_IDLE_SECS";
+
+fn spawn_disabled() -> bool {
+    std::env::var(NO_SPAWN_ENV).is_ok_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
+    })
+}
+
+/// How to start `imperium-core` for this command, when none runs: the one beside this
+/// executable, else on the `PATH`, as a daemon that exits when no client and no work uses it.
+fn daemon_launch(paths: &Paths) -> Option<Launch> {
+    if spawn_disabled() {
+        return None;
+    }
+    let grace = std::env::var(IDLE_SECS_ENV)
+        .ok()
+        .and_then(|seconds| seconds.trim().parse::<u64>().ok())
+        .map(Duration::from_secs);
+    let mut launch = Launch::shared(find_daemon()?, grace);
+    launch.log = Some(paths.data_dir().join("imperium-core.log"));
+    Some(launch)
+}
+
+/// What this process is doing, for the daemon's list of who holds it open: the subcommand
+/// (never its arguments, which may hold a prompt).
+fn lease_label() -> String {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--remote" {
+            args.next();
+        } else if !arg.starts_with('-') {
+            return format!("imperium {arg}");
+        }
+    }
+    "imperium".into()
+}
+
+/// Connects to the daemon, starting one if none runs, and holds a lease on it for as long as
+/// the returned client lives. Returns the client and the daemon's URL.
 async fn connect() -> anyhow::Result<(Client, String)> {
+    connect_as(LeaseKind::Cli, true).await
+}
+
+/// Like [`connect`], but never starts a daemon: for commands that ask about one.
+async fn connect_existing() -> anyhow::Result<(Client, String)> {
+    connect_as(LeaseKind::Cli, false).await
+}
+
+/// Connects as `kind`; with `start`, starts a daemon when none runs (a local one only: a
+/// `--remote` daemon is started with `imperium remote connect`).
+async fn connect_as(kind: LeaseKind, start: bool) -> anyhow::Result<(Client, String)> {
     let paths = Paths::from_env()?;
-    let file = match REMOTE.get().and_then(Option::as_deref) {
+    let remote = REMOTE.get().and_then(Option::as_deref);
+    let file = match remote {
         Some(name) => remote::endpoint_file(&paths, name),
         None => paths.daemon_endpoint_file(),
     };
-    let endpoint = read_endpoint(&file)?;
+    let launch = if remote.is_none() && start {
+        daemon_launch(&paths)
+    } else {
+        None
+    };
     let me = Peer {
         name: "imperium-cli".into(),
         version: env!("CARGO_PKG_VERSION").into(),
     };
-    let client = Client::connect(&endpoint, me).await.with_context(|| {
-        format!(
-            "imperium-core at {} did not answer; it may have stopped without removing {}",
-            endpoint.url,
+    let lease = LeaseRequest {
+        kind,
+        label: lease_label(),
+        // A forwarded daemon is on another machine, where this process id means nothing.
+        pid: remote.is_none().then(std::process::id),
+    };
+    match attach(&file, me, Some(lease), launch.as_ref()).await {
+        Ok((client, endpoint)) => Ok((client, endpoint.url)),
+        Err(error @ ClientError::Connect(_)) => Err(anyhow::Error::new(error).context(format!(
+            "imperium-core did not answer; it may have stopped without removing {}",
             file.display()
-        )
-    })?;
-    Ok((client, endpoint.url))
+        ))),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Whether the daemon of this machine answers (never a `--remote` one).

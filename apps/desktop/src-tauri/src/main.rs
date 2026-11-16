@@ -109,9 +109,10 @@ fn main() {
         .expect("the Imperium window could not start")
         .run(move |app, event| {
             if let tauri::RunEvent::Exit = event {
-                // The login run never started the daemon, so leaves it alone.
+                // The daemon is not stopped here: the app's lease on it ends with the process,
+                // and a daemon the app started exits once nothing else uses it. The login run
+                // never started the daemon, so leaves it alone.
                 if !background {
-                    daemon::on_exit(app);
                     update::install_on_exit(app);
                 }
             }

@@ -144,7 +144,7 @@ export function DaemonSettings({ daemon }: { daemon: Daemon }) {
         description={
           status.keep_running
             ? "imperium-core outlives the window, so schedules and auto-fix keep working; once Imperium closes it shows as its own process in Task Manager."
-            : "Off: imperium-core runs as part of Imperium and exits with it. Sessions are saved and resume when Imperium opens again."
+            : "Off: imperium-core exits once Imperium and every other program using it (such as an imperium command) have closed and it has nothing left to do: no running turn, enabled schedule, agent with initiative, or auto-fix. Sessions are saved and resume when it starts again."
         }
       >
         <Switch

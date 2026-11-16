@@ -2450,6 +2450,7 @@ dependencies = [
  "getrandom 0.4.3",
  "imperium-api",
  "imperium-automation",
+ "imperium-client",
  "imperium-config",
  "imperium-core",
  "imperium-engine",
@@ -2501,7 +2502,6 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-updater",
  "tokio",
- "win32job",
 ]
 
 [[package]]

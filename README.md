@@ -37,8 +37,9 @@ React interface that users can restyle, extend, or replace.
 Download the installer for your platform from the
 [releases page](https://github.com/Densetsu152637/Imperium-AI/releases): `…_x64-setup.exe` on
 Windows, the `.dmg` on macOS, or the `.AppImage` or `.deb` on Linux. It installs the desktop app
-together with the `imperium-core` daemon and the `imperium` CLI; the app starts the daemon when it
-opens and keeps itself up to date (Settings → Updates chooses the main or experimental channel).
+together with the `imperium-core` daemon and the `imperium` CLI; the app and every `imperium` command start the daemon when none runs, and a daemon they start
+exits once nothing uses it (`imperium daemon status` shows what does). The app keeps itself up to
+date (Settings → Updates chooses the main or experimental channel).
 
 ## Development
 

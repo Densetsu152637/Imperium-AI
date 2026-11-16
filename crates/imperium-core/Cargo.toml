@@ -54,6 +54,7 @@ testing = []
 workspace = true
 
 [dev-dependencies]
+imperium-client = { path = "../imperium-client" }
 imperium-config = { path = "../imperium-config" }
 imperium-core = { path = ".", features = ["testing"] }
 imperium-github = { path = "../imperium-github" }
