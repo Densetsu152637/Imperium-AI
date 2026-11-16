@@ -77,6 +77,9 @@ enum Value {
     List(Vec<String>),
 }
 
+/// The fields of a front matter, in file order.
+type Fields = Vec<(String, Value)>;
+
 /// Reads agent files from `folders`, lowest precedence first: an agent of the same name in a
 /// later folder replaces an earlier one. Returns the agents by name, and what to tell the user
 /// (a file that could not be used, and the keys it has that are ignored).
@@ -322,7 +325,7 @@ pub(crate) fn index_lines(agents: &[AgentDef]) -> String {
 // ---- Front matter: the YAML subset agent files use ----
 
 /// Splits `text` into its front matter fields (in file order) and its body.
-fn front_matter(text: &str) -> Result<(Vec<(String, Value)>, &str), String> {
+fn front_matter(text: &str) -> Result<(Fields, &str), String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let Some(rest) = text
         .strip_prefix("---\n")
@@ -346,9 +349,9 @@ fn front_matter(text: &str) -> Result<(Vec<(String, Value)>, &str), String> {
     Ok((fields, &rest[body_start..]))
 }
 
-fn parse_yaml(yaml: &str) -> Result<Vec<(String, Value)>, String> {
+fn parse_yaml(yaml: &str) -> Result<Fields, String> {
     let lines: Vec<&str> = yaml.lines().collect();
-    let mut fields: Vec<(String, Value)> = Vec::new();
+    let mut fields: Fields = Vec::new();
     let mut index = 0;
     while index < lines.len() {
         let line = lines[index];
