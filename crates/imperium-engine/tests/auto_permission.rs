@@ -335,18 +335,20 @@ async fn a_routine_call_the_classifier_clears_runs_without_asking_and_is_journal
         "{:?}",
         turn.notices()
     );
-    let journal = std::fs::read_dir(dir.path())
+    // Beside the journal the session keeps other files; the journal is the one with the event.
+    let journalled = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(Result::ok)
-        .find(|entry| entry.file_name().to_string_lossy().starts_with(".journal-"))
-        .unwrap()
-        .path();
-    let recorded = imperium_engine::journal_events(&journal);
-    assert!(
-        recorded.iter().any(|entry| matches!(&entry.event,
-            SessionEvent::Notice { message } if message.contains("Auto mode allowed") && message.contains(wanted))),
-        "the journal holds the decision"
-    );
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(".journal-"))
+        .any(|entry| {
+            imperium_engine::journal_events(&entry.path())
+                .iter()
+                .any(|recorded| {
+                    matches!(&recorded.event, SessionEvent::Notice { message }
+                        if message.contains("Auto mode allowed") && message.contains(wanted))
+                })
+        });
+    assert!(journalled, "the journal holds the decision");
 }
 
 #[tokio::test]
