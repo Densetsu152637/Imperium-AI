@@ -501,9 +501,13 @@ stage owns them.
 **Shared files** (owned only by the stages named; every other stage must leave them alone):
 `apps/desktop/package.json` and `pnpm-lock.yaml` (stage 2), `styles/index.css` (stages 1 and 2),
 `styles/tokens.css` (stages 1, 2 and 15), `styles/primitives.css` and `styles/dialog.css`
-(stages 1, 3 and 15), `apps/desktop/test/styleTokens.test.ts` (stages 1 and 15), and the docs:
+(stages 1, 3 and 15, and stage 2 for the gradient, highlight and halo removal only), `apps/desktop/test/styleTokens.test.ts` (stages 1 and 15), and the docs:
 this plan (its single writer, the coordinator) and [07](../07-desktop-ui.md) (the sections each
 stage names).
+
+**Who edits this plan:** only the coordinator. It sets each stage's Status and Outcome and
+records handoff notes and value changes from the stage's report. Stage pull requests never touch
+`docs/plans/ui-polish.md`.
 
 "Owned CSS" means the file in `apps/desktop/src/styles/` created by stage 1 for that surface.
 
@@ -596,9 +600,11 @@ stage names).
 - **Status:** pending.
 - **Outcome:** none yet.
 - **Handoff notes:** keep `--fast`, `--slow`, `--ease`, `--space`, `--radius`, `--panel`, `--fg`,
-  `--muted` as aliases. **Token values are frozen when this stage merges:** later stages may add
-  tokens, but change an existing value only with a note in this plan saying which value, why,
-  and that the contrast test still passes. Stage-specific checks: Settings → Appearance accent swatches, theme
+  `--muted` as aliases. **Token values are frozen when this stage merges:** later stages never
+  edit `tokens.css`. A stage from 3 to 13 that needs a new token defines it at `:root` in its own
+  CSS file (for example `styles/session.css`), and stage 15 promotes it into `tokens.css`. An
+  existing value changes only with a note in this plan saying which value, why, and that the
+  contrast test still passes (the coordinator records it, and stage 15 applies it). Stage-specific checks: Settings → Appearance accent swatches, theme
   System following the operating system. The font is bundled by Vite into the app (no network
   fetch), so the content security policy needs no change.
 
@@ -630,8 +636,8 @@ stage names).
 - **Outcome:** none yet.
 - **Handoff notes:** components accept `className` for layout only. The Dialog's narrow sheet
   behaviour is here so stage 14 needs no dialog changes. Token values are frozen since stage 2:
-  add a token if a component needs one, but change an existing value only with a note in this
-  plan.
+  a token a component needs is defined at `:root` in `primitives.css` or `dialog.css`, and stage
+  15 promotes it into `tokens.css`; an existing value changes only with a note in this plan.
 
 ### Stage 4: session panel, composer and transcript
 
@@ -641,7 +647,7 @@ stage names).
 - **Owned paths:** `panels/SessionPanel.tsx`, `Composer.tsx`, `AgentView.tsx`,
   `ContextBreakdown.tsx`, `ComparePanel.tsx`, `NewSessionPanel.tsx`; `components/ToolCall.tsx`,
   `ToolGroup.tsx`, `ToolState.tsx`, `WaitLine.tsx`, `JumpToLatest.tsx`, `AttachmentChips.tsx`,
-  `ModelName.tsx`; `styles/session.css`.
+  `ModelName.tsx`; `styles/session.css`, and `docs/07-desktop-ui.md`, the section for this surface.
 - **What visibly changes:** user messages in a soft bubble at `--radius`, assistant messages as
   unboxed prose at `--fs-base` and `--lh-prose`; headings, lists, tables and code blocks on the
   type scale; tool calls as one quiet row each (icon, name, one-line summary, state) that
@@ -667,7 +673,7 @@ stage names).
 - **Owned paths:** `App.tsx`, `layout/` (all), `shared/useWindows.ts`, `ConnectionBanner.tsx`,
   `DaemonControl.tsx`, `UpdateControl.tsx`, `panels/NavigationPanels.tsx`, `SessionSearch.tsx`,
   `environments/projectIcons.tsx`, `commands/CommandPalette.tsx`, `styles/shell.css`,
-  `styles/sidebar.css`, `styles/palette.css`.
+  `styles/sidebar.css`, `styles/palette.css`, and `docs/07-desktop-ui.md`, the section for this surface.
 - **What visibly changes:** a lighter title bar (icon buttons via IconButton, no metal), panel
   headers at one height with the title in `--fs-md` semibold, session and environment rows at
   `--row-h` with the selected row on `--accent-soft`, the palette on the Dialog with `Kbd`
@@ -696,7 +702,7 @@ stage names).
 - **Depends on:** stage 3.
 - **Owned paths:** `settings/*.tsx`, `components/SettingsRow.tsx`, `ShortcutsSection.tsx`,
   `ApiSection.tsx`, `BenchmarkSection.tsx`, `BudgetsEditor.tsx`, `PermissionsEditor.tsx`,
-  `styles/settings.css`.
+  `styles/settings.css`, and `docs/07-desktop-ui.md`, the section for this surface.
 - **What visibly changes:** rows at a consistent height with label and description on the left
   and the control right-aligned in a fixed-width column; sections separated by space rather than
   lines; the Keyboard section as a table with the chord in `Kbd` and a `--sp-3` gap before
@@ -714,7 +720,7 @@ stage names).
 
 - **Objective:** the Connectors window on the shared Dialog, Tabs, Card and form components.
 - **Depends on:** stage 3.
-- **Owned paths:** `connectors/` (all), `styles/connectors.css`.
+- **Owned paths:** `connectors/` (all), `styles/connectors.css`, and `docs/07-desktop-ui.md`, the section for this surface.
 - **What visibly changes:** the window uses the Dialog shell; Browse and Installed are Tabs;
   connector cards are `.card.interactive` in an even grid; forms use Field with hints and
   errors; the installed list's rows match the sidebar row height.
@@ -732,7 +738,7 @@ stage names).
 - **Depends on:** stage 3.
 - **Owned paths:** `models/*.tsx`, `models/modelConfig.css`, `panels/ModelSelect.tsx`,
   `ModelsPanel.tsx`, `LocalModelsPanel.tsx`, `ModelSetup.tsx`, `ModelMarks.tsx`,
-  `styles/models.css`.
+  `styles/models.css`, and `docs/07-desktop-ui.md`, the section for this surface.
 - **What visibly changes:** one `.table` style for the model tables, the three native selects
   (`LocalForm`, `ModelConfigDialog`, `TableForm`) become Select, `info-tip` uses Tooltip, the
   first-run setup's three choices become cards with `--control-h-lg` actions.
@@ -751,7 +757,7 @@ stage names).
 - **Depends on:** stage 3.
 - **Owned paths:** `environments/EnvironmentWindow.tsx`, `panels/EnvironmentAgents.tsx`,
   `EnvironmentConfigSection.tsx`, `EnvironmentRuntimeFields.tsx`, `AgentInitiative.tsx`,
-  `KnowledgeSection.tsx`, `styles/environments.css`.
+  `KnowledgeSection.tsx`, `styles/environments.css`, and `docs/07-desktop-ui.md`, the section for this surface.
 - **What visibly changes:** sections in the shared Dialog with Field layout; the Danger zone as
   a `danger` Notice with one destructive button; agent lists as rows at `--row-h`.
 - **Acceptance checks:** create, edit, unsaved-changes prompt and delete behave as before;
@@ -767,7 +773,7 @@ stage names).
 - **Depends on:** stage 3.
 - **Owned paths:** `panels/AgentsPanel.tsx`, `ApprovalsPanel.tsx`, `BrowserPanel.tsx`,
   `PreviewPanel.tsx`, `ResourcesPanel.tsx`, `ReviewPanel.tsx`, `TelemetryPanel.tsx`,
-  `UsagePanel.tsx`, `styles/panels.css`.
+  `UsagePanel.tsx`, `styles/panels.css`, and `docs/07-desktop-ui.md`, the section for this surface.
 - **What visibly changes:** panel content uses the shared table, empty, loading and notice
   states; the Browser tabs use Tabs; the review panel's two native selects become Select; fixed
   control minimums give way to `min-width: 0` and wrapping toolbars, with container queries
@@ -786,7 +792,7 @@ stage names).
 
 - **Objective:** the first-run tour card and its highlight.
 - **Depends on:** stage 3.
-- **Owned paths:** `tour/` (all), `styles/tour.css`.
+- **Owned paths:** `tour/` (all), `styles/tour.css`, and `docs/07-desktop-ui.md`, the section for this surface.
 - **What visibly changes:** the tour card as a `.card` at `--elev-2`, step dots and buttons on
   the shared styles, the highlight ring using `--focus`, the scrim using `--scrim`.
 - **Acceptance checks:** the tour still skips missing targets, yields to approvals and
@@ -801,7 +807,7 @@ stage names).
 - **Objective:** the house-models suggestion and the model suggestion card.
 - **Depends on:** stage 3.
 - **Owned paths:** `panels/HouseModelCard.tsx`, `ModelSuggestionCard.tsx`,
-  `styles/house-models.css`.
+  `styles/house-models.css`, and `docs/07-desktop-ui.md`, the section for this surface.
 - **What visibly changes:** both as `.card` with a title at `--fs-lg`, one primary action, a
   ghost dismiss IconButton, and model rows that match the model lists.
 - **Acceptance checks:** dismiss and set-up actions unchanged; budgets at zero.
@@ -817,7 +823,7 @@ stage names).
 - **Depends on:** stage 3.
 - **Owned paths:** `apps/desktop/src/mods/ModFrame.tsx` (the frame's base CSS only),
   `styles/mods.css`, `mods/imperium-nursery/src/view.ts`, `panels.ts`, `space.ts` and its tests in
-  `mods/imperium-nursery/test`.
+  `mods/imperium-nursery/test`, and `docs/07-desktop-ui.md`, the section for this surface.
 - **What visibly changes:** a frame sets `color-scheme` to the app theme resolved when the frame
   is built (`dark` or `light`, not `light dark`), so native controls in mods match the app (K2's
   dark select); the frame body's padding uses the existing `--space`. The nursery's controls bar
@@ -869,7 +875,9 @@ stage names).
 - **What visibly changes:** menus, popovers, dialogs and sheets enter and leave with the
   token durations; panel folding uses `--dur-base`; hover and press transitions are uniform;
   the forced-colours rules cover the new components.
-- **Acceptance checks:** budget and `native-select` comments removed and the guards require zero
+- **Acceptance checks:** every token that stages 3 to 13 defined at `:root` in their own files
+  is moved into `tokens.css` (none is left outside it), and value changes noted in this plan are
+  applied; budget and `native-select` comments removed and the guards require zero
   everywhere; with reduced motion on, no transform or animation runs (checked by toggling the
   setting and the operating-system preference); every surface passes a keyboard-only run;
   `rg "outline: (none|0)" apps/desktop/src/styles` matches only rules that draw another focus
