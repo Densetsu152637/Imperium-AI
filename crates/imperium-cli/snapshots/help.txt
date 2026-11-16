@@ -3401,6 +3401,7 @@ Commands:
   autostart  Start imperium-core when you log in (enable, disable, or status)
   start      Start imperium-core in the background
   stop       Stop the running imperium-core gracefully
+  status     Show what keeps the running imperium-core up: the programs using it, and its own work
   endpoint   Print the running daemon's endpoint as JSON (used by `imperium remote connect`)
 
 ===== imperium help daemon autostart =====
@@ -3417,6 +3418,11 @@ Usage: imperium help daemon start
 Stop the running imperium-core gracefully
 
 Usage: imperium help daemon stop
+
+===== imperium help daemon status =====
+Show what keeps the running imperium-core up: the programs using it, and its own work
+
+Usage: imperium help daemon status
 
 ===== imperium help daemon endpoint =====
 Print the running daemon's endpoint as JSON (used by `imperium remote connect`)
