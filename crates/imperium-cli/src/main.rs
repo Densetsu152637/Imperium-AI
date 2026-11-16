@@ -226,7 +226,7 @@ enum Command {
     /// `--print-prompt` it prints the resolved system prompt and tool schemas instead, without
     /// calling a model. Exit code 0 when the agent finished its turn, 3 when the run stopped
     /// early (a ceiling, the step limit, a timeout or a model error), 1 when it could not run.
-    Run(imperium_cli::eval::RunArgs),
+    Run(Box<imperium_cli::eval::RunArgs>),
     /// CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use.
     Resources {
         /// Keep printing a fresh snapshot every two seconds until Ctrl+C.
@@ -1045,7 +1045,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 },
         } => vllm::remove(yes),
         Command::Run(args) => {
-            let outcome = block_on(imperium_cli::eval::run(args))?;
+            let outcome = block_on(imperium_cli::eval::run(*args))?;
             println!("{}", serde_json::to_string_pretty(&outcome.json)?);
             std::io::Write::flush(&mut std::io::stdout())?;
             if outcome.code != 0 {

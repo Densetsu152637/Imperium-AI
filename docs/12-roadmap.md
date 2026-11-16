@@ -632,7 +632,7 @@ and `environments.agent_update` (protocol 0.28)
     0.42 (`agents` on `mcp.list` results); `imperium agents list`. No desktop UI yet
     ([06](06-extensibility.md#named-agents-implemented),
     [03](03-agent-engine.md#named-agents-implemented)).
-
+<!-- markdownlint-disable-next-line MD029 -->
 53. **Headless eval mode** (implemented). `imperium run --headless --json` runs one task through
     the real agent loop (the engine's own root prompt, tool schemas and loop) with no daemon and
     no desktop, against any OpenAI-compatible root model endpoint, and prints a JSON result: the
