@@ -310,7 +310,12 @@ column, including the model picker in its footer), `settings.css`, `connectors.c
 icon-only buttons, fields, the select trigger, switches, badge variants, status dots). The order
 matters: rules of equal specificity are decided by it, so `primitives.css` stays last, where
 those rules sat in the original single file, and a rule that must beat or lose to one in another
-file is placed to keep that order. `models/modelConfig.css` belongs to the model configuration
+file is placed to keep that order. `tokens.css` holds the shared tokens, but a few surface-local custom properties live in
+their surface files (`--tile` in `environments.css`, `--session-gutter` and the `--ctx-color`
+set in `session.css`, `--settings-indent` in `settings.css`), and the `.badge` base rule, `.error`
+and the model picker rules (`.model-select`, `.effort-select`, `.mode-select`,
+`.model-status`, `.model-note`) sit in `session.css` because of their cascade position.
+`models/modelConfig.css` belongs to the model configuration
 dialog, which imports it before `styles/index.css` loads. Each stylesheet except `tokens.css`
 starts with a `/* style-budget: … */` comment counting the literal colours, font sizes and
 weights, radii, shadows, durations and z-indexes it still holds; `test/styleTokens.test.ts`

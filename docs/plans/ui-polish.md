@@ -501,9 +501,28 @@ stage owns them.
 **Shared files** (owned only by the stages named; every other stage must leave them alone):
 `apps/desktop/package.json` and `pnpm-lock.yaml` (stage 2), `styles/index.css` (stages 1 and 2),
 `styles/tokens.css` (stages 1, 2 and 15), `styles/primitives.css` and `styles/dialog.css`
-(stages 1, 3 and 15, and stage 2 for the gradient, highlight and halo removal only), `apps/desktop/test/styleTokens.test.ts` (stages 1 and 15), and the docs:
+(stages 1, 3 and 15; stage 2 for the gradient, highlight and halo removal, and, in
+`primitives.css` only, for the element and class rules it restyles: `.field`, `.search-field`,
+`button.select`, `.switch`, `button.small`, `button.icon-only`, `button:has(> .lucide)`), `apps/desktop/test/styleTokens.test.ts` (stages 1 and 15), and the docs:
 this plan (its single writer, the coordinator) and [07](../07-desktop-ui.md) (the sections each
 stage names).
+
+**Cascade rule (from stage 1):** `styles/index.css` imports `primitives.css` last, and rules of
+equal specificity are decided by import order. A stage that moves a rule across files re-runs
+the order-check script from [PR #197](https://github.com/Densetsu152637/Imperium-AI/pull/197)'s
+description (counts must stay at 0 manual) and keeps `primitives.css` last.
+
+**Rule-scoped ownership exceptions** (these rules sit in `session.css` for cascade reasons):
+
+- The `.badge` base rule and `.error` in `session.css` belong to stage 3, which overrides them
+  from `primitives.css` (it loads last), not by editing `session.css`.
+- The model picker rules (`.model-select`, `.effort-select`, `.mode-select`, `.model-status`,
+  `.model-note`, and `.session-footer .*-select-button …`) in `session.css` belong to stage 8;
+  stage 4 must not edit them.
+- Stage 2 owns the comment-only `styles.css` references left in `public/boot.css`,
+  `shared/boot.ts`, `settings/settings.ts` and `src-tauri/src/main.rs` (the Rust edit is a
+  comment only).
+- Stage 8 lowers the `models/modelConfig.css` and `styles/models.css` budgets to zero.
 
 **Who edits this plan:** only the coordinator. It sets each stage's Status and Outcome and
 records handoff notes and value changes from the stage's report. Stage pull requests never touch
@@ -558,15 +577,28 @@ records handoff notes and value changes from the stage's report. Stage pull requ
     `boot.test.ts` pass.
 - **Risks:** cascade order changes (mitigated above); a missed rule (the computed-style dump
   catches it).
-- **Status:** pending.
-- **Outcome:** none yet.
+- **Status:** done.
+- **Outcome:** [PR #197](https://github.com/Densetsu152637/Imperium-AI/pull/197). 53 repeated
+  selectors merged (the plan's 54 counted the `:is(li` fragment of two different selectors), 8
+  overridden declarations dropped; 17,564 selector pairs changed order, all auto-resolved, 0
+  manual; the computed-style comparison (every element, hover and focus included, dark and
+  light at 1280 and 1024) shows 0 differences. **Deviation:** `primitives.css` is imported
+  last, not third, because the shared component rules sat after the surfaces in the original
+  file and win ties with them; `models/modelConfig.css` got its one-line budget comment (it is
+  retroactively a stage 1 owned path). The order-check script and its fixture are in the PR's
+  description; every stage that moves rules across files re-runs it and keeps `primitives.css`
+  last. Declared verification gaps (420 px, forced colours, the nursery frame, hover over every
+  control) are carried into stages 14 and 15.
 - **Handoff notes:** keep each file's sections in their original relative order. Put rules used
   by several surfaces (`.muted`, `.error`, `.empty`, `.badge`) in `primitives.css`. Put the
   shared dialog shell (`.settings-backdrop`, `.settings-window`, its header, content and
   footer), the dialog navigation (`.settings-nav`, `.settings-group*`, `.settings-nav-item*`,
   `.settings-search`), the menu (`.row-menu*`) and the floating-list rules of `Select` in
   `dialog.css`, which stage 3 owns; `settings.css` keeps only rules for the Settings sections'
-  content. Stage 3 can then fix K1 without touching `settings.css`.
+  content. Stage 3 can then fix K1 without touching `settings.css`. **As built** (cascade order
+  beat these placements): `.error` and the `.badge` base rule are in `session.css`, and the
+  model picker rules (`.model-select`, `.effort-select`, `.mode-select`, `.model-status`,
+  `.model-note`) are in `session.css`; see the ownership rules below.
 
 ### Stage 2: tokens and base elements
 
@@ -859,7 +891,9 @@ records handoff notes and value changes from the stage's report. Stage pull requ
 - **Acceptance checks:** K4: at 420 × 800 the session is readable without horizontal scroll and
   the sidebar and each side panel can be opened and closed by mouse and keyboard; at 1024 × 768
   no column is narrower than its minimum; a pure test in `apps/desktop/test` for the rule that
-  picks which columns fold at a given width; saved layouts and presets load unchanged.
+  picks which columns fold at a given width; saved layouts and presets load unchanged. Carried
+  from stage 1's verification gaps: the computed-style comparison (the in-browser harness
+  described in PR #197) is run at 420 px, and in forced-colours mode.
 - **Risks:** this is the one new interaction in the plan; the fold rule must be pure and tested,
   and the panel editor (layout mode) should be disabled below 600 px rather than adapted.
 - **Status:** pending.
@@ -875,7 +909,9 @@ records handoff notes and value changes from the stage's report. Stage pull requ
 - **What visibly changes:** menus, popovers, dialogs and sheets enter and leave with the
   token durations; panel folding uses `--dur-base`; hover and press transitions are uniform;
   the forced-colours rules cover the new components.
-- **Acceptance checks:** every token that stages 3 to 13 defined at `:root` in their own files
+- **Acceptance checks:** the comparison gaps declared by stage 1 are closed: forced colours,
+  the nursery mod frame, and hover and focus over every control are checked (420 px is
+  stage 14's); every token that stages 3 to 13 defined at `:root` in their own files
   is moved into `tokens.css` (none is left outside it), and value changes noted in this plan are
   applied; budget and `native-select` comments removed and the guards require zero
   everywhere; with reduced motion on, no transform or animation runs (checked by toggling the
