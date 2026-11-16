@@ -85,10 +85,10 @@ impl DaemonState {
             .snapshot(Instant::now(), self.work_references())
     }
 
-    /// Uses `probe(pid)` (the process's start time, or none when it is gone) instead of the
-    /// process table (for tests). Call once.
+    /// Uses `probe(pid)` (whether the process is alive) instead of the process table (for
+    /// tests). Call once.
     #[cfg(any(test, feature = "testing"))]
-    pub fn use_pid_probe(&self, probe: Arc<dyn Fn(u32) -> Option<u64> + Send + Sync>) {
+    pub fn use_pid_probe(&self, probe: Arc<dyn Fn(u32) -> bool + Send + Sync>) {
         self.lifetime.use_probe(probe);
     }
 

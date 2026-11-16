@@ -127,9 +127,7 @@ async fn a_lease_whose_process_is_gone_is_reaped_though_its_connection_lingers()
     let daemon = daemon_with("", data.path());
     let alive = Arc::new(AtomicBool::new(true));
     let probe = Arc::clone(&alive);
-    daemon.use_pid_probe(Arc::new(move |_| {
-        probe.load(Ordering::SeqCst).then_some(1_000)
-    }));
+    daemon.use_pid_probe(Arc::new(move |_| probe.load(Ordering::SeqCst)));
     daemon.start_lifetime(Some(GRACE));
     let endpoint = serve(&daemon).await;
 

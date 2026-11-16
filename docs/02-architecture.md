@@ -60,12 +60,12 @@ service) is **persistent** and never exits for want of clients.
   lease belongs to the connection, so a normal exit, a kill and a lost socket all end it. The
   process id covers what a socket cannot: a hung or crashed client can leave a connection open,
   so once a second the daemon checks that each lease's process is still in the process table
-  with the start time the table showed when the lease was taken (within 2 seconds; a different
-  start time is another process under a reused id, and the machine's wall clock is never
-  consulted); a lease whose process is gone or changed is dropped. A command that the
-  daemon's own agents run (`run_command`, hooks, MCP servers; they carry
-  `IMPERIUM_SPAWNED_BY_DAEMON`) takes no lease and starts no daemon, since a lease would keep
-  the daemon up for as long as the agent waits on it. A client over an SSH forward sends no process id, since the id
+  (start times are not compared: on Linux they move when the clock is stepped, and a process
+  that ended has closed its connection anyway); a lease whose process is gone is dropped. A
+  command that the daemon's own agents run (`run_command`, background commands, hooks; they
+  carry `IMPERIUM_SPAWNED_BY_DAEMON`) takes no lease and starts no daemon, since a lease would
+  keep the daemon up for as long as the agent waits on it (`imperium mcp-serve` refuses to run
+  as one of a session's own MCP servers, which carry `IMPERIUM_MCP_CHILD`). A client over an SSH forward sends no process id, since the id
   means nothing on the daemon's machine, and a lease is then only its connection. Each running
   `imperium` command holds one, so commands run in parallel each hold one; a daemon of an
   earlier protocol answers "method not found" and is simply used (it is persistent).
