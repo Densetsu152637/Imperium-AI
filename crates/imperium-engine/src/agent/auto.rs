@@ -407,7 +407,7 @@ impl Agent {
         floored: bool,
         approve_tool: &str,
         tool: &str,
-        input: &dyn Fn() -> CallInput,
+        input: &(dyn Fn() -> CallInput + Sync),
     ) -> AutoGate {
         // Only a call that asks with the session allowance offered reaches the classifier: a
         // floored call, an ask rule's call and every refusal are decided without it.
