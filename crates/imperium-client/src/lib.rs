@@ -3,6 +3,8 @@
 
 #![warn(unreachable_pub)]
 
+pub mod launch;
+
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -14,7 +16,10 @@ use imperium_protocol::discovery::{DaemonEndpoint, EndpointError};
 use imperium_protocol::jsonrpc::{
     ErrorObject, JsonRpcVersion, Notification, Outcome, Request, RequestId, Response,
 };
-use imperium_protocol::methods::{Handshake, HandshakeParams, HandshakeResult, Method, Peer};
+use imperium_protocol::methods::{
+    Handshake, HandshakeParams, HandshakeResult, LeaseKind, Method, Peer, SystemLease,
+    SystemLeaseParams,
+};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -31,6 +36,9 @@ pub enum ClientError {
     Rpc(ErrorObject),
     #[error("protocol error: {0}")]
     Protocol(String),
+    /// The daemon could not be started, or did not start listening in time.
+    #[error("{0}")]
+    Launch(String),
 }
 
 /// The byte stream under the WebSocket: loopback TCP, or the daemon's local socket.
@@ -189,6 +197,26 @@ impl Client {
     /// What the daemon reported in the handshake.
     pub fn daemon(&self) -> &HandshakeResult {
         &self.daemon
+    }
+
+    /// Takes a lease on the daemon for as long as this connection stays open: a daemon that a
+    /// client started exits when no connection holds a lease and no work keeps it up. `pid` is
+    /// this process's id when the daemon is on this machine (the daemon also ends the lease when
+    /// that process is gone), `None` over a forward. Returns the lease's id.
+    pub async fn lease(
+        &mut self,
+        kind: LeaseKind,
+        label: &str,
+        pid: Option<u32>,
+    ) -> Result<String, ClientError> {
+        let held = self
+            .call::<SystemLease>(SystemLeaseParams {
+                kind,
+                pid,
+                label: label.to_string(),
+            })
+            .await?;
+        Ok(held.id)
     }
 
     pub async fn call<M: Method>(&mut self, params: M::Params) -> Result<M::Result, ClientError> {

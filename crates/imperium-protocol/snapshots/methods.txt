@@ -108,6 +108,8 @@ method session.suggestion_respond
 method session.tool_result
 method session.tools
 method system.handshake
+method system.lease
+method system.lifetime
 method system.ping
 method system.resources
 method system.resources_subscribe

@@ -1,0 +1,221 @@
+//! The daemon's side of its lifetime: what counts as work, and the monitor that ends a shared
+//! daemon nobody uses (the rules are in [`crate::lifetime`]).
+
+use imperium_protocol::initiative::Initiative;
+use imperium_protocol::methods::{LeaseKind, LifetimeStatus, WorkInfo, WorkKind};
+
+use super::*;
+use crate::lifetime::{Exiting, LeaseGuard};
+
+/// Most names listed in a work reference's detail.
+const DETAIL_NAMES: usize = 3;
+
+fn names(all: &[String]) -> String {
+    let mut shown = all
+        .iter()
+        .take(DETAIL_NAMES)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if all.len() > DETAIL_NAMES {
+        shown.push_str(&format!(" and {} more", all.len() - DETAIL_NAMES));
+    }
+    shown
+}
+
+fn work(kind: WorkKind, all: &[String]) -> Option<WorkInfo> {
+    (!all.is_empty()).then(|| WorkInfo {
+        kind,
+        count: u32::try_from(all.len()).unwrap_or(u32::MAX),
+        detail: names(all),
+    })
+}
+
+impl DaemonState {
+    /// Makes the daemon shared, so it exits after `grace` with no lease and no work (`Some`),
+    /// or leaves it persistent (`None`), and starts the monitor that decides. Call once, inside
+    /// the Tokio runtime, after the background work has started.
+    pub fn start_lifetime(self: &Arc<Self>, shared: Option<Duration>) {
+        self.lifetime.configure(shared);
+        let weak = Arc::downgrade(self);
+        let lifetime = Arc::clone(&self.lifetime);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(lifetime.tick_interval()).await;
+                let Some(state) = weak.upgrade() else {
+                    return;
+                };
+                let reaping = Arc::clone(&state.lifetime);
+                if let Ok(gone) = tokio::task::spawn_blocking(move || reaping.reap()).await {
+                    for label in gone {
+                        tracing::info!(%label, "its process is gone; the lease ended");
+                    }
+                }
+                if state
+                    .lifetime
+                    .tick(Instant::now(), || !state.work_references().is_empty())
+                {
+                    tracing::info!("no client and no work is using imperium-core; exiting");
+                    state.request_shutdown();
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Registers a lease held by one connection; it ends when the guard is dropped. Refused
+    /// once the daemon has decided to exit.
+    pub(crate) fn acquire_lease(
+        &self,
+        kind: LeaseKind,
+        pid: Option<u32>,
+        label: &str,
+    ) -> Result<LeaseGuard, Exiting> {
+        self.lifetime.acquire(kind, pid, label)
+    }
+
+    /// Chooses whether the daemon runs until stopped (`true`) or exits when idle (`false`).
+    pub fn set_persistent(&self, persistent: bool) {
+        self.lifetime.set_persistent(persistent);
+    }
+
+    /// Who holds the daemon open and what work does, for `system.lifetime`.
+    pub fn lifetime_status(&self) -> LifetimeStatus {
+        self.lifetime
+            .snapshot(Instant::now(), self.work_references())
+    }
+
+    /// Uses `probe(pid)` (whether the process is alive) instead of the process table (for
+    /// tests). Call once.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn use_pid_probe(&self, probe: Arc<dyn Fn(u32) -> bool + Send + Sync>) {
+        self.lifetime.use_probe(probe);
+    }
+
+    /// What the daemon does on its own that keeps it up: turns running, schedules with a run to
+    /// come, persistent agents with initiative, and GitHub responders.
+    ///
+    /// A session waiting on a permission or a question is not counted: with no client to answer
+    /// it, nothing runs, and its journal is picked up again when a daemon starts.
+    pub(crate) fn work_references(&self) -> Vec<WorkInfo> {
+        let mut found = Vec::new();
+
+        let turns: Vec<String> = self
+            .sessions()
+            .iter()
+            .filter(|session| {
+                matches!(
+                    session.status().0,
+                    SessionStatus::Working | SessionStatus::Paused
+                )
+            })
+            .map(|session| session.id().to_string())
+            .collect();
+        found.extend(work(WorkKind::Turn, &turns));
+
+        if let Some(scheduler) = self.scheduler() {
+            let schedules: Vec<String> = scheduler
+                .list()
+                .schedules
+                .into_iter()
+                .filter(|row| row.enabled && (row.running || row.next_run.is_some()))
+                .map(|row| row.id)
+                .collect();
+            found.extend(work(WorkKind::Schedule, &schedules));
+        }
+
+        let agents: Vec<String> = self
+            .environments()
+            .list()
+            .iter()
+            .flat_map(|env| {
+                env.agents
+                    .iter()
+                    .filter(|agent| agent.initiative != Initiative::Off)
+                    .map(move |agent| format!("{}/{}", env.name, agent.name))
+            })
+            .collect();
+        found.extend(work(WorkKind::Initiative, &agents));
+
+        let settings = self.settings();
+        let mut github: Vec<String> = Vec::new();
+        if settings.github.autofix.enabled {
+            github.extend(
+                settings
+                    .github
+                    .watch
+                    .iter()
+                    .map(|watch| format!("auto-fix {}", watch.repo)),
+            );
+        }
+        github.extend(
+            self.watched()
+                .into_iter()
+                .map(|(_, repo, number)| format!("{repo}#{number}")),
+        );
+        found.extend(work(WorkKind::Github, &github));
+
+        // Long jobs the daemon runs on its own, with no client needed to see them through.
+        let mut jobs: Vec<String> = self
+            .downloads
+            .list()
+            .into_iter()
+            .filter(|job| job.state == "running")
+            .map(|job| format!("download {}", job.repo))
+            .collect();
+        jobs.extend(
+            self.bench
+                .runs()
+                .into_iter()
+                .filter(|run| run.state == "running")
+                .map(|run| format!("benchmark {}", run.run_id)),
+        );
+        let running = |job: Option<&String>| job.is_some_and(|state| state == "running");
+        if running(
+            self.runtime_install
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .map(|job| &job.state),
+        ) {
+            jobs.push("llama.cpp runtime install".into());
+        }
+        if running(
+            self.runtime_update
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .map(|job| &job.state),
+        ) {
+            jobs.push("llama.cpp runtime update".into());
+        }
+        jobs.extend(self.lifetime.jobs());
+        found.extend(work(WorkKind::Job, &jobs));
+
+        // A request that only a paired phone can answer while no client is attached: the
+        // phone listener is on and a device may approve.
+        if self.phone_url().is_some()
+            && self
+                .devices()
+                .list()
+                .iter()
+                .any(|device| device.scopes.iter().any(|scope| scope == "approve"))
+        {
+            let mut waiting: Vec<String> = self
+                .sessions()
+                .iter()
+                // Waiting on a permission or a question; not a failed turn, which nobody answers.
+                .filter(|session| session.is_asking())
+                .map(|session| format!("session {}", session.id()))
+                .collect();
+            waiting.extend(
+                self.approvals()
+                    .list()
+                    .into_iter()
+                    .map(|approval| format!("approval {}", approval.id)),
+            );
+            found.extend(work(WorkKind::Approval, &waiting));
+        }
+        found
+    }
+}

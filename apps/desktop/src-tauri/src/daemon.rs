@@ -3,13 +3,13 @@
 //! its log, and choose whether it keeps running after the app closes. Before an update replaces
 //! the bundled daemon, the app stops it.
 //!
-//! The app owns the bundled daemon: it starts it as its own child process (so Task Manager shows
-//! it under Imperium), and a bundled daemon it finds running that it did not start (left by an
-//! earlier run) is restarted as its child. By default the daemon exits with the app; sessions are
-//! saved and resume when it starts again. On Windows the child is also put in a job object that
-//! ends it if the app goes away without stopping it (a crash, or being ended from Task Manager).
-//! With "Keep running after Imperium closes" on, the daemon outlives the app instead: the job no
-//! longer ends it, and a daemon left running is adopted as it is when the app opens again.
+//! The daemon's lifetime is shared (docs/02-architecture.md#shared-daemon-lifetime-implemented).
+//! The app attaches to whichever daemon runs, one the `imperium` command started or one left by
+//! an earlier run, and holds a lease on it from its own process for as long as it runs. A daemon
+//! the app starts is `imperium-core --exit-when-idle`: it exits once the app and every other
+//! program using it are gone and it has no background work, so closing the app never ends a
+//! daemon that a terminal or a schedule still needs. With "Keep running after Imperium closes"
+//! on, the daemon is started persistent (or made so while it runs) and outlives everything.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -21,9 +21,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use imperium_client::Client;
+use imperium_client::launch::{LeaseRequest, attach};
 use imperium_config::Paths;
 use imperium_protocol::discovery::{DaemonEndpoint, read_endpoint};
-use imperium_protocol::methods::{Peer, Shutdown, ShutdownParams};
+use imperium_protocol::methods::{
+    LeaseKind, Peer, Shutdown, ShutdownParams, SystemLifetime, SystemLifetimeParams,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -34,6 +37,8 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the stop request itself may take (connect, handshake, reply).
 const ASK_TIMEOUT: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(250);
+/// How long the lease task waits before it looks for the daemon again.
+const LEASE_RETRY: Duration = Duration::from_secs(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 /// The most of the log the interface is sent.
 const LOG_TAIL_BYTES: u64 = 64 * 1024;
@@ -67,8 +72,9 @@ pub struct DaemonStatus {
     log_path: Option<String>,
 }
 
-/// The saved choice of whether the daemon outlives the window. By default it does not: the
-/// daemon exits with the app, and its sessions resume when the app starts it again.
+/// The saved choice of whether the daemon outlives everything that uses it. By default it does
+/// not: it exits once the app and every other program using it are gone and it has no work,
+/// and its sessions resume when a daemon starts again.
 #[derive(Default, Serialize, Deserialize)]
 struct Preferences {
     keep_running: bool,
@@ -80,8 +86,8 @@ struct Preferences {
 pub struct DaemonControl {
     stopped_by_user: AtomicBool,
     child: Mutex<Option<Child>>,
-    #[cfg(windows)]
-    job: std::sync::OnceLock<Option<win32job::Job>>,
+    /// Whether the task holding the app's lease on the daemon has been started.
+    leasing: AtomicBool,
 }
 
 impl DaemonControl {
@@ -100,47 +106,88 @@ impl DaemonControl {
         child.as_ref().map(Child::id)
     }
 
-    /// Keeps the started daemon as this app's child, tied to the app unless it keeps running.
-    fn adopt(&self, child: Child, keep_running: bool) {
-        #[cfg(windows)]
-        if let Some(job) = self.job() {
-            use std::os::windows::io::AsRawHandle;
-            // The handle is only lent to the job; the process stays owned by `child`.
-            let handle = child.as_raw_handle() as isize;
-            if let Err(error) = job.assign_process(handle) {
-                eprintln!("imperium-core could not be tied to the app: {error}");
-            }
-        }
-        self.tie(keep_running);
+    /// Keeps the started daemon as this app's child, so Task Manager shows it under Imperium and
+    /// the app can tell it from one started elsewhere. It is not tied to the app: its lifetime
+    /// is the leases on it.
+    fn adopt(&self, child: Child) {
         *self
             .child
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(child);
     }
+}
 
-    /// Whether the daemon ends when the app goes away: the job's kill-on-close limit, which can
-    /// be changed while the daemon runs.
-    fn tie(&self, keep_running: bool) {
-        #[cfg(windows)]
-        if let Some(job) = self.job() {
-            let mut limits = win32job::ExtendedLimitInfo::new();
-            if !keep_running {
-                limits.limit_kill_on_job_close();
+/// Holds this app's lease on the daemon from the app's own process for as long as it runs, and
+/// attaches again whenever the daemon restarts. It never starts a daemon: that is
+/// [`daemon_endpoint`]'s job, and a daemon the user stopped stays stopped. Does nothing when the
+/// task already runs.
+fn hold_lease<R: Runtime>(app: &AppHandle<R>, control: &DaemonControl) {
+    if control.leasing.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            if let Some(mut client) = take_lease(&app).await {
+                // The daemon sends announcements to every connection; reading them keeps the
+                // connection healthy, and the read fails when the daemon goes.
+                while client.next_notification().await.is_ok() {}
             }
-            if let Err(error) = job.set_extended_limit_info(&limits) {
-                eprintln!("could not update imperium-core's job limits: {error}");
-            }
+            tokio::time::sleep(LEASE_RETRY).await;
         }
-        #[cfg(not(windows))]
-        let _ = keep_running;
-    }
+    });
+}
 
-    #[cfg(windows)]
-    fn job(&self) -> Option<&win32job::Job> {
-        self.job
-            .get_or_init(|| win32job::Job::create().ok())
-            .as_ref()
+/// One attempt at a lease on the running daemon.
+async fn take_lease<R: Runtime>(app: &AppHandle<R>) -> Option<Client> {
+    let file = endpoint_file().ok()?;
+    let peer = Peer {
+        name: "imperium-desktop".into(),
+        version: app.package_info().version.to_string(),
+    };
+    let lease = LeaseRequest {
+        kind: LeaseKind::Desktop,
+        label: "Imperium desktop".into(),
+        pid: Some(std::process::id()),
+    };
+    let (mut client, _) = attach(&file, peer, Some(lease), None).await.ok()?;
+    if preferences(app).keep_running {
+        let _ = client
+            .call::<SystemLifetime>(SystemLifetimeParams {
+                persistent: Some(true),
+            })
+            .await;
     }
+    Some(client)
+}
+
+/// Makes the running daemon persistent (`true`) or shared again (`false`), as the user's choice
+/// of keeping it running changes. A daemon that is not this install's own is only ever made
+/// persistent: one the user runs themselves keeps their choice.
+async fn apply_keep_running(version: String, keep_running: bool) {
+    let Ok(file) = endpoint_file() else {
+        return;
+    };
+    let Some(endpoint) = live_endpoint(&file) else {
+        return;
+    };
+    if !keep_running && !runs_bundled(endpoint.pid) {
+        return;
+    }
+    let peer = Peer {
+        name: "imperium-desktop".into(),
+        version,
+    };
+    let ask = async {
+        let mut client = Client::connect(&endpoint, peer).await.ok()?;
+        client
+            .call::<SystemLifetime>(SystemLifetimeParams {
+                persistent: Some(keep_running),
+            })
+            .await
+            .ok()
+    };
+    let _ = tokio::time::timeout(ASK_TIMEOUT, ask).await;
 }
 
 /// The running daemon's endpoint, starting the bundled daemon first when none answers (unless
@@ -151,15 +198,16 @@ pub async fn daemon_endpoint<R: Runtime>(
     control: tauri::State<'_, DaemonControl>,
     autostart: Option<bool>,
 ) -> Result<DaemonConnection, String> {
+    hold_lease(&app, &control);
     let endpoint_file = endpoint_file()?;
     let may_start = !control.stopped_by_user.load(Ordering::Relaxed) && autostart != Some(false);
     if let Some(endpoint) = live_endpoint(&endpoint_file) {
-        let replace =
-            may_start && bundled_daemon().is_some() && should_replace(&app, &control, endpoint.pid);
+        // Any daemon is attached to as it is, whoever started it. Only the previous version's
+        // `imperiumd` is replaced: this install no longer knows how to share it.
+        let replace = may_start && bundled_daemon().is_some() && runs_legacy(endpoint.pid);
         if !replace {
             return Ok(connection(endpoint));
         }
-        // A bundled daemon this app did not start: restart it as the app's own child.
         stop(app.package_info().version.to_string(), true).await?;
     }
     if control.stopped_by_user.load(Ordering::Relaxed) {
@@ -181,16 +229,6 @@ pub async fn daemon_endpoint<R: Runtime>(
         .map(connection)
 }
 
-/// Whether the running daemon `pid` is one the app should restart as its own child: the previous
-/// version's `imperiumd`, or this install's daemon left by an earlier run, unless the user keeps
-/// the daemon running after the app closes (then it is used as it is).
-fn should_replace<R: Runtime>(app: &AppHandle<R>, control: &DaemonControl, pid: u32) -> bool {
-    if runs_legacy(pid) {
-        return true;
-    }
-    !preferences(app).keep_running && control.child_pid() != Some(pid) && runs_bundled(pid)
-}
-
 #[tauri::command]
 pub fn daemon_status<R: Runtime>(
     app: AppHandle<R>,
@@ -206,6 +244,7 @@ pub async fn daemon_start<R: Runtime>(
     control: tauri::State<'_, DaemonControl>,
 ) -> Result<DaemonStatus, String> {
     control.stopped_by_user.store(false, Ordering::Relaxed);
+    hold_lease(&app, &control);
     let endpoint_file = endpoint_file()?;
     if live_endpoint(&endpoint_file).is_none() {
         let daemon = bundled_daemon()
@@ -236,6 +275,7 @@ pub async fn daemon_restart<R: Runtime>(
         .ok_or("This install has no imperium-core to start; restart it where you started it.")?;
     stop(app.package_info().version.to_string(), false).await?;
     control.stopped_by_user.store(false, Ordering::Relaxed);
+    hold_lease(&app, &control);
     start_and_wait(&app, &control, &daemon, &endpoint_file()?).await?;
     status(&app, &control)
 }
@@ -264,9 +304,9 @@ pub fn daemon_log<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
     })
 }
 
-/// Chooses whether the daemon keeps running after the app closes.
+/// Chooses whether the daemon keeps running after everything that uses it has gone.
 #[tauri::command]
-pub fn daemon_set_keep_running<R: Runtime>(
+pub async fn daemon_set_keep_running<R: Runtime>(
     app: AppHandle<R>,
     control: tauri::State<'_, DaemonControl>,
     keep_running: bool,
@@ -278,16 +318,8 @@ pub fn daemon_set_keep_running<R: Runtime>(
     let bytes =
         serde_json::to_vec(&Preferences { keep_running }).map_err(|error| error.to_string())?;
     std::fs::write(file, bytes).map_err(|error| error.to_string())?;
-    control.tie(keep_running);
+    apply_keep_running(app.package_info().version.to_string(), keep_running).await;
     status(&app, &control)
-}
-
-/// As the app exits: stops the bundled daemon unless the user keeps it running.
-pub fn on_exit<R: Runtime>(app: &AppHandle<R>) {
-    if !preferences(app).keep_running {
-        let version = app.package_info().version.to_string();
-        let _ = tauri::async_runtime::block_on(stop(version, true));
-    }
 }
 
 /// Stops the daemon if it is the one bundled with this app, so an update can replace it and the
@@ -476,7 +508,7 @@ async fn start_and_wait<R: Runtime>(
     endpoint_file: &Path,
 ) -> Result<DaemonEndpoint, String> {
     let child = start(app, daemon)?;
-    control.adopt(child, preferences(app).keep_running);
+    control.adopt(child);
     let deadline = Instant::now() + START_TIMEOUT;
     while Instant::now() < deadline {
         tokio::time::sleep(POLL).await;
@@ -492,7 +524,7 @@ async fn start_and_wait<R: Runtime>(
 }
 
 /// Starts the bundled daemon in the background as the app's child; its output goes to the app's
-/// log folder.
+/// log folder. Unless the user keeps the daemon running, it exits when nothing uses it.
 fn start<R: Runtime>(app: &AppHandle<R>, daemon: &Path) -> Result<Child, String> {
     let log = log_file(app).and_then(|log| {
         std::fs::create_dir_all(log.parent()?).ok()?;
@@ -501,6 +533,9 @@ fn start<R: Runtime>(app: &AppHandle<R>, daemon: &Path) -> Result<Child, String>
     let mut command = Command::new(daemon);
     command.stdin(Stdio::null()).stdout(Stdio::null());
     command.stderr(log.map_or_else(Stdio::null, Stdio::from));
+    if !preferences(app).keep_running {
+        command.arg("--exit-when-idle");
+    }
     // Bundled workflow packs and pets live in the resource folder, apart from the binaries.
     if let Ok(resources) = app.path().resource_dir() {
         command.env("IMPERIUM_RESOURCE_DIR", resources);

@@ -108,6 +108,8 @@ impl DaemonState {
     /// the move is refused while any is; idle ones are restarted afterwards so their scratch
     /// folder is the new one. A failure at any step puts everything back.
     pub fn move_workspaces(&self, target: &str) -> Result<WorkspacesMoveResult, String> {
+        // A move that the last client started must be seen through, not cut short by an exit.
+        let _job = self.lifetime.begin_job("moving the working folders");
         let default = imperium_config::default_workspaces_root(&self.paths);
         let target = target.trim();
         let new = if target.is_empty() {
@@ -482,7 +484,24 @@ fn open_with_system(path: &Path) -> Result<(), String> {
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // On Windows the daemon's own job ends its children with it; a folder or file opened for the
+    // user is theirs, and stays open when the daemon exits. The job allows the breakaway, and
+    // where it does not (an outer job that forbids it) the program starts inside it.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        if command
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+        command.creation_flags(0);
+    }
+    command
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("could not open {}: {error}", path.display()))

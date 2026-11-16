@@ -448,6 +448,12 @@ impl Session {
         self.controls.status()
     }
 
+    /// Whether an agent of the session waits on a permission or a question, as opposed to
+    /// `NeedsAttention` after a failed turn, which nobody needs to answer.
+    pub fn is_asking(&self) -> bool {
+        self.controls.is_asking()
+    }
+
     pub fn resume_policy(&self) -> ResumePolicy {
         self.controls.policy()
     }

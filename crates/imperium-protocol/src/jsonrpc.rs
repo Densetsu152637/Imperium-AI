@@ -152,6 +152,9 @@ pub mod codes {
     /// A budget in the session's scope is used up and says to ask (repeat with
     /// `confirm_budget`) or to block; `data` is a `BudgetStop`.
     pub const BUDGET_EXCEEDED: i32 = -32008;
+    /// The daemon is exiting because nothing uses it and takes no more leases; a client
+    /// waits for it to go and starts a new one.
+    pub const DAEMON_STOPPING: i32 = -32009;
 }
 
 #[cfg(test)]

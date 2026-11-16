@@ -904,7 +904,11 @@ at once and `max_sessions_per_day` (default 20) per day. Permission requests fro
 its sessions, and from scheduled prompt runs, become approval requests (the Approvals panel,
 `imperium approvals`). `imperium daemon autostart enable|disable|status` starts `imperium-core` at
 login (a per-user `Run` registry value on Windows, a LaunchAgent on macOS, an XDG autostart
-entry on Linux). The sessions an agent starts are [background sessions](#quiet-periods): they
+entry on Linux); that daemon is persistent. Without it, an `imperium` command or the desktop
+app starts a daemon that exits when nothing uses it, and an enabled schedule, an agent with
+initiative, a running turn and auto-fix each count as use, so they keep it up
+([02](02-architecture.md#shared-daemon-lifetime-implemented)); `imperium daemon status` lists
+what is holding it. The sessions an agent starts are [background sessions](#quiet-periods): they
 rank below yours, wait for a quiet machine before starting (`prefer_quiet`, default on), and
 pause while the machine is busy. Not yet: file, Git, and webhook wake-ups, cost budgets, a tray
 icon, and notes beyond the agent's memory tools.

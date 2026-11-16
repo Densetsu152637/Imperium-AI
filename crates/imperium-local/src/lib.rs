@@ -14,6 +14,7 @@ pub mod gpu_fdinfo;
 pub mod gpu_windows;
 pub mod hardware;
 pub mod hf;
+pub mod ledger;
 pub mod monitor;
 pub mod planner;
 pub mod process;

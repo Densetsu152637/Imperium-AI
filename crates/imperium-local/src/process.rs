@@ -212,6 +212,10 @@ impl ProcessLauncher {
         let mut child = command
             .spawn()
             .map_err(|error| format!("could not start {}: {error}", program.display()))?;
+        // Written down so a daemon that dies without stopping it does not leave it running.
+        if let Some(pid) = child.id() {
+            crate::ledger::record(&self.logs, pid);
+        }
         // From here on the container is ours to remove: by `stop`, on a failed start, or when
         // this future is dropped (a cancelled start) or the server is.
         let container = container.map(|(docker, name)| ContainerGuard::new(docker, name));
