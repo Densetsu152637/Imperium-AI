@@ -529,18 +529,26 @@ impl Agent {
         {
             return finish(false, missing);
         }
-        if let Decision::Ask { sticky } = decision
-            && !self
-                .approve_with(
-                    rule_tool,
-                    &summary,
-                    suggest(rule_tool, &target).filter(|_| !(floored && check.command.is_none())),
-                    sticky,
-                    floored,
-                )
-                .await
-        {
-            return finish(false, "The user denied this action.".into());
+        if let Decision::Ask { sticky } = decision {
+            // In auto mode a classifier may settle a call that would ask; what it leaves
+            // open (or a floored call) is asked as before, with its reason.
+            let gate = self
+                .auto_gate(decision, floored, rule_tool, name, arguments)
+                .await;
+            if gate != AutoGate::Allowed
+                && !self
+                    .approve_with(
+                        rule_tool,
+                        &gate.question(&summary),
+                        suggest(rule_tool, &target)
+                            .filter(|_| !(floored && check.command.is_none())),
+                        sticky,
+                        floored,
+                    )
+                    .await
+            {
+                return finish(false, "The user denied this action.".into());
+            }
         }
         let started = self.tool_started(call, name, summary);
         let emit = |event: ToolEvent| {
@@ -870,12 +878,25 @@ impl Agent {
         {
             return finish(false, missing);
         }
-        if let Decision::Ask { sticky } = decision
-            && !self
-                .approve_with(tool, &summary, suggest(tool, &target), sticky, floored)
-                .await
-        {
-            return finish(false, "The user denied this action.".into());
+        if let Decision::Ask { sticky } = decision {
+            // In auto mode a classifier may settle a call that would ask; what it leaves
+            // open (or a floored call) is asked as before, with its reason.
+            let gate = self
+                .auto_gate(decision, floored, tool, tool, &hook_arguments)
+                .await;
+            if gate != AutoGate::Allowed
+                && !self
+                    .approve_with(
+                        tool,
+                        &gate.question(&summary),
+                        suggest(tool, &target),
+                        sticky,
+                        floored,
+                    )
+                    .await
+            {
+                return finish(false, "The user denied this action.".into());
+            }
         }
         let started = self.tool_started(call, tool, summary);
         let (ok, output) = match invocation.execute(&self.workspace).await {

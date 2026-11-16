@@ -13,7 +13,7 @@ effort?: "low" | "medium" | "high" | "max",
 /**
  * For `set_permission_mode`: the session's permission mode afterwards.
  */
-permission_mode?: "ask" | "default" | "accept_edits" | "plan" | "full", 
+permission_mode?: "ask" | "default" | "auto" | "accept_edits" | "plan" | "full", 
 /**
  * For `set_model` and `set_effort`: whether the session's model can reason.
  */

@@ -44,7 +44,7 @@ pub use mcp_servers::{
     MAX_SERVER_NAME, remove_mcp_server, save_mcp_server, set_mcp_server_enabled, valid_server_name,
 };
 pub use paths::{Paths, PathsError};
-pub use permissions::{PermissionSettings, save_permissions};
+pub use permissions::{AutoPermissionSettings, PermissionSettings, save_permissions};
 pub use registry::{
     SETTINGS, SetError, SettingDef, SettingKind, SettingState, describe, describe_key,
     set_user_setting, setting,

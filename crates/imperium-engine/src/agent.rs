@@ -38,6 +38,7 @@ use imperium_memory::{NewEntry, Scope};
 use imperium_protocol::methods::{Compaction, ContextFit};
 
 mod attachments;
+mod auto;
 mod compaction;
 mod delegation;
 mod fork;
@@ -48,6 +49,8 @@ mod specs;
 mod tools;
 mod turn;
 
+use auto::AutoGate;
+pub(crate) use auto::AutoGuard;
 use delegation::*;
 pub(crate) use delegation::{cancel_subagent, resume_subagent};
 pub(crate) use fork::run_fork;

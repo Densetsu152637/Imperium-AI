@@ -131,6 +131,7 @@ async fn agents_generate_images_and_audio() {
         auto_compact_at: None,
         attended: true,
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
