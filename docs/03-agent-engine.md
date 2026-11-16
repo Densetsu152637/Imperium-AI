@@ -906,7 +906,7 @@ imperium run --print-prompt --variant lean --context-tokens 32768 > prompt.json
 | `--subagent-replay <file>` | Answer subagents from recordings, with no model call for them. |
 | `--cost-ceiling USD`, `--token-ceiling N`, `--price-in`, `--price-out` | Prices are per million tokens. A ceiling is checked before each model call (the root's and any real subagent's), so the last call can pass it by its own size. A cost ceiling needs prices. |
 | `--permission-mode` | Default `default`. A call that would ask is always denied (recorded under `permission_requests`); `plan` and `ask` are stricter, `accept_edits` lets edits through, `full` runs everything the user's deny and ask rules and the safety floor do not stop (including `web_fetch`); `auto` is refused. |
-| `--local`, `--config-home <dir>` | `--local`: the root model runs on this machine, so the harness aids set to `auto` count as on. `--config-home`: read the configuration from this folder instead of the user's. |
+| `--local` | The root model runs on this machine, so the harness aids set to `auto` count as on. |
 | `--timeout-s`, `--journal <file>` | A wall-clock limit (default 1800) and a place to keep the session journal. |
 | `--print-prompt` | Print the resolved system prompt (with `{workspace}` where the working folder goes) and tool schemas as JSON and stop. No model is called: the session is built as for a run and answered by a stand-in model, so the output is what a run would first send. |
 
@@ -921,14 +921,12 @@ run does not inject the working folder's `AGENTS.md` or `CLAUDE.md` when file to
 machine; and it does not list the repository's other git worktrees, so a worktree's own path is
 the only path in the prompt (replaced by `{workspace}` in `prompt_hash`).
 
-The workspace is built as the daemon builds a session's: the user's `[permissions]` rules and
-grants, the `[isolation]` tier's sandbox, and the folders the safety floor guards (`<config>/mods`,
-`<config>/plugins`, `<data>/packs`, `extensions.plugin_dirs`), all read from the user's
-configuration (`--config-home <dir>` reads another, laid out as `IMPERIUM_HOME`). So a deny rule
-holds in `full` mode, and a write into a guarded folder still asks (and is denied). `full` is
-therefore as unsafe as the configured isolation tier: with the default `policy` tier commands run
-in the user's own shell, so use `full` only in a throwaway workspace under `os` or `container`
-isolation.
+The headless run builds its own workspace: it reads none of the user's configuration, so the
+user's permission rules, path grants and isolation tier do not apply, and the folders the daemon
+guards (`<config>/mods`, `<config>/plugins`, `<data>/packs`) are not guarded. Only the safety
+floor's built-in rules and the permission mode apply, and commands run in the user's own shell.
+Use `--permission-mode full` only in a throwaway workspace. (A later change will run sessions
+through a daemon, which brings the user's rules, grants, isolation and guarded folders.)
 
 **Output (schema version 1).** Keys: `schema_version`, `mode` (`run` or `print_prompt`),
 `engine` (`imperium_version`, `protocol_version`), `task` (`id`, `source`, `prompt`, `raw`),
