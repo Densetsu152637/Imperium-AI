@@ -381,12 +381,13 @@ value. Dark values are today's (dark ink on them is 5.0:1 or more for all twelve
 fills target 5.2:1 for white ink:** each is darkened in lightness, keeping hue and saturation,
 until white ink reaches 5.2:1, which also puts it at 4.7:1 or more as text on `--bg`; cyan keeps
 the hand-picked `#0a7186` (5.7:1). **Accent text** is derived separately: light values are
-darkened further, to 6.6:1 against white (cyan `#086276`), and dark values are lightened until
+darkened further, to at least 6.6:1 against white (cyan `#086276` is 6.96:1, and 6.1:1 or more on
+the four surfaces), and dark values are lightened until
 they reach 5:1 on their own wash over `--surface-raised` (cyan `#5fd0e0`), so accent text passes
 on selected rows too. At 5.2:1 amber, lime and silver turn brownish or olive (amber `#906317`,
 lime `#5d7523`, silver `#736c5c`). That is accepted for fills and text, the places contrast
-matters; stage 2's screenshots of every accent in light mode are reviewed for muddiness before
-merging, and a light value may be nudged in hue only if the contrast test still passes. `applySettings` sets `data-accent` on the root instead of writing colours inline, and
+matters; stage 2's screenshots of every accent in light and dark mode are reviewed for muddiness
+before merging, and a light value may be nudged in hue only if the contrast test still passes. `applySettings` sets `data-accent` on the root instead of writing colours inline, and
 `tokens.css` defines each accent under `:root[data-accent="…"]` and
 `:root[data-theme="light"][data-accent="…"]`, so the light theme's values win (K8). The loading
 screen's light accent becomes `#0a7186`.
@@ -492,8 +493,17 @@ Stages 1 to 3 run in order. After stage 3 merges, stages 4 to 13 own disjoint fi
 merges the latest `experimental` and re-measures its budgets before review; passes
 `pnpm --filter @imperium/desktop test` and `pnpm --filter @imperium/desktop typecheck` locally
 and `bash scripts/check-web.sh` in CI; passes the [visual checklist](#visual-checklist); and
-touches no path outside its owned paths (a needed change elsewhere goes in its handoff notes for
-the owning stage).
+touches no path outside its owned paths: `git diff --name-only origin/experimental...HEAD` is a
+subset of the stage's owned paths, and a needed change elsewhere goes in its handoff notes for
+the owning stage. Each pull request also lists the shared files below as not touched, unless the
+stage owns them.
+
+**Shared files** (owned only by the stages named; every other stage must leave them alone):
+`apps/desktop/package.json` and `pnpm-lock.yaml` (stage 2), `styles/index.css` (stages 1 and 2),
+`styles/tokens.css` (stages 1, 2 and 15), `styles/primitives.css` and `styles/dialog.css`
+(stages 1, 3 and 15), `apps/desktop/test/styleTokens.test.ts` (stages 1 and 15), and the docs:
+this plan (its single writer, the coordinator) and [07](../07-desktop-ui.md) (the sections each
+stage names).
 
 "Owned CSS" means the file in `apps/desktop/src/styles/` created by stage 1 for that surface.
 
@@ -534,7 +544,11 @@ the owning stage).
     interaction: hover (pointer over each control), keyboard focus (Tab through), disabled
     controls, open menus, selects, dialogs and popovers, and error states (a failing form, an
     offline daemon). Differences are listed and explained or fixed.
-  - The order-check pair list in the pull request has no unresolved pair.
+  - The order-check pair list in the pull request has no unresolved pair. The list comes from
+    the order-check script, whose source is attached to the pull request (it stays out of the
+    repository). The reviewer re-runs it on the final diff and gets the same counts, and first
+    runs it on a tiny fixture attached with it (two rules with the same specificity and a
+    shared property, one moved past the other) to confirm the script flags that pair.
   - `styleTokens.test.ts` passes with budgets equal to today's counts; the repeated-selector
     count, by the [counting rule](#tokens-today), is zero; `cssBalance.test.ts` and
     `boot.test.ts` pass.
@@ -572,7 +586,8 @@ the owning stage).
   `boot.test.ts` passes with `main.rs` and `tauri.conf.json` untouched;
   `rg "metal|chrome-text" apps/desktop/src/styles` finds only the wordmark rule and
   `rg "highlight" apps/desktop/src/styles` finds nothing; screenshots of all twelve accents in
-  light mode are reviewed for muddiness; the theme switch in the command palette still flips
+  light and dark mode, each over the four surfaces (bg, surface, raised, sunken) with a selected
+  row and a primary button, are reviewed for muddiness and contrast; the theme switch in the command palette still flips
   every surface, and the loading screen matches the theme before first paint.
 - **Risks:** this is the largest visible change and lands before surfaces are tidied, so some
   surface overrides will look off until their stage (accepted: stages merge as ready, U5). Mods
@@ -581,7 +596,9 @@ the owning stage).
 - **Status:** pending.
 - **Outcome:** none yet.
 - **Handoff notes:** keep `--fast`, `--slow`, `--ease`, `--space`, `--radius`, `--panel`, `--fg`,
-  `--muted` as aliases. Stage-specific checks: Settings → Appearance accent swatches, theme
+  `--muted` as aliases. **Token values are frozen when this stage merges:** later stages may add
+  tokens, but change an existing value only with a note in this plan saying which value, why,
+  and that the contrast test still passes. Stage-specific checks: Settings → Appearance accent swatches, theme
   System following the operating system. The font is bundled by Vite into the app (no network
   fetch), so the content security policy needs no change.
 
@@ -612,7 +629,9 @@ the owning stage).
 - **Status:** pending.
 - **Outcome:** none yet.
 - **Handoff notes:** components accept `className` for layout only. The Dialog's narrow sheet
-  behaviour is here so stage 14 needs no dialog changes.
+  behaviour is here so stage 14 needs no dialog changes. Token values are frozen since stage 2:
+  add a token if a component needs one, but change an existing value only with a note in this
+  plan.
 
 ### Stage 4: session panel, composer and transcript
 
