@@ -4,7 +4,7 @@ import type { LeaseKind } from "./LeaseKind";
 /**
  * A client holding the daemon open, as `system.lifetime` lists it.
  */
-export type LeaseInfo = { id: string, kind: LeaseKind, pid: number | null, label: string,
+export type LeaseInfo = { id: string, kind: LeaseKind, pid: number | null, label: string, 
 /**
  * How long the lease has been held.
  */

@@ -6,19 +6,19 @@ import type { WorkInfo } from "./WorkInfo";
 /**
  * What `system.lifetime` reports.
  */
-export type LifetimeStatus = { mode: LifetimeMode,
+export type LifetimeStatus = { mode: LifetimeMode, 
 /**
  * How long a shared daemon waits with no lease and no work before it exits.
  */
-grace_ms: number, leases: Array<LeaseInfo>, work: Array<WorkInfo>,
+grace_ms: number, leases: Array<LeaseInfo>, work: Array<WorkInfo>, 
 /**
  * How long the daemon has had no lease and no work; absent while it has either.
  */
-idle_ms: number | null,
+idle_ms: number | null, 
 /**
  * How long until a shared daemon exits; absent while it has a lease or work.
  */
-exits_in_ms: number | null,
+exits_in_ms: number | null, 
 /**
  * The daemon has decided to exit and takes no more leases.
  */
