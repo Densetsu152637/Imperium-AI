@@ -190,7 +190,7 @@ pub struct SessionControlParams {
     /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
     /// for `models.default`; refused while a turn runs), `set_effort` (with `effort`; applies
     /// from every agent's next model call, also while a turn runs; kept across restarts),
-    /// `set_permission_mode` (with `permission_mode`: `ask`, `default`, `accept_edits`, `plan`,
+    /// `set_permission_mode` (with `permission_mode`: `ask`, `default`, `auto`, `accept_edits`, `plan`,
     /// or `full`; applies from every agent's next call, also while a turn runs; kept across
     /// restarts), `compact` (summarise older turns
     /// now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
@@ -222,7 +222,7 @@ pub struct SessionControlParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(
         optional,
-        type = "\"ask\" | \"default\" | \"accept_edits\" | \"plan\" | \"full\""
+        type = "\"ask\" | \"default\" | \"auto\" | \"accept_edits\" | \"plan\" | \"full\""
     )]
     pub permission_mode: Option<String>,
     /// For `set_pinned`: whether the session is pinned.
@@ -249,7 +249,7 @@ pub struct SessionControlResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(
         optional,
-        type = "\"ask\" | \"default\" | \"accept_edits\" | \"plan\" | \"full\""
+        type = "\"ask\" | \"default\" | \"auto\" | \"accept_edits\" | \"plan\" | \"full\""
     )]
     pub permission_mode: Option<String>,
     /// For `set_model` and `set_effort`: whether the session's model can reason.

@@ -25,9 +25,42 @@ use crate::{Paths, SetError};
 pub struct PermissionSettings {
     pub grants: Vec<PathGrant>,
     pub rules: Vec<PermissionRule>,
-    /// The permission mode new sessions start in (`ask`, `default`, `accept_edits`, `plan`,
-    /// `full`); each session can change its own.
+    /// The permission mode new sessions start in (`ask`, `default`, `auto`, `accept_edits`,
+    /// `plan`, `full`); each session can change its own.
     pub mode: PermissionMode,
+    /// `[permissions.auto]`: the classifier behind the `auto` mode.
+    pub auto: AutoPermissionSettings,
+}
+
+/// `[permissions.auto]`: the classifier that decides, in `auto` mode, whether a call that would
+/// ask the user may run (see docs/05-tools-and-isolation.md#auto-mode-implemented).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AutoPermissionSettings {
+    /// The model that classifies: a model table `id` or `<endpoint>:<model>` spec of a row in
+    /// the table. Unset, routing picks the cheapest basic-tier model, on this machine when the
+    /// session's model runs here. A named hosted row is refused for a session whose model is
+    /// local (the call would leave the machine), and the user is asked instead.
+    pub model: Option<String>,
+    /// Seconds one classification may take, a local model's loading included; a late answer is
+    /// an ask.
+    pub timeout_s: u64,
+    /// Consecutive classifications that ended in an ask or an error after which the classifier
+    /// rests for `cooldown_s` seconds and every call asks; 0 never rests.
+    pub max_fallbacks: u32,
+    /// Seconds the classifier rests after `max_fallbacks` fallbacks in a row.
+    pub cooldown_s: u64,
+}
+
+impl Default for AutoPermissionSettings {
+    fn default() -> Self {
+        AutoPermissionSettings {
+            model: None,
+            timeout_s: 20,
+            max_fallbacks: 3,
+            cooldown_s: 300,
+        }
+    }
 }
 
 /// Replaces the user file's `[permissions]` grants and rules (an empty list removes its key).
@@ -130,6 +163,7 @@ mod tests {
                 },
             ],
             mode: PermissionMode::Default,
+            auto: AutoPermissionSettings::default(),
         };
         let saved = save_permissions(&paths, &wanted, Vec::new()).unwrap();
         assert_eq!(saved, wanted);

@@ -111,7 +111,7 @@ pub fn run(
             "Type a message. While the agent works, messages queue and run in order; /steer \
              <text> adds a message to the running turn, /queue lists what waits. /context shows \
              what the model is reading, /model <id> switches models, /effort <low|medium|high|max> \
-             sets how hard a reasoning model thinks, /mode <ask|default|accept_edits|plan|full> \
+             sets how hard a reasoning model thinks, /mode <ask|default|auto|accept_edits|plan|full> \
              sets how actions are approved, /compact summarises older turns, /rewind lists \
              checkpoints and puts files and the conversation back to one, /diff [n] shows what \
              the session changed (since checkpoint n); /branch continues in a copy of this \
@@ -1393,6 +1393,7 @@ fn describe_mode(mode: &str) -> String {
     let what = match mode {
         "ask" => "every write, edit, and command asks, whatever the allow rules say",
         "accept_edits" => "file edits run without asking; commands follow the rules",
+        "auto" => "a classifier decides the calls that would ask; when it is unsure, you are asked",
         "plan" => "agents only read and plan; writes and commands are refused",
         "full" => "everything runs without asking except what deny rules or the safety floor stop",
         _ => "writes, edits, and commands ask unless a rule allows them",

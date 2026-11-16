@@ -147,6 +147,7 @@ fn start(
         auto_compact_at: None,
         attended: true,
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         harness: Default::default(),
         keep_agent_state: false,
         knowledge: Default::default(),

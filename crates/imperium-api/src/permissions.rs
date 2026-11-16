@@ -58,6 +58,10 @@ pub enum PermissionMode {
     /// Reads run; writes, edits, and commands ask unless a rule allows them.
     #[default]
     Default,
+    /// Like `default`, but a classifier decides the calls that would ask: it lets a routine,
+    /// in-scope call run and otherwise leaves the question to the user. Deny rules, ask rules
+    /// and the safety floor are never put to it.
+    Auto,
     /// File writes and edits run without asking; commands follow the rules.
     AcceptEdits,
     /// Read and plan only: writes, edits, commands, and tools that would ask are refused.
@@ -69,10 +73,11 @@ pub enum PermissionMode {
 
 impl PermissionMode {
     /// Every mode, most cautious first.
-    pub const ALL: [PermissionMode; 5] = [
+    pub const ALL: [PermissionMode; 6] = [
         PermissionMode::Plan,
         PermissionMode::Ask,
         PermissionMode::Default,
+        PermissionMode::Auto,
         PermissionMode::AcceptEdits,
         PermissionMode::Full,
     ];
@@ -81,6 +86,7 @@ impl PermissionMode {
         match self {
             PermissionMode::Ask => "ask",
             PermissionMode::Default => "default",
+            PermissionMode::Auto => "auto",
             PermissionMode::AcceptEdits => "accept_edits",
             PermissionMode::Plan => "plan",
             PermissionMode::Full => "full",
@@ -102,7 +108,7 @@ impl std::fmt::Display for UnknownMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "unknown permission mode {:?}; use ask, default, accept_edits, plan or full",
+            "unknown permission mode {:?}; use ask, default, auto, accept_edits, plan or full",
             self.0
         )
     }
@@ -117,6 +123,7 @@ impl std::str::FromStr for PermissionMode {
         match text.trim().to_ascii_lowercase().replace('-', "_").as_str() {
             "ask" => Ok(PermissionMode::Ask),
             "default" => Ok(PermissionMode::Default),
+            "auto" => Ok(PermissionMode::Auto),
             "accept_edits" | "edits" => Ok(PermissionMode::AcceptEdits),
             "plan" => Ok(PermissionMode::Plan),
             "full" | "full_access" => Ok(PermissionMode::Full),

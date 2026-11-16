@@ -195,6 +195,7 @@ fn start_with(
         auto_compact_at: None,
         attended: true,
         attachments,
+        auto_permissions: Default::default(),
         harness: Default::default(),
         keep_agent_state: false,
         effort: Default::default(),

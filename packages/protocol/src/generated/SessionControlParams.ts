@@ -7,7 +7,7 @@ export type SessionControlParams = { session_id: string,
  * `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
  * for `models.default`; refused while a turn runs), `set_effort` (with `effort`; applies
  * from every agent's next model call, also while a turn runs; kept across restarts),
- * `set_permission_mode` (with `permission_mode`: `ask`, `default`, `accept_edits`, `plan`,
+ * `set_permission_mode` (with `permission_mode`: `ask`, `default`, `auto`, `accept_edits`, `plan`,
  * or `full`; applies from every agent's next call, also while a turn runs; kept across
  * restarts), `compact` (summarise older turns
  * now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
@@ -30,7 +30,7 @@ effort?: "low" | "medium" | "high" | "max",
 /**
  * For `set_permission_mode`: the session's new permission mode.
  */
-permission_mode?: "ask" | "default" | "accept_edits" | "plan" | "full", 
+permission_mode?: "ask" | "default" | "auto" | "accept_edits" | "plan" | "full", 
 /**
  * For `set_pinned`: whether the session is pinned.
  */

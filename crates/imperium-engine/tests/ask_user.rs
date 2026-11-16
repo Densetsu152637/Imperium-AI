@@ -118,6 +118,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         auto_compact_at: None,
         attended: true,
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),

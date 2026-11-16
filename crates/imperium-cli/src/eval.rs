@@ -189,6 +189,12 @@ pub struct Outcome {
 pub async fn run(args: RunArgs) -> anyhow::Result<Outcome> {
     let started = Instant::now();
     let printing = args.print_prompt;
+    if args.permission_mode == PermissionMode::Auto {
+        bail!(
+            "--permission-mode auto asks a classifier model about each call, which a \
+             deterministic eval does not do: use default, plan, ask, accept_edits or full"
+        );
+    }
     let setup = Setup::new(&args)?;
     let scratch = Scratch::new(args.journal.as_deref())?;
     let workspace_dir = match (&args.workspace, printing) {
@@ -797,6 +803,7 @@ impl Setup {
             auto_compact_at: self.flags.auto_compact_at,
             attended: self.flags.attended,
             attachments: Default::default(),
+            auto_permissions: Default::default(),
             harness: HarnessSettings {
                 dereference: mode,
                 state: mode,

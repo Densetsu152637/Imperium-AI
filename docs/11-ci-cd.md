@@ -52,7 +52,7 @@ experimental builds are `0.2.<run>-experimental`. It is declared in the Cargo wo
 (`Cargo.toml`, which every crate and the Tauri shell inherit, and the path dependencies'
 versions), `apps/desktop/package.json` and `apps/desktop/src-tauri/tauri.conf.json`, and the
 desktop and phone clients send it in their handshake. `PROTOCOL_VERSION` is separate and stays
-at 0.42; the mods, `packages/protocol` and `packages/mod-sdk` keep their own versions.
+at 0.43; the mods, `packages/protocol` and `packages/mod-sdk` keep their own versions.
 
 ### Desktop updates
 

@@ -358,7 +358,7 @@ pub struct SessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(
         optional,
-        type = "\"ask\" | \"default\" | \"accept_edits\" | \"plan\" | \"full\""
+        type = "\"ask\" | \"default\" | \"auto\" | \"accept_edits\" | \"plan\" | \"full\""
     )]
     pub permission_mode: Option<String>,
     /// Whether the session's model can reason, so its effort applies (clients show the effort

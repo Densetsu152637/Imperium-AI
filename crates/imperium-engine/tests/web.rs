@@ -147,6 +147,7 @@ async fn agents_research_and_cite_sources() {
         auto_compact_at: None,
         attended: true,
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
@@ -296,6 +297,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
         auto_compact_at: None,
         attended: true,
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
@@ -422,6 +424,7 @@ async fn agents_use_tabs_and_save_downloads_after_approval() {
     let dir = tempfile::tempdir().unwrap();
     let session = Session::spawn(SessionConfig {
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         id: "tabs".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
         model: Some(ResolvedModel {
@@ -616,6 +619,7 @@ async fn a_download_is_approved_afresh_every_time() {
     let dir = tempfile::tempdir().unwrap();
     let session = Session::spawn(SessionConfig {
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         id: "afresh".into(),
         workspace: {
             let workspace = Workspace::new(dir.path()).unwrap();

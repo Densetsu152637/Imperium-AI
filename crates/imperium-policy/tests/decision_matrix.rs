@@ -46,7 +46,9 @@ fn table(mode: PermissionMode) -> [Row; 5] {
             [E, E, E, E, E, E, D, D],
             [R, E, R, E, E, E, D, D],
         ],
-        PermissionMode::Default => [
+        // Auto decides as default does: the classifier is the engine's, and sees only the
+        // calls that ask with the session allowance offered (the `A` cells).
+        PermissionMode::Default | PermissionMode::Auto => [
             read,
             [A, E, R, E, E, E, D, D],
             [A, E, R, E, E, E, D, D],
@@ -79,7 +81,7 @@ fn table(mode: PermissionMode) -> [Row; 5] {
 
 #[test]
 fn every_mode_kind_rule_and_floor_gives_the_tabled_decision() {
-    assert_eq!(PermissionMode::ALL.len(), 5, "a new mode needs table rows");
+    assert_eq!(PermissionMode::ALL.len(), 6, "a new mode needs table rows");
     for mode in PermissionMode::ALL {
         let rows = table(mode);
         for (kind, row) in KINDS.into_iter().zip(rows) {

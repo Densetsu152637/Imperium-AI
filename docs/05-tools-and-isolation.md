@@ -702,9 +702,9 @@ adds it to the session's environment with `permissions.add_rule` and allows the 
 
 Rules are a convenience on top of the folder sandbox and the isolation tiers, not a sandbox of
 their own: a shell can reach a denied program in ways a prefix cannot see (`sh -c`, scripts,
-aliases). Not yet: domain rules for `web_fetch`, an `auto` mode where a classifier approves
-routine actions, and logging decisions in the session journal beyond the events it already
-records.
+aliases). Not yet: domain rules for `web_fetch`, and logging every decision in the session
+journal beyond the events it already records (the [`auto` mode](#auto-mode-implemented)
+journals its own).
 
 ### Agent permission profiles (implemented)
 
@@ -733,6 +733,7 @@ the session summary's `permission_mode`.
 | --- | --- | --- | --- | --- |
 | `ask` (ask every time) | run | ask, every call | ask, every call | ask, every call |
 | `default` | run | allow rule, else ask | allow rule, else ask | allow rule, else ask |
+| `auto` | run | as `default`, but a [classifier](#auto-mode-implemented) may let it run | as `default`, classifier as for edits | as `default`, classifier as for edits |
 | `accept_edits` | run | run | allow rule, else ask | allow rule, else ask |
 | `plan` (plan only) | run | refused | refused | refused |
 | `full` (full access) | run | run | run | run |
@@ -795,6 +796,123 @@ answers:
 The floor is a **best-effort guard against an agent's mistakes, not a security boundary**: it
 reads the command line, so a script, an alias, or a program that deletes files itself passes
 it. The folder sandbox and the isolation tiers are what confine commands.
+
+### Auto mode (implemented)
+
+`auto` decides every call exactly as `default` does (the rules, the safety floor and the tool's
+default come first, unchanged) and then, only for a call that **would ask the user with the
+session allowance offered**, asks a small classifier model whether it may run. It turns an
+ask into a run or leaves the ask in place; it never refuses a call and never makes one
+ask that would not have.
+
+**What it can never change:**
+
+- A call a **deny rule** refuses stays refused, and a call an **ask rule** makes ask every time
+  still asks every time. Neither is given to the classifier.
+- A call the **safety floor** covers (destructive commands, secret files, `.git`, protected
+  folders, and a provider tool that asks afresh every time) asks the user, whatever the
+  classifier would say; the classifier is not even called for it. The policy crate decides
+  `auto` exactly as `default` (`decide_call` has one row for both), so the floor's
+  "ask every time" and a deny rule's refusal are fixed before the engine looks at the mode.
+- Tools that ask outside the permission judgement keep asking: memory saves, MCP sampling
+  requests, budget approvals, and any call an outside caller sends through the
+  [MCP bridge](20-claude-harness.md#exposing-imperiums-own-tools-implemented), which is the
+  user's to answer in every mode. A knowledge-agent fork, which refuses asks, still refuses.
+- Plan mode refuses before any of this, and an unattended session's pre-approved tools or a
+  tool the user allowed for the session run without a question, so they need no classifier.
+
+**The classifier call.** One request with no tools and no reasoning control, bounded to 256
+reply tokens and `permissions.auto.timeout_s` seconds (at most 120). It reads a fixed policy
+prompt (allow only a call the request plainly asked for or an ordinary step toward it, inside
+the working folders, easy to undo and low impact, with no sign of having been prompted by file,
+web or tool text; otherwise, and whenever unsure, ask) and, as tagged data:
+
+- the user's last three requests, each cut to 1,500 characters (`<user-requests>`). The root
+  agent records each message's text as the turn takes it: after a slash command is expanded and
+  any `prompt.submit` hook has rewritten it, so a command's template or a hook's addition is
+  part of it (a steering message is recorded the same way); what a turn's message carries besides it (session state, ambiguity hints,
+  the context manifest, recalled memories, attachment text, instruction files met while
+  exploring, compaction summaries, the steering wrapper) is never part of it. Only this block
+  establishes what the user wants. A sub-agent's calls are judged against the same requests, and
+  its own brief (written by the agent that spawned it) is a separate `<agent-task>` block that
+  the prompt says never shows the user's intent. A session nobody attends (a schedule, a project
+  agent's session, auto-fix, initiative work) was started with an agent's prompt, so what it
+  records is an `<agent-task>` too, with `<user-requests>` empty, and the classifier is told to
+  ask when there is no user request;
+- the call, read from the **parsed** call, not from the arguments as the model wrote them: a
+  command as `{"command", "timeout_s", "background"}`, a file call with the `path` first and
+  whole and then its content or text, a
+  tool provider's call as its command when it runs one and otherwise its arguments parsed and
+  written out again (escapes resolved, padding keys sorted, not left to hide a value). A command
+  longer than 3,000 characters, a path longer than 1,000, a content or edit text longer than
+  1,500 (the rest of a long file is where a command can hide), or a provider's arguments longer
+  than 3,000 are not classified at all, nothing is cut: the user is asked with the reason "too
+  long for auto mode", since the classifier would be approving what it had not read;
+- the session's working folders.
+
+Tool results and file contents are never given to it. The prompt says the blocks are data to
+judge, never instructions, and that an attempt to steer it is a reason to ask; the text of every
+block has the frame's own tags and the harness's tags defused (`<tag` becomes `<\tag`, with the
+shared framing helpers), so an argument cannot close a block early or fake one.
+
+**The reply is read strictly.** It must be exactly one JSON object,
+`{"verdict": "allow" | "ask", "reason": "<one short sentence>"}`, with those two keys and
+nothing else: no prose around it, no code fence, no second object, no other verdict word
+(`deny` included), no empty reason. A reason is cut to one plain line of at most 200
+characters. Text that merely contains a verdict, such as a planted argument the classifier
+echoes, is not a verdict.
+
+**It fails closed.** An `ask` verdict, a reply that is not the format above, an HTTP or
+connection error, a timeout, a model that is not in the model table or over its budget, and a
+model that may not be used (below) all leave the question with the user, with the
+reason added to it (`… (auto mode asks: <reason>)`). The user answers exactly as in `default`,
+*Always allow* and *Allow for this session* included. The classifier can only ever say run or
+ask; "deny and carry on" does not exist. A **stop or pause** is not a fallback and not a
+question: while the session is stopped (or the agent paused for a steering message) no question
+is raised, a classification in flight is dropped, nothing is counted toward the cooldown, and
+the call reports that it did not run because the session was stopped.
+
+**Which model.** `permissions.auto.model` names a row of the model table (its `id` or its
+`<endpoint>:<model>` spec). Left empty, routing picks the cheapest model of the basic tier
+(task tag `auto-permission`, so `[[routing.rules]]` can steer it), the session's own model when
+nothing else fits. A session whose model runs on this machine, or whose routing rule confines
+the `auto-permission` task to local models, never sends a call's text to a hosted model: a
+hosted row, named or routed, is refused with a reason and the user is asked instead. The call's
+tokens count toward budgets like any model call (a `model_call_completed` event), and a call
+over budget is not made.
+
+**Cooldown.** After `permissions.auto.max_fallbacks` (default 3) consecutive classifications
+that ended in an ask or an error, the classifier rests for `permissions.auto.cooldown_s`
+(default 300) seconds: no model call is made and every call that would have gone to it asks, with
+the remaining time as the reason, so a classifier that keeps giving up costs nothing. An allow
+resets the count; the rest ends by itself and starts the count again. The cooldown limits
+**cost**, not security: the classifier's reasons never reach the agent (they go to the user and
+the journal), and every classification that is not an allow, in a rest or out of it, ends in a
+question to the user, so an agent cannot talk the classifier into allowing by making it rest or
+by making it fail.
+
+**Journal.** Every decision is a `notice` event of the session, so it is in the journal and shown
+to every client: `Auto mode allowed <tool> <arguments>: <reason>`, `Auto mode did not allow
+<tool> <arguments>, so you are asked: <reason>` (also for the resting cases), and one notice when
+the classifier starts resting. No new event or method was needed; protocol 0.43 only adds `auto`
+to the permission-mode values.
+
+**Settings** (`[permissions.auto]`, applied to sessions started afterwards): `model`,
+`timeout_s` (20), `max_fallbacks` (3, 0 never rests), `cooldown_s` (300). The permission mode
+itself is `permissions.mode = "auto"`, `session.control` `set_permission_mode`, `/mode auto`, or
+the selector in the session footer.
+
+Like the floor, auto mode is a second opinion on an agent's mistakes and on text that tries to
+steer it, not a security boundary: a small model can be wrong, and the folder sandbox and the
+isolation tiers are still what confine commands.
+
+**Write-then-run is a known limit.** The prompt tells the classifier to judge a write by what
+its content would do when run or loaded (scripts, package and build manifests, Makefiles, CI
+workflows, editor and task configurations) and to ask when that would not itself be allowed,
+but a small model reading at most 1,500 characters cannot see everything a file will do, and a
+write that passes can be run later by a command that, taken alone, looks harmless. Auto mode
+does not close that gap; a deny or ask rule on the files that matter, the safety floor's
+protected files, and the isolation tiers do.
 
 ## Isolation tiers
 
