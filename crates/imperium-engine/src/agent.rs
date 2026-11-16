@@ -850,7 +850,8 @@ mod prompt_tests {
         let off = root_prompt("/work", false);
         assert!(on.contains("keep_as_knowledge") && on.contains("ask_agent"));
         assert!(!off.contains("keep_as_knowledge") && !off.contains("ask_agent"));
-        assert!(!off.contains("knowledge"));
+        // The proverb says "knowledge" too; the check is about knowledge agents.
+        assert!(!off.replace(PROVERB, "").contains("knowledge"));
         // The rest of the prompt is the same either way.
         assert!(on.starts_with(&off));
         assert!(!off.contains("  ") && !on.contains("  "));
