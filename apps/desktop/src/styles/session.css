@@ -421,78 +421,78 @@
   overflow-wrap: anywhere;
 }
 
-/* The assistant's turn: plain flowing text */
-.message.assistant > :first-child {
+/* The assistant's turn: plain flowing text (a comparison's replies read the same way) */
+:is(.message.assistant, .compare-reply) > :first-child {
   margin-top: 0;
 }
 
-.message.assistant > :last-child {
+:is(.message.assistant, .compare-reply) > :last-child {
   margin-bottom: 0;
 }
 
-.message.assistant p,
-.message.assistant ul,
-.message.assistant ol {
+:is(.message.assistant, .compare-reply) p,
+:is(.message.assistant, .compare-reply) ul,
+:is(.message.assistant, .compare-reply) ol {
   margin: 0 0 0.8em;
 }
 
-.message.assistant ul,
-.message.assistant ol {
+:is(.message.assistant, .compare-reply) ul,
+:is(.message.assistant, .compare-reply) ol {
   padding-left: 1.5em;
 }
 
-.message.assistant li + li {
+:is(.message.assistant, .compare-reply) li + li {
   margin-top: 0.25em;
 }
 
-.message.assistant h1,
-.message.assistant h2,
-.message.assistant h3,
-.message.assistant h4 {
+:is(.message.assistant, .compare-reply) h1,
+:is(.message.assistant, .compare-reply) h2,
+:is(.message.assistant, .compare-reply) h3,
+:is(.message.assistant, .compare-reply) h4 {
   margin: 1.4em 0 0.5em;
   line-height: var(--lh-tight);
   font-weight: var(--fw-semibold);
 }
 
-.message.assistant h1 {
+:is(.message.assistant, .compare-reply) h1 {
   font-size: 1.4em;
 }
 
-.message.assistant h2 {
+:is(.message.assistant, .compare-reply) h2 {
   font-size: 1.15em;
 }
 
-.message.assistant h3,
-.message.assistant h4 {
+:is(.message.assistant, .compare-reply) h3,
+:is(.message.assistant, .compare-reply) h4 {
   font-size: 1em;
 }
 
-.message.assistant a {
+:is(.message.assistant, .compare-reply) a {
   color: var(--accent-text);
   text-underline-offset: 2px;
 }
 
-.message.assistant blockquote {
+:is(.message.assistant, .compare-reply) blockquote {
   margin: 0 0 0.8em;
   padding-left: var(--sp-3);
   border-left: 2px solid var(--border-strong);
   color: var(--text-muted);
 }
 
-.message.assistant hr {
+:is(.message.assistant, .compare-reply) hr {
   border: 0;
   border-top: 1px solid var(--border);
   margin: 1.4em 0;
 }
 
-.message.assistant :not(pre) > code {
+:is(.message.assistant, .compare-reply) :not(pre) > code {
   padding: 0.1em 0.35em;
   background: var(--surface-active);
   border-radius: var(--radius-xs);
   font-size: var(--fs-code);
 }
 
-.message.assistant pre {
+:is(.message.assistant, .compare-reply) pre {
   margin: 0 0 0.8em;
   padding: var(--sp-3) var(--sp-4);
   background: var(--surface-sunken);
@@ -506,7 +506,7 @@
 }
 
 /* A table scrolls inside itself, so a wide one never widens the column. */
-.message.assistant table {
+:is(.message.assistant, .compare-reply) table {
   display: block;
   max-width: 100%;
   margin: 0 0 0.8em;
@@ -516,14 +516,14 @@
   font-variant-numeric: tabular-nums;
 }
 
-.message.assistant td,
-.message.assistant th {
+:is(.message.assistant, .compare-reply) td,
+:is(.message.assistant, .compare-reply) th {
   padding: var(--sp-1) var(--sp-3);
   border-bottom: 1px solid var(--border);
   text-align: left;
 }
 
-.message.assistant th {
+:is(.message.assistant, .compare-reply) th {
   border-bottom-color: var(--border-strong);
   color: var(--text-muted);
   font-weight: var(--fw-medium);
