@@ -637,4 +637,12 @@ Custom agents come from customised open-weight models (Emperor and Consul), or f
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
 rather than a separate snapshot store.
 
+Planned: **task-scoped context.** Context loaded for one task is tagged with that task and
+ejected from the conversation when the task finishes, saving context length. This covers
+files read, tool results, retrieved workflow rules, and subagent reports. Only a short result
+summary and the task's outcome stay behind, and the full material stays in the session
+journal so it can be recalled if a later task needs it. Context the user pins, or that a later
+plan step depends on, is kept. Small local models (such as the Emperor and Consul roots) gain
+the most, since their effective context is the tightest.
+
 Later candidates: fine-tuning plugin (Unsloth), shared team projects, a plugin registry.
