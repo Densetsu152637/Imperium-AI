@@ -600,13 +600,25 @@ and `environments.agent_update` (protocol 0.28)
     *Retire*; `/agents`, `/ask`, `/keep` and `/retire` in `imperium chat`; the prompt lines, `brief.md`,
     Emperor's root prompt and the evaluation cases). Not built: the acceptance measurement, phone
     access, fork streaming events and `ask_agent` in `mcp-serve`.
-46. **Final cleanup** (implemented; the last roadmap item). One pull request, opened after every
+46. **Final cleanup** (implemented). One pull request, opened after every
     other roadmap pull request has merged: tidy the repository, split oversized modules,
     remove duplicated helpers, route callers through proper interfaces, and build the policy
     crate deferred from item 31 ([08](08-agent-policy.md#default-policy-pack)), with no
     protocol change and one named behaviour change (`imperium workflow resolve` loads packs
     as sessions do). The inventory, decisions, commit order, acceptance checks and review
     split are in the [cleanup plan](plans/cleanup.md).
+47. **Interface polish** (planned). Bring the desktop app to the polish of Claude's interface with
+    its own look: simple, well-styled components, careful type and spacing, restrained colour and
+    smooth states. A small token system (type, spacing, radii, elevation, motion, colours for
+    light and dark, one focus ring), shared components (icon button, tooltip, field, tabs, menu,
+    dialog, badge, empty, loading and notice states) in plain React and CSS, then one pull
+    request per surface, a narrow layout at 600 px and below, and a motion and accessibility
+    pass, with guard tests against raw colours and ad hoc font sizes. Fixes the defects from the
+    last visual review (ragged Settings navigation, the nursery panel's scrollbars and dark
+    select, clipped inputs at 1024 px, no narrow layout, Ctrl+, needing a click, the tight
+    shortcut column, overlapping pets) and the light theme's accent contrast. No feature,
+    protocol, Rust or mod-contract change. The audit, tokens, stages and open questions are in the
+    [interface polish plan](plans/ui-polish.md).
 
 <!-- markdownlint-disable-next-line MD029 -->
 48. **Custom agent files** (implemented). User-defined subagents in Claude Code's format: Markdown
