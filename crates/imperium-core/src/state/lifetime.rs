@@ -204,7 +204,8 @@ impl DaemonState {
             let mut waiting: Vec<String> = self
                 .sessions()
                 .iter()
-                .filter(|session| session.status().0 == SessionStatus::NeedsAttention)
+                // Waiting on a permission or a question; not a failed turn, which nobody answers.
+                .filter(|session| session.is_asking())
                 .map(|session| format!("session {}", session.id()))
                 .collect();
             waiting.extend(

@@ -127,6 +127,11 @@ impl Controls {
         lock(&self.tracker).current()
     }
 
+    /// Whether any agent waits on a permission or a question.
+    pub(crate) fn is_asking(&self) -> bool {
+        lock(&self.tracker).asking.values().any(|count| *count > 0)
+    }
+
     /// Updates the status from an event; returns a `status_changed` event when it changed.
     pub(crate) fn observe(&self, event: &AgentEvent) -> Option<SessionEvent> {
         let mut tracker = lock(&self.tracker);

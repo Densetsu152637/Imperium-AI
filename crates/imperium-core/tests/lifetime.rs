@@ -379,6 +379,70 @@ async fn a_running_download_holds_the_daemon_until_it_ends() {
 }
 
 #[tokio::test]
+async fn a_failed_turn_is_not_a_request_a_phone_can_answer() {
+    let data = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    // A model that refuses every request, so the turn fails.
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { (axum::http::StatusCode::BAD_REQUEST, "no") }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let config = format!(
+        "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"{base_url}\"\n[phone]\nbind = \"127.0.0.1:0\"\n"
+    );
+    let daemon = daemon_with(&config, data.path());
+    daemon.start_phone().await.unwrap();
+    // A paired device that may approve.
+    let code = daemon.devices().new_code();
+    daemon.devices().pair(&code.code, "phone").unwrap();
+    daemon.start_lifetime(Some(Duration::from_millis(500)));
+    let endpoint = serve(&daemon).await;
+
+    let holder = leased(&endpoint, "imperium chat", None).await;
+    let mut client = Client::connect(&endpoint, me()).await.unwrap();
+    let session = client
+        .call::<SessionCreate>(SessionCreateParams {
+            environment_id: None,
+            project_dir: Some(project.path().to_string_lossy().into_owned()),
+            model: None,
+            ..SessionCreateParams::default()
+        })
+        .await
+        .unwrap();
+    client
+        .call::<SessionSend>(SessionSendParams {
+            session_id: session.session_id.clone(),
+            text: "hello".into(),
+            mode: None,
+            agent_id: None,
+            confirm_budget: None,
+            attachments: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let live = daemon.session(&session.session_id).unwrap();
+    wait_for(|| live.status().0 == imperium_protocol::session::SessionStatus::NeedsAttention).await;
+    assert!(!live.is_asking());
+    drop(holder);
+
+    assert!(
+        daemon
+            .lifetime_status()
+            .work
+            .iter()
+            .all(|work| work.kind != WorkKind::Approval),
+        "a failed turn is not waiting on anyone"
+    );
+    assert!(
+        exits(&daemon, Duration::from_secs(20)).await,
+        "the daemon exits though a phone that may approve is paired"
+    );
+}
+
+#[tokio::test]
 async fn an_explicit_stop_refuses_new_leases() {
     let data = tempfile::tempdir().unwrap();
     let daemon = daemon_with("", data.path());
