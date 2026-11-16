@@ -440,6 +440,7 @@ impl Agent {
         shown: String,
         model: ResolvedModel,
         gate: Option<Arc<Semaphore>>,
+        replay_key: (String, crate::ReplayRole),
     ) -> (String, JoinHandle<TaskReport>) {
         let task_id = self.shared.next_task_id();
         self.emit(SessionEvent::TaskSpawned {
@@ -458,6 +459,7 @@ impl Agent {
         );
         let spawned = json!({"task_id": task_id, "brief": &shown, "model": agent.model.spec});
         agent.shown = Some(shown);
+        agent.replay_key = Some(replay_key);
         agent.can_ask = false;
         agent.kind = AgentKind::Chunk;
         let handle = tokio::spawn(async move {
@@ -605,6 +607,10 @@ impl Agent {
                 shown,
                 model.clone(),
                 Some(Arc::clone(&self.shared.chunk_gate)),
+                (
+                    args.brief.clone(),
+                    crate::ReplayRole::Chunk { number, total },
+                ),
             ));
         }
         let list = started
@@ -645,7 +651,13 @@ impl Agent {
             }
             reports.join("\n\n")
         };
-        let (reduce_id, handle) = self.start_task(brief, shown, model, None);
+        let (reduce_id, handle) = self.start_task(
+            brief,
+            shown,
+            model,
+            None,
+            (reduce.clone(), crate::ReplayRole::Reduce { chunks: total }),
+        );
         self.tasks.insert(reduce_id.clone(), handle);
         Ok(format!(
             "started {list}, one per chunk of {artefact} ({total} chunks), and {reduce_id}, which \
@@ -1234,6 +1246,37 @@ pub(super) async fn run_subagent(
     let shared = Arc::clone(&agent.shared);
     let id = agent.id.clone();
     let spec = agent.model.spec.clone();
+    // An evaluation harness answers subagents from recordings: no model call, no tools.
+    if let Some(replay) = shared.replay.clone() {
+        let (brief, role) = agent
+            .replay_key
+            .clone()
+            .unwrap_or_else(|| (text.clone(), crate::ReplayRole::Task));
+        let answer = replay.answer(&crate::ReplayRequest {
+            task_id: &id,
+            brief: &brief,
+            role,
+        });
+        shared.inboxes.close(&id);
+        shared.emitter.emit(
+            &id,
+            SessionEvent::TaskFinished {
+                task_id: id.clone(),
+                ok: answer.ok,
+                report: truncate(&answer.report, EVENT_OUTPUT_CHARS),
+                usage: TokenUsage::default(),
+                cost_usd: None,
+                at_ms: Some(imperium_api::time::unix_ms()),
+            },
+        );
+        return TaskReport {
+            task_id: id,
+            model: spec,
+            ok: answer.ok,
+            paused: false,
+            report: truncate(&answer.report, REPORT_CHARS),
+        };
+    }
     if let Some(payload) = spawned {
         shared
             .hook_in(&agent.workspace, HookEvent::AgentSpawn, None, payload)
