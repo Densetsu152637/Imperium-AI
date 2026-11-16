@@ -184,28 +184,19 @@ impl Agent {
         let location_ok =
             |local: bool| confined.is_none_or(|wanted| (wanted == Location::Local) == local);
         // The tier is a floor only when the call (or a rule) sets one: the default is not a
-        // requirement the file's model must meet.
-        let fit_tier = if args.tier.is_some() {
+        // requirement the file's model must meet, though rules written for it still match.
+        let floor = if args.tier.is_some() {
             tier
         } else {
             Tier::Basic
         };
-        let fit_request = || {
-            task_request(
-                None,
-                fit_tier,
-                location,
-                &tags,
-                &session_id,
-                args.single_call,
-            )
-        };
         let mut file_notes = Vec::new();
         if let Some(def) = &named_def {
             if inherit_model {
-                let fits = self
-                    .row_fits(&self.model.spec, fit_request())
-                    .unwrap_or_else(|| location_ok(self.model.local));
+                let fits = location_ok(self.model.local)
+                    && self
+                        .row_fits(&self.model.spec, request(None), floor)
+                        .unwrap_or(true);
                 if fits {
                     routed.model = self.model.clone();
                 } else {
@@ -228,9 +219,10 @@ impl Agent {
                          the task was routed normally",
                         def.name
                     ));
-                } else if !self
-                    .row_fits(&routed.model.spec, fit_request())
-                    .unwrap_or_else(|| location_ok(routed.model.local))
+                } else if !(location_ok(routed.model.local)
+                    && self
+                        .row_fits(&routed.model.spec, request(None), floor)
+                        .unwrap_or(true))
                 {
                     file_notes.push(format!(
                         "the agent {} asks for the model {wanted}, which does not meet what \
@@ -399,7 +391,7 @@ impl Agent {
     /// `request`, as a ranking of that row alone decides: its tier, location and capabilities
     /// (tools, vision, long context) must suit, and its queue must not be backed up. `None` when
     /// no such row exists, so nothing is known about the model.
-    fn row_fits(&self, which: &str, request: TaskRequest<'_>) -> Option<bool> {
+    fn row_fits(&self, which: &str, request: TaskRequest<'_>, floor: Tier) -> Option<bool> {
         let row = self
             .shared
             .catalog
@@ -410,11 +402,14 @@ impl Agent {
         let mut alone = row.clone();
         alone.named_only = false;
         alone.cpu_lane = false;
-        let picked = route_noted(
+        // The rules match at the task's own tier (the default one included), and the row must
+        // meet the floor: the call's tier, or the lowest, and a matching rule's.
+        let picked = crate::model::route_noted_floor(
             &[alone],
             &self.shared.routing,
             &self.model,
             request,
+            floor,
             self.shared.local.as_deref(),
         );
         Some(!picked.fell_back && picked.model.spec == row.model.spec)

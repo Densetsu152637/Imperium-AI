@@ -161,6 +161,28 @@ async fn start_with_catalog(
     initial: ProfileRules,
     rows: &[Row<'_>],
 ) -> Setup {
+    start_routed(
+        root,
+        sub,
+        agents,
+        rules,
+        initial,
+        rows,
+        imperium_config::RoutingSettings::default(),
+    )
+    .await
+}
+
+/// [`start_with_catalog`] with these routing settings (user rules).
+async fn start_routed(
+    root: Vec<Step>,
+    sub: Vec<Step>,
+    agents: &[(&str, &str)],
+    rules: Vec<PermissionRule>,
+    initial: ProfileRules,
+    rows: &[Row<'_>],
+    routing: imperium_config::RoutingSettings,
+) -> Setup {
     let config = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     for (name, text) in agents {
@@ -222,7 +244,7 @@ async fn start_with_catalog(
         workspace,
         model: Some(resolved("fake:model")),
         catalog,
-        routing: imperium_config::RoutingSettings::default(),
+        routing,
         clients: Default::default(),
         local: None,
         tools: vec![Arc::new(Fetcher)],
@@ -765,6 +787,96 @@ async fn inherit_respects_the_capabilities_the_task_requires() {
             .notices
             .iter()
             .any(|n| n.contains("inherits") && n.contains("capabilities")),
+        "{:?}",
+        outcome.notices
+    );
+}
+
+/// Rules written for the default (standard) tier, which a call that sets no tier still meets.
+fn standard_rule(
+    location: Option<imperium_config::Location>,
+    require: Vec<imperium_config::Capability>,
+) -> imperium_config::RoutingSettings {
+    imperium_config::RoutingSettings {
+        rules: vec![imperium_config::RoutingRule {
+            when_tier: Some(imperium_config::Tier::Standard),
+            location,
+            require,
+            ..imperium_config::RoutingRule::default()
+        }],
+        ..imperium_config::RoutingSettings::default()
+    }
+}
+
+#[tokio::test]
+async fn a_rule_for_the_default_tier_confines_a_file_model_when_the_call_sets_no_tier() {
+    let hosted = agent_file("far", "Wants a hosted model.", "model: rowx\n", "Far.");
+    let inherit = agent_file("near", "Inherits.", "model: inherit\n", "Near.");
+    let setup = start_routed(
+        vec![
+            spawn_requiring("far", json!({})),
+            spawn_requiring("near", json!({})),
+            Some(("await_tasks", json!({}))),
+            None,
+        ],
+        Vec::new(),
+        &[("far.md", &hosted), ("near.md", &inherit)],
+        Vec::new(),
+        ProfileRules::default(),
+        // The session's own hosted model is in the table too.
+        &[
+            ("rowx", Default::default(), ""),
+            ("fake", Default::default(), ""),
+        ],
+        standard_rule(Some(imperium_config::Location::Local), Vec::new()),
+    )
+    .await;
+    let outcome = turn(&setup.session, "delegate", PermissionDecision::Deny).await;
+    assert_eq!(outcome.started_on.len(), 2, "{outcome:?}");
+    assert_ne!(outcome.started_on[0], "rowx:model", "{outcome:?}");
+    assert!(
+        outcome
+            .notices
+            .iter()
+            .any(|n| n.contains("rowx") && n.contains("location") && n.contains("routed normally")),
+        "{:?}",
+        outcome.notices
+    );
+    assert!(
+        outcome
+            .notices
+            .iter()
+            .any(|n| n.contains("inherits") && n.contains("location")),
+        "{:?}",
+        outcome.notices
+    );
+}
+
+#[tokio::test]
+async fn a_rules_required_capabilities_apply_to_a_file_model() {
+    let file = agent_file("far", "Wants a model.", "model: rowx\n", "Far.");
+    let setup = start_routed(
+        vec![
+            spawn_requiring("far", json!({})),
+            Some(("await_tasks", json!({}))),
+            None,
+        ],
+        Vec::new(),
+        &[("far.md", &file)],
+        Vec::new(),
+        ProfileRules::default(),
+        // No `vision` tag on the row.
+        &[("rowx", Default::default(), "")],
+        standard_rule(None, vec![imperium_config::Capability::Vision]),
+    )
+    .await;
+    let outcome = turn(&setup.session, "delegate", PermissionDecision::Deny).await;
+    assert_eq!(outcome.started_on.len(), 1, "{outcome:?}");
+    assert_ne!(outcome.started_on[0], "rowx:model", "{outcome:?}");
+    assert!(
+        outcome.notices.iter().any(|n| n.contains("rowx")
+            && n.contains("capabilities")
+            && n.contains("routed normally")),
         "{:?}",
         outcome.notices
     );
