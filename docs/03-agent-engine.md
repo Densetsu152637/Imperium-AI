@@ -886,8 +886,10 @@ by `session.eval_create` (protocol 0.45): the user's permission rules, path gran
 tier and protected folders apply exactly as they do in the app. The daemon wraps the session's
 model client to keep what is sent and received, and answers permission asks and `ask_user`
 batches itself, because no one is there. Only the `imperium` command may make such a session
-(`session.eval_create`, `session.eval_result`, `session.prompt_preview`): a paired phone, a mod
-or the API cannot, and neither can another client. (The `imperium run --ephemeral` of
+(`session.eval_create`, `session.eval_result`, `session.prompt_preview`): it must say it is
+`imperium-cli` in the handshake and come in on the daemon's local socket (a page in the app's
+window, a mod's included, reaches the daemon over loopback TCP and can call itself anything), so
+a paired phone, a mod, the API and any other client cannot. (The `imperium run --ephemeral` of
 [02](02-architecture.md) was a different idea that was never built.)
 
 ```sh
@@ -914,7 +916,7 @@ imperium run --print-prompt --variant lean --context-tokens 32768 > prompt.json
 | `--permission-mode` | Default `default`. A call that would ask is always denied (recorded under `permission_requests`); `plan` and `ask` are stricter, `accept_edits` lets edits through, `full` runs everything the user's deny and ask rules and the safety floor do not stop (including `web_fetch`) and warns on stderr; `auto` is refused (it asks a classifier model). |
 | `--config-home <dir>` | Look up named variants under this folder's `config` folder (laid out as `IMPERIUM_HOME`) instead of the user's. The daemon's own configuration is always the one that applies. |
 | `--local` | The root model runs on this machine, so the harness aids set to `auto` count as on. |
-| `--timeout-s`, `--journal <file>` | A wall-clock limit (default 1800) and a file the session's events are written to, one JSON object per line. The session itself is not kept: it is deleted when the run ends. |
+| `--timeout-s`, `--journal <file>` | A wall-clock limit (default 1800), enforced by the daemon too (the session stops at the deadline and is deleted 30 seconds later, even if the command is gone), and a file the session's events are written to, one JSON object per line. The session itself is not kept: it is deleted when the run ends, or when the connection that made it closes. |
 | `--print-prompt` | Print the resolved system prompt (with `{workspace}` where the working folder goes) and tool schemas as JSON and stop. No model is called: the daemon builds the session as for a run (`session.prompt_preview`) and answers it with a stand-in model, so the output is what a run would first send. |
 
 The root agent has the engine's own tools, plus `web_search` and `web_fetch`: the schemas and
@@ -929,6 +931,14 @@ when file tools touch it, does not list the repository's other git worktrees, an
 attachments or scratch folder, so the prompt and the files the model reads are the same on any
 machine; the working folder is the only path in the prompt (replaced by `{workspace}` in
 `prompt_hash`). The user's own path grants do appear in it, as they do in the app.
+
+The folder is an environment of the daemon: an existing environment whose first folder it is is
+used, otherwise one is made for the run and deleted with the session (nobody is told of it, and
+`environments.list` is as before once the run is over). The session is not announced and not in
+`session.list`, so other clients, a paired phone included, do not see it. The daemon, not the
+command's view of the notifications, is the authority on how the root's turn ended: `exit_reason`
+comes from what the daemon recorded (`session.eval_result` has `ended` and `plan`), and the
+command asks for it whenever two seconds pass without an event.
 
 What the user's configuration decides applies as in the app: a deny rule (say on `write_file`)
 holds in `full` mode, the isolation tier (`os`, `container`) confines commands, and a write into
@@ -1016,7 +1026,9 @@ in spawn order), `brief` (exact, blank space ignored), `brief_contains` (case-in
 reply needs at least one key. For the chunk and merge agents of `delegate_chunks`, `brief` is the
 call's own `brief` (chunk agents) or `reduce` text (the merge agent), without the chunk text or
 markers, and `role` (`task`, `chunk`, `reduce`) and `chunk` (the chunk's number, from 1) can
-narrow a reply. A `rename` in a variant may not take a name another tool has (the rename is
+narrow a reply. Chunk agents run in parallel, so a reply that is `once` (or several replies matching the same
+`brief_contains`) is handed to whichever chunk asks first: key chunk replies by `chunk` to make a
+run repeatable. A `rename` in a variant may not take a name another tool has (the rename is
 skipped with a warning). `ok: false` makes the root read a failed task. `"once": true` makes a
 reply answer one subagent only: once matched it is consumed, and the next subagent with the same
 key falls through to a later reply (or, with none, to the error below). No key matching gives

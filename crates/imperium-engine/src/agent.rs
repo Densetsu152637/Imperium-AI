@@ -460,9 +460,15 @@ impl Agent {
         if let Some(ChatMessage::System { content }) = self.messages.first_mut() {
             content.push_str(crate::breakdown::PART_SEPARATOR);
             let start = content.len();
+            // A root agent takes its task from the user, a subagent from the agent that started it.
+            let source = if self.can_delegate {
+                "the user"
+            } else {
+                "the agent that started you"
+            };
             content.push_str(&format!(
                 "You are running as the agent {}. Its definition follows; your task comes from \
-                 the agent that started you.\n\n{}",
+                 {source}.\n\n{}",
                 named.name, named.prompt
             ));
             let end = content.len();

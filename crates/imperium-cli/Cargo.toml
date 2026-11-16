@@ -35,7 +35,7 @@ workspace = true
 
 [dev-dependencies]
 axum = "0.8.9"
-imperium-core = { path = "../imperium-core" }
+imperium-core = { path = "../imperium-core", features = ["testing"] }
 imperium-ipc = { path = "../imperium-ipc" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time"] }

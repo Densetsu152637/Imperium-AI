@@ -208,6 +208,8 @@ pub struct Connection {
     allowed: Option<Vec<&'static str>>,
     /// What the client called itself in the handshake.
     client_name: Option<String>,
+    /// The evaluation sessions this connection made: deleted when it ends.
+    eval_sessions: Vec<String>,
     /// The process id of the other end and when (Unix seconds) the connection was accepted, for
     /// a connection on the local socket.
     peer: Option<(u32, u64)>,
@@ -231,6 +233,7 @@ impl Connection {
             handshake_done: false,
             allowed: None,
             client_name: None,
+            eval_sessions: Vec::new(),
             peer: None,
             resources: None,
             events: crate::events::EventFilter::default(),
@@ -253,6 +256,7 @@ impl Connection {
             handshake_done: false,
             allowed: Some(allowed),
             client_name: None,
+            eval_sessions: Vec::new(),
             peer: None,
             resources: None,
             events: crate::events::EventFilter::default(),
@@ -260,11 +264,14 @@ impl Connection {
         }
     }
 
-    /// Whether this connection may start evaluation sessions: it is not a paired phone's, and it
-    /// says it is the `imperium` command.
+    /// Whether this connection may start evaluation sessions: it is not a paired phone's, it
+    /// says it is the `imperium` command, and it came in on the local socket (a page in the
+    /// app's window, such as a mod's, reaches the daemon over loopback TCP with the token and
+    /// can call itself anything).
     pub(crate) fn may_eval(&self) -> bool {
         self.allowed.is_none()
             && self.client_name.as_deref() == Some(imperium_protocol::methods::EVAL_CLIENT)
+            && (self.peer.is_some() || self.state.eval_over_tcp())
     }
 
     /// Whether this connection wants `system.resources_changed` notifications.
@@ -412,6 +419,16 @@ impl Connection {
             },
             protocol: PROTOCOL_VERSION,
         })
+    }
+}
+
+impl Drop for Connection {
+    /// The evaluation sessions this connection made go with it, so a client that vanishes
+    /// leaves no session running (or the model's key held).
+    fn drop(&mut self) {
+        for id in std::mem::take(&mut self.eval_sessions) {
+            let _ = self.state.delete_session(&id, false);
+        }
     }
 }
 
@@ -579,8 +596,15 @@ mod tests {
             let handled = phone.handle_text(&request(2, method, params.clone()));
             assert_eq!(error_code(&handled), Some(codes::FORBIDDEN), "{method}");
         }
-        // The command itself is let in (here only as far as the missing session).
-        let mut cli = connection();
+        // The command's own name over loopback TCP is not enough: a page in the app's window
+        // reaches the daemon that way with the token.
+        let mut tcp = connection();
+        tcp.handle_text(&request(1, Handshake::NAME, named("imperium-cli")));
+        let handled = tcp.handle_text(&request(2, SessionEvalResult::NAME, methods[1].1.clone()));
+        assert_eq!(error_code(&handled), Some(codes::FORBIDDEN));
+        // The command itself, on the local socket, is let in (here only as far as the missing
+        // session).
+        let mut cli = connection().with_peer(Some((std::process::id(), 0)));
         cli.handle_text(&request(1, Handshake::NAME, named("imperium-cli")));
         let handled = cli.handle_text(&request(2, SessionEvalResult::NAME, methods[1].1.clone()));
         assert_eq!(error_code(&handled), Some(codes::INVALID_PARAMS));

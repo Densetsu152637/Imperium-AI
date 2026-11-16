@@ -19,9 +19,9 @@ use imperium_config::HarnessMode;
 use imperium_engine::{ChatClient, ChatClients, Endpoint, ResolvedModel, Session, SubagentReplay};
 use imperium_models::OpenAiCompatible;
 use imperium_protocol::methods::{
-    EvalOptions, EvalPermission, EvalQuestion, EvalResult, EvalVariant, PromptPreview,
+    EvalEnd, EvalOptions, EvalPermission, EvalQuestion, EvalResult, EvalVariant, PromptPreview,
 };
-use imperium_protocol::session::{PermissionDecision, SessionEvent};
+use imperium_protocol::session::{AgentEvent, PermissionDecision, ROOT_AGENT, SessionEvent};
 use imperium_web::{SearchFuture, SearchProvider, Web, WebError, WebTools};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -42,6 +42,17 @@ pub(crate) struct EvalRun {
     replay: Option<Arc<Replay>>,
     variant: Arc<EvalVariant>,
     asks: Mutex<Asks>,
+    /// How the root's turn ended and its last plan, from the session's events: the daemon is
+    /// the authority on it, whatever a client saw of the notifications.
+    progress: Mutex<Progress>,
+    /// The environment this run made for its folder, deleted with the session.
+    ephemeral_env: Mutex<Option<String>>,
+}
+
+#[derive(Debug, Default)]
+struct Progress {
+    ended: Option<EvalEnd>,
+    plan: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default)]
@@ -64,6 +75,7 @@ pub(crate) struct Prepared {
     pub permission_mode: PermissionMode,
     pub effort: Option<Effort>,
     pub agent: Option<String>,
+    pub timeout_s: Option<u64>,
     pub subagent_replay: Option<Arc<dyn SubagentReplay>>,
     /// Answer every model call with a fixed reply (a prompt preview).
     pub preview: bool,
@@ -190,6 +202,8 @@ impl Prepared {
                 replay,
                 variant,
                 asks: Mutex::new(Asks::default()),
+                progress: Mutex::new(Progress::default()),
+                ephemeral_env: Mutex::new(None),
             }),
             model,
             extra_body,
@@ -201,6 +215,7 @@ impl Prepared {
             permission_mode,
             effort,
             agent: options.agent.clone(),
+            timeout_s: options.timeout_s,
             subagent_replay,
             preview,
         })
@@ -244,6 +259,7 @@ impl EvalRun {
             None => (None, None),
         };
         let asks = self.asks.lock().unwrap_or_else(PoisonError::into_inner);
+        let progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
         EvalResult {
             variant_config_hash: variant::config_hash(&self.variant),
             prompt_hash,
@@ -266,7 +282,65 @@ impl EvalRun {
             permissions: asks.permissions.clone(),
             questions: asks.questions.clone(),
             workspace_root: workspace_root.to_string(),
+            ended: progress.ended.clone(),
+            plan: progress.plan.clone(),
         }
+    }
+
+    /// Takes in one of the session's events: how the root's turn ended, and its plan.
+    pub(crate) fn observe(&self, event: &AgentEvent) {
+        if event.agent_id != ROOT_AGENT && !matches!(event.event, SessionEvent::Paused { .. }) {
+            return;
+        }
+        let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
+        let end = |reason: &str, message: Option<String>| EvalEnd {
+            reason: reason.to_string(),
+            message,
+        };
+        match &event.event {
+            SessionEvent::PlanUpdated { plan } => {
+                progress.plan = serde_json::to_value(plan).ok();
+            }
+            SessionEvent::TurnCompleted { .. } => {
+                progress.ended.get_or_insert_with(|| end("completed", None));
+            }
+            SessionEvent::TurnFailed { message } => {
+                progress
+                    .ended
+                    .get_or_insert_with(|| end("failed", Some(message.clone())));
+            }
+            SessionEvent::Paused { reason, .. } => {
+                progress
+                    .ended
+                    .get_or_insert_with(|| end("paused", Some(reason.clone())));
+            }
+            _ => {}
+        }
+    }
+
+    /// The daemon stopped the session at its deadline.
+    pub(crate) fn mark_timeout(&self) {
+        let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
+        progress.ended.get_or_insert(EvalEnd {
+            reason: "timeout".into(),
+            message: None,
+        });
+    }
+
+    /// Remembers the environment this run made for its folder.
+    pub(crate) fn set_ephemeral_env(&self, id: Option<String>) {
+        *self
+            .ephemeral_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = id;
+    }
+
+    /// The environment this run made, once.
+    pub(crate) fn take_ephemeral_env(&self) -> Option<String> {
+        self.ephemeral_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     /// The first request's prompt and tools, for a preview.
@@ -288,7 +362,7 @@ impl EvalRun {
 /// denied and a batch of questions gets its recommended answers. It looks at the session's
 /// history again after a lag, so a request whose event was dropped is still answered. It holds
 /// the session only while it answers, so deleting the session ends it.
-pub(crate) fn watch_asks(session: &Arc<Session>, run: Arc<EvalRun>) {
+pub(crate) fn watch(session: &Arc<Session>, run: Arc<EvalRun>) {
     let (history, mut events) = session.subscribe_with_history();
     let mut seen = history.len();
     let weak = Arc::downgrade(session);
@@ -324,7 +398,8 @@ pub(crate) fn watch_asks(session: &Arc<Session>, run: Arc<EvalRun>) {
     });
 }
 
-fn answer(session: &Session, run: &EvalRun, event: imperium_protocol::session::AgentEvent) {
+fn answer(session: &Session, run: &EvalRun, event: AgentEvent) {
+    run.observe(&event);
     let mut asks = run.asks.lock().unwrap_or_else(PoisonError::into_inner);
     match event.event {
         SessionEvent::PermissionRequested {
@@ -353,5 +428,73 @@ fn answer(session: &Session, run: &EvalRun, event: imperium_protocol::session::A
             });
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use imperium_protocol::session::TokenUsage;
+
+    use super::*;
+
+    fn run() -> EvalRun {
+        EvalRun {
+            record: Shared::default(),
+            replay: None,
+            variant: Arc::new(EvalVariant::default()),
+            asks: Mutex::default(),
+            progress: Mutex::default(),
+            ephemeral_env: Mutex::default(),
+        }
+    }
+
+    fn event(agent: &str, event: SessionEvent) -> AgentEvent {
+        AgentEvent {
+            agent_id: agent.into(),
+            event,
+        }
+    }
+
+    /// The daemon keeps how the root's turn ended itself, so a client that missed the
+    /// notification can still ask.
+    #[test]
+    fn the_end_of_the_root_turn_is_recorded_from_the_sessions_events() {
+        let run = run();
+        run.observe(&event(
+            "t1",
+            SessionEvent::TurnFailed {
+                message: "a subagent".into(),
+            },
+        ));
+        assert!(run.result("/w").ended.is_none());
+        run.observe(&event(
+            "root",
+            SessionEvent::TurnCompleted {
+                usage: TokenUsage::default(),
+                cost_usd: None,
+                steps: 2,
+            },
+        ));
+        run.observe(&event(
+            "root",
+            SessionEvent::TurnFailed {
+                message: "later".into(),
+            },
+        ));
+        let ended = run.result("/w").ended.unwrap();
+        assert_eq!((ended.reason.as_str(), ended.message), ("completed", None));
+    }
+
+    #[test]
+    fn a_deadline_ends_the_run_once() {
+        let run = run();
+        run.mark_timeout();
+        run.observe(&event(
+            "root",
+            SessionEvent::TurnFailed {
+                message: "stopped".into(),
+            },
+        ));
+        assert_eq!(run.result("/w").ended.unwrap().reason, "timeout");
     }
 }

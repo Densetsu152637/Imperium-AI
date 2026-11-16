@@ -275,7 +275,10 @@ pub async fn run(client: &mut Client, args: RunArgs) -> anyhow::Result<Outcome> 
         "tools": result.first_request.as_ref().map_or_else(Vec::new, |request| request.tools.clone()),
         "transcript": transcript(&result),
         "final_reply": final_reply(&result),
-        "plan": log.plan.as_ref().and_then(|plan| serde_json::to_value(plan).ok()),
+        "plan": result
+            .plan
+            .clone()
+            .or_else(|| log.plan.as_ref().and_then(|plan| serde_json::to_value(plan).ok())),
         "subagents": subagents_json(&log, &result),
         "replay": result.replay,
         "ledger": {
@@ -313,15 +316,33 @@ async fn delete(client: &mut Client, session_id: &str) -> Result<(), imperium_cl
         .map(|_| ())
 }
 
+/// How often the daemon is asked how the run stands when no event has come: the daemon is the
+/// authority on how the turn ended, and a notification can be missed.
+const POLL: Duration = Duration::from_secs(2);
+
 /// Reads the session's events until the root agent's turn ends, the session pauses for a usage
-/// limit, the connection fails, or `timeout_s` passes.
+/// limit, the connection fails, or `timeout_s` passes. When the events are quiet it asks the
+/// daemon for the run's end.
 async fn follow(client: &mut Client, session_id: &str, timeout_s: u64, log: &mut EventLog) -> End {
     let deadline = tokio::time::sleep(Duration::from_secs(timeout_s));
     tokio::pin!(deadline);
     loop {
         let received = tokio::select! {
             () = &mut deadline => return End::Timeout,
-            notification = client.next_notification() => notification,
+            () = tokio::time::sleep(POLL) => None,
+            notification = client.next_notification() => Some(notification),
+        };
+        let Some(received) = received else {
+            let asked = client
+                .call::<SessionEvalResult>(SessionEvalResultParams {
+                    session_id: session_id.to_string(),
+                })
+                .await;
+            match asked.map(|result| result.ended) {
+                Ok(Some(ended)) => return end_of(&ended),
+                Ok(None) => continue,
+                Err(error) => return End::Failed(error.to_string()),
+            }
         };
         let notification = match received {
             Ok(notification) => notification,
@@ -339,6 +360,17 @@ async fn follow(client: &mut Client, session_id: &str, timeout_s: u64, log: &mut
         if let Some(end) = log.observe(params.agent_event) {
             return end;
         }
+    }
+}
+
+/// The run's end as the daemon recorded it.
+fn end_of(ended: &imperium_protocol::methods::EvalEnd) -> End {
+    let message = ended.message.clone().unwrap_or_default();
+    match ended.reason.as_str() {
+        "completed" => End::Completed,
+        "timeout" => End::Timeout,
+        "paused" => End::Paused(message),
+        _ => End::Failed(message),
     }
 }
 
@@ -635,6 +667,7 @@ impl Setup {
                 permission_mode: Some(args.permission_mode.as_str().to_string()),
                 cost_ceiling_usd: args.cost_ceiling,
                 token_ceiling: args.token_ceiling,
+                timeout_s: Some(args.timeout_s),
             },
         })
     }

@@ -925,7 +925,7 @@ impl DaemonState {
         }
         let session = Arc::new(session);
         if let Some(eval) = &eval {
-            crate::eval::watch_asks(&session, Arc::clone(&eval.run));
+            crate::eval::watch(&session, Arc::clone(&eval.run));
             self.evals
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -945,7 +945,10 @@ impl DaemonState {
             .lock()
             .expect("session map lock is never poisoned by a panic while held")
             .insert(id, Arc::clone(&session));
-        self.announce(SESSION_CREATED, self.summary(&session));
+        // An evaluation session is not announced: it belongs to the connection that made it.
+        if eval.is_none() {
+            self.announce(SESSION_CREATED, self.summary(&session));
+        }
         Ok((session, events))
     }
 

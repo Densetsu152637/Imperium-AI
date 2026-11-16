@@ -568,17 +568,10 @@ impl Environments {
     /// The environment whose working directory is `folder`, created (named after the folder)
     /// when there is none. This is how a bare project folder becomes an environment.
     pub fn for_folder(&self, folder: &str) -> Result<EnvironmentInfo, EnvironmentError> {
-        let folder = existing_folder(folder)?;
-        // Home is not a project's environment, even once it has been given this folder.
-        if let Some(env) = self.lock().iter().find(|env| {
-            !env.builtin
-                && env
-                    .folders
-                    .first()
-                    .is_some_and(|first| same(first, &folder))
-        }) {
-            return Ok(env.clone());
+        if let Some(env) = self.existing_for_folder(folder)? {
+            return Ok(env);
         }
+        let folder = existing_folder(folder)?;
         let name = Path::new(&folder)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -589,6 +582,26 @@ impl Environments {
             folders: vec![folder],
             ..EnvironmentCreateParams::default()
         })
+    }
+
+    /// The environment whose working directory is `folder`, if there is one: nothing is created.
+    pub fn existing_for_folder(
+        &self,
+        folder: &str,
+    ) -> Result<Option<EnvironmentInfo>, EnvironmentError> {
+        let folder = existing_folder(folder)?;
+        // Home is not a project's environment, even once it has been given this folder.
+        Ok(self
+            .lock()
+            .iter()
+            .find(|env| {
+                !env.builtin
+                    && env
+                        .folders
+                        .first()
+                        .is_some_and(|first| same(first, &folder))
+            })
+            .cloned())
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<EnvironmentInfo>> {

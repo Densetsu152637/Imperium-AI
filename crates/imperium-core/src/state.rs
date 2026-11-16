@@ -211,6 +211,8 @@ pub struct DaemonState {
     placements: Mutex<HashMap<String, Placement>>,
     /// What the evaluation sessions recorded, by session id.
     evals: Mutex<HashMap<String, Arc<crate::eval::EvalRun>>>,
+    /// Evaluation sessions may be made over loopback TCP, not only on the local socket.
+    eval_tcp: std::sync::atomic::AtomicBool,
     environments: Environments,
     /// Set at start when there are model folders, or after the first download.
     local: OnceLock<LocalRuntime>,
@@ -344,6 +346,7 @@ impl DaemonState {
             sessions: Mutex::new(HashMap::new()),
             placements: Mutex::new(HashMap::new()),
             evals: Mutex::new(HashMap::new()),
+            eval_tcp: std::sync::atomic::AtomicBool::new(false),
             environments,
             local: local.map(OnceLock::from).unwrap_or_default(),
             downloads: Downloads::default(),

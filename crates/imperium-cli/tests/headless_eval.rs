@@ -16,8 +16,9 @@ use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
 use imperium_protocol::jsonrpc::codes;
 use imperium_protocol::methods::{
-    EvalModel, EvalOptions, EvalVariant, Peer, SessionEvalCreate, SessionEvalCreateParams,
-    SessionPromptPreview,
+    EnvironmentList, EnvironmentListParams, EvalModel, EvalOptions, EvalVariant, Peer,
+    SessionEvalCreate, SessionEvalCreateParams, SessionEvalResult, SessionEvalResultParams,
+    SessionList, SessionListParams, SessionPromptPreview, SessionSend, SessionSendParams,
 };
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -53,6 +54,8 @@ impl Daemon {
         .settings()
         .unwrap();
         let state = DaemonState::new(Paths::under(data.path()), settings, None);
+        // The tests reach the daemon over loopback TCP; the command uses the local socket.
+        state.allow_eval_over_tcp();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let token = AccessToken::generate().unwrap();
         let endpoint = DaemonEndpoint {
@@ -836,6 +839,7 @@ fn eval_params(workspace: &std::path::Path) -> SessionEvalCreateParams {
             permission_mode: None,
             cost_ceiling_usd: None,
             token_ceiling: None,
+            timeout_s: None,
         },
     }
 }
@@ -985,4 +989,160 @@ async fn delegate_chunks_agents_are_answered_by_the_calls_bare_brief() {
     assert_eq!(reduce.len(), 1);
     assert_eq!(reduce[0]["report"], "merged lists");
     assert_eq!(out["replay"]["unused"], json!([]));
+}
+
+/// The folders of every environment the daemon has.
+async fn environment_folders(client: &mut Client) -> Vec<Vec<String>> {
+    client
+        .call::<EnvironmentList>(EnvironmentListParams::default())
+        .await
+        .unwrap()
+        .environments
+        .into_iter()
+        .map(|env| env.folders)
+        .collect()
+}
+
+/// Asks for the record of `session_id` until `ready` likes it, within ten seconds.
+async fn record_when(
+    client: &mut Client,
+    session_id: &str,
+    ready: impl Fn(&imperium_protocol::methods::EvalResult) -> bool,
+) -> Option<imperium_protocol::methods::EvalResult> {
+    for _ in 0..100 {
+        let asked = client
+            .call::<SessionEvalResult>(SessionEvalResultParams {
+                session_id: session_id.to_string(),
+            })
+            .await;
+        match asked {
+            Ok(result) if ready(&result) => return Some(result),
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    None
+}
+
+/// Whether the record of `session_id` is gone within ten seconds.
+async fn session_gone(client: &mut Client, session_id: &str) -> bool {
+    for _ in 0..100 {
+        let asked = client
+            .call::<SessionEvalResult>(SessionEvalResultParams {
+                session_id: session_id.to_string(),
+            })
+            .await;
+        if asked.is_err() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn a_run_leaves_no_environment_and_no_listed_session_behind() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let mut watcher = daemon.client().await;
+    let before = environment_folders(&mut watcher).await;
+    let (url, _) = endpoint(vec![text_body("Done.")]).await;
+
+    // While the run lives, the session is not listed to other clients.
+    let mut client = daemon.client().await;
+    let mut params = eval_params(workspace.path());
+    params.options.model.base_url = url.split('#').next().unwrap().to_string();
+    params.options.model.model_id = "fake-model".into();
+    let created = client.call::<SessionEvalCreate>(params).await.unwrap();
+    let listed = watcher
+        .call::<SessionList>(SessionListParams::default())
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .sessions
+            .iter()
+            .all(|row| row.session_id != created.session_id),
+        "an evaluation session is listed"
+    );
+
+    // The daemon, not the notifications, says how the turn ended and what the plan was.
+    client
+        .call::<SessionSend>(SessionSendParams {
+            session_id: created.session_id.clone(),
+            text: "Say done.".into(),
+            mode: None,
+            agent_id: None,
+            confirm_budget: None,
+            attachments: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let record = record_when(&mut watcher, &created.session_id, |r| r.ended.is_some())
+        .await
+        .expect("the daemon records the end of the turn");
+    assert_eq!(record.ended.unwrap().reason, "completed");
+
+    // The end of the run takes its environment with it.
+    drop(client);
+    assert!(session_gone(&mut watcher, &created.session_id).await);
+    assert_eq!(environment_folders(&mut watcher).await, before);
+}
+
+#[tokio::test]
+async fn an_evaluation_session_goes_when_its_connection_drops() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let mut client = daemon.client().await;
+    let created = client
+        .call::<SessionEvalCreate>(eval_params(workspace.path()))
+        .await
+        .unwrap();
+    let mut other = daemon.client().await;
+    assert!(
+        record_when(&mut other, &created.session_id, |_| true)
+            .await
+            .is_some()
+    );
+    drop(client);
+    assert!(
+        session_gone(&mut other, &created.session_id).await,
+        "the session outlived its connection"
+    );
+}
+
+#[tokio::test]
+async fn the_daemon_stops_a_session_at_its_deadline() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    // A model that accepts the request and never answers.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+        }
+    });
+    let mut client = daemon.client().await;
+    let mut params = eval_params(workspace.path());
+    params.options.model.base_url = url;
+    params.options.timeout_s = Some(1);
+    let created = client.call::<SessionEvalCreate>(params).await.unwrap();
+    client
+        .call::<SessionSend>(SessionSendParams {
+            session_id: created.session_id.clone(),
+            text: "Wait.".into(),
+            mode: None,
+            agent_id: None,
+            confirm_budget: None,
+            attachments: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let record = record_when(&mut client, &created.session_id, |r| r.ended.is_some())
+        .await
+        .expect("the daemon ends the run at its deadline");
+    assert_eq!(record.ended.unwrap().reason, "timeout");
 }

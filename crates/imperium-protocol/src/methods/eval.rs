@@ -107,6 +107,10 @@ pub struct EvalOptions {
     /// Stop before the next model call once this many tokens have been used.
     #[serde(default)]
     pub token_ceiling: Option<u64>,
+    /// The daemon stops the session after this many seconds and deletes it shortly after, so a
+    /// client that vanishes leaves nothing running.
+    #[serde(default)]
+    pub timeout_s: Option<u64>,
 }
 
 /// The root model of an evaluation session: any OpenAI-compatible endpoint, set per session
@@ -282,6 +286,19 @@ pub struct EvalResult {
     pub questions: Vec<EvalQuestion>,
     /// The session's working folder, as the prompt shows it.
     pub workspace_root: String,
+    /// How the root agent's turn ended, as the daemon saw it; `None` while it runs.
+    pub ended: Option<EvalEnd>,
+    /// The root agent's last plan.
+    pub plan: Option<serde_json::Value>,
+}
+
+/// How an evaluation session's root turn ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvalEnd {
+    /// `completed`, `failed`, `paused` (a usage limit) or `timeout`.
+    pub reason: String,
+    /// The failure or the pause's reason.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -17,6 +17,7 @@ impl Connection {
             }),
             SessionEvalCreate::NAME => call::<SessionEvalCreate>(c.params.take(), |params| {
                 let (result, events) = self.create_eval_session(params)?;
+                self.eval_sessions.push(result.session_id.clone());
                 *c.subscription = Some(Subscription {
                     session_id: result.session_id.clone(),
                     events,
@@ -70,6 +71,8 @@ impl Connection {
                     .state
                     .sessions()
                     .iter()
+                    // An evaluation session belongs to the connection that made it.
+                    .filter(|session| self.state.eval_run(session.id()).is_none())
                     .map(|session| self.state.summary(session))
                     .collect();
                 sessions.extend(self.state.archived_sessions());
