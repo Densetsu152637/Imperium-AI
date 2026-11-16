@@ -27,6 +27,7 @@ Commands:
   mcp-serve   Serve the Claude harness: an MCP server on standard input and output that lets an external agent such as Claude Code start sessions, follow them and answer their permission requests through this daemon. Register it in `.mcp.json`. With `--tools` it serves Imperium's own tools instead (files, search, web, memory), each run in an Imperium session under the user's permission rules
   mcp         Remote MCP servers that use OAuth: sign in and out
   agents      Named agents: subagents defined by Markdown files that the root agent can delegate to
+  run         Run one task through the real agent loop without the daemon or the desktop, against any OpenAI-compatible model endpoint, and print the result (transcript, plan, token and cost ledger, exit reason) as JSON: the harness evaluations run through. With `--print-prompt` it prints the resolved system prompt and tool schemas instead, without calling a model. Exit code 0 when the agent finished its turn, 3 when the run stopped early (a ceiling, the step limit, a timeout or a model error), 1 when it could not run
   resources   CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
   help        Print this message or the help of the given subcommand(s)
 
@@ -3015,6 +3016,93 @@ Print this message or the help of the given subcommand(s)
 
 Usage: imperium agents help help
 
+===== imperium run =====
+Run one task through the real agent loop without the daemon or the desktop, against any OpenAI-compatible model endpoint, and print the result (transcript, plan, token and cost ledger, exit reason) as JSON: the harness evaluations run through. With `--print-prompt` it prints the resolved system prompt and tool schemas instead, without calling a model. Exit code 0 when the agent finished its turn, 3 when the run stopped early (a ceiling, the step limit, a timeout or a model error), 1 when it could not run
+
+Usage: imperium run [OPTIONS]
+
+Options:
+      --headless
+          Run without the daemon or the desktop. Required to run a task (`--print-prompt` needs neither)
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --json
+          Print the result as JSON. It is the only output format; scripts pass it to say so
+
+      --print-prompt
+          Print the resolved system prompt and tool schemas as JSON and stop, without calling a model. The prompt shows `{workspace}` where the working folder goes
+
+      --task <TASK>
+          The task: a JSON file with a `prompt` (its other fields are kept in the output), or the prompt itself
+
+      --workspace <WORKSPACE>
+          The folder the agent works in. Its tools can read and, where the permission mode lets them, change it: point it at a copy
+
+      --root-model <ROOT_MODEL>
+          The root model's endpoint: an OpenAI-compatible base URL such as `http://127.0.0.1:8080/v1`, optionally followed by `#<model id>`
+
+      --model-id <MODEL_ID>
+          The root model's id at that endpoint (when `--root-model` has no `#<id>`)
+
+      --api-key-env <VAR>
+          The environment variable that holds the endpoint's API key. The key is never printed
+
+      --context-tokens <N>
+          The root model's context window in tokens
+
+      --effort <EFFORT>
+          How hard a model that can reason thinks: low, medium, high or max
+
+      --thinking <THINKING>
+          Turn thinking on or off by sending `chat_template_kwargs.enable_thinking` (llama.cpp, vLLM)
+          
+          [possible values: on, off]
+
+      --chat-template-kwargs <JSON>
+          A JSON object sent as `chat_template_kwargs` with every request of the root model
+
+      --variant <VARIANT>
+          A named variant (`<config>/harness-variants/<name>.toml`) or the path of a variant file
+
+      --prompt-overlay <FILE>
+          A text file appended to the root agent's system prompt, after any variant's edits
+
+      --flag <KEY=VALUE>
+          A loop flag, `key=value`; repeatable. The flags are listed in docs/03-agent-engine.md: max_steps, effort, auto_compact, auto_compact_at, knowledge, attended, harness
+
+      --subagent-replay <FILE>
+          Answer subagents from this recordings file instead of running them (no model calls for subagents). A task file with a `subagent_replay` object is used when this is not given
+
+      --cost-ceiling <USD>
+          Stop before the next model call once this much has been spent, in US dollars. Needs prices (`--price-in` and `--price-out`)
+
+      --token-ceiling <N>
+          Stop before the next model call once this many tokens (prompt plus completion, over all agents) have been used
+
+      --price-in <USD>
+          Price of a million prompt tokens in US dollars, for the cost ledger
+
+      --price-out <USD>
+          Price of a million completion tokens in US dollars, for the cost ledger
+
+      --permission-mode <PERMISSION_MODE>
+          How the agent's tool calls are checked. A call that would ask is always denied: nobody answers. `full` runs everything the rules and the safety floor do not stop
+          
+          [default: default]
+
+      --timeout-s <SECONDS>
+          Stop the run after this many seconds
+          
+          [default: 1800]
+
+      --journal <FILE>
+          Keep the session's journal at this path (events, one JSON object per line)
+
+  -h, --help
+          Print help
+
 ===== imperium resources =====
 CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
 
@@ -3059,6 +3147,7 @@ Commands:
   mcp-serve   Serve the Claude harness: an MCP server on standard input and output that lets an external agent such as Claude Code start sessions, follow them and answer their permission requests through this daemon. Register it in `.mcp.json`. With `--tools` it serves Imperium's own tools instead (files, search, web, memory), each run in an Imperium session under the user's permission rules
   mcp         Remote MCP servers that use OAuth: sign in and out
   agents      Named agents: subagents defined by Markdown files that the root agent can delegate to
+  run         Run one task through the real agent loop without the daemon or the desktop, against any OpenAI-compatible model endpoint, and print the result (transcript, plan, token and cost ledger, exit reason) as JSON: the harness evaluations run through. With `--print-prompt` it prints the resolved system prompt and tool schemas instead, without calling a model. Exit code 0 when the agent finished its turn, 3 when the run stopped early (a ceiling, the step limit, a timeout or a model error), 1 when it could not run
   resources   CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
   help        Print this message or the help of the given subcommand(s)
 
@@ -3764,6 +3853,11 @@ Commands:
 List the named agents from your agents folder and from plugins: name, source and what each is for. A project's own agent files load per session, for a trusted project only
 
 Usage: imperium help agents list
+
+===== imperium help run =====
+Run one task through the real agent loop without the daemon or the desktop, against any OpenAI-compatible model endpoint, and print the result (transcript, plan, token and cost ledger, exit reason) as JSON: the harness evaluations run through. With `--print-prompt` it prints the resolved system prompt and tool schemas instead, without calling a model. Exit code 0 when the agent finished its turn, 3 when the run stopped early (a ceiling, the step limit, a timeout or a model error), 1 when it could not run
+
+Usage: imperium help run
 
 ===== imperium help resources =====
 CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
