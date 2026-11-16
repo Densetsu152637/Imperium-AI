@@ -1065,7 +1065,7 @@ async fn run(
         },
     };
     if let Some(def) = &root_agent {
-        let (named, notes) = root.as_named_root(def);
+        let (named, notes) = root.into_named_root(def);
         root = named;
         for message in notes {
             shared

@@ -479,7 +479,10 @@ impl Agent {
     /// file as the root): its instructions follow the base ones and only the tools its file
     /// lists are offered, none when the file lists `tools` with nothing in it. Returns the
     /// agent and notes for the user.
-    pub(crate) fn as_named_root(self, def: &imperium_extensions::AgentDef) -> (Self, Vec<String>) {
+    pub(crate) fn into_named_root(
+        self,
+        def: &imperium_extensions::AgentDef,
+    ) -> (Self, Vec<String>) {
         let offered: Vec<String> = self
             .offered_tools()
             .0
