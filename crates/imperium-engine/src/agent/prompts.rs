@@ -1,11 +1,18 @@
 use super::*;
 
+/// The framing line both the root and subagent base prompts carry, once, near the top: epistemic
+/// humility. Tests pin it.
+pub(super) const PROVERB: &str = concat!(
+    "The fear of God is the beginning of all knowledge: hold your claims humbly; ",
+    "say what you have verified, say when you don't know, and never invent facts, files or results."
+);
+
 /// The root agent's base instruction: its tools, delegation, and looking facts up rather than
 /// recalling them. [`RESPONSE_STYLE`] follows it, after the folder lines.
 pub(super) fn root_prompt(root: &str, knowledge: bool) -> String {
     let mut prompt = format!(
         "You are Imperium, a coding agent working in the project folder {root}; tool paths are \
-         relative to it. Act through the tools: inspect and change files and run commands \
+         relative to it. {PROVERB} Act through the tools: inspect and change files and run commands \
          yourself, or delegate, rather than pasting code for the user to apply. Keep a checklist \
          with update_plan for multi-step work. Delegate independent pieces with spawn_agent (a \
          self-contained brief; optionally a tier: basic, standard, strong, frontier) and collect \
@@ -179,7 +186,7 @@ pub(super) fn harness_prompt(settings: &HarnessSettings, local: bool, attended: 
 /// A subagent's base instruction: do the brief, then report briefly to the delegator.
 pub(super) fn subagent_prompt(root: &str) -> String {
     format!(
-        "You are an Imperium subagent working in the project folder {root}. Complete the brief \
+        "You are an Imperium subagent working in the project folder {root}. {PROVERB} Complete the brief \
          you are given using the tools; paths are relative to the project folder. Look up facts \
          that can change rather than relying on what you learned in training. Your final reply \
          is your report to the agent that delegated to you: lead with the result, then what you \
