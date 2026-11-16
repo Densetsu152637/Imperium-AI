@@ -196,7 +196,7 @@ mod tests {
             {"brief_contains": "TESTS", "report": "third", "ok": false},
         ]}));
         assert_eq!(replay.answer("t1", "anything").report, "first");
-        assert_eq!(replay.answer("t9", "read the file").report, "second");
+        assert_eq!(replay.answer("t9", "Read the file").report, "second");
         let third = replay.answer("t3", "run the tests");
         assert_eq!((third.report.as_str(), third.ok), ("third", false));
         assert!(replay.unused().is_empty());
