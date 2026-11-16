@@ -7,7 +7,7 @@ import { BookOpen, CircleX, PanelTop, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { RESUME_TEXT, formatElapsed, taskElapsed } from "../sessions/agentView";
-import { RowMenu, type RowMenuItem } from "../components/RowMenu";
+import { Menu, type MenuItem } from "../components/Menu";
 import { canKeep, rowNote } from "../sessions/knowledge";
 import { modelName, useModelNames } from "../models/modelNames";
 import type { KnowledgeCard } from "@imperium/protocol";
@@ -103,7 +103,7 @@ function AgentRow({
   ]
     .filter(Boolean)
     .join("\n");
-  const items: RowMenuItem[] = [
+  const items: MenuItem[] = [
     { label: "Open log", icon: PanelTop, onSelect: () => onOpen?.(task.taskId), disabled: !onOpen },
   ];
   if (paused && onResume) {
@@ -138,7 +138,7 @@ function AgentRow({
           )}
           {elapsed !== null && <span className="agent-elapsed">{formatElapsed(elapsed)}</span>}
         </button>
-        <RowMenu label={`More for ${task.title}`} items={items} />
+        <Menu label={`More for ${task.title}`} items={items} />
       </div>
     </li>
   );

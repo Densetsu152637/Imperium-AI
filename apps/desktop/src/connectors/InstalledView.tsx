@@ -3,7 +3,7 @@
 import { KeyRound, LoaderCircle, LogIn, LogOut, Pencil, Plus, Puzzle, RefreshCw, Sparkles, Trash, X } from "lucide-react";
 import { useState } from "react";
 import type { CatalogServer, McpListResult, McpServerInfo, McpStatus, PluginInfo } from "@imperium/protocol";
-import { RowMenu } from "../components/RowMenu";
+import { Menu } from "../components/Menu";
 import { Switch } from "../components/Switch";
 import { installedByAgent, sourceLabel } from "../settings/configChanges";
 import { ConnectorIcon } from "./connectorIcons";
@@ -199,7 +199,7 @@ export function InstalledView({
                         <LogIn aria-hidden="true" /> Sign in
                       </button>
                     )}
-                    <RowMenu
+                    <Menu
                       label={`More for ${server.name}`}
                       items={[
                         {

@@ -6,13 +6,13 @@
 // the settings as they are edited. "Use this model" switches a model off: it is greyed out, left
 // out of the pickers, routing and escalation, and cannot be the default (modelAvailability.ts).
 // Edits are saved through `models.set_config`; a debounced dry run supplies the live estimate and
-// the server's validation message. It uses the Settings window's shell (SettingsModal): the models
+// the server's validation message. It uses the Settings window's shell (Dialog): the models
 // are its navigation, local ones and model-table rows in two groups.
 
 import { Boxes, Cpu, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { LocalModelConfig, ModelConfigResult, ModelSetConfigParams, TableModelConfig, TableModelSettings, LocalLaunchSettings } from "@imperium/protocol";
-import { matches, ModalNavGroup, ModalNavItem, SettingsModal } from "../components/SettingsModal";
+import { matches, DialogNavGroup, DialogNavItem, Dialog } from "../components/Dialog";
 import type { DaemonClient } from "../daemon/client";
 import { defaultTurnedOff, disabledToSave, offSpecs, replacementDefaults, type AvailabilityInput, type Switches } from "./modelAvailability";
 import { EMPTY_LOCAL, EMPTY_TABLE, localDraft, localSettings, normLocal, normTable, same, tableDraft, tableSettings, type LocalDraft, type TableDraft } from "./modelConfigDrafts";
@@ -296,7 +296,7 @@ export function ModelConfigDialog({
       ? (config?.disabled ?? []).includes(row.spec) || !(tableDrafts[row.id]?.enabled ?? row.effective.enabled)
       : off.has(specOf(item));
     return (
-      <ModalNavItem
+      <DialogNavItem
         key={`${kind}:${item.id}`}
         icon={kind === "local" ? Cpu : Boxes}
         active={tab === kind && selected === item.id}
@@ -326,7 +326,7 @@ export function ModelConfigDialog({
         ) : (
           item.id
         )}
-      </ModalNavItem>
+      </DialogNavItem>
     );
   };
 
@@ -345,18 +345,18 @@ export function ModelConfigDialog({
           autoFocus
         />
       </label>
-      <ModalNavGroup label="Local models">
+      <DialogNavGroup label="Local models">
         {localItems.map((item) => navItem(item, "local"))}
         {config && localItems.length === 0 && (
           <span className="settings-nav-empty">{query.trim() ? "No matches." : "No local models found."}</span>
         )}
-      </ModalNavGroup>
-      <ModalNavGroup label="Model table">
+      </DialogNavGroup>
+      <DialogNavGroup label="Model table">
         {tableItems.map((item) => navItem(item, "table"))}
         {config && tableItems.length === 0 && (
           <span className="settings-nav-empty">{query.trim() ? "No matches." : "The model table is empty."}</span>
         )}
-      </ModalNavGroup>
+      </DialogNavGroup>
     </>
   );
 
@@ -401,7 +401,7 @@ export function ModelConfigDialog({
     ) : null;
 
   return (
-    <SettingsModal
+    <Dialog
       label="Models"
       title={selected ? (selectedAlias ?? selected) : "Models"}
       nav={nav}
@@ -449,6 +449,6 @@ export function ModelConfigDialog({
           onResetAll={() => setTableDrafts((all) => ({ ...all, [selectedTable.id]: EMPTY_TABLE }))}
         />
       )}
-    </SettingsModal>
+    </Dialog>
   );
 }

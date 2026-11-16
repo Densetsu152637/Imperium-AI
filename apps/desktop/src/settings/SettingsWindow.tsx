@@ -10,8 +10,8 @@ import type { ConfigDescribeResult, ConfigEntry, ConfigSetResult, ModListResult 
 import { ApiSection } from "../components/ApiSection";
 import { BenchmarkSection } from "../components/BenchmarkSection";
 import { BudgetsSection } from "../components/BudgetsEditor";
-import { RowMenu } from "../components/RowMenu";
-import { matches, ModalNavGroup, ModalNavItem, SettingsModal } from "../components/SettingsModal";
+import { Menu } from "../components/Menu";
+import { matches, DialogNavGroup, DialogNavItem, Dialog } from "../components/Dialog";
 import { Row } from "../components/SettingsRow";
 import { ShortcutsSection } from "../components/ShortcutsSection";
 import { Switch as Toggle } from "../components/Switch";
@@ -286,7 +286,7 @@ export function SettingsWindow(props: Props) {
             {section === "notifications" && (
               <>
                 <Row label="Try the sounds" description="Hear each chime; a failed turn uses the finish sound setting.">
-                  <RowMenu
+                  <Menu
                     label="Play a sound"
                     icon={Volume2}
                     text="Play"
@@ -323,11 +323,11 @@ export function SettingsWindow(props: Props) {
         />
       </label>
       {groups.map((group) => (
-        <ModalNavGroup key={group} label={group}>
+        <DialogNavGroup key={group} label={group}>
           {sections
             .filter((s) => s.group === group)
             .map((s) => (
-              <ModalNavItem
+              <DialogNavItem
                 key={s.id}
                 icon={SECTION_ICONS[s.id] ?? SlidersHorizontal}
                 active={s.id === section && !query.trim()}
@@ -337,9 +337,9 @@ export function SettingsWindow(props: Props) {
                 }}
               >
                 {s.label}
-              </ModalNavItem>
+              </DialogNavItem>
             ))}
-        </ModalNavGroup>
+        </DialogNavGroup>
       ))}
     </>
   );
@@ -367,8 +367,8 @@ export function SettingsWindow(props: Props) {
   );
 
   return (
-    <SettingsModal label="Settings" title={title} nav={nav} notice={notice} onClose={onClose}>
+    <Dialog label="Settings" title={title} nav={nav} notice={notice} onClose={onClose}>
       {body()}
-    </SettingsModal>
+    </Dialog>
   );
 }

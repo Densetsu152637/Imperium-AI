@@ -1,4 +1,4 @@
-/* style-budget: colour=0 font-size=6 font-weight=2 radius=4 shadow=0 duration=3 z-index=0 */
+/* style-budget: colour=0 font-size=5 font-weight=0 radius=3 shadow=0 duration=3 z-index=0 */
 /* Shared components: icon and small buttons, fields, the select trigger, switches, badge variants, status dots. Imported last: in the original stylesheet these came after the surfaces and win ties with them. */
 
 .muted {
@@ -11,33 +11,88 @@
   margin: calc(var(--space) * 0.5);
 }
 
-.badge.running {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-  color: var(--accent);
+/* ---- Badge: text on the soft colour of its tone; the legacy state classes map onto the tones ---- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  max-width: 100%;
+  min-height: calc(18 * var(--px));
+  padding: calc(1 * var(--px)) var(--sp-2);
+  background: var(--surface-active);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  white-space: nowrap;
 }
 
-.badge.finished {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+.badge > .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.badge.tone-accent,
+.badge.running,
+.badge.cloud,
+.badge.persistent,
+.badge.knowledge {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.badge.tone-ok,
+.badge.finished,
+.badge.local,
+.badge.answered {
+  background: var(--ok-soft);
   color: var(--ok);
 }
 
-.badge.failed {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+.badge.tone-warn,
+.badge.paused {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.badge.tone-danger,
+.badge.failed,
+.badge.timeout,
+.badge.cancelled,
+.badge.refused {
+  background: var(--danger-soft);
   color: var(--danger);
 }
 
-/* Paused for a steering message: waiting for the root or the user to resume or cancel it */
-.badge.paused {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
-  color: var(--warn);
+/* Session status: a mark and words, with colour as a third cue */
+.badge.status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-mark {
+  font-size: var(--fs-xs);
+}
+
+.badge.status.idle {
+  background: transparent;
+}
+
+.badge.status.needs_attention {
+  font-weight: var(--fw-semibold);
+}
+
+.badge.status.needs_model,
+.badge.status.paused {
+  border-style: dashed;
+  border-color: currentColor;
+}
+
+.badge.status.merged {
+  background: var(--ok);
+  color: var(--accent-ink);
 }
 
 .status-dot.task-running {
@@ -66,20 +121,6 @@
   .status-dot.task-running {
     animation: none;
   }
-}
-
-.badge.local {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
-  color: var(--ok);
-}
-
-.badge.cloud {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-  color: var(--accent);
 }
 
 .visually-hidden {
@@ -128,67 +169,6 @@
   }
 }
 
-/* Session status: a mark and words, with colour as a third cue */
-.badge.status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  white-space: nowrap;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.status-mark {
-  font-size: 0.7rem;
-}
-
-.badge.status.idle {
-  color: var(--muted);
-  background: transparent;
-}
-
-.badge.status.working {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-  color: var(--accent);
-}
-
-.badge.status.needs_attention {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
-  color: var(--danger);
-  font-weight: 600;
-}
-
-.badge.status.needs_model {
-  border-color: var(--accent);
-  border-style: dashed;
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.badge.status.paused {
-  border-style: dashed;
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.badge.status.watching {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  border-color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
-  color: var(--ok);
-}
-
-.badge.status.merged {
-  border-color: var(--ok);
-  background: var(--ok);
-  color: var(--ink);
-}
-
 .row-actions {
   display: flex;
   gap: 0.5rem;
@@ -212,16 +192,6 @@
   max-width: 22rem;
   font-size: 0.75rem;
   overflow-wrap: anywhere;
-}
-
-.switch.on {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.switch.on .switch-knob {
-  left: calc(100% - 1.15rem);
-  background: var(--accent-ink);
 }
 
 .wrap-code pre,
@@ -373,18 +343,34 @@ textarea.field {
   border-color: var(--focus);
 }
 
-/* ---- Select: a raised key that opens a floating list with a check by the choice ---- */
+/* ---- Select: a field-like button that opens a floating list with a check by the choice ---- */
 button.select {
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
-  min-width: 10rem;
+  gap: var(--sp-2);
+  min-width: min(100%, calc(160 * var(--px)));
   max-width: 100%;
-  padding: 0.38rem 0.55rem 0.38rem 0.75rem;
+  min-height: var(--control-h);
+  padding: 0 var(--sp-2) 0 var(--control-pad);
   text-align: left;
-  background: var(--surface-raised);
+  background: var(--surface-sunken);
   border-color: var(--border-control);
+}
+
+button.select:hover:not(:disabled) {
+  background: var(--surface-sunken);
+  border-color: var(--text-subtle);
+}
+
+button.select.small {
+  min-height: var(--control-h-sm);
+  padding-left: var(--control-pad-sm);
+  font-size: var(--fs-sm);
+}
+
+button.select[aria-invalid="true"] {
+  border-color: var(--danger);
 }
 
 button.select .select-value {
@@ -394,54 +380,69 @@ button.select .select-value {
 }
 
 button.select .select-value.placeholder {
-  color: var(--muted);
+  color: var(--text-subtle);
 }
 
 button.select .select-chevron {
-  color: var(--muted);
-  transition: transform var(--fast) var(--ease);
+  width: var(--icon);
+  height: var(--icon);
+  color: var(--text-muted);
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 
 button.select.open {
-  border-color: var(--accent);
+  border-color: var(--focus);
 }
 
 button.select.open .select-chevron {
   transform: rotate(180deg);
 }
 
-/* A switch: a pill with a knob that slides to the accent when on. */
+/* ---- Switch: a pill that is 24 px tall (the target floor); the knob slides to the accent when on ---- */
 .switch {
+  --switch-pad: calc(3 * var(--px));
+  --switch-knob: calc(var(--size-floor) - 2 * var(--switch-pad) - 2 * var(--px));
   position: relative;
-  width: 2.4rem;
-  height: 1.35rem;
-  padding: 0;
-  border-radius: 999px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-control);
-  box-shadow: none;
   flex: none;
+  width: calc(40 * var(--px));
+  height: var(--size-floor);
+  padding: 0;
+  border-radius: var(--radius-full);
+  background: var(--surface-active);
+  border: 1px solid var(--border-control);
   transition:
-    background-color var(--fast) var(--ease),
-    border-color var(--fast) var(--ease);
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
+}
+
+.switch:hover:not(:disabled) {
+  background: var(--surface-active);
+  border-color: var(--text-subtle);
 }
 
 .switch-knob {
   position: absolute;
   top: 50%;
-  left: 0.15rem;
-  width: 1rem;
-  height: 1rem;
+  left: calc(var(--switch-pad) - 1px);
+  width: var(--switch-knob);
+  height: var(--switch-knob);
   border-radius: 50%;
   background: var(--text-muted);
   transform: translateY(-50%);
-  transition: left var(--fast) var(--ease);
-  box-shadow: var(--elev-1);
+  transition:
+    transform var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard);
 }
 
-.switch:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+.switch.on,
+.switch.on:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch.on .switch-knob {
+  background: var(--accent-ink);
+  transform: translate(calc(100% + 2 * var(--px)), -50%);
 }
 
 .status-dot {
@@ -451,15 +452,6 @@ button.select.open .select-chevron {
   height: 0.45rem;
   border-radius: 50%;
   background: var(--muted);
-}
-
-.badge.persistent {
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-  color: var(--accent);
-}
-
-.badge.worktree {
-  border-color: var(--border-strong);
 }
 
 .budget-number {
@@ -484,22 +476,393 @@ button.select.open .select-chevron {
   padding: 0;
 }
 
-/* Knowledge agents (docs/21-knowledge-agents.md): the badge on an agent's row and the section in its view. */
-.badge.knowledge {
-  flex: none;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-  color: var(--accent);
+/* ---- Icon button sizes ---- */
+button.icon-only.icon-sm {
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
 }
 
-.badge.answered {
-  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+button.icon-only.icon-sm .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+/* ---- Field: label, control, hint and error on one left edge ---- */
+.field-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-1);
+  min-width: 0;
+  text-align: left;
+}
+
+.field-label {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-ui);
+  color: var(--text);
+}
+
+.field-required {
+  color: var(--text-muted);
+}
+
+.field-hint,
+.field-error {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+}
+
+.field-hint {
+  color: var(--text-muted);
+}
+
+.field-error {
+  color: var(--danger);
+}
+
+.field[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+/* ---- Checkbox: a drawn box with a control-strength edge; the check is a mask over the accent fill ---- */
+input[type="checkbox"] {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: var(--icon);
+  height: var(--icon);
+  margin: 0;
+  vertical-align: middle;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
+}
+
+input[type="checkbox"]:hover:not(:disabled) {
+  border-color: var(--text-subtle);
+}
+
+input[type="checkbox"]:checked,
+input[type="checkbox"]:indeterminate {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent-ink);
+  mask: center / 80% no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3.5 8.5 3 3 6-7'/%3E%3C/svg%3E");
+  opacity: 0;
+}
+
+input[type="checkbox"]:indeterminate::after {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 8h8'/%3E%3C/svg%3E");
+}
+
+input[type="checkbox"]:checked::after,
+input[type="checkbox"]:indeterminate::after {
+  opacity: 1;
+}
+
+input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---- Tabs ---- */
+.tabs-list {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs-list.vertical {
+  flex-direction: column;
+  border-bottom: none;
+  border-right: 1px solid var(--border);
+}
+
+.tabs-list .tabs-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-h);
+  padding: 0 var(--sp-3);
+  margin-bottom: -1px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.tabs-list.vertical .tabs-tab {
+  margin: 0 -1px 0 0;
+  border-bottom: none;
+  border-right: 2px solid transparent;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.tabs-list .tabs-tab:hover:not(:disabled, .active) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.tabs-list .tabs-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.tabs-list.vertical .tabs-tab.active {
+  border-right-color: var(--accent);
+}
+
+.tabs-badge {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* ---- Empty and loading states ---- */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6);
+  text-align: center;
+}
+
+.empty-state-icon {
+  width: var(--icon-lg);
+  height: var(--icon-lg);
+  color: var(--text-subtle);
+}
+
+.empty-state-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+}
+
+.empty-state-body {
+  margin: 0;
+  max-width: calc(360 * var(--px));
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--text-muted);
+}
+
+.empty-state-action {
+  margin-top: var(--sp-2);
+}
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6);
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+}
+
+.loading-state.inline {
+  justify-content: flex-start;
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-sm);
+}
+
+.loading-state > .lucide {
+  width: var(--icon);
+  height: var(--icon);
+}
+
+/* ---- Notice, and the old error paragraph on the same look ---- */
+.notice-box {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+}
+
+.notice-icon {
+  flex: none;
+  width: var(--icon);
+  height: var(--icon);
+  margin-top: calc(1 * var(--px));
+}
+
+.notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.notice-title {
+  margin: 0;
+  font-weight: var(--fw-semibold);
+}
+
+.notice-body {
+  color: var(--text-muted);
+}
+
+.notice-title + .notice-body {
+  margin-top: calc(2 * var(--px));
+}
+
+.notice-action {
+  flex: none;
+  align-self: center;
+}
+
+.notice-box.tone-info {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.notice-box.tone-info .notice-icon {
+  color: var(--accent-text);
+}
+
+.notice-box.tone-ok {
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
+
+.notice-box.tone-ok .notice-icon {
   color: var(--ok);
 }
 
-.badge.timeout,
-.badge.cancelled,
-.badge.refused {
-  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+.notice-box.tone-warn {
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+}
+
+.notice-box.tone-warn .notice-icon {
+  color: var(--warn);
+}
+
+.notice-box.tone-danger {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+.notice-box.tone-danger .notice-icon {
   color: var(--danger);
+}
+
+/* The error paragraph (session.css owns its width and margin) takes the danger notice's colours. */
+.error {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+}
+
+/* ---- Kbd ---- */
+.kbd-chord {
+  display: inline-flex;
+  gap: calc(3 * var(--px));
+}
+
+.kbd {
+  display: inline-block;
+  min-width: calc(18 * var(--px));
+  padding: calc(1 * var(--px)) calc(5 * var(--px));
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ---- Table: header, row hover, numeric columns, and a compact variant ---- */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.table th {
+  border-bottom: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+
+.table td {
+  border-bottom: 1px solid var(--border);
+}
+
+.table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.table .num,
+.table th.num,
+.table td.num {
+  text-align: right;
+}
+
+.table.compact th,
+.table.compact td {
+  padding: var(--sp-1) var(--sp-2);
+}
+
+/* ---- Card ---- */
+.card {
+  padding: var(--sp-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.card.interactive {
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard);
+}
+
+.card.interactive:hover {
+  background: color-mix(in srgb, var(--surface-raised), var(--text) 3%);
+  border-color: var(--border-strong);
+}
+
+.card.interactive:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }

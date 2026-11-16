@@ -14,7 +14,7 @@ import type { Attachment, PermissionDecision, PermissionRule, RuntimeInstallJob,
 import { RESUME_TEXT, agentComposerHint, formatElapsed, taskElapsed } from "../sessions/agentView";
 import { JumpToLatest } from "../components/JumpToLatest";
 import { ModelName } from "../components/ModelName";
-import { RowMenu } from "../components/RowMenu";
+import { Menu } from "../components/Menu";
 import { ToolGroup } from "../components/ToolGroup";
 import { WaitLine } from "../components/WaitLine";
 import type { DaemonClient } from "../daemon/client";
@@ -176,7 +176,7 @@ export function AgentView({
             </button>
           )}
           {paused && onCancel && !archived && (
-            <RowMenu
+            <Menu
               label={`More for ${task.title}`}
               items={[
                 {

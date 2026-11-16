@@ -1,4 +1,4 @@
-// A select that matches the metallic theme: a button showing the current choice and a listbox
+// The app's select: a button showing the current choice and a listbox
 // popover with a check by the selected option. It follows the WAI-ARIA select-only combobox
 // pattern: arrows, Home/End and Page keys move, typing jumps to a matching option, Enter or
 // Space chooses, Escape or a click outside closes. The popover is rendered into the body so
@@ -7,6 +7,8 @@
 import { Check, ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+
+import { placeList } from "../shared/floating";
 
 export type SelectOption = {
   value: string;
@@ -34,12 +36,16 @@ type Props = {
   /** Shown when `value` matches no option. */
   placeholder?: string;
   className?: string;
+  /** `small` is the 24 px row-tool height; the default is the control height. */
+  size?: "small";
+  /** Marks the control invalid (a Field sets it from its error). */
+  "aria-invalid"?: boolean | "true" | "false";
 };
 
 /** How long typed characters keep adding to the same search. */
 const TYPEAHEAD_MS = 600;
 
-export function Select({ value, options, onChange, disabled, inert, placeholder = "Choose…", className, id, ...rest }: Props) {
+export function Select({ value, options, onChange, disabled, inert, placeholder = "Choose…", className, id, size, ...rest }: Props) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [position, setPosition] = useState<{ left: number; top: number; width: number; maxHeight: number; above: boolean } | null>(null);
@@ -70,16 +76,8 @@ export function Select({ value, options, onChange, disabled, inert, placeholder 
   const place = useCallback(() => {
     const box = button.current?.getBoundingClientRect();
     if (!box) return;
-    const below = window.innerHeight - box.bottom - 8;
-    const aboveRoom = box.top - 8;
-    const above = below < 180 && aboveRoom > below;
-    setPosition({
-      left: box.left,
-      top: above ? box.top - 4 : box.bottom + 4,
-      width: box.width,
-      maxHeight: Math.max(Math.min(above ? aboveRoom : below, 320), 120),
-      above,
-    });
+    const placed = placeList(box, { width: window.innerWidth, height: window.innerHeight }, { needed: 180, maxHeight: 320, minHeight: 120 });
+    setPosition({ left: placed.left, top: placed.top, width: placed.width, maxHeight: placed.maxHeight, above: placed.above });
   }, []);
 
   const show = (index = selectedIndex >= 0 ? selectedIndex : move(-1, 1)) => {
@@ -207,7 +205,7 @@ export function Select({ value, options, onChange, disabled, inert, placeholder 
         close();
         break;
       case "Tab":
-        close(false);
+        close();
         return;
       default: {
         if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -230,12 +228,13 @@ export function Select({ value, options, onChange, disabled, inert, placeholder 
         id={id}
         type="button"
         role="combobox"
-        className={`select${open ? " open" : ""}${className ? ` ${className}` : ""}`}
+        className={`select${size === "small" ? " small" : ""}${open ? " open" : ""}${className ? ` ${className}` : ""}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         aria-label={rest["aria-label"]}
         aria-describedby={rest["aria-describedby"]}
+        aria-invalid={rest["aria-invalid"]}
         aria-disabled={inert || undefined}
         disabled={disabled}
         onClick={() => (open ? close() : show())}

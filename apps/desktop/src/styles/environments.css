@@ -295,7 +295,7 @@ button.colour-choice[aria-checked="true"]::after {
   font-size: 0.85rem;
 }
 
-/* The environment window is the shared modal (SettingsModal); these fit its rows. */
+/* The environment window is the shared modal (Dialog); these fit its rows. */
 .settings-row-note > .environment-folders,
 .settings-row-note > .environment-agents,
 .settings-row-note > .environment-icon-picker,

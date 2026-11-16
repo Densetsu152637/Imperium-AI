@@ -41,7 +41,7 @@ import type {
 
 import { PermissionsEditor, samePermissions } from "../components/PermissionsEditor";
 import { Select } from "../components/Select";
-import { ModalNavGroup, ModalNavItem, SettingsModal } from "../components/SettingsModal";
+import { DialogNavGroup, DialogNavItem, Dialog } from "../components/Dialog";
 import { Row, RowNote } from "../components/SettingsRow";
 import type { DaemonClient } from "../daemon/client";
 import { pickFolder } from "../daemon/connection";
@@ -301,13 +301,13 @@ export function EnvironmentWindow({
   const disabled = busy || !client;
 
   const nav = (
-    <ModalNavGroup label={creating ? "New environment" : environment.name}>
+    <DialogNavGroup label={creating ? "New environment" : environment.name}>
       {sections.map((entry) => (
-        <ModalNavItem key={entry.id} icon={SECTION_ICONS[entry.id]} active={entry.id === current.id} onClick={() => setSection(entry.id)}>
+        <DialogNavItem key={entry.id} icon={SECTION_ICONS[entry.id]} active={entry.id === current.id} onClick={() => setSection(entry.id)}>
           {entry.label}
-        </ModalNavItem>
+        </DialogNavItem>
       ))}
-    </ModalNavGroup>
+    </DialogNavGroup>
   );
 
   const footer = (
@@ -333,7 +333,7 @@ export function EnvironmentWindow({
   );
 
   return (
-    <SettingsModal
+    <Dialog
       label={title}
       title={current.label}
       nav={nav}
@@ -648,6 +648,6 @@ export function EnvironmentWindow({
           )}
         </Row>
       )}
-    </SettingsModal>
+    </Dialog>
   );
 }

@@ -19,7 +19,7 @@
 import { ChevronDown, ChevronsDownUp, ChevronsUpDown, ExternalLink, GripVertical, MoveRight, X } from "lucide-react";
 import { useState, useRef, type MouseEvent, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
 
-import { RowMenu, type RowMenuItem } from "../components/RowMenu";
+import { Menu, type MenuItem } from "../components/Menu";
 import type { DropTarget } from "./arrangement";
 import { panelMenuEntries } from "./panelMenu";
 import { getLayout, updateLayout } from "./state";
@@ -31,11 +31,11 @@ export type PanelSpec = {
   /** The panel's primary action (at most one button, or a control and its button), always shown. */
   actions?: ReactNode;
   /** The panel's secondary actions, listed first in the header's ⋯ menu. */
-  menu?: RowMenuItem[];
+  menu?: MenuItem[];
   onClose?: () => void;
   onDetach?: () => void;
   /** The keyboard alternatives to dragging the panel (layout/moves.ts), listed as *Move…* in its ⋯ menu. */
-  moves?: RowMenuItem[];
+  moves?: MenuItem[];
   /** The canvas (the session): spans its column when alone there, and never folds. */
   span?: boolean;
   /** A mod's panel: it can be dragged into another panel and shown there as a module. */
@@ -180,7 +180,7 @@ type Edit = {
 function PanelMenu({ panel, fold, collapsed }: { panel: PanelSpec; fold?: Fold; collapsed: boolean }) {
   const own = collapsed ? [] : (panel.menu ?? []);
   const column = fold?.column;
-  const items: RowMenuItem[] = panelMenuEntries({
+  const items: MenuItem[] = panelMenuEntries({
     own: own.length,
     column,
     moves: panel.moves?.length ?? 0,
@@ -191,7 +191,7 @@ function PanelMenu({ panel, fold, collapsed }: { panel: PanelSpec; fold?: Fold; 
       case "panel":
         return own[entry.index];
       case "move":
-        return { ...(panel.moves as RowMenuItem[])[entry.index], icon: MoveRight };
+        return { ...(panel.moves as MenuItem[])[entry.index], icon: MoveRight };
       case "fold-all":
         return { label: entry.label, icon: column?.allCollapsed ? ChevronsUpDown : ChevronsDownUp, onSelect: () => column?.onToggleAll() };
       case "detach":
@@ -201,7 +201,7 @@ function PanelMenu({ panel, fold, collapsed }: { panel: PanelSpec; fold?: Fold; 
     }
   });
   if (items.length === 0) return null;
-  return <RowMenu label={`${panel.title} options`} items={items} className="panel-menu-button" />;
+  return <Menu label={`${panel.title} options`} items={items} className="panel-menu-button" />;
 }
 
 function Panel({ panel, fold, edit }: { panel: PanelSpec; fold?: Fold; edit?: Edit }) {

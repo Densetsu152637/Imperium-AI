@@ -7,7 +7,7 @@ import { PanelLeftClose, Pin } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { RowMenu } from "../components/RowMenu";
+import { Menu } from "../components/Menu";
 import { insideTauri } from "../daemon/connection";
 import { emitPanelEvent, listenPanelEvents } from "../shared/panelWindows";
 import type { PanelSpec } from "./Columns";
@@ -105,7 +105,7 @@ export function PanelWindow({ id, panel }: { id: string; panel: PanelSpec | null
         <h2 id={`panel-${id}`}>{title}</h2>
         {panel?.actions}
         {panel?.menu && panel.menu.length > 0 && (
-          <RowMenu label={`${title} options`} items={panel.menu} className="panel-menu-button" />
+          <Menu label={`${title} options`} items={panel.menu} className="panel-menu-button" />
         )}
         {canPin && (
           <button
