@@ -837,7 +837,7 @@ mod tests {
         text.push_str("---\nBody\n");
         let (agent, ignored) = parse(&text, "user", Path::new("big.md")).unwrap();
         assert!(agent.description.starts_with("first line 0 of"));
-        assert!(agent.description.ends_with("line 5999 of the description"));
+        assert_eq!(agent.description.chars().count(), DESCRIPTION_CHARS);
         assert_eq!(ignored, vec!["color".to_string()]);
     }
 
