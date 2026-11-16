@@ -312,7 +312,7 @@ impl Agent {
         if let Some(named) = &named {
             // Kept with the subagent's record, so a resumed one is the same agent.
             self.shared.agents.set_named(&task_id, named.clone());
-            agent = agent.as_named(named.clone());
+            agent = agent.with_named(named.clone());
         }
         if isolated {
             agent = agent.writing();
@@ -1118,7 +1118,7 @@ pub(super) async fn run_escalating(
         )
         .with_effort(retry.effort);
         if let Some(named) = &retry.named {
-            next = next.as_named(named.clone());
+            next = next.with_named(named.clone());
         }
         if retry.single_call {
             next = next.single_call();
@@ -1349,7 +1349,7 @@ pub(crate) fn resume_subagent(
     );
     // A named agent resumes as itself: its instructions and its narrowed tools.
     if let Some(named) = shared.agents.named(agent_id) {
-        agent = agent.as_named(named);
+        agent = agent.with_named(named);
     }
     if tree.is_some() {
         agent = agent.writing();

@@ -449,7 +449,7 @@ impl Agent {
     /// Runs this agent as the named agent `named`: its instructions follow the base ones, and
     /// when its file listed tools only those are offered and run. Nothing here grants a
     /// permission: every call still goes through the profile, the rules and the safety floor.
-    pub(crate) fn as_named(mut self, named: NamedAgent) -> Self {
+    pub(crate) fn with_named(mut self, named: NamedAgent) -> Self {
         if let Some(ChatMessage::System { content }) = self.messages.first_mut() {
             content.push_str(crate::breakdown::PART_SEPARATOR);
             let start = content.len();
