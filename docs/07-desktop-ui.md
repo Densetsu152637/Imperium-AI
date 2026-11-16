@@ -794,11 +794,11 @@ every setting:
   dialog's gutter (`--dialog-gutter`, the same inset as the title, notices and footer): the
   setting's title and description, then its control under them, flush left (text fields, selects
   and text areas 320 px wide, numbers 144 px, swatches and switches at their own size). Sections
-  are separated by space, not lines. A setting that depends on the one above it (such as checking
+  are separated by space, not lines (a budget in Budgets is set off by a hairline above it, with no box). A setting that depends on the one above it (such as checking
   at startup under the update schedule) sits closer to it on the same edge; status lines and logs
   under a setting use the same edge. Tables (Keyboard, the benchmark) start their first column
   on it. Inline loading, error, empty and warning states in a section use the shared `LoadingState`,
-  `Notice` and `EmptyState`; the benchmark's model picker is a `Select`.
+  `Notice` and `EmptyState`, left-aligned on the same edge rather than centred; the benchmark's model picker is a `Select`.
 - **Agent and daemon:** every setting the daemon exposes through `config.describe`, grouped by
   section (models, local runtime, memory, workflow, web, media, isolation, GitHub, pets, phone,
   resuming, network). *Personality* is a select of the personalities `personalities.list`

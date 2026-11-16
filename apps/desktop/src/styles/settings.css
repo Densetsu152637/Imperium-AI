@@ -104,14 +104,14 @@
 }
 
 /* Plain muted lines (a fault, "No budgets yet") read at the size of the rows around them. */
-.dialog-body > p.muted,
+.settings-window .dialog-body > p.muted,
 .settings-section > p.muted:not(.permissions-hint) {
   margin: 0;
   font-size: var(--fs-md);
   line-height: var(--lh-ui);
 }
 
-.dialog-body > p.muted {
+.settings-window .dialog-body > p.muted {
   padding: var(--sp-2) 0;
 }
 
@@ -219,13 +219,13 @@
   overflow-x: auto;
 }
 
-.settings-table th:first-child,
-.settings-table td:first-child {
+.table.settings-table th:first-child,
+.table.settings-table td:first-child {
   padding-left: 0;
 }
 
-.settings-table th:last-child,
-.settings-table td:last-child {
+.table.settings-table th:last-child,
+.table.settings-table td:last-child {
   padding-right: 0;
 }
 
@@ -397,8 +397,9 @@
 
 .budget-limit {
   display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
   flex: 1 1 calc(160 * var(--px));
   font-size: var(--fs-sm);
 }
@@ -409,8 +410,17 @@
 }
 
 .budget-limit input {
-  flex: 1 1 auto;
+  align-self: stretch;
   min-width: calc(80 * var(--px));
+}
+
+/* In a budget, each limit has a line of its own, so every input box starts on the edge. */
+.budget-card-row > .budget-limit {
+  flex: 1 1 100%;
+}
+
+.budget-card-row > .budget-limit input {
+  max-width: var(--settings-control-w);
 }
 
 /* Alone in a row, a limit is as wide as any other field. */
@@ -418,7 +428,44 @@
   flex: 0 1 var(--settings-control-w);
 }
 
+.settings-row-control > .budget-limit input {
+  width: var(--settings-control-w);
+  max-width: 100%;
+}
+
 .budget-card-status {
   margin: 0;
   font-size: var(--fs-sm);
+}
+
+/* ---- Dynamic states stay on the edge ---- */
+.settings-section > ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-window .dialog-body .empty-state,
+.settings-window .dialog-body .loading-state {
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: var(--sp-2) 0;
+  text-align: left;
+}
+
+.settings-window .dialog-body .empty-state-body {
+  max-width: none;
+}
+
+.settings-window .dialog-body .notice-box + .notice-box {
+  margin-top: var(--sp-2);
+}
+
+.settings-row-control code,
+.api-token {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
