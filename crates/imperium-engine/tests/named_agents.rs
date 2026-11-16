@@ -149,14 +149,17 @@ async fn start(
     start_with_catalog(root, sub, agents, rules, initial, &[]).await
 }
 
-/// [`start`] with hosted model-table rows (id) beside the session's model.
+/// A hosted model-table row: id (its spec is `<id>:model`), tier and tags.
+type Row<'a> = (&'a str, imperium_config::Tier, &'a str);
+
+/// [`start`] with hosted model-table rows beside the session's model.
 async fn start_with_catalog(
     root: Vec<Step>,
     sub: Vec<Step>,
     agents: &[(&str, &str)],
     rules: Vec<PermissionRule>,
     initial: ProfileRules,
-    rows: &[&str],
+    rows: &[Row],
 ) -> Setup {
     let config = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
@@ -200,12 +203,16 @@ async fn start_with_catalog(
     };
     let catalog = rows
         .iter()
-        .map(|id| CatalogModel {
+        .map(|(id, tier, tags)| CatalogModel {
             id: (*id).into(),
             model: resolved(&format!("{id}:model")),
-            tier: Default::default(),
+            tier: *tier,
             location: imperium_config::Location::Cloud,
-            tags: Vec::new(),
+            tags: tags
+                .split(',')
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_string)
+                .collect(),
             named_only: false,
             cpu_lane: false,
         })
@@ -636,7 +643,7 @@ async fn a_files_model_never_overrides_the_location_the_task_is_confined_to() {
         &[("far.md", &hosted), ("near.md", &inherit)],
         Vec::new(),
         ProfileRules::default(),
-        &["rowx"],
+        &[("rowx", Default::default(), "")],
     )
     .await;
     let outcome = turn(&setup.session, "delegate", PermissionDecision::Deny).await;
@@ -678,7 +685,7 @@ async fn an_unavailable_files_model_keeps_the_routed_choice() {
         &[("far.md", &file)],
         Vec::new(),
         ProfileRules::default(),
-        &["rowx"],
+        &[("rowx", Default::default(), "")],
     )
     .await;
     let outcome = turn(&setup.session, "delegate", PermissionDecision::Deny).await;
@@ -690,6 +697,74 @@ async fn an_unavailable_files_model_keeps_the_routed_choice() {
             .notices
             .iter()
             .any(|n| n.contains("nowhere:gone") && n.contains("routed normally")),
+        "{:?}",
+        outcome.notices
+    );
+}
+
+fn spawn_requiring(agent: &str, extra: Value) -> Step {
+    let mut arguments = json!({"brief": "look at note.txt", "agent": agent});
+    for (key, value) in extra.as_object().unwrap() {
+        arguments[key] = value.clone();
+    }
+    Some(("spawn_agent", arguments))
+}
+
+#[tokio::test]
+async fn a_files_model_never_overrides_the_tier_the_task_requires() {
+    let file = agent_file("cheap", "Wants a basic model.", "model: rowx\n", "Cheap.");
+    let setup = start_with_catalog(
+        vec![
+            spawn_requiring("cheap", json!({"tier": "strong"})),
+            spawn_requiring("cheap", json!({})),
+            Some(("await_tasks", json!({}))),
+            None,
+        ],
+        Vec::new(),
+        &[("cheap.md", &file)],
+        Vec::new(),
+        ProfileRules::default(),
+        &[("rowx", imperium_config::Tier::Basic, "")],
+    )
+    .await;
+    let outcome = turn(&setup.session, "delegate", PermissionDecision::Deny).await;
+    assert_eq!(outcome.started_on.len(), 2, "{outcome:?}");
+    // Under a strong tier the basic row is passed over, with a notice; without one it is used.
+    assert_ne!(outcome.started_on[0], "rowx:model", "{outcome:?}");
+    assert!(
+        outcome
+            .notices
+            .iter()
+            .any(|n| n.contains("rowx") && n.contains("tier") && n.contains("routed normally")),
+        "{:?}",
+        outcome.notices
+    );
+    assert_eq!(outcome.started_on[1], "rowx:model", "{outcome:?}");
+}
+
+#[tokio::test]
+async fn inherit_respects_the_capabilities_the_task_requires() {
+    let file = agent_file("same", "Inherits.", "model: inherit\n", "Same.");
+    let setup = start_with_catalog(
+        vec![
+            spawn_requiring("same", json!({"tags": ["vision"]})),
+            Some(("await_tasks", json!({}))),
+            None,
+        ],
+        Vec::new(),
+        &[("same.md", &file)],
+        Vec::new(),
+        ProfileRules::default(),
+        // The session's own model is in the table and reads no images (no `vision` tag).
+        &[("fake", imperium_config::Tier::Standard, "")],
+    )
+    .await;
+    let outcome = turn(&setup.session, "delegate", PermissionDecision::Deny).await;
+    assert!(
+        outcome
+            .notices
+            .iter()
+            .any(|n| n.contains("inherits") && n.contains("capabilities")),
         "{:?}",
         outcome.notices
     );

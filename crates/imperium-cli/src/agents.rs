@@ -27,8 +27,6 @@ pub fn list() -> anyhow::Result<()> {
             .max()
             .unwrap_or(0);
         for agent in &listing.agents {
-            // Files are other people's text: nothing in them may drive the terminal.
-            let clean = |text: &str| text.chars().filter(|c| !c.is_control()).collect::<String>();
             let description = clean(
                 agent
                     .description
@@ -50,4 +48,24 @@ pub fn list() -> anyhow::Result<()> {
         }
         Ok(())
     })
+}
+
+/// `text` without control characters: agent files are other people's text, and nothing in them
+/// may drive the terminal.
+fn clean(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean;
+
+    #[test]
+    fn control_characters_are_stripped_from_what_is_printed() {
+        assert_eq!(clean("a\x1b[31mred\x07\r\n\t\u{9b}x"), "a[31mredx");
+        assert_eq!(
+            clean("plain text, with accents: \u{e9}"),
+            "plain text, with accents: \u{e9}"
+        );
+    }
 }

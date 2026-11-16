@@ -232,15 +232,7 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
 
     // Named agents of plugins and the user (a project's are loaded per session, for trusted
     // projects only).
-    let mut agent_folders: Vec<imperium_extensions::AgentFolder> = plugins
-        .iter()
-        .filter(|plugin| !settings.extensions.disabled_plugins.contains(&plugin.name))
-        .map(|plugin| imperium_extensions::AgentFolder::new(plugin.agents_dir(), plugin.origin()))
-        .collect();
-    agent_folders.push(imperium_extensions::AgentFolder::new(
-        config_dir.join("agents"),
-        "user",
-    ));
+    let agent_folders = agent_folders(&plugins, &settings.extensions.disabled_plugins, config_dir);
     let (agents, mut agent_problems) = imperium_extensions::agents::discover(&agent_folders);
     problems.append(&mut agent_problems);
 
@@ -290,6 +282,25 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
         user_file: state.paths().user_config_file().display().to_string(),
         problems,
     }
+}
+
+/// Where named agents are read from, lowest precedence first: enabled plugins' `agents/`, then the
+/// user's.
+fn agent_folders(
+    plugins: &[imperium_extensions::plugins::Plugin],
+    disabled: &[String],
+    config_dir: &Path,
+) -> Vec<imperium_extensions::AgentFolder> {
+    let mut folders: Vec<imperium_extensions::AgentFolder> = plugins
+        .iter()
+        .filter(|plugin| !disabled.contains(&plugin.name))
+        .map(|plugin| imperium_extensions::AgentFolder::new(plugin.agents_dir(), plugin.origin()))
+        .collect();
+    folders.push(imperium_extensions::AgentFolder::new(
+        config_dir.join("agents"),
+        "user",
+    ));
+    folders
 }
 
 /// Entries of `dir` that `keep` accepts.
@@ -934,6 +945,31 @@ mod tests {
         serde_json::from_str::<CatalogFile>(BUILT_IN)
             .unwrap()
             .entries
+    }
+
+    #[test]
+    fn agents_of_disabled_plugins_are_not_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["on", "off"] {
+            let root = dir.path().join(name);
+            std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+            std::fs::write(
+                root.join(".claude-plugin/plugin.json"),
+                format!(r#"{{"name": "{name}"}}"#),
+            )
+            .unwrap();
+        }
+        let (plugins, problems) = imperium_extensions::plugins::discover(
+            &[dir.path().to_path_buf()],
+            Duration::from_secs(5),
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        let folders = agent_folders(&plugins, &["off".to_string()], Path::new("config"));
+        let origins: Vec<&str> = folders
+            .iter()
+            .map(|folder| folder.origin.as_str())
+            .collect();
+        assert_eq!(origins, ["plugin:on", "user"]);
     }
 
     #[test]

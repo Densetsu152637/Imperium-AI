@@ -176,20 +176,26 @@ impl Agent {
             request(args.model.as_deref().or(file_model)),
             self.shared.local.as_deref(),
         );
-        // The file's model is a preference: it never overrides where the call or the user's
-        // routing rules confine the task. The location in force is the call's, else a rule's.
+        // The file's model is a preference: it never overrides what the call or the user's
+        // routing rules require of the model: its tier, its location, and the capabilities the
+        // task needs (tools, vision, long context). The location in force is the call's, else a
+        // rule's. A miss is treated alike for `inherit` and a named model: route normally.
         let confined = crate::model::effective_location(&self.shared.routing, request(None));
-        let allowed =
+        let location_ok =
             |local: bool| confined.is_none_or(|wanted| (wanted == Location::Local) == local);
         let mut file_notes = Vec::new();
         if let Some(def) = &named_def {
             if inherit_model {
-                if allowed(self.model.local) {
+                let fits = self
+                    .row_fits(&self.model.spec, request(None))
+                    .unwrap_or_else(|| location_ok(self.model.local));
+                if fits {
                     routed.model = self.model.clone();
                 } else {
                     file_notes.push(format!(
-                        "the agent {} inherits the session's model, which is outside the \
-                         location this task is limited to, so the task was routed normally",
+                        "the agent {} inherits the session's model, which does not meet what \
+                         this task requires (its tier, location or capabilities), so the task \
+                         was routed normally",
                         def.name
                     ));
                 }
@@ -205,10 +211,14 @@ impl Agent {
                          the task was routed normally",
                         def.name
                     ));
-                } else if !allowed(routed.model.local) {
+                } else if !self
+                    .row_fits(&routed.model.spec, request(None))
+                    .unwrap_or_else(|| location_ok(routed.model.local))
+                {
                     file_notes.push(format!(
-                        "the agent {} asks for the model {wanted}, which is outside the \
-                         location this task is limited to, so the task was routed normally",
+                        "the agent {} asks for the model {wanted}, which does not meet what \
+                         this task requires (its tier, location or capabilities), so the task \
+                         was routed normally",
                         def.name
                     ));
                     routed = route_noted(
@@ -366,6 +376,31 @@ impl Agent {
             started.push_str(&format!("\nNote: {notice}."));
         }
         Ok(started)
+    }
+
+    /// Whether routing would take the model-table row `which` (a table id or a spec) for
+    /// `request`, as a ranking of that row alone decides: its tier, location and capabilities
+    /// (tools, vision, long context) must suit, and its queue must not be backed up. `None` when
+    /// no such row exists, so nothing is known about the model.
+    fn row_fits(&self, which: &str, request: TaskRequest<'_>) -> Option<bool> {
+        let row = self
+            .shared
+            .catalog
+            .iter()
+            .find(|row| row.model.spec == which || row.id == which)?;
+        // Asked for by name, so the row's being reached only by a rule or a name does not count
+        // against it.
+        let mut alone = row.clone();
+        alone.named_only = false;
+        alone.cpu_lane = false;
+        let picked = route_noted(
+            &[alone],
+            &self.shared.routing,
+            &self.model,
+            request,
+            self.shared.local.as_deref(),
+        );
+        Some(!picked.fell_back && picked.model.spec == row.model.spec)
     }
 
     /// Starts `agent` on `brief` as its own task. (A plain function, so the async tool functions
