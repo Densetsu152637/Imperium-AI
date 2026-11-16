@@ -1,53 +1,59 @@
-/* style-budget: colour=2 font-size=48 font-weight=15 radius=14 shadow=1 duration=3 z-index=2 */
+/* style-budget: font-weight=1 */
 /* The session column: header, transcript, tool calls, composer, queue, attachments, context breakdown, new session and compare. */
 
-.usage-limits select:hover,
-.usage-limits input:hover {
-  border-color: var(--border-strong);
+/* The reading column's width. Registered as a length so it resolves once, on .session, and every
+   element in the column inherits the same pixels: a bare `90ch` would differ with each element's own
+   font size, and the transcript, tool rows, composer and footer would not share an edge. */
+@property --col-max {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 720px;
 }
 
-.usage-limits select:focus-visible,
-.usage-limits input:focus-visible {
-  outline-offset: 0;
-  border-color: var(--focus);
+/* Tokens this surface adds (stage 15 promotes them into tokens.css). */
+:root {
+  --fs-prose: calc(var(--fs-base) * var(--prose-scale)); /* transcript prose: the reading size times the user's prose scale */
+  --fs-code: calc(var(--fs-md) * var(--code-scale)); /* code in the transcript: the UI size times the user's code scale */
+  --session-gutter-wide: var(--sp-4);
+  --session-gutter-narrow: var(--sp-3);
+  --dur-pulse: 1400ms; /* the breathing dots: working, recording */
+  --dur-spin: 1200ms; /* the wait line's spinner */
 }
 
 /* Disclosure rows: a chevron that turns as the section opens. */
-.usage-limits > summary,
-.session-details > summary,
 .plan > summary {
   list-style: none;
 }
 
-.usage-limits > summary::-webkit-details-marker,
-.session-details > summary::-webkit-details-marker,
 .tool > summary::-webkit-details-marker,
 .plan > summary::-webkit-details-marker {
   display: none;
 }
 
-.usage-limits > summary::before,
-.session-details > summary::before,
 .tool > summary::before,
 .plan > summary::before {
   content: "›";
   display: inline-block;
-  width: 0.9em;
-  color: var(--muted);
-  transition: transform var(--fast) var(--ease);
+  flex: none;
+  width: var(--icon-sm);
+  color: var(--text-subtle);
+  text-align: center;
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 
-.usage-limits[open] > summary::before,
-.session-details[open] > summary::before,
 .tool[open] > summary::before,
 .plan[open] > summary::before {
   transform: rotate(90deg);
 }
 
-/* Session: a header, the conversation, and the composer floating at the bottom */
+/* Session: a header, the conversation, and the composer at the bottom. Everything stacked under the
+   transcript shares one gutter and one column, so the edges line up and no component touches the
+   prompt box's side padding. */
 .session {
-  /* One gutter for everything stacked under the transcript, so the column lines up. */
-  --session-gutter: calc(var(--space) * 3);
+  --session-gutter: var(--session-gutter-wide);
+  /* The readable measure, resolved once here so every element in the column agrees whatever its own
+     font size (a bare `ch` would differ per element). */
+  --col-max: calc(var(--prose-max) * var(--prose-scale));
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -55,57 +61,37 @@
   min-height: 0;
 }
 
-.session-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: calc(var(--space) * 2);
-  padding: calc(var(--space) * 3);
-  text-align: center;
+.session > :is(.plan, .archived-note, .needs-model, .stopped-banner, .queue, .session-drawer, .composer-area, .session-footer, .composer, .new-session-intro, .new-session-error, .branch-note) {
+  flex: none;
+  width: calc(100% - 2 * var(--session-gutter));
+  max-width: var(--col-max);
+  margin-inline: auto;
 }
 
-/* A brushed ring standing in for an empty conversation */
-.session-empty::before {
-  content: "";
-  width: 3.5rem;
-  height: 3.5rem;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle, var(--accent) 0 14%, transparent 17%),
-    var(--surface-raised);
-  border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow);
-}
-
-.session-empty .empty {
-  max-width: 24rem;
-  margin: 0;
-  font-size: 1rem;
+/* The same gap under each, so stacked components never touch. */
+.session > :is(.archived-note, .needs-model, .stopped-banner, .queue, .session-drawer, .composer-area, .composer) {
+  margin-bottom: var(--sp-2);
 }
 
 .session-top {
   display: flex;
   flex-direction: column;
-  gap: calc(var(--space) * 0.75);
-  padding: calc(var(--space) * 1.5) calc(var(--space) * 3) var(--space);
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--session-gutter);
   border-bottom: 1px solid var(--border);
 }
 
 /* Under the composer: the model at the left, cost, options, and the context meter at the right. */
 .session-footer {
-  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: calc(var(--space) * 0.5) var(--space);
-  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
-  max-width: var(--prose-max);
-  margin: 0 auto calc(var(--space) * 1.5);
-  padding: 0 calc(var(--space) * 0.5);
-  font-size: 0.8rem;
-  color: var(--muted);
+  gap: var(--sp-1) var(--sp-2);
+  /* Inside the well's own padding, so the footer's controls sit under the composer's contents. */
+  padding: 0 calc(var(--sp-2) + var(--px));
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }
 
 .session-footer-spacer {
@@ -115,17 +101,21 @@
 .session-footer button.select {
   min-width: 0;
   max-width: 18rem;
-  padding: 0.2rem 0.55rem;
-  font-size: 0.8rem;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
   background: transparent;
   border-color: transparent;
-  box-shadow: none;
 }
 
-.session-footer button.select:hover:not(:disabled),
+.session-footer button.select:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: transparent;
+}
+
 .session-footer button.select.open {
-  background: var(--hover);
-  border-color: var(--border);
+  background: var(--surface-active);
+  border-color: transparent;
 }
 
 .model-select {
@@ -223,7 +213,7 @@
 
 .session-footer .footer-button[aria-expanded="true"],
 .context-meter[aria-expanded="true"] {
-  background: var(--active);
+  background: var(--surface-active);
   color: var(--text);
 }
 
@@ -231,18 +221,19 @@
 .context-meter {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.2rem 0.55rem;
-  font-size: 0.8rem;
+  gap: var(--sp-2);
+  min-height: var(--control-h-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
 }
 
 .context-meter-bar {
   position: relative;
-  width: 3.5rem;
-  height: 0.35rem;
-  border-radius: 999px;
-  background: var(--surface-3);
+  width: calc(56 * var(--px));
+  height: calc(5 * var(--px));
+  border-radius: var(--radius-full);
+  background: var(--surface-active);
   overflow: hidden;
 }
 
@@ -251,7 +242,7 @@
   inset: 0 auto 0 0;
   border-radius: inherit;
   background: var(--accent);
-  transition: width var(--slow) var(--ease);
+  transition: width var(--dur-base) var(--ease-standard);
 }
 
 .context-meter.high .context-meter-bar > span {
@@ -259,35 +250,31 @@
 }
 
 .context-meter.full .context-meter-bar > span {
-  background: var(--danger, var(--warn));
+  background: var(--danger);
 }
 
 /* What the footer opened: above the composer, scrolling within a capped height. */
 .session-drawer {
   position: relative;
-  flex: none;
-  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
-  max-width: var(--prose-max);
   max-height: 45vh;
-  margin: 0 auto var(--space);
   overflow: auto;
-}
-
-.session-drawer > .session-sections {
-  margin-top: 0;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  animation: rise-in var(--dur-base) var(--ease-standard);
 }
 
 .session-drawer-close {
   position: absolute;
-  top: calc(var(--space) * 0.5);
-  right: calc(var(--space) * 0.5);
-  z-index: 1;
+  top: var(--sp-2);
+  right: var(--sp-2);
+  z-index: var(--z-raised);
 }
 
 .option-row {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--sp-2);
   cursor: pointer;
 }
 
@@ -295,7 +282,7 @@
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--sp-2);
 }
 
 /* The new-session view: an intro, the first-message composer, and the session's options. */
@@ -305,42 +292,41 @@
 }
 
 .new-session-intro {
-  width: calc(100% - var(--space) * 6);
-  max-width: var(--prose-max);
-  margin: 0 auto calc(var(--space) * 2);
+  margin-bottom: var(--sp-4);
 }
 
 .new-session-intro h3 {
-  margin: 0 0 0.25rem;
-  font-size: 1.25rem;
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
 }
 
 .new-session-intro p {
   margin: 0;
   overflow: hidden;
+  font-size: var(--fs-md);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .new-session-error {
-  width: calc(100% - var(--space) * 6);
-  max-width: var(--prose-max);
-  margin: 0 auto var(--space);
+  margin-bottom: var(--sp-2);
 }
 
 .new-session-options {
-  margin-top: var(--space);
+  margin-top: var(--sp-2);
 }
 
 .new-session-worktree {
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 
 .new-session-subfolder {
   min-width: 9rem;
   max-width: 14rem;
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
 }
 
 .conversation {
@@ -349,17 +335,21 @@
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: calc(var(--space) * 2);
-  padding: calc(var(--space) * 3) calc(var(--space) * 3) calc(var(--space) * 4);
+  gap: var(--sp-4);
+  padding: var(--sp-5) var(--session-gutter) var(--sp-6);
   /* Room for the scrollbar on both sides keeps the column centred over the composer. */
   scrollbar-gutter: stable both-edges;
   /* Text fades out just above the composer, so it reads as floating. */
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent);
+  mask-image: linear-gradient(to bottom, currentcolor calc(100% - var(--sp-5)), transparent);
 }
 
+/* Every entry sits in the one reading column; the user's turn, below, aligns right inside it. */
 .conversation > * {
   flex: none;
-  animation: rise-in var(--slow) var(--ease);
+  width: 100%;
+  max-width: var(--col-max);
+  margin-inline: auto;
+  animation: rise-in var(--dur-base) var(--ease-standard);
 }
 
 /* Jump to latest: floats over the bottom of a transcript the reader has scrolled up in. The
@@ -367,12 +357,12 @@
 .jump-latest-anchor {
   position: relative;
   height: 0;
-  z-index: 2;
+  z-index: var(--z-raised);
 }
 
 .jump-latest {
   position: absolute;
-  bottom: calc(var(--space) * 1.5);
+  bottom: var(--sp-3);
   /* Centred without a transform, which the rise-in animation owns. */
   left: 0;
   right: 0;
@@ -380,52 +370,53 @@
   margin-inline: auto;
   display: inline-flex;
   align-items: center;
-  gap: calc(var(--space) * 0.75);
-  padding: calc(var(--space) * 0.5) calc(var(--space) * 1.5);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--muted);
-  font-size: 0.8rem;
+  gap: var(--sp-2);
+  min-height: var(--control-h-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
   white-space: nowrap;
-  box-shadow: 0 4px 14px rgb(0 0 0 / 0.25);
-  animation: rise-in var(--slow) var(--ease);
+  box-shadow: var(--elev-2);
+  animation: rise-in var(--dur-base) var(--ease-standard);
 }
 
 .jump-latest:hover,
 .jump-latest:focus-visible {
   color: var(--text);
+  background: var(--surface-raised);
   border-color: var(--border-strong);
 }
 
 .jump-latest-count {
   min-width: 1.4em;
-  padding: 0 0.4em;
-  border-radius: 999px;
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-full);
   background: var(--accent-soft);
-  color: var(--accent-strong);
-  font-size: 0.75rem;
+  color: var(--accent-text);
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
 
 .jump-latest-dot {
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 50%;
+  width: calc(7 * var(--px));
+  height: calc(7 * var(--px));
+  border-radius: var(--radius-full);
   background: var(--accent);
 }
 
-/* The user's turn: a soft pill at the right edge of the reading column */
-.message.user {
+/* The user's turn: a soft bubble at the right edge of the reading column */
+.conversation > .message.user {
   width: fit-content;
-  max-width: min(85%, calc(var(--prose-max) * 0.85));
+  max-width: min(85%, calc(var(--col-max) * 0.85));
   margin-left: auto;
-  margin-right: max(0px, calc((100% - var(--prose-max)) / 2));
-  padding: calc(var(--space) * 1.25) calc(var(--space) * 2);
-  background: var(--bubble);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-bubble);
+  margin-right: max(0px, calc((100% - var(--col-max)) / 2));
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-active);
+  border-radius: var(--radius);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -445,168 +436,202 @@
   margin: 0 0 0.8em;
 }
 
+.message.assistant ul,
+.message.assistant ol {
+  padding-left: 1.5em;
+}
+
+.message.assistant li + li {
+  margin-top: 0.25em;
+}
+
+.message.assistant h1,
+.message.assistant h2,
+.message.assistant h3,
+.message.assistant h4 {
+  margin: 1.4em 0 0.5em;
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semibold);
+}
+
 .message.assistant h1 {
-  margin: 1.2em 0 0.5em;
-  line-height: 1.3;
-  font-weight: 600;
-  font-size: 1.35em;
+  font-size: 1.4em;
 }
 
 .message.assistant h2 {
-  margin: 1.2em 0 0.5em;
-  line-height: 1.3;
-  font-weight: 600;
-  font-size: 1.2em;
+  font-size: 1.15em;
 }
 
 .message.assistant h3,
 .message.assistant h4 {
-  margin: 1.2em 0 0.5em;
-  line-height: 1.3;
-  font-weight: 600;
-  font-size: 1.05em;
+  font-size: 1em;
 }
 
-.message.assistant a,
-.task-report a {
-  color: var(--accent);
+.message.assistant a {
+  color: var(--accent-text);
   text-underline-offset: 2px;
 }
 
 .message.assistant blockquote {
   margin: 0 0 0.8em;
-  padding-left: calc(var(--space) * 1.5);
-  border-left: 2px solid var(--silver);
-  color: var(--muted);
+  padding-left: var(--sp-3);
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-muted);
 }
 
 .message.assistant hr {
   border: 0;
   border-top: 1px solid var(--border);
-  margin: 1.2em 0;
+  margin: 1.4em 0;
 }
 
 .message.assistant :not(pre) > code {
   padding: 0.1em 0.35em;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--surface-active);
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-code);
 }
 
 .message.assistant pre {
   margin: 0 0 0.8em;
-  background: var(--code-bg);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-sunken);
   border: 1px solid var(--border);
-  padding: calc(var(--space) * 1.5) calc(var(--space) * 2);
   border-radius: var(--radius);
+  font-size: var(--fs-code);
+  line-height: 1.5;
   overflow-x: auto;
   white-space: pre;
   max-width: none;
-  line-height: 1.5;
 }
 
+/* A table scrolls inside itself, so a wide one never widens the column. */
 .message.assistant table {
-  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
   margin: 0 0 0.8em;
-  font-size: 0.92em;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: var(--fs-md);
+  font-variant-numeric: tabular-nums;
 }
 
-.message.assistant td {
-  border: 1px solid var(--border);
-  padding: 0.3rem 0.6rem;
-}
-
+.message.assistant td,
 .message.assistant th {
-  border: 1px solid var(--border);
-  padding: 0.3rem 0.6rem;
-  background: var(--surface-2);
-  font-weight: 600;
+  padding: var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--border);
   text-align: left;
 }
 
+.message.assistant th {
+  border-bottom-color: var(--border-strong);
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+
+/* ---- Tool calls: one quiet row each (chevron, state, tool, what it did, how long) ---- */
 .tool {
-  width: 100%;
-  max-width: var(--prose-max);
-  margin: 0 auto;
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
+}
+
+.tool > summary,
+.tool.plain {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: fit-content;
+  max-width: 100%;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--sp-2) 0 var(--sp-1);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .tool > summary {
   list-style: none;
   cursor: pointer;
-  color: var(--muted);
-  width: fit-content;
-  max-width: 100%;
-  padding: 0.2rem 0.6rem 0.2rem 0.4rem;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   transition:
-    background-color var(--fast) var(--ease),
-    color var(--fast) var(--ease);
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 }
 
 .tool > summary:hover,
 .tool[open] > summary {
-  background: var(--hover);
+  background: var(--surface-hover);
   color: var(--text);
 }
 
+/* A call with nothing to open (denied or blocked before it ran): the same row, no chevron. */
+.tool.plain {
+  padding-left: calc(var(--sp-1) + var(--icon-sm) + var(--sp-2));
+}
+
+.tool-state {
+  display: inline-flex;
+  flex: none;
+  width: var(--icon-sm);
+}
+
+.tool-name {
+  flex: none;
+  font-family: var(--font-code);
+  font-size: var(--fs-xs);
+  color: var(--text-subtle);
+}
+
+.tool-summary,
+.tool-current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tool-current {
+  color: var(--text-subtle);
+}
+
+.tool-duration {
+  flex: none;
+  color: var(--text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
 .tool.failed > summary,
+.tool.plain.failed,
 .outputs .failed {
   color: var(--danger);
 }
 
+/* Opened: the arguments and result hang off a hairline under the row's chevron. */
+.tool-body,
+.tool-group-calls {
+  margin: var(--sp-1) 0 var(--sp-1) calc(var(--sp-1) + var(--icon-sm) / 2);
+  padding-left: calc(var(--icon-sm) / 2 + var(--sp-2));
+  border-left: 1px solid var(--border-strong);
+}
+
 .tool pre {
-  margin-top: calc(var(--space) * 0.5);
-  padding: var(--space) calc(var(--space) * 1.5);
-  background: var(--code-bg);
+  margin-top: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-sunken);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-code);
+  color: var(--text);
   max-height: 20rem;
   overflow: auto;
 }
 
-.tool-state {
-  display: inline-block;
-  width: 1.2em;
-}
-
-/* A call with nothing to open (denied or blocked before it ran): the same line, no chevron. */
-.tool.plain {
-  color: var(--muted);
-  padding: 0.2rem 0.6rem 0.2rem calc(0.4rem + 0.9em);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tool.plain.failed {
-  color: var(--danger);
-}
-
-.tool-name {
-  font-family: var(--font-code);
-  font-size: 0.9em;
-  margin-right: 0.5em;
-  opacity: 0.8;
-}
-
-.tool-duration {
-  margin-left: 0.6em;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.7;
-}
-
-.tool-body {
-  padding-left: calc(0.4rem + 0.9em);
-}
-
 .tool-label {
-  margin-top: calc(var(--space) * 0.75);
-  font-size: 0.8em;
-  color: var(--muted);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-subtle);
 }
 
 .tool-text pre {
@@ -615,12 +640,12 @@
 }
 
 .tool-more {
-  margin-top: calc(var(--space) * 0.25);
+  margin-top: var(--sp-1);
   padding: 0;
   border: none;
   background: none;
-  color: var(--muted);
-  font-size: 0.8em;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
   cursor: pointer;
 }
 
@@ -629,41 +654,33 @@
   text-decoration: underline;
 }
 
-/* Consecutive calls on one line; opened, the calls sit under it as their own rows. */
-.tool-current {
-  margin-left: 0.6em;
-  opacity: 0.7;
-}
-
-.tool-group-calls {
-  padding-left: calc(0.4rem + 0.9em);
-}
-
 .tool-group-calls > .tool {
   max-width: none;
 }
 
+/* ---- Cards the agent raises: a permission request, a model suggestion, questions ---- */
+.permission,
+.questions {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-raised);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius);
+  font-size: var(--fs-md);
+}
+
 .permission {
-  width: 100%;
-  max-width: var(--prose-max);
-  margin: 0 auto;
-  font-size: 0.85rem;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space);
-  padding: calc(var(--space) * 1.25) calc(var(--space) * 1.75);
-  background: var(--surface-raised);
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  border-radius: var(--radius);
+  gap: var(--sp-2);
 }
 
 .suggestion-body {
   display: flex;
   flex: 1 1 18rem;
   flex-direction: column;
-  gap: calc(var(--space) * 0.5);
+  gap: var(--sp-1);
 }
 
 .suggestion-body progress {
@@ -673,41 +690,44 @@
 .permission .buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: calc(var(--space) * 0.5);
+  gap: var(--sp-1);
 }
 
 .questions {
   display: flex;
   flex-direction: column;
-  gap: var(--space);
-  width: 100%;
-  max-width: var(--prose-max);
-  margin: 0 auto;
-  padding: calc(var(--space) * 1.25) calc(var(--space) * 1.75);
-  background: var(--surface-raised);
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  border-radius: var(--radius);
-  font-size: 0.85rem;
+  gap: var(--sp-3);
 }
 
 .question {
   display: flex;
   flex-direction: column;
-  gap: calc(var(--space) * 0.5);
+  gap: var(--sp-1);
 }
 
 .question .buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: calc(var(--space) * 0.5);
+  gap: var(--sp-1);
 }
 
+/* ---- Waiting: the working line, the core's wait line, steering marks ---- */
 .conversation > .working {
-  width: 100%;
-  max-width: var(--prose-max);
-  margin: 0 auto;
-  font-size: 0.85rem;
-  color: var(--muted);
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+}
+
+/* "Working…" with a breathing accent dot */
+.conversation > .working::before {
+  content: "";
+  display: inline-block;
+  width: calc(7 * var(--px));
+  height: calc(7 * var(--px));
+  margin-right: var(--sp-2);
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  vertical-align: 0.05em;
+  animation: pulse var(--dur-pulse) var(--ease-standard) infinite;
 }
 
 /* A message sent from this window that has not started its turn yet. */
@@ -720,18 +740,19 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.45rem;
-  width: 100%;
-  max-width: var(--prose-max);
-  margin: 0 auto;
-  font-size: 0.85rem;
-  color: var(--muted);
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  color: var(--text-muted);
 }
 
 .wait-line.compact {
   max-width: none;
-  margin: 0.25rem 0 0;
-  font-size: 0.78rem;
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-sm);
+}
+
+.conversation > .wait-line.compact {
+  max-width: var(--col-max);
 }
 
 .wait-line .wait-text {
@@ -743,81 +764,47 @@
 }
 
 .wait-line .wait-spinner {
-  width: 0.95rem;
-  height: 0.95rem;
-  color: var(--accent);
-  animation: spin 1.2s linear infinite;
+  width: var(--icon);
+  height: var(--icon);
+  color: var(--accent-text);
+  animation: spin var(--dur-spin) linear infinite;
 }
 
 .reduce-motion .wait-line .wait-spinner {
   animation: none;
 }
 
-.wait-line button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-size: 0.78rem;
-  padding: 0.15rem 0.5rem;
-}
-
 .wait-line button svg {
-  width: 0.8rem;
-  height: 0.8rem;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 
 .turn-summary {
-  width: 100%;
-  max-width: var(--prose-max);
-  margin: 0 auto;
-  color: var(--muted);
-  font-size: 0.75rem;
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 
+/* Failures and notes in the transcript are Notices, set in the reading column. The base `.error`
+   look comes from primitives.css; this is only its width and margin, for every `.error` in the app. */
 .error {
   width: 100%;
   max-width: var(--prose-max);
   margin: 0 auto;
-  font-size: 0.85rem;
-  color: var(--danger);
-  padding: var(--space) calc(var(--space) * 1.5);
-  background: color-mix(in srgb, var(--danger) 9%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
-  border-radius: var(--radius);
 }
 
-/* "Working…" with a breathing accent dot */
-.conversation > .working::before {
-  content: "";
-  display: inline-block;
-  width: 0.5rem;
-  height: 0.5rem;
-  margin-right: 0.5rem;
-  border-radius: 50%;
-  background: var(--accent);
-  vertical-align: 0.05em;
-  animation: pulse 1.4s var(--ease) infinite;
+.entry-notice {
+  align-self: stretch;
 }
 
-/* Composer: a floating rounded field with the send button inside it; attachment chips and the
-   push-to-talk status sit above it. */
+/* ---- Composer: one well on the sunken surface, the tools and send button inside it; attachment
+   chips and the push-to-talk status sit above it. ---- */
 .composer-area {
-  flex: none;
   display: flex;
   flex-direction: column;
-  gap: calc(var(--space) * 0.75);
-  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
-  max-width: var(--prose-max);
-  margin: 0 auto var(--space);
+  gap: var(--sp-2);
   border-radius: var(--radius-lg);
-}
-
-/* The new-session form is a bare .composer, not inside .composer-area: same column. */
-.new-session-view > .composer {
-  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
-  max-width: var(--prose-max);
-  margin: 0 auto var(--space);
 }
 
 .composer-area[hidden] {
@@ -827,45 +814,47 @@
 .composer-area.dragging .composer {
   border-color: var(--accent);
   border-style: dashed;
-  box-shadow: var(--shadow);
 }
 
 .composer {
   display: flex;
-  gap: var(--space);
+  gap: var(--sp-1);
   align-items: flex-end;
-  padding: var(--space) var(--space) var(--space) var(--space);
-  background: var(--surface-raised);
-  border: 1px solid var(--border-strong);
+  padding: var(--sp-2);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
-  transition:
-    border-color var(--fast) var(--ease),
-    box-shadow var(--fast) var(--ease);
+  transition: border-color var(--dur-fast) var(--ease-standard);
 }
 
-.composer:focus-within {
-  border-color: var(--accent);
-  box-shadow: var(--shadow);
+.composer:hover {
+  border-color: var(--text-subtle);
+}
+
+/* The well is the field: typing in it draws the one focus ring on its edge. */
+.composer:has(textarea:focus-visible) {
+  border-color: var(--focus);
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
 }
 
 .composer textarea {
   flex: 1;
-  align-self: center;
-  min-height: 1.6em;
+  align-self: stretch;
+  min-height: var(--control-h-lg);
   max-height: 14rem;
-  padding: calc(var(--space) * 0.5) 0;
+  padding: calc((var(--control-h-lg) - 1lh) / 2) var(--sp-2);
   resize: none;
   field-sizing: content;
-  font-size: calc(1rem * var(--prose-scale));
+  font-size: var(--fs-prose);
   line-height: 1.5;
   background: transparent;
   border: 0;
 }
 
-/* The composer's ring is the focus indicator for its field. */
+/* The ring above is this field's focus indicator; the transparent outline still shows in forced colours. */
 .composer textarea:focus-visible {
-  outline: none;
+  outline: 2px solid transparent;
 }
 
 /* Without content sizing the field cannot grow, so it starts taller and can be dragged. */
@@ -876,65 +865,58 @@
   }
 }
 
+/* The 30 px tools centre on the 40 px send button. */
+.composer .composer-tool {
+  flex: none;
+  margin-block: calc((var(--control-h-lg) - var(--control-h)) / 2);
+}
+
 .composer .send {
   flex: none;
   display: grid;
   place-items: center;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: var(--control-h-lg);
+  height: var(--control-h-lg);
   padding: 0;
-  border-radius: 50%;
-  border-color: transparent;
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
-.composer .send:hover:not(:disabled) {
-  background: var(--accent-strong);
-  border-color: transparent;
+  border-radius: var(--radius-full);
 }
 
 .composer .send:disabled {
   opacity: 1;
-  background: var(--surface-3);
-  color: var(--muted);
+  background: var(--surface-active);
+  color: var(--text-muted);
 }
 
-.composer .send svg {
-  width: 1.1rem;
-  height: 1.1rem;
-  fill: none;
-  stroke: currentColor;
+.composer button.icon-only .lucide {
+  width: var(--icon);
+  height: var(--icon);
+}
+
+.composer .send .lucide {
   stroke-width: 2.25;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 /* Steering: a user message that joined a running turn, marked with an accent edge and label */
 .message.user.steer {
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .steer-label {
   display: block;
-  margin-bottom: calc(var(--space) * 0.25);
-  color: var(--accent);
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  margin-bottom: var(--sp-1);
+  color: var(--accent-text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
 
 /* Messages waiting for the agent, stacked just above the composer */
 .queue {
-  flex: none;
   display: flex;
   flex-direction: column;
-  gap: calc(var(--space) * 0.5);
-  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
-  max-width: var(--prose-max);
-  margin: 0 auto var(--space);
+  gap: var(--sp-1);
+  margin-top: 0;
   padding: 0;
   list-style: none;
 }
@@ -942,13 +924,14 @@
 .queue li {
   display: flex;
   align-items: center;
-  gap: var(--space);
+  gap: var(--sp-2);
   min-width: 0;
-  padding: calc(var(--space) * 0.5) var(--space) calc(var(--space) * 0.5) calc(var(--space) * 1.5);
-  background: var(--surface-2);
+  min-height: var(--control-h);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  background: var(--surface-sunken);
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius);
-  font-size: 0.85rem;
+  font-size: var(--fs-md);
 }
 
 .queue li.steer {
@@ -957,20 +940,20 @@
 
 .queue-kind {
   flex: none;
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
 
 .queue li.steer .queue-kind {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Pending: dimmed and italic until the agent reads it */
 .queue-text {
-  color: var(--muted);
+  color: var(--text-muted);
   font-style: italic;
   flex: 1;
   min-width: 0;
@@ -987,61 +970,49 @@
 .queue .buttons {
   flex: none;
   display: flex;
-  gap: calc(var(--space) * 0.5);
-}
-
-.queue button {
-  display: inline-flex;
   align-items: center;
-  gap: calc(var(--space) * 0.35);
-  padding: calc(var(--space) * 0.25) var(--space);
-  font-size: 0.75rem;
-}
-
-.queue button svg {
-  width: 0.85rem;
-  height: 0.85rem;
+  gap: var(--sp-1);
 }
 
 .queue button.steer {
-  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--accent-text);
 }
 
-.queue button.danger {
-  color: var(--danger);
+.queue button.steer svg {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 
+/* ---- The drawer's content: context, totals, outputs, options ---- */
 .session-sections {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  gap: calc(var(--space) * 2);
-  margin-top: var(--space);
-  padding: calc(var(--space) * 1.5);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  animation: rise-in var(--slow) var(--ease);
+  gap: var(--sp-4);
+  padding: var(--sp-4);
 }
 
 .session-sections h3 {
-  margin: 0 0 calc(var(--space) * 0.5);
-  font-size: 0.72rem;
-  font-weight: 600;
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--muted);
+  letter-spacing: var(--tracking-caps);
+  color: var(--text-muted);
 }
 
 .session-sections dl {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 0.15rem var(--space);
+  gap: var(--sp-1) var(--sp-2);
   margin: 0;
-  font-size: 0.85rem;
+  font-size: var(--fs-md);
 }
 
 .session-sections dt {
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .session-sections dd {
@@ -1056,8 +1027,8 @@
 
 .outputs {
   margin: 0;
-  padding-left: 1.1rem;
-  font-size: 0.85rem;
+  padding-left: var(--sp-4);
+  font-size: var(--fs-md);
 }
 
 .outputs li {
@@ -1073,20 +1044,15 @@
 
 .context-breakdown {
   display: grid;
-  gap: calc(var(--space) * 0.75);
-  font-size: 0.85rem;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
 }
 
 .context-agent {
   display: flex;
   align-items: center;
-  gap: var(--space);
-  color: var(--muted);
-}
-
-.context-agent select {
-  min-width: 0;
-  flex: 1;
+  gap: var(--sp-2);
+  color: var(--text-muted);
 }
 
 .session-sections .context-use,
@@ -1095,69 +1061,49 @@
 }
 
 .context-method {
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
 }
 
 .context-bar {
   display: flex;
-  height: 0.85rem;
+  height: calc(10 * var(--px));
   overflow: hidden;
-  background: var(--surface-3);
+  background: var(--surface-active);
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .context-segment {
   flex-basis: 0;
   min-width: 2px;
-  background: var(--ctx-color, var(--muted));
+  background: var(--ctx-color, var(--text-muted));
 }
 
 /* A hairline between segments, so neighbouring shades stay apart. */
 .context-segment + .context-segment {
-  box-shadow: inset 1px 0 0 var(--surface-2);
+  box-shadow: inset 1px 0 0 var(--surface-raised);
 }
 
 .context-segment.ctx-free {
   background: transparent;
 }
 
-.context-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-variant-numeric: tabular-nums;
-}
-
-.context-table th,
-.context-table td {
-  padding: 0.12rem 0;
-  font-weight: normal;
-  text-align: right;
-}
-
-.context-table th:first-child {
-  text-align: left;
-}
-
-.context-table thead th {
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
 .context-table tfoot th,
 .context-table tfoot td {
-  border-top: 1px solid var(--border);
-  font-weight: 600;
+  border-top: 1px solid var(--border-strong);
+  border-bottom: 0;
+  color: var(--text);
+  font-weight: var(--fw-semibold);
 }
 
 .context-swatch {
   display: inline-block;
-  width: 0.7rem;
-  height: 0.7rem;
-  margin-right: 0.45rem;
-  vertical-align: -0.05rem;
-  background: var(--ctx-color, var(--muted));
-  border-radius: 3px;
+  width: calc(10 * var(--px));
+  height: calc(10 * var(--px));
+  margin-right: var(--sp-2);
+  vertical-align: -1px;
+  background: var(--ctx-color, var(--text-muted));
+  border-radius: var(--radius-xs);
 }
 
 .context-swatch.ctx-free {
@@ -1225,47 +1171,49 @@
   --ctx-color: var(--ctx-overhead);
 }
 
-/* Plan, delegated tasks, and the agents panel */
+/* ---- Plan, delegated tasks, and the agents panel ---- */
 .plan {
-  flex: none;
-  width: calc(100% - var(--space) * 6);
-  max-width: var(--prose-max);
-  margin: calc(var(--space) * 1.5) auto 0;
-  padding: var(--space) calc(var(--space) * 1.5);
+  margin-top: var(--sp-3);
+  margin-bottom: 0;
+  padding: var(--sp-2) var(--sp-4);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-raised);
-  font-size: 0.9rem;
+  font-size: var(--fs-md);
 }
 
 .plan summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--control-h-sm);
   cursor: pointer;
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 .plan ol {
   list-style: none;
-  margin: calc(var(--space) * 0.75) 0 0;
+  margin: var(--sp-2) 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: var(--sp-1);
 }
 
 .plan .mark {
   display: inline-block;
   width: 1.3em;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .plan .done {
-  color: var(--muted);
+  color: var(--text-muted);
   text-decoration: line-through;
 }
 
 .plan .in_progress .mark,
 .plan .in_progress {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .plan .blocked {
@@ -1273,35 +1221,20 @@
 }
 
 .task-line {
-  width: 100%;
-  max-width: var(--prose-max);
-  margin: 0 auto;
-  font-size: 0.85rem;
-  color: var(--muted);
+  font-size: var(--fs-md);
+  color: var(--text-muted);
 }
 
 .task-line strong {
   color: var(--text);
-  font-weight: 600;
-}
-
-/* Badges: a pill tinted with its own colour; the words always say the state too. */
-.badge {
-  display: inline-block;
-  padding: 0.05rem 0.5rem;
-  border-radius: 999px;
-  font-size: 0.72rem;
-  font-weight: 500;
-  line-height: 1.5;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  font-weight: var(--fw-semibold);
 }
 
 /* A subagent's log in the main panel: "← <session> / <subagent>" heads it. */
 .agent-crumbs {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: var(--sp-1);
   min-width: 0;
   flex: 1;
 }
@@ -1313,11 +1246,11 @@
 button.agent-back {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: var(--sp-1);
   min-width: 0;
   max-width: 45%;
-  padding: 0.15rem 0.4rem;
-  color: var(--muted);
+  padding: 0 var(--sp-2);
+  color: var(--text-muted);
 }
 
 button.agent-back:hover {
@@ -1326,8 +1259,8 @@ button.agent-back:hover {
 
 button.agent-back svg {
   flex: none;
-  width: 0.95rem;
-  height: 0.95rem;
+  width: var(--icon);
+  height: var(--icon);
 }
 
 .agent-crumb-session {
@@ -1337,22 +1270,22 @@ button.agent-back svg {
 }
 
 .agent-crumb-separator {
-  color: var(--muted);
+  color: var(--text-subtle);
 }
 
 .agent-view .session-head > button {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: var(--sp-1);
 }
 
 .agent-view .session-head > button svg {
-  width: 0.9rem;
-  height: 0.9rem;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 
 .agent-footer-id {
-  font-size: 0.75rem;
+  font-size: var(--fs-xs);
 }
 
 /* A subagent's line in the root's transcript opens its log. */
@@ -1362,7 +1295,7 @@ button.task-open {
   background: none;
   color: var(--text);
   font: inherit;
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
   cursor: pointer;
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
@@ -1370,7 +1303,7 @@ button.task-open {
 }
 
 button.task-open:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* The entry a search hit opened at, marked for a moment. */
@@ -1378,24 +1311,21 @@ button.task-open:hover {
   outline: 2px solid var(--focus);
   outline-offset: 4px;
   border-radius: var(--radius-sm);
-  transition: outline-color var(--slow) var(--ease);
+  transition: outline-color var(--dur-slow) var(--ease-standard);
 }
 
 .session-error {
-  margin: 0 calc(var(--space) * 0.5) var(--space);
+  margin: 0 var(--sp-1) var(--sp-2);
 }
 
 /* A session without a model: says what to do before its messages can run. */
 .needs-model {
-  flex: none;
-  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
-  max-width: var(--prose-max);
-  margin: 0 auto var(--space);
-  padding: 0.5rem 0.75rem;
-  border: 1px dashed var(--accent);
-  border-radius: var(--radius);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: var(--radius-sm);
   background: var(--accent-soft);
-  font-size: 0.85rem;
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
 }
 
 /* Session header: icon, title, status, and the usage-limit controls */
@@ -1403,16 +1333,17 @@ button.task-open:hover {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: calc(var(--space) * 0.5) var(--space);
+  gap: var(--sp-1) var(--sp-2);
+  min-height: var(--control-h);
 }
 
 .session-title {
   flex: 1 1 12rem;
   min-width: 0;
   margin: 0;
-  font-size: 0.92rem;
-  font-weight: 600;
-  letter-spacing: -0.005em;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1422,86 +1353,65 @@ button.task-open:hover {
 .stopped-banner button {
   display: inline-flex;
   align-items: center;
-  gap: calc(var(--space) * 0.35);
+  gap: var(--sp-1);
 }
 
-.resume-now {
-  font-size: 0.85rem;
-  display: inline-flex;
-  align-items: center;
-  gap: calc(var(--space) * 0.35);
-}
-
+.resume-now,
 .stop-session {
   display: inline-flex;
   align-items: center;
-  gap: calc(var(--space) * 0.35);
-  font-size: 0.85rem;
+  gap: var(--sp-1);
+  font-size: var(--fs-md);
 }
 
 .stop-session svg,
 .resume-now svg,
 .stopped-banner svg {
-  width: 0.9rem;
-  height: 0.9rem;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 
 /* Shown while the user has the session stopped, above the queue and the composer */
 .stopped-banner {
-  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space);
-  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
-  max-width: var(--prose-max);
-  margin: 0 auto var(--space);
-  padding: calc(var(--space) * 0.75) var(--space) calc(var(--space) * 0.75) calc(var(--space) * 1.5);
-  background: color-mix(in srgb, var(--warn) 10%, var(--surface-2));
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
-  border-radius: var(--radius);
-  font-size: 0.85rem;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  background: var(--warn-soft);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+}
+
+/* The archived note's look is sidebar.css's; only its place in the column is set above. */
+.session > .archived-note {
+  padding: var(--sp-2) var(--sp-3);
 }
 
 .usage-limits {
-  font-size: 0.8rem;
-}
-
-.usage-limits summary {
-  cursor: pointer;
-  color: var(--muted);
-  transition: color var(--fast) var(--ease);
+  font-size: var(--fs-sm);
 }
 
 .usage-limits form {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: calc(var(--space) * 0.75) calc(var(--space) * 1.5);
-  margin-top: var(--space);
-  padding: calc(var(--space) * 1.25) calc(var(--space) * 1.5);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  animation: rise-in var(--slow) var(--ease);
+  gap: var(--sp-2) var(--sp-4);
 }
 
 .usage-limits label {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--sp-2);
 }
 
-.usage-limits select,
 .usage-limits input {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  transition:
-    border-color var(--fast) var(--ease),
-    box-shadow var(--fast) var(--ease);
-  padding: 0.25rem 0.45rem;
+  padding: 0 var(--sp-2);
+  min-height: var(--control-h-sm);
+  font-size: var(--fs-sm);
 }
 
 .usage-limits input[type="number"] {
@@ -1510,7 +1420,7 @@ button.task-open:hover {
 
 .usage-actions {
   display: inline-flex;
-  gap: calc(var(--space) * 0.5);
+  gap: var(--sp-2);
   margin-left: auto;
 }
 
@@ -1527,76 +1437,51 @@ button.task-open:hover {
 
 /* Narrow canvas: tighter gutters around the conversation and composer. */
 @container (max-width: 36rem) {
-  .session-top {
-    padding-inline: calc(var(--space) * 1.5);
-  }
-
-  .conversation {
-    padding-inline: calc(var(--space) * 1.5);
-  }
-
   .session,
   .new-session-view {
-    --session-gutter: calc(var(--space) * 1.5);
+    --session-gutter: var(--session-gutter-narrow);
   }
 
-  .plan,
-  .new-session-intro,
-  .new-session-error {
-    width: calc(100% - var(--space) * 3);
-  }
-
-  .message.user {
+  .conversation > .message.user {
     max-width: 92%;
   }
 }
 
-/* Readable measure: prose is capped and centred; code and tables may run wider. */
-
-/* Settings that change how text and motion behave everywhere. */
+/* Settings that change how text and motion behave everywhere: the transcript's prose. */
 .prose {
-  font-size: calc(1rem * var(--prose-scale));
-  line-height: 1.65;
-  width: 100%;
-  max-width: var(--prose-max);
-  margin-inline: auto;
+  font-size: var(--fs-prose);
+  line-height: var(--lh-prose);
   font-family: var(--font-prose, var(--font-ui));
 }
 
 .budget-mark {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  font-size: 0.75rem;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  min-height: calc(18 * var(--px));
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   cursor: default;
 }
 
 .budget-mark svg {
-  width: 0.9rem;
-  height: 0.9rem;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 
 .budget-mark.near {
   color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  background: var(--warn-soft);
 }
 
 .budget-mark.over {
-  color: var(--danger, var(--warn));
-  background: color-mix(in srgb, var(--danger, var(--warn)) 14%, transparent);
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
-/* Composer tools: attach and push-to-talk */
-.composer .composer-tool {
-  flex: none;
-  width: 2.25rem;
-  height: 2.25rem;
-  border-radius: 50%;
-}
-
+/* Push-to-talk status */
 .composer .mic.recording {
   background: var(--danger);
   color: var(--accent-ink);
@@ -1606,10 +1491,10 @@ button.task-open:hover {
 .ptt-status {
   display: flex;
   align-items: center;
-  gap: var(--space);
-  padding: calc(var(--space) * 0.5) calc(var(--space) * 1.5);
-  font-size: 0.9rem;
-  color: var(--muted);
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }
 
 .ptt-status.error {
@@ -1618,37 +1503,43 @@ button.task-open:hover {
 
 .ptt-dot {
   display: inline-block;
-  width: 0.6rem;
-  height: 0.6rem;
-  border-radius: 50%;
+  width: calc(9 * var(--px));
+  height: calc(9 * var(--px));
+  border-radius: var(--radius-full);
   background: var(--danger);
-  animation: pulse 1.2s var(--ease) infinite;
+  animation: pulse var(--dur-pulse) var(--ease-standard) infinite;
 }
 
 /* Attachment chips, in the composer and on sent messages */
 .attachment-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: calc(var(--space) * 0.5);
+  gap: var(--sp-2);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .message .attachment-chips.sent {
-  margin-bottom: calc(var(--space) * 0.75);
+  margin-bottom: var(--sp-2);
 }
 
 .attachment-chip {
   display: inline-flex;
   align-items: center;
-  gap: calc(var(--space) * 0.5);
+  gap: var(--sp-2);
   max-width: 18rem;
-  padding: calc(var(--space) * 0.35) calc(var(--space) * 0.5);
-  font-size: 0.85rem;
-  background: var(--surface-3);
+  min-height: var(--control-h);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-2);
+  font-size: var(--fs-sm);
+  background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
+}
+
+.attachment-chip.sent,
+.attachment-chips.sent .attachment-chip {
+  padding-right: var(--sp-2);
 }
 
 .attachment-chip.failed {
@@ -1657,16 +1548,16 @@ button.task-open:hover {
 }
 
 .attachment-chip img {
-  width: 2.5rem;
-  height: 2.5rem;
+  width: calc(32 * var(--px));
+  height: calc(32 * var(--px));
   object-fit: cover;
-  border-radius: calc(var(--radius-sm) * 0.6);
+  border-radius: var(--radius-xs);
 }
 
 .attachment-chip svg {
   flex: none;
-  width: 1rem;
-  height: 1rem;
+  width: var(--icon);
+  height: var(--icon);
 }
 
 .attachment-chip .attachment-name {
@@ -1677,7 +1568,7 @@ button.task-open:hover {
 
 .attachment-chip .attachment-size {
   flex: none;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
 }
 
 .queue-attachments svg {
@@ -1694,17 +1585,9 @@ button.task-open:hover {
 
 .message-action {
   position: absolute;
-  top: 0.15rem;
-  width: 1.6rem;
-  height: 1.6rem;
-  padding: 0;
+  top: 0;
   opacity: 0;
-  color: var(--muted);
-}
-
-.message-action .lucide {
-  width: 0.85rem;
-  height: 0.85rem;
+  color: var(--text-muted);
 }
 
 .message.assistant > .message-action {
@@ -1712,7 +1595,7 @@ button.task-open:hover {
 }
 
 .message.user > .message-action {
-  left: -2rem;
+  left: calc(-1 * (var(--control-h-sm) + var(--sp-1)));
 }
 
 .message:hover > .message-action,
@@ -1729,23 +1612,22 @@ button.task-open:hover {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  margin: 0;
-  padding: 0 calc(var(--space) * 3);
-  font-size: 0.8rem;
+  gap: var(--sp-2);
+  margin-block: var(--sp-2) 0;
+  font-size: var(--fs-sm);
 }
 
 .branch-note .lucide {
-  width: 0.85rem;
-  height: 0.85rem;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
   flex: none;
 }
 
 .compare-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space);
-  padding: calc(var(--space) * 2);
+  gap: var(--sp-2);
+  padding: var(--sp-4);
 }
 
 .compare-form h3,
@@ -1756,7 +1638,7 @@ button.task-open:hover {
 .compare-models {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: var(--sp-1);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1765,10 +1647,11 @@ button.task-open:hover {
 .compare-models label {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.2rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-bubble);
+  gap: var(--sp-2);
+  min-height: var(--control-h-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
   cursor: pointer;
 }
 
@@ -1777,13 +1660,16 @@ button.task-open:hover {
   background: var(--accent-soft);
 }
 
-.compare-form textarea {
+.compare-form textarea.field {
   resize: vertical;
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
 }
 
 .compare-form-actions {
   display: flex;
-  gap: var(--space);
+  gap: var(--sp-2);
 }
 
 .compare {
@@ -1791,14 +1677,14 @@ button.task-open:hover {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  gap: var(--space);
+  gap: var(--sp-2);
 }
 
 .compare-head {
   display: flex;
   align-items: center;
-  gap: calc(var(--space) * 2);
-  padding: calc(var(--space) * 1.5) calc(var(--space) * 2) 0;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4) 0;
 }
 
 .compare-message {
@@ -1806,7 +1692,7 @@ button.task-open:hover {
   min-width: 0;
   margin: 0;
   overflow: hidden;
-  color: var(--muted);
+  color: var(--text-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1815,8 +1701,8 @@ button.task-open:hover {
   display: grid;
   flex: 1;
   min-height: 0;
-  gap: var(--space);
-  padding: 0 calc(var(--space) * 2) calc(var(--space) * 2);
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4) var(--sp-4);
   overflow: auto;
 }
 
@@ -1826,8 +1712,8 @@ button.task-open:hover {
   min-width: 0;
   min-height: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius-bubble);
-  background: var(--surface-2);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
 }
 
 .compare-column.archived {
@@ -1837,40 +1723,41 @@ button.task-open:hover {
 .compare-column > header {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
-  padding: var(--space) calc(var(--space) * 1.5);
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
 }
 
 .compare-column > footer {
   display: flex;
-  padding: var(--space) calc(var(--space) * 1.5);
+  padding: var(--sp-3) var(--sp-4);
   flex-direction: row;
   align-items: center;
-  gap: var(--space);
+  gap: var(--sp-2);
   border-top: 1px solid var(--border);
 }
 
 .compare-column h3 {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
 }
 
 .compare-stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.2rem 0.9rem;
+  gap: var(--sp-1) var(--sp-3);
   margin: 0;
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
 }
 
 .compare-stats > div {
   display: flex;
-  gap: 0.35rem;
+  gap: var(--sp-1);
 }
 
 .compare-stats dt {
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .compare-stats dd {
@@ -1878,14 +1765,13 @@ button.task-open:hover {
 }
 
 .compare-stats dd.standout {
-  color: var(--accent-strong);
+  color: var(--accent-text);
 }
 
 .compare-reply {
   flex: 1;
   min-height: 0;
   margin: 0;
-  padding: 0 calc(var(--space) * 1.5);
+  padding: 0 var(--sp-4);
   overflow: auto;
-  font-size: 0.95rem;
 }

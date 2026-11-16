@@ -45,7 +45,10 @@ import {
 } from "../sessions/sessions";
 import { describeUsage, formatShare, indicator, modelSpec } from "../models/budgets";
 import { describeRule } from "../components/PermissionsEditor";
+import { Badge } from "../components/Badge";
+import { IconButton } from "../components/IconButton";
 import { Menu } from "../components/Menu";
+import { Notice } from "../components/Notice";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { ToolCall } from "../components/ToolCall";
@@ -397,15 +400,7 @@ export function SessionPanel({
           className="session-drawer"
           aria-label={drawer === "context" ? "Context and outputs" : drawer === "compare" ? "Compare models" : "Session options"}
         >
-          <button
-            type="button"
-            className="ghost icon-only session-drawer-close"
-            onClick={() => setDrawer(null)}
-            aria-label="Close"
-            title="Close"
-          >
-            <X aria-hidden="true" />
-          </button>
+          <IconButton icon={X} label="Close" size="sm" className="session-drawer-close" onClick={() => setDrawer(null)} />
           {drawer === "compare" ? (
             onCompare && (
               <CompareForm
@@ -523,30 +518,28 @@ export function SessionPanel({
           </span>
         )}
         {onCompare && !archived && (
-          <button
-            type="button"
-            className="ghost icon-only footer-button"
+          <IconButton
+            icon={GitCompare}
+            label="Compare models"
+            tooltip="Compare models: send one message to a copy of this conversation on several models"
+            size="sm"
+            className="footer-button"
             onClick={() => toggle("compare")}
-            aria-label="Compare models"
             aria-expanded={drawer === "compare"}
             aria-controls={drawer === "compare" ? drawerId : undefined}
             disabled={session.busy}
-            title="Compare models: send one message to a copy of this conversation on several models"
-          >
-            <GitCompare aria-hidden="true" />
-          </button>
+          />
         )}
-        <button
-          type="button"
-          className="ghost icon-only footer-button"
+        <IconButton
+          icon={SlidersHorizontal}
+          label="Session options"
+          tooltip={`Session options: Markdown and usage limits (when usage runs out: ${describePolicy(session.summary.resume_policy)})`}
+          size="sm"
+          className="footer-button"
           onClick={() => toggle("options")}
-          aria-label="Session options"
           aria-expanded={drawer === "options"}
           aria-controls={drawer === "options" ? drawerId : undefined}
-          title={`Session options: Markdown and usage limits (when usage runs out: ${describePolicy(session.summary.resume_policy)})`}
-        >
-          <SlidersHorizontal aria-hidden="true" />
-        </button>
+        />
         <BudgetMark
           budgets={budgets}
           environmentId={session.summary.environment_id ?? null}
@@ -689,6 +682,7 @@ function QuestionsView({
             </span>
           )}
           <input
+            className="field"
             id={`${inputId}-${index}`}
             value={answers[index] ?? ""}
             disabled={entry.answered}
@@ -733,15 +727,14 @@ export function EntryView({
   const branch = (title: string) =>
     onBranch &&
     entry.event !== undefined && (
-      <button
-        type="button"
-        className="ghost icon-only message-action"
-        aria-label="Branch from here"
-        title={title}
+      <IconButton
+        icon={GitBranch}
+        label="Branch from here"
+        tooltip={title}
+        size="sm"
+        className="message-action"
         onClick={() => onBranch(entry.event!)}
-      >
-        <GitBranch aria-hidden="true" />
-      </button>
+      />
     );
   switch (entry.kind) {
     case "user":
@@ -790,9 +783,9 @@ export function EntryView({
         <div className="permission" role="group" aria-label="Permission request">
           <span>
             {entry.agentId !== "root" && (
-              <span className="badge running" title={entry.agentId}>
+              <Badge tone="accent" title={entry.agentId}>
                 {agentName(entry.agentId)}
-              </span>
+              </Badge>
             )}{" "}
             Allow{" "}
             <strong>{entry.summary}</strong>?
@@ -837,9 +830,17 @@ export function EntryView({
         </p>
       );
     case "error":
-      return <p className="error">Turn failed: {entry.message}</p>;
+      return (
+        <Notice tone="danger" title="Turn failed" className="entry-notice">
+          {entry.message}
+        </Notice>
+      );
     case "notice":
-      return <p className="notice">{entry.message}</p>;
+      return (
+        <Notice tone="info" className="entry-notice">
+          {entry.message}
+        </Notice>
+      );
     case "suggestion":
       return null;
   }
@@ -889,6 +890,7 @@ export function QueueView({
             <span className="queue-kind">{queueLabel(message)}</span>
             {isEditing ? (
               <input
+                className="field"
                 aria-label="Edit queued message"
                 autoFocus
                 value={editing.text}
@@ -914,25 +916,25 @@ export function QueueView({
             )}
             <span className="buttons">
               {actions.includes("edit") && !isEditing && (
-                <button
-                  className="ghost icon-only row-tool"
+                <IconButton
+                  icon={Pencil}
+                  label="Edit queued message"
+                  size="sm"
+                  className="row-tool"
                   onClick={() => setEditing({ id: message.id, text: message.text })}
-                  aria-label="Edit queued message"
-                  title="Edit"
-                >
-                  <Pencil aria-hidden="true" />
-                </button>
+                />
               )}
-              <button
-                className="ghost icon-only row-tool danger"
+              <IconButton
+                icon={Trash}
+                label="Remove queued message"
+                variant="danger"
+                size="sm"
+                className="row-tool"
                 onClick={() => onChange(message.id, { kind: "remove" })}
-                aria-label="Remove queued message"
-                title="Remove"
-              >
-                <Trash aria-hidden="true" />
-              </button>
+              />
               {actions.includes("steer") && (
                 <button
+                  type="button"
                   className="ghost small steer"
                   onClick={() => onChange(message.id, { kind: "steer" })}
                   aria-label="Steer the running turn with this message"
@@ -1008,6 +1010,7 @@ function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Prop
           <label>
             At
             <input
+              className="field"
               type="time"
               required
               value={draft.at_time ?? ""}
@@ -1019,6 +1022,7 @@ function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Prop
           <label title={draft.mode === "retry_every" ? undefined : "How often to retry when no reset time is known"}>
             {draft.mode === "retry_every" ? "Every" : "Retry every"}
             <input
+              className="field"
               type="number"
               min={1}
               max={1440}
@@ -1032,6 +1036,7 @@ function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Prop
           <label>
             Give up after
             <input
+              className="field"
               type="number"
               min={1}
               max={168}

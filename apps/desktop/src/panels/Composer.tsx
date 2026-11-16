@@ -27,6 +27,7 @@ import {
   type Chip,
 } from "../sessions/attachments";
 import { ComposerChips } from "../components/AttachmentChips";
+import { IconButton } from "../components/IconButton";
 import type { DaemonClient } from "../daemon/client";
 import { insideTauri } from "../daemon/connection";
 import { useSettings } from "../settings/settings";
@@ -322,15 +323,7 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
           {ptt.phase === "error" && (
             <>
               <span>{ptt.message}</span>
-              <button
-                type="button"
-                className="ghost icon-only"
-                onClick={() => dispatch({ type: "dismiss" })}
-                aria-label="Dismiss"
-                title="Dismiss"
-              >
-                <X aria-hidden="true" />
-              </button>
+              <IconButton icon={X} label="Dismiss" size="sm" onClick={() => dispatch({ type: "dismiss" })} />
             </>
           )}
         </div>
@@ -343,15 +336,13 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
           send();
         }}
       >
-        <button
-          type="button"
-          className="ghost icon-only composer-tool"
+        <IconButton
+          icon={Paperclip}
+          label="Attach files"
+          tooltip="Attach files (or paste, or drop them here)"
+          className="composer-tool"
           onClick={() => void choose()}
-          aria-label="Attach files"
-          title="Attach files (or paste, or drop them here)"
-        >
-          <Paperclip aria-hidden="true" />
-        </button>
+        />
         <input
           ref={picker}
           type="file"
@@ -390,16 +381,16 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
           }}
           rows={1}
         />
-        <button
-          type="button"
-          className={`ghost icon-only composer-tool mic${recording ? " recording" : ""}`}
-          aria-label={recording ? "Recording: release to transcribe" : "Hold to talk"}
-          aria-pressed={recording}
-          title={
+        <IconButton
+          icon={Mic}
+          label={recording ? "Recording: release to transcribe" : "Hold to talk"}
+          tooltip={
             settings.pushToTalkKey === "off"
               ? "Hold to talk; release to transcribe into the message"
               : `Hold to talk (or hold ${settings.pushToTalkKey}); release to transcribe into the message`
           }
+          className={`composer-tool mic${recording ? " recording" : ""}`}
+          aria-pressed={recording}
           disabled={ptt.phase === "transcribing"}
           onPointerDown={(event) => {
             event.preventDefault();
@@ -415,18 +406,16 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
               pttRef.current.phase === "recording" ? { type: "release", at: Date.now() } : { type: "press", at: Date.now() },
             );
           }}
-        >
-          <Mic aria-hidden="true" />
-        </button>
-        <button
+        />
+        <IconButton
           type="submit"
+          icon={busy ? ListPlus : ArrowUp}
+          label={busy ? "Queue" : "Send"}
+          tooltip={busy ? "Queue for after this turn (Enter)" : "Send (Enter)"}
+          variant="primary"
           className="send"
           disabled={!ready}
-          aria-label={busy ? "Queue" : "Send"}
-          title={busy ? "Queue for after this turn (Enter)" : "Send (Enter)"}
-        >
-          {busy ? <ListPlus aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}
-        </button>
+        />
       </form>
     </div>
   );

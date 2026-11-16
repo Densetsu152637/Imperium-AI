@@ -15,6 +15,7 @@ import { RESUME_TEXT, agentComposerHint, formatElapsed, taskElapsed } from "../s
 import { JumpToLatest } from "../components/JumpToLatest";
 import { ModelName } from "../components/ModelName";
 import { Menu } from "../components/Menu";
+import { Notice } from "../components/Notice";
 import { ToolGroup } from "../components/ToolGroup";
 import { WaitLine } from "../components/WaitLine";
 import type { DaemonClient } from "../daemon/client";
@@ -229,11 +230,15 @@ export function AgentView({
         ) : (
           running && !stopped && <p className="working">Working…</p>
         )}
-        {task.status === "failed" && task.report && <p className="error">{task.report}</p>}
+        {task.status === "failed" && task.report && (
+          <Notice tone="danger" className="entry-notice">
+            {task.report}
+          </Notice>
+        )}
         {paused && (
-          <p className="notice">
+          <Notice tone="info" className="entry-notice">
             Paused for a steering message to the root agent. Resume it, message it to re-brief it, or cancel it.
-          </p>
+          </Notice>
         )}
       </div>
       <JumpToLatest follow={follow} />

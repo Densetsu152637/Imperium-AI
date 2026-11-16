@@ -19,6 +19,7 @@ import {
   type BranchRun,
 } from "../sessions/branches";
 import { ModelName } from "../components/ModelName";
+import { Notice } from "../components/Notice";
 import { formatCost, formatTokens } from "../sessions/sessions";
 import { formatElapsed } from "../sessions/agentView";
 
@@ -96,6 +97,7 @@ export function CompareForm({
         </ul>
       )}
       <textarea
+        className="field"
         aria-label="Message for every model"
         rows={3}
         placeholder="The message to send to every model"
@@ -103,9 +105,7 @@ export function CompareForm({
         onChange={(event) => setMessage(event.target.value)}
       />
       {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
+        <Notice tone="danger">{error}</Notice>
       )}
       <div className="compare-form-actions">
         <button type="submit" className="primary" disabled={!!problem || busy} title={problem ?? undefined}>
@@ -179,7 +179,9 @@ export function ComparePanel({
             </header>
             <div className="compare-reply prose">
               {column.state === "failed" ? (
-                <p className="error">{column.error ?? "The turn failed."}</p>
+                <Notice tone="danger" title="The turn failed">
+                  {column.error}
+                </Notice>
               ) : column.text ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{column.text}</ReactMarkdown>
               ) : (

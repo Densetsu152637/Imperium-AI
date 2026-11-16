@@ -6,6 +6,7 @@ import { File, FileText, Image as ImageIcon, LoaderCircle, TriangleAlert, X } fr
 import type { Attachment } from "@imperium/protocol";
 
 import { deliveryLabel, formatBytes, type Chip } from "../sessions/attachments";
+import { IconButton } from "./IconButton";
 
 function KindIcon({ kind }: { kind: Attachment["kind"] | undefined }) {
   if (kind === "image") return <ImageIcon aria-hidden="true" />;
@@ -38,15 +39,7 @@ export function ComposerChips({ chips, onRemove }: { chips: Chip[]; onRemove: (k
                 {noVision && " · path only"}
               </span>
             )}
-            <button
-              type="button"
-              className="ghost icon-only"
-              onClick={() => onRemove(chip.key)}
-              aria-label={`Remove ${chip.name}`}
-              title="Remove"
-            >
-              <X aria-hidden="true" />
-            </button>
+            <IconButton icon={X} label={`Remove ${chip.name}`} tooltip="Remove" size="sm" onClick={() => onRemove(chip.key)} />
           </li>
         );
       })}
