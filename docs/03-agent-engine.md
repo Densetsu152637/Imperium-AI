@@ -905,15 +905,30 @@ imperium run --print-prompt --variant lean --context-tokens 32768 > prompt.json
 | `--variant <name\|path>`, `--prompt-overlay <file>`, `--flag k=v` | See [variants](#harness-variants). |
 | `--subagent-replay <file>` | Answer subagents from recordings, with no model call for them. |
 | `--cost-ceiling USD`, `--token-ceiling N`, `--price-in`, `--price-out` | Prices are per million tokens. A ceiling is checked before each model call (the root's and any real subagent's), so the last call can pass it by its own size. A cost ceiling needs prices. |
-| `--permission-mode` | Default `default`. A call that would ask is always denied (recorded under `permission_requests`); `plan` and `ask` are stricter, `accept_edits` lets edits through, `full` runs everything the rules and the safety floor do not stop (including `web_fetch`). |
+| `--permission-mode` | Default `default`. A call that would ask is always denied (recorded under `permission_requests`); `plan` and `ask` are stricter, `accept_edits` lets edits through, `full` runs everything the user's deny and ask rules and the safety floor do not stop (including `web_fetch`); `auto` is refused. |
+| `--local`, `--config-home <dir>` | `--local`: the root model runs on this machine, so the harness aids set to `auto` count as on. `--config-home`: read the configuration from this folder instead of the user's. |
 | `--timeout-s`, `--journal <file>` | A wall-clock limit (default 1800) and a place to keep the session journal. |
 | `--print-prompt` | Print the resolved system prompt (with `{workspace}` where the working folder goes) and tool schemas as JSON and stop. No model is called: the session is built as for a run and answered by a stand-in model, so the output is what a run would first send. |
 
 The root agent has the engine's own tools, plus `web_search` and `web_fetch`: the schemas and
 citation rules are the real ones, search returns an error ("turned off in headless evals"), and
 `web_fetch` asks, so it is denied unless the mode is `full`. Harness aids that talk to a person
-(`request_clarification`, rewrites, hints) are off unless `--flag attended=true`. No memory,
-skills, hooks, MCP servers, or project instructions are loaded: the prompt is the base prompt.
+(`request_clarification`, rewrites, hints) are off unless `--flag attended=true`, and `auto`
+counts as on only with `--local` (the root model runs on this machine, as in the product). No
+memory, skills, hooks, MCP servers or plugins are loaded. Unlike a daemon session, a headless
+run does not inject the working folder's `AGENTS.md` or `CLAUDE.md` when file tools touch it
+(no workflow context is loaded), so the prompt and the files the model reads are the same on any
+machine; and it does not list the repository's other git worktrees, so a worktree's own path is
+the only path in the prompt (replaced by `{workspace}` in `prompt_hash`).
+
+The workspace is built as the daemon builds a session's: the user's `[permissions]` rules and
+grants, the `[isolation]` tier's sandbox, and the folders the safety floor guards (`<config>/mods`,
+`<config>/plugins`, `<data>/packs`, `extensions.plugin_dirs`), all read from the user's
+configuration (`--config-home <dir>` reads another, laid out as `IMPERIUM_HOME`). So a deny rule
+holds in `full` mode, and a write into a guarded folder still asks (and is denied). `full` is
+therefore as unsafe as the configured isolation tier: with the default `policy` tier commands run
+in the user's own shell, so use `full` only in a throwaway workspace under `os` or `container`
+isolation.
 
 **Output (schema version 1).** Keys: `schema_version`, `mode` (`run` or `print_prompt`),
 `engine` (`imperium_version`, `protocol_version`), `task` (`id`, `source`, `prompt`, `raw`),
@@ -951,7 +966,10 @@ description = "no knowledge line, terse"
 
 [prompt]                           # applied in this order: replace, remove, prepend, append
 replace = [{ find = "Act through the tools", with = "Use the tools" }]   # first match
-remove  = ["Research that several later tasks"]   # drops each paragraph containing the text
+remove  = ["Some other paragraph"]   # drops each paragraph containing the text, except the base
+                                     # paragraph (identity line, proverb, tool rules, knowledge
+                                     # line are one paragraph): replace part of it, or use
+                                     # --flag knowledge=false to drop the knowledge line
 prepend = "Context budget: {context_k}K tokens."
 append  = "Answer in one line."    # {context_tokens} and {context_k} are filled in
 
@@ -984,7 +1002,11 @@ edits, flags and overlay, not the name) are in the output next to the prompt has
 Every subagent a run starts (`spawn_agent`, `resume_agent`, the chunk and reduce agents of
 `delegate_chunks`) is answered by the first reply whose keys all match: `task_id` (`t1`, `t2`, ...
 in spawn order), `brief` (exact, blank space ignored), `brief_contains` (case-insensitive); a
-reply needs at least one key. `ok: false` makes the root read a failed task. No key matching gives
+reply needs at least one key. For the chunk and merge agents of `delegate_chunks`, `brief` is the
+call's own `brief` (chunk agents) or `reduce` text (the merge agent), without the chunk text or
+markers, and `role` (`task`, `chunk`, `reduce`) and `chunk` (the chunk's number, from 1) can
+narrow a reply. A `rename` in a variant may not take a name another tool has (the rename is
+skipped with a warning). `ok: false` makes the root read a failed task. No key matching gives
 the root `replay error: no recording matches task t3 ...` as the report, with `ok` false, and the
 run goes on. A task file may hold the recordings under `subagent_replay` instead. `replay.unused`
 lists the replies nothing asked for.

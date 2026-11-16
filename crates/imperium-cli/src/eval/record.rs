@@ -169,10 +169,10 @@ impl Recorder {
                     .variant
                     .edit_prompt(content, self.placeholders, &mut warnings);
             }
-            self.variant.rename_calls(&mut messages);
             let (edited, reverse) = self.variant.edit_tools(&tools, &mut warnings);
             tools = edited;
             back = reverse;
+            Variant::rename_calls(&back, &mut messages);
             self.remember_request(&messages, &tools, warnings);
         }
         let sent = ChatRequest {

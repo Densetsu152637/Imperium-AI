@@ -45,7 +45,7 @@ pub use model::{
 };
 pub use queue::QueueError;
 pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
-pub use replay::{ReplayAnswer, SubagentReplay};
+pub use replay::{ReplayAnswer, ReplayRequest, ReplayRole, SubagentReplay};
 pub use session::{
     BridgeError, Session, SessionClosed, SessionConfig, SessionMemory, SessionOptions,
     new_session_id,

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, bail};
-use imperium_engine::{ReplayAnswer, SubagentReplay};
+use imperium_engine::{ReplayAnswer, ReplayRequest, ReplayRole, SubagentReplay};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -32,12 +32,38 @@ pub struct Reply {
     /// Text the brief must contain (compared without regard to case).
     #[serde(default)]
     pub brief_contains: Option<String>,
+    /// The kind of subagent: `task` (`spawn_agent`), `chunk` or `reduce` (the chunk and merge
+    /// agents of `delegate_chunks`; for those `brief` is the call's `brief` or `reduce` text).
+    #[serde(default)]
+    pub role: Option<Role>,
+    /// For a `chunk`: its number, from 1.
+    #[serde(default)]
+    pub chunk: Option<usize>,
     /// What the subagent reports back.
     pub report: String,
     /// Whether the subagent counts as having finished its task; false makes the root read it
     /// as a failed task. Defaults to true.
     #[serde(default = "yes")]
     pub ok: bool,
+}
+
+/// The kind of subagent a reply is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Task,
+    Chunk,
+    Reduce,
+}
+
+impl Role {
+    fn of(role: ReplayRole) -> Role {
+        match role {
+            ReplayRole::Task => Role::Task,
+            ReplayRole::Chunk { .. } => Role::Chunk,
+            ReplayRole::Reduce { .. } => Role::Reduce,
+        }
+    }
 }
 
 fn yes() -> bool {
@@ -67,8 +93,12 @@ impl Recordings {
         let recordings: Recordings =
             serde_json::from_value(value).context("the recordings are malformed")?;
         for (index, reply) in recordings.replies.iter().enumerate() {
-            if reply.task_id.is_none() && reply.brief.is_none() && reply.brief_contains.is_none() {
-                bail!("reply {index} has no key: give task_id, brief or brief_contains");
+            if reply.task_id.is_none()
+                && reply.brief.is_none()
+                && reply.brief_contains.is_none()
+                && reply.role.is_none()
+            {
+                bail!("reply {index} has no key: give task_id, brief, brief_contains or role");
             }
         }
         Ok(recordings)
@@ -80,6 +110,7 @@ impl Recordings {
 pub struct Answered {
     pub task_id: String,
     pub brief: String,
+    pub role: Role,
     /// The index of the reply that answered, or `None` for an unknown key.
     pub reply: Option<usize>,
     pub ok: bool,
@@ -125,11 +156,19 @@ impl Replay {
         })
     }
 
-    fn find(&self, task_id: &str, brief: &str) -> Option<usize> {
+    fn find(&self, request: &ReplayRequest<'_>) -> Option<usize> {
+        let (task_id, brief) = (request.task_id, request.brief);
         let squashed = squash(brief);
         let lowered = brief.to_lowercase();
+        let role = Role::of(request.role);
+        let number = match request.role {
+            ReplayRole::Chunk { number, .. } => Some(number),
+            _ => None,
+        };
         self.recordings.replies.iter().position(|reply| {
-            reply.task_id.as_deref().is_none_or(|key| key == task_id)
+            reply.role.is_none_or(|key| key == role)
+                && reply.chunk.is_none_or(|key| Some(key) == number)
+                && reply.task_id.as_deref().is_none_or(|key| key == task_id)
                 && reply
                     .brief
                     .as_deref()
@@ -143,8 +182,9 @@ impl Replay {
 }
 
 impl SubagentReplay for Replay {
-    fn answer(&self, task_id: &str, brief: &str) -> ReplayAnswer {
-        let found = self.find(task_id, brief);
+    fn answer(&self, request: &ReplayRequest<'_>) -> ReplayAnswer {
+        let (task_id, brief) = (request.task_id, request.brief);
+        let found = self.find(request);
         let answer = match found {
             Some(index) => {
                 let reply = &self.recordings.replies[index];
@@ -167,6 +207,7 @@ impl SubagentReplay for Replay {
             .push(Answered {
                 task_id: task_id.to_string(),
                 brief: brief.to_string(),
+                role: Role::of(request.role),
                 reply: found,
                 ok: answer.ok,
                 report: answer.report.clone(),
@@ -184,6 +225,14 @@ fn squash(text: &str) -> String {
 mod tests {
     use super::*;
 
+    fn ask(replay: &Replay, task_id: &str, brief: &str) -> ReplayAnswer {
+        replay.answer(&ReplayRequest {
+            task_id,
+            brief,
+            role: ReplayRole::Task,
+        })
+    }
+
     fn recordings(value: Value) -> Replay {
         Replay::new(Recordings::from_value(value).unwrap())
     }
@@ -195,9 +244,9 @@ mod tests {
             {"brief": "Read   the\nfile", "report": "second"},
             {"brief_contains": "TESTS", "report": "third", "ok": false},
         ]}));
-        assert_eq!(replay.answer("t1", "anything").report, "first");
-        assert_eq!(replay.answer("t9", "Read the file").report, "second");
-        let third = replay.answer("t3", "run the tests");
+        assert_eq!(ask(&replay, "t1", "anything").report, "first");
+        assert_eq!(ask(&replay, "t9", "Read the file").report, "second");
+        let third = ask(&replay, "t3", "run the tests");
         assert_eq!((third.report.as_str(), third.ok), ("third", false));
         assert!(replay.unused().is_empty());
     }
@@ -205,7 +254,7 @@ mod tests {
     #[test]
     fn an_unknown_key_is_an_error_answer_not_a_wait() {
         let replay = recordings(json!({"replies": [{"task_id": "t1", "report": "x"}]}));
-        let answer = replay.answer("t2", "something else");
+        let answer = ask(&replay, "t2", "something else");
         assert!(!answer.ok);
         assert!(
             answer.report.starts_with("replay error:"),
@@ -214,6 +263,34 @@ mod tests {
         );
         assert_eq!(replay.answered()[0].reply, None);
         assert_eq!(replay.unused(), vec![0]);
+    }
+
+    #[test]
+    fn chunk_and_reduce_agents_match_on_the_bare_brief() {
+        let replay = recordings(json!({"replies": [
+            {"role": "chunk", "chunk": 2, "brief": "list rows", "report": "second"},
+            {"role": "chunk", "brief": "list rows", "report": "any chunk"},
+            {"role": "reduce", "brief": "merge them", "report": "merged"},
+        ]}));
+        let chunk = |number| {
+            replay
+                .answer(&ReplayRequest {
+                    task_id: "t2",
+                    brief: "list rows",
+                    role: ReplayRole::Chunk { number, total: 3 },
+                })
+                .report
+        };
+        assert_eq!(chunk(2), "second");
+        assert_eq!(chunk(1), "any chunk");
+        let reduce = replay.answer(&ReplayRequest {
+            task_id: "t5",
+            brief: "merge them",
+            role: ReplayRole::Reduce { chunks: 3 },
+        });
+        assert_eq!(reduce.report, "merged");
+        // A task with the same brief is not a chunk.
+        assert!(!ask(&replay, "t1", "list rows").ok);
     }
 
     #[test]

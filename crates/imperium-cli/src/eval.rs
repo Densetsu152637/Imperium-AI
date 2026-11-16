@@ -22,17 +22,17 @@ use clap::ValueEnum;
 use imperium_api::encoding::hex;
 use imperium_api::{Effort, PermissionMode, Pricing, ToolProvider};
 use imperium_config::{
-    Enforce, HarnessMode, HarnessSettings, KnowledgeSettings, Paths, RoutingSettings,
+    Enforce, HarnessMode, HarnessSettings, KnowledgeSettings, Paths, RoutingSettings, Settings,
 };
 use imperium_engine::{
     ChatClient, ChatClients, Endpoint, KnowledgeConfig, ResolvedModel, Session, SessionConfig,
     SessionOptions, SubagentReplay,
 };
 use imperium_models::OpenAiCompatible;
-use imperium_policy::permissions::Permissions;
+use imperium_policy::permissions::{Permissions, SharedRules, protect_dir};
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::session::{AgentEvent, PermissionDecision, Plan, ROOT_AGENT, SessionEvent};
-use imperium_tools::Workspace;
+use imperium_tools::{Sandbox, Workspace};
 use imperium_web::{SearchFuture, SearchProvider, Web, WebError, WebTools};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -123,6 +123,14 @@ pub struct RunArgs {
     /// The environment variable that holds the endpoint's API key. The key is never printed.
     #[arg(long, value_name = "VAR")]
     pub api_key_env: Option<String>,
+    /// The root model runs on this machine (a local llama-server): the harness aids that are
+    /// `auto` count as on, as in the product, where `auto` means on for a local model.
+    #[arg(long)]
+    pub local: bool,
+    /// Read the configuration (permission rules and grants, isolation tier, plugin folders) from
+    /// this folder, laid out as `IMPERIUM_HOME`, instead of the user's own.
+    #[arg(long, value_name = "DIR")]
+    pub config_home: Option<PathBuf>,
     /// The root model's context window in tokens.
     #[arg(long, value_name = "N")]
     pub context_tokens: Option<u64>,
@@ -205,9 +213,27 @@ pub async fn run(args: RunArgs) -> anyhow::Result<Outcome> {
     if printing {
         std::fs::create_dir_all(&workspace_dir).context("could not make a folder to print for")?;
     }
+    // Built as the daemon builds a session's workspace: the user's permission rules and path
+    // grants, the isolation tier's sandbox, and the folders the safety floor guards.
+    for dir in imperium_config::extension_dirs(&setup.paths, &setup.settings) {
+        protect_dir(&dir);
+    }
+    let permissions = Permissions::new(
+        SharedRules::new(setup.settings.permissions.rules.clone()),
+        SharedRules::default(),
+    )
+    .with_mode(args.permission_mode);
+    let isolation = &setup.settings.isolation;
     let workspace = Workspace::new(&workspace_dir)
         .with_context(|| format!("the workspace {} is not a folder", workspace_dir.display()))?
-        .with_permissions(Permissions::default().with_mode(args.permission_mode));
+        .with_sandbox(Sandbox::for_tier(
+            &isolation.tier,
+            isolation.network,
+            &isolation.container_runtime,
+            &isolation.container_image,
+        ))
+        .with_grants(&setup.settings.permissions.grants)
+        .with_permissions(permissions);
 
     let record: Shared = Shared::default();
     let model = setup.model(&record, printing);
@@ -222,7 +248,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<Outcome> {
         },
     )
     .context("could not start the session")?;
-    let mut events = session.subscribe();
+    let (earlier, mut events) = session.subscribe_with_history();
     let prompt = if printing {
         PRINT_PROMPT_MESSAGE.to_string()
     } else {
@@ -231,23 +257,39 @@ pub async fn run(args: RunArgs) -> anyhow::Result<Outcome> {
     session.send(prompt).map_err(|error| anyhow!("{error}"))?;
 
     let mut log = EventLog::default();
+    // Events taken in so far: after a lag the history says what was missed, so an ask whose
+    // event was dropped is still answered.
+    let mut seen = earlier.len();
     let deadline = tokio::time::sleep(Duration::from_secs(args.timeout_s));
     tokio::pin!(deadline);
     let end = loop {
-        tokio::select! {
-            () = &mut deadline => {
-                session.stop();
-                break End::Timeout;
+        let received = tokio::select! {
+            () = &mut deadline => None,
+            event = events.recv() => Some(event),
+        };
+        let Some(received) = received else {
+            session.stop();
+            break End::Timeout;
+        };
+        let batch = match received {
+            Ok(event) => {
+                seen += 1;
+                vec![event]
             }
-            event = events.recv() => match event {
-                Ok(event) => {
-                    if let Some(end) = log.observe(&session, event) {
-                        break end;
-                    }
-                }
-                Err(RecvError::Lagged(_)) => {}
-                Err(RecvError::Closed) => break End::Failed("the session closed".into()),
-            },
+            Err(RecvError::Lagged(_)) => {
+                let (history, fresh) = session.subscribe_with_history();
+                events = fresh;
+                let missed = history.len().saturating_sub(seen);
+                seen = history.len();
+                history.into_iter().skip(seen - missed).collect()
+            }
+            Err(RecvError::Closed) => break End::Failed("the session closed".into()),
+        };
+        let ended = batch
+            .into_iter()
+            .find_map(|event| log.observe(&session, event));
+        if let Some(end) = ended {
+            break end;
         }
     };
     let wall_time_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -581,6 +623,9 @@ impl LoopFlags {
 
 /// Everything resolved from the command line before the session starts.
 struct Setup {
+    paths: Paths,
+    settings: Settings,
+    local: bool,
     task: Task,
     variant: Arc<Variant>,
     flags: LoopFlags,
@@ -600,6 +645,14 @@ struct Setup {
 impl Setup {
     fn new(args: &RunArgs) -> anyhow::Result<Self> {
         let printing = args.print_prompt;
+        let paths = match &args.config_home {
+            Some(home) => Paths::under(home),
+            None => Paths::from_env().context("could not find the configuration folder")?,
+        };
+        let settings = imperium_config::load(&paths, None, std::env::vars())
+            .context("could not read the configuration")?
+            .settings()
+            .context("the configuration is not valid")?;
         let task = if printing {
             Task {
                 id: None,
@@ -699,6 +752,9 @@ impl Setup {
             (!kwargs.is_empty()).then(|| json!({ "chat_template_kwargs": Value::Object(kwargs) }));
 
         Ok(Setup {
+            paths,
+            settings,
+            local: args.local,
             task,
             variant: Arc::new(variant),
             effort: args.effort.or(flags.effort),
@@ -769,7 +825,12 @@ impl Setup {
             browser: None,
             downloads: None,
         });
-        let mode = self.flags.harness;
+        // `auto` means on for a model that runs on this machine, which the engine cannot tell
+        // here (it has no local runtime), so `--local` says it.
+        let mode = match self.flags.harness {
+            HarnessMode::Auto if self.local => HarnessMode::On,
+            other => other,
+        };
         SessionConfig {
             id: "eval".into(),
             workspace: workspace.clone(),
@@ -936,6 +997,7 @@ fn subagents_json(log: &EventLog, replay: Option<&Replay>) -> Value {
                     "brief": row.brief,
                     "model": row.model,
                     "source": if recorded.is_some() { "replay" } else { "model" },
+                    "role": recorded.map(|answer| answer.role),
                     "recording": recorded.and_then(|answer| answer.reply),
                     "ok": ok,
                     "report": report,

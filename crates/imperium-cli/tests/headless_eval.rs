@@ -48,15 +48,22 @@ type Seen = Arc<Mutex<Vec<Value>>>;
 /// An endpoint that answers request `n` with `bodies[n]` (the last one from then on), and the
 /// request bodies it received. Returns the base URL with the model id after `#`.
 async fn endpoint(bodies: Vec<String>) -> (String, Seen) {
+    endpoint_with(move |index, _| bodies[index.min(bodies.len() - 1)].clone()).await
+}
+
+/// An endpoint whose answer to request `n` is `reply(n, body)`.
+async fn endpoint_with(
+    reply: impl Fn(usize, &Value) -> String + Send + Sync + 'static,
+) -> (String, Seen) {
     let seen: Seen = Arc::default();
     let calls = Arc::new(AtomicUsize::new(0));
-    let bodies = Arc::new(bodies);
+    let reply = Arc::new(reply);
     let record = Arc::clone(&seen);
     let app = Router::new().route(
         "/v1/chat/completions",
         post(move |axum::Json(body): axum::Json<Value>| {
             let index = calls.fetch_add(1, Ordering::SeqCst);
-            let reply = bodies[index.min(bodies.len() - 1)].clone();
+            let reply = reply(index, &body);
             record.lock().unwrap().push(body);
             async move { ([("content-type", "text/event-stream")], reply) }
         }),
@@ -576,4 +583,223 @@ async fn asks_are_denied_and_never_wait_for_anyone() {
     let requests = out["permission_requests"].as_array().unwrap();
     assert_eq!(requests.len(), 1, "{requests:?}");
     assert_eq!(requests[0]["decision"], "denied");
+}
+
+fn tool_names(json: &Value) -> Vec<String> {
+    json["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn removing_the_base_paragraph_is_refused_and_a_flag_drops_the_knowledge_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(
+        &dir,
+        "remove.toml",
+        "[prompt]\nremove = [\"Research that several later tasks\"]\n",
+    );
+    let removed = print_prompt(&["--variant", &file]).await;
+    let prompt = removed.json["system_prompt"].as_str().unwrap();
+    assert!(prompt.starts_with("You are Imperium, a coding agent"));
+    assert!(prompt.contains("The fear of God"));
+    assert_eq!(
+        removed.json["variant"]["warnings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let baseline = print_prompt(&[]).await;
+    let off = print_prompt(&["--flag", "knowledge=false"]).await;
+    let with = baseline.json["system_prompt"].as_str().unwrap();
+    let without = off.json["system_prompt"].as_str().unwrap();
+    assert!(with.contains("Research that several later tasks"));
+    assert!(!without.contains("Research that several later tasks"));
+    assert!(!tool_names(&off.json).contains(&"keep_as_knowledge".to_string()));
+}
+
+#[tokio::test]
+async fn a_rename_onto_an_existing_tool_is_skipped_with_a_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(
+        &dir,
+        "clash.toml",
+        "[tools]\nrename = { ask_user = \"await_tasks\" }\n",
+    );
+    let clash = print_prompt(&["--variant", &file]).await;
+    let names = tool_names(&clash.json);
+    assert!(names.contains(&"ask_user".to_string()));
+    assert_eq!(
+        names.iter().filter(|name| *name == "await_tasks").count(),
+        1
+    );
+    assert_eq!(
+        clash.json["variant"]["warnings"].as_array().unwrap().len(),
+        1
+    );
+    let twice = write(
+        &dir,
+        "twice.toml",
+        "[tools.rename]\nask_user = \"x\"\nupdate_plan = \"x\"\n",
+    );
+    let both = strings(&["--print-prompt", "--variant", &twice]);
+    assert!(run(args(&both)).await.is_err());
+}
+
+#[tokio::test]
+async fn local_root_models_get_the_harness_aids_that_are_auto() {
+    let hosted = print_prompt(&["--flag", "attended=true"]).await;
+    let local = print_prompt(&["--flag", "attended=true", "--local"]).await;
+    assert!(!tool_names(&hosted.json).contains(&"request_clarification".to_string()));
+    assert!(tool_names(&local.json).contains(&"request_clarification".to_string()));
+}
+
+/// A config folder with a deny rule on `write_file`.
+fn config_home_denying_writes() -> tempfile::TempDir {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("config.toml"),
+        "[[permissions.rules]]\ntool = \"write_file\"\naction = \"deny\"\n",
+    )
+    .unwrap();
+    home
+}
+
+fn write_script() -> Vec<String> {
+    vec![
+        tool_call_body("write_file", &json!({"path": "notes.txt", "content": "hi"})),
+        text_body("Done."),
+    ]
+}
+
+#[tokio::test]
+async fn the_users_deny_rules_hold_even_in_full_mode() {
+    let workspace = tempfile::tempdir().unwrap();
+    let home = config_home_denying_writes();
+    let (url, _) = endpoint(write_script()).await;
+    let outcome = run(args(&[
+        "--headless".into(),
+        "--task".into(),
+        "Write notes.".into(),
+        "--workspace".into(),
+        workspace.path().display().to_string(),
+        "--root-model".into(),
+        url,
+        "--config-home".into(),
+        home.path().display().to_string(),
+        "--permission-mode".into(),
+        "full".into(),
+    ]))
+    .await
+    .unwrap();
+    let out = &outcome.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    assert!(!workspace.path().join("notes.txt").exists());
+    assert_eq!(out["failed_tool_calls"], 1);
+    assert_eq!(out["permission_requests"], json!([]));
+}
+
+#[tokio::test]
+async fn a_write_into_a_protected_folder_asks_even_in_full_mode_and_is_denied() {
+    let home = tempfile::tempdir().unwrap();
+    let mods = home.path().join("config").join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let (url, _) = endpoint(write_script()).await;
+    let outcome = run(args(&[
+        "--headless".into(),
+        "--task".into(),
+        "Write notes.".into(),
+        "--workspace".into(),
+        mods.display().to_string(),
+        "--root-model".into(),
+        url,
+        "--config-home".into(),
+        home.path().display().to_string(),
+        "--permission-mode".into(),
+        "full".into(),
+    ]))
+    .await
+    .unwrap();
+    let out = &outcome.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    assert!(!mods.join("notes.txt").exists());
+    let requests = out["permission_requests"].as_array().unwrap();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0]["decision"], "denied");
+}
+
+#[tokio::test]
+async fn delegate_chunks_agents_are_answered_by_the_calls_bare_brief() {
+    let workspace = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let recordings = write(
+        &files,
+        "recordings.json",
+        r#"{"replies": [
+            {"role": "chunk", "chunk": 1, "brief": "list the rows", "report": "first chunk rows"},
+            {"role": "chunk", "brief": "list the rows", "report": "chunk rows"},
+            {"role": "reduce", "brief": "merge the lists", "report": "merged lists"}
+        ]}"#,
+    );
+    let mut input = String::new();
+    for row in 0..200 {
+        input.push_str(&format!("NEEDLE row {row:06} lorem ipsum dolor sit\n"));
+    }
+    let (url, _) = endpoint_with(|index, body| match index {
+        0 => {
+            let text = body.to_string();
+            let id = text
+                .split("stored as artefact ")
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next())
+                .unwrap_or("missing")
+                .to_string();
+            tool_call_body(
+                "delegate_chunks",
+                &json!({"artefact_id": id, "chunk_tokens": 100,
+                    "brief": "list the rows", "reduce": "merge the lists"}),
+            )
+        }
+        1 => tool_call_body("await_tasks", &json!({})),
+        _ => text_body("Merged."),
+    })
+    .await;
+    let outcome = run(args(&[
+        "--headless".into(),
+        "--task".into(),
+        input,
+        "--workspace".into(),
+        workspace.path().display().to_string(),
+        "--root-model".into(),
+        url,
+        "--context-tokens".into(),
+        "1000".into(),
+        "--subagent-replay".into(),
+        recordings,
+    ]))
+    .await
+    .unwrap();
+    let out = &outcome.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    let agents = out["subagents"].as_array().unwrap();
+    let chunks: Vec<&Value> = agents.iter().filter(|a| a["role"] == "chunk").collect();
+    assert!(chunks.len() >= 2, "{agents:?}");
+    assert!(chunks.iter().all(|chunk| chunk["ok"] == true));
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| chunk["report"] == "first chunk rows")
+    );
+    assert!(chunks.iter().any(|chunk| chunk["report"] == "chunk rows"));
+    let reduce: Vec<&Value> = agents.iter().filter(|a| a["role"] == "reduce").collect();
+    assert_eq!(reduce.len(), 1);
+    assert_eq!(reduce[0]["report"], "merged lists");
+    assert_eq!(out["replay"]["unused"], json!([]));
 }

@@ -194,6 +194,9 @@ pub(crate) struct Agent {
     /// What the next `turn_started` says instead of the text, for chunk and reduce agents
     /// whose real brief holds chunk text that must stay out of the journal and history.
     shown: Option<String>,
+    /// For a chunk or reduce agent: the brief its parent wrote (without chunk text) and which
+    /// agent of the call it is, for an evaluation harness that answers subagents from recordings.
+    replay_key: Option<(String, crate::ReplayRole)>,
     /// The reasoning effort this subagent was spawned with, over the session's.
     effort: Option<Effort>,
     /// How many messages the conversation had when mid-turn compaction last ran or was last
@@ -428,6 +431,7 @@ impl Agent {
             fit_pending: false,
             previous: None,
             shown: None,
+            replay_key: None,
             effort: None,
             compact_mark: None,
             compact_stalled: false,

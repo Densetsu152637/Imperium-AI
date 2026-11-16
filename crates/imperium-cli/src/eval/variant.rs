@@ -21,6 +21,14 @@ pub const VARIANTS_DIR: &str = "harness-variants";
 /// The paragraph separator the base prompt's parts are joined with.
 const PARAGRAPH: &str = "\n\n";
 
+/// Text the root prompt's first paragraph carries (it is one paragraph: the identity line, the
+/// proverb, the tool rules and the knowledge line), so `prompt.remove` never drops a paragraph
+/// that has any of it: use `replace` for a part of that paragraph, or a flag.
+const PROTECTED: [&str; 2] = [
+    "You are Imperium, a coding agent",
+    "The fear of God is the beginning of all knowledge",
+];
+
 /// A variant file (`<config>/harness-variants/<name>.toml`, or any path).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -174,6 +182,17 @@ impl Variant {
         if id.trim().is_empty() {
             bail!("{}: the variant needs a name", path.display());
         }
+        let mut targets: Vec<&String> = file.tools.rename.values().collect();
+        targets.sort();
+        if targets.iter().any(|target| target.trim().is_empty()) {
+            bail!("{}: a tools.rename target is empty", path.display());
+        }
+        if targets.windows(2).any(|pair| pair[0] == pair[1]) {
+            bail!(
+                "{}: two tools.rename entries give the same new name",
+                path.display()
+            );
+        }
         Ok(Variant {
             id,
             description: file.description,
@@ -261,12 +280,25 @@ impl Variant {
                 continue;
             }
             let paragraphs: Vec<&str> = text.split(PARAGRAPH).collect();
-            let kept: Vec<&str> = paragraphs
-                .iter()
-                .copied()
-                .filter(|paragraph| !paragraph.contains(needle.as_str()))
-                .collect();
-            if kept.len() == paragraphs.len() {
+            let mut kept: Vec<&str> = Vec::new();
+            let mut matched = 0;
+            for paragraph in paragraphs.iter().copied() {
+                if !paragraph.contains(needle.as_str()) {
+                    kept.push(paragraph);
+                    continue;
+                }
+                matched += 1;
+                if PROTECTED.iter().any(|marker| paragraph.contains(marker)) {
+                    warnings.push(format!(
+                        "prompt.remove: {:?} is in the base paragraph (the identity line and \
+                         the proverb), which is never dropped; use prompt.replace for part of \
+                         it, or a flag such as knowledge=false",
+                        clip(needle)
+                    ));
+                    kept.push(paragraph);
+                }
+            }
+            if matched == 0 {
                 warnings.push(format!(
                     "prompt.remove: no paragraph of the system prompt contains {:?}",
                     clip(needle)
@@ -314,6 +346,14 @@ impl Variant {
         }
         let mut back = HashMap::new();
         let mut edited = Vec::with_capacity(tools.len());
+        // Names a rename may not take: those of the tools that stay as they are.
+        let unchanged: Vec<&str> = tools
+            .iter()
+            .filter(|tool| {
+                !self.tools.drop.contains(&tool.name) && !self.tools.rename.contains_key(&tool.name)
+            })
+            .map(|tool| tool.name.as_str())
+            .collect();
         for tool in tools {
             if self.tools.drop.contains(&tool.name) {
                 continue;
@@ -323,8 +363,16 @@ impl Variant {
                 tool.description.clone_from(text);
             }
             if let Some(new) = self.tools.rename.get(&tool.name) {
-                back.insert(new.clone(), tool.name.clone());
-                tool.name.clone_from(new);
+                if unchanged.contains(&new.as_str()) || back.contains_key(new) {
+                    warnings.push(format!(
+                        "tools.rename: {:?} cannot become {new:?}, which another tool already has; \
+                         the rename is skipped",
+                        tool.name
+                    ));
+                } else {
+                    back.insert(new.clone(), tool.name.clone());
+                    tool.name.clone_from(new);
+                }
             }
             edited.push(tool);
         }
@@ -332,16 +380,21 @@ impl Variant {
     }
 
     /// The conversation as the model sees it: earlier tool calls carry the renamed tools' new
-    /// names, so a renamed tool is called by one name throughout.
-    pub fn rename_calls(&self, messages: &mut [ChatMessage]) {
-        if self.tools.rename.is_empty() {
+    /// names (`back` maps new names to the engine's, from [`Variant::edit_tools`]), so a
+    /// renamed tool is called by one name throughout.
+    pub fn rename_calls(back: &HashMap<String, String>, messages: &mut [ChatMessage]) {
+        if back.is_empty() {
             return;
         }
+        let forward: HashMap<&str, &str> = back
+            .iter()
+            .map(|(new, original)| (original.as_str(), new.as_str()))
+            .collect();
         for message in messages {
             if let ChatMessage::Assistant { tool_calls, .. } = message {
                 for call in tool_calls {
-                    if let Some(new) = self.tools.rename.get(&call.function.name) {
-                        call.function.name.clone_from(new);
+                    if let Some(new) = forward.get(call.function.name.as_str()) {
+                        call.function.name = (*new).to_string();
                     }
                 }
             }
