@@ -1014,11 +1014,11 @@ pub(super) fn manifest_event(manifest: &LoadManifest) -> SessionEvent {
     }
 }
 
-/// What the model is told when a permission rule refuses a call.
 /// What a call that auto mode did not get to decide reports when the session was stopped.
 pub(super) const STOPPED_BEFORE_RUNNING: &str =
     "The session was stopped before this call ran, so it did not run.";
 
+/// What the model is told when a permission rule refuses a call.
 pub(super) fn denied_by_rule(summary: &str) -> String {
     format!(
         "A permission rule denies this action ({summary}). Do not retry it; find another way or \

@@ -807,10 +807,10 @@ async fn the_classifier_reads_the_parsed_call_not_the_arguments_as_written() {
             format!(r#"{{"zzz":"{padding}","command":"echo hi"}}"#),
             r#""command": "echo hi""#,
         ),
-        // The content before the path.
+        // The content before the path, a padded unknown key between them.
         (
             "write_file",
-            format!(r#"{{"content":"{padding}","path":"real.txt"}}"#),
+            format!(r#"{{"content":"hi","zzz":"{padding}","path":"real.txt"}}"#),
             r#"{"path": "real.txt", "content": ""#,
         ),
         // A command written with escapes.
@@ -847,6 +847,16 @@ async fn a_command_or_path_too_long_to_read_whole_asks_without_the_classifier() 
         (
             "write_file",
             json!({"path": "d/".repeat(600), "content": "x"}).to_string(),
+        ),
+        // A content over the limit: the rest of a long file is where a command can hide.
+        (
+            "write_file",
+            json!({"path": "run.sh", "content": "x".repeat(1_501)}).to_string(),
+        ),
+        (
+            "edit_file",
+            json!({"path": "run.sh", "old_string": "a", "new_string": "y".repeat(1_501)})
+                .to_string(),
         ),
     ] {
         let fake = fake(

@@ -834,7 +834,9 @@ pub(crate) struct Shared {
     /// How far the classifier has fallen back to asking, for its cooldown.
     pub auto_guard: Mutex<crate::agent::AutoGuard>,
     /// The user's last typed requests, as they arrived (never what a turn's message carries
-    /// besides them), for the auto-mode classifier.
+    /// besides them), for the auto-mode classifier. Empty when a session starts or resumes, and so
+    /// after a conversation rewind, which continues in a new session (`fork_session`): requests
+    /// the rewind undid are never shown to the classifier.
     pub user_requests: Mutex<Vec<String>>,
     /// Image descriptions by describing model and file hash, so a file attached again (or to
     /// another message) is not described again.

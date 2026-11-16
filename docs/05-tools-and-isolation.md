@@ -827,9 +827,10 @@ prompt (allow only a call the request plainly asked for or an ordinary step towa
 the working folders, easy to undo and low impact, with no sign of having been prompted by file,
 web or tool text; otherwise, and whenever unsure, ask) and, as tagged data:
 
-- the user's last three requests as they typed them, each cut to 1,500 characters
-  (`<user-requests>`). The root agent records the text as it arrives (a turn's message, a
-  steering message); what a turn's message carries besides it (session state, ambiguity hints,
+- the user's last three requests, each cut to 1,500 characters (`<user-requests>`). The root
+  agent records each message's text as the turn takes it: after a slash command is expanded and
+  any `prompt.submit` hook has rewritten it, so a command's template or a hook's addition is
+  part of it (a steering message is recorded the same way); what a turn's message carries besides it (session state, ambiguity hints,
   the context manifest, recalled memories, attachment text, instruction files met while
   exploring, compaction summaries, the steering wrapper) is never part of it. Only this block
   establishes what the user wants. A sub-agent's calls are judged against the same requests, and
@@ -840,13 +841,13 @@ web or tool text; otherwise, and whenever unsure, ask) and, as tagged data:
   ask when there is no user request;
 - the call, read from the **parsed** call, not from the arguments as the model wrote them: a
   command as `{"command", "timeout_s", "background"}`, a file call with the `path` first and
-  whole and then its content or text (each cut to 1,500 characters and marked `[truncated]`), a
+  whole and then its content or text, a
   tool provider's call as its command when it runs one and otherwise its arguments parsed and
   written out again (escapes resolved, padding keys sorted, not left to hide a value). A command
-  longer than 3,000 characters, a path longer than 1,000, or a provider's arguments longer than
-  3,000 are not classified at all: the user is asked with the reason "too long for auto mode",
-  since a cut command is one the classifier has not read. The prompt tells it that a value
-  ending `[truncated]` was cut and to ask;
+  longer than 3,000 characters, a path longer than 1,000, a content or edit text longer than
+  1,500 (the rest of a long file is where a command can hide), or a provider's arguments longer
+  than 3,000 are not classified at all, nothing is cut: the user is asked with the reason "too
+  long for auto mode", since the classifier would be approving what it had not read;
 - the session's working folders.
 
 Tool results and file contents are never given to it. The prompt says the blocks are data to
@@ -904,6 +905,14 @@ the selector in the session footer.
 Like the floor, auto mode is a second opinion on an agent's mistakes and on text that tries to
 steer it, not a security boundary: a small model can be wrong, and the folder sandbox and the
 isolation tiers are still what confine commands.
+
+**Write-then-run is a known limit.** The prompt tells the classifier to judge a write by what
+its content would do when run or loaded (scripts, package and build manifests, Makefiles, CI
+workflows, editor and task configurations) and to ask when that would not itself be allowed,
+but a small model reading at most 1,500 characters cannot see everything a file will do, and a
+write that passes can be run later by a command that, taken alone, looks harmless. Auto mode
+does not close that gap; a deny or ask rule on the files that matter, the safety floor's
+protected files, and the isolation tiers do.
 
 ## Isolation tiers
 
