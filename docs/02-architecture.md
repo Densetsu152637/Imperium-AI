@@ -47,7 +47,7 @@ service) is **persistent** and never exits for want of clients.
   it starts `imperium-core --exit-when-idle` and waits up to 20 seconds for it to listen. The
   CLI uses the `imperium-core` beside the `imperium` executable, then the `PATH`; the app uses
   the bundled one. The daemon is started detached from the caller's console and process group
-  (`DETACHED_PROCESS` and a new process group on Windows, a new process group on Unix), so
+  (`CREATE_NO_WINDOW` and a new process group on Windows, which gives the daemon a hidden console its children share instead of each opening a window; a new process group on Unix), so
   closing the terminal or pressing Ctrl+C does not end it; its output goes to
   `<data>/imperium-core.log` (the app's log folder for the app). Several clients may start one
   at the same moment: the single-instance lock on `<data>/daemon.lock` is the arbiter. The

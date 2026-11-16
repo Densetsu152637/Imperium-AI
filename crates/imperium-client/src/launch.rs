@@ -105,10 +105,10 @@ fn spawn_detached(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        let flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+        let flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
         // A job object that ends its processes with the terminal would end the daemon too;
         // leaving it is refused when the job does not allow it, and then the daemon stays in.
         build()?
