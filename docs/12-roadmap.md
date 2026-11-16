@@ -627,8 +627,8 @@ and `environments.agent_update` (protocol 0.28)
     name). `spawn_agent` takes `agent`; the root's prompt lists names and one-line descriptions
     only. `tools` is intersected with the delegator's tools and can never widen them, and the
     permission rules, safety floor and agent profiles apply unchanged (a file grants no
-    permission); `model` goes through the usual routing and falls back to the delegator's model
-    with a notice. A project's files load only for a project in `mcp.trusted_projects`. Protocol
+    permission); `model` is a preference that goes through the usual routing, never past a
+    location constraint, and falls back to normal routing with a notice. A project's files load only for a project in `mcp.trusted_projects`. Protocol
     0.42 (`agents` on `mcp.list` results); `imperium agents list`. No desktop UI yet
     ([06](06-extensibility.md#named-agents-implemented),
     [03](03-agent-engine.md#named-agents-implemented)).

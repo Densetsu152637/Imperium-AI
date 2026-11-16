@@ -75,7 +75,7 @@ You review code. Report only problems you can point to ...
 - **Project files are repository content.** A project's agent files are read only when the
   project is in `mcp.trusted_projects`, the same trust that starts a project's `.mcp.json`
   servers ([10](10-configuration.md)); otherwise one notice per folder says how many files
-  were not loaded. A symbolic link in a project's agents folder is skipped.
+  were not loaded. A symbolic link as or above a project's agents folder, or as an agent file, is skipped, as is anything but a regular file.
 - **Delegating.** The root's prompt lists each agent's name and the first line of its
   description (at most 40 agents, and no body), with how to use them: `spawn_agent` takes
   `agent` (the name). The subagent runs with the file's body after its own base instructions.
@@ -95,12 +95,14 @@ You review code. Report only problems you can point to ...
   floor, plan mode, the agent's permission profile and MCP and plugin allowlists are applied to
   every call of a named agent exactly as to any subagent's: the file's tool list is only a
   further filter in front of them.
-- **`model`.** `inherit` is the delegating agent's model. A model id or spec goes through the same
-  routing as `spawn_agent`'s `model` (availability, queue limits, budgets); one that is not
-  available runs on the delegating agent's model, with a notice. `model` on the call overrides
-  the file; with neither, ordinary routing by tier, tags and rules applies.
+- **`model`.** A preference, never an override. `inherit` is the delegating agent's model; a model
+  id or spec goes through the same routing as `spawn_agent`'s `model`. The file's choice applies
+  only when it satisfies the location the task is confined to (the call's `location`, else a
+  user routing rule's); otherwise, and when the model is not available, the task is routed
+  normally (tier, tags and rules) and a notice says why. `model` on the call overrides the file;
+  with neither, ordinary routing applies.
 - **Clients.** `mcp.list` results carry `agents` (name, description, origin, path, tools, model)
-  for the user's and plugins' agents (protocol 0.42); a project's are loaded per session, for
+  for the user's and enabled plugins' agents (protocol 0.42); a project's are loaded per session, for
   trusted projects only. `imperium agents list` prints them. The desktop shows none yet.
 
 ### Lazy skills and plugins (implemented)

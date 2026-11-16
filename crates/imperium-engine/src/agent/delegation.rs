@@ -165,40 +165,65 @@ impl Agent {
         };
         let inherit_model = file_model == Some("inherit");
         let file_model = file_model.filter(|_| !inherit_model);
-        let routed = route_noted(
+        let session_id = self.shared.session_id.clone();
+        let request =
+            |named| task_request(named, tier, location, &tags, &session_id, args.single_call);
+        let mut routed = route_noted(
             &self.shared.catalog,
             &self.shared.routing,
             // Only the root delegates, so this is the session's current model.
             &self.model,
-            TaskRequest {
-                named: args.model.as_deref().or(file_model),
-                tier,
-                location,
-                tags: &tags,
-                session: Some(&self.shared.session_id),
-                needs_tools: !args.single_call,
-            },
+            request(args.model.as_deref().or(file_model)),
             self.shared.local.as_deref(),
         );
-        let mut route_notes = routed.notes;
-        let mut model = routed.model;
-        if inherit_model {
-            model = self.model.clone();
-        } else if let (Some(def), Some(wanted)) = (&named_def, file_model) {
-            // The file's model must be one routing found and can use now; otherwise the agent
-            // runs on the delegating agent's model, and the user is told.
-            let found = self.shared.catalog.iter().any(|row| {
-                (row.id == wanted || row.model.spec == wanted) && row.model.spec == model.spec
-            });
-            if !found {
-                model = self.model.clone();
-                route_notes.push(format!(
-                    "the agent {} asks for the model {wanted}, which is not available, so it \
-                     runs on {}",
-                    def.name, model.spec
-                ));
+        // The file's model is a preference: it never overrides where the call or the user's
+        // routing rules confine the task. The location in force is the call's, else a rule's.
+        let confined = crate::model::effective_location(&self.shared.routing, request(None));
+        let allowed =
+            |local: bool| confined.is_none_or(|wanted| (wanted == Location::Local) == local);
+        let mut file_notes = Vec::new();
+        if let Some(def) = &named_def {
+            if inherit_model {
+                if allowed(self.model.local) {
+                    routed.model = self.model.clone();
+                } else {
+                    file_notes.push(format!(
+                        "the agent {} inherits the session's model, which is outside the \
+                         location this task is limited to, so the task was routed normally",
+                        def.name
+                    ));
+                }
+            } else if let Some(wanted) = file_model {
+                // The file's model must be one routing found and can use now.
+                let found = self.shared.catalog.iter().any(|row| {
+                    (row.id == wanted || row.model.spec == wanted)
+                        && row.model.spec == routed.model.spec
+                });
+                if !found {
+                    file_notes.push(format!(
+                        "the agent {} asks for the model {wanted}, which is not available, so \
+                         the task was routed normally",
+                        def.name
+                    ));
+                } else if !allowed(routed.model.local) {
+                    file_notes.push(format!(
+                        "the agent {} asks for the model {wanted}, which is outside the \
+                         location this task is limited to, so the task was routed normally",
+                        def.name
+                    ));
+                    routed = route_noted(
+                        &self.shared.catalog,
+                        &self.shared.routing,
+                        &self.model,
+                        request(None),
+                        self.shared.local.as_deref(),
+                    );
+                }
             }
         }
+        let mut route_notes = routed.notes;
+        let model = routed.model;
+        route_notes.extend(file_notes);
         route_notes.extend(named_notes);
         // A model whose budget is used up and blocks is not started; one that asks is
         // approved at the subagent's first call.
@@ -967,6 +992,25 @@ pub(super) struct Retry {
     pub(super) single_call: bool,
     /// The agent file the task runs as, which the retry runs as too.
     pub(super) named: Option<crate::agents::NamedAgent>,
+}
+
+/// What a delegating call asks routing for.
+fn task_request<'a>(
+    named: Option<&'a str>,
+    tier: Tier,
+    location: Option<Location>,
+    tags: &'a [String],
+    session: &'a str,
+    single_call: bool,
+) -> TaskRequest<'a> {
+    TaskRequest {
+        named,
+        tier,
+        location,
+        tags,
+        session: Some(session),
+        needs_tools: !single_call,
+    }
 }
 
 /// What a named agent runs with: its instructions, and its tools: those its file lists that

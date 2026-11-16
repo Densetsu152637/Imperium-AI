@@ -27,17 +27,26 @@ pub fn list() -> anyhow::Result<()> {
             .max()
             .unwrap_or(0);
         for agent in &listing.agents {
-            let first = agent
-                .description
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .unwrap_or_default();
+            // Files are other people's text: nothing in them may drive the terminal.
+            let clean = |text: &str| text.chars().filter(|c| !c.is_control()).collect::<String>();
+            let description = clean(
+                agent
+                    .description
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or_default(),
+            );
+            let first = description.as_str();
             let mut shown: String = first.chars().take(DESCRIPTION_CHARS).collect();
             if first.chars().count() > DESCRIPTION_CHARS {
                 shown.push_str("...");
             }
-            println!("{:<width$}  {:<16}  {shown}", agent.name, agent.origin);
+            println!(
+                "{:<width$}  {:<16}  {shown}",
+                clean(&agent.name),
+                clean(&agent.origin)
+            );
         }
         Ok(())
     })

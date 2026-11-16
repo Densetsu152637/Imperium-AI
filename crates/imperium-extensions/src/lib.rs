@@ -249,7 +249,13 @@ pub fn load_trusting(
         (project.join(".imperium/agents"), ".imperium/agents"),
     ];
     for (dir, shown) in project_agents {
-        if project_trusted {
+        if agents::is_linked_below(&dir, project) {
+            if dir.exists() {
+                notices.push(format!(
+                    "{shown} is reached through a symbolic link, so its agent files were skipped"
+                ));
+            }
+        } else if project_trusted {
             agent_folders.push(AgentFolder::new(dir, "project"));
         } else {
             let found = agents::count_files(&dir);

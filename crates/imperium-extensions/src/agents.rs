@@ -20,6 +20,7 @@
 //! model; it never grants a permission: that is decided where tools run, not here.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Longest agent file read; a bigger one is repository noise, not instructions.
@@ -152,23 +153,28 @@ fn read_file(path: &Path, origin: &str) -> (Option<AgentDef>, Vec<String>) {
             vec![format!("{shown}: a symbolic link, so it was skipped")],
         );
     }
+    // Regular files only (opening a FIFO would wait for a writer), and never more than the
+    // limit is read, whatever the file grows to.
     match std::fs::metadata(path) {
-        Ok(meta) if meta.len() > MAX_FILE_BYTES => {
+        Ok(meta) if !meta.is_file() => {
             return (
                 None,
-                vec![format!(
-                    "{shown}: over {} KiB, so it was skipped",
-                    MAX_FILE_BYTES / 1024
-                )],
+                vec![format!("{shown}: not a regular file, so it was skipped")],
             );
         }
+        Ok(meta) if meta.len() > MAX_FILE_BYTES => return (None, too_big(path)),
         Err(error) => return (None, vec![format!("{shown}: {error}")]),
         Ok(_) => {}
     }
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) => return (None, vec![format!("{shown}: {error}")]),
-    };
+    let mut text = String::new();
+    let read = std::fs::File::open(path)
+        .and_then(|file| file.take(MAX_FILE_BYTES + 1).read_to_string(&mut text));
+    if let Err(error) = read {
+        return (None, vec![format!("{shown}: {error}")]);
+    }
+    if text.len() as u64 > MAX_FILE_BYTES {
+        return (None, too_big(path));
+    }
     match parse(&text, origin, path) {
         Ok((agent, ignored)) => {
             let mut notices = Vec::new();
@@ -182,6 +188,24 @@ fn read_file(path: &Path, origin: &str) -> (Option<AgentDef>, Vec<String>) {
         }
         Err(error) => (None, vec![format!("{shown}: {error}, so it was skipped")]),
     }
+}
+
+fn too_big(path: &Path) -> Vec<String> {
+    vec![format!(
+        "{}: over {} KiB, so it was skipped",
+        path.display(),
+        MAX_FILE_BYTES / 1024
+    )]
+}
+
+/// Whether `dir`, or a folder between it and `project`, is a symbolic link: a repository can
+/// point such a folder anywhere on the machine.
+pub fn is_linked_below(dir: &Path, project: &Path) -> bool {
+    dir.ancestors()
+        .take_while(|folder| *folder != project)
+        .any(|folder| {
+            std::fs::symlink_metadata(folder).is_ok_and(|meta| meta.file_type().is_symlink())
+        })
 }
 
 /// Parses one agent file. Returns the agent and the front matter keys that were ignored.
@@ -352,6 +376,8 @@ fn front_matter(text: &str) -> Result<(Fields, &str), String> {
 fn parse_yaml(yaml: &str) -> Result<Fields, String> {
     let lines: Vec<&str> = yaml.lines().collect();
     let mut fields: Fields = Vec::new();
+    // Where each key is in `fields`, so a repeated key replaces its value in one step.
+    let mut positions: BTreeMap<String, usize> = BTreeMap::new();
     let mut index = 0;
     while index < lines.len() {
         let line = lines[index];
@@ -391,8 +417,13 @@ fn parse_yaml(yaml: &str) -> Result<Fields, String> {
         } else {
             Value::Text(plain(rest, &lines, &mut index))
         };
-        fields.retain(|(existing, _)| existing != key);
-        fields.push((key.to_string(), value));
+        match positions.get(key) {
+            Some(&at) => fields[at].1 = value,
+            None => {
+                positions.insert(key.to_string(), fields.len());
+                fields.push((key.to_string(), value));
+            }
+        }
     }
     Ok(fields)
 }
@@ -488,18 +519,22 @@ fn inline_list(text: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// A quoted value, which may continue on the following indented lines.
+/// A quoted value, which may continue on the following indented lines. Each line is scanned
+/// once.
 fn quoted(first: &str, lines: &[&str], index: &mut usize) -> Result<String, String> {
     let quote = first.chars().next().unwrap_or('"');
     let mut text = first.to_string();
+    let mut value = String::new();
+    let mut from = quote.len_utf8();
     loop {
-        if let Some((value, after)) = close_quote(&text, quote) {
-            let after = after.trim();
+        if let Some(end) = scan_quote(&text, from, quote, &mut value) {
+            let after = text[end..].trim();
             if !after.is_empty() && !after.starts_with('#') {
                 return Err(format!("text after the closing {quote}"));
             }
             return Ok(value);
         }
+        from = text.len();
         if *index < lines.len() && (is_indented(lines[*index]) || lines[*index].trim().is_empty()) {
             text.push(' ');
             text.push_str(lines[*index].trim());
@@ -510,13 +545,16 @@ fn quoted(first: &str, lines: &[&str], index: &mut usize) -> Result<String, Stri
     }
 }
 
-/// The value of `text` (which starts with `quote`) up to its closing quote, and what follows.
-fn close_quote(text: &str, quote: char) -> Option<(String, &str)> {
-    let mut value = String::new();
-    let mut chars = text.char_indices().skip(1);
-    while let Some((position, c)) = chars.next() {
+/// Reads the value of a quoted text from byte `from` of `text` into `value`: the index just past
+/// the closing quote, or `None` when the text ends first (the caller continues from its end).
+fn scan_quote(text: &str, from: usize, quote: char, value: &mut String) -> Option<usize> {
+    let mut chars = text[from..].char_indices();
+    while let Some((offset, c)) = chars.next() {
+        let position = from + offset;
         if quote == '"' && c == '\\' {
-            let (_, escaped) = chars.next()?;
+            let Some((_, escaped)) = chars.next() else {
+                break;
+            };
             value.push(match escaped {
                 'n' => '\n',
                 't' => '\t',
@@ -529,7 +567,7 @@ fn close_quote(text: &str, quote: char) -> Option<(String, &str)> {
                 value.push('\'');
                 chars.next();
             } else {
-                return Some((value, &text[position + 1..]));
+                return Some(position + 1);
             }
         } else {
             value.push(c);
@@ -552,12 +590,11 @@ fn plain(first: &str, lines: &[&str], index: &mut usize) -> String {
 /// `"x"` or `'x'` without its quotes; anything else as it is.
 fn unquote(text: &str) -> String {
     for quote in ['"', '\''] {
-        if text.starts_with(quote)
-            && text.len() >= 2
-            && text.ends_with(quote)
-            && let Some((value, "")) = close_quote(text, quote)
-        {
-            return value;
+        if text.len() >= 2 && text.starts_with(quote) && text.ends_with(quote) {
+            let mut value = String::new();
+            if scan_quote(text, quote.len_utf8(), quote, &mut value) == Some(text.len()) {
+                return value;
+            }
         }
     }
     text.to_string()
@@ -784,6 +821,42 @@ mod tests {
         );
         // The first of two files in one folder (by path) wins.
         assert_eq!(agents[1].description, "d");
+    }
+
+    #[test]
+    fn a_large_many_line_file_is_read_in_one_pass() {
+        // A quoted description of thousands of lines, and as many repeated keys.
+        let mut text = String::from("---\nname: big\ndescription: \"first");
+        for line in 0..6000 {
+            text.push_str(&format!("\n  line {line} of the description"));
+        }
+        text.push_str("\"\n");
+        for _ in 0..6000 {
+            text.push_str("color: red\n");
+        }
+        text.push_str("---\nBody\n");
+        let (agent, ignored) = parse(&text, "user", Path::new("big.md")).unwrap();
+        assert!(agent.description.starts_with("first line 0 of"));
+        assert!(agent.description.ends_with("line 5999 of the description"));
+        assert_eq!(ignored, vec!["color".to_string()]);
+    }
+
+    #[test]
+    fn project_folders_that_are_links_are_found() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!is_linked_below(
+            &root.path().join(".claude/agents"),
+            root.path()
+        ));
+        #[cfg(unix)]
+        {
+            let elsewhere = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(elsewhere.path(), root.path().join(".claude")).unwrap();
+            assert!(is_linked_below(
+                &root.path().join(".claude/agents"),
+                root.path()
+            ));
+        }
     }
 
     #[test]

@@ -234,6 +234,7 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
     // projects only).
     let mut agent_folders: Vec<imperium_extensions::AgentFolder> = plugins
         .iter()
+        .filter(|plugin| !settings.extensions.disabled_plugins.contains(&plugin.name))
         .map(|plugin| imperium_extensions::AgentFolder::new(plugin.agents_dir(), plugin.origin()))
         .collect();
     agent_folders.push(imperium_extensions::AgentFolder::new(

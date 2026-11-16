@@ -13,7 +13,7 @@ use imperium_api::{
     PermissionMode, PermissionRule, RuleAction, ToolCheck, ToolContext, ToolFuture, ToolProvider,
     ToolSpec,
 };
-use imperium_engine::{ResolvedModel, Session, SessionConfig};
+use imperium_engine::{CatalogModel, ResolvedModel, Session, SessionConfig};
 use imperium_extensions::Sources;
 use imperium_models::Endpoint;
 use imperium_policy::permissions::{Permissions, SharedRules};
@@ -146,6 +146,18 @@ async fn start(
     rules: Vec<PermissionRule>,
     initial: ProfileRules,
 ) -> Setup {
+    start_with_catalog(root, sub, agents, rules, initial, &[]).await
+}
+
+/// [`start`] with hosted model-table rows (id) beside the session's model.
+async fn start_with_catalog(
+    root: Vec<Step>,
+    sub: Vec<Step>,
+    agents: &[(&str, &str)],
+    rules: Vec<PermissionRule>,
+    initial: ProfileRules,
+    rows: &[&str],
+) -> Setup {
     let config = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     for (name, text) in agents {
@@ -173,23 +185,36 @@ async fn start(
         .with_permissions(permissions)
         .with_profile(AgentProfile::new(initial));
     workspace.permissions().set_mode(PermissionMode::Full);
+    let resolved = |spec: &str| ResolvedModel {
+        spec: spec.into(),
+        endpoint: Endpoint {
+            base_url: url.clone(),
+            api_key: None,
+        },
+        model: "model".into(),
+        pricing: None,
+        local: false,
+        context_window: None,
+        kind: "openai".into(),
+        reasoning: None,
+    };
+    let catalog = rows
+        .iter()
+        .map(|id| CatalogModel {
+            id: (*id).into(),
+            model: resolved(&format!("{id}:model")),
+            tier: Default::default(),
+            location: imperium_config::Location::Cloud,
+            tags: Vec::new(),
+            named_only: false,
+            cpu_lane: false,
+        })
+        .collect();
     let session = Session::spawn(SessionConfig {
         id: "named".into(),
         workspace,
-        model: Some(ResolvedModel {
-            spec: "fake:model".into(),
-            endpoint: Endpoint {
-                base_url: url,
-                api_key: None,
-            },
-            model: "model".into(),
-            pricing: None,
-            local: false,
-            context_window: None,
-            kind: "openai".into(),
-            reasoning: None,
-        }),
-        catalog: Vec::new(),
+        model: Some(resolved("fake:model")),
+        catalog,
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),
         local: None,
@@ -237,6 +262,8 @@ struct Outcome {
     /// The tools that asked for permission, and what they asked to run.
     asked: Vec<String>,
     notices: Vec<String>,
+    /// The models the subagents were started on.
+    started_on: Vec<String>,
 }
 
 /// Sends `text` and runs the turn to its end, answering every permission request with `answer`.
@@ -262,6 +289,7 @@ async fn turn(session: &Session, text: &str, answer: PermissionDecision) -> Outc
                 session.respond(request_id, answer).unwrap();
             }
             SessionEvent::Notice { message } => outcome.notices.push(message),
+            SessionEvent::TaskSpawned { model, .. } => outcome.started_on.push(model),
             SessionEvent::ToolFinished { ok, output, .. } => {
                 if event.agent_id == ROOT_AGENT {
                     outcome.root.push((ok, output));
@@ -535,7 +563,7 @@ async fn a_model_that_is_not_available_falls_back_to_the_delegators_with_a_notic
         .filter(|notice| notice.contains("nowhere:no-such-model"))
         .collect();
     assert_eq!(told.len(), 1, "{:?}", outcome.notices);
-    assert!(told[0].contains("not available") && told[0].contains("fake:model"));
+    assert!(told[0].contains("not available") && told[0].contains("routed normally"));
     // `inherit` needs no notice.
     assert!(!outcome.notices.iter().any(|notice| notice.contains("near")));
 }
@@ -578,5 +606,91 @@ async fn a_resumed_named_agent_is_the_same_agent_with_the_same_tools() {
             .iter()
             .any(|result| !result.0 && result.1.contains("not one of the tools of the agent")),
         "{outcome:?}"
+    );
+}
+
+fn spawn_with(agent: Option<&str>, location: Option<&str>) -> Step {
+    let mut arguments = json!({"brief": "look at note.txt"});
+    if let Some(agent) = agent {
+        arguments["agent"] = json!(agent);
+    }
+    if let Some(location) = location {
+        arguments["location"] = json!(location);
+    }
+    Some(("spawn_agent", arguments))
+}
+
+#[tokio::test]
+async fn a_files_model_never_overrides_the_location_the_task_is_confined_to() {
+    let hosted = agent_file("far", "Wants a hosted model.", "model: rowx\n", "Far.");
+    let inherit = agent_file("near", "Inherits.", "model: inherit\n", "Near.");
+    let setup = start_with_catalog(
+        vec![
+            spawn_with(Some("far"), Some("local")),
+            spawn_with(Some("near"), Some("local")),
+            spawn_with(Some("far"), None),
+            Some(("await_tasks", json!({}))),
+            None,
+        ],
+        Vec::new(),
+        &[("far.md", &hosted), ("near.md", &inherit)],
+        Vec::new(),
+        ProfileRules::default(),
+        &["rowx"],
+    )
+    .await;
+    let outcome = turn(&setup.session, "delegate", PermissionDecision::Deny).await;
+    assert_eq!(outcome.started_on.len(), 3, "{outcome:?}");
+    // Confined to local: the hosted row is not taken, and a hosted session model is not
+    // inherited; each says why.
+    assert_ne!(outcome.started_on[0], "rowx:model", "{outcome:?}");
+    assert!(
+        outcome
+            .notices
+            .iter()
+            .any(|n| n.contains("rowx") && n.contains("location") && n.contains("routed normally")),
+        "{:?}",
+        outcome.notices
+    );
+    assert!(
+        outcome
+            .notices
+            .iter()
+            .any(|n| n.contains("inherits") && n.contains("location")),
+        "{:?}",
+        outcome.notices
+    );
+    // With no confinement the file's model is used.
+    assert_eq!(outcome.started_on[2], "rowx:model", "{outcome:?}");
+}
+
+#[tokio::test]
+async fn an_unavailable_files_model_keeps_the_routed_choice() {
+    let file = agent_file("far", "Wants a model.", "model: nowhere:gone\n", "Far.");
+    let setup = start_with_catalog(
+        vec![
+            spawn_with(Some("far"), None),
+            spawn_with(None, None),
+            Some(("await_tasks", json!({}))),
+            None,
+        ],
+        Vec::new(),
+        &[("far.md", &file)],
+        Vec::new(),
+        ProfileRules::default(),
+        &["rowx"],
+    )
+    .await;
+    let outcome = turn(&setup.session, "delegate", PermissionDecision::Deny).await;
+    assert_eq!(outcome.started_on.len(), 2, "{outcome:?}");
+    // Routed as the same call without the agent is: not forced onto the session's model.
+    assert_eq!(outcome.started_on[0], outcome.started_on[1], "{outcome:?}");
+    assert!(
+        outcome
+            .notices
+            .iter()
+            .any(|n| n.contains("nowhere:gone") && n.contains("routed normally")),
+        "{:?}",
+        outcome.notices
     );
 }
