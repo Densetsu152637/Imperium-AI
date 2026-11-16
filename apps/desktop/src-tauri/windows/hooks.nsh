@@ -8,8 +8,8 @@
 ; settings (%APPDATA%\Imperium\config) and data ($INSTDIR\data) are not touched.
 
 !macro NSIS_HOOK_PREINSTALL
-  nsExec::Exec 'taskkill /F /IM imperium-core.exe'
-  nsExec::Exec 'taskkill /F /IM imperiumd.exe'
+  nsExec::Exec 'taskkill /F /T /IM imperium-core.exe'
+  nsExec::Exec 'taskkill /F /T /IM imperiumd.exe'
   ; Only over an existing Imperium install, so a folder shared with other things is left alone.
   ${If} ${FileExists} "$INSTDIR\imperium-desktop.exe"
     RMDir /r "$INSTDIR\mods"
@@ -20,6 +20,6 @@
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  nsExec::Exec 'taskkill /F /IM imperium-core.exe'
-  nsExec::Exec 'taskkill /F /IM imperiumd.exe'
+  nsExec::Exec 'taskkill /F /T /IM imperium-core.exe'
+  nsExec::Exec 'taskkill /F /T /IM imperiumd.exe'
 !macroend

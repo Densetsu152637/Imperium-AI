@@ -49,6 +49,7 @@ async fn run() -> anyhow::Result<()> {
     std::fs::create_dir_all(paths.data_dir())
         .with_context(|| format!("could not create {}", paths.data_dir().display()))?;
     let _lock = acquire_single_instance_lock(&paths)?;
+    end_children_with_daemon();
 
     let listener = TcpListener::bind(SocketAddr::from((
         Ipv4Addr::LOCALHOST,
@@ -193,6 +194,28 @@ async fn run() -> anyhow::Result<()> {
 /// Resolves when the daemon is told to stop (or its sender is gone, which means the same).
 async fn wait_for_stop(mut signal: watch::Receiver<bool>) {
     let _ = signal.wait_for(|stopping| *stopping).await;
+}
+
+/// On Windows, puts the daemon in a job that ends every process in it when the daemon goes, by
+/// whatever means (a crash, Task Manager, a forced stop): its servers, commands and MCP servers
+/// then never outlive it. The job is nested in any the daemon was started in, and the jobs that
+/// background commands make for themselves nest in this one. Elsewhere the servers are written
+/// to a ledger and the next daemon ends what a killed one left (`imperium_local::ledger`).
+fn end_children_with_daemon() {
+    #[cfg(windows)]
+    {
+        let mut limits = win32job::ExtendedLimitInfo::new();
+        limits.limit_kill_on_job_close();
+        match win32job::Job::create_with_limit_info(&limits)
+            .and_then(|job| job.assign_current_process().map(|()| job))
+        {
+            // Closing the job is what ends the children: keep it open until the process ends.
+            Ok(job) => std::mem::forget(job),
+            Err(error) => {
+                tracing::warn!(%error, "could not tie the daemon's children to it");
+            }
+        }
+    }
 }
 
 /// How long a daemon started with `--exit-when-idle[=SECONDS]` waits with no client and no work

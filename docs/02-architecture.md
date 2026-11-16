@@ -59,9 +59,13 @@ service) is **persistent** and never exits for want of clients.
   label (the subcommand, such as `imperium chat`, never its arguments) and its process id. The
   lease belongs to the connection, so a normal exit, a kill and a lost socket all end it. The
   process id covers what a socket cannot: a hung or crashed client can leave a connection open,
-  so once a second the daemon checks that each lease's process is alive and started no later
-  than the lease was taken (a process that started later reuses the id of one that is gone); a
-  dead one's lease is dropped. A client over an SSH forward sends no process id, since the id
+  so once a second the daemon checks that each lease's process is still in the process table
+  with the start time the table showed when the lease was taken (within 2 seconds; a different
+  start time is another process under a reused id, and the machine's wall clock is never
+  consulted); a lease whose process is gone or changed is dropped. A command that the
+  daemon's own agents run (`run_command`, hooks, MCP servers; they carry
+  `IMPERIUM_SPAWNED_BY_DAEMON`) takes no lease and starts no daemon, since a lease would keep
+  the daemon up for as long as the agent waits on it. A client over an SSH forward sends no process id, since the id
   means nothing on the daemon's machine, and a lease is then only its connection. Each running
   `imperium` command holds one, so commands run in parallel each hold one; a daemon of an
   earlier protocol answers "method not found" and is simply used (it is persistent).
@@ -71,10 +75,20 @@ service) is **persistent** and never exits for want of clients.
   resumed from its journal when a daemon starts), an enabled schedule with a run to come or
   running, a persistent agent whose initiative is on (`suggest` or `act`), and GitHub
   responders (auto-fix with watched repositories, and the pull requests sessions follow).
-  `system.lifetime` lists them. The machine's other listeners (the phone listener and the
-  OpenAI-compatible API) are not work: a daemon that serves them for other devices is meant to
-  be a persistent one (`imperium daemon autostart enable`, or **Keep running** in the desktop
-  app).
+  long jobs the daemon runs on its own (a running model download, benchmark, llama.cpp runtime
+  install or update, or a move of the working folders, so an exit never cuts them short), and,
+  while the phone listener is on and a paired device may approve, a session or request waiting
+  for an approval (the phone can answer it). `system.lifetime` lists them. The phone listener
+  and the OpenAI-compatible API themselves are not work: a daemon that serves other devices is
+  meant to be a persistent one (`imperium daemon autostart enable`, or **Keep running** in the
+  desktop app).
+- **Children.** What the daemon starts ends with it, however it dies. On Windows it puts itself
+  in a kill-on-close job at start (jobs nest, so the jobs background commands make for
+  themselves still work), and the installer's `taskkill` ends the whole tree. Elsewhere a
+  killed daemon cannot take its children down without unsafe code, so every `llama-server` or
+  `vllm` it starts is written to `<data>/logs/children.txt` with its start time and name, and
+  the next daemon ends what is still running under that id, start time and name before it
+  loads anything. The local speech server is not in the ledger.
 - **Exiting.** When there is no lease and no work for the grace period (10 seconds, long enough
   that one command after another reuses the daemon; `--exit-when-idle=SECONDS` on the daemon,
   `IMPERIUM_DAEMON_IDLE_SECS` for the daemon an `imperium` command starts) the daemon exits
@@ -88,7 +102,8 @@ service) is **persistent** and never exits for want of clients.
   been idle and when it will exit; with `persistent` it chooses the mode while the daemon runs
   (a daemon that has decided to exit stays decided). `imperium daemon status` prints it. The
   desktop's **Keep running after Imperium closes** switch uses it. `system.shutdown`
-  (`imperium daemon stop`, the app's Stop) still stops the daemon at once whatever holds it.
+  (`imperium daemon stop`, the app's Stop) still stops the daemon at once whatever holds it,
+  and from the moment it is asked, `system.lease` answers `-32009` too.
 - **Opting out.** `IMPERIUM_NO_DAEMON_SPAWN=1` makes `imperium` commands attach to a running
   daemon but never start one (for CI and tests); `imperium ping`, `imperium daemon stop` and
   `imperium daemon status` never start one either, since they ask about a daemon. A `--remote`

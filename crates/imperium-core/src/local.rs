@@ -104,6 +104,8 @@ impl LocalRuntime {
     /// Scans the model folders ([`scan_folders`]), probes the hardware, and starts the
     /// supervisor. `None` when there is nothing to scan. Must run inside the Tokio runtime.
     pub fn start(paths: &Paths, settings: &Settings) -> Option<Self> {
+        // Servers a daemon that was killed left running.
+        imperium_local::ledger::sweep(&paths.data_dir().join("logs"));
         let folders = scan_folders(paths, settings);
         if folders.is_empty() {
             return None;

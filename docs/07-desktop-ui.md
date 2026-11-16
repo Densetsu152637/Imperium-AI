@@ -335,7 +335,7 @@ From its native process (not the window's WebSocket, whose process is the web vi
 lease on the daemon for as long as it runs, and takes it again when the daemon restarts. The
 daemon the app starts is `imperium-core --exit-when-idle`: it exits once the app and every
 other program using it (an `imperium chat` in a terminal, an MCP bridge) are gone and it has
-no work (a running turn, an enabled schedule, an agent with initiative, auto-fix), so closing
+no work (a running turn, an enabled schedule, an agent with initiative, auto-fix, a download or other long job; it does not stay up for the phone app or the OpenAI-compatible API, which need Keep running), so closing
 the app never ends a daemon a terminal or a schedule still needs, and nothing is left behind
 when the app was the last user. The app no longer stops the daemon as it quits, and there is no
 Windows job object: the lease ends with the app's process, a crash included. Sessions are saved
