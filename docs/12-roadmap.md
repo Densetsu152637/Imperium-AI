@@ -632,6 +632,25 @@ and `environments.agent_update` (protocol 0.28)
     0.42 (`agents` on `mcp.list` results); `imperium agents list`. No desktop UI yet
     ([06](06-extensibility.md#named-agents-implemented),
     [03](03-agent-engine.md#named-agents-implemented)).
+<!-- markdownlint-disable-next-line MD029 -->
+50. **Auto permission mode** (implemented). A permission mode, `auto`, in which a small classifier
+    model decides whether a call that would ask the user may run. It decides as `default` does
+    and is consulted only for a call that would ask with the session allowance offered: a deny
+    rule's refusal, an ask rule's question and everything the safety floor covers (the floor's
+    calls never reach the classifier) are unchanged, as are the questions that sit outside the
+    permission judgement (memory saves, MCP sampling, budgets, MCP-bridge calls). The classifier
+    has no tools; it reads a fixed policy, the text the user typed (nothing else a turn
+    carries), the call as parsed (a command or path too long to read whole asks without a
+    classification), agent-written briefs labelled as such, all framed as data with tags
+    defused, and the working folders, and must answer
+    exactly `{"verdict": "allow" | "ask", "reason": ...}`. An ask verdict, any other reply, an
+    error, a timeout or a model that is missing, over budget or hosted for a session that stays
+    on this machine asks the user with the reason shown; after `permissions.auto.max_fallbacks`
+    in a row it rests for `permissions.auto.cooldown_s`. The model is `permissions.auto.model`,
+    else routing's cheapest basic-tier row (local for a local session). Every decision is a
+    `notice` event, so it is journalled and shown to clients. Protocol 0.43 (`auto` among the
+    permission-mode values); `auto` is in the CLI's `/mode` and the desktop's mode selector
+    ([05](05-tools-and-isolation.md#auto-mode-implemented)).
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based

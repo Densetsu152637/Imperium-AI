@@ -86,6 +86,7 @@ fn start(dir: &std::path::Path, base_url: String) -> Session {
         auto_compact_at: Some(0.5),
         attended: true,
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),

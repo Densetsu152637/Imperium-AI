@@ -240,9 +240,14 @@ pub enum Refusal {
 /// |---|---|---|---|---|
 /// | `ask` | runs | asks every time | asks every time | ask every time if they ask by default |
 /// | `default` | runs | allow rule or ask | allow rule or ask | allow rule, else their default |
+/// | `auto` | as `default` | as `default` | as `default` | as `default` |
 /// | `accept_edits` | runs | runs | allow rule or ask | allow rule, else their default |
 /// | `plan` | runs | refused | refused | refused if they would ask |
 /// | `full` | runs | runs | runs | run |
+///
+/// `auto` decides exactly as `default` does: the classifier that makes it different lives in the
+/// engine and sees only a call this function says would ask with `sticky` set (never a floored
+/// call, an ask rule's call, or a refusal), so nothing it says can reach a call that must ask.
 pub fn decide_call(
     mode: PermissionMode,
     kind: CallKind,

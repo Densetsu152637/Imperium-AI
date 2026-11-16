@@ -771,6 +771,7 @@ impl DaemonState {
             auto_compact_at: Some(self.settings().context.auto_compact_at),
             harness: self.settings().harness.clone(),
             attachments: self.settings().attachments.clone(),
+            auto_permissions: self.settings().permissions.auto.clone(),
             keep_agent_state: remember && self.settings().sessions.agent_state_keep,
             knowledge: imperium_engine::KnowledgeConfig {
                 settings: self.settings().knowledge.clone(),

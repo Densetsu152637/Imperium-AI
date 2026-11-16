@@ -1116,7 +1116,9 @@ Settings window lists with the other model settings.
 
 **Permission mode selector (implemented):** after the effort, a list as quiet as the effort
 (muted text) of the session's [permission mode](05-tools-and-isolation.md#permission-modes-implemented):
-*Plan only*, *Ask every time*, *Ask by rules* (the default), *Accept edits*, and *Full access*,
+*Plan only*, *Ask every time*, *Ask by rules* (the default), *Auto* (a classifier lets routine
+in-scope calls run and asks about the rest; [auto mode](05-tools-and-isolation.md#auto-mode-implemented)),
+*Accept edits*, and *Full access*,
 each with a one-line description. Choosing one sends `session.control` `set_permission_mode`,
 which applies from the agents' next call, during a turn too, and is kept across restarts; a
 refusal shows its error beside the list. New sessions start in `permissions.mode`, which the

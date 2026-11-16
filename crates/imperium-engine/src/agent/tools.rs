@@ -529,18 +529,31 @@ impl Agent {
         {
             return finish(false, missing);
         }
-        if let Decision::Ask { sticky } = decision
-            && !self
-                .approve_with(
-                    rule_tool,
-                    &summary,
-                    suggest(rule_tool, &target).filter(|_| !(floored && check.command.is_none())),
-                    sticky,
-                    floored,
-                )
-                .await
-        {
-            return finish(false, "The user denied this action.".into());
+        if let Decision::Ask { sticky } = decision {
+            // In auto mode a classifier may settle a call that would ask; what it leaves
+            // open (or a floored call) is asked as before, with its reason.
+            let gate = self
+                .auto_gate(decision, floored, rule_tool, name, &|| {
+                    provider_input(check.command.as_deref(), arguments)
+                })
+                .await;
+            if gate == AutoGate::Stopped {
+                return finish(false, STOPPED_BEFORE_RUNNING.into());
+            }
+            if gate != AutoGate::Allowed
+                && !self
+                    .approve_with(
+                        rule_tool,
+                        &gate.question(&summary),
+                        suggest(rule_tool, &target)
+                            .filter(|_| !(floored && check.command.is_none())),
+                        sticky,
+                        floored,
+                    )
+                    .await
+            {
+                return finish(false, "The user denied this action.".into());
+            }
         }
         let started = self.tool_started(call, name, summary);
         let emit = |event: ToolEvent| {
@@ -870,12 +883,30 @@ impl Agent {
         {
             return finish(false, missing);
         }
-        if let Decision::Ask { sticky } = decision
-            && !self
-                .approve_with(tool, &summary, suggest(tool, &target), sticky, floored)
-                .await
-        {
-            return finish(false, "The user denied this action.".into());
+        if let Decision::Ask { sticky } = decision {
+            // In auto mode a classifier may settle a call that would ask; what it leaves
+            // open (or a floored call) is asked as before, with its reason.
+            let gate = self
+                .auto_gate(decision, floored, tool, tool, &|| {
+                    builtin_input(&invocation)
+                })
+                .await;
+            if gate == AutoGate::Stopped {
+                return finish(false, STOPPED_BEFORE_RUNNING.into());
+            }
+            if gate != AutoGate::Allowed
+                && !self
+                    .approve_with(
+                        tool,
+                        &gate.question(&summary),
+                        suggest(tool, &target),
+                        sticky,
+                        floored,
+                    )
+                    .await
+            {
+                return finish(false, "The user denied this action.".into());
+            }
         }
         let started = self.tool_started(call, tool, summary);
         let (ok, output) = match invocation.execute(&self.workspace).await {
@@ -982,6 +1013,10 @@ pub(super) fn manifest_event(manifest: &LoadManifest) -> SessionEvent {
             .collect(),
     }
 }
+
+/// What a call that auto mode did not get to decide reports when the session was stopped.
+pub(super) const STOPPED_BEFORE_RUNNING: &str =
+    "The session was stopped before this call ran, so it did not run.";
 
 /// What the model is told when a permission rule refuses a call.
 pub(super) fn denied_by_rule(summary: &str) -> String {

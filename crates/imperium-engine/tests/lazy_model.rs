@@ -160,6 +160,7 @@ fn start(
         auto_compact_at: None,
         attended: true,
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         harness: imperium_config::HarnessSettings {
             dereference: imperium_config::HarnessMode::Off,
             state: imperium_config::HarnessMode::Off,

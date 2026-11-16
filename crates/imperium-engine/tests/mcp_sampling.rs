@@ -251,6 +251,7 @@ async fn run(options: Options) -> Outcome {
         keep_agent_state: true,
         attended,
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         harness: Default::default(),
         effort: Default::default(),
         knowledge: Default::default(),

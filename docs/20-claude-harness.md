@@ -224,7 +224,8 @@ user (`ask_user`), starting sessions, and MCP and plugin tools are never bridged
   sends it only for a user who turned writes on), and the session the server starts mounts the
   environment read-only. Writes are therefore an explicit choice made when the server is
   registered, per server, and each write still asks under the session's permission mode (`ask`,
-  `default`, `accept_edits`; `full` runs them, `plan` refuses them) and the safety floor.
+  `default`, `accept_edits`; `full` runs them, `plan` refuses them) and the safety floor. In
+  `auto` mode a bridged call still asks the user: the classifier never answers for them.
 - **Approvals are the user's.** A call that asks becomes a `permission_requested` event in the
   bridge session, which the user answers in the desktop app or the CLI. The MCP client has no
   tool to answer it, and nothing here approves one. The request's summary starts with

@@ -32,6 +32,7 @@ impl Agent {
                 text.push_str(&status);
                 listed = paused.clone();
             }
+            self.note_user_request(&message.text);
             let rendered = self.render_attachments(&message.attachments).await;
             self.emit(SessionEvent::Steered {
                 id: message.id,
@@ -190,6 +191,7 @@ impl Agent {
             text
         };
         let shown = self.shown.take().unwrap_or_else(|| text.clone());
+        self.note_user_request(&text);
         let rendered = self.render_attachments(&attachments).await;
         self.emit(SessionEvent::TurnStarted {
             text: shown,

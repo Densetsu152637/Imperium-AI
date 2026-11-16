@@ -192,6 +192,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
         auto_compact_at: None,
         attended: true,
         attachments: Default::default(),
+        auto_permissions: Default::default(),
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),

@@ -209,12 +209,13 @@ export function needsRuntime(spec: string, runtime: RuntimeInfo | null | undefin
 }
 
 /** A permission mode, as `session.control` `set_permission_mode` takes it. */
-export type PermissionMode = "ask" | "default" | "accept_edits" | "plan" | "full";
+export type PermissionMode = "ask" | "default" | "auto" | "accept_edits" | "plan" | "full";
 
 const MODE_OPTIONS: SelectOption[] = [
   { value: "plan", label: "Plan only", description: "Agents read and plan; no writes or commands" },
   { value: "ask", label: "Ask every time", description: "Every write, edit, and command asks, whatever the rules allow" },
   { value: "default", label: "Ask by rules", description: "Writes and commands ask unless a rule allows them" },
+  { value: "auto", label: "Auto", description: "A classifier lets routine in-scope calls run; anything unsure asks you" },
   { value: "accept_edits", label: "Accept edits", description: "File edits run without asking; commands follow the rules" },
   { value: "full", label: "Full access", description: "Everything runs except what deny rules or the safety floor stop" },
 ];
