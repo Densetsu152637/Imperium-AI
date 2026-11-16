@@ -533,8 +533,13 @@ impl Agent {
             // In auto mode a classifier may settle a call that would ask; what it leaves
             // open (or a floored call) is asked as before, with its reason.
             let gate = self
-                .auto_gate(decision, floored, rule_tool, name, arguments)
+                .auto_gate(decision, floored, rule_tool, name, &|| {
+                    provider_input(check.command.as_deref(), arguments)
+                })
                 .await;
+            if gate == AutoGate::Stopped {
+                return finish(false, STOPPED_BEFORE_RUNNING.into());
+            }
             if gate != AutoGate::Allowed
                 && !self
                     .approve_with(
@@ -882,8 +887,13 @@ impl Agent {
             // In auto mode a classifier may settle a call that would ask; what it leaves
             // open (or a floored call) is asked as before, with its reason.
             let gate = self
-                .auto_gate(decision, floored, tool, tool, &hook_arguments)
+                .auto_gate(decision, floored, tool, tool, &|| {
+                    builtin_input(&invocation)
+                })
                 .await;
+            if gate == AutoGate::Stopped {
+                return finish(false, STOPPED_BEFORE_RUNNING.into());
+            }
             if gate != AutoGate::Allowed
                 && !self
                     .approve_with(
@@ -1005,6 +1015,10 @@ pub(super) fn manifest_event(manifest: &LoadManifest) -> SessionEvent {
 }
 
 /// What the model is told when a permission rule refuses a call.
+/// What a call that auto mode did not get to decide reports when the session was stopped.
+pub(super) const STOPPED_BEFORE_RUNNING: &str =
+    "The session was stopped before this call ran, so it did not run.";
+
 pub(super) fn denied_by_rule(summary: &str) -> String {
     format!(
         "A permission rule denies this action ({summary}). Do not retry it; find another way or \

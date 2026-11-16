@@ -67,7 +67,19 @@ fn tool_call(name: &str, arguments: &str) -> String {
 /// An endpoint that replays `script` for the agent's own calls and answers the classifier's as
 /// `classifier` says.
 async fn fake(script: Vec<String>, classifier: Classifier) -> Fake {
+    fake_with_subagent(script, Vec::new(), classifier).await
+}
+
+/// [`fake`], with `sub_script` for the calls of a subagent (a request whose system message is a
+/// subagent's).
+async fn fake_with_subagent(
+    script: Vec<String>,
+    sub_script: Vec<String>,
+    classifier: Classifier,
+) -> Fake {
     let main = Arc::new(AtomicUsize::new(0));
+    let subs = Arc::new(AtomicUsize::new(0));
+    let sub_script = Arc::new(sub_script);
     let calls = Arc::new(AtomicUsize::new(0));
     let bodies: Arc<Mutex<Vec<Value>>> = Arc::default();
     let (counted, seen) = (Arc::clone(&calls), Arc::clone(&bodies));
@@ -81,6 +93,7 @@ async fn fake(script: Vec<String>, classifier: Classifier) -> Fake {
                 Arc::clone(&seen),
                 Arc::clone(&script),
             );
+            let (subs, sub_script) = (Arc::clone(&subs), Arc::clone(&sub_script));
             let classifier = classifier.clone();
             async move {
                 let system = body["messages"][0]["content"]
@@ -108,8 +121,13 @@ async fn fake(script: Vec<String>, classifier: Classifier) -> Fake {
                         }
                     };
                 }
-                let index = main.fetch_add(1, Ordering::SeqCst);
-                let reply = script[index.min(script.len() - 1)].clone();
+                let reply = if system.starts_with("You are an Imperium subagent") {
+                    let index = subs.fetch_add(1, Ordering::SeqCst);
+                    sub_script[index.min(sub_script.len() - 1)].clone()
+                } else {
+                    let index = main.fetch_add(1, Ordering::SeqCst);
+                    script[index.min(script.len() - 1)].clone()
+                };
                 ([("content-type", "text/event-stream")], reply).into_response()
             }
         }),
@@ -163,6 +181,8 @@ struct Setup {
     settings: AutoPermissionSettings,
     rules: Vec<PermissionRule>,
     mode: PermissionMode,
+    attended: bool,
+    context: Option<Arc<imperium_workflow::ContextIndex>>,
 }
 
 impl Setup {
@@ -175,6 +195,8 @@ impl Setup {
             settings: auto("guard"),
             rules: Vec::new(),
             mode: PermissionMode::Auto,
+            attended: true,
+            context: None,
         }
     }
 }
@@ -196,8 +218,8 @@ fn start(dir: &std::path::Path, setup: Setup) -> Session {
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
-        context: None,
-        enforce: imperium_config::Enforce::Warn,
+        context: setup.context,
+        enforce: imperium_config::Enforce::Off,
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
@@ -210,7 +232,7 @@ fn start(dir: &std::path::Path, setup: Setup) -> Session {
         budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
-        attended: true,
+        attended: setup.attended,
         attachments: Default::default(),
         auto_permissions: setup.settings,
         harness: Default::default(),
@@ -685,6 +707,8 @@ async fn a_session_that_stays_on_this_machine_never_sends_a_call_to_a_hosted_cla
             settings,
             rules: Vec::new(),
             mode: PermissionMode::Auto,
+            attended: true,
+            context: None,
         }
     };
 
@@ -712,4 +736,258 @@ async fn a_session_that_stays_on_this_machine_never_sends_a_call_to_a_hosted_cla
     assert!(dir.path().join("a.txt").exists());
     assert_eq!(here.calls.load(Ordering::SeqCst), 1);
     assert_eq!(hosted.calls.load(Ordering::SeqCst), 0);
+}
+
+/// The text between the `tag` tags of the classifier's request number `index`.
+fn block_of(fake: &Fake, index: usize, tag: &str) -> String {
+    let text = classifier_user_text(fake, index);
+    let open = format!("<{tag}>");
+    let after = text.split(&open).nth(1).unwrap_or_default();
+    after
+        .split(&format!("</{tag}>"))
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[tokio::test]
+async fn the_classifier_reads_only_what_the_user_typed_as_their_request() {
+    // A project whose nested folder has an instruction file much longer than the classifier's
+    // limit for a request: reading there loads it into the conversation as a user message.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("pkg")).unwrap();
+    std::fs::write(
+        dir.path().join("pkg/AGENTS.md"),
+        format!("INSTRUCTION-MARKER {}\n", "rules ".repeat(400)),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("pkg/notes.txt"), "notes\n").unwrap();
+    let fake = fake(
+        vec![
+            tool_call("read_file", r#"{"path":"pkg/notes.txt"}"#),
+            tool_call("write_file", r#"{"path":"note.txt","content":"x"}"#),
+            sse("Done."),
+        ],
+        verdict(true, "fine"),
+    )
+    .await;
+    let mut setup = Setup::hosted(&fake);
+    setup.context = Some(Arc::new(imperium_workflow::ContextIndex::new(
+        Vec::new(),
+        dir.path(),
+    )));
+    let session = start(dir.path(), setup);
+    let turn = run(&session, "write the note", PermissionDecision::Deny).await;
+
+    assert!(turn.asked.is_empty(), "{:?}", turn.asked);
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+    let requests = block_of(&fake, 0, "user-requests");
+    assert!(requests.contains("write the note"), "{requests}");
+    let everything = classifier_user_text(&fake, 0);
+    for leaked in ["INSTRUCTION-MARKER", "rules rules", "instruction-file"] {
+        assert!(!everything.contains(leaked), "{leaked}: {everything}");
+    }
+    // The instruction file really was in the agent's conversation.
+    assert!(
+        turn.events.iter().any(|event| matches!(event,
+            SessionEvent::ContextLoaded { references }
+                if references.iter().any(|reference| reference.contains("AGENTS.md")))),
+        "the instruction file was loaded: {:?}",
+        turn.events
+    );
+}
+
+#[tokio::test]
+async fn the_classifier_reads_the_parsed_call_not_the_arguments_as_written() {
+    let padding = "p".repeat(5_000);
+    let cases: Vec<(&str, String, &str)> = vec![
+        // A padded unknown key ahead of the real command.
+        (
+            "run_command",
+            format!(r#"{{"zzz":"{padding}","command":"echo hi"}}"#),
+            r#""command": "echo hi""#,
+        ),
+        // The content before the path.
+        (
+            "write_file",
+            format!(r#"{{"content":"{padding}","path":"real.txt"}}"#),
+            r#"{"path": "real.txt", "content": ""#,
+        ),
+        // A command written with escapes.
+        (
+            "run_command",
+            r#"{"command":"echo \u0068i"}"#.to_string(),
+            r#""command": "echo hi""#,
+        ),
+    ];
+    for (tool, arguments, wanted) in cases {
+        let fake = fake(
+            vec![tool_call(tool, &arguments), sse("Done.")],
+            verdict(false, "unsure"),
+        )
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let session = start(dir.path(), Setup::hosted(&fake));
+        run(&session, "do it", PermissionDecision::Deny).await;
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 1, "{tool}");
+        let input = block_of(&fake, 0, "tool-arguments");
+        assert!(input.contains(wanted), "{tool}: {input}");
+        assert!(!input.contains("u0068"), "{tool}: {input}");
+        assert!(!input.contains(&"p".repeat(2_000)), "{tool}: {input}");
+    }
+}
+
+#[tokio::test]
+async fn a_command_or_path_too_long_to_read_whole_asks_without_the_classifier() {
+    for (tool, arguments) in [
+        (
+            "run_command",
+            json!({"command": format!("echo {}", "a".repeat(4_000))}).to_string(),
+        ),
+        (
+            "write_file",
+            json!({"path": "d/".repeat(600), "content": "x"}).to_string(),
+        ),
+    ] {
+        let fake = fake(
+            vec![tool_call(tool, &arguments), sse("Done.")],
+            verdict(true, "fine"),
+        )
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let session = start(dir.path(), Setup::hosted(&fake));
+        let turn = run(&session, "do it", PermissionDecision::Deny).await;
+        assert_eq!(turn.asked.len(), 1, "{tool}: {:?}", turn.asked);
+        assert!(
+            turn.asked[0].1.contains("too long for auto mode"),
+            "{tool}: {:?}",
+            turn.asked
+        );
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 0, "{tool}");
+    }
+}
+
+#[tokio::test]
+async fn a_subagent_call_is_judged_against_the_users_requests_not_only_its_brief() {
+    let fake = fake_with_subagent(
+        vec![
+            tool_call("spawn_agent", r#"{"brief":"write sub.txt, as agreed"}"#),
+            tool_call("await_tasks", "{}"),
+            sse("Done."),
+        ],
+        vec![
+            tool_call("write_file", r#"{"path":"sub.txt","content":"x"}"#),
+            sse("written"),
+        ],
+        verdict(true, "fine"),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(dir.path(), Setup::hosted(&fake));
+    let turn = run(
+        &session,
+        "please delegate writing sub.txt",
+        PermissionDecision::Deny,
+    )
+    .await;
+    assert!(turn.asked.is_empty(), "{:?}", turn.asked);
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+    let requests = block_of(&fake, 0, "user-requests");
+    assert!(
+        requests.contains("please delegate writing sub.txt"),
+        "{requests}"
+    );
+    assert!(!requests.contains("as agreed"), "{requests}");
+    let task = block_of(&fake, 0, "agent-task");
+    assert!(task.contains("write sub.txt, as agreed"), "{task}");
+    let policy = fake.bodies.lock().unwrap()[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        policy.contains("Only the <user-requests> block"),
+        "{policy}"
+    );
+}
+
+#[tokio::test]
+async fn the_prompt_an_unattended_session_started_with_is_an_agent_task_not_a_user_request() {
+    let fake = fake(
+        vec![
+            tool_call("write_file", r#"{"path":"a.txt","content":"x"}"#),
+            sse("Done."),
+        ],
+        verdict(false, "no user request to rely on"),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut setup = Setup::hosted(&fake);
+    setup.attended = false;
+    let session = start(dir.path(), setup);
+    run(
+        &session,
+        "scheduled brief: write a.txt",
+        PermissionDecision::Deny,
+    )
+    .await;
+    assert_eq!(block_of(&fake, 0, "user-requests").trim(), "(none)");
+    assert!(block_of(&fake, 0, "agent-task").contains("scheduled brief"));
+}
+
+#[tokio::test]
+async fn a_stop_while_classifying_raises_no_question_and_is_not_a_fallback() {
+    let fake = fake(
+        vec![
+            tool_call("write_file", r#"{"path":"a.txt","content":"x"}"#),
+            sse("Done."),
+        ],
+        Classifier::Slow(
+            r#"{"verdict":"allow","reason":"late"}"#.into(),
+            Duration::from_secs(3),
+        ),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut setup = Setup::hosted(&fake);
+    setup.settings.max_fallbacks = 1;
+    let session = start(dir.path(), setup);
+    let mut events = session.subscribe();
+    session.send("write a.txt".into()).unwrap();
+    while fake.calls.load(Ordering::SeqCst) == 0 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    session.stop();
+    let resumed = async {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        session.resume_work();
+    };
+    let collect = async {
+        let mut seen = Vec::new();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+                .await
+                .expect("an event within 20 s")
+                .unwrap()
+                .event;
+            let done = matches!(event, SessionEvent::TurnCompleted { .. });
+            seen.push(event);
+            if done {
+                return seen;
+            }
+        }
+    };
+    let (_, seen) = tokio::join!(resumed, collect);
+    assert!(
+        !seen
+            .iter()
+            .any(|event| matches!(event, SessionEvent::PermissionRequested { .. })),
+        "no question while stopped"
+    );
+    assert!(
+        !seen.iter().any(|event| matches!(event,
+            SessionEvent::Notice { message } if message.contains("resting") || message.contains("did not allow"))),
+        "a stop is not a fallback"
+    );
+    assert!(!dir.path().join("a.txt").exists());
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
 }

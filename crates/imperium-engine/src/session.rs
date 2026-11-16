@@ -833,6 +833,9 @@ pub(crate) struct Shared {
     pub auto_permissions: imperium_config::AutoPermissionSettings,
     /// How far the classifier has fallen back to asking, for its cooldown.
     pub auto_guard: Mutex<crate::agent::AutoGuard>,
+    /// The user's last typed requests, as they arrived (never what a turn's message carries
+    /// besides them), for the auto-mode classifier.
+    pub user_requests: Mutex<Vec<String>>,
     /// Image descriptions by describing model and file hash, so a file attached again (or to
     /// another message) is not described again.
     pub descriptions: Mutex<std::collections::HashMap<String, String>>,
@@ -979,6 +982,7 @@ async fn run(
         attachments: config.attachments,
         auto_permissions: config.auto_permissions,
         auto_guard: Mutex::default(),
+        user_requests: Mutex::default(),
         descriptions: Mutex::new(std::collections::HashMap::new()),
         attended: config.attended,
         allowed_tools: Mutex::new(config.pre_approved.iter().cloned().collect()),

@@ -49,8 +49,8 @@ mod specs;
 mod tools;
 mod turn;
 
-use auto::AutoGate;
 pub(crate) use auto::AutoGuard;
+use auto::{AutoGate, builtin_input, provider_input};
 use delegation::*;
 pub(crate) use delegation::{cancel_subagent, resume_subagent};
 pub(crate) use fork::run_fork;

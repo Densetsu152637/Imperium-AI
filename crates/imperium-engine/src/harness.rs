@@ -311,7 +311,7 @@ pub(crate) fn resolved_text(resolved: &str, original: &str) -> String {
 
 /// What the user wrote in a user message's content: the original when the message was
 /// rewritten, without the blocks that precede the text.
-fn user_text(content: &str) -> String {
+pub(crate) fn user_text(content: &str) -> String {
     let spans = restored_spans(content);
     let own = spans
         .iter()
