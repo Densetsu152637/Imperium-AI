@@ -5,6 +5,9 @@ import { useCallback, useEffect, useState } from "react";
 import type { ConfigChange, ConfigChangesResult, ConfigUndoResult } from "@imperium/protocol";
 import { formatAgo } from "../shared/ago";
 import { changeDetails, undoLabel } from "./configChanges";
+import { Badge } from "../components/Badge";
+import { LoadingState } from "../components/LoadingState";
+import { Notice } from "../components/Notice";
 import { Row } from "../components/SettingsRow";
 import type { DaemonClient } from "../daemon/client";
 
@@ -39,7 +42,7 @@ export function AgentChangesSection({ client, onChanged }: { client: DaemonClien
     }
   };
 
-  if (!changes) return error ? <p className="error">{error}</p> : <p className="muted">Loading…</p>;
+  if (!changes) return error ? <Notice tone="danger">{error}</Notice> : <LoadingState />;
   return (
     <>
       <Row
@@ -54,7 +57,7 @@ export function AgentChangesSection({ client, onChanged }: { client: DaemonClien
           <Row
             key={change.id}
             label={change.summary}
-            badge={undone ? <span className="badge">undone</span> : undefined}
+            badge={undone ? <Badge>undone</Badge> : undefined}
             description={[formatAgo(change.at_unix_ms) && `${formatAgo(change.at_unix_ms)} ago`, ...details].filter(Boolean).join(" · ")}
           >
             <button onClick={() => void undo(change)} disabled={undone || busy !== null} title={undoLabel(change)}>
@@ -64,11 +67,11 @@ export function AgentChangesSection({ client, onChanged }: { client: DaemonClien
         );
       })}
       {error && (
-        <p className="error" role="alert">
+        <Notice tone="danger">
           {error}
-        </p>
+        </Notice>
       )}
-      {notice && <p className="muted">{notice}</p>}
+      {notice && <Notice>{notice}</Notice>}
     </>
   );
 }

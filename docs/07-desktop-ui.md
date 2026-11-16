@@ -312,7 +312,7 @@ matters: rules of equal specificity are decided by it, so `primitives.css` stays
 those rules sat in the original single file, and a rule that must beat or lose to one in another
 file is placed to keep that order. `tokens.css` holds the shared tokens, but a few surface-local custom properties live in
 their surface files (`--tile` in `environments.css`, `--session-gutter` and the `--ctx-color`
-set in `session.css`, `--settings-indent` in `settings.css`), and the `.badge` base rule, `.error`
+set in `session.css`, `--settings-control-w`, `--settings-number-w` and `--settings-swatch` in `settings.css`), and the `.badge` base rule, `.error`
 and the model picker rules (`.model-select`, `.effort-select`, `.mode-select`,
 `.model-status`, `.model-note`) sit in `session.css` because of their cascade position.
 `models/modelConfig.css` belongs to the model configuration
@@ -675,7 +675,8 @@ rebindable, under Settings → Keyboard ([below](#rebindable-shortcuts-implement
 
 ## Rebindable shortcuts (implemented)
 
-Settings → Keyboard lists each shortcut with its binding. **Change** waits for the next key
+Settings → Keyboard is a table of the shortcuts: the action, its binding drawn as one `Kbd` chip per
+key, and **Change** and **Reset** after a 24 px gap, followed by the fixed shortcuts. **Change** waits for the next key
 combination; **Reset** returns one to its default. The rebindable ones are the command palette
 (Ctrl+K), Settings (Ctrl+,), and stop or resume the session (Ctrl+.); on macOS Cmd stands for
 Ctrl, and a chord is stored as "Mod+Shift+K" so a binding means the same everywhere. Sending
@@ -787,12 +788,17 @@ every setting:
   channel, how often to check, and checking when the computer starts; see
   [desktop updates](11-ci-cd.md#desktop-updates)), and Connectors (opens the Connectors
   window, with the MCP and plugin settings).
-- **Accent colours:** twelve, shown as a grid of swatches in hue order (cyan, teal, green, lime,
+- **Accent colours:** twelve, shown as a row of swatches in hue order (cyan, teal, green, lime,
   amber, orange, rose, magenta, violet, indigo, blue, silver); the chosen one is ringed.
-- **Layout:** every section uses the same rows: the setting's title and description
-  left-justified on the left, its control aligned right. A setting that depends on the one above
-  it (such as checking at startup under the update schedule), and status lines or logs under a
-  setting, are indented one step with a rule on the left.
+- **Layout:** every section uses the same rows, and every row starts on one left edge, the
+  dialog's gutter (`--dialog-gutter`, the same inset as the title, notices and footer): the
+  setting's title and description, then its control under them, flush left (text fields, selects
+  and text areas 320 px wide, numbers 144 px, swatches and switches at their own size). Sections
+  are separated by space, not lines (a budget in Budgets is set off by a hairline above it, with no box). A setting that depends on the one above it (such as checking
+  at startup under the update schedule) sits closer to it on the same edge; status lines and logs
+  under a setting use the same edge. Tables (Keyboard, the benchmark) start their first column
+  on it. Inline loading, error, empty and warning states in a section use the shared `LoadingState`,
+  `Notice` and `EmptyState`, left-aligned on the same edge rather than centred; the benchmark's model picker is a `Select`.
 - **Agent and daemon:** every setting the daemon exposes through `config.describe`, grouped by
   section (models, local runtime, memory, workflow, web, media, isolation, GitHub, pets, phone,
   resuming, network). *Personality* is a select of the personalities `personalities.list`

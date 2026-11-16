@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import type { PermissionSet, PermissionsResult } from "@imperium/protocol";
 import { PermissionsEditor, samePermissions } from "../components/PermissionsEditor";
+import { LoadingState } from "../components/LoadingState";
+import { Notice } from "../components/Notice";
 import { Row } from "../components/SettingsRow";
 import type { DaemonClient } from "../daemon/client";
 
@@ -29,7 +31,7 @@ export function PermissionsSection({ client }: { client: DaemonClient }) {
     };
   }, [client]);
 
-  if (!saved) return error ? <p className="error">{error}</p> : <p className="muted">Loading…</p>;
+  if (!saved) return error ? <Notice tone="danger">{error}</Notice> : <LoadingState />;
   const changed = !samePermissions(draft, saved.global);
 
   const save = async () => {
@@ -59,11 +61,11 @@ export function PermissionsSection({ client }: { client: DaemonClient }) {
       />
       <PermissionsEditor value={draft} onChange={setDraft} presets={saved.presets} disabled={busy} />
       {error && (
-        <p className="error" role="alert">
+        <Notice tone="danger">
           {error}
-        </p>
+        </Notice>
       )}
-      {notice && !changed && <p className="muted">{notice}</p>}
+      {notice && !changed && <Notice tone="ok">{notice}</Notice>}
       <div className="permissions-actions">
         <button onClick={() => setDraft(saved.global)} disabled={busy || !changed}>
           Revert
