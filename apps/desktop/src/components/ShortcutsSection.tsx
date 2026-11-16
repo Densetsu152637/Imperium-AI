@@ -17,15 +17,22 @@ import {
   withoutBinding,
   type ShortcutId,
 } from "../settings/shortcuts";
-import { Row } from "./SettingsRow";
+import { Kbd } from "./Kbd";
 
-/** Fixed shortcuts: listed for reference, not rebindable. */
-const FIXED: [string, string][] = [
-  ["↑ / ↓, Enter, Tab, Esc", "In the palette: move, run the command, jump to the next group (Shift+Tab: previous), close"],
-  ["Esc", "Close Settings"],
-  ["Enter / Ctrl+Enter", "Send a message (see Chat)"],
-  ["Shift+Enter", "New line in a message"],
+/** Fixed shortcuts: listed for reference, not rebindable. Each is the chords that do it (any one of them), as keys. */
+const FIXED: { id: string; chords: string[][]; action: string }[] = [
+  { id: "palette", chords: [["↑"], ["↓"], ["Enter"], ["Tab"], ["Esc"]], action: "In the palette: move, run the command, jump to the next group (Shift+Tab: previous), close" },
+  { id: "close", chords: [["Esc"]], action: "Close Settings" },
+  { id: "send", chords: [["Enter"], ["Ctrl", "Enter"]], action: "Send a message (see Chat)" },
+  { id: "newline", chords: [["Shift", "Enter"]], action: "New line in a message" },
 ];
+
+/** A formatted chord ("Ctrl+K", "⌘⇧K") as one key per chip. */
+function chordKeys(text: string): string[] {
+  const symbols = /^[⌘⇧⌥⌃]+/.exec(text)?.[0] ?? "";
+  const rest = text.slice(symbols.length);
+  return [...symbols, ...(rest ? rest.split(/\+(?!$)/) : [])];
+}
 
 export function ShortcutsSection({ settings, onChange }: { settings: AppSettings; onChange: (settings: AppSettings) => void }) {
   const [capturing, setCapturing] = useState<ShortcutId | null>(null);
@@ -80,48 +87,81 @@ export function ShortcutsSection({ settings, onChange }: { settings: AppSettings
 
   return (
     <>
-      {SHORTCUT_ACTIONS.map((action) => {
-        const changed = settings.shortcuts[action.id] !== undefined;
-        const waiting = capturing === action.id;
-        return (
-          <Row key={action.id} label={action.label} description={action.description}>
-            <kbd>{waiting ? "Press the new keys…" : formatShortcut(bindingFor(settings.shortcuts, action.id))}</kbd>
-            <span role="status" className="muted">
-              {waiting && message ? message : ""}
-            </span>
-            <button
-              onBlur={() => waiting && setCapturing(null)}
-              onClick={() => {
-                setCapturing(waiting ? null : action.id);
-                setMessage(null);
-              }}
-            >
-              {waiting ? "Cancel" : "Change"}
-            </button>
-            {changed && (
-              <button
-                className="ghost reset-link"
-                title={`Back to ${formatShortcut(action.default)}`}
-                onClick={() => onChange({ ...settings, shortcuts: withoutBinding(settings.shortcuts, action.id) })}
-              >
-                Reset
-              </button>
-            )}
-          </Row>
-        );
-      })}
-      <table className="shortcuts">
-        <tbody>
-          {FIXED.map(([keys, action]) => (
-            <tr key={keys}>
-              <td>
-                <kbd>{keys}</kbd>
-              </td>
-              <td>{action}</td>
+      <div className="settings-table-scroll">
+        <table className="table settings-table shortcuts-table">
+          <thead>
+            <tr>
+              <th scope="col">Action</th>
+              <th scope="col">Shortcut</th>
+              <th scope="col">
+                <span className="visually-hidden">Change or reset</span>
+              </th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {SHORTCUT_ACTIONS.map((action) => {
+              const changed = settings.shortcuts[action.id] !== undefined;
+              const waiting = capturing === action.id;
+              return (
+                <tr key={action.id}>
+                  <td className="shortcut-action">
+                    <span className="settings-row-label">{action.label}</span>
+                    <span className="settings-row-description">{action.description}</span>
+                  </td>
+                  <td className="shortcut-keys">
+                    {waiting ? <Kbd>Press the new keys…</Kbd> : <Kbd keys={chordKeys(formatShortcut(bindingFor(settings.shortcuts, action.id)))} />}
+                    <span role="status" className="shortcut-status">
+                      {waiting && message ? message : ""}
+                    </span>
+                  </td>
+                  <td className="shortcut-buttons">
+                    <button
+                      onBlur={() => waiting && setCapturing(null)}
+                      onClick={() => {
+                        setCapturing(waiting ? null : action.id);
+                        setMessage(null);
+                      }}
+                    >
+                      {waiting ? "Cancel" : "Change"}
+                    </button>
+                    {changed && (
+                      <button
+                        className="ghost reset-link"
+                        title={`Back to ${formatShortcut(action.default)}`}
+                        onClick={() => onChange({ ...settings, shortcuts: withoutBinding(settings.shortcuts, action.id) })}
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <section className="settings-section" aria-label="Fixed shortcuts">
+        <h3 className="settings-subhead">Fixed shortcuts</h3>
+        <div className="settings-table-scroll">
+          <table className="table settings-table shortcuts-table">
+            <tbody>
+              {FIXED.map((fixed) => (
+                <tr key={fixed.id}>
+                  <td className="shortcut-fixed-keys">
+                    {fixed.chords.map((chord, index) => (
+                      <span key={chord.join("+")} className="shortcut-alternative">
+                        {index > 0 && <span className="shortcut-or" aria-hidden="true">/</span>}
+                        <Kbd keys={chord} />
+                      </span>
+                    ))}
+                  </td>
+                  <td>{fixed.action}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </>
   );
 }

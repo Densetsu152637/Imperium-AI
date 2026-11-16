@@ -76,9 +76,9 @@ export function PermissionsEditor({
 
   return (
     <div className="permissions-editor">
-      <section className="environment-section" aria-label="Paths outside the folders">
-        <div className="environment-section-head">
-          <span className="environment-label">Paths outside the folders</span>
+      <section className="settings-section" aria-label="Paths outside the folders">
+        <div className="settings-section-head">
+          <h3 className="settings-subhead">Paths outside the folders</h3>
           {!remote && (
             <button
               type="button"
@@ -149,6 +149,7 @@ export function PermissionsEditor({
         </ul>
         <div className="runtime-row">
           <input
+            className="field"
             aria-label="Path to grant"
             placeholder={remote ? "/home/me/.cargo" : "~/.cargo or an absolute path"}
             value={typedPath}
@@ -182,9 +183,9 @@ export function PermissionsEditor({
         </div>
       </section>
 
-      <section className="environment-section" aria-label="Rules">
-        <div className="environment-section-head">
-          <span className="environment-label">Rules</span>
+      <section className="settings-section" aria-label="Rules">
+        <div className="settings-section-head">
+          <h3 className="settings-subhead">Rules</h3>
           <button
             type="button"
             disabled={disabled}

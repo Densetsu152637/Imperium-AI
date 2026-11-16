@@ -1,6 +1,6 @@
-// One row of the Settings window: the title and description on the left, left-justified, and the
-// control aligned right. A sub-setting (one that depends on the row above it) is indented by the
-// same step everywhere, and a note row spans the width under its setting.
+// One row of the Settings window: the title and description, then the control under them, all on
+// the dialog's one left edge. A sub-setting (one that depends on the row above it) sits closer to
+// that row on the same edge, and a note row spans the width under its setting.
 
 import type { ReactNode } from "react";
 
@@ -15,7 +15,7 @@ export function Row({
   description?: ReactNode;
   children?: ReactNode;
   badge?: ReactNode;
-  /** Indents the row under the setting it belongs to. */
+  /** Sits closer to the setting it depends on, the row above. */
   sub?: boolean;
 }) {
   return (

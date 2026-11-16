@@ -22,6 +22,8 @@ import type {
 import { describeUsage, formatShare } from "../models/budgets";
 import type { DaemonClient } from "../daemon/client";
 import { formatTokens } from "../sessions/sessions";
+import { LoadingState } from "./LoadingState";
+import { Notice } from "./Notice";
 import { Select } from "./Select";
 import { Row } from "./SettingsRow";
 
@@ -123,7 +125,7 @@ export function BudgetsSection({ client }: { client: DaemonClient }) {
     };
   }, [client]);
 
-  if (!saved || !draft) return error ? <p className="error">{error}</p> : <p className="muted">Loading…</p>;
+  if (!saved || !draft) return error ? <Notice tone="danger">{error}</Notice> : <LoadingState />;
   const changed = JSON.stringify(draft) !== JSON.stringify(saved.settings);
   const endpoints = [...new Set(specs.map((spec) => spec.split(":")[0]))].sort();
   const setBudget = (index: number, change: Partial<Budget>) =>
@@ -185,9 +187,9 @@ export function BudgetsSection({ client }: { client: DaemonClient }) {
         />
       </Row>
 
-      <section className="environment-section budgets-editor" aria-label="Budgets">
-        <div className="environment-section-head">
-          <span className="environment-label">Budgets</span>
+      <section className="settings-section budgets-editor" aria-label="Budgets">
+        <div className="settings-section-head">
+          <h3 className="settings-subhead">Budgets</h3>
           <button type="button" disabled={busy} onClick={() => setDraft({ ...draft, limits: [...draft.limits, newBudget()] })}>
             <Plus aria-hidden="true" /> Add budget
           </button>
@@ -319,11 +321,11 @@ export function BudgetsSection({ client }: { client: DaemonClient }) {
         })}
       </section>
       {error && (
-        <p className="error" role="alert">
+        <Notice tone="danger">
           {error}
-        </p>
+        </Notice>
       )}
-      {notice && !changed && <p className="muted">{notice}</p>}
+      {notice && !changed && <Notice tone="ok">{notice}</Notice>}
       <div className="permissions-actions">
         <button onClick={() => setDraft(saved.settings)} disabled={busy || !changed}>
           Revert

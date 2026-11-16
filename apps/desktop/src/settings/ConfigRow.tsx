@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import type { ConfigEntry } from "@imperium/protocol";
+import { Badge } from "../components/Badge";
 import { Select } from "../components/Select";
 import { Row } from "../components/SettingsRow";
 import { Switch as Toggle } from "../components/Switch";
@@ -49,7 +50,7 @@ export function ConfigRow({ entry, disabled, onSet }: { entry: ConfigEntry; disa
   const overridden = SOURCE_LABEL[entry.source];
   const badge = (
     <>
-      {overridden && <span className="source-badge">{overridden}</span>}
+      {overridden && <Badge>{overridden}</Badge>}
       {entry.source === "user" && (
         <button className="ghost reset-link" onClick={() => onSet(entry.key, null)} title="Remove from your config file">
           reset

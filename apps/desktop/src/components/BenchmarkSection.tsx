@@ -1,4 +1,3 @@
-// style-budget: native-select=1
 // Settings → Models → Local model benchmark: runs the daemon's benchmark (`models.bench`) on one
 // local model or all of them and shows the saved results. It only runs when asked, takes its
 // place in the normal model queue as a background call (so it waits while the machine is saturated), and
@@ -16,6 +15,8 @@ import type {
 
 import { activeRun, gibibytes, history, latestHere, mergeRun, millis, seconds, tokensPerSecond } from "../models/bench";
 import type { DaemonClient } from "../daemon/client";
+import { Notice } from "./Notice";
+import { Select } from "./Select";
 import { Row, RowNote } from "./SettingsRow";
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -25,39 +26,55 @@ const ALL = "";
 function ResultRow({ result }: { result: BenchResult }) {
   return (
     <tr>
-      <th scope="row">{result.model_id}</th>
-      <td>{seconds(result.load_s)}</td>
-      <td>{millis(result.ttft_ms)}</td>
-      <td>{tokensPerSecond(result.prompt_tok_s)}</td>
-      <td>{tokensPerSecond(result.gen_tok_s, 1)}</td>
-      <td>
+      <th scope="row" className="model-id">
+        {result.model_id}
+      </th>
+      <td className="num">{seconds(result.load_s)}</td>
+      <td className="num">{millis(result.ttft_ms)}</td>
+      <td className="num">{tokensPerSecond(result.prompt_tok_s)}</td>
+      <td className="num">{tokensPerSecond(result.gen_tok_s, 1)}</td>
+      <td className="num">
         {gibibytes(result.peak_ram_bytes)} / {gibibytes(result.peak_vram_bytes)}
       </td>
-      <td>{result.date.slice(0, 10)}</td>
+      <td className="num">{result.date.slice(0, 10)}</td>
     </tr>
   );
 }
 
 function ResultTable({ results }: { results: BenchResult[] }) {
   return (
-    <table className="bench-table">
-      <thead>
-        <tr>
-          <th scope="col">Model</th>
-          <th scope="col">Load</th>
-          <th scope="col">First token</th>
-          <th scope="col">Prompt</th>
-          <th scope="col">Generation</th>
-          <th scope="col">Peak RAM / VRAM</th>
-          <th scope="col">Date</th>
-        </tr>
-      </thead>
-      <tbody>
-        {results.map((result) => (
-          <ResultRow key={`${result.run_id}:${result.model_id}`} result={result} />
-        ))}
-      </tbody>
-    </table>
+    <div className="settings-table-scroll">
+      <table className="table compact settings-table">
+        <thead>
+          <tr>
+            <th scope="col">Model</th>
+            <th scope="col" className="num">
+              Load
+            </th>
+            <th scope="col" className="num">
+              First token
+            </th>
+            <th scope="col" className="num">
+              Prompt
+            </th>
+            <th scope="col" className="num">
+              Generation
+            </th>
+            <th scope="col" className="num">
+              Peak RAM / VRAM
+            </th>
+            <th scope="col" className="num">
+              Date
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {results.map((result) => (
+            <ResultRow key={`${result.run_id}:${result.model_id}`} result={result} />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -135,28 +152,19 @@ export function BenchmarkSection({ client }: { client: DaemonClient }) {
   const failed = runs.flatMap((run) => run.results).filter((result) => result.error);
 
   return (
-    <section className="environment-section" aria-label="Local model benchmark">
-      <div className="environment-section-head">
-        <span className="environment-label">Local model benchmark</span>
-      </div>
+    <section className="settings-section" aria-label="Local model benchmark">
+      <h3 className="settings-subhead">Local model benchmark</h3>
       <Row
         label="Run a benchmark"
         description="Loads the model the way any call does, waits while the machine is saturated, and sends a few fixed prompts, measuring load time, time to first token, prompt and generation speed, and peak memory. It runs only when you start it and can be cancelled."
       >
-        <select
-          className="field"
+        <Select
           aria-label="Model to benchmark"
           value={model}
           disabled={busy || !!running}
-          onChange={(event) => setModel(event.target.value)}
-        >
-          <option value={ALL}>All local models</option>
-          {models.map((row) => (
-            <option key={row.id} value={row.id}>
-              {row.label}
-            </option>
-          ))}
-        </select>
+          onChange={setModel}
+          options={[{ value: ALL, label: "All local models" }, ...models.map((row) => ({ value: row.id, label: row.label }))]}
+        />
         {running ? (
           <button type="button" disabled={busy} onClick={() => void cancel(running)}>
             Cancel
@@ -179,9 +187,9 @@ export function BenchmarkSection({ client }: { client: DaemonClient }) {
         </RowNote>
       )}
       {failed.map((result) => (
-        <p key={`${result.run_id}:${result.model_id}`} className="error" role="alert">
+        <Notice key={`${result.run_id}:${result.model_id}`} tone="danger">
           {result.model_id}: {result.error}
-        </p>
+        </Notice>
       ))}
       {here.length === 0 && !running && (
         <p className="muted">No results for this machine yet. Run a benchmark to see how fast your models are here.</p>
@@ -200,9 +208,9 @@ export function BenchmarkSection({ client }: { client: DaemonClient }) {
         </details>
       )}
       {error && (
-        <p className="error" role="alert">
+        <Notice tone="danger">
           {error}
-        </p>
+        </Notice>
       )}
     </section>
   );

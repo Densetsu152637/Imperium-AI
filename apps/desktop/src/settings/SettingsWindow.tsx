@@ -10,7 +10,10 @@ import type { ConfigDescribeResult, ConfigEntry, ConfigSetResult, ModListResult 
 import { ApiSection } from "../components/ApiSection";
 import { BenchmarkSection } from "../components/BenchmarkSection";
 import { BudgetsSection } from "../components/BudgetsEditor";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
 import { Menu } from "../components/Menu";
+import { Notice } from "../components/Notice";
 import { matches, DialogNavGroup, DialogNavItem, Dialog } from "../components/Dialog";
 import { Row } from "../components/SettingsRow";
 import { ShortcutsSection } from "../components/ShortcutsSection";
@@ -145,9 +148,7 @@ export function SettingsWindow(props: Props) {
       <Fragment key={field.key}>
         <FieldRow field={field} value={settings[field.key]} onChange={set} />
         {field.key === "pushToTalkKey" && pttNotice && (
-          <p className="muted" role="status">
-            {pttNotice}
-          </p>
+          <Notice tone="warn">{pttNotice}</Notice>
         )}
       </Fragment>
     ));
@@ -168,7 +169,7 @@ export function SettingsWindow(props: Props) {
       const entries = (config?.entries ?? []).filter((entry) =>
         matches(query, entry.label, entry.description, entry.key, CONFIG_SECTIONS[entry.section] ?? entry.section),
       );
-      if (fields.length + entries.length === 0) return <p className="muted">No settings match “{query}”.</p>;
+      if (fields.length + entries.length === 0) return <EmptyState title={`No settings match “${query}”.`} />;
       return (
         <>
           {fieldRows(fields)}
@@ -178,8 +179,8 @@ export function SettingsWindow(props: Props) {
     }
     if (section.startsWith("config:")) {
       const id = section.slice("config:".length);
-      if (!client) return <p className="muted">Connect to imperium-core to change these settings.</p>;
-      if (!config) return <p className="muted">Loading…</p>;
+      if (!client) return <EmptyState title="Connect to imperium-core to change these settings." />;
+      if (!config) return <LoadingState />;
       const rows = configRows(config.entries.filter((entry) => entry.section === id));
       if (id !== "models" && id !== "runtime") return rows;
       return (
@@ -240,13 +241,13 @@ export function SettingsWindow(props: Props) {
         return props.daemon ? (
           <DaemonSettings daemon={props.daemon} />
         ) : (
-          <p className="muted">The daemon is managed here only in the desktop app.</p>
+          <EmptyState title="The daemon is managed here only in the desktop app." />
         );
       case "updates":
         return props.updates ? (
           <UpdateSettings updates={props.updates} settings={settings} onChange={onChange} />
         ) : (
-          <p className="muted">Updates are available in the desktop app.</p>
+          <EmptyState title="Updates are available in the desktop app." />
         );
       case "connectors":
         return (
@@ -263,16 +264,16 @@ export function SettingsWindow(props: Props) {
           </>
         );
       case "permissions":
-        return client ? <PermissionsSection client={client} /> : <p className="muted">Connect to imperium-core to change permissions.</p>;
+        return client ? <PermissionsSection client={client} /> : <EmptyState title="Connect to imperium-core to change permissions." />;
       case "budgets":
-        return client ? <BudgetsSection client={client} /> : <p className="muted">Connect to imperium-core to manage budgets.</p>;
+        return client ? <BudgetsSection client={client} /> : <EmptyState title="Connect to imperium-core to manage budgets." />;
       case "api":
-        return client ? <ApiSection client={client} /> : <p className="muted">Connect to imperium-core to manage the API.</p>;
+        return client ? <ApiSection client={client} /> : <EmptyState title="Connect to imperium-core to manage the API." />;
       case "agent-changes":
         return client ? (
           <AgentChangesSection client={client} onChanged={props.onModelsChanged} />
         ) : (
-          <p className="muted">Connect to imperium-core to see what agents changed.</p>
+          <EmptyState title="Connect to imperium-core to see what agents changed." />
         );
       case "data":
         return <DataSection userFile={config?.user_file ?? null} settings={settings} onChange={onChange} onResetLayout={props.onResetLayout} />;
@@ -347,22 +348,26 @@ export function SettingsWindow(props: Props) {
   const notice = (
     <>
       {needsRestart && (
-        <div className="settings-notice">
+        <Notice
+          tone="warn"
+          action={
+            props.daemon?.status.can_start ? (
+              <button
+                className="primary"
+                onClick={() => {
+                  props.daemon?.run("restart");
+                  setNeedsRestart(false);
+                }}
+              >
+                Restart now
+              </button>
+            ) : undefined
+          }
+        >
           Restart imperium-core to apply daemon settings.
-          {props.daemon?.status.can_start && (
-            <button
-              className="primary"
-              onClick={() => {
-                props.daemon?.run("restart");
-                setNeedsRestart(false);
-              }}
-            >
-              Restart now
-            </button>
-          )}
-        </div>
+        </Notice>
       )}
-      {configError && <p className="error">{configError}</p>}
+      {configError && <Notice tone="danger">{configError}</Notice>}
     </>
   );
 

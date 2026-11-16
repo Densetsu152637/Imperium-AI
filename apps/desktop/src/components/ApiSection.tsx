@@ -10,6 +10,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { ApiSetParams, ApiStatus, ApiTokenResult } from "@imperium/protocol";
 
 import type { DaemonClient } from "../daemon/client";
+import { LoadingState } from "./LoadingState";
+import { Notice } from "./Notice";
 import { Row, RowNote } from "./SettingsRow";
 import { Switch } from "./Switch";
 
@@ -86,7 +88,7 @@ export function ApiSection({ client }: { client: DaemonClient }) {
     }
   };
 
-  if (!status) return error ? <p className="error">{error}</p> : <p className="muted">Loading…</p>;
+  if (!status) return error ? <Notice tone="danger">{error}</Notice> : <LoadingState />;
 
   const local = status.models.filter((model) => !model.hosted);
   const hosted = status.models.filter((model) => model.hosted);
@@ -107,9 +109,9 @@ export function ApiSection({ client }: { client: DaemonClient }) {
         />
       </Row>
       {status.error && (
-        <p className="error" role="alert">
+        <Notice tone="danger">
           The API is not running: {status.error}
-        </p>
+        </Notice>
       )}
       {status.running && status.base_url && (
         <>
@@ -201,9 +203,9 @@ export function ApiSection({ client }: { client: DaemonClient }) {
         </Row>
       )}
 
-      <section className="environment-section" aria-label="Models served">
-        <div className="environment-section-head">
-          <span className="environment-label">Models served</span>
+      <section className="settings-section" aria-label="Models served">
+        <div className="settings-section-head">
+          <h3 className="settings-subhead">Models served</h3>
         </div>
         {local.length === 0 ? (
           <p className="muted">No local models found. Add a model folder in Settings → Models.</p>
@@ -217,9 +219,9 @@ export function ApiSection({ client }: { client: DaemonClient }) {
           </ul>
         )}
       </section>
-      <section className="environment-section" aria-label="Hosted models">
-        <div className="environment-section-head">
-          <span className="environment-label">Hosted models</span>
+      <section className="settings-section" aria-label="Hosted models">
+        <div className="settings-section-head">
+          <h3 className="settings-subhead">Hosted models</h3>
         </div>
         <p className="muted permissions-hint">
           Off by default. A hosted model that is on is used with your key and billed to you by its provider, by anything that has
@@ -246,9 +248,9 @@ export function ApiSection({ client }: { client: DaemonClient }) {
         refuses API calls with an error the tool can show, even one set to ask first.
       </RowNote>
       {error && (
-        <p className="error" role="alert">
+        <Notice tone="danger">
           {error}
-        </p>
+        </Notice>
       )}
     </>
   );
