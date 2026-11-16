@@ -991,10 +991,13 @@ impl DaemonState {
                 ));
             }
             // The model is checked first, so a refusal leaves no folder behind.
-            let resolved = if options.resume_id.is_some() && model.is_some() {
-                self.resolve_model(model)
+            // (An evaluation session brings its own model.)
+            let resolved = if options.eval.is_some() {
+                Ok(None)
+            } else if options.resume_id.is_some() && model.is_some() {
+                self.resolve_model(model).map(Some)
             } else {
-                self.resolve_usable_model(model)
+                self.resolve_usable_model(model).map(Some)
             };
             match resolved {
                 Ok(_) => {}
