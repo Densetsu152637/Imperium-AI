@@ -159,7 +159,7 @@ async fn start_with_catalog(
     agents: &[(&str, &str)],
     rules: Vec<PermissionRule>,
     initial: ProfileRules,
-    rows: &[Row],
+    rows: &[Row<'_>],
 ) -> Setup {
     let config = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
