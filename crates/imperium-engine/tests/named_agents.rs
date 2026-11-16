@@ -567,7 +567,7 @@ async fn a_resumed_named_agent_is_the_same_agent_with_the_same_tools() {
     .await;
     let outcome = turn(&setup.session, "delegate", PermissionDecision::Allow).await;
     let requests = subagent_requests(&setup);
-    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert_eq!(requests.len(), 3, "{outcome:?}");
     for request in &requests {
         assert!(request.system.contains("READER RULES."));
         assert_eq!(request.tools, ["read_file"], "{:?}", request.tools);
