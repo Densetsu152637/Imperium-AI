@@ -797,7 +797,7 @@ mod single_call_tests {
 
 #[cfg(test)]
 mod prompt_tests {
-    use super::{RESPONSE_STYLE, root_prompt, subagent_prompt};
+    use super::{PROVERB, RESPONSE_STYLE, root_prompt, subagent_prompt};
 
     /// The rules of roadmap item 19 stay in the root prompt: change them on purpose, here too.
     #[test]
@@ -890,6 +890,10 @@ mod prompt_tests {
         }
         assert!(root.starts_with("You are Imperium, a coding agent"));
         assert!(subagent.starts_with("You are an Imperium subagent"));
+        for prompt in [root.as_str(), subagent.as_str()] {
+            assert_eq!(prompt.matches(PROVERB).count(), 1);
+            assert!(prompt.contains("The fear of God is the beginning of all knowledge"));
+        }
         assert!(subagent.contains("lead with the result"));
         assert!(subagent.contains("not verified"));
     }

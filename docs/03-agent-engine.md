@@ -61,6 +61,11 @@ support.
 
 ## Response style
 
+Both base prompts (the root's and a subagent's) open with one framing line on epistemic humility,
+after the first sentence: "The fear of God is the beginning of all knowledge: hold your claims
+humbly; say what you have verified, say when you don't know, and never invent facts, files or
+results." It is a single shared constant (`PROVERB` in `agent/prompts.rs`), not repeated per tool.
+
 **Implemented:** the root agent's system prompt carries a short style contract
 ([roadmap item 19](12-roadmap.md)), and
 [`emperor-root.md`](../crates/imperium-protocol/schemas/prompts/emperor-root.md) has the same
