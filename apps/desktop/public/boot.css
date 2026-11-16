@@ -1,13 +1,13 @@
 /* The loading screen (index.html): a linked file, not an inline <style>, because Tauri adds a
    nonce for inline styles to the release CSP, which turns off 'unsafe-inline' for every other
-   inline style. The colours repeat --bg and --accent of styles.css; test/boot.test.ts checks
+   inline style. The colours repeat --bg and --accent of styles/tokens.css; test/boot.test.ts checks
    they agree with it, shared/boot.ts, main.rs, and tauri.conf.json. The operating system's theme
    applies until boot.js sets the remembered one. */
 :root { --boot-bg: #0b0c0e; --boot-accent: #1fb2c8; color-scheme: dark; }
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme]) { --boot-bg: #f4f5f7; --boot-accent: #005a72; color-scheme: light; }
+  :root:not([data-theme]) { --boot-bg: #f4f5f7; --boot-accent: #0a7186; color-scheme: light; }
 }
-:root[data-theme="light"] { --boot-bg: #f4f5f7; --boot-accent: #005a72; color-scheme: light; }
+:root[data-theme="light"] { --boot-bg: #f4f5f7; --boot-accent: #0a7186; color-scheme: light; }
 :root[data-theme="dark"] { --boot-bg: #0b0c0e; --boot-accent: #1fb2c8; color-scheme: dark; }
 html { background: var(--boot-bg); }
 body { margin: 0; }

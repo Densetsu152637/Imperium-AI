@@ -8,10 +8,10 @@
   margin: 0;
   padding: 0.3rem;
   list-style: none;
-  background: var(--metal-card);
+  background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  box-shadow: var(--highlight), var(--shadow);
+  box-shadow: var(--shadow);
   font-size: var(--fs-md);
   animation: pop-in var(--fast) var(--ease);
 }
@@ -87,10 +87,10 @@
   width: min(62rem, 100%);
   height: min(42rem, 100%);
   overflow: hidden;
-  background: var(--metal-card, var(--surface));
+  background: var(--surface-raised);
   border: 1px solid var(--border-strong, var(--border));
   border-radius: calc(var(--radius) * 1.5);
-  box-shadow: var(--highlight), var(--shadow);
+  box-shadow: var(--shadow);
   animation: rise-in var(--slow) var(--ease);
 }
 
@@ -245,10 +245,10 @@
   padding: 0.3rem;
   list-style: none;
   overflow-y: auto;
-  background: var(--metal-card);
+  background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  box-shadow: var(--highlight), var(--shadow);
+  box-shadow: var(--shadow);
   font-size: 0.9rem;
   animation: pop-in var(--fast) var(--ease);
 }

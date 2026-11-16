@@ -1,4 +1,4 @@
-/* style-budget: colour=5 font-size=10 font-weight=1 radius=2 shadow=4 duration=0 z-index=0 */
+/* style-budget: colour=1 font-size=10 font-weight=1 radius=2 shadow=0 duration=0 z-index=0 */
 /* The Settings sections' content: rows, swatches, permissions and budget editors, shortcuts. */
 
 .bench-table {
@@ -101,7 +101,6 @@
   border-radius: 50%;
   border: 2px solid color-mix(in srgb, var(--swatch) 60%, black);
   background: var(--swatch);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25);
 }
 
 .swatches .swatch:hover:not(:disabled) {
@@ -173,7 +172,6 @@
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.25);
   transition:
     border-color var(--fast) var(--ease),
     box-shadow var(--fast) var(--ease);
@@ -185,7 +183,6 @@
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.25);
   transition:
     border-color var(--fast) var(--ease),
     box-shadow var(--fast) var(--ease);
@@ -201,7 +198,6 @@
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.25);
   transition:
     border-color var(--fast) var(--ease),
     box-shadow var(--fast) var(--ease);
@@ -218,9 +214,8 @@
 
 .settings-row-control input:focus-visible,
 .settings-row-control textarea:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline-offset: 0;
+  border-color: var(--focus);
 }
 
 .settings-row-control input::placeholder,

@@ -6,9 +6,8 @@
 }
 
 .models-toolbar input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline-offset: 0;
+  border-color: var(--focus);
 }
 
 .models tbody tr {
@@ -484,9 +483,8 @@ button.setup-action small {
 }
 
 .hf-download select:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline-offset: 0;
+  border-color: var(--focus);
 }
 
 .hf-download .error,

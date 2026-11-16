@@ -3,6 +3,7 @@
    same specificity are decided by this order, so keep it. models/modelConfig.css is imported by its
    dialog and loads before all of these. */
 
+@import "@fontsource-variable/inter/index.css";
 @import "./tokens.css";
 @import "./base.css";
 @import "./dialog.css";

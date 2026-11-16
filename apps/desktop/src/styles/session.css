@@ -1,4 +1,4 @@
-/* style-budget: colour=3 font-size=48 font-weight=15 radius=14 shadow=2 duration=3 z-index=2 */
+/* style-budget: colour=2 font-size=48 font-weight=15 radius=14 shadow=1 duration=3 z-index=2 */
 /* The session column: header, transcript, tool calls, composer, queue, attachments, context breakdown, new session and compare. */
 
 .usage-limits select:hover,
@@ -8,9 +8,8 @@
 
 .usage-limits select:focus-visible,
 .usage-limits input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline-offset: 0;
+  border-color: var(--focus);
 }
 
 /* Disclosure rows: a chevron that turns as the section opens. */
@@ -75,9 +74,9 @@
   border-radius: 50%;
   background:
     radial-gradient(circle, var(--accent) 0 14%, transparent 17%),
-    var(--metal-card);
+    var(--surface-raised);
   border: 1px solid var(--border-strong);
-  box-shadow: var(--highlight), var(--shadow);
+  box-shadow: var(--shadow);
 }
 
 .session-empty .empty {
@@ -427,7 +426,6 @@
   background: var(--bubble);
   border: 1px solid var(--border);
   border-radius: var(--radius-bubble);
-  box-shadow: var(--highlight);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -656,10 +654,9 @@
   justify-content: space-between;
   gap: var(--space);
   padding: calc(var(--space) * 1.25) calc(var(--space) * 1.75);
-  background: var(--metal-card);
+  background: var(--surface-raised);
   border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
   border-radius: var(--radius);
-  box-shadow: var(--highlight), 0 0 0 3px var(--accent-soft);
 }
 
 .suggestion-body {
@@ -687,10 +684,9 @@
   max-width: var(--prose-max);
   margin: 0 auto;
   padding: calc(var(--space) * 1.25) calc(var(--space) * 1.75);
-  background: var(--metal-card);
+  background: var(--surface-raised);
   border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
   border-radius: var(--radius);
-  box-shadow: var(--highlight), 0 0 0 3px var(--accent-soft);
   font-size: 0.85rem;
 }
 
@@ -831,7 +827,7 @@
 .composer-area.dragging .composer {
   border-color: var(--accent);
   border-style: dashed;
-  box-shadow: var(--highlight), var(--shadow), 0 0 0 3px var(--accent-soft);
+  box-shadow: var(--shadow);
 }
 
 .composer {
@@ -839,10 +835,10 @@
   gap: var(--space);
   align-items: flex-end;
   padding: var(--space) var(--space) var(--space) var(--space);
-  background: var(--metal-card);
+  background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  box-shadow: var(--highlight), var(--shadow);
+  box-shadow: var(--shadow);
   transition:
     border-color var(--fast) var(--ease),
     box-shadow var(--fast) var(--ease);
@@ -850,7 +846,7 @@
 
 .composer:focus-within {
   border-color: var(--accent);
-  box-shadow: var(--highlight), var(--shadow), 0 0 0 3px var(--accent-soft);
+  box-shadow: var(--shadow);
 }
 
 .composer textarea {
@@ -891,7 +887,6 @@
   border-color: transparent;
   background: var(--accent);
   color: var(--accent-ink);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22);
 }
 
 .composer .send:hover:not(:disabled) {
@@ -903,7 +898,6 @@
   opacity: 1;
   background: var(--surface-3);
   color: var(--muted);
-  box-shadow: var(--highlight);
 }
 
 .composer .send svg {
@@ -919,7 +913,7 @@
 /* Steering: a user message that joined a running turn, marked with an accent edge and label */
 .message.user.steer {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  box-shadow: var(--highlight), inset 3px 0 0 var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .steer-label {
@@ -1026,7 +1020,6 @@
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: var(--highlight);
   animation: rise-in var(--slow) var(--ease);
 }
 
@@ -1241,8 +1234,7 @@
   padding: var(--space) calc(var(--space) * 1.5);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--metal-card);
-  box-shadow: var(--highlight);
+  background: var(--surface-raised);
   font-size: 0.9rem;
 }
 
@@ -1383,7 +1375,7 @@ button.task-open:hover {
 
 /* The entry a search hit opened at, marked for a moment. */
 .conversation > .search-focus {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 4px;
   border-radius: var(--radius-sm);
   transition: outline-color var(--slow) var(--ease);
@@ -1491,7 +1483,6 @@ button.task-open:hover {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: var(--highlight);
   animation: rise-in var(--slow) var(--ease);
 }
 

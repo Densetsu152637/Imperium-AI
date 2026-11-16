@@ -186,22 +186,22 @@ export function modEnabled(
 const DENSITY_SPACE: Record<Density, number> = { compact: 0.7, comfortable: 1, spacious: 1.35 };
 
 /**
- * Accent colours, in hue order for the swatch grid: the base, a brighter variant for hover, and
- * (computed) a translucent wash. Each is light enough to read on the dark surfaces.
+ * Accent colours, in hue order for the swatch grid: the dark-theme fill the swatch shows. Every accent
+ * has a dark and a light value in styles/tokens.css, selected with `data-accent` on the root element.
  */
-export const ACCENTS: Record<Accent, { label: string; base: string; strong: string }> = {
-  cyan: { label: "Cyan", base: "#1fb2c8", strong: "#45c6d8" },
-  teal: { label: "Teal", base: "#22b39a", strong: "#4ccab4" },
-  green: { label: "Green", base: "#3fbf7f", strong: "#62d39a" },
-  lime: { label: "Lime", base: "#9cc43a", strong: "#b5d965" },
-  amber: { label: "Amber", base: "#e0a33a", strong: "#f0bd5f" },
-  orange: { label: "Orange", base: "#e57a3c", strong: "#f09763" },
-  rose: { label: "Rose", base: "#e0607e", strong: "#ec8399" },
-  magenta: { label: "Magenta", base: "#cf62c4", strong: "#de86d5" },
-  violet: { label: "Violet", base: "#9b7cf0", strong: "#b49cf5" },
-  indigo: { label: "Indigo", base: "#6f7bea", strong: "#939cf2" },
-  blue: { label: "Blue", base: "#3d8fe0", strong: "#66a9ec" },
-  silver: { label: "Silver", base: "#b9b3a7", strong: "#d9d4ca" },
+export const ACCENTS: Record<Accent, { label: string; base: string }> = {
+  cyan: { label: "Cyan", base: "#1fb2c8" },
+  teal: { label: "Teal", base: "#22b39a" },
+  green: { label: "Green", base: "#3fbf7f" },
+  lime: { label: "Lime", base: "#9cc43a" },
+  amber: { label: "Amber", base: "#e0a33a" },
+  orange: { label: "Orange", base: "#e57a3c" },
+  rose: { label: "Rose", base: "#e0607e" },
+  magenta: { label: "Magenta", base: "#cf62c4" },
+  violet: { label: "Violet", base: "#9b7cf0" },
+  indigo: { label: "Indigo", base: "#6f7bea" },
+  blue: { label: "Blue", base: "#3d8fe0" },
+  silver: { label: "Silver", base: "#b9b3a7" },
 };
 
 const PROSE_FONTS: Record<ProseFont, string> = {
@@ -209,11 +209,6 @@ const PROSE_FONTS: Record<ProseFont, string> = {
   serif: 'Charter, "Iowan Old Style", Georgia, Cambria, serif',
   mono: "var(--font-code)",
 };
-
-function wash(hex: string, alpha: number): string {
-  const value = Number.parseInt(hex.slice(1), 16);
-  return `rgb(${(value >> 16) & 255} ${(value >> 8) & 255} ${value & 255} / ${alpha})`;
-}
 
 const LIGHT_QUERY = "(prefers-color-scheme: light)";
 
@@ -226,7 +221,7 @@ export function resolvedTheme(theme: Theme): "light" | "dark" {
 /** Stops following the operating system's theme (set while the setting is "system"). */
 let stopFollowingSystem: (() => void) | null = null;
 
-/** Sets `data-theme` on the root, which styles.css keys the light tokens on. */
+/** Sets `data-theme` on the root, which styles/tokens.css keys the light tokens on. */
 function applyTheme(theme: Theme): void {
   const root = document.documentElement;
   root.dataset.theme = resolvedTheme(theme);
@@ -252,10 +247,8 @@ export function applySettings(settings: AppSettings): void {
   style.setProperty("--code-scale", String(settings.codeScale));
   style.setProperty("--space-scale", String(DENSITY_SPACE[settings.density]));
   style.setProperty("--prose-max", `${settings.maxProseCh}ch`);
-  const accent = ACCENTS[settings.accent] ?? ACCENTS.cyan;
-  style.setProperty("--accent", accent.base);
-  style.setProperty("--accent-strong", accent.strong);
-  style.setProperty("--accent-soft", wash(accent.base, 0.15));
+  // The accent's colours come from tokens.css, per theme, so the light theme's values win (K8).
+  root.dataset.accent = settings.accent in ACCENTS ? settings.accent : "cyan";
   style.setProperty("--font-prose", PROSE_FONTS[settings.proseFont] ?? PROSE_FONTS.sans);
   root.classList.toggle("reduce-motion", settings.reduceMotion);
   root.classList.toggle("wrap-code", settings.wrapCode);
