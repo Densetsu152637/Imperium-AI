@@ -7,6 +7,8 @@ import { PanelLeftClose, Pin } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { IconButton } from "../components/IconButton";
+import { LoadingState } from "../components/LoadingState";
 import { Menu } from "../components/Menu";
 import { insideTauri } from "../daemon/connection";
 import { emitPanelEvent, listenPanelEvents } from "../shared/panelWindows";
@@ -108,21 +110,19 @@ export function PanelWindow({ id, panel }: { id: string; panel: PanelSpec | null
           <Menu label={`${title} options`} items={panel.menu} className="panel-menu-button" />
         )}
         {canPin && (
-          <button
-            className="ghost icon-only panel-tool panel-pin"
+          <IconButton
+            icon={Pin}
+            size="sm"
+            className="panel-tool panel-pin"
             onClick={togglePin}
             aria-pressed={pinned}
-            aria-label="Keep above other windows"
-            title={pinned ? "Pinned above other windows; click to unpin" : "Keep above other windows"}
-          >
-            <Pin aria-hidden="true" fill={pinned ? "currentColor" : "none"} />
-          </button>
+            label="Keep above other windows"
+            tooltip={pinned ? "Pinned above other windows; click to unpin" : "Keep above other windows"}
+          />
         )}
-        <button className="ghost icon-only panel-tool" onClick={dock} aria-label="Dock" title="Dock: return to the main window">
-          <PanelLeftClose aria-hidden="true" />
-        </button>
+        <IconButton icon={PanelLeftClose} size="sm" className="panel-tool" onClick={dock} label="Dock" tooltip="Dock: return to the main window" />
       </header>
-      <div className="panel-body">{panel?.body ?? <p className="empty">Loading…</p>}</div>
+      <div className="panel-body">{panel?.body ?? <LoadingState />}</div>
     </section>
   );
 }

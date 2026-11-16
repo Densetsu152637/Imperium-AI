@@ -131,10 +131,14 @@ export function GlyphSvg({ glyph }: { glyph: Glyph }) {
   return <Icon aria-hidden="true" focusable="false" />;
 }
 
+/** The glyph colour on a tile: every tile colour above is dark enough for white. */
+const TILE_INK = "#ffffff";
+
 /** The coloured tile. Decorative; whatever wraps it supplies the accessible name. */
 export function ProjectIcon({ choice, size = "normal" }: { choice: ProjectIconChoice; size?: "normal" | "small" }) {
   return (
-    <span className={`project-icon ${size}`} style={{ background: choice.color }}>
+    // The glyph is white on every tile colour: the pair is data, so both come from here, not the stylesheet.
+    <span className={`project-icon ${size}`} style={{ background: choice.color, color: TILE_INK }}>
       <GlyphSvg glyph={choice.icon} />
     </span>
   );

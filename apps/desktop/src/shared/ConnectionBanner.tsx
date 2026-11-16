@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { Notice } from "../components/Notice";
 import type { DaemonClient, DaemonConnection } from "../daemon/client";
 import { insideTauri } from "../daemon/connection";
 import type { Daemon } from "./DaemonControl";
@@ -33,7 +34,7 @@ export function ConnectionBanner({
         <strong>imperium-core is not connected.</strong> {status.kind === "failed" ? status.message : ""} Showing what was
         last known.
       </span>
-      {daemon?.error && <span className="error">{daemon.error}</span>}
+      {daemon?.error && <Notice tone="danger" className="connection-error">{daemon.error}</Notice>}
       {daemon?.status.can_start && !daemon.status.running && (
         <button className="primary" onClick={() => daemon.run("start")} disabled={daemon.busy !== null}>
           {daemon.busy ? "Starting…" : "Start imperium-core"}

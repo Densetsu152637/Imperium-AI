@@ -6,6 +6,10 @@ import { useEffect, useRef, useState } from "react";
 
 import type { SessionSearchHit } from "@imperium/protocol";
 
+import { EmptyState } from "../components/EmptyState";
+import { IconButton } from "../components/IconButton";
+import { LoadingState } from "../components/LoadingState";
+import { Notice } from "../components/Notice";
 import { highlightSegments, hitKindLabel, searchSessions, type SearchClient } from "../sessions/sessionSearch";
 
 /** Wait this long after typing stops before searching. */
@@ -75,16 +79,14 @@ export function SessionSearch({
           }}
         />
         {query && (
-          <button className="icon" aria-label="Clear search" onClick={() => setQuery("")}>
-            <X aria-hidden="true" />
-          </button>
+          <IconButton icon={X} size="sm" label="Clear search" onClick={() => setQuery("")} />
         )}
       </label>
       {trimmed && (
         <div className="session-search-results" aria-live="polite">
-          {state === "failed" && <p className="empty">Search failed: {error}</p>}
-          {state === "searching" && hits.length === 0 && <p className="empty">Searching…</p>}
-          {state === "done" && hits.length === 0 && <p className="empty">No session mentions that.</p>}
+          {state === "failed" && <Notice tone="danger" title="Search failed">{error}</Notice>}
+          {state === "searching" && hits.length === 0 && <LoadingState inline label="Searching…" />}
+          {state === "done" && hits.length === 0 && <EmptyState title="No session mentions that" />}
           {hits.length > 0 && (
             <ul className="list" aria-label="Search results">
               {hits.map((hit) => (

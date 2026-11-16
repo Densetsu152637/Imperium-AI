@@ -141,7 +141,9 @@ import { UpdateControl, useUpdates } from "./shared/UpdateControl";
 import type { Cache } from "./shared/cache";
 import { ConnectionBanner, type Status } from "./shared/ConnectionBanner";
 import { useSessionStore } from "./sessions/useSessionStore";
-import { useWindows } from "./shared/useWindows";
+import { useLaunchFocus, useWindows } from "./shared/useWindows";
+import { Badge } from "./components/Badge";
+import { IconButton } from "./components/IconButton";
 
 let migrating: Promise<EnvironmentInfo[]> | null = null;
 
@@ -282,6 +284,9 @@ export function App() {
 
   // The panels have rendered (child effects run first), so the loading screen can fade out.
   useEffect(() => splashDone(), []);
+  // Keys such as Ctrl+, and Ctrl+K only reach the window once the document has focus.
+  const appRoot = useRef<HTMLDivElement>(null);
+  useLaunchFocus(appRoot);
 
   // Settings changed in another window apply here too.
   useEffect(() => subscribeDoc("settings", () => setSettings(loadSettings())), []);
@@ -1082,15 +1087,15 @@ export function App() {
       id: "projects",
       title: "Environments",
       actions: (
-        <button
-          className="ghost icon-only panel-tool"
+        <IconButton
+          icon={Plus}
+          size="sm"
+          className="panel-tool"
           onClick={() => setEnvWindow({ id: null })}
           disabled={!client}
-          aria-label="New environment"
-          title={client ? "New environment" : "Not connected to imperium-core"}
-        >
-          <Plus aria-hidden="true" />
-        </button>
+          label="New environment"
+          tooltip={client ? undefined : "New environment: not connected to imperium-core"}
+        />
       ),
       body: (
         <EnvironmentsPanel
@@ -1111,15 +1116,15 @@ export function App() {
       actions: (
         <>
           <SessionSortSelect sort={sessionSort} onSort={setSessionSort} />
-          <button
-            className="ghost icon-only panel-tool"
+          <IconButton
+            icon={Plus}
+            size="sm"
+            className="panel-tool"
             onClick={newSessionView}
             disabled={!client}
-            aria-label="New session"
-            title={client ? "New session: choose its options and write the first message in the middle panel" : "Not connected to imperium-core"}
-          >
-            <Plus aria-hidden="true" />
-          </button>
+            label="New session"
+            tooltip={client ? "New session: choose its options and write the first message in the middle panel" : "New session: not connected to imperium-core"}
+          />
         </>
       ),
       body: (
@@ -1457,7 +1462,7 @@ export function App() {
     return (
       <SettingsContext.Provider value={settings}>
       <ChangeSettingsContext.Provider value={changeSettings}>
-        <div className="app app-panel">
+        <div className="app app-panel" ref={appRoot} tabIndex={-1}>
           {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={null} />}
           <PanelWindow id={detachedId} panel={findPanel(detachedId) ?? null} />
           <CommandPalette detached />
@@ -1522,13 +1527,13 @@ export function App() {
   return (
     <SettingsContext.Provider value={settings}>
       <ChangeSettingsContext.Provider value={changeSettings}>
-    <div className="app">
+    <div className="app" ref={appRoot} tabIndex={-1}>
       <header className="titlebar">
         <strong className="brand">Imperium</strong>
         {projectLayout && (
-          <span className="layout-marker" title={`${environmentName ?? "This environment"} uses its own layout; Settings → Panels switches back to the global one`}>
+          <Badge tone="accent" title={`${environmentName ?? "This environment"} uses its own layout; Settings → Panels switches back to the global one`}>
             Project layout
-          </span>
+          </Badge>
         )}
         <span className="muted connection" data-state={status.kind}>
           {status.kind === "connected"
@@ -1539,35 +1544,32 @@ export function App() {
         </span>
         <span className="spacer" />
         <UpdateControl updates={updates} onOpen={() => setShowSettings(true)} />
-        <button
-          className="ghost titlebar-button icon-only"
-          onClick={() => setShowConnectors((open) => !open)}
-          aria-expanded={showConnectors}
-          aria-label="Connectors"
-          title="Connectors: MCP servers, plugins, and skills"
-        >
-          <Plug aria-hidden="true" />
-        </button>
-        <button
-          className={`ghost titlebar-button icon-only layout-toggle${editingLayout ? " active" : ""}`}
-          onClick={() => setEditingLayout((editing) => !editing)}
-          aria-pressed={editingLayout}
-          data-tour="layout"
-          aria-label="Edit layout"
-          title={editingLayout ? "Done editing the layout (Esc)" : "Edit layout"}
-        >
-          <PANELS_ICON aria-hidden="true" />
-        </button>
-        <button
-          className="ghost titlebar-button icon-only"
-          onClick={() => setShowSettings((open) => !open)}
-          aria-expanded={showSettings}
-          data-tour="settings"
-          aria-label="Settings"
-          title={`Settings (${formatShortcut(bindingFor(settings.shortcuts, "settings.toggle"))})`}
-        >
-          <Settings aria-hidden="true" />
-        </button>
+        <div className="titlebar-tools">
+          <IconButton
+            icon={Plug}
+            onClick={() => setShowConnectors((open) => !open)}
+            aria-expanded={showConnectors}
+            label="Connectors"
+            tooltip="Connectors: MCP servers, plugins, and skills"
+          />
+          <IconButton
+            icon={PANELS_ICON}
+            className="layout-toggle"
+            onClick={() => setEditingLayout((editing) => !editing)}
+            aria-pressed={editingLayout}
+            data-tour="layout"
+            label="Edit layout"
+            tooltip={editingLayout ? "Done editing the layout (Esc)" : "Edit layout"}
+          />
+          <IconButton
+            icon={Settings}
+            onClick={() => setShowSettings((open) => !open)}
+            aria-expanded={showSettings}
+            data-tour="settings"
+            label="Settings"
+            tooltip={`Settings (${formatShortcut(bindingFor(settings.shortcuts, "settings.toggle"))})`}
+          />
+        </div>
       </header>
       {showConnectors && <ConnectorsWindow client={client} onClose={() => setShowConnectors(false)} />}
       {showSettings && (

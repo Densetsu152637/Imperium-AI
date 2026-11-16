@@ -1,12 +1,29 @@
 // Which windows and modes lie over the workspace: Settings, Connectors, the model dialog, an
 // environment's window, and the panel editor. Two keys close or open them (App.tsx draws them).
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type RefObject } from "react";
 
 import type { ModelDialogTarget } from "../models/ModelConfigDialog";
 import type { AppSettings } from "../settings/settings";
 import { isCapturing, triggers } from "../settings/shortcuts";
 import { anyModalOpen } from "../tour/tourSteps";
+
+/**
+ * Gives the document keyboard focus once the app has rendered, so Ctrl+, and Ctrl+K work at launch
+ * without a click first. A web view starts with no focused element and, in some shells, without
+ * document focus; the window's key listeners only hear keys while the document has it. Focus moves
+ * to the app's root element (focusable, no ring), which also leaves Tab starting at the title bar.
+ * An already focused element, such as an autofocused field, keeps its focus.
+ */
+export function useLaunchFocus(root: RefObject<HTMLElement | null>): void {
+  useEffect(() => {
+    // Ask for document focus whatever is focused: an autofocused field has focus within a document that has none.
+    window.focus();
+    const element = root.current;
+    const idle = !document.activeElement || document.activeElement === document.body || document.activeElement === document.documentElement;
+    if (element && idle) element.focus({ preventScroll: true });
+  }, [root]);
+}
 
 export function useWindows(isDetached: boolean, shortcuts: AppSettings["shortcuts"]) {
   /** The environment window: which environment it edits (null id: a new one). */

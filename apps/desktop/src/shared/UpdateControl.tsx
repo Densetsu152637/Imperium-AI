@@ -7,6 +7,8 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { Badge } from "../components/Badge";
+import { Notice } from "../components/Notice";
 import { Row, RowNote } from "../components/SettingsRow";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
@@ -143,7 +145,7 @@ export function UpdateControl({ updates, onOpen }: { updates: Updates | null; on
       )}
       <button className="ghost update-version" onClick={onOpen} title="Updates">
         v{status.current_version}
-        {status.channel === "experimental" && <span className="channel-tag">experimental</span>}
+        {status.channel === "experimental" && <Badge tone="accent">experimental</Badge>}
       </button>
     </>
   );
@@ -191,7 +193,7 @@ export function UpdateSettings({
             <RotateCw aria-hidden="true" /> Restart to update
           </button>
         )}
-        {updates.error && <p className="error">{updates.error}</p>}
+        {updates.error && <Notice tone="danger">{updates.error}</Notice>}
       </RowNote>
       <Row label="Update channel" description={channelHint}>
         <Select

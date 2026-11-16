@@ -1,14 +1,17 @@
-/* style-budget: colour=1 font-size=10 font-weight=4 radius=2 shadow=0 duration=0 z-index=0 */
+/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The sidebar: environment and session rows, session search, groups, archived sessions and project icons. */
 
-/* Lists: rounded rows that tint on hover; the current one gets an accent trim. */
+/* Lists: rows that tint on hover; the current one sits on the accent wash. Every navigation row is
+   --row-h tall at every density, with its leading mark (a project tile or a status dot) in one
+   --nav-lead column, so session rows line up with environment rows. */
 .list {
+  --nav-lead: calc(20 * var(--px));
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2 * var(--px));
 }
 
 .list button {
@@ -16,46 +19,45 @@
   text-align: left;
   display: flex;
   flex-direction: column;
-  padding: calc(var(--space) * 0.75) var(--space);
+  padding: var(--sp-1) var(--sp-2);
   background: transparent;
   border-color: transparent;
   box-shadow: none;
 }
 
 .list button:hover:not(:disabled) {
-  background: var(--hover);
+  background: var(--surface-hover);
   border-color: transparent;
 }
 
-.list button.selected {
-  background: var(--active);
+.list button:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.list button.selected,
+.list button.selected:hover:not(:disabled) {
+  background: var(--accent-soft);
   border-color: transparent;
-  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .list .name {
-  font-weight: 500;
+  font-weight: var(--fw-medium);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* Session titles sit a step below the base size so long titles fit the rail. */
-.sessions .list .name {
-  font-size: 0.875rem;
 }
 
 .list .detail {
-  font-size: 0.75rem;
-  color: var(--muted);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Project icons: a glyph on a coloured tile, and the picker that changes it */
+/* Project icons: a glyph on a coloured tile (the glyph colour is set with the tile's, from the TSX) */
 .project-icon {
-  --tile: calc(1.75rem * var(--space-scale, 1));
+  --tile: calc(26 * var(--px) * var(--space-scale));
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -63,12 +65,11 @@
   width: var(--tile);
   height: var(--tile);
   border-radius: var(--radius-sm);
-  color: #fff;
 }
 
 .project-icon.small {
-  --tile: 1.25rem;
-  border-radius: 6px;
+  --tile: calc(20 * var(--px));
+  border-radius: var(--radius-xs);
 }
 
 .project-icon svg {
@@ -81,11 +82,11 @@
   stroke-linejoin: round;
 }
 
-/* A list row: the main button and controls beside it. */
+/* A list row: the main button, with the "more" menu laid over its right end. */
 .list .row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: calc(var(--space) * 0.25);
   min-width: 0;
 }
 
@@ -94,189 +95,181 @@
   min-width: 0;
 }
 
-/* Environment and session rows: icon and title, a pin mark, and a "more" menu on the right. */
+/* Environment and session rows: a leading mark, the title, a pin mark, and (sessions) how long ago. */
 .list button.nav-row-main {
   flex-direction: row;
   align-items: center;
-  gap: calc(var(--space) * 0.75);
-  padding: calc(var(--space) * 0.5) calc(var(--space) * 0.75);
+  gap: var(--sp-2);
+  height: var(--row-h);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
 }
 
-.nav-row-main > .name {
+.nav-row-main .name {
   flex: 1;
   min-width: 0;
+  font-weight: var(--fw-regular);
 }
 
-.nav-row-text {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
+.nav-row-main.selected .name {
+  font-weight: var(--fw-medium);
 }
 
-.nav-row-text > .name {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
+.nav-row-main .project-icon {
+  --tile: var(--nav-lead);
+  border-radius: var(--radius-xs);
 }
 
-/* Session rows: one line, a status dot, the title, and how long ago; the rest is in the tooltip. */
-.list button.session-row-main {
-  flex-direction: row;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.3rem 0.6rem;
-}
-
-.session-row-main > .name {
-  flex: 1;
-  min-width: 0;
+/* Session rows: a status dot centred in the leading column, the title, and how long ago; the rest
+   is in the tooltip. */
+.session-row-main > .status-dot {
+  margin-inline: calc((var(--nav-lead) - 0.45rem) / 2);
 }
 
 .session-ago {
   flex: none;
-  font-size: 0.72rem;
-  color: var(--muted);
+  font-size: var(--fs-xs);
+  color: var(--text-subtle);
   font-variant-numeric: tabular-nums;
-}
-
-/* The time gives way to the "more" button on hover, so the row keeps its width. */
-.list .session-row:hover .session-ago,
-.list .session-row:focus-within .session-ago {
-  visibility: hidden;
-}
-
-.list .session-row .row-menu-button {
-  position: relative;
-  margin-left: -1.9rem;
-  pointer-events: none;
-}
-
-.list .session-row:hover .row-menu-button,
-.list .session-row:focus-within .row-menu-button,
-.list .session-row .row-menu-button.open {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.list .session-row:has(.selected):not(:hover, :focus-within) .row-menu-button:not(.open) {
-  opacity: 0;
-}
-
-@media (hover: none) {
-  .list .session-row .session-ago {
-    display: none;
-  }
-
-  .list .session-row .row-menu-button {
-    pointer-events: auto;
-  }
 }
 
 .session-rename {
   flex: 1;
   min-width: 0;
-  margin: 0.1rem 0;
-  padding: 0.2rem 0.5rem;
-  font: inherit;
-  font-size: 0.875rem;
+  margin: 0;
+  font-size: var(--fs-md);
 }
 
 .pin-mark {
   flex: none;
-  width: 0.8rem;
-  height: 0.8rem;
-  color: var(--accent);
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  color: var(--accent-text);
   transform: rotate(35deg);
 }
 
+/* The "more" menu: hidden until the row is hovered or holds focus (always shown on touch screens),
+   and it takes the place of the time or the pin mark while it shows. */
 .list button.row-menu-button {
-  width: 1.8rem;
-  height: 1.8rem;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
   padding: 0;
   flex: none;
   flex-direction: row;
   justify-content: center;
-  color: var(--muted);
+  color: var(--text-muted);
   opacity: 0;
-  transition: opacity var(--fast) var(--ease);
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.list .nav-row .row-menu-button {
+  position: absolute;
+  inset-block: 0;
+  right: var(--sp-1);
+  margin-block: auto;
 }
 
 .list .row:hover .row-menu-button,
 .list .row:focus-within .row-menu-button,
-.list button.row-menu-button.open,
-.list .row:has(.selected) .row-menu-button {
+.list button.row-menu-button.open {
   opacity: 1;
-}
-
-@media (hover: none) {
-  .list button.row-menu-button {
-    opacity: 1;
-  }
 }
 
 .list button.row-menu-button:hover:not(:disabled) {
   color: var(--text);
 }
 
+.list .row:hover .session-ago,
+.list .row:focus-within .session-ago,
+.list .row:has(.row-menu-button.open) .session-ago,
+.environments .row:hover .pin-mark,
+.environments .row:focus-within .pin-mark,
+.environments .row:has(.row-menu-button.open) .pin-mark {
+  visibility: hidden;
+}
+
+@media (hover: none) {
+  .list button.row-menu-button {
+    opacity: 1;
+  }
+
+  .list .session-row .session-ago {
+    display: none;
+  }
+}
+
 /* Session search: a box above the sessions; its results replace the list while a query is entered. */
 .session-search {
-  margin: 0 calc(var(--space) * 0.5) calc(var(--space) * 0.75);
+  margin: 0 0 var(--sp-2);
 }
 
 .session-search-box {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0 0.5rem;
-  border: 1px solid var(--border);
+  gap: var(--sp-2);
+  height: var(--control-h);
+  padding: 0 var(--sp-1) 0 var(--sp-2);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-sm);
-  background: var(--panel);
+  background: var(--surface-sunken);
 }
 
-.session-search-box:focus-within {
-  border-color: var(--accent);
+.session-search-box:hover {
+  border-color: var(--text-subtle);
+}
+
+.session-search-box:has(input:focus-visible) {
+  border-color: var(--focus);
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
 }
 
 .session-search-box .lucide {
-  width: 0.9rem;
-  height: 0.9rem;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
   flex: none;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .session-search-box input {
   flex: 1;
   min-width: 0;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
   border: none;
   background: transparent;
-  padding: 0.35rem 0;
-  font-size: 0.8rem;
+  box-shadow: none;
+  font-size: var(--fs-md);
+}
+
+.session-search-box input:focus-visible {
   outline: none;
 }
 
-.session-search-box button.icon {
-  padding: 0.1rem;
-  border: none;
-  background: transparent;
+/* The clear button is ours; the engine's own would be a second one. */
+.session-search-box input::-webkit-search-cancel-button {
+  appearance: none;
 }
 
 .session-search-results {
-  margin-top: calc(var(--space) * 0.5);
+  margin-top: var(--sp-2);
 }
 
 .session-search-results .search-hit {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 0.15rem;
+  gap: var(--sp-1);
+  padding-block: var(--sp-2);
   text-align: left;
 }
 
 .search-snippet {
-  font-size: 0.75rem;
-  line-height: 1.4;
-  color: var(--fg);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--text);
   overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -287,16 +280,15 @@
 .search-snippet mark {
   background: var(--accent-soft);
   color: inherit;
-  border-radius: 2px;
-  padding: 0 1px;
+  border-radius: var(--radius-xs);
+  padding: 0 calc(1 * var(--px));
 }
 
 /* Sessions: a sort control, then the sessions, under headings when grouped. */
 .sessions-toolbar {
   display: flex;
   align-items: center;
-  gap: calc(var(--space) * 0.5);
-  margin: 0 calc(var(--space) * 0.5) calc(var(--space) * 0.75);
+  gap: var(--sp-2);
 }
 
 .sessions-toolbar .sessions-scope {
@@ -308,31 +300,34 @@
 }
 
 button.select.sessions-sort {
-  min-width: 0;
+  min-width: var(--control-h-sm);
+  height: var(--control-h-sm);
   width: auto;
-  font-size: 0.75rem;
+  font-size: var(--fs-sm);
   border-color: var(--border);
 }
 
 .session-group + .session-group {
-  margin-top: calc(var(--space) * 0.75);
+  margin-top: var(--sp-2);
 }
 
 .session-group-label {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  margin: 0 calc(var(--space) * 0.5) calc(var(--space) * 0.25);
-  font-size: 0.7rem;
-  font-weight: 600;
+  gap: var(--sp-1);
+  height: var(--control-h-sm);
+  margin: 0;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
+  letter-spacing: var(--tracking-caps);
+  color: var(--text-muted);
 }
 
 .session-group-count {
-  font-weight: 500;
-  opacity: 0.8;
+  font-weight: var(--fw-medium);
+  color: var(--text-subtle);
 }
 
 /* The list fills the panel so Archived can sit at its foot, apart from active sessions. */
@@ -347,11 +342,11 @@ button.select.sessions-sort {
 .archived-sessions {
   margin-top: auto;
   border-top: 1px solid var(--border);
-  padding-top: calc(var(--space) * 0.5);
+  padding-top: var(--sp-1);
 }
 
 .sessions > :has(+ .archived-sessions) {
-  margin-bottom: var(--space);
+  margin-bottom: var(--sp-2);
 }
 
 .sessions > .session-group + .archived-sessions {
@@ -361,6 +356,11 @@ button.select.sessions-sort {
 .archived-sessions > summary {
   cursor: pointer;
   list-style: none;
+  border-radius: var(--radius-sm);
+}
+
+.archived-sessions > summary:hover {
+  background: var(--surface-hover);
 }
 
 .archived-sessions > summary::-webkit-details-marker {
@@ -368,8 +368,8 @@ button.select.sessions-sort {
 }
 
 .archived-sessions > summary .lucide {
-  width: 0.85rem;
-  height: 0.85rem;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 
 .archived-sessions .row-main {
@@ -381,16 +381,18 @@ button.select.sessions-sort {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space);
+  gap: var(--sp-2);
   flex: none;
-  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
+  width: calc(100% - var(--session-gutter, var(--sp-5)) * 2);
   max-width: var(--prose-max);
-  margin: 0 auto var(--space);
-  padding: 0.5rem 0.75rem;
-  border: 1px dashed var(--border-strong, var(--border));
+  margin: 0 auto var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-size: 0.85rem;
-  color: var(--muted);
+  background: var(--surface-sunken);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--text-muted);
 }
 
 /* Sessions list: global, or one environment's with a way back */
@@ -398,31 +400,33 @@ button.select.sessions-sort {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: calc(var(--space) * 0.5) var(--space);
-  margin: 0 calc(var(--space) * 0.5) var(--space);
-  padding-bottom: var(--space);
+  gap: var(--sp-1) var(--sp-2);
+  margin: 0 0 var(--sp-2);
+  padding-bottom: var(--sp-2);
   border-bottom: 1px solid var(--border);
 }
 
 .sessions-scope .back {
-  font-size: 0.8rem;
-  padding: 0.2rem 0.6rem;
+  height: var(--control-h-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
   background: transparent;
   box-shadow: none;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .sessions-scope .back:hover:not(:disabled) {
-  background: var(--hover);
+  background: var(--surface-hover);
   color: var(--text);
 }
 
 .scope-name {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--sp-2);
   min-width: 0;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
 }
 
 .scope-name > span:last-child {
@@ -434,9 +438,8 @@ button.select.sessions-sort {
 .list .row-meta {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--sp-2);
   min-width: 0;
-  margin-top: 0.15rem;
 }
 
 .list .row-meta .badge {
@@ -451,6 +454,6 @@ button.select.sessions-sort {
 }
 
 .list li.branch-row > .session-row {
-  margin-left: calc(var(--branch-depth, 1) * 0.9rem);
+  margin-left: calc(var(--branch-depth, 1) * var(--sp-3));
   border-left: 1px solid var(--border);
 }

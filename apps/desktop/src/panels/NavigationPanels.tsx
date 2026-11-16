@@ -12,6 +12,7 @@ import { useState, type KeyboardEvent } from "react";
 
 import type { EnvironmentInfo, SessionStatus } from "@imperium/protocol";
 
+import { EmptyState } from "../components/EmptyState";
 import { Menu } from "../components/Menu";
 import { environmentById } from "../environments/byId";
 import { Select } from "../components/Select";
@@ -67,9 +68,11 @@ export function EnvironmentsPanel({
   if (environments.length === 0) {
     return (
       <div className="environments">
-        <p className="empty">
-          {connected ? "No environments yet. Use + (New environment) above to make one." : "No environments known yet."}
-        </p>
+        <EmptyState
+          icon={FolderOpen}
+          title={connected ? "No environments yet" : "No environments known yet"}
+          body={connected ? "Use + (New environment) above to make one." : undefined}
+        />
       </div>
     );
   }
@@ -296,7 +299,7 @@ export function SessionsPanel({
             />
           ) : (
             <button
-              className={`row-main session-row-main${id === selected ? " selected" : ""}`}
+              className={`row-main nav-row-main session-row-main${id === selected ? " selected" : ""}`}
               aria-current={id === selected ? "true" : undefined}
               title={hover}
               onClick={() => onSelect(id)}
@@ -369,7 +372,7 @@ export function SessionsPanel({
         />
       )}
       {searching ? null : active.length === 0 ? (
-        <p className="empty">{scope ? "No sessions in this environment." : "No sessions yet."}</p>
+        <EmptyState title={scope ? "No sessions in this environment" : "No sessions yet"} body="Start one with + (New session) above." />
       ) : (
         groups.map((group) => (
           <section key={group.key} className="session-group" aria-label={group.label ?? undefined}>
