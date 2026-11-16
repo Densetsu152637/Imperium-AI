@@ -25,26 +25,30 @@ use imperium_protocol::methods::{LeaseInfo, LeaseKind, LifetimeMode, LifetimeSta
 /// How long a shared daemon waits with no lease and no work unless told otherwise. Long enough
 /// that one command after another reuses the daemon.
 pub(crate) const DEFAULT_GRACE: Duration = Duration::from_secs(10);
-/// How much later than a lease was taken its process may have started, in seconds, for clock
-/// rounding; a process that started after that is a new one under a reused process id.
+/// How far a process's start time may differ from the one recorded when its lease was taken, in
+/// seconds, for rounding; a process that differs by more is another one under a reused id.
 const START_SLACK_SECS: u64 = 2;
 const LABEL_CHARS: usize = 120;
 
-/// Whether the process `pid` is running and is the one that took a lease at `since_unix`
-/// (Unix seconds): one that started later reuses the id of a process that is gone.
-pub(crate) fn process_alive(pid: u32, since_unix: u64) -> bool {
+/// When the process `pid` started (Unix seconds, as the process table says), or `None` when it
+/// is gone or a zombie. Only ever compared with an earlier reading of the same table, never
+/// with this machine's clock.
+pub(crate) fn process_start(pid: u32) -> Option<u64> {
     let pid = sysinfo::Pid::from_u32(pid);
     let mut system = sysinfo::System::new();
     system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-    system.process(pid).is_some_and(|process| {
-        !matches!(
-            process.status(),
-            sysinfo::ProcessStatus::Zombie | sysinfo::ProcessStatus::Dead
-        ) && process.start_time() <= since_unix.saturating_add(START_SLACK_SECS)
-    })
+    system
+        .process(pid)
+        .filter(|process| {
+            !matches!(
+                process.status(),
+                sysinfo::ProcessStatus::Zombie | sysinfo::ProcessStatus::Dead
+            )
+        })
+        .map(sysinfo::Process::start_time)
 }
 
-type Probe = Arc<dyn Fn(u32, u64) -> bool + Send + Sync>;
+type Probe = Arc<dyn Fn(u32) -> Option<u64> + Send + Sync>;
 
 #[derive(Debug)]
 pub(crate) struct Lifetime {
@@ -67,6 +71,8 @@ struct Inner {
     persistent: bool,
     grace: Duration,
     leases: BTreeMap<u64, Lease>,
+    /// Long jobs in progress, by id (see [`Lifetime::begin_job`]).
+    jobs: BTreeMap<u64, String>,
     next_id: u64,
     /// When the daemon last found itself with no lease and no work.
     idle_since: Option<Instant>,
@@ -80,7 +86,8 @@ struct Lease {
     pid: Option<u32>,
     label: String,
     since: Instant,
-    since_unix: u64,
+    /// The process's start time when the lease was taken (`None`: the table did not show it).
+    started: Option<u64>,
 }
 
 /// Why a lease was refused: the daemon is exiting.
@@ -100,6 +107,19 @@ impl LeaseGuard {
     }
 }
 
+/// A long job in progress; ends when dropped.
+#[derive(Debug)]
+pub(crate) struct JobGuard {
+    lifetime: Arc<Lifetime>,
+    id: u64,
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        self.lifetime.lock().jobs.remove(&self.id);
+    }
+}
+
 impl Drop for LeaseGuard {
     fn drop(&mut self) {
         self.lifetime.lock().leases.remove(&self.id);
@@ -114,6 +134,7 @@ impl Lifetime {
                 persistent: true,
                 grace: DEFAULT_GRACE,
                 leases: BTreeMap::new(),
+                jobs: BTreeMap::new(),
                 next_id: 1,
                 idle_since: None,
                 exiting: false,
@@ -165,6 +186,9 @@ impl Lifetime {
         pid: Option<u32>,
         label: &str,
     ) -> Result<LeaseGuard, Exiting> {
+        let pid = pid.filter(|pid| *pid != 0);
+        // Read before the lock is taken: it asks the operating system.
+        let started = pid.and_then(|pid| self.start_of(pid));
         let mut inner = self.lock();
         if inner.exiting {
             return Err(Exiting);
@@ -175,14 +199,14 @@ impl Lifetime {
             id,
             Lease {
                 kind,
-                pid: pid.filter(|pid| *pid != 0),
+                pid,
                 label: label
                     .chars()
                     .filter(|c| !c.is_control())
                     .take(LABEL_CHARS)
                     .collect(),
                 since: Instant::now(),
-                since_unix: imperium_api::time::unix_secs(),
+                started,
             },
         );
         inner.idle_since = None;
@@ -195,26 +219,67 @@ impl Lifetime {
     /// Ends the leases whose process is gone; returns what they were doing. The process table
     /// is read without the lock held.
     pub(crate) fn reap(&self) -> Vec<String> {
-        let candidates: Vec<(u64, u32, u64)> = self
+        let candidates: Vec<(u64, u32, Option<u64>)> = self
             .lock()
             .leases
             .iter()
-            .filter_map(|(id, lease)| Some((*id, lease.pid?, lease.since_unix)))
+            .filter_map(|(id, lease)| Some((*id, lease.pid?, lease.started)))
             .collect();
-        let probe = self.probe.get().map(|probe| Arc::clone(&probe.0));
-        let dead: Vec<u64> = candidates
-            .into_iter()
-            .filter(|(_, pid, since)| match &probe {
-                Some(probe) => !probe(*pid, *since),
-                None => !process_alive(*pid, *since),
-            })
-            .map(|(id, ..)| id)
-            .collect();
+        let mut dead = Vec::new();
+        let mut learned = Vec::new();
+        for (id, pid, recorded) in candidates {
+            match (self.start_of(pid), recorded) {
+                // Gone.
+                (None, _) => dead.push(id),
+                // Another process under the same id.
+                (Some(now), Some(then)) if now.abs_diff(then) > START_SLACK_SECS => dead.push(id),
+                // The table did not show it when the lease was taken; it does now.
+                (Some(now), None) => learned.push((id, now)),
+                (Some(_), Some(_)) => {}
+            }
+        }
         let mut inner = self.lock();
+        for (id, started) in learned {
+            if let Some(lease) = inner.leases.get_mut(&id) {
+                lease.started = Some(started);
+            }
+        }
         dead.into_iter()
             .filter_map(|id| inner.leases.remove(&id))
             .map(|lease| lease.label)
             .collect()
+    }
+
+    /// When `pid` started, from the process table or the fake in tests.
+    fn start_of(&self, pid: u32) -> Option<u64> {
+        match self.probe.get() {
+            Some(probe) => (probe.0)(pid),
+            None => process_start(pid),
+        }
+    }
+
+    /// Ends the daemon's willingness to take leases: it is being stopped.
+    pub(crate) fn mark_exiting(&self) {
+        self.lock().exiting = true;
+    }
+
+    /// Records a long job the daemon runs on its own (a folder move); it holds the daemon up
+    /// until the guard is dropped.
+    pub(crate) fn begin_job(self: &Arc<Self>, label: &str) -> JobGuard {
+        let mut inner = self.lock();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.jobs.insert(id, label.to_string());
+        inner.idle_since = None;
+        JobGuard {
+            lifetime: Arc::clone(self),
+            id,
+        }
+    }
+
+    /// The jobs `begin_job` recorded.
+    pub(crate) fn jobs(&self) -> Vec<String> {
+        self.lock().jobs.values().cloned().collect()
     }
 
     /// One look at the daemon: returns true when it should exit now, once. `work` says whether
@@ -421,15 +486,19 @@ mod tests {
     #[test]
     fn a_lease_whose_process_is_gone_is_reaped() {
         let lifetime = shared();
-        let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let seen = Arc::clone(&alive);
-        lifetime.use_probe(Arc::new(move |_, _| {
-            seen.load(std::sync::atomic::Ordering::SeqCst)
+        // The fake process table: the start time of process 7, or none once it is gone.
+        let start = Arc::new(std::sync::atomic::AtomicU64::new(1_000));
+        let seen = Arc::clone(&start);
+        lifetime.use_probe(Arc::new(move |_| {
+            match seen.load(std::sync::atomic::Ordering::SeqCst) {
+                0 => None,
+                started => Some(started),
+            }
         }));
         let _with_pid = lease(&lifetime, Some(7));
         let _without = lease(&lifetime, None);
         assert!(lifetime.reap().is_empty());
-        alive.store(false, std::sync::atomic::Ordering::SeqCst);
+        start.store(0, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(lifetime.reap(), ["imperium chat"]);
         let status = lifetime.snapshot(Instant::now(), Vec::new());
         assert_eq!(
@@ -459,21 +528,35 @@ mod tests {
     }
 
     #[test]
+    fn a_reused_process_id_is_told_by_its_start_time_not_the_wall_clock() {
+        let lifetime = shared();
+        let start = Arc::new(std::sync::atomic::AtomicU64::new(5_000));
+        let seen = Arc::clone(&start);
+        lifetime.use_probe(Arc::new(move |_| {
+            Some(seen.load(std::sync::atomic::Ordering::SeqCst))
+        }));
+        let _held = lease(&lifetime, Some(7));
+        // A table clock that disagrees with this machine's by years changes nothing, and a
+        // reading within the slack is the same process.
+        start.store(5_002, std::sync::atomic::Ordering::SeqCst);
+        assert!(lifetime.reap().is_empty());
+        // Another process under the id: its start time is shifted past the slack.
+        start.store(9_000, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(lifetime.reap(), ["imperium chat"]);
+    }
+
+    #[test]
     fn the_process_table_tells_a_live_process_from_a_dead_one() {
-        let now = imperium_api::time::unix_secs();
-        assert!(process_alive(std::process::id(), now));
+        let own = process_start(std::process::id()).expect("this process is in the table");
+        assert!(own > 0);
         let mut child = child();
         let pid = child.id();
         // Give the process table a moment to show a new process.
         std::thread::sleep(Duration::from_millis(300));
-        assert!(process_alive(pid, now));
-        assert!(
-            !process_alive(pid, now.saturating_sub(3600)),
-            "a process that started after the lease is another one with a reused id"
-        );
+        assert!(process_start(pid).is_some());
         child.kill().expect("end the child");
         child.wait().expect("reap the child");
         std::thread::sleep(Duration::from_millis(200));
-        assert!(!process_alive(pid, now));
+        assert_eq!(process_start(pid), None);
     }
 }
