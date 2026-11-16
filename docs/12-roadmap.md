@@ -620,7 +620,6 @@ and `environments.agent_update` (protocol 0.28)
     protocol, Rust or mod-contract change. The audit, tokens, stages and open questions are in the
     [interface polish plan](plans/ui-polish.md).
 
-<!-- markdownlint-disable-next-line MD029 -->
 48. **Custom agent files** (implemented). User-defined subagents in Claude Code's format: Markdown
     with YAML front matter (`name`, `description`, optional `tools` and `model`; the body is the
     agent's instructions) from plugins' `agents/`, the user's `<config>/agents/` and a trusted
