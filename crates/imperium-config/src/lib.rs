@@ -15,6 +15,7 @@
 mod budgets;
 mod endpoints;
 mod environment;
+mod extension_dirs;
 mod layers;
 mod local_models;
 mod mcp_servers;
@@ -31,6 +32,7 @@ pub use budgets::{
 };
 pub use endpoints::{save_endpoint, valid_endpoint_id};
 pub use environment::{ENVIRONMENT_CONFIG_FILES, EnvironmentConfig, EnvironmentSettings};
+pub use extension_dirs::extension_dirs;
 pub use layers::{
     Config, ConfigError, Explained, Layer, Source, load, load_layers, replace_app_layer,
 };

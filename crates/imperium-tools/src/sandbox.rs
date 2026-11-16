@@ -35,6 +35,20 @@ pub enum Sandbox {
 }
 
 impl Sandbox {
+    /// The sandbox of the isolation tier `tier` (`os`, `container`; anything else is the policy
+    /// tier), with the container runtime and image the container tier uses.
+    pub fn for_tier(tier: &str, network: bool, runtime: &str, image: &str) -> Sandbox {
+        match tier {
+            "os" => Sandbox::Os { network },
+            "container" => Sandbox::Container {
+                runtime: runtime.to_string(),
+                image: image.to_string(),
+                network,
+            },
+            _ => Sandbox::Policy,
+        }
+    }
+
     /// A short label for the interface, such as `tier 2 · container ubuntu:24.04`.
     pub fn label(&self) -> String {
         match self {

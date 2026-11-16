@@ -170,12 +170,9 @@ struct Placement {
 /// plugin, so a write there is always asked about.
 fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     use imperium_policy::permissions::protect_dir;
-    protect_dir(&paths.config_dir().join("mods"));
-    protect_dir(&paths.config_dir().join("plugins"));
-    // Pinned policy packs: agents read their files as instructions, so a write is always asked.
-    protect_dir(&paths.data_dir().join("packs"));
-    for dir in &settings.extensions.plugin_dirs {
-        protect_dir(dir);
+    // Pinned policy packs are among them: agents read their files as instructions.
+    for dir in imperium_config::extension_dirs(paths, settings) {
+        protect_dir(&dir);
     }
 }
 
@@ -1069,17 +1066,12 @@ impl DaemonState {
 
 /// The isolation tier commands run under, from `[isolation]`.
 fn sandbox_for(isolation: &IsolationSettings) -> Sandbox {
-    match isolation.tier.as_str() {
-        "os" => Sandbox::Os {
-            network: isolation.network,
-        },
-        "container" => Sandbox::Container {
-            runtime: isolation.container_runtime.clone(),
-            image: isolation.container_image.clone(),
-            network: isolation.network,
-        },
-        _ => Sandbox::Policy,
-    }
+    Sandbox::for_tier(
+        &isolation.tier,
+        isolation.network,
+        &isolation.container_runtime,
+        &isolation.container_image,
+    )
 }
 
 /// Instructions an environment's own configuration adds, framed as the repository's data: the
