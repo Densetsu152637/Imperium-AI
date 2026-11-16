@@ -183,11 +183,28 @@ impl Agent {
         let confined = crate::model::effective_location(&self.shared.routing, request(None));
         let location_ok =
             |local: bool| confined.is_none_or(|wanted| (wanted == Location::Local) == local);
+        // The tier is a floor only when the call (or a rule) sets one: the default is not a
+        // requirement the file's model must meet.
+        let fit_tier = if args.tier.is_some() {
+            tier
+        } else {
+            Tier::Basic
+        };
+        let fit_request = || {
+            task_request(
+                None,
+                fit_tier,
+                location,
+                &tags,
+                &session_id,
+                args.single_call,
+            )
+        };
         let mut file_notes = Vec::new();
         if let Some(def) = &named_def {
             if inherit_model {
                 let fits = self
-                    .row_fits(&self.model.spec, request(None))
+                    .row_fits(&self.model.spec, fit_request())
                     .unwrap_or_else(|| location_ok(self.model.local));
                 if fits {
                     routed.model = self.model.clone();
@@ -212,7 +229,7 @@ impl Agent {
                         def.name
                     ));
                 } else if !self
-                    .row_fits(&routed.model.spec, request(None))
+                    .row_fits(&routed.model.spec, fit_request())
                     .unwrap_or_else(|| location_ok(routed.model.local))
                 {
                     file_notes.push(format!(
