@@ -200,16 +200,22 @@ async fn wait_for_stop(mut signal: watch::Receiver<bool>) {
 fn exit_when_idle(args: impl IntoIterator<Item = String>) -> anyhow::Result<Option<Duration>> {
     let mut grace = None;
     for arg in args {
-        match arg.strip_prefix("--exit-when-idle") {
-            Some("") => grace = Some(IDLE_GRACE),
-            Some(seconds) if seconds.starts_with('=') => {
-                let seconds: u64 = seconds[1..].parse().with_context(|| {
-                    format!("{arg}: the grace period is a whole number of seconds")
-                })?;
-                grace = Some(Duration::from_secs(seconds.max(1)));
+        let seconds = match arg.strip_prefix("--exit-when-idle") {
+            Some("") => {
+                grace = Some(IDLE_GRACE);
+                continue;
             }
-            _ => tracing::warn!(%arg, "ignoring an argument imperium-core does not take"),
-        }
+            Some(rest) => rest.strip_prefix('='),
+            None => None,
+        };
+        let Some(seconds) = seconds else {
+            tracing::warn!(%arg, "ignoring an argument imperium-core does not take");
+            continue;
+        };
+        let seconds: u64 = seconds
+            .parse()
+            .with_context(|| format!("{arg}: the grace period is a whole number of seconds"))?;
+        grace = Some(Duration::from_secs(seconds.max(1)));
     }
     Ok(grace)
 }

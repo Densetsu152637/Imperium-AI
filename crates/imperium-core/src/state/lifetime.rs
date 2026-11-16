@@ -132,7 +132,7 @@ impl DaemonState {
                 env.agents
                     .iter()
                     .filter(|agent| agent.initiative != Initiative::Off)
-                    .map(|agent| format!("{}/{}", env.name, agent.name))
+                    .map(move |agent| format!("{}/{}", env.name, agent.name))
             })
             .collect();
         found.extend(work(WorkKind::Initiative, &agents));

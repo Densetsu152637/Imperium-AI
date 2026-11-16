@@ -71,7 +71,7 @@ impl Launch {
             let mut command = Command::new(&self.program);
             command
                 .args(&self.args)
-                .envs(self.envs.iter().map(|(key, value)| (key, value)))
+                .envs(self.envs.iter().cloned())
                 .stdin(Stdio::null())
                 .stdout(Stdio::null());
             match &self.log {
@@ -153,7 +153,7 @@ pub struct LeaseRequest {
 }
 
 enum Attempt {
-    Attached(Client, DaemonEndpoint),
+    Attached(Box<Client>, DaemonEndpoint),
     /// No daemon answers, or the one that did is going away.
     NotUp(ClientError),
     /// Something a new daemon would not fix, such as an incompatible protocol.
@@ -186,7 +186,7 @@ async fn attempt(endpoint_file: &Path, peer: &Peer, lease: Option<&LeaseRequest>
             Err(error) => return Attempt::Failed(error),
         }
     }
-    Attempt::Attached(client, endpoint)
+    Attempt::Attached(Box::new(client), endpoint)
 }
 
 fn is_stopping(error: &ClientError) -> bool {
@@ -204,7 +204,7 @@ pub async fn attach(
     launch: Option<&Launch>,
 ) -> Result<(Client, DaemonEndpoint), ClientError> {
     let mut last = match attempt(endpoint_file, &peer, lease.as_ref()).await {
-        Attempt::Attached(client, endpoint) => return Ok((client, endpoint)),
+        Attempt::Attached(client, endpoint) => return Ok((*client, endpoint)),
         Attempt::Failed(error) => return Err(error),
         Attempt::NotUp(error) => error,
     };
@@ -225,7 +225,7 @@ pub async fn attach(
         }
         tokio::time::sleep(POLL).await;
         match attempt(endpoint_file, &peer, lease.as_ref()).await {
-            Attempt::Attached(client, endpoint) => return Ok((client, endpoint)),
+            Attempt::Attached(client, endpoint) => return Ok((*client, endpoint)),
             Attempt::Failed(error) => return Err(error),
             Attempt::NotUp(error) => last = error,
         }
