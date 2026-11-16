@@ -1572,24 +1572,6 @@ button.task-open:hover {
   font-family: var(--font-prose, var(--font-ui));
 }
 
-.tool-icon {
-  width: 1em;
-  height: 1em;
-  vertical-align: -0.15em;
-}
-
-.tool-icon.ok {
-  color: var(--ok);
-}
-
-.tool-icon.failed {
-  color: var(--danger);
-}
-
-.tool-icon.spin {
-  color: var(--muted);
-}
-
 .budget-mark {
   display: inline-flex;
   align-items: center;
@@ -1622,11 +1604,6 @@ button.task-open:hover {
   width: 2.25rem;
   height: 2.25rem;
   border-radius: 50%;
-}
-
-.composer .composer-tool svg {
-  width: 1.1rem;
-  height: 1.1rem;
 }
 
 .composer .mic.recording {

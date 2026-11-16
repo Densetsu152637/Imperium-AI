@@ -294,6 +294,24 @@ button.row-tool:focus-visible {
   animation: spin 0.9s linear infinite;
 }
 
+.tool-icon {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
+}
+
+.tool-icon.ok {
+  color: var(--ok);
+}
+
+.tool-icon.failed {
+  color: var(--danger);
+}
+
+.tool-icon.spin {
+  color: var(--muted);
+}
+
 .field {
   padding: 0.4rem 0.65rem;
   background: var(--bg);
@@ -452,6 +470,18 @@ button.select.open .select-chevron {
 
 .budget-number {
   width: 5rem;
+}
+
+.panel-grip {
+  flex: none;
+  width: 0.9rem;
+  height: 0.9rem;
+  color: var(--muted);
+}
+
+.composer .composer-tool svg {
+  width: 1.1rem;
+  height: 1.1rem;
 }
 
 .attachment-chip button {

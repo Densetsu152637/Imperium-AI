@@ -655,13 +655,6 @@ button.icon-only.panel-tool .lucide {
   justify-content: flex-start;
 }
 
-.panel-grip {
-  flex: none;
-  width: 0.9rem;
-  height: 0.9rem;
-  color: var(--muted);
-}
-
 .panel.drag-source {
   opacity: 0.4;
 }
