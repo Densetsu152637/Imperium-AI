@@ -36,30 +36,29 @@ impl Connection {
                     Ok(run.result(session.project_dir()))
                 })
             }
-            SessionPromptPreview::NAME => match self.eval_forbidden() {
-                Err(error) => Err(error),
-                Ok(()) => call_later::<SessionPromptPreview, _>(
-                    c.params.take(),
-                    c.later,
-                    |params: SessionEvalCreateParams| {
-                        let state = Arc::clone(&self.state);
-                        async move {
-                            let prepared = crate::eval::Prepared::new(&params.options, true)
-                                .map_err(|message| {
-                                    ErrorObject::new(codes::INVALID_PARAMS, message)
-                                })?;
-                            state
-                                .prompt_preview(
-                                    params.environment_id.as_deref(),
-                                    params.project_dir.as_deref(),
-                                    Arc::new(prepared),
-                                )
-                                .await
-                                .map_err(|message| ErrorObject::new(codes::INTERNAL_ERROR, message))
+            SessionPromptPreview::NAME => call_later::<SessionPromptPreview, _>(
+                c.params.take(),
+                c.later,
+                |params: SessionEvalCreateParams| {
+                    let state = Arc::clone(&self.state);
+                    let forbidden = self.eval_forbidden().err();
+                    async move {
+                        if let Some(error) = forbidden {
+                            return Err(error);
                         }
-                    },
-                ),
-            },
+                        let prepared = crate::eval::Prepared::new(&params.options, true)
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+                        state
+                            .prompt_preview(
+                                params.environment_id.as_deref(),
+                                params.project_dir.as_deref(),
+                                Arc::new(prepared),
+                            )
+                            .await
+                            .map_err(|message| ErrorObject::new(codes::INTERNAL_ERROR, message))
+                    }
+                },
+            ),
             SessionControl::NAME => {
                 call_later::<SessionControl, _>(c.params.take(), c.later, |params| {
                     self.control(params)

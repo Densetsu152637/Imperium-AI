@@ -17,6 +17,7 @@ use imperium_protocol::discovery::DaemonEndpoint;
 use imperium_protocol::jsonrpc::codes;
 use imperium_protocol::methods::{
     EvalModel, EvalOptions, EvalVariant, Peer, SessionEvalCreate, SessionEvalCreateParams,
+    SessionPromptPreview,
 };
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -865,6 +866,14 @@ async fn only_the_imperium_command_may_start_an_evaluation_session() {
     let mut other = daemon.client_named("imperium-desktop").await;
     let error = other
         .call::<SessionEvalCreate>(eval_params(workspace.path()))
+        .await
+        .unwrap_err();
+    match error {
+        imperium_cli::client::ClientError::Rpc(error) => assert_eq!(error.code, codes::FORBIDDEN),
+        other => panic!("expected an RPC error, got {other:?}"),
+    }
+    let error = other
+        .call::<SessionPromptPreview>(eval_params(workspace.path()))
         .await
         .unwrap_err();
     match error {

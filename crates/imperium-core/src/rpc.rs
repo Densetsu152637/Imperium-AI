@@ -559,9 +559,9 @@ mod tests {
         };
         let methods = [
             (SessionEvalCreate::NAME, eval.clone()),
-            (SessionPromptPreview::NAME, eval.clone()),
             (SessionEvalResult::NAME, json!({"session_id": "x"})),
         ];
+        // (`session.prompt_preview` answers later; the command-level test covers it.)
         // Another full-token client.
         let mut other = connection();
         other.handle_text(&request(1, Handshake::NAME, named("imperium-desktop")));
@@ -582,7 +582,7 @@ mod tests {
         // The command itself is let in (here only as far as the missing session).
         let mut cli = connection();
         cli.handle_text(&request(1, Handshake::NAME, named("imperium-cli")));
-        let handled = cli.handle_text(&request(2, SessionEvalResult::NAME, methods[2].1.clone()));
+        let handled = cli.handle_text(&request(2, SessionEvalResult::NAME, methods[1].1.clone()));
         assert_eq!(error_code(&handled), Some(codes::INVALID_PARAMS));
     }
 
