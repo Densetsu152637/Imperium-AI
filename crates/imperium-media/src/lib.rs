@@ -3,12 +3,15 @@
 //! OpenAI-compatible transcription API (LocalAI, whisper.cpp front-ends, or hosted services).
 //! Results are files in the project's `media/` folder with a provenance file beside each.
 
+#![warn(unreachable_pub)]
+
+pub mod attachments;
 pub mod image;
 mod tools;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use imperium_api::ToolSpec;
 use serde_json::{Value, json};
@@ -54,14 +57,31 @@ pub enum MediaError {
     NotConfigured(&'static str),
     #[error("{0}")]
     Service(String),
+    /// The service answered with an HTTP error status.
+    #[error("{message}")]
+    Status { status: u16, message: String },
     #[error("{0}: {1}")]
     Io(String, std::io::Error),
     #[error("{0} must be a path inside the project")]
     Outside(String),
 }
 
+impl MediaError {
+    /// Whether the service refused the request (a 4xx status): the request was at fault, not
+    /// the service.
+    pub fn is_client_error(&self) -> bool {
+        matches!(self, MediaError::Status { status, .. } if (400..500).contains(status))
+    }
+}
+
 fn service_error(error: reqwest::Error) -> MediaError {
-    MediaError::Service(error.to_string())
+    match error.status() {
+        Some(status) => MediaError::Status {
+            status: status.as_u16(),
+            message: error.to_string(),
+        },
+        None => MediaError::Service(error.to_string()),
+    }
 }
 
 impl Media {
@@ -168,10 +188,9 @@ impl Media {
         root: &Path,
         path: &str,
     ) -> Result<String, MediaError> {
-        let service = self
-            .transcription
-            .as_ref()
-            .ok_or(MediaError::NotConfigured("transcription"))?;
+        if self.transcription.is_none() {
+            return Err(MediaError::NotConfigured("transcription"));
+        }
         let relative = Path::new(path);
         if relative
             .components()
@@ -181,12 +200,26 @@ impl Media {
         }
         let file = root.join(relative);
         let bytes = std::fs::read(&file).map_err(|error| MediaError::Io(path.into(), error))?;
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(
-            relative
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "audio".into()),
-        );
+        let name = relative
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "audio".into());
+        self.transcribe_bytes(http, bytes, &name).await
+    }
+
+    /// Transcribes recorded audio (push-to-talk); `file_name`'s extension tells the service
+    /// the format, such as `speech.webm`.
+    pub async fn transcribe_bytes(
+        &self,
+        http: &reqwest::Client,
+        bytes: Vec<u8>,
+        file_name: &str,
+    ) -> Result<String, MediaError> {
+        let service = self
+            .transcription
+            .as_ref()
+            .ok_or(MediaError::NotConfigured("transcription"))?;
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.to_string());
         let form = reqwest::multipart::Form::new()
             .text("model", service.model.clone())
             .part("file", part);
@@ -207,6 +240,18 @@ impl Media {
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| MediaError::Service("the transcription had no text".into()))
+    }
+}
+
+/// The file name a recording of `mime` is sent under, so the service knows its format.
+pub fn recording_name(mime: &str) -> &'static str {
+    let essence = mime.split(';').next().unwrap_or_default().trim();
+    match essence {
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "speech.wav",
+        "audio/ogg" => "speech.ogg",
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac" => "speech.m4a",
+        "audio/mpeg" | "audio/mp3" => "speech.mp3",
+        _ => "speech.webm",
     }
 }
 
@@ -240,9 +285,7 @@ fn save(
         .take(6)
         .collect::<Vec<_>>()
         .join("-");
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis());
+    let stamp = imperium_api::time::unix_ms();
     let dir = root.join("media");
     std::fs::create_dir_all(&dir)
         .map_err(|error| MediaError::Io(dir.display().to_string(), error))?;
@@ -254,7 +297,7 @@ fn save(
     std::fs::write(&path, bytes)
         .map_err(|error| MediaError::Io(path.display().to_string(), error))?;
     let mut provenance = provenance;
-    provenance["created_unix_ms"] = json!(stamp as u64);
+    provenance["created_unix_ms"] = json!(stamp);
     provenance["bytes"] = json!(bytes.len());
     let meta = dir.join(format!("{file_name}.json"));
     std::fs::write(

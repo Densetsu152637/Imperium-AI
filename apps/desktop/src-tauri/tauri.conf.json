@@ -1,27 +1,30 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Imperium",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "mainBinaryName": "imperium-desktop",
   "identifier": "io.github.densetsu152637.imperium",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm -w run build:mods && pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm -w run build:mods && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "Imperium",
         "width": 1440,
         "height": 900,
         "minWidth": 900,
-        "minHeight": 560
+        "minHeight": 560,
+        "backgroundColor": "#0b0c0e"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src imperium-mod: http://imperium-mod.localhost https://imperium-mod.localhost http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*"
     }
   },
   "bundle": {
@@ -37,7 +40,8 @@
     "createUpdaterArtifacts": false,
     "resources": {
       "../../../policy/": "policy/",
-      "../../../pets/": "pets/"
+      "../../../pets/": "pets/",
+      "mods/": "mods/"
     },
     "windows": {
       "nsis": {

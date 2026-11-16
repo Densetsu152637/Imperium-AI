@@ -1,14 +1,19 @@
 //! A session's MCP servers: starting them, listing their tools, and calling them.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use imperium_api::ToolSpec;
+use imperium_api::{Sampler, SamplingFuture, SamplingRequest, ToolSpec};
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 
-use crate::client::{Client, McpError, PROTOCOL_VERSION};
+use crate::client::{Client, McpError, PROTOCOL_VERSION, Sampling, TokenSource};
+use crate::extras::{self, ToolKind};
+use crate::sampling::MAX_REQUESTS_PER_CALL;
 
 /// How to reach a server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +40,9 @@ pub struct ServerSpec {
     /// Tools that run without asking (by MCP tool name, or `*` for all).
     pub allow: Vec<String>,
     pub timeout: Duration,
+    /// Whether the server may ask the session's model to write replies (sampling). Each
+    /// request still waits for the user's approval; off unless the user's own config turns it on.
+    pub sampling: bool,
 }
 
 /// A tool offered by a connected server.
@@ -48,9 +56,45 @@ pub struct McpTool {
     pub input_schema: Value,
     /// Runs without the user's approval (from the server's `allow` list).
     pub allowed: bool,
+    /// One of the server's own tools, or an extra tool for its resources or prompts.
+    pub kind: ToolKind,
+}
+
+/// The sampler for one tool call: a few requests at most, and none after one was declined or
+/// failed.
+struct Limited<'a> {
+    inner: &'a dyn Sampler,
+    asked: AtomicUsize,
+    stopped: AtomicBool,
+}
+
+impl Sampler for Limited<'_> {
+    fn sample<'a>(&'a self, request: SamplingRequest) -> SamplingFuture<'a> {
+        Box::pin(async move {
+            if self.stopped.load(Ordering::SeqCst) {
+                return Err(
+                    "sampling was stopped for this call after an earlier request was \
+                            declined or failed"
+                        .into(),
+                );
+            }
+            if self.asked.fetch_add(1, Ordering::SeqCst) >= MAX_REQUESTS_PER_CALL {
+                self.stopped.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "at most {MAX_REQUESTS_PER_CALL} sampling requests are allowed per tool call"
+                ));
+            }
+            let reply = self.inner.sample(request).await;
+            if reply.is_err() {
+                self.stopped.store(true, Ordering::SeqCst);
+            }
+            reply
+        })
+    }
 }
 
 struct Server {
+    name: String,
     client: Client,
     tools: Vec<McpTool>,
     /// The server process for stdio servers; dropping it stops the server.
@@ -84,9 +128,22 @@ pub struct Failed {
 impl McpServers {
     /// Starts every server concurrently. Servers that fail are reported, not fatal.
     pub async fn connect(specs: Vec<ServerSpec>) -> (Self, Vec<Failed>) {
-        let attempts = futures_util::future::join_all(specs.into_iter().map(|spec| async move {
-            let name = spec.name.clone();
-            (name, start(spec).await)
+        McpServers::connect_with(specs, HashMap::new()).await
+    }
+
+    /// Like [`McpServers::connect`], giving each HTTP server named in `auths` the OAuth access
+    /// tokens of its [`TokenSource`]. Connecting never starts a sign-in: a server that needs one
+    /// fails with a reason that says so.
+    pub async fn connect_with(
+        specs: Vec<ServerSpec>,
+        auths: HashMap<String, Arc<dyn TokenSource>>,
+    ) -> (Self, Vec<Failed>) {
+        let attempts = futures_util::future::join_all(specs.into_iter().map(|spec| {
+            let auth = auths.get(&spec.name).cloned();
+            async move {
+                let name = spec.name.clone();
+                (name, start(spec, auth).await)
+            }
         }))
         .await;
         let mut servers = McpServers::default();
@@ -121,7 +178,12 @@ impl McpServers {
 
     /// Calls a tool with JSON `arguments` and returns its content as text; a tool-reported
     /// error is returned as `Err`.
-    pub async fn call(&self, qualified: &str, arguments: &str) -> Result<String, String> {
+    pub async fn call(
+        &self,
+        qualified: &str,
+        arguments: &str,
+        sampler: Option<&dyn Sampler>,
+    ) -> Result<String, String> {
         let (server, tool) = self
             .servers
             .iter()
@@ -139,24 +201,143 @@ impl McpServers {
             serde_json::from_str(arguments)
                 .map_err(|error| format!("invalid arguments: {error}"))?
         };
-        let result = server
-            .client
-            .request(
-                "tools/call",
-                json!({"name": tool.name, "arguments": arguments}),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        let text = content_text(&result);
-        if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            Err(text)
-        } else {
-            Ok(text)
+        let limited = sampler.map(|inner| Limited {
+            inner,
+            asked: AtomicUsize::new(0),
+            stopped: AtomicBool::new(false),
+        });
+        let sampling = limited.as_ref().map(|sampler| Sampling {
+            sampler,
+            server: &server.name,
+        });
+        let ask = |method: &'static str, params: Value| {
+            server.client.request_with(method, params, sampling)
+        };
+        let fail = |error: McpError| error.to_string();
+        let page = |arguments: &Value| match arguments.get("cursor").and_then(Value::as_str) {
+            Some(cursor) => json!({"cursor": cursor}),
+            None => json!({}),
+        };
+        match tool.kind {
+            ToolKind::Remote => {
+                let result = ask(
+                    "tools/call",
+                    json!({"name": tool.name, "arguments": arguments}),
+                )
+                .await
+                .map_err(fail)?;
+                let text = content_text(&result);
+                if result.get("isError").and_then(Value::as_bool) == Some(true) {
+                    Err(text)
+                } else {
+                    Ok(text)
+                }
+            }
+            ToolKind::ResourcesList => {
+                let params = page(&arguments);
+                let first = params.get("cursor").is_none();
+                let listed = ask("resources/list", params).await.map_err(fail)?;
+                // Templates come with the first page; a server without them is not an error.
+                let templates = if first {
+                    ask("resources/templates/list", json!({})).await.ok()
+                } else {
+                    None
+                };
+                Ok(extras::frame(
+                    "listing",
+                    &server.name,
+                    ("of", "resources"),
+                    &extras::resources_listing(&listed, templates.as_ref()),
+                ))
+            }
+            ToolKind::ResourcesRead => {
+                let uri = arguments
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .filter(|uri| !uri.is_empty())
+                    .ok_or("uri is required")?;
+                let read = ask("resources/read", json!({"uri": uri}))
+                    .await
+                    .map_err(fail)?;
+                Ok(extras::frame(
+                    "resource",
+                    &server.name,
+                    ("uri", uri),
+                    &extras::resource_text(&read),
+                ))
+            }
+            ToolKind::PromptsList => {
+                let listed = ask("prompts/list", page(&arguments)).await.map_err(fail)?;
+                Ok(extras::frame(
+                    "listing",
+                    &server.name,
+                    ("of", "prompts"),
+                    &extras::prompts_listing(&listed),
+                ))
+            }
+            ToolKind::PromptsGet => {
+                let name = arguments
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .ok_or("name is required")?;
+                // Prompt arguments are text; other JSON values are sent as their JSON.
+                let given: serde_json::Map<String, Value> = arguments
+                    .get("arguments")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flatten()
+                    .map(|(key, value)| {
+                        let text = value
+                            .as_str()
+                            .map_or_else(|| value.to_string(), str::to_string);
+                        (key.clone(), Value::String(text))
+                    })
+                    .collect();
+                let got = ask("prompts/get", json!({"name": name, "arguments": given}))
+                    .await
+                    .map_err(fail)?;
+                Ok(extras::frame(
+                    "prompt",
+                    &server.name,
+                    ("name", name),
+                    &extras::prompt_text(&got),
+                ))
+            }
         }
     }
 }
 
-async fn start(spec: ServerSpec) -> Result<Server, String> {
+/// Set in the environment of every stdio server a session starts. `imperium mcp-serve` refuses
+/// to run when it is set (unless it serves a remote daemon), whatever the command line looked
+/// like. (The CLI keeps a copy of the name.)
+pub const CHILD_MARK: &str = "IMPERIUM_MCP_CHILD";
+
+/// Whether a stdio launch runs `imperium mcp-serve` (the harness or the tools bridge): the
+/// `imperium` binary, in any spelling of its path or `.exe`, and the `mcp-serve` word, in the
+/// arguments or inside a single shell-style argument such as `imperium mcp-serve --tools`.
+pub fn is_own_bridge(command: &str, args: &[String]) -> bool {
+    let words: Vec<String> = std::iter::once(command)
+        .chain(args.iter().map(String::as_str))
+        .flat_map(str::split_whitespace)
+        .map(|word| {
+            let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
+            let name = name
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_ascii_lowercase();
+            name.strip_suffix(".exe").unwrap_or(&name).to_string()
+        })
+        .collect();
+    words
+        .iter()
+        .any(|word| word == "imperium" || word == "imperium-cli")
+        && words.iter().any(|word| word == "mcp-serve")
+}
+
+/// What a server reports when it needs a sign-in the user has not done (or that expired).
+pub const NEEDS_SIGN_IN: &str = "needs sign-in";
+
+async fn start(spec: ServerSpec, auth: Option<Arc<dyn TokenSource>>) -> Result<Server, String> {
     let (client, child) = match &spec.launch {
         Launch::Stdio {
             command,
@@ -164,10 +345,23 @@ async fn start(spec: ServerSpec) -> Result<Server, String> {
             env,
             cwd,
         } => {
+            // Imperium's own server bridge is for outside agents. A session that connected to
+            // it would call back into the daemon it runs in.
+            if is_own_bridge(command, args) {
+                return Err(format!(
+                    "{} is Imperium's own MCP server (`imperium mcp-serve`), which is for other \
+                     agents to use Imperium: it is not started from inside Imperium, so tool \
+                     calls cannot loop back into this daemon",
+                    spec.name
+                ));
+            }
             let mut process = Command::new(command);
             process
                 .args(args)
                 .envs(env.iter().map(|(key, value)| (key, value)))
+                // Set after the configured variables, so they cannot clear it: a started
+                // `imperium mcp-serve` sees it and refuses to serve its own daemon.
+                .env(CHILD_MARK, "1")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -187,14 +381,27 @@ async fn start(spec: ServerSpec) -> Result<Server, String> {
             )
         }
         Launch::Http { url, headers } => (
-            Client::over_http(url.clone(), headers.clone(), spec.timeout),
+            Client::over_http_with(url.clone(), headers.clone(), spec.timeout, auth.clone()),
             None,
         ),
     };
+    if spec.sampling {
+        client.allow_sampling();
+    }
     let tools = initialize(&client, &spec)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| match error {
+            McpError::AuthRequired(_) if auth.is_some() => format!(
+                "{NEEDS_SIGN_IN}: run `imperium mcp login {}` or use Sign in on the server in Connectors",
+                spec.name
+            ),
+            McpError::AuthRequired(_) => {
+                "the server answered 401: its credentials were refused".to_string()
+            }
+            other => other.to_string(),
+        })?;
     Ok(Server {
+        name: spec.name,
         client,
         tools,
         _child: child,
@@ -207,16 +414,16 @@ async fn initialize(client: &Client, spec: &ServerSpec) -> Result<Vec<McpTool>, 
             "initialize",
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
+                "capabilities": if spec.sampling { json!({"sampling": {}}) } else { json!({}) },
                 "clientInfo": {"name": "imperium", "version": env!("CARGO_PKG_VERSION")},
             }),
         )
         .await?;
-    if init.get("capabilities").is_none() {
+    let Some(capabilities) = init.get("capabilities") else {
         return Err(McpError::Protocol(
             "initialize returned no capabilities".into(),
         ));
-    }
+    };
     client
         .notify("notifications/initialized", json!({}))
         .await?;
@@ -253,6 +460,7 @@ async fn initialize(client: &Client, spec: &ServerSpec) -> Result<Vec<McpTool>, 
                     .allow
                     .iter()
                     .any(|allowed| allowed == "*" || allowed == name),
+                kind: ToolKind::Remote,
             });
         }
         cursor = page
@@ -260,9 +468,47 @@ async fn initialize(client: &Client, spec: &ServerSpec) -> Result<Vec<McpTool>, 
             .and_then(Value::as_str)
             .map(str::to_string);
         if cursor.is_none() {
-            return Ok(tools);
+            break;
         }
     }
+    // A server that offers resources or prompts gets tools to list and read them. They are
+    // named like its own tools, so the agent's MCP allowlist, the local-files lock, the
+    // permission rules, and the server's `allow` list govern them the same way.
+    let extra = [
+        (
+            "resources",
+            [ToolKind::ResourcesList, ToolKind::ResourcesRead],
+        ),
+        ("prompts", [ToolKind::PromptsList, ToolKind::PromptsGet]),
+    ];
+    for (capability, kinds) in extra {
+        if capabilities.get(capability).is_none() {
+            continue;
+        }
+        for kind in kinds {
+            let Some(name) = kind.tool_name() else {
+                continue;
+            };
+            let qualified = qualified_name(&spec.name, name);
+            // A tool of the server's own with the same name wins.
+            if tools.iter().any(|tool| tool.qualified == qualified) {
+                continue;
+            }
+            tools.push(McpTool {
+                server: spec.name.clone(),
+                name: name.to_string(),
+                qualified,
+                description: kind.description().to_string(),
+                input_schema: kind.schema(),
+                allowed: spec
+                    .allow
+                    .iter()
+                    .any(|allowed| allowed == "*" || allowed == name),
+                kind,
+            });
+        }
+    }
+    Ok(tools)
 }
 
 /// `mcp__<server>__<tool>`, with characters model APIs reject replaced and the length capped
@@ -329,6 +575,31 @@ fn content_text(result: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imperiums_own_server_is_not_started_from_inside_imperium() {
+        let own = |command: &str, args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            is_own_bridge(command, &args)
+        };
+        assert!(own("imperium", &["mcp-serve"]));
+        assert!(own(
+            "imperium",
+            &["--remote", "box", "mcp-serve", "--tools"]
+        ));
+        assert!(own(
+            "C:\\Program Files\\Imperium\\imperium.exe",
+            &["mcp-serve"]
+        ));
+        assert!(own("/usr/local/bin/imperium", &["mcp-serve", "--tools"]));
+        assert!(own("cmd", &["/c", "imperium mcp-serve --tools"]));
+        assert!(!own("imperium", &["status"]));
+        assert!(!own(
+            "npx",
+            &["-y", "@modelcontextprotocol/server-filesystem"]
+        ));
+        assert!(!own("other-server", &["mcp-serve"]));
+    }
 
     #[test]
     fn names_are_qualified_and_sanitised() {

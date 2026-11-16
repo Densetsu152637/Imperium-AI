@@ -12,5 +12,39 @@ untracked="$(git ls-files --others --exclude-standard -- "$generated")"
 if ! git diff --quiet -- "$generated" || [ -n "$untracked" ]; then
   echo "Generated protocol types are out of date. Run cargo test and commit $generated:" >&2
   git status --short -- "$generated" >&2
+  git --no-pager diff -- "$generated" >&2
+  for file in $untracked; do
+    echo "--- new file: $file" >&2
+    cat "$file" >&2
+  done
+  exit 1
+fi
+
+# The same for the tool schemas the protocol crate exports; the prompts next to them are
+# hand-written files, so this also catches stray or modified files there.
+contract=crates/imperium-protocol/schemas
+untracked="$(git ls-files --others --exclude-standard -- "$contract")"
+if ! git diff --quiet -- "$contract" || [ -n "$untracked" ]; then
+  echo "Exported tool schemas are out of date. Run cargo test and commit $contract:" >&2
+  git status --short -- "$contract" >&2
+  exit 1
+fi
+
+# Snapshots written by tests: the protocol's method names and the command-line help (the
+# latter only where the test runs, on Linux). A change to either shows up here, in review.
+snapshots="crates/imperium-protocol/snapshots crates/imperium-cli/snapshots"
+# shellcheck disable=SC2086
+untracked="$(git ls-files --others --exclude-standard -- $snapshots)"
+# shellcheck disable=SC2086
+if ! git diff --quiet -- $snapshots || [ -n "$untracked" ]; then
+  echo "Snapshots are out of date. Run cargo test and commit what it writes:" >&2
+  # shellcheck disable=SC2086
+  git status --short -- $snapshots >&2
+  # shellcheck disable=SC2086
+  git --no-pager diff -- $snapshots >&2
+  for file in $untracked; do
+    echo "--- new file: $file" >&2
+    cat "$file" >&2
+  done
   exit 1
 fi

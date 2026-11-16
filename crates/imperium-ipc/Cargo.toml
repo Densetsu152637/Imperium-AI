@@ -1,0 +1,33 @@
+[package]
+name = "imperium-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Same-user local sockets for the Imperium daemon: a Unix domain socket or a Windows named pipe"
+
+[dependencies]
+tokio = { version = "1.54.1", features = ["net", "io-util", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+getrandom = "0.4.3"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["net", "io-util", "time", "rt", "macros"] }
+
+# The Windows named-pipe ACL needs the Win32 security API, which is unsafe to call. That one
+# module opts in (`#[allow(unsafe_code)]`); the rest of the workspace still forbids it.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

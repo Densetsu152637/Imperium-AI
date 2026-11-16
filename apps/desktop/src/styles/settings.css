@@ -1,0 +1,335 @@
+/* style-budget: colour=1 font-size=10 font-weight=1 radius=2 shadow=0 duration=0 z-index=0 */
+/* The Settings sections' content: rows, swatches, permissions and budget editors, shortcuts. */
+
+.bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  margin: 0.4rem 0 0.8rem;
+}
+
+.bench-table th,
+.bench-table td {
+  padding: 0.2rem 0.5rem;
+  font-weight: normal;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.bench-table th:first-child {
+  text-align: left;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.bench-table thead th {
+  color: var(--muted);
+  font-size: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.field-with-action {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Every row: the title block left-justified on the left, the control aligned right. */
+.settings-row-text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  min-width: 0;
+  text-align: left;
+}
+
+/* A sub-setting, and full-width content under a setting, step in by the same indent. */
+.settings-rows {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.4rem 1.4rem 1.4rem;
+  --settings-indent: 1.5rem;
+}
+
+.settings-row.sub,
+.settings-row-note.sub {
+  margin-left: var(--settings-indent);
+  padding-left: 0.85rem;
+  border-left: 2px solid var(--border);
+}
+
+.settings-row-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.6rem 0 0.85rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.settings-row-note > p {
+  margin: 0;
+}
+
+.settings-row-note .daemon-log {
+  align-self: stretch;
+}
+
+/* Accent colours as a grid of swatches; the chosen one is ringed. */
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(6, 1.7rem);
+  gap: 0.5rem;
+}
+
+.swatches .swatch {
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--swatch) 60%, black);
+  background: var(--swatch);
+}
+
+.swatches .swatch:hover:not(:disabled) {
+  background: var(--swatch);
+  border-color: var(--fg);
+}
+
+.swatches .swatch.selected {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
+.swatches .swatch:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 3px;
+}
+
+.settings-row-label {
+  font-size: 0.9rem;
+}
+
+.settings-row-description {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.settings-row-control select {
+  width: 16rem;
+  max-width: 100%;
+}
+
+.settings-row .slider {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.settings-row .slider output {
+  min-width: 3.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.reset-link {
+  padding: 0 0.3rem;
+  font-size: 0.72rem;
+  color: var(--accent);
+}
+
+.source-badge {
+  margin-left: 0.3rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong, var(--border));
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.shortcuts td {
+  padding: 0.45rem 1rem 0.45rem 0;
+}
+
+/* ---- Fields: a recessed graphite well that lights up on focus ---- */
+.settings-row-control input[type="text"] {
+  width: 16rem;
+  max-width: 100%;
+  padding: 0.4rem 0.65rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+}
+
+.settings-row-control input[type="number"] {
+  max-width: 100%;
+  padding: 0.4rem 0.65rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+  width: 9rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-row-control textarea {
+  width: 16rem;
+  max-width: 100%;
+  padding: 0.4rem 0.65rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+  resize: vertical;
+  font-family: var(--font-code);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.settings-row-control input:hover:not(:disabled),
+.settings-row-control textarea:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.settings-row-control input:focus-visible,
+.settings-row-control textarea:focus-visible {
+  outline-offset: 0;
+  border-color: var(--focus);
+}
+
+.settings-row-control input::placeholder,
+.settings-row-control textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
+}
+
+.settings-row-control input.numeric {
+  width: 9rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-row-control button.select {
+  width: 16rem;
+}
+
+.settings-row:last-child {
+  border-bottom: none;
+}
+
+.settings-row-control {
+  flex-shrink: 0;
+  max-width: 55%;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Permissions: path grants and rules (Settings → Permissions and the environment window). */
+.permissions-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.permissions-hint {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.permission-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.permission-presets .chip:disabled[aria-pressed="true"] {
+  opacity: 1;
+}
+
+.permission-list li {
+  flex-wrap: wrap;
+}
+
+.permission-rule .permission-tool {
+  flex: 0 1 10rem;
+  min-width: 6rem;
+}
+
+.permission-rule .permission-pattern {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+}
+
+.permissions-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/* Budgets: the editor (Settings → Budgets), the Usage panel, and the mark beside the context meter. */
+.budgets-editor {
+  margin-top: 1rem;
+}
+
+.budget-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--surface-2, transparent);
+}
+
+.budget-card-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.budget-card-row .budget-name,
+.budget-card-row .budget-target {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+}
+
+.budget-limit {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1 1 10rem;
+  font-size: 0.8rem;
+}
+
+.budget-limit input {
+  flex: 1 1 auto;
+  min-width: 5rem;
+}
+
+.budget-card-status {
+  margin: 0;
+  font-size: 0.78rem;
+}

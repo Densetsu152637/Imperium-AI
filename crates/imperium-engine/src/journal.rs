@@ -1,0 +1,80 @@
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::Path;
+
+use imperium_protocol::session::AgentEvent;
+use serde::{Deserialize, Serialize};
+
+/// Append-only JSON Lines record of a session: one object per event, with a timestamp.
+#[derive(Debug)]
+pub(crate) struct Journal {
+    file: File,
+}
+
+#[derive(Serialize)]
+struct Line<'a> {
+    at_ms: u64,
+    #[serde(flatten)]
+    event: &'a AgentEvent,
+}
+
+impl Journal {
+    pub(crate) fn open(path: &Path) -> std::io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Journal { file })
+    }
+
+    pub(crate) fn record(&mut self, event: &AgentEvent) -> std::io::Result<()> {
+        let at_ms = imperium_api::time::unix_ms();
+        let mut line = serde_json::to_vec(&Line { at_ms, event })?;
+        line.push(b'\n');
+        self.file.write_all(&line)
+    }
+}
+
+/// The events recorded in a journal, oldest first; unreadable lines are skipped.
+pub fn read_events(path: &Path) -> Vec<AgentEvent> {
+    read_timed_events(path)
+        .into_iter()
+        .map(|(_, event)| event)
+        .collect()
+}
+
+/// [`read_events`] with the time each event was recorded, in milliseconds since the Unix epoch
+/// (0 for a line without one).
+pub(crate) fn read_timed_events(path: &Path) -> Vec<(u64, AgentEvent)> {
+    #[derive(Deserialize)]
+    struct Stored {
+        #[serde(default)]
+        at_ms: u64,
+        #[serde(flatten)]
+        event: AgentEvent,
+    }
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Stored>(line).ok())
+        .map(|stored| (stored.at_ms, stored.event))
+        .collect()
+}
+
+/// Where a session's root conversation is kept between turns, beside its journal.
+pub fn messages_path(journal: &Path) -> std::path::PathBuf {
+    journal.with_extension("messages.json")
+}
+
+/// The model a session's journal last switched its root agent to, if it was ever switched, so
+/// a resumed session keeps it.
+pub fn journalled_model(journal: &Path) -> Option<String> {
+    use imperium_protocol::session::{ROOT_AGENT, SessionEvent};
+    read_events(journal)
+        .into_iter()
+        .rev()
+        .find_map(|event| match event.event {
+            SessionEvent::ModelChanged { to, .. } if event.agent_id == ROOT_AGENT => Some(to),
+            _ => None,
+        })
+}

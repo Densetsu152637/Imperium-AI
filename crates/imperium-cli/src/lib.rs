@@ -1,3 +1,7 @@
 //! Client side of the daemon protocol, used by the `imperium` command.
 
-pub mod client;
+#![warn(unreachable_pub)]
+
+pub use imperium_client as client;
+pub mod mcp_bridge;
+pub mod mcp_serve;

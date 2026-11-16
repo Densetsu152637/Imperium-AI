@@ -1,0 +1,354 @@
+/* style-budget: colour=2 font-size=9 font-weight=4 radius=0 shadow=0 duration=1 z-index=3 */
+/* The dialog shell (the Settings window and the modals built on it), its navigation column, menus and the floating lists. */
+
+.row-menu {
+  position: fixed;
+  z-index: 1100;
+  min-width: 10rem;
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-md);
+  animation: pop-in var(--fast) var(--ease);
+}
+
+.row-menu.above {
+  transform: translateY(-100%);
+  animation: none;
+}
+
+.row-menu:focus {
+  outline: none;
+}
+
+.row-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.4rem 0.7rem 0.4rem 0.5rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 28rem;
+}
+
+.row-menu-item > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row-menu-item .lucide,
+.row-menu-spacer {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: none;
+  color: var(--muted);
+}
+
+.row-menu-item.active {
+  background: var(--hover);
+}
+
+.row-menu:focus-visible .row-menu-item.active {
+  background: var(--accent-soft);
+}
+
+.row-menu-item.danger,
+.row-menu-item.danger .lucide {
+  color: var(--danger);
+}
+
+.row-menu-item[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Settings window: a centred sheet over a dimmed workspace, sections on the left. */
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: rgb(0 0 0 / 0.55);
+  backdrop-filter: blur(3px);
+  animation: fade-in var(--fast, 120ms) ease-out;
+}
+
+.settings-window {
+  display: grid;
+  grid-template-columns: 15rem 1fr;
+  width: min(62rem, 100%);
+  height: min(42rem, 100%);
+  overflow: hidden;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: calc(var(--radius) * 1.5);
+  box-shadow: var(--shadow);
+  animation: rise-in var(--slow) var(--ease);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.9rem 0.6rem;
+  overflow-y: auto;
+  background: rgb(0 0 0 / 0.18);
+  border-right: 1px solid var(--border);
+}
+
+.settings-search {
+  margin-bottom: 0.6rem;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-bottom: 0.6rem;
+}
+
+.settings-group-label {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.settings-nav-item:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.settings-nav-item.active {
+  background: var(--accent-soft);
+  color: var(--fg);
+  border-color: transparent;
+}
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.settings-content-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-content-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.settings-content > .error {
+  margin: 0.6rem 1.4rem 0;
+}
+
+/* Actions under a modal's content (Cancel, Apply, Save), for editors that do not save as they change. */
+.settings-footer {
+  display: flex;
+  gap: var(--space);
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0.7rem 1.4rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+
+.settings-footer .muted {
+  margin-right: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-footer .error {
+  margin-right: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--danger);
+}
+
+/* A navigation item with badges under its label (a model and its state). */
+
+/* Fill the rest of the row so every label starts at the same edge, however long it is. */
+.settings-nav-item-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  min-width: 0;
+  text-align: left;
+}
+
+.settings-nav-item-label {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.settings-nav-item.dimmed {
+  opacity: 0.55;
+}
+
+.settings-nav-empty {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+@media (max-width: 720px) {
+  .settings-window {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    max-height: 10rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+.select-list {
+  position: fixed;
+  z-index: 1100;
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  overflow-y: auto;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: 0.9rem;
+  animation: pop-in var(--fast) var(--ease);
+}
+
+.select-list.above {
+  transform: translateY(-100%);
+  animation: none;
+}
+
+.select-list:focus {
+  outline: none;
+}
+
+.select-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.4rem 0.7rem 0.4rem 0.4rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.select-option.active {
+  background: var(--hover);
+}
+
+.select-list:focus-visible .select-option.active {
+  background: var(--accent-soft);
+}
+
+.select-option[aria-selected="true"] {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.select-option[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.select-option.dimmed {
+  opacity: 0.6;
+}
+
+.select-group {
+  padding: 0.45rem 0.7rem 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: default;
+}
+
+.select-check {
+  display: inline-flex;
+  width: 1.1rem;
+  padding-top: 0.12rem;
+  color: var(--accent);
+}
+
+.select-option-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.select-option-description {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.settings-nav-item {
+  justify-content: flex-start;
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  font-size: 0.88rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  min-width: 0;
+}
+
+/* The icon keeps its size, so a long label can't squeeze it and shift the text. */
+.settings-nav-item .lucide {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  color: var(--muted);
+}
+
+.settings-nav-item.active .lucide {
+  color: var(--accent);
+}
+
+.settings-search input {
+  font-size: 0.85rem;
+}

@@ -1,7 +1,13 @@
 //! Plugins in the Claude Code layout: a folder with `.claude-plugin/plugin.json` contributing
-//! `skills/`, `commands/`, `hooks/hooks.json`, and `.mcp.json`. `${CLAUDE_PLUGIN_ROOT}` in
-//! hook commands and server definitions is the plugin folder. `agents/` is reported as not yet
-//! supported.
+//! `skills/`, `commands/`, `agents/` (named subagents, see [`crate::agents`]),
+//! `hooks/hooks.json`, and `.mcp.json`. `${CLAUDE_PLUGIN_ROOT}` in hook commands and server
+//! definitions is the plugin folder.
+//!
+//! `${VAR}` in `.mcp.json` falls back to the daemon's environment, except for a plugin an agent
+//! installed (its folder holds the `.imperium-source.json` the daemon writes, naming the
+//! session): downloaded content must not read the daemon's secrets into a server's command,
+//! arguments, headers, or URL, so there only `CLAUDE_PLUGIN_ROOT` expands and any other
+//! variable is empty (or its `:-default`).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,9 +17,14 @@ use serde::Deserialize;
 
 use crate::hooks::{Hook, parse_hooks_json};
 
+/// The provenance file the daemon writes into each extension an agent installs.
+pub const SOURCE_FILE: &str = ".imperium-source.json";
+
 #[derive(Debug, Clone)]
 pub struct Plugin {
     pub name: String,
+    /// The manifest's description; empty when it has none.
+    pub description: String,
     pub root: PathBuf,
     pub hooks: Vec<Hook>,
     pub servers: Vec<ServerSpec>,
@@ -31,11 +42,17 @@ impl Plugin {
     pub fn commands_dir(&self) -> PathBuf {
         self.root.join("commands")
     }
+
+    pub fn agents_dir(&self) -> PathBuf {
+        self.root.join("agents")
+    }
 }
 
 #[derive(Deserialize)]
 struct Manifest {
     name: String,
+    #[serde(default)]
+    description: String,
 }
 
 /// Loads each plugin folder in `dirs` (folders that themselves hold plugins are searched one
@@ -77,6 +94,25 @@ pub fn discover(dirs: &[PathBuf], server_timeout: Duration) -> (Vec<Plugin>, Vec
     (plugins, problems)
 }
 
+/// Whether an agent installed the plugin in `root`: its provenance file records a session. A
+/// provenance file that cannot be read or parsed counts as agent-installed, so a damaged record
+/// never widens what the plugin may read.
+fn installed_by_agent(root: &Path) -> bool {
+    let path = root.join(SOURCE_FILE);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return path.exists();
+    };
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        // Anything but an object (`[]`, `null`, `123`) is a damaged record too.
+        Ok(value) => value.as_object().is_none_or(|record| {
+            record
+                .get("session_id")
+                .is_some_and(|session| !session.is_null())
+        }),
+        Err(_) => true,
+    }
+}
+
 fn is_plugin(dir: &Path) -> bool {
     dir.join(".claude-plugin").join("plugin.json").is_file()
 }
@@ -93,14 +129,23 @@ fn load(root: &Path, server_timeout: Duration) -> Result<(Plugin, Vec<String>), 
     if let Ok(text) = std::fs::read_to_string(root.join("hooks/hooks.json")) {
         let (loaded, mut skipped) = parse_hooks_json(&text, root, &origin)?;
         hooks = loaded;
+        // A plugin an agent installed may block with its hooks but never rewrite a call or a
+        // prompt: downloaded code does not get to change what the model asked for.
+        let rewrites = !installed_by_agent(root);
+        for hook in &mut hooks {
+            hook.may_rewrite = rewrites;
+        }
         notes.append(&mut skipped);
     }
     let mut servers = Vec::new();
     if let Ok(text) = std::fs::read_to_string(root.join(".mcp.json")) {
         let plugin_root = root.display().to_string();
+        let local_only = installed_by_agent(root);
         let specs = mcp_json::parse(&text, root, server_timeout, |name| {
             if name == "CLAUDE_PLUGIN_ROOT" {
                 Some(plugin_root.clone())
+            } else if local_only {
+                None
             } else {
                 std::env::var(name).ok()
             }
@@ -115,14 +160,10 @@ fn load(root: &Path, server_timeout: Duration) -> Result<(Plugin, Vec<String>), 
             })
             .collect();
     }
-    if root.join("agents").is_dir() {
-        notes.push(format!(
-            "{origin}: agents/ definitions are not supported yet and were skipped"
-        ));
-    }
     Ok((
         Plugin {
             name: manifest.name,
+            description: manifest.description,
             root: root.to_path_buf(),
             hooks,
             servers,
@@ -150,7 +191,7 @@ mod tests {
         }
         std::fs::write(
             root.join(".claude-plugin/plugin.json"),
-            r#"{"name": "reviewer", "version": "1.0.0"}"#,
+            r#"{"name": "reviewer", "version": "1.0.0", "description": "Reviews code"}"#,
         )
         .unwrap();
         std::fs::write(
@@ -166,13 +207,87 @@ mod tests {
         let (plugins, problems) = discover(&[dir.path().to_path_buf()], Duration::from_secs(5));
         assert_eq!(plugins.len(), 1);
         let plugin = &plugins[0];
+        assert_eq!(plugin.description, "Reviews code");
         assert_eq!(plugin.hooks.len(), 1);
         assert!(plugin.hooks[0].command.ends_with("fmt.sh"));
         assert_eq!(plugin.servers[0].name, "reviewer_lint");
         assert!(matches!(&plugin.servers[0].launch,
             imperium_mcp::Launch::Stdio { command, .. } if command.contains("reviewer")));
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].contains("agents/"));
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(plugin.agents_dir().ends_with("agents"));
         assert!(plugin.skills_dir().ends_with("skills"));
+    }
+
+    /// A plugin whose `.mcp.json` puts `${var}` into a server's URL and the plugin folder into
+    /// a header; `provenance` is written as `.imperium-source.json` when given.
+    fn plugin_with_vars(dir: &Path, var: &str, provenance: Option<&str>) -> Vec<Plugin> {
+        let root = dir.join("vars");
+        std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            root.join(".claude-plugin/plugin.json"),
+            r#"{"name": "vars"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".mcp.json"),
+            format!(
+                r#"{{"mcpServers": {{"api": {{"type": "http", "url": "https://example.test/${{{var}}}/${{UNSET_VAR_FOR_TEST:-fallback}}", "headers": {{"X-Root": "${{CLAUDE_PLUGIN_ROOT}}"}}}}}}}}"#
+            ),
+        )
+        .unwrap();
+        if let Some(provenance) = provenance {
+            std::fs::write(root.join(SOURCE_FILE), provenance).unwrap();
+        }
+        discover(&[dir.to_path_buf()], Duration::from_secs(5)).0
+    }
+
+    fn url_and_root(plugin: &Plugin) -> (String, String) {
+        match &plugin.servers[0].launch {
+            imperium_mcp::Launch::Http { url, headers } => (
+                url.clone(),
+                headers.iter().map(|(_, value)| value.clone()).collect(),
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_user_plugin_reads_the_daemon_environment_in_its_servers() {
+        // PATH is set in every environment the tests run in.
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = plugin_with_vars(dir.path(), "PATH", None);
+        let (url, root) = url_and_root(&plugins[0]);
+        assert_eq!(
+            url,
+            format!(
+                "https://example.test/{}/fallback",
+                std::env::var("PATH").unwrap()
+            )
+        );
+        assert!(root.ends_with("vars"), "{root}");
+    }
+
+    #[test]
+    fn an_agent_installed_plugin_expands_only_its_own_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let provenance = r#"{"kind": "git", "location": "https://example.test/x.git", "installed_at_unix_ms": 1, "session_id": "s1"}"#;
+        let plugins = plugin_with_vars(dir.path(), "PATH", Some(provenance));
+        let (url, root) = url_and_root(&plugins[0]);
+        // The daemon's PATH is not read; the default and the plugin folder still expand.
+        assert_eq!(url, "https://example.test//fallback");
+        assert!(root.ends_with("vars"), "{root}");
+    }
+
+    #[test]
+    fn a_damaged_provenance_file_still_restricts_expansion() {
+        for damaged in ["not json", "[]", "null", "123"] {
+            let dir = tempfile::tempdir().unwrap();
+            let plugins = plugin_with_vars(dir.path(), "PATH", Some(damaged));
+            assert_eq!(
+                url_and_root(&plugins[0]).0,
+                "https://example.test//fallback",
+                "{damaged}"
+            );
+        }
     }
 }

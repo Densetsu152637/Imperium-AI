@@ -1,0 +1,21 @@
+{
+  "description": "Send a running subagent a message that joins its current turn: it reads it before its next model call and carries on. Use to correct or redirect work in progress.",
+  "name": "steer_agent",
+  "parameters": {
+    "properties": {
+      "agent_id": {
+        "description": "The subagent's task id, such as t1",
+        "type": "string"
+      },
+      "text": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent_id",
+      "text"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

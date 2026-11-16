@@ -1,6 +1,8 @@
 //! Pixel Pets v3 in Imperium: packages and the behaviour arbiter that turns agent activity
 //! into animations. Pets never call a model.
 
+#![warn(unreachable_pub)]
+
 pub mod arbiter;
 pub mod package;
 

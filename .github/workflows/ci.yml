@@ -38,11 +38,9 @@ jobs:
       - uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
         with:
           globs: "**/*.md"
+      # Offline, with nothing to download: GitHub's release downloads were failing on runners.
       - name: Check relative links
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
-        with:
-          args: --offline --no-progress --include-fragments --exclude-path policy "./**/*.md"
-          fail: true
+        run: python3 scripts/ci/check-links.py .
 
   workflows:
     runs-on: ubuntu-latest
@@ -108,10 +106,28 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - run: bash scripts/check-python.sh
 
+  # Work lands on experimental; main only takes experimental, once it has been released there.
+  source:
+    name: source branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Only experimental merges into main
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$BASE" = main ] && { [ "$HEAD" != experimental ] || [ "$HEAD_REPO" != "$REPO" ]; }; then
+            echo "::error::Pull requests into main must come from experimental. Target experimental instead."
+            exit 1
+          fi
+
   gate:
     name: CI gate
     if: always()
-    needs: [detect, docs, workflows, rust, web, python]
+    needs: [detect, docs, workflows, rust, web, python, source]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

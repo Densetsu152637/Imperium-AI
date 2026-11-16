@@ -2,10 +2,39 @@
 
 export type SessionCreateParams = { 
 /**
- * Absolute path of the project folder the session works in.
+ * The environment the session works in: its folders are the sandbox, the first is the
+ * working directory. Give this or `project_dir`; with neither, the session starts in the
+ * built-in Home environment.
  */
-project_dir: string, 
+environment_id?: string, 
 /**
- * `<endpoint>:<model>`; defaults to `models.default` from the configuration.
+ * Absolute path of a folder to work in, for clients that predate environments. It maps to
+ * the environment whose first folder it is, created (named after the folder) if needed.
  */
-model?: string, };
+project_dir?: string, 
+/**
+ * A model table id or `<endpoint>:<model>`; defaults to `models.default` from the
+ * configuration. With neither, the session is still created, without a model: messages
+ * sent to it wait (status `needs_model`) until `session.control` `set_model` gives it one.
+ */
+model?: string, 
+/**
+ * Start on git worktrees: every folder of the environment that is in a git repository is
+ * replaced by a new worktree on a new branch (`imperium/<session id>` unless
+ * `worktree_branch` names one). Other folders are used as they are. Local folders only.
+ */
+worktree?: boolean, worktree_branch?: string, 
+/**
+ * Narrow the session to one folder inside the environment's folders: an absolute path, or
+ * a path relative to the first folder. The folder is then the session's only folder and
+ * working directory; the environment's other folders are closed to it. Not with
+ * `worktree`.
+ */
+subfolder?: string, 
+/**
+ * Mount the session's folders read-only: its file tools read and list but never write,
+ * edit or delete there (its scratch folder stays writable), and commands run only under a
+ * tier that can keep them from writing there (`os` and `container`; tier 0 refuses them).
+ * Not with `worktree`.
+ */
+read_only?: boolean, };

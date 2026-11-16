@@ -8,13 +8,16 @@ repository.workspace = true
 description = "Model Context Protocol client for Imperium: stdio and streamable HTTP servers"
 
 [dependencies]
+base64 = "0.23.1"
 futures-util = "0.3.34"
-imperium-api = { version = "0.1.0", path = "../imperium-api" }
+getrandom = "0.4.3"
+imperium-api = { version = "0.2.0", path = "../imperium-api" }
 reqwest = { version = "0.13.5", features = ["json", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.11.1"
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt", "sync", "time", "process", "io-util", "macros"] }
+tokio = { version = "1.54.1", features = ["rt", "sync", "time", "process", "io-util", "macros", "net"] }
 tracing = "0.1.44"
 
 [lints]

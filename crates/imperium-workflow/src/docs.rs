@@ -23,7 +23,7 @@ pub struct DocChunk {
 }
 
 /// Indexes `README*.md` at the root and every Markdown file under `docs/`.
-pub fn index(project_dir: &Path) -> Vec<DocChunk> {
+pub(crate) fn index(project_dir: &Path) -> Vec<DocChunk> {
     let mut files: Vec<String> = std::fs::read_dir(project_dir)
         .into_iter()
         .flatten()
@@ -102,7 +102,7 @@ fn mentions(text: &str) -> BTreeSet<String> {
 
 /// The chunks most relevant to a request: those quoting a path or file the request names
 /// first, then those sharing at least three words with it.
-pub fn pointers(
+pub(crate) fn pointers(
     chunks: &[DocChunk],
     request: &str,
     wanted: &BTreeSet<String>,

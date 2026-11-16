@@ -1,0 +1,36 @@
+{
+  "description": "Propose downloading a local model from Hugging Face that suits this task better than the models available (for example one that reads images, writes code, calls tools reliably, or reads a longer context). The user is asked and decides; nothing downloads without their consent, and you carry on with the current model meanwhile. Use sparingly: at most once per need.",
+  "name": "suggest_local_model",
+  "parameters": {
+    "properties": {
+      "context_tokens": {
+        "description": "For context: the tokens it must read.",
+        "type": "integer"
+      },
+      "needs": {
+        "description": "What the model must be good at.",
+        "items": {
+          "enum": [
+            "chat",
+            "code",
+            "vision",
+            "tools",
+            "context"
+          ],
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "task": {
+        "description": "What the model is needed for, in a few words.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "task",
+      "needs"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

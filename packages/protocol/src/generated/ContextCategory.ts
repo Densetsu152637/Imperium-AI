@@ -5,9 +5,12 @@
  */
 export type ContextCategory = { 
 /**
- * A stable id: `system_base`, `system_skills`, `system_memory`, `system_citations`,
- * `system_project`, `tools_builtin`, `tools_mcp`, `manifest`, `memories`, `user`,
- * `assistant`, `tool_results`, or `overhead`. Clients show unknown keys by their label.
+ * A stable id: `system_base`, `system_skills` (the skill and plugin index),
+ * `skills_loaded` (skill instructions loaded on use, or eagerly), `system_memory`,
+ * `system_citations`, `system_project`, `tools_builtin`, `tools_mcp`, `tools_plugins`
+ * (tools of activated plugins), `summary` (a compacted conversation's
+ * summary), `manifest`, `memories`, `user`, `assistant`, `tool_results`, or `overhead`.
+ * Clients show unknown keys by their label.
  */
 key: string, label: string, 
 /**

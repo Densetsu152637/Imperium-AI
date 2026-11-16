@@ -9,7 +9,7 @@ React interface that users can restyle, extend, or replace.
 
 ## Highlights (planned)
 
-- **Rust core, React shell.** A headless daemon (`imperiumd`) owns sessions, agents, tools,
+- **Rust core, React shell.** A headless daemon (`imperium-core`) owns sessions, agents, tools,
   and models. The CLI (`imperium`), the Tauri desktop app, and remote hosts are all clients of
   the same protocol.
 - **Any model, anywhere.** OpenAI-compatible endpoints, local llama.cpp and vLLM, multiple
@@ -37,7 +37,7 @@ React interface that users can restyle, extend, or replace.
 Download the installer for your platform from the
 [releases page](https://github.com/Densetsu152637/Imperium-AI/releases): `…_x64-setup.exe` on
 Windows, the `.dmg` on macOS, or the `.AppImage` or `.deb` on Linux. It installs the desktop app
-together with the `imperiumd` daemon and the `imperium` CLI; the app starts the daemon when it
+together with the `imperium-core` daemon and the `imperium` CLI; the app starts the daemon when it
 opens and keeps itself up to date (Settings → Updates chooses the main or experimental channel).
 
 ## Development
@@ -47,7 +47,7 @@ protocol package.
 
 ```bash
 cargo build
-cargo run --bin imperiumd          # leave running; Ctrl+C stops it
+cargo run --bin imperium-core      # leave running; Ctrl+C stops it
 cargo run --bin imperium -- ping   # in another terminal
 cargo run --bin imperium -- config explain daemon.port
 bash scripts/check-rust.sh         # what CI runs: fmt, clippy, tests, generated-type drift
@@ -76,8 +76,9 @@ cargo run --bin imperium -- chat --project path/to/project
 Local servers such as llama.cpp, LM Studio, or Ollama work the same way with their
 OpenAI-compatible URL and no `api_key`.
 
-To have Imperium load GGUF models itself, list your model folders, install the llama.cpp
-runtime pack for your hardware, and use a model as `llamacpp:<id>`:
+To have Imperium load GGUF models itself, list your model folders, install llama.cpp's build
+for your hardware (or let Imperium use a `llama-server` already on the machine), and use a
+model as `llamacpp:<id>`:
 
 ```toml
 [models]

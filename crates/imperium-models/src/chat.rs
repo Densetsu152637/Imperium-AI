@@ -1,7 +1,8 @@
 use std::fmt;
+use std::time::Instant;
 
 use futures_util::StreamExt;
-use imperium_api::{ChatMessage, FunctionCall, ToolCall, ToolSpec, Usage};
+use imperium_api::{ChatMessage, Effort, FunctionCall, ToolCall, ToolSpec, Usage};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -29,6 +30,108 @@ pub struct ChatRequest<'a> {
     pub model: &'a str,
     pub messages: &'a [ChatMessage],
     pub tools: &'a [ToolSpec],
+    /// For a llama.cpp server: the slot to run the request on (`id_slot`), with the slot's
+    /// cached prompt kept and reused (`cache_prompt`). `None` leaves both to the server, and
+    /// other endpoints never receive these fields.
+    pub slot: Option<u32>,
+    /// Most tokens the reply may generate (`max_tokens`); `None` sends none.
+    pub max_tokens: Option<u32>,
+    /// How hard a model that can reason thinks, sent in the endpoint's own form (see
+    /// [`ReasoningStyle`]); `None` for models that cannot reason, which are sent nothing.
+    pub effort: Option<Effort>,
+}
+
+/// How an endpoint takes a reasoning effort, decided by who serves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningStyle {
+    /// `reasoning_effort`: `low`, `medium` or `high` (`max` is sent as `high`, the highest
+    /// level every server accepts). OpenAI's Chat Completions, llama.cpp (whose chat template
+    /// receives the value; there is no per-request thinking budget, only the server's
+    /// `--reasoning-budget`), vLLM, Ollama, and most other OpenAI-compatible services.
+    ReasoningEffort,
+    /// OpenRouter's `reasoning: {"effort": ...}`, which takes `max` as it is.
+    OpenRouter,
+    /// Anthropic's OpenAI-compatible endpoint, which ignores `reasoning_effort`: extended
+    /// thinking with a token budget, `thinking: {"type": "enabled", "budget_tokens": N}`, at
+    /// least 1024 and below `max_tokens`. Claude 5 models think adaptively whatever the budget.
+    AnthropicThinking,
+    /// No effort control is known (DeepSeek's and Mistral's APIs), so nothing is sent.
+    Unsupported,
+}
+
+/// Thinking budget sent to Anthropic for each effort, in tokens.
+const ANTHROPIC_BUDGETS: [(Effort, u32); 4] = [
+    (Effort::Low, 1024),
+    (Effort::Medium, 4096),
+    (Effort::High, 12_288),
+    (Effort::Max, 24_000),
+];
+/// Smallest thinking budget Anthropic accepts.
+const ANTHROPIC_MIN_BUDGET: u32 = 1024;
+/// Room for the answer after the thinking budget when the request sets no `max_tokens` (the
+/// budget must stay below it); with the largest budget it totals 32,000, the smallest output
+/// limit among the Claude models that take a budget.
+const ANTHROPIC_REPLY_ROOM: u32 = 8000;
+
+impl ReasoningStyle {
+    /// The style for an endpoint, from its base URL's host.
+    pub fn for_base_url(base_url: &str) -> Self {
+        let after_scheme = base_url
+            .split_once("://")
+            .map_or(base_url, |(_, rest)| rest);
+        let host = after_scheme
+            .split(['/', ':'])
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let on = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+        if on("anthropic.com") {
+            ReasoningStyle::AnthropicThinking
+        } else if on("openrouter.ai") {
+            ReasoningStyle::OpenRouter
+        } else if on("deepseek.com") || on("mistral.ai") {
+            ReasoningStyle::Unsupported
+        } else {
+            ReasoningStyle::ReasoningEffort
+        }
+    }
+
+    /// Adds `effort` to a Chat Completions request body in this style.
+    pub fn apply(self, body: &mut serde_json::Value, effort: Effort) {
+        match self {
+            ReasoningStyle::ReasoningEffort => {
+                let level = match effort {
+                    Effort::Max => Effort::High,
+                    level => level,
+                };
+                body["reasoning_effort"] = json!(level.as_str());
+            }
+            ReasoningStyle::OpenRouter => {
+                body["reasoning"] = json!({ "effort": effort.as_str() });
+            }
+            ReasoningStyle::AnthropicThinking => {
+                let budget = ANTHROPIC_BUDGETS
+                    .iter()
+                    .find(|(level, _)| *level == effort)
+                    .map_or(ANTHROPIC_MIN_BUDGET, |(_, budget)| *budget);
+                let cap = body.get("max_tokens").and_then(serde_json::Value::as_u64);
+                let budget = match cap {
+                    Some(cap) => {
+                        budget.min(u32::try_from(cap).unwrap_or(u32::MAX).saturating_sub(1))
+                    }
+                    None => {
+                        body["max_tokens"] = json!(budget + ANTHROPIC_REPLY_ROOM);
+                        budget
+                    }
+                };
+                // A cap too small for the least budget leaves thinking off.
+                if budget >= ANTHROPIC_MIN_BUDGET {
+                    body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+                }
+            }
+            ReasoningStyle::Unsupported => {}
+        }
+    }
 }
 
 /// The assembled result of one streamed completion.
@@ -38,6 +141,13 @@ pub struct Completion {
     pub tool_calls: Vec<ToolCall>,
     /// Absent when the endpoint does not report usage for streamed responses.
     pub usage: Option<Usage>,
+    /// When the first generated text arrived, answer or reasoning. A thinking model streams
+    /// its reasoning before the answer and counts it in `completion_tokens`, so generation
+    /// speed is measured from here; the reasoning itself is not kept.
+    pub first_token: Option<Instant>,
+    /// Why the reply ended, from the stream's last choice: `stop`, `tool_calls`, or `length`
+    /// when it hit `max_tokens`. Absent when the endpoint does not say.
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +177,12 @@ impl ModelError {
                 ..
             }
         )
+    }
+
+    /// Whether llama.cpp refused because the request does not fit its KV pool ("Context size
+    /// has been exceeded"), so sending it again without the output cap is worth trying.
+    pub fn is_context_overflow(&self) -> bool {
+        self.to_string().contains("Context size has been exceeded")
     }
 
     /// When the provider says to retry, in seconds, if it said.
@@ -135,15 +251,7 @@ pub async fn stream_chat(
         "{}/chat/completions",
         endpoint.base_url.trim_end_matches('/')
     );
-    let mut body = json!({
-        "model": request.model,
-        "messages": request.messages,
-        "stream": true,
-        "stream_options": { "include_usage": true },
-    });
-    if !request.tools.is_empty() {
-        body["tools"] = request.tools.iter().map(ToolSpec::to_wire).collect();
-    }
+    let body = request_body(request, ReasoningStyle::for_base_url(&endpoint.base_url));
     let mut builder = http.post(url).json(&body);
     if let Some(key) = &endpoint.api_key {
         builder = builder.bearer_auth(key);
@@ -178,6 +286,34 @@ pub async fn stream_chat(
     Ok(assembler.finish())
 }
 
+/// The JSON body of a streamed chat completion request.
+fn request_body(request: ChatRequest<'_>, style: ReasoningStyle) -> serde_json::Value {
+    let mut body = json!({
+        "model": request.model,
+        "messages": request.messages.iter().map(ChatMessage::to_wire).collect::<Vec<_>>(),
+        "stream": true,
+        "stream_options": { "include_usage": true },
+    });
+    if !request.tools.is_empty() {
+        body["tools"] = request.tools.iter().map(ToolSpec::to_wire).collect();
+    }
+    if let Some(slot) = request.slot {
+        // llama.cpp's chat endpoint passes these on to its completion task. A pinned slot that
+        // holds another prompt still has it saved to the host cache and the agent's own prompt
+        // restored, but only under the server's default `--slot-prompt-similarity` (never 0);
+        // see `LlamaCpp::launch_args`.
+        body["id_slot"] = json!(slot);
+        body["cache_prompt"] = json!(true);
+    }
+    if let Some(max_tokens) = request.max_tokens {
+        body["max_tokens"] = json!(max_tokens);
+    }
+    if let Some(effort) = request.effort {
+        style.apply(&mut body, effort);
+    }
+    body
+}
+
 #[derive(Debug, Deserialize)]
 struct StreamChunk {
     #[serde(default)]
@@ -190,12 +326,20 @@ struct StreamChunk {
 struct StreamChoice {
     #[serde(default)]
     delta: Delta,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct Delta {
     #[serde(default)]
     content: Option<String>,
+    /// A thinking model's reasoning: llama.cpp sends `reasoning_content` (b12180,
+    /// `server_chat_msg_diff_to_json_oaicompat`); some OpenAI-compatible services `reasoning`.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Vec<ToolCallDelta>,
 }
@@ -244,6 +388,8 @@ struct Assembler {
     text: String,
     tool_calls: Vec<ToolCall>,
     usage: Option<Usage>,
+    first_token: Option<Instant>,
+    finish_reason: Option<String>,
 }
 
 impl Assembler {
@@ -258,7 +404,19 @@ impl Assembler {
                     .map_or(0, |details| details.cached_tokens),
             });
         }
-        let delta = chunk.choices.into_iter().next()?.delta;
+        let choice = chunk.choices.into_iter().next()?;
+        if choice.finish_reason.is_some() {
+            self.finish_reason = choice.finish_reason;
+        }
+        let delta = choice.delta;
+        let generated =
+            |text: &Option<String>| text.as_deref().is_some_and(|text| !text.is_empty());
+        if generated(&delta.content)
+            || generated(&delta.reasoning_content)
+            || generated(&delta.reasoning)
+        {
+            self.first_token.get_or_insert_with(Instant::now);
+        }
         for fragment in delta.tool_calls {
             while self.tool_calls.len() <= fragment.index {
                 self.tool_calls.push(ToolCall {
@@ -293,12 +451,30 @@ impl Assembler {
             text: self.text,
             tool_calls: self.tool_calls,
             usage: self.usage,
+            first_token: self.first_token,
+            finish_reason: self.finish_reason,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn llama_cpp_context_overflow_is_told_from_other_refusals() {
+        let status = |status: u16, body: &str| ModelError::Status {
+            status,
+            body: body.into(),
+            retry_after_s: None,
+        };
+        assert!(status(400, "Context size has been exceeded.").is_context_overflow());
+        assert!(
+            status(500, "{\"error\":\"Context size has been exceeded\"}").is_context_overflow()
+        );
+        assert!(!status(400, "invalid request").is_context_overflow());
+        assert!(!status(429, "slow down").is_context_overflow());
+        assert!(!ModelError::Decode("bad frame".into()).is_context_overflow());
+    }
+
     use super::*;
     use axum::Router;
     use axum::routing::post;
@@ -335,10 +511,11 @@ mod tests {
             &endpoint,
             ChatRequest {
                 model: "m",
-                messages: &[ChatMessage::User {
-                    content: "hi".into(),
-                }],
+                messages: &[ChatMessage::user("hi")],
                 tools: &[],
+                slot: None,
+                max_tokens: None,
+                effort: None,
             },
             |text| streamed.push_str(text),
         )
@@ -365,6 +542,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reasoning_marks_the_first_token_without_becoming_reply_text() {
+        let endpoint = fake_endpoint(concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Let me think\"}}]}
+
+",
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\" more\"}}]}
+
+",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":40}}
+
+",
+            "data: [DONE]
+
+",
+        ))
+        .await;
+
+        let mut streamed = String::new();
+        let before = Instant::now();
+        let completion = stream_chat(
+            &reqwest::Client::new(),
+            &endpoint,
+            ChatRequest {
+                model: "m",
+                messages: &[],
+                tools: &[],
+                slot: None,
+                max_tokens: None,
+                effort: None,
+            },
+            |text| streamed.push_str(text),
+        )
+        .await
+        .unwrap();
+
+        assert!(streamed.is_empty() && completion.text.is_empty());
+        assert!(completion.first_token.is_some_and(|first| first >= before));
+    }
+
+    #[tokio::test]
     async fn http_errors_carry_the_status_and_body() {
         let app = Router::new().route(
             "/v1/chat/completions",
@@ -384,6 +601,9 @@ mod tests {
                 model: "m",
                 messages: &[],
                 tools: &[],
+                slot: None,
+                max_tokens: None,
+                effort: None,
             },
             |_| {},
         )
@@ -393,6 +613,155 @@ mod tests {
             matches!(error, ModelError::Status { status: 401, ref body, .. } if body == "bad key"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_reply_cap_is_sent_only_when_set() {
+        let request = |max_tokens| ChatRequest {
+            model: "m",
+            messages: &[],
+            tools: &[],
+            slot: None,
+            max_tokens,
+            effort: None,
+        };
+        let plain = ReasoningStyle::ReasoningEffort;
+        assert!(
+            request_body(request(None), plain)
+                .get("max_tokens")
+                .is_none()
+        );
+        assert_eq!(request_body(request(Some(512)), plain)["max_tokens"], 512);
+    }
+
+    #[test]
+    fn llama_cpp_slots_are_requested_only_when_the_call_has_one() {
+        let request = |slot| ChatRequest {
+            model: "m",
+            messages: &[],
+            tools: &[],
+            slot,
+            max_tokens: None,
+            effort: None,
+        };
+        let style = ReasoningStyle::ReasoningEffort;
+        let plain = request_body(request(None), style);
+        assert!(plain.get("id_slot").is_none() && plain.get("cache_prompt").is_none());
+        let pinned = request_body(request(Some(1)), style);
+        assert_eq!(pinned["id_slot"], 1);
+        assert_eq!(pinned["cache_prompt"], true);
+    }
+
+    #[test]
+    fn endpoints_get_the_reasoning_style_their_host_speaks() {
+        let style = ReasoningStyle::for_base_url;
+        assert_eq!(
+            style("https://api.anthropic.com/v1/"),
+            ReasoningStyle::AnthropicThinking
+        );
+        assert_eq!(
+            style("https://openrouter.ai/api/v1"),
+            ReasoningStyle::OpenRouter
+        );
+        assert_eq!(
+            style("https://api.openai.com/v1"),
+            ReasoningStyle::ReasoningEffort
+        );
+        assert_eq!(
+            style("http://127.0.0.1:8080/v1"),
+            ReasoningStyle::ReasoningEffort
+        );
+        assert_eq!(
+            style("https://api.deepseek.com"),
+            ReasoningStyle::Unsupported
+        );
+        assert_eq!(
+            style("https://api.mistral.ai/v1"),
+            ReasoningStyle::Unsupported
+        );
+        // A look-alike host is not the provider.
+        assert_eq!(
+            style("https://anthropic.com.example/v1"),
+            ReasoningStyle::ReasoningEffort
+        );
+    }
+
+    fn body_with(effort: Option<Effort>, max_tokens: Option<u32>, url: &str) -> serde_json::Value {
+        request_body(
+            ChatRequest {
+                model: "m",
+                messages: &[],
+                tools: &[],
+                slot: None,
+                max_tokens,
+                effort,
+            },
+            ReasoningStyle::for_base_url(url),
+        )
+    }
+
+    #[test]
+    fn models_that_cannot_reason_are_sent_no_reasoning_control() {
+        for url in [
+            "https://api.openai.com/v1",
+            "https://openrouter.ai/api/v1",
+            "https://api.anthropic.com/v1",
+        ] {
+            let body = body_with(None, None, url);
+            for key in ["reasoning_effort", "reasoning", "thinking", "max_tokens"] {
+                assert!(body.get(key).is_none(), "{url}: {key}");
+            }
+        }
+        let body = body_with(Some(Effort::High), None, "https://api.deepseek.com");
+        assert!(body.get("reasoning_effort").is_none() && body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn openai_style_servers_get_reasoning_effort_with_max_as_high() {
+        for (effort, sent) in [
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::Max, "high"),
+        ] {
+            for url in ["https://api.openai.com/v1", "http://127.0.0.1:8080/v1"] {
+                let body = body_with(Some(effort), None, url);
+                assert_eq!(body["reasoning_effort"], sent);
+                assert!(body.get("reasoning").is_none() && body.get("thinking").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn openrouter_gets_a_reasoning_object_with_every_level() {
+        for effort in Effort::ALL {
+            let body = body_with(Some(effort), None, "https://openrouter.ai/api/v1");
+            assert_eq!(body["reasoning"], json!({ "effort": effort.as_str() }));
+            assert!(body.get("reasoning_effort").is_none());
+        }
+    }
+
+    #[test]
+    fn anthropic_gets_a_thinking_budget_below_max_tokens() {
+        let anthropic = "https://api.anthropic.com/v1/";
+        let mut last = 0;
+        for effort in Effort::ALL {
+            let body = body_with(Some(effort), None, anthropic);
+            let budget = body["thinking"]["budget_tokens"].as_u64().unwrap();
+            let cap = body["max_tokens"].as_u64().unwrap();
+            assert_eq!(body["thinking"]["type"], "enabled");
+            assert!(budget >= 1024 && budget > last, "{effort}");
+            assert!(cap > budget && cap <= 32_000, "{effort}");
+            assert!(body.get("reasoning_effort").is_none());
+            last = budget;
+        }
+        // A caller's cap is kept and the budget fits under it.
+        let capped = body_with(Some(Effort::Max), Some(5000), anthropic);
+        assert_eq!(capped["max_tokens"], 5000);
+        assert_eq!(capped["thinking"]["budget_tokens"], 4999);
+        // Too small a cap for any budget leaves thinking off.
+        let tiny = body_with(Some(Effort::Low), Some(600), anthropic);
+        assert!(tiny.get("thinking").is_none());
     }
 
     #[test]

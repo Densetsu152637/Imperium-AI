@@ -5,6 +5,8 @@ import { useState } from "react";
 
 import type { TokenCountMethod } from "@imperium/protocol";
 
+import { Select } from "../components/Select";
+
 import {
   ROOT,
   breakdownUsed,
@@ -12,7 +14,8 @@ import {
   formatCount,
   type ContextBreakdown as Breakdown,
   type SessionState,
-} from "../sessions";
+} from "../sessions/sessions";
+import { ModelName } from "../components/ModelName";
 
 const METHODS: Record<TokenCountMethod, string> = {
   exact: "Exact, counted with the model's tokenizer",
@@ -28,8 +31,8 @@ function agentOrder(a: string, b: string): number {
 
 function agentLabel(session: SessionState, agentId: string): string {
   if (agentId === ROOT) return "Root agent";
-  const brief = session.tasks[agentId]?.brief.split("\n")[0] ?? "";
-  return brief ? `${agentId}: ${brief.length > 48 ? `${brief.slice(0, 47)}…` : brief}` : agentId;
+  const title = session.tasks[agentId]?.title ?? "";
+  return title ? `${title.length > 48 ? `${title.slice(0, 47)}…` : title} (${agentId})` : agentId;
 }
 
 /** A share of the window (or, when it is unknown, of the request) as a percentage. */
@@ -47,13 +50,12 @@ export function ContextBreakdownView({ session }: { session: SessionState }) {
       {agents.length > 1 && (
         <label className="context-agent">
           Agent
-          <select value={agentId} onChange={(event) => setChosen(event.target.value)}>
-            {agents.map((id) => (
-              <option key={id} value={id}>
-                {agentLabel(session, id)}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={agentId}
+            onChange={setChosen}
+            aria-label="Agent"
+            options={agents.map((id) => ({ value: id, label: agentLabel(session, id) }))}
+          />
         </label>
       )}
       <BreakdownDetail breakdown={breakdown} />
@@ -75,7 +77,10 @@ function BreakdownDetail({ breakdown }: { breakdown: Breakdown }) {
       <p className="context-use">
         <strong>{describeUse(breakdown)}</strong>
         {limit !== null && <span className="muted"> · {percent(used, limit)} of the window</span>}
-        <span className="muted"> · {breakdown.model}</span>
+        <span className="muted">
+          {" · "}
+          <ModelName name={breakdown.model} />
+        </span>
       </p>
       <div
         className="context-bar"

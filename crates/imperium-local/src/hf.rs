@@ -2,6 +2,7 @@
 //! (a GGUF quantisation for llama.cpp, or a safetensors folder for vLLM), and downloading them
 //! with resume and SHA256 checks into `<dir>/<owner>/<repo>/`, where the scanner finds them.
 
+use imperium_api::encoding::hex;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -550,10 +551,6 @@ fn encode(text: &str) -> String {
         .collect()
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -791,7 +788,7 @@ pub(crate) mod fake {
     use sha2::{Digest, Sha256};
 
     #[derive(Debug, Default)]
-    pub struct Repo {
+    pub(crate) struct Repo {
         /// Path to contents.
         pub files: BTreeMap<String, Vec<u8>>,
         /// Paths whose listed checksum is wrong, to test the check.
@@ -803,7 +800,7 @@ pub(crate) mod fake {
     }
 
     #[derive(Debug, Default)]
-    pub struct Shared {
+    pub(crate) struct Shared {
         pub repo: Mutex<Repo>,
         /// Range headers seen, by path.
         pub ranges: Mutex<Vec<(String, Option<String>)>>,
@@ -882,7 +879,7 @@ pub(crate) mod fake {
     }
 
     /// Serves `repo` at a local address; returns the endpoint and the shared state.
-    pub async fn serve(repo: Repo) -> (String, Arc<Shared>) {
+    pub(crate) async fn serve(repo: Repo) -> (String, Arc<Shared>) {
         let shared = Arc::new(Shared {
             repo: Mutex::new(repo),
             ranges: Mutex::default(),

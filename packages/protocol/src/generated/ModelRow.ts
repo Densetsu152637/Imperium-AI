@@ -7,7 +7,12 @@ export type ModelRow = { id: string,
 /**
  * `<endpoint>:<model>`.
  */
-spec: string, location: "local" | "cloud", tier: "basic" | "standard" | "strong" | "frontier", tags: Array<string>, input_usd_per_mtok: number | null, output_usd_per_mtok: number | null, 
+spec: string, 
+/**
+ * The display name set for the row (its `alias`, or the app's override), shown instead of
+ * the id; the id is what rules, agents and `--model` use.
+ */
+alias: string | null, location: "local" | "cloud", tier: "basic" | "standard" | "strong" | "frontier", tags: Array<string>, input_usd_per_mtok: number | null, output_usd_per_mtok: number | null, 
 /**
  * False when the row names an endpoint that is not configured.
  */
@@ -15,4 +20,13 @@ endpoint_configured: boolean,
 /**
  * The row's `context_window`, in tokens, when configured.
  */
-context_window: number | null, };
+context_window: number | null, 
+/**
+ * False when the row is switched off and left out of routing.
+ */
+enabled: boolean, 
+/**
+ * Whether the model can reason, so sessions on it send their effort: the row's
+ * `reasoning` setting or tags, a local model's chat template, or a known model name.
+ */
+reasoning: boolean, };

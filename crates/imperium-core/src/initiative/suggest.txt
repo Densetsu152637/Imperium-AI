@@ -1,0 +1,1 @@
+- Mode: suggest. Offer each item with the suggest_work tool (`title`, `prompt`, `reason`, `source`), at most {{max_suggestions}} in this review. You cannot start sessions now; the user starts a suggestion with one click.

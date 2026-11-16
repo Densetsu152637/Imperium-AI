@@ -1,0 +1,33 @@
+{
+  "description": "Pause and ask the user for one missing piece when your confidence about what they mean is below the threshold you were given, instead of guessing. Name the missing parameter and list the likely options (at most five). Check the session state, the conversation and the files first: ask only when they do not settle it. The user's answer comes back as the result; nothing runs meanwhile.",
+  "name": "request_clarification",
+  "parameters": {
+    "properties": {
+      "confidence": {
+        "description": "Your confidence, from 0 to 1, in the best guess you could act on",
+        "type": "number"
+      },
+      "missing_parameter": {
+        "description": "What you cannot determine, such as \"which file\" or \"which branch\"",
+        "type": "string"
+      },
+      "options": {
+        "description": "The likely answers, best first; leave empty when the answer is open-ended",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "question": {
+        "description": "The question to show, one short sentence; made from the missing parameter when left out",
+        "type": "string"
+      }
+    },
+    "required": [
+      "missing_parameter",
+      "options"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

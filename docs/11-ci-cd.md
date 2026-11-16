@@ -12,7 +12,6 @@ updates.
 | `build.yml`         | Called by release workflows only                     | Builds desktop bundles and CLI archives       |
 | `release.yml`       | Tags `v*` (for example `v0.4.0`, `v0.5.0-beta.1`)    | Main-channel GitHub Release                   |
 | `experimental.yml`  | Pushes to `experimental`, manual run on it           | Experimental-channel GitHub pre-release       |
-| `runtime-packs.yml` | Changes to `runtimes/`, manual                       | llama.cpp runtime packs per hardware backend  |
 
 ### Checks (`ci.yml`)
 
@@ -35,20 +34,55 @@ There are two channels, each with its own branch, workflow, and update feed.
 | ------------ | ----------------------------------- | ---------------------------- | -------------------------------------------------------------- |
 | Main         | Tag `vX.Y.Z` on `main`              | `X.Y.Z`                      | `vX.Y.Z (main)`, marked latest                                 |
 | Main (pre)   | Tag `vX.Y.Z-beta.N` etc.            | `X.Y.Z-beta.N`               | `vX.Y.Z-beta.N (main)` pre-release; not offered by the updater |
-| Experimental | Each push to the `experimental` branch | `X.Y.Z-experimental.<run>` | `vX.Y.Z-experimental.<run> (experimental)` pre-release         |
+| Experimental | Each push to the `experimental` branch | `X.Y.<run>-experimental` | `vX.Y.<run>-experimental` pre-release (for example `v0.2.9-experimental`) |
 
-`X.Y.Z` is the version in `apps/desktop/src-tauri/tauri.conf.json`; `<run>` is the
-experimental workflow's run number, so every experimental build is newer than the last.
-`release.yml` ignores `-experimental.` tags.
+Each channel keeps one release. After a new release is published,
+`scripts/ci/prune-releases.sh` deletes the channel's older releases and their tags: a new
+experimental build replaces the last one, a stable main release replaces every other main
+release, and a main pre-release replaces only the last pre-release (so the stable release the
+main update feed points at stays). Deleting after publishing means the feed never points at
+nothing. Runtime-pack releases are never touched.
+
+`X.Y.Z` is the version in `apps/desktop/src-tauri/tauri.conf.json`. Experimental builds keep its
+`X.Y` and use the experimental workflow's run number as the patch, so every experimental build
+is newer than the last. `release.yml` ignores `-experimental` tags.
+
+The version is **0.2.0**, set when the last roadmap item (the final cleanup, item 46) was merged;
+experimental builds are `0.2.<run>-experimental`. It is declared in the Cargo workspace
+(`Cargo.toml`, which every crate and the Tauri shell inherit, and the path dependencies'
+versions), `apps/desktop/package.json` and `apps/desktop/src-tauri/tauri.conf.json`, and the
+desktop and phone clients send it in their handshake. `PROTOCOL_VERSION` is separate and stays
+at 0.42; the mods, `packages/protocol` and `packages/mod-sdk` keep their own versions.
 
 ### Desktop updates
 
-The desktop app updates itself. It checks at startup and every six hours, downloads a newer
-build in the background, and installs it when the app quits; the title bar offers
-**Restart to update** to install it at once. **Settings → Updates** (also opened by the version
-button in the title bar) shows the installed version, chooses the channel (main or
-experimental), and has **Check and install updates**, which checks now and, when a newer build
-exists, downloads it, installs it, and restarts. A build follows the channel it was released on
+The desktop app updates itself. It checks on a schedule, downloads a newer build in the
+background, and installs it when the app quits; the title bar offers **Restart to update** to
+install it at once. **Settings → Updates** (also opened by the version button in the title bar)
+shows the installed version, when it last checked and when it checks next, and has two buttons:
+**Check for updates** (checks now; a newer build downloads and waits for a restart) and **Check
+and install** (checks now and, when a newer build exists, downloads it, installs it, and
+restarts). It also chooses the channel (main or experimental) and the schedule:
+
+- **Check automatically:** every day (the default), every 7 days, or every 28 days. The interval
+  runs from the last *successful* check, whose time is saved (`update.json` in the app's config
+  folder), so it holds across restarts: an app opened after the interval has passed checks about
+  20 seconds after it starts. A failed check is retried after an hour. Waits are measured against
+  the clock in steps of at most 15 minutes, so time the computer spent asleep counts.
+- **Check for updates when the computer starts:** registers Imperium to start when the user signs
+  in, with `--background-update`. Started that way the app opens no window and does not start
+  the daemon: it checks the channel once, installs a newer build if there is one (stopping the
+  bundled daemon first, and without starting the new version), and exits. The login entry is
+  made with [`tauri-plugin-autostart`](https://crates.io/crates/tauri-plugin-autostart) (2.5,
+  for Tauri 2): a per-user `Run` registry value on Windows, a LaunchAgent on macOS, an XDG
+  autostart entry on Linux, the same mechanisms `imperium daemon autostart` uses. It is named
+  "Imperium update check", so it never replaces the `Imperium` entry that command makes for the
+  daemon. Development builds neither register nor check on their own.
+
+Both are app settings, kept in the interface's `settings` document (`updateIntervalDays`,
+`checkUpdatesAtLogin`); the interface passes changes to the native side
+(`update_set_schedule`), and the app reads the document again at every start, before any
+window opens, and adds or removes the login entry to match. A build follows the channel it was released on
 until the user changes it; switching from experimental to main moves to the next main release newer than the
 installed build (the updater never downgrades).
 
@@ -70,7 +104,7 @@ Losing the key means installed apps can no longer update, so keep a copy outside
 | Windows arm64     | `windows-11-arm`   | NSIS                           | `imperium-windows-arm64.tar.gz`        |
 | macOS universal   | `macos-latest`     | `.app`, DMG                    | `imperium-macos-universal.tar.gz`      |
 
-- Each desktop bundle is a complete install: `build-desktop.sh` builds `imperiumd` and the
+- Each desktop bundle is a complete install: `build-desktop.sh` builds `imperium-core` and the
   `imperium` CLI for the target and ships them beside the app (Tauri `externalBin`; the app's
   own executable is `imperium-desktop` so the CLI's name stays free), with the bundled
   `policy/` workflow pack and `pets/` as resources. When no daemon answers, the app starts the
@@ -78,6 +112,9 @@ Losing the key means installed apps can no longer update, so keep a copy outside
   its log in the app's log folder; it keeps running after the window closes. Before an update
   installs, the app stops that daemon (only if it is the bundled one), and the Windows
   installer's hooks (`src-tauri/windows/hooks.nsh`) stop it before replacing or removing files.
+  An update over an existing install also replaces the bundled `mods`, `pets` and `policy` folders
+  whole and removes the pre-rename `imperiumd.exe`, so nothing an older version shipped lingers;
+  the user's settings and data are left alone.
   On Windows the CLI is in the install folder; on Linux the deb puts it on `PATH`.
 - Linux builds use Ubuntu 22.04 for an older glibc baseline.
 - MSI and RPM reject the hyphen in pre-release versions, so pre-release and experimental builds
@@ -86,30 +123,17 @@ Losing the key means installed apps can no longer update, so keep a copy outside
 
 ## Runtime packs
 
-Desktop bundles do not include inference runtimes. `runtime-packs.yml` builds `llama-server`
-and its libraries from the llama.cpp ref pinned in `runtimes/llama-cpp.env`, one pack per
-platform and backend, and publishes them to a `runtime-llama.cpp-<ref>` release. The daemon
-downloads the right pack on demand and verifies its checksum.
+Desktop bundles do not include inference runtimes. The app installs llama.cpp's own release
+build for the ref pinned in `runtimes/llama-cpp.env` from
+[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases), verified against the
+SHA-256 digests GitHub publishes for each asset
+([04](04-models-and-routing.md#runtimes)); raising `LLAMA_CPP_REF` is all a llama.cpp update
+needs on the release side, once the new ref's builds are checked locally.
 
-| Pack                | OS / arch       | Backend                         |
-| ------------------- | --------------- | ------------------------------- |
-| `linux-x64-cpu`     | Linux x86_64    | CPU                             |
-| `linux-x64-vulkan`  | Linux x86_64    | Vulkan (NVIDIA, AMD, Intel)     |
-| `linux-x64-cuda12`  | Linux x86_64    | CUDA 12.9 (Pascal and newer)    |
-| `linux-x64-cuda13`  | Linux x86_64    | CUDA 13 (Turing and newer)      |
-| `linux-x64-rocm`    | Linux x86_64    | ROCm / HIP (RDNA2+, CDNA)       |
-| `linux-arm64-cpu`   | Linux aarch64   | CPU                             |
-| `windows-x64-cpu`   | Windows x86_64  | CPU                             |
-| `windows-x64-vulkan`| Windows x86_64  | Vulkan                          |
-| `windows-x64-cuda12`| Windows x86_64  | CUDA 12.9                       |
-| `windows-x64-cuda13`| Windows x86_64  | CUDA 13                         |
-| `windows-arm64-cpu` | Windows arm64   | CPU                             |
-| `macos-arm64-metal` | macOS arm64     | Metal                           |
-| `macos-x64-cpu`     | macOS x86_64    | CPU                             |
+There is no runtime-pack pipeline of our own: an earlier `runtime-packs.yml` never built
+Windows CUDA or macOS packs and was removed once the app switched to llama.cpp's own builds.
 
-Each pack contains a `manifest.json` (pack id, backend, OS, arch, llama.cpp ref, build
-flags) and, for CUDA packs, the redistributable CUDA runtime libraries. vLLM is never packaged
-(see [04](04-models-and-routing.md#runtimes)).
+vLLM is never packaged (see [04](04-models-and-routing.md#runtimes)).
 
 ## Mobile (later)
 
@@ -139,5 +163,8 @@ no update feed).
   pull requests. The maintainer's explicit go-ahead is the approval, and the maintainer merges
   or authorises the merge.
 
-The `experimental` branch exists (created 2026-11-08) and is not protected; every push to it
-publishes an experimental release.
+`experimental` is the default branch (since 2026-11-08), so pull requests target it; every
+merge into it publishes an experimental release. `main` only takes `experimental`: the
+`source branch` job (part of `CI gate`) fails any pull request into `main` from another branch.
+Promoting is a pull request from `experimental` into `main`, then a `vX.Y.Z` tag on `main` for a
+main release.

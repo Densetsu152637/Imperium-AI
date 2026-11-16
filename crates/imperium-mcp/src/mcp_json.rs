@@ -82,6 +82,7 @@ pub fn parse(
                 launch,
                 allow: Vec::new(),
                 timeout,
+                sampling: false,
             })
         })
         .collect()

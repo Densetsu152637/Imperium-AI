@@ -5,32 +5,65 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 /// Whether a local model can take work right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Availability {
     /// Loaded with a free slot: reusing it costs nothing.
     Loaded,
-    /// Not loaded (or every slot is busy) but fits in free memory: it can be loaded.
+    /// Not loaded (or every slot is busy) but fits beside the loaded models: it can be loaded.
     Fits,
-    /// Cannot run without evicting a model that is in use, or the model is unknown.
+    /// Fits once loaded models nobody has a slot on are swapped out (their slots saved and
+    /// restored when they come back). `seconds` is the expected wait for the swap, from the
+    /// model's last measured load, so a caller can weigh it against a hosted model.
+    Swap { seconds: u32 },
+    /// Cannot run without evicting a model that is in use, swapping is paused because the
+    /// swap limit was reached, or the model is unknown.
     Unavailable,
 }
 
-/// A slot on a loaded local model, held while an agent uses it. Dropping it frees the slot.
+/// A slot on a loaded local model, held for one model call. Dropping it frees the slot, so an
+/// agent takes a lease immediately before each request and drops it when the request ends, and
+/// holds none while it runs tools or waits.
 pub struct LocalLease {
     /// The OpenAI-compatible base URL of the model's server.
     pub base_url: String,
+    /// The server slot this lease owns, for runtimes that address slots by index (llama.cpp's
+    /// `id_slot`); requests sent with the lease are pinned to it so the slot's cached prompt is
+    /// reused. `None` for runtimes that choose their own.
+    pub slot: Option<u32>,
+    /// How long the call waited for a free slot or for room to load the model, not counting
+    /// time spent loading it, swapping other models out, or restoring a saved slot.
+    pub waited: Duration,
+    /// What the agent must send as `max_tokens` (the reservation less its prompt estimate), or
+    /// `None` when the reply is uncapped or the runtime has no token pool (vLLM).
+    pub max_tokens: Option<u32>,
     _release: Box<dyn Send + Sync>,
 }
 
 impl LocalLease {
     /// `release` is dropped with the lease; its `Drop` frees the slot.
-    pub fn new(base_url: String, release: impl Send + Sync + 'static) -> Self {
+    pub fn new(
+        base_url: String,
+        slot: Option<u32>,
+        max_tokens: Option<u32>,
+        release: impl Send + Sync + 'static,
+    ) -> Self {
         LocalLease {
             base_url,
+            slot,
+            waited: Duration::ZERO,
+            max_tokens,
             _release: Box::new(release),
         }
+    }
+
+    /// The lease, recording that the call waited `waited` for its slot.
+    #[must_use]
+    pub fn with_wait(mut self, waited: Duration) -> Self {
+        self.waited = waited;
+        self
     }
 }
 
@@ -38,16 +71,318 @@ impl fmt::Debug for LocalLease {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LocalLease")
             .field("base_url", &self.base_url)
+            .field("slot", &self.slot)
+            .field("waited", &self.waited)
+            .field("max_tokens", &self.max_tokens)
             .finish_non_exhaustive()
     }
 }
 
+/// What an agent told the local runtime about itself ([`LocalModels::attach`],
+/// [`LocalModels::waiting`]); dropping it withdraws that.
+pub struct LocalPresence(Option<Box<dyn Send + Sync>>);
+
+impl LocalPresence {
+    /// `withdraw` is dropped with the presence; its `Drop` withdraws it.
+    pub fn new(withdraw: impl Send + Sync + 'static) -> Self {
+        LocalPresence(Some(Box::new(withdraw)))
+    }
+
+    /// A presence the runtime does not track.
+    pub fn untracked() -> Self {
+        LocalPresence(None)
+    }
+}
+
+impl fmt::Debug for LocalPresence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("LocalPresence")
+            .field(&self.0.is_some())
+            .finish()
+    }
+}
+
+/// Whose work a model call is. Interactive calls are admitted before queued background calls,
+/// and background work never evicts a model an interactive session used recently.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Priority {
+    /// A session the user is driving.
+    #[default]
+    Interactive,
+    /// A session a schedule or a project agent started.
+    Background,
+}
+
+/// What one model call asks of a local model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalRequest {
+    pub priority: Priority,
+    /// The agent's estimate of the call's prompt, in tokens; the runtime reserves it plus the
+    /// reply the model may generate. `None` reserves the whole context.
+    pub prompt_tokens: Option<u32>,
+    /// Reserve the whole context and send no `max_tokens`: the retry of a reply that a
+    /// reservation cut short.
+    pub uncapped: bool,
+}
+
+impl Default for LocalRequest {
+    fn default() -> Self {
+        LocalRequest {
+            priority: Priority::Interactive,
+            prompt_tokens: None,
+            uncapped: false,
+        }
+    }
+}
+
+/// Why a call for a local model is waiting, while it waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalWait {
+    /// The model is being loaded (or restarted) for it.
+    Loading,
+    /// The model restarts with a larger KV pool once the calls running on it are done.
+    GrowingPool,
+    /// The model's KV pool is full of other calls' reservations.
+    KvRoom,
+    /// Every slot of the model is busy.
+    Slot,
+    /// Another model is in the way: its calls come first, or it must unload to make room.
+    OtherModel,
+    /// Waiting for room on the GPU: models in the way are finishing their calls before they
+    /// are swapped out, so this call does not run on the CPU.
+    MakingRoom,
+    /// The contexts of agents on a model being swapped out for this call are being saved.
+    SavingContext,
+    /// This agent's own context, saved while it waited, is being restored.
+    RestoringContext,
+}
+
+/// The agent id of a holder, `<session id>/<agent id>`.
+pub fn holder(session: &str, agent: &str) -> String {
+    format!("{session}/{agent}")
+}
+
+/// The session a holder (see [`holder`]) belongs to: the text before the first `/`.
+pub fn holder_session(holder: &str) -> &str {
+    holder.split('/').next().unwrap_or(holder)
+}
+
 pub type AcquireFuture<'a> = Pin<Box<dyn Future<Output = Result<LocalLease, String>> + Send + 'a>>;
+pub type LoadedFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<LocalLease, AcquireError>> + Send + 'a>>;
+
+/// Why [`LocalModels::acquire_loaded`] gave no slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcquireError {
+    /// The model is not loaded (or is being swapped out, restarted or recovered from a crash),
+    /// and this call never loads one: the caller does without it.
+    NotLoaded(String),
+    /// Anything else, as [`LocalModels::acquire`] reports it.
+    Failed(String),
+}
+
+impl fmt::Display for AcquireError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AcquireError::NotLoaded(model) => {
+                write!(
+                    f,
+                    "local model {model} is not loaded, and this call does not load it"
+                )
+            }
+            AcquireError::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for AcquireError {}
+
+impl From<String> for AcquireError {
+    fn from(message: String) -> Self {
+        AcquireError::Failed(message)
+    }
+}
+
+impl From<&str> for AcquireError {
+    fn from(message: &str) -> Self {
+        AcquireError::Failed(message.to_string())
+    }
+}
+pub type SuspendFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+pub type ResumeFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 /// Local models the router may place work on.
 pub trait LocalModels: Send + Sync + fmt::Debug {
     /// Where the model with this id stands, without loading anything.
     fn availability(&self, model: &str) -> Availability;
-    /// Takes a slot on the model, loading it first if needed.
-    fn acquire<'a>(&'a self, model: &'a str) -> AcquireFuture<'a>;
+    /// Whether the runtime has a model with this id (found in the model folders), without
+    /// loading anything. A runtime that cannot tell says yes; loading it then reports the error.
+    fn has_model(&self, _model: &str) -> bool {
+        true
+    }
+    /// The context window a session would get on the model once it is loaded, from its launch
+    /// settings and file metadata, without loading it; `None` when unknown. Only an estimate:
+    /// the loaded server's own report replaces it.
+    fn planned_context(&self, _model: &str) -> Option<u64> {
+        None
+    }
+    /// Whether the model can reason (its chat template has a thinking switch, think tags or an
+    /// effort variable, or its settings say so), so a session's effort is sent with its calls;
+    /// `None` when the runtime cannot tell.
+    fn reasons(&self, _model: &str) -> Option<bool> {
+        None
+    }
+    /// Why `holder`'s call for a model waits, while it waits in [`LocalModels::acquire`];
+    /// `None` when it does not wait or the runtime does not say.
+    fn wait_reason(&self, _holder: &str) -> Option<LocalWait> {
+        None
+    }
+    /// Whether `holder`'s context was saved and its cells freed while it waited (see
+    /// [`LocalModels::waiting`]): its next [`LocalModels::acquire`] restores it before the call,
+    /// so whoever wakes it (subagents done, a steer) needs nothing else.
+    fn suspended(&self, _holder: &str) -> bool {
+        false
+    }
+    /// Saves `holder`'s context on `model` and frees its KV cells now, for an agent that will
+    /// not call for a while (a stopped session). Its next [`LocalModels::acquire`] restores it.
+    /// A runtime that cannot does nothing.
+    fn suspend<'a>(&'a self, _model: &'a str, _holder: &'a str) -> SuspendFuture<'a> {
+        Box::pin(async {})
+    }
+    /// Brings `holder`'s context on `model` back now, ahead of its next call, for an agent that
+    /// goes on after waiting (its subagents done, a steering message, Resume): the model is
+    /// loaded if it was swapped out and the saved context restored, as the user's work. The
+    /// default takes a slot with a call that reserves almost nothing and lets it go.
+    fn resume<'a>(&'a self, model: &'a str, holder: &'a str) -> ResumeFuture<'a> {
+        Box::pin(async move {
+            let request = LocalRequest {
+                priority: Priority::Interactive,
+                prompt_tokens: Some(0),
+                uncapped: false,
+            };
+            self.acquire_with(model, holder, request).await.map(drop)
+        })
+    }
+    /// Takes a slot on the model for one call, loading the model first if needed (waiting for
+    /// room while the models in the way are in use, up to a limit the runtime sets) and queueing
+    /// first-come, first-served while every slot is busy. `holder` names the agent asking, so the model can give it back the
+    /// slot it used last, whose cached prompt is still there unless another agent has
+    /// overwritten it (or restored from disk if the model was swapped out meanwhile).
+    fn acquire<'a>(&'a self, model: &'a str, holder: &'a str) -> AcquireFuture<'a>;
+    /// Like [`LocalModels::acquire`], for a call of the given priority. A runtime that does not
+    /// rank calls serves them all alike.
+    fn acquire_as<'a>(
+        &'a self,
+        model: &'a str,
+        holder: &'a str,
+        _priority: Priority,
+    ) -> AcquireFuture<'a> {
+        self.acquire(model, holder)
+    }
+    /// Like [`LocalModels::availability`], from the point of view of `session`: models other
+    /// sessions are using are not available to it.
+    fn availability_for(&self, model: &str, _session: &str) -> Availability {
+        self.availability(model)
+    }
+    /// Like [`LocalModels::acquire_as`], with the agent's estimate of the call
+    /// ([`LocalRequest`]): the runtime reserves tokens of the model's KV pool for it.
+    fn acquire_with<'a>(
+        &'a self,
+        model: &'a str,
+        holder: &'a str,
+        request: LocalRequest,
+    ) -> AcquireFuture<'a> {
+        self.acquire_as(model, holder, request.priority)
+    }
+    /// Like [`LocalModels::acquire_with`], for a call only worth making on a model already
+    /// loaded (a session title): it never loads, restarts or swaps a model, and answers
+    /// [`AcquireError::NotLoaded`] instead, so the caller falls back. The default checks
+    /// [`LocalModels::availability`] first, which a swap-out can overtake; a runtime that loads
+    /// models itself enforces it where it hands out slots.
+    fn acquire_loaded<'a>(
+        &'a self,
+        model: &'a str,
+        holder: &'a str,
+        request: LocalRequest,
+    ) -> LoadedFuture<'a> {
+        Box::pin(async move {
+            if self.availability(model) != Availability::Loaded {
+                return Err(AcquireError::NotLoaded(model.to_string()));
+            }
+            self.acquire_with(model, holder, request)
+                .await
+                .map_err(AcquireError::Failed)
+        })
+    }
+    /// Says that `holder` is working on `model` for one turn: while held, after the agent's
+    /// first call on the loaded model, the model is never unloaded for another session's load,
+    /// an idle timeout or a settings change. Held for the turn.
+    fn attach(&self, _model: &str, _holder: &str) -> LocalPresence {
+        LocalPresence::untracked()
+    }
+    /// Says that `holder` is asleep (waiting for its subagents, an approval, or a usage-limit
+    /// pause). That releases its hold: the model may be swapped out for any load, its slots
+    /// saved and restored. Held while it waits.
+    fn waiting(&self, _model: &str, _holder: &str) -> LocalPresence {
+        LocalPresence::untracked()
+    }
+    /// Reports one finished call to `model`: how many tokens it generated and how long
+    /// generating them took (after the first token, or the whole call for a buffered response).
+    /// The runtime keeps the measured speed ([`LocalModels::tokens_per_s`]).
+    fn record_throughput(&self, _model: &str, _completion_tokens: u64, _generating: Duration) {}
+    /// The generation speed measured for `model` so far, in tokens per second; `None` before
+    /// any call finished. Slow models, such as one pinned to the CPU, are judged by it.
+    fn tokens_per_s(&self, _model: &str) -> Option<f64> {
+        None
+    }
+    /// How long, in seconds, a call for `model` made now is expected to wait for a slot behind
+    /// the calls already running and queued, not counting loading it; `0` when a slot is free,
+    /// the model is not loaded, or the runtime cannot tell. An estimate from recent call times,
+    /// used by routing to send work elsewhere when a model is backed up.
+    fn queue_wait_s(&self, _model: &str) -> u32 {
+        0
+    }
+    /// Says that `holder`, a knowledge agent, is kept on `model` (docs/21-knowledge-agents.md):
+    /// from now until the presence is dropped its slot is saved when the model is swapped out or
+    /// unloaded, and its saved file outranks those of finished agents when the saved-slot cache
+    /// is trimmed. It never pins the model, and counts as neither working nor waiting.
+    fn keep(&self, _model: &str, _holder: &str) -> LocalPresence {
+        LocalPresence::untracked()
+    }
+    /// Saves `holder`'s slot on `model` to disk now without erasing its cells, after a question's
+    /// fork ended (however it ended), so the prefix can be restored if another agent overwrites
+    /// the slot. Does nothing when slots are not saved or the holder's cells are not in a free
+    /// slot any more.
+    fn save_kept<'a>(&'a self, _model: &'a str, _holder: &'a str) -> SuspendFuture<'a> {
+        Box::pin(async {})
+    }
+    /// Saves `holder`'s slot `slot` on `model` while the caller still holds its lease on it, so
+    /// nobody queued for a slot can take it first; leaves the cells in place. For a fork's final
+    /// call (see [`LocalModels::save_kept`] for the best-effort save after the lease is gone).
+    /// `Err` says why nothing was saved, so the caller can fall back.
+    fn save_leased<'a>(
+        &'a self,
+        _model: &'a str,
+        _holder: &'a str,
+        _slot: u32,
+    ) -> ResumeFuture<'a> {
+        Box::pin(async { Err("this runtime does not save slots".to_string()) })
+    }
+    /// Removes `holder`'s saved slots from the disk, for a knowledge agent that was retired or
+    /// resumed (its prefix changed).
+    fn drop_saved(&self, _holder: &str) {}
+    /// Whether `fork_model` is loaded with a slot free for a fork: an asker waiting for the fork's
+    /// answer holds no slot, so one free permit is enough even on the asker's own model, and the
+    /// asker need not give up its cached prompt.
+    fn fork_fits(&self, _asker_model: &str, _fork_model: &str) -> bool {
+        false
+    }
+    /// The bytes the saved-slot cache may hold, `None` when slots are not saved.
+    fn swap_cache_bytes(&self) -> Option<u64> {
+        None
+    }
+    /// The bytes of KV cache one token takes on `model`, `None` when unknown.
+    fn kv_bytes_per_token(&self, _model: &str) -> Option<u64> {
+        None
+    }
 }

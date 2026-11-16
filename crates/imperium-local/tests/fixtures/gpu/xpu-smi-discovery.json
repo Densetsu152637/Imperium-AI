@@ -1,0 +1,26 @@
+{
+    "device_list": [
+        {
+            "device_id": 0,
+            "device_name": "Intel(R) Data Center GPU Max 1550",
+            "vendor_name": "Intel(R) Corporation",
+            "uuid": "00000000-0000-0000-0000-0000000000a1",
+            "pci_device_id": "0BD5",
+            "pci_bdf_address": "0000:18:00.0",
+            "memory_physical_size_byte": "136902082560",
+            "drm_device": "/dev/dri/card0",
+            "function_type": "physical"
+        },
+        {
+            "device_id": 1,
+            "device_name": "Intel(R) Arc(TM) A770 Graphics",
+            "vendor_name": "Intel(R) Corporation",
+            "uuid": "00000000-0000-0000-0000-0000000000b2",
+            "pci_device_id": "56A0",
+            "pci_bdf_address": "0000:03:00.0",
+            "memory_physical_size_byte": "17071734784",
+            "drm_device": "/dev/dri/card1",
+            "function_type": "physical"
+        }
+    ]
+}

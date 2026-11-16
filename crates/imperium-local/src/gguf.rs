@@ -31,19 +31,53 @@ pub struct GgufInfo {
     /// For split models: which part this is (0-based) and how many there are.
     pub split_index: Option<u32>,
     pub split_count: Option<u32>,
+    /// Whether the chat template renders reasoning (a thinking switch, think tags, or a
+    /// `reasoning_effort` variable); `None` when the file has no template, or one too long to
+    /// read.
+    pub template_reasons: Option<bool>,
+    /// `tokenizer.ggml.model`, the tokenizer family (`llama`, `gpt2`, ...).
+    pub tokenizer_model: Option<String>,
+    /// Entries in the vocabulary (`tokenizer.ggml.tokens`); the entries themselves are not read.
+    pub vocab_size: Option<u64>,
+    /// What the model card fields of the header say (`general.*`), for the model's card.
+    pub about: About,
+}
+
+/// The descriptive `general.*` fields of a GGUF header.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct About {
+    /// `general.basename`, such as `Qwen3-Coder`.
+    pub basename: Option<String>,
+    /// `general.finetune`, such as `Instruct`.
+    pub finetune: Option<String>,
+    /// `general.size_label`, such as `30B-A3B`.
+    pub size_label: Option<String>,
+    pub description: Option<String>,
+    pub license: Option<String>,
+    /// `general.tags`, such as `text-generation` or `code`.
+    pub tags: Vec<String>,
+    /// `general.languages`.
+    pub languages: Vec<String>,
 }
 
 impl GgufInfo {
     /// Bytes of KV cache per token of context at the given cache element size, when the
     /// header has what it takes: layers × KV heads × (key + value head size) × element bytes.
     pub fn kv_bytes_per_token(&self, cache_element_bytes: f64) -> Option<u64> {
+        self.kv_bytes_per_token_kv(cache_element_bytes, cache_element_bytes)
+    }
+
+    /// Like [`GgufInfo::kv_bytes_per_token`], with separate element sizes for the key and the
+    /// value cache.
+    pub fn kv_bytes_per_token_kv(&self, key_bytes: f64, value_bytes: f64) -> Option<u64> {
         let layers = self.block_count?;
         let heads = self.head_count?;
         let kv_heads = self.head_count_kv.unwrap_or(heads);
         let head_dim = self.embedding_length? / heads.max(1);
         let key = self.key_length.unwrap_or(head_dim);
         let value = self.value_length.unwrap_or(head_dim);
-        let bytes = (layers * kv_heads * (key + value)) as f64 * cache_element_bytes;
+        let bytes =
+            (layers * kv_heads) as f64 * (key as f64 * key_bytes + value as f64 * value_bytes);
         Some(bytes.ceil() as u64)
     }
 
@@ -128,10 +162,35 @@ pub fn read(reader: &mut (impl Read + Seek)) -> Result<GgufInfo, GgufError> {
     for _ in 0..kv_count {
         let key = read_string(reader)?.ok_or(GgufError::Malformed("key too long"))?;
         let kind = read_u32(reader)?;
-        match read_value(reader, kind)? {
-            Value::Text(text) => match key.as_str() {
-                "general.architecture" => info.architecture = Some(text),
-                "general.name" => info.name = Some(text),
+        if key == "tokenizer.ggml.tokens" && kind == ARRAY {
+            let element = read_u32(reader)?;
+            let count = read_u64(reader)?;
+            skip_array(reader, element, count)?;
+            info.vocab_size = Some(count);
+            continue;
+        }
+        let texts = matches!(key.as_str(), "general.tags" | "general.languages");
+        match read_value(reader, kind, texts)? {
+            Value::Text(text) => {
+                let about = &mut info.about;
+                match key.as_str() {
+                    "general.architecture" => info.architecture = Some(text),
+                    "general.name" => info.name = Some(text),
+                    "general.basename" => about.basename = Some(text),
+                    "general.finetune" => about.finetune = Some(text),
+                    "general.size_label" => about.size_label = Some(text),
+                    "general.description" => about.description = Some(text),
+                    "general.license" => about.license = Some(text),
+                    "tokenizer.ggml.model" => info.tokenizer_model = Some(text),
+                    "tokenizer.chat_template" => {
+                        info.template_reasons = Some(imperium_api::template_reasons(&text));
+                    }
+                    _ => {}
+                }
+            }
+            Value::Texts(list) => match key.as_str() {
+                "general.tags" => info.about.tags = list,
+                "general.languages" => info.about.languages = list,
                 _ => {}
             },
             Value::Number(number) => numbers.push((key, number)),
@@ -172,9 +231,14 @@ pub fn read(reader: &mut (impl Read + Seek)) -> Result<GgufInfo, GgufError> {
 
 enum Value {
     Text(String),
+    /// A short array of strings, kept only where asked for.
+    Texts(Vec<String>),
     Number(u64),
     Skipped,
 }
+
+/// Most strings of an array kept as [`Value::Texts`]; longer arrays (the vocabulary) are skipped.
+const MAX_TEXTS: u64 = 64;
 
 // GGUF value types.
 const UINT8: u32 = 0;
@@ -191,7 +255,8 @@ const UINT64: u32 = 10;
 const INT64: u32 = 11;
 const FLOAT64: u32 = 12;
 
-fn read_value(reader: &mut (impl Read + Seek), kind: u32) -> Result<Value, GgufError> {
+/// Reads one value; with `texts`, a short array of strings is kept as [`Value::Texts`].
+fn read_value(reader: &mut (impl Read + Seek), kind: u32, texts: bool) -> Result<Value, GgufError> {
     Ok(match kind {
         UINT8 | INT8 | BOOL => Value::Number(u64::from(read_array::<1>(reader)?[0])),
         UINT16 | INT16 => Value::Number(u64::from(u16::from_le_bytes(read_array(reader)?))),
@@ -209,23 +274,38 @@ fn read_value(reader: &mut (impl Read + Seek), kind: u32) -> Result<Value, GgufE
         ARRAY => {
             let element = read_u32(reader)?;
             let count = read_u64(reader)?;
-            match fixed_size(element) {
-                Some(size) => skip(
-                    reader,
-                    count
-                        .checked_mul(size)
-                        .ok_or(GgufError::Malformed("array too large"))?,
-                )?,
-                None => {
-                    for _ in 0..count {
-                        read_value(reader, element)?;
+            if texts && element == STRING && count <= MAX_TEXTS {
+                let mut list = Vec::new();
+                for _ in 0..count {
+                    if let Some(text) = read_string(reader)? {
+                        list.push(text);
                     }
                 }
+                return Ok(Value::Texts(list));
             }
+            skip_array(reader, element, count)?;
             Value::Skipped
         }
         _ => return Err(GgufError::Malformed("unknown value type")),
     })
+}
+
+/// Skips `count` elements of type `element` of an array whose header was read.
+fn skip_array(reader: &mut (impl Read + Seek), element: u32, count: u64) -> Result<(), GgufError> {
+    match fixed_size(element) {
+        Some(size) => skip(
+            reader,
+            count
+                .checked_mul(size)
+                .ok_or(GgufError::Malformed("array too large"))?,
+        )?,
+        None => {
+            for _ in 0..count {
+                read_value(reader, element, false)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn fixed_size(kind: u32) -> Option<u64> {
@@ -273,7 +353,7 @@ fn read_u64(reader: &mut impl Read) -> io::Result<u64> {
 /// Writes GGUF headers for tests.
 #[cfg(test)]
 pub(crate) mod fixture {
-    pub enum V<'a> {
+    pub(crate) enum V<'a> {
         Str(&'a str),
         U32(u32),
         U64(u64),
@@ -282,7 +362,7 @@ pub(crate) mod fixture {
         I32Array(&'a [i32]),
     }
 
-    pub fn header(pairs: &[(&str, V<'_>)]) -> Vec<u8> {
+    pub(crate) fn header(pairs: &[(&str, V<'_>)]) -> Vec<u8> {
         let mut out = b"GGUF".to_vec();
         out.extend(3u32.to_le_bytes());
         out.extend(0u64.to_le_bytes());
@@ -332,7 +412,7 @@ pub(crate) mod fixture {
     }
 
     /// A small Llama-shaped model header: 32 layers, 32 heads, 8 KV heads, 4096 wide.
-    pub fn llama(name: &str) -> Vec<u8> {
+    pub(crate) fn llama(name: &str) -> Vec<u8> {
         header(&[
             ("general.architecture", V::Str("llama")),
             ("general.name", V::Str(name)),
@@ -372,6 +452,32 @@ mod tests {
     }
 
     #[test]
+    fn the_model_card_fields_are_read() {
+        let bytes = header(&[
+            ("general.architecture", V::Str("qwen3")),
+            ("general.basename", V::Str("Qwen3-Coder")),
+            ("general.finetune", V::Str("Instruct")),
+            ("general.size_label", V::Str("30B-A3B")),
+            ("general.license", V::Str("apache-2.0")),
+            ("general.description", V::Str("A coding model.")),
+            ("general.tags", V::StrArray(&["code", "text-generation"])),
+            ("general.languages", V::StrArray(&["en"])),
+            ("tokenizer.ggml.tokens", V::StrArray(&["a", "b"])),
+            ("qwen3.block_count", V::U32(48)),
+        ]);
+        let info = read(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!(info.about.basename.as_deref(), Some("Qwen3-Coder"));
+        assert_eq!(info.about.finetune.as_deref(), Some("Instruct"));
+        assert_eq!(info.about.size_label.as_deref(), Some("30B-A3B"));
+        assert_eq!(info.about.license.as_deref(), Some("apache-2.0"));
+        assert_eq!(info.about.description.as_deref(), Some("A coding model."));
+        assert_eq!(info.about.tags, ["code", "text-generation"]);
+        assert_eq!(info.about.languages, ["en"]);
+        // Arrays after the kept ones are still skipped correctly.
+        assert_eq!(info.block_count, Some(48));
+    }
+
+    #[test]
     fn explicit_head_sizes_and_split_parts_are_read() {
         let bytes = header(&[
             ("general.architecture", V::Str("qwen3")),
@@ -387,6 +493,102 @@ mod tests {
         let info = read(&mut Cursor::new(bytes)).unwrap();
         assert_eq!(info.kv_bytes_per_token(1.0), Some(48 * 4 * 256));
         assert_eq!((info.split_index, info.split_count), (Some(1), Some(3)));
+    }
+
+    #[test]
+    fn the_chat_template_says_whether_the_model_reasons() {
+        let with = |template: &str| {
+            let bytes = header(&[
+                ("general.architecture", V::Str("qwen3")),
+                ("tokenizer.chat_template", V::Str(template)),
+            ]);
+            read(&mut Cursor::new(bytes)).unwrap().template_reasons
+        };
+        assert_eq!(
+            with("{%- if enable_thinking is defined and enable_thinking is false %}"),
+            Some(true)
+        );
+        assert_eq!(
+            with("{% for m in messages %}{{ m.content }}{% endfor %}"),
+            Some(false)
+        );
+        let none = read(&mut Cursor::new(llama("plain"))).unwrap();
+        assert_eq!(none.template_reasons, None);
+    }
+
+    #[test]
+    fn the_tokenizer_family_and_vocabulary_size_are_read() {
+        let bytes = header(&[
+            ("general.architecture", V::Str("qwen3")),
+            ("tokenizer.ggml.model", V::Str("gpt2")),
+            ("tokenizer.ggml.tokens", V::StrArray(&["a", "b", "c"])),
+            ("qwen3.block_count", V::U32(48)),
+        ]);
+        let info = read(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!(info.tokenizer_model.as_deref(), Some("gpt2"));
+        assert_eq!(info.vocab_size, Some(3));
+        // The key after the vocabulary is still read: the array was skipped whole.
+        assert_eq!(info.block_count, Some(48));
+        let none = read(&mut Cursor::new(header(&[(
+            "general.architecture",
+            V::Str("x"),
+        )])));
+        assert_eq!(none.unwrap().vocab_size, None);
+    }
+
+    #[test]
+    fn malformed_tokenizer_fields_are_ignored_not_fatal() {
+        // A tokenizer family that is a number and a vocabulary that is not a list: nothing is
+        // learned from them, and the keys after them are still read.
+        let bytes = header(&[
+            ("general.architecture", V::Str("qwen3")),
+            ("tokenizer.ggml.model", V::U32(7)),
+            ("tokenizer.ggml.tokens", V::U32(151_936)),
+            ("qwen3.block_count", V::U32(48)),
+        ]);
+        let info = read(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!((info.tokenizer_model, info.vocab_size), (None, None));
+        assert_eq!(info.block_count, Some(48));
+        // A vocabulary of numbers instead of strings still counts its entries.
+        let bytes = header(&[
+            ("general.architecture", V::Str("qwen3")),
+            ("tokenizer.ggml.tokens", V::I32Array(&[1, 2, 3, 4])),
+            ("qwen3.block_count", V::U32(48)),
+        ]);
+        let info = read(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!(info.vocab_size, Some(4));
+        assert_eq!(info.block_count, Some(48));
+    }
+
+    #[test]
+    fn a_truncated_or_absurd_vocabulary_is_an_error_not_a_hang() {
+        // `header` writes the key count; one more key (the vocabulary) is appended by hand.
+        let with_tokens = |element: u32, count: u64, data: &[u8]| {
+            let mut bytes = header(&[("general.architecture", V::Str("qwen3"))]);
+            bytes[16..24].copy_from_slice(&2u64.to_le_bytes());
+            let key = b"tokenizer.ggml.tokens";
+            bytes.extend((key.len() as u64).to_le_bytes());
+            bytes.extend(key);
+            bytes.extend(9u32.to_le_bytes());
+            bytes.extend(element.to_le_bytes());
+            bytes.extend(count.to_le_bytes());
+            bytes.extend(data);
+            read(&mut Cursor::new(bytes))
+        };
+        // Strings: the count promises far more than the file holds.
+        let one = [3u64.to_le_bytes().as_slice(), b"abc".as_slice()].concat();
+        assert!(matches!(
+            with_tokens(8, u64::MAX / 2, &one),
+            Err(GgufError::Io(_))
+        ));
+        // Fixed-size elements: a count whose size overflows, and one that runs past the end.
+        assert!(matches!(
+            with_tokens(5, u64::MAX, &[]),
+            Err(GgufError::Malformed(_))
+        ));
+        let _ = with_tokens(5, 1 << 40, &[]); // a seek past the end: parsed, not hung on
+        // A complete one is read.
+        assert_eq!(with_tokens(5, 0, &[]).unwrap().vocab_size, Some(0));
     }
 
     #[test]

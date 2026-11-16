@@ -1,146 +1,405 @@
-// The Projects (environments) and Sessions panels on the left.
+// The Environments and Sessions panels on the left. An environment is a named set of folders;
+// its sessions' tools may use every folder, and the first is the working directory. Each row
+// is an icon and a title with a "more" menu; environments are created and edited in the
+// environment window (EnvironmentWindow.tsx). A session row is one line: a status dot, its title,
+// and how long ago it was active, with the rest in its tooltip; double-click the title, or use
+// the "more" menu, to rename it. Pinned environments and sessions come first;
+// archived sessions are kept apart in a collapsed Archived group at the bottom. A search box above
+// the sessions searches what was said and done in them (SessionSearch.tsx).
 
-import { useState } from "react";
+import { Archive, ArchiveRestore, ArrowLeft, Download, FolderOpen, Pencil, Pin, PinOff, Trash } from "lucide-react";
+import { useState, type KeyboardEvent } from "react";
 
-import { IconPicker, ProjectIcon, normalizeProject, projectName, type ProjectIcons } from "../projectIcons";
-import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
-import { StatusBadge } from "./StatusBadge";
+import type { EnvironmentInfo, SessionStatus } from "@imperium/protocol";
 
-export function ProjectsPanel({
-  projects,
+import { RowMenu } from "../components/RowMenu";
+import { environmentById } from "../environments/byId";
+import { Select } from "../components/Select";
+import { ProjectIcon, environmentIcon, projectName, sameFolder } from "../environments/projectIcons";
+import type { SearchClient } from "../sessions/sessionSearch";
+import { agentOfSession, agentTitle, startedByNote } from "../sessions/agents";
+import { formatAgo } from "../shared/ago";
+import { branchNote, nestBranches } from "../sessions/branches";
+import { formatCost, sessionTitle, totals, type SessionState } from "../sessions/sessions";
+import { SessionSearch } from "./SessionSearch";
+import { statusText } from "./StatusBadge";
+import { modelAliases, modelName } from "../models/modelNames";
+
+/** The environment a session works in: the one it names, else the one whose first folder it uses. */
+export function environmentOf(session: SessionState, environments: EnvironmentInfo[]): EnvironmentInfo | null {
+  const id = session.summary.environment_id;
+  if (id) return environmentById(environments, id);
+  return environments.find((env) => env.folders[0] && sameFolder(env.folders[0], session.summary.project_dir)) ?? null;
+}
+
+/** Home first, then pinned environments, otherwise in the daemon's order (creation). */
+export function sortEnvironments(environments: EnvironmentInfo[]): EnvironmentInfo[] {
+  return environments
+    .map((env, index) => ({ env, index }))
+    .sort(
+      (a, b) =>
+        Number(!!b.env.builtin) - Number(!!a.env.builtin) ||
+        Number(!!b.env.pinned) - Number(!!a.env.pinned) ||
+        a.index - b.index,
+    )
+    .map(({ env }) => env);
+}
+
+export type EnvironmentActions = {
+  onEdit: (id: string) => void;
+  onSetPinned: (env: EnvironmentInfo, pinned: boolean) => void;
+  onDelete: (id: string) => void;
+};
+
+export function EnvironmentsPanel({
+  environments,
   selected,
-  icons,
+  connected,
   onSelect,
+  actions,
 }: {
-  projects: string[];
+  environments: EnvironmentInfo[];
   selected: string | null;
-  icons: ProjectIcons;
-  onSelect: (project: string) => void;
+  connected: boolean;
+  onSelect: (id: string) => void;
+  actions: EnvironmentActions;
 }) {
-  const [editing, setEditing] = useState<string | null>(null);
-  if (projects.length === 0) return <p className="empty">No projects yet. Use Open folder to add one.</p>;
+  if (environments.length === 0) {
+    return (
+      <div className="environments">
+        <p className="empty">
+          {connected ? "No environments yet. Use + (New environment) above to make one." : "No environments known yet."}
+        </p>
+      </div>
+    );
+  }
   return (
-    <ul className="list" aria-label="Projects">
-      {projects.map((project) => {
-        const name = projectName(project);
-        const choice = icons.iconFor(project);
-        return (
-          <li key={project}>
-            <div className="row">
-              <button
-                className="icon-button"
-                aria-label={`Change icon for ${name}`}
-                aria-expanded={editing === project}
-                title="Change icon"
-                onClick={() => setEditing((open) => (open === project ? null : project))}
-              >
-                <ProjectIcon choice={choice} />
-              </button>
-              <button
-                className={`row-main${project === selected ? " selected" : ""}`}
-                aria-current={project === selected ? "true" : undefined}
-                onClick={() => onSelect(project)}
-              >
-                <span className="name">{name}</span>
-                <span className="detail">{project}</span>
-              </button>
-            </div>
-            {editing === project && (
-              <IconPicker
-                name={name}
-                choice={choice}
-                onChange={(next) => icons.setIcon(project, next)}
-                onReset={() => icons.setIcon(project, null)}
-                onClose={() => setEditing(null)}
-              />
-            )}
-          </li>
-        );
-      })}
-    </ul>
+    <div className="environments">
+      <ul className="list" aria-label="Environments">
+        {sortEnvironments(environments).map((env) => {
+          const isSelected = env.id === selected;
+          return (
+            <li key={env.id}>
+              <div className="row nav-row">
+                <button
+                  className={`row-main nav-row-main${isSelected ? " selected" : ""}`}
+                  aria-current={isSelected ? "true" : undefined}
+                  title={
+                    env.folders.length
+                      ? env.folders.join("\n")
+                      : env.builtin
+                        ? "Home: no project folders; sessions work in their own scratch folders"
+                        : "No folders yet"
+                  }
+                  onClick={() => onSelect(env.id)}
+                  onDoubleClick={() => connected && actions.onEdit(env.id)}
+                >
+                  <ProjectIcon choice={environmentIcon(env)} />
+                  <span className="name">{env.name}</span>
+                  {env.pinned && <Pin className="pin-mark" aria-label="Pinned" />}
+                </button>
+                <RowMenu
+                  label={`More for ${env.name}`}
+                  items={[
+                    { label: "Edit", icon: Pencil, onSelect: () => actions.onEdit(env.id), disabled: !connected },
+                    env.pinned
+                      ? { label: "Unpin", icon: PinOff, onSelect: () => actions.onSetPinned(env, false), disabled: !connected }
+                      : { label: "Pin", icon: Pin, onSelect: () => actions.onSetPinned(env, true), disabled: !connected },
+                    ...(env.builtin
+                      ? []
+                      : [{ label: "Delete", icon: Trash, danger: true, onSelect: () => actions.onDelete(env.id), disabled: !connected }]),
+                  ]}
+                />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
-/** Sessions needing the user come first, merged ones last, and otherwise the most recent first. */
-function rank(session: SessionState): number {
-  if (session.status === "needs_attention") return 0;
-  if (session.status === "merged") return 2;
-  return 1;
+export type SessionSort = "recent" | "environment" | "status";
+
+const SORT_OPTIONS: { value: SessionSort; label: string }[] = [
+  { value: "recent", label: "Recent" },
+  { value: "environment", label: "By environment" },
+  { value: "status", label: "By status" },
+];
+
+/** The Sessions panel's sort, shown in the panel header beside the New session (+) button. */
+export function SessionSortSelect({ sort, onSort }: { sort: SessionSort; onSort: (sort: SessionSort) => void }) {
+  return (
+    <Select
+      aria-label="Sort sessions"
+      className="sessions-sort"
+      value={sort}
+      onChange={(value) => onSort(value as SessionSort)}
+      options={SORT_OPTIONS}
+    />
+  );
 }
 
+/** Status groups, in the order they are shown. */
+const STATUS_GROUPS: { label: string; statuses: SessionStatus[] }[] = [
+  { label: "Waiting for approval", statuses: ["needs_attention"] },
+  { label: "Active", statuses: ["working", "watching"] },
+  { label: "Paused", statuses: ["paused"] },
+  { label: "Idle", statuses: ["idle"] },
+  { label: "Merged", statuses: ["merged"] },
+];
+
+/** An environment's persistent agent first, then pinned sessions, then the most recently active. */
 export function sortSessions(sessions: SessionState[]): SessionState[] {
-  return [...sessions].sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt);
+  return [...sessions].sort(
+    (a, b) =>
+      Number(!!b.summary.persistent) - Number(!!a.summary.persistent) ||
+      Number(!!b.summary.pinned) - Number(!!a.summary.pinned) ||
+      b.updatedAt - a.updatedAt,
+  );
+}
+
+type Group = { key: string; label: string | null; env?: EnvironmentInfo | null; sessions: SessionState[] };
+
+/** The sessions as headed groups (one unheaded group for Recent). */
+export function groupSessions(sessions: SessionState[], environments: EnvironmentInfo[], sort: SessionSort): Group[] {
+  const sorted = sortSessions(sessions);
+  if (sort === "status") {
+    return STATUS_GROUPS.map(({ label, statuses }) => ({
+      key: label,
+      label,
+      sessions: sorted.filter((s) => statuses.includes(s.status)),
+    })).filter((group) => group.sessions.length > 0);
+  }
+  if (sort === "environment") {
+    const groups: Group[] = sortEnvironments(environments).map((env) => ({
+      key: env.id,
+      label: env.name,
+      env,
+      sessions: sorted.filter((s) => environmentOf(s, environments)?.id === env.id),
+    }));
+    groups.push({
+      key: "none",
+      label: "No environment",
+      env: null,
+      sessions: sorted.filter((s) => !environmentOf(s, environments)),
+    });
+    return groups.filter((group) => group.sessions.length > 0);
+  }
+  return [{ key: "all", label: null, sessions: sorted }];
 }
 
 export function SessionsPanel({
   sessions,
-  project,
+  environments,
+  scope,
   selected,
-  icons,
+  sort,
   onSelect,
-  onShowProject,
+  onSetPinned,
+  onSetArchived,
+  onRename,
+  onExport,
+  onShowEnvironment,
   onShowAll,
+  client = null,
+  onOpenHit,
 }: {
-  /** Every session; filtered to `project` when one is given. */
+  /** Every session; filtered to `scope` when one is given. */
   sessions: SessionState[];
-  project: string | null;
+  environments: EnvironmentInfo[];
+  scope: EnvironmentInfo | null;
   selected: string | null;
-  icons: ProjectIcons;
+  /** How active sessions are grouped; the header's `SessionSortSelect` sets it. */
+  sort: SessionSort;
   onSelect: (sessionId: string) => void;
-  onShowProject: (project: string) => void;
+  onSetPinned: (sessionId: string, pinned: boolean) => void;
+  /** Archives a session (`true`) or resumes an archived one. */
+  onSetArchived: (sessionId: string, archived: boolean) => void;
+  /** Renames a session; an empty title lets it be titled automatically again. */
+  onRename: (sessionId: string, title: string) => void;
+  /** Exports a session's transcript (running or archived) as Markdown or JSON; no export items without it. */
+  onExport?: (sessionId: string, format: "markdown" | "json") => void;
+  onShowEnvironment: (id: string) => void;
   onShowAll: () => void;
+  /** Searches sessions; no search box without one. */
+  client?: SearchClient | null;
+  /** Opens a session at a search hit's history event. */
+  onOpenHit?: (sessionId: string, eventIndex: number) => void;
 }) {
-  const shown = sortSessions(project ? sessions.filter((s) => normalizeProject(s.summary.project_dir) === project) : sessions);
+  const [searchActive, setSearching] = useState(false);
+  // The session whose title is being edited in place.
+  const [renaming, setRenaming] = useState<string | null>(null);
+  // While a query is entered, its results stand in for the list.
+  const searching = searchActive && !!client && !!onOpenHit;
+  const inScope = scope ? sessions.filter((s) => environmentOf(s, environments)?.id === scope.id) : sessions;
+  const active = inScope.filter((s) => !s.summary.archived);
+  const archived = sortSessions(inScope.filter((s) => s.summary.archived)).sort(
+    (a, b) => (b.summary.archived_at ?? 0) - (a.summary.archived_at ?? 0),
+  );
+  // Within one environment, grouping by environment would be a single group.
+  const groups = groupSessions(active, environments, scope && sort === "environment" ? "recent" : sort);
+
+  const row = ({ session, depth }: { session: SessionState; depth: number }) => {
+    const id = session.summary.session_id;
+    const env = environmentOf(session, environments);
+    const place = env?.name ?? projectName(session.summary.project_dir);
+    const pinned = !!session.summary.pinned;
+    const persistent = !!session.summary.persistent;
+    const title = persistent ? agentTitle(place, agentOfSession(env, id)) : sessionTitle(session);
+    const status = statusText(session);
+    // `updatedAt` is a time once the session has had an event here, else only an ordering key.
+    const at = session.summary.archived
+      ? session.summary.archived_at
+      : Math.max(session.updatedAt, session.summary.created_at ?? 0);
+    // Everything but the title and time is on hover.
+    const hover = [
+      title,
+      status,
+      place,
+      `${session.summary.model ? modelName(modelAliases(), session.summary.model) : "No model"} · ${formatCost(totals(session.calls).costUsd)}`,
+      persistent ? "Persistent: always available, keeps its conversation across restarts" : null,
+      session.summary.started_by ? startedByNote(session.summary.started_by) : null,
+      branchNote(session.summary, (from) => {
+        const source = sessions.find((s) => s.summary.session_id === from);
+        return source ? sessionTitle(source) : null;
+      }),
+      ...(session.summary.worktrees ?? []).map((tree) => `Worktree ${tree.path} (${tree.branch})`),
+    ]
+      .filter(Boolean)
+      .join("\n");
+    // Enter and leaving the field keep the new title; Escape keeps the old one.
+    const finishRename = (input: HTMLInputElement) => {
+      setRenaming(null);
+      const value = input.value.trim();
+      if (input.dataset.cancel !== "true" && value !== title) onRename(id, value);
+    };
+    const onRenameKey = (event: KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        event.currentTarget.dataset.cancel = "true";
+      }
+      if (event.key === "Enter" || event.key === "Escape") event.currentTarget.blur();
+    };
+    return (
+      <li key={id} className={depth > 0 ? "branch-row" : undefined} style={depth > 0 ? { ["--branch-depth" as string]: depth } : undefined}>
+        <div className="row nav-row session-row">
+          {renaming === id ? (
+            <input
+              className="session-rename"
+              aria-label="Session title"
+              defaultValue={title}
+              autoFocus
+              onFocus={(event) => event.currentTarget.select()}
+              onKeyDown={onRenameKey}
+              onBlur={(event) => finishRename(event.currentTarget)}
+            />
+          ) : (
+            <button
+              className={`row-main session-row-main${id === selected ? " selected" : ""}`}
+              aria-current={id === selected ? "true" : undefined}
+              title={hover}
+              onClick={() => onSelect(id)}
+              onDoubleClick={() => !persistent && setRenaming(id)}
+            >
+              <span className={`status-dot ${session.status}`} role="img" aria-label={status} />
+              <span className="name">{title}</span>
+              {pinned && <Pin className="pin-mark" aria-label="Pinned" />}
+              <span className="session-ago">{formatAgo(at)}</span>
+            </button>
+          )}
+          <RowMenu
+            label={`More for ${title}`}
+            items={[
+              { label: "Rename", icon: Pencil, onSelect: () => setRenaming(id), disabled: persistent },
+              ...(session.summary.archived
+                ? [{ label: "Unarchive", icon: ArchiveRestore, onSelect: () => onSetArchived(id, false) }]
+                : [
+                    pinned
+                      ? { label: "Unpin", icon: PinOff, onSelect: () => onSetPinned(id, false) }
+                      : { label: "Pin", icon: Pin, onSelect: () => onSetPinned(id, true) },
+                    {
+                      label: "Archive",
+                      icon: Archive,
+                      onSelect: () => onSetArchived(id, true),
+                      // An environment's agent runs while the daemon does.
+                      disabled: persistent,
+                    },
+                  ]),
+              ...(onExport
+                ? [
+                    { label: "Export as Markdown", icon: Download, onSelect: () => onExport(id, "markdown") },
+                    { label: "Export as JSON", icon: Download, onSelect: () => onExport(id, "json") },
+                  ]
+                : []),
+              {
+                label: `Show ${place}`,
+                icon: FolderOpen,
+                onSelect: () => env && onShowEnvironment(env.id),
+                disabled: !env || scope?.id === env.id,
+              },
+            ]}
+          />
+        </div>
+      </li>
+    );
+  };
+
   return (
     <div className="sessions">
-      {project && (
-        <div className="sessions-scope">
-          <button className="back" onClick={onShowAll}>
-            <span aria-hidden="true">←</span> All sessions
-          </button>
-          <span className="scope-name" title={project}>
-            <ProjectIcon choice={icons.iconFor(project)} size="small" />
-            <span>{projectName(project)}</span>
-          </span>
+      {scope && (
+        <div className="sessions-toolbar">
+          <div className="sessions-scope">
+            <button className="back" onClick={onShowAll}>
+              <ArrowLeft aria-hidden="true" /> All sessions
+            </button>
+            <span className="scope-name" title={scope.folders.join("\n")}>
+              <ProjectIcon choice={environmentIcon(scope)} size="small" />
+              <span>{scope.name}</span>
+            </span>
+          </div>
         </div>
       )}
-      {shown.length === 0 ? (
-        <p className="empty">{project ? "No sessions in this project." : "No sessions yet."}</p>
+      {client && onOpenHit && (
+        <SessionSearch
+          client={client}
+          environmentId={scope?.id ?? null}
+          onOpen={onOpenHit}
+          onActiveChange={setSearching}
+        />
+      )}
+      {searching ? null : active.length === 0 ? (
+        <p className="empty">{scope ? "No sessions in this environment." : "No sessions yet."}</p>
       ) : (
-        <ul className="list" aria-label={project ? `Sessions in ${projectName(project)}` : "All sessions"}>
-          {shown.map((session) => {
-            const id = session.summary.session_id;
-            const dir = session.summary.project_dir;
-            return (
-              <li key={id}>
-                <div className="row">
-                  <button
-                    className="icon-button"
-                    aria-label={`Show sessions in ${projectName(dir)}`}
-                    title={`Show sessions in ${projectName(dir)}`}
-                    onClick={() => onShowProject(dir)}
-                  >
-                    <ProjectIcon choice={icons.iconFor(dir)} />
-                  </button>
-                  <button
-                    className={`row-main${id === selected ? " selected" : ""}`}
-                    aria-current={id === selected ? "true" : undefined}
-                    onClick={() => onSelect(id)}
-                  >
-                    <span className="name">{sessionTitle(session)}</span>
-                    <span className="row-meta">
-                      <StatusBadge session={session} />
-                      <span className="detail">
-                        {!project && `${projectName(dir)} · `}
-                        {session.summary.model} · {formatCost(totals(session.calls).costUsd)}
-                      </span>
-                    </span>
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+        groups.map((group) => (
+          <section key={group.key} className="session-group" aria-label={group.label ?? undefined}>
+            {group.label && (
+              <h3 className="session-group-label">
+                {group.env && <ProjectIcon choice={environmentIcon(group.env)} size="small" />}
+                <span>{group.label}</span>
+                <span className="session-group-count">{group.sessions.length}</span>
+              </h3>
+            )}
+            <ul
+              className="list"
+              aria-label={group.label ?? (scope ? `Sessions in ${scope.name}` : "All sessions")}
+            >
+              {nestBranches(group.sessions).map(row)}
+            </ul>
+          </section>
+        ))
+      )}
+      {!searching && archived.length > 0 && (
+        <details className="session-group archived-sessions">
+          <summary className="session-group-label">
+            <Archive aria-hidden="true" />
+            <span>Archived</span>
+            <span className="session-group-count">{archived.length}</span>
+          </summary>
+          <ul className="list" aria-label="Archived sessions">
+            {nestBranches(archived).map(row)}
+          </ul>
+        </details>
       )}
     </div>
   );

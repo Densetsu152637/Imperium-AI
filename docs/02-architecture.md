@@ -10,7 +10,7 @@
         │  JSON-RPC 2.0 over WebSocket (local) or SSH-forwarded socket
         └──────────────────┼────────────────────┘
                     ┌──────┴───────┐
-                    │  imperiumd   │  sessions · agent engine · scheduler · telemetry
+                    │ imperium-core│  sessions · agent engine · scheduler · telemetry
                     └──┬───┬───┬───┘
         ┌──────────────┘   │   └───────────────┐
  ┌──────┴──────┐  ┌────────┴───────┐  ┌────────┴────────┐
@@ -21,11 +21,11 @@
  └─────────────┘
 ```
 
-- **`imperiumd`** is the only process that holds state. It owns sessions, the agent engine,
+- **`imperium-core`** is the only process that holds state. It owns sessions, the agent engine,
   the model scheduler, tool execution, policy resolution, configuration, and telemetry.
 - **Clients** are stateless views. The desktop app embeds or launches a local daemon; the CLI
   connects to a running daemon or starts an ephemeral one (`imperium run --ephemeral`).
-- **Remote hosts** run their own `imperiumd`. The desktop connects through an SSH tunnel to the
+- **Remote hosts** run their own `imperium-core`. The desktop connects through an SSH tunnel to the
   remote daemon's Unix socket, so remote sessions use the remote machine's files, models, and
   GPUs with no special-case code paths (see [isolation](05-tools-and-isolation.md#ssh-hosts)).
 - **Model runtimes and sidecars** are child processes supervised by the daemon (restart policy,
@@ -33,33 +33,102 @@
 
 ## Protocol
 
-- JSON-RPC 2.0 requests and responses, plus server-pushed **event streams** (subscriptions,
-  planned).
+- JSON-RPC 2.0 requests and responses, plus server-pushed **event streams**
+  (`session.subscribe`, and the topic choice below).
 - **Transport (implemented):** a WebSocket at `ws://127.0.0.1:<port>/rpc`, text frames only.
   The port is `daemon.port` (default `0`: a free port chosen at each start). The upgrade must
   carry `Authorization: Bearer <token>`; anything else gets HTTP 401. The token is 32 random
   bytes generated at every launch. It is never bound to a public interface. Browser-based
   clients (the desktop webview), which cannot set headers, instead offer the subprotocols
-  `imperium.v0` and `imperium.token.<token>`; the daemon selects `imperium.v0`. Unix domain
-  sockets and Windows named pipes are planned for SSH forwarding.
+  `imperium.v0` and `imperium.token.<token>`; the daemon selects `imperium.v0`.
+- **Local socket (implemented, opt-in):** with `daemon.socket = true` the daemon also serves
+  the same HTTP and WebSocket server, with the same `/rpc` path and the same token check, on a
+  Unix domain socket or a Windows named pipe. A local connection is not trusted for being
+  local: without the token the upgrade gets 401 there too. It is off by default because most
+  people never forward the daemon, and a listener nobody uses should not exist. The address
+  goes in `daemon.json` as `socket`.
+  - Unix: `<data>/ipc/daemon.sock`. The `ipc` folder is created mode 0700 and the socket set to
+    0600, so only the current user can open it, even in the instant between creating and
+    changing the socket. At start a socket nobody answers on (left by a crash) is replaced; a
+    socket another process still answers on, or a file that is not a socket, stops the start
+    with an error rather than being removed. The socket is removed on a clean shutdown.
+  - Windows: a named pipe `\\.\pipe\imperium-core-<random>`, new at every start, created with
+    a protected DACL that grants only the current user's SID, local clients only, and as the
+    first instance of its name so another process cannot take the name before the daemon. The
+    daemon always holds an instance (it creates the replacement before handing over a connected
+    one, and keeps the old one if that fails), so the name is never vacant for another local
+    user to take. A pipe name is not a secret and `daemon.json` can outlive the daemon, so a
+    client that finds a pipe in it checks that the process serving the pipe is the `pid` in the
+    same file (`GetNamedPipeServerProcessId`) before sending the token, and refuses otherwise.
+    Pipes disappear with the process, so there is nothing stale to clean up.
+  - Remote use: forward the socket with OpenSSH, for example `ssh -N -L
+    /tmp/imperium.sock:<remote data>/ipc/daemon.sock host`, or let `imperium remote connect
+    <host> --socket` do it (with `StreamLocalBindMask=0177`, so the local end is also mode
+    0600). The remote token is in the host's `daemon.json`; the forwarded endpoint file the
+    command writes holds it. `-R` works the other way, to let a remote machine reach a daemon
+    behind your firewall. SSH cannot forward a Windows named pipe, so a Windows host is
+    reached through its TCP port as before; the pipe serves clients on the same machine.
+- **Event subscriptions (implemented):** a new connection receives every notification it may,
+  as before. `events.subscribe` with `topics` narrows it to those topics (a notification method
+  such as `session.event`, a prefix such as `session.*`, or `*` for everything again) and
+  later calls add to them; `events.unsubscribe` removes topics, or, on a connection still
+  receiving everything, mutes them. Both return the current choice (`topics`, which is `null`
+  while everything is received, and `muted`). The choice is applied after the existing rules
+  (a restricted connection's allowed list, benchmark progress withheld from a paired phone,
+  resource snapshots only for `system.resources_subscribe`), so it can only narrow: naming a
+  topic the connection could not receive changes nothing. A connection may name at most 128
+  topics; a malformed topic gets `-32602`. Paired phones may not call these methods. Replies
+  to calls are never filtered, and `session.subscribe` still returns a session's history.
 - **Discovery (implemented):** on start the daemon writes `<data>/daemon.json` (URL, token,
-  PID, protocol version), readable only by the user (mode 0600 on Unix; per-user directory ACL
-  on Windows), and removes it on shutdown. It holds a lock on `<data>/daemon.lock`, so only one
+  PID, protocol version, and the local socket's address when `daemon.socket` is on), readable
+  only by the user (mode 0600 on Unix; per-user directory ACL on Windows), and removes it on
+  shutdown. Clients that find a `socket` there try it before the URL. It holds a lock on `<data>/daemon.lock`, so only one
   daemon runs per user; a second start exits with "already running". A daemon killed without
   cleanup leaves a stale `daemon.json`, which the next start overwrites.
+- **OpenAI-compatible API (implemented):** a second, optional listener for other tools, off
+  until `api.openai_compatible.enabled`. It serves `/v1/models` and `/v1/chat/completions` over
+  HTTP on `api.openai_compatible.bind` (loopback only unless `allow_lan` is set) and requires its
+  own bearer token, which lives in the secret store as `api.openai-token` and is neither the
+  daemon's token nor ever written to the config or logs. Its calls go through the residency
+  controller like any other and count toward budgets as the `api` source
+  ([04](04-models-and-routing.md#openai-compatible-local-api-implemented)). `api.get`,
+  `api.set` (which saves the settings and starts or stops the listener at once), and `api.token`
+  (show or rotate) manage it over the JSON-RPC socket; a paired phone may not call them.
 - **Handshake (implemented):** every connection's first call must be `system.handshake`
   (client name/version and protocol version). Other calls before it fail with `-32002`. The
   daemon refuses a different protocol major with `-32001`. `system.ping` returns uptime.
-- **Sessions (implemented):** `session.create` (the caller is subscribed), `session.list`,
+- **Sessions (implemented):** `session.create` (the caller is subscribed), `session.list`
+  (each summary carries `created_at`, from when the session's journal was started),
   `session.subscribe` (returns the session's full event history so far, then streams new
-  events with no gap or duplicate), `session.send`, and `session.respond`. Events arrive as
-  `session.event` notifications.
+  events with no gap or duplicate), `session.search` (searches running and archived sessions'
+  content: the best match per session with an excerpt, highlights, and the history event to
+  open at; see [17](17-memory.md#session-search-implemented)), `session.export` (a session's
+  transcript as Markdown or JSON, from the journal, so archived sessions work too; the CLI's
+  `imperium session export`, also spelled `sessions`; exports are verbatim and may hold
+  secrets an agent read, which is why the result carries a `warning` when one looks like a
+  credential), `session.send`, and
+  `session.respond`. Events arrive as
+  `session.event` notifications. `session.send` takes an optional `mode` (`queue`, the
+  default: run now, or after the current turn; `steer`: join the running turn) and `agent_id`
+  (a running subagent), and `attachments` (files staged with `session.attach`, which references
+  a file inside the session's folders or copies it into the session's attachments folder), and
+  returns the message's `id`; `session.queue` lists, edits, or
+  removes queued messages ([03](03-agent-engine.md#queueing-and-steering)). `voice.transcribe`
+  turns recorded speech into text through `[media.transcription]`
+  ([07](07-desktop-ui.md#attachments-and-voice-input-implemented)). `session.agents`
+  lists a session's agents with their kept state and `session.agent_resume` gives a finished
+  subagent a follow-up ([03](03-agent-engine.md#agent-state)). `session.control` changes a running session between turns:
+  its usage-limit policy, what it watches, its model (without loading it; the next turn
+  compacts the conversation to fit, [03](03-agent-engine.md#switching-models-and-compaction)),
+  or compaction now, pins it (`set_pinned`) or renames it (`rename`; both kept across restarts
+  and announced as `session.updated`); model switches and compaction are refused with `-32006` while a turn runs,
+  and compaction with `-32007` when the conversation cannot fit.
 - Schema defined in Rust (`imperium-protocol`) and exported to TypeScript with `ts-rs` into
   `packages/protocol/src/generated/` whenever `cargo test` runs. `scripts/check-rust.sh` (run
   by CI) fails if the checked-in files differ. The pnpm package `@imperium/protocol`
   (`packages/protocol`) re-exports them; its `src/index.ts` is generated by
   `scripts/generate-index.mjs` on every typecheck and is not checked in.
-- Versioned: `ProtocolVersion { major, minor }` in the handshake (currently 0.2); additive
+- Versioned: `ProtocolVersion { major, minor }` in the handshake (currently 0.42: 0.42 added `agents` (`AgentFileInfo`) to `mcp.list` results and the `agent` argument of the `spawn_agent` tool, the named agents of agent files, see [06](06-extensibility.md#named-agents-implemented); 0.41 added `session.tools`, `session.run_tool` and `session.tool_result`, the daemon side of the MCP server bridge `imperium mcp-serve --tools` (CLI methods, with no generated TypeScript types; a paired phone cannot call them), see [20](20-claude-harness.md#exposing-imperiums-own-tools-implemented); 0.40 added the `interactive`, `trusted` and `notes` fields of the `mods.install` result (what the daemon counted of an approval, see [06](06-extensibility.md#who-may-grant-trust-and-approval-implemented)); 0.39 added `session.agent_ask`, with which the user asks a knowledge agent a question (see [21](21-knowledge-agents.md)); 0.38 added knowledge agents: `AgentSummary.knowledge` (the `KnowledgeCard` and its parts), the `knowledge_changed`, `question_asked` and `question_answered` session events, `session.agent_knowledge`, and the `knowledge` argument of the `spawn_agent` tool and the `ask_agent`, `list_knowledge_agents` and `keep_as_knowledge` tools, see [21](21-knowledge-agents.md); 0.37 added `mcp.login` and `mcp.logout` and the `sign_in` field of the status of `mcp.list` servers (OAuth sign-in for remote MCP servers, see [05](05-tools-and-isolation.md#oauth-for-remote-servers-implemented)); 0.36 added `models.disabled` (the specs of models the user switched off) as `disabled` on `models.config` results and `models.set_config` params, `default_model` on `models.config` results, `enabled` on local model rows (`models.local`) and on `models.config` local rows, and the `weights_bytes`, `layers`, `gpu_layers`, `vram_bytes` and `ram_bytes` memory-estimate fields of `models.config` local rows, see [04](04-models-and-routing.md#disabled-models-implemented); 0.35 added browser tabs: the `tab` and `tabs` fields of the `browser_view` session event and of `BrowserPage` (the result of `session.browser_control` and `session.browser_act`), the `BrowserTab` type, and the `new_tab`, `switch_tab` and `close_tab` actions of `session.browser_act`, see [05](05-tools-and-isolation.md#fetch-cache-and-robotstxt-implemented); 0.34 added the `main_context` and `trusted` fields of `mods.list` rows, and `main_context` on `mods.inspect` results, `trusted` on its installed mod and on `mods.install` params (a mod that asks to run in the app's own window, and the user's confirmation of it), see [06](06-extensibility.md#trusted-main-context-mods-trust-implemented-loader-not-built); hooks may answer `tool.before` and `prompt.submit` with a rewrite, which changes no protocol type, see [06](06-extensibility.md#rewriting-hooks-implemented); 0.33 added `mods.inspect` and `mods.install`, the daemon side of `imperium mods install` and `imperium mods update` (CLI methods, with no generated TypeScript types; a paired phone cannot call them), the `opt_in` and `modified` fields of `mods.list` rows, and the `url` and `headers` fields of `[[hooks]]` and the `session.end`, `turn.start`, `turn.end` and `permission.requested` hook events (no session event or desktop type changed), see [06](06-extensibility.md#hooks); 0.32 added `permissions` (an agent permission profile: MCP server and plugin allowlists and a local-files-only lock) to environment agents and to `environments.agent_create` and `environments.agent_update` (0.28 and 0.30 are not used); 0.31 folded the project-private and project-shared memory scopes into the environment scope of the memory tools (`memory_remember`, `memory_search`, `memory_read`) and the `memory.write` settings, and accepts `project`, `project-private` and `private` as names for `environment` in this version only, see [17](17-memory.md#names-kept-for-one-protocol-version); no method or type changed; 0.29 added `environments.config`, the `subfolder` and `read_only` options of `session.create` and the `read_only` field of session summaries, and the `environment` field of schedule rows; 0.27 added the `initiative.*` methods, `initiative.changed` and `initiative.notice` notifications, `initiative` on environment agents (off by default), and `started_by` on session summaries; 0.26 added `events.subscribe` and `events.unsubscribe` and the optional `socket` field of the discovery file; 0.25 added the `access` argument of `spawn_agent` (`write` gives a subagent git worktrees of its own); 0.24 added the `draft_model`, `draft_max`, `draft_min` and `draft_gpu_layers` settings of local models (`LocalLaunchSettings` and `LocalLaunchEffective`), `draft_in_use` and `draft_notice` on `models.config` rows, and `draft_model` and `draft_notice` on the active local models of `system.resources`; 0.23 added the `builtin` field of environments (the Home environment, and `session.create` with neither environment nor project starting there); 0.22 added the `environments.agent_*` methods, `agents` on environments, and made `persistent_agent` and `agent_session_id` deprecated aliases that a later version removes; 0.21 added `models.bench`, `models.bench_results`, `models.bench_cancel` and the `models.bench_progress` notification for the local model benchmark; 0.20 added `workspaces.where`, `workspaces.move`, `workspaces.open`, and the `workspaces.progress` notification; 0.19 added `api.get`, `api.set`, `api.token` and the `source` budget scope for the OpenAI-compatible API; 0.18 added `session.browser_control`, `session.browser_act`, and the `browser_control` and `preview_changed` session events; 0.17 added `session.control` `set_permission_mode` and the `permission_mode` fields of session summaries and control results; 0.16 added `session.branch`, `session.compare` and `session.compare_pick` and the `branched_from` and `comparison_id` fields of session summaries; 0.15 added `session.export` and `kept_context` on `context_compacted`; 0.14 added `session.review`, `session.review_hunk`, `session.review_commit`, and `session.review_pull_request`; 0.13 added `personalities.list`; 0.12 added `session.checkpoints`, `session.rewind`, and the `session.checkpoint` notification; 0.11 added the `model.residency` notification; 0.9 added `session.control` `set_effort`, the `effort` and `reasoning` fields of session summaries and control results, `reasoning` on model rows, and `effort` on `spawn_agent`; 0.8 added `session.attach`, `attachments` on `session.send`, queued messages, `turn_started`, and `steered`, and `voice.transcribe`; 0.7 added the `local_model_waiting` session event and the local model rows' context, layer and memory fields; 0.6 added the `budgets.*` methods and notifications, `confirm_budget` on `session.send`, and the `-32008` budget error; 0.5 added the `permissions.*` methods, environment permissions, and suggested rules on approvals); additive
   changes bump minor, breaking changes bump major and keep the previous major for one release.
 
 Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `tool.*`,
@@ -70,42 +139,48 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | Crate                 | Responsibility                                                         |
 | --------------------- | ---------------------------------------------------------------------- |
 | `imperium-api`        | Shared types and traits: chat messages, tool specs, usage and pricing, the local-model and tool-provider interfaces, Markdown front matter (implemented) |
+| `imperium-client`     | The client of the daemon protocol, used by the CLI and the tests (implemented) |
+| `imperium-ipc`        | Same-user local sockets: Unix domain socket, Windows named pipe (the one crate that allows `unsafe`, for the pipe's ACL) |
 | `imperium-protocol`   | Wire types, method/event definitions, TS export                        |
-| `imperium-core`       | Sessions, agent loop, delegation, task graph, event bus                |
+| `imperium-engine`     | Agent engine library: sessions, agent loop, delegation, task graph, event bus |
 | `imperium-models`     | Endpoint clients behind `ChatClient`, model registry, router, cost accounting |
-| `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, runtime supervision (llama.cpp, vLLM) |
-| `imperium-tools`      | Built-in tools: files, commands, isolation tiers (implemented)         |
+| `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, runtime supervision (llama.cpp, vLLM); carries out residency decisions, decides none on its own |
+| `imperium-tools`      | Built-in tools: files, commands, isolation tiers; confines paths to a workspace and asks `imperium-policy` before it acts (implemented) |
 | `imperium-web`        | Web search providers, page fetching, and a CDP browser (implemented)   |
-| `imperium-mcp`        | MCP client (stdio, streamable HTTP; implemented) and server bridge (planned) |
-| `imperium-sandbox`    | Isolation tiers: policy guard, container driver, SSH transport         |
+| `imperium-mcp`        | MCP client (stdio, streamable HTTP; implemented) and the Imperium MCP server (`imperium mcp-serve`, the session-level [Claude harness](20-claude-harness.md) and its `--tools` bridge for Imperium's own tools) lives in `imperium-cli`; the engine side of the bridge is `imperium-engine`'s `bridge` module |
 | `imperium-extensions` | Plugin, skill, hook, and slash-command loading; Claude Code plugin compatibility (implemented) |
 | `imperium-workflow`   | Workflow packs, context retrieval, load manifests, documentation pointers (implemented) |
-| `imperium-policy`     | Policy pack layering and prompt assembly (planned)                      |
-| `imperium-memory`     | Global and project memory: entries, index, search, redaction (implemented) |
-| `imperium-config`     | Layered config, schema validation, secret store (keychain, in-memory)  |
-| `imperium-telemetry`  | Metrics, traces, cost ledger, OpenTelemetry export                     |
+| `imperium-policy`     | What agents may do: permission rules and modes, the safety floor, agent profiles, and the layering of workflow packs (implemented); prompt assembly stays in `imperium-engine` |
+| `imperium-memory`     | Global memory and environment `Memory.md`: entries, index, search, redaction, migration of older project memory (implemented) |
+| `imperium-config`     | Layered config, schema validation, secret store (keychain, encrypted file, in-memory)  |
 | `imperium-automation` | Schedule triggers (cron, interval, one-shot), missed runs, run history (implemented); project agents (planned) |
 | `imperium-github`     | Failing pull request checks through `gh`, auto-fix worktrees, commit and push (implemented) |
-| `imperium-remote`     | Device pairing, encrypted remote transport, relay client               |
 | `imperium-media`      | Image (OpenAI-compatible, ComfyUI), speech, and transcription tools (implemented) |
-| `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours (planned) |
-| `imperiumd`           | Daemon binary                                                          |
-| `imperium-cli`        | `imperium` binary: CLI and TUI client                                  |
+| `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours run in the desktop's mod frames, not here ([16](16-pets.md)) |
+| `imperium-core`       | The daemon (`imperium-core` binary, formerly `imperiumd`), also a library for tests |
+| `imperium-cli`        | `imperium` binary: CLI and TUI client, and `imperium mcp-serve` ([20](20-claude-harness.md)) |
 
 `imperium-api` depends on no other Imperium crate, and crates that only share vocabulary
 depend on it rather than on each other: `imperium-tools`, `imperium-mcp`, `imperium-web`, and
 `imperium-media` take `ToolSpec` from it instead of `imperium-models`; `imperium-config` takes
 `Pricing`; `imperium-memory` takes the front-matter parser instead of `imperium-extensions`;
-and `imperium-local` implements its `LocalModels` trait without depending on `imperium-core`.
+and `imperium-local` implements its `LocalModels` trait without depending on `imperium-engine`.
 Likewise `imperium-web`, `imperium-media`, and `imperium-mcp` implement its `ToolProvider` trait,
-so `imperium-core` does not depend on them (it reaches `imperium-mcp` only through
-`imperium-extensions`, for plugins' server definitions); the daemon builds the providers.
-`imperium-models`, `imperium-core`, and `imperium-extensions` re-export the moved items at their
-old paths.
+so `imperium-engine` does not depend on `imperium-web` or `imperium-mcp` (it reaches `imperium-mcp` only
+through `imperium-extensions`, for plugins' server definitions); the daemon builds the providers.
+`imperium-engine` does depend on `imperium-media`, for the attachments it stages and describes. There is
+no separate sandbox, telemetry or remote-transport crate: isolation tiers live in `imperium-tools`, usage
+and cost are recorded by the engine and the daemon, and remote hosts are reached over an SSH tunnel.
+The moved items are imported from `imperium-api` directly; no crate re-exports them at an old
+path. `imperium-policy` depends on `imperium-api` and `imperium-workflow` (and on no other
+Imperium crate, `imperium-config` included: it takes plain inputs); `imperium-tools`,
+`imperium-engine`, `imperium-core`, `imperium-web` and `imperium-cli` depend on it.
 
 Secrets go through the `SecretStore` trait in `imperium-config` (`load`, `store`, `delete`):
-`KeychainSecrets` uses the OS keychain and `MemorySecrets` keeps them in memory for tests and
-headless runs. The daemon builds one `Arc<dyn SecretStore>` at start and every key lookup
+`KeychainSecrets` uses the OS keychain, `FileSecrets` keeps them in an encrypted file,
+`AutoSecrets` uses the keychain and falls back to that file where there is none
+([10](10-configuration.md#encrypted-file-fallback-implemented)), and `MemorySecrets` keeps them
+in memory for tests. The daemon builds one `Arc<dyn SecretStore>` at start and every key lookup
 (endpoint and media keys, web search keys, MCP tokens, the Hugging Face token) reads through it;
 environment variables such as `HF_TOKEN` still take precedence where they did before.
 
@@ -116,14 +191,37 @@ one is added without editing its callers:
 
 | Seam | Trait | Built-ins | Chosen by |
 | ---- | ----- | --------- | --------- |
-| Secrets | `SecretStore` (`imperium-config`) | `KeychainSecrets`, `MemorySecrets` | The daemon at start |
+| Secrets | `SecretStore` (`imperium-config`) | `AutoSecrets` (`KeychainSecrets`, `FileSecrets`), `MemorySecrets` | The daemon at start |
 | Local runtimes | `RuntimeBackend` (`imperium-local`) | `LlamaCpp`, `Vllm` | First backend that accepts the model format and is available; `Supervisor::with_backends` sets the list |
-| Web search | `SearchProvider` (`imperium-web`) | `Searxng`, `Brave`, `Tavily` | `web.search` through `SearchProviders::register` / `build` |
+| Web search | `SearchProvider` (`imperium-web`) | `Searxng`, `Brave`, `Tavily`, `Kagi`, `Exa` | `web.search` through `SearchProviders::register` / `build` |
 | Image generation | `ImageGenerator` (`imperium-media`) | `OpenAiImages`, `ComfyUi` | `media.image.backend` through `ImageGenerators::register` / `build` |
 | Local model leasing | `LocalModels` (`imperium-api`) | The `imperium-local` supervisor | The daemon at start |
+| Local memory residency | `ResidencyPolicy` (`imperium-local::residency`) | `Standard` (the arbiter's rules), `CorePolicy` (`imperium-core::residency`) | The daemon's residency controller installs `CorePolicy` with `Supervisor::set_policy` |
 | GitHub | `GitHub` (`imperium-github`) | REST client | The daemon at start |
 | Model clients | `ChatClient` (`imperium-models`), with an optional `Tokenizer` | `OpenAiCompatible`, `LlamaCpp` | `endpoints.<id>.kind` (default `openai`) through `ChatClients::register` / `build`, given to each session as `SessionConfig::clients` |
 | Agent tools beyond the agent's own | `ToolProvider` (`imperium-api`) | `WebTools` (`imperium-web`, with the browser), `MediaTools` (`imperium-media`), `McpTools` (`imperium-mcp`) | The daemon for each session, as `SessionConfig::tools` |
+
+### Local memory residency
+
+`imperium-core` owns every decision about which local models and KV caches are in memory
+(roadmap item 16; [04](04-models-and-routing.md#residency-controller-implemented)). Its
+`ResidencyController` (`crates/imperium-core/src/residency.rs`) runs one plan loop per local
+runtime and is the policy calls consult; the `imperium-local` supervisor executes:
+
+```text
+            signals (slot freed, agent waiting, settings changed, every 15 s)
+ supervisor ---------------------------------------------> ResidencyController (core)
+     ^                                                        | plan(loaded, idle_unload_s)
+     | execute(Action, Reason): Load, Unload, SaveSlot,       | refreshed_budget(probe)
+     |   RestoreSlot, ResizePool, SetBudget                   | CorePolicy::decide (calls)
+     +--------------------------------------------------------+
+ every move --> Supervisor::moves --> model.residency (clients), model.swapped_out/in
+```
+
+The supervisor has no timer and spawns nothing that unloads; what it still does without being
+told is what a call in flight needs (load its model, evict what the policy says, restore the
+caller's saved context, restart a pool that must grow or a model the GPU rule moves once it
+has drained), each reported with its reason.
 
 Key dependencies (to confirm during phase 0): `tokio`, `axum` / `tokio-tungstenite`,
 `serde`, `reqwest`, `rmcp` (official Rust MCP SDK), `chromiumoxide`, `keyring`, `sysinfo`,
@@ -134,14 +232,12 @@ Key dependencies (to confirm during phase 0): `tokio`, `axum` / `tokio-tungsteni
 ```text
 Cargo.toml              Rust workspace
 crates/                 Rust crates listed above
-apps/desktop/           Tauri 2 shell (src-tauri/) and React app (src/)
-apps/mobile/            Phone app (phase 11)
+apps/desktop/           Tauri 2 shell (src-tauri/) and React app (src/, in feature folders)
 pets/                   Bundled default pet packs
+mods/                   Bundled UI mods (opt-in), such as imperium-nursery
 packages/protocol/      Generated TypeScript protocol types
 packages/mod-sdk/       UI mod SDK (@imperium/mod-sdk)
 examples/mods/          Example UI mods
-packages/ui/            Shared React components and design tokens
-sidecars/media/         Python media sidecar (uv project)
 runtimes/               Pinned runtime versions (llama.cpp ref, vLLM version)
 policy/                 Bundled default policy pack (pinned snapshot)
 scripts/                Check, build, and CI helper scripts
@@ -167,7 +263,7 @@ Setting `IMPERIUM_HOME` puts all three under one root as `config/`, `data/`, and
 
 ## Concurrency and failure
 
-- **One process.** `imperiumd` hosts everything; model runtimes and sidecars are the only
+- **One process.** `imperium-core` hosts everything; model runtimes and sidecars are the only
   child processes.
 - **Task per agent (implemented).** The daemon runs one multi-threaded Tokio runtime with a
   worker per core. Every agent (a session's root and each subagent) is its own task on it, so

@@ -1,0 +1,671 @@
+//! `models.config` and `models.set_config`: per-model settings the desktop app saves to
+//! `<config dir>/models.toml` (the app layer, see docs/10-configuration.md#layers) and applies
+//! to the running daemon.
+
+use std::path::Path;
+use std::sync::PoisonError;
+
+use imperium_config::{
+    CACHE_TYPES, Config, ContextLimit, LocalModelSettings, ModelLaunch, NO_CONTEXT_LIMIT, Settings,
+    TableOverride, check_local_model, load_layers, replace_app_layer,
+};
+use imperium_protocol::methods::{
+    LocalLaunchEffective, LocalLaunchSettings, LocalModelConfig, ModelConfigResult,
+    ModelSetConfigParams, TableModelConfig, TableModelEffective, TableModelSettings,
+};
+use toml::{Table, Value};
+
+use crate::state::DaemonState;
+
+const HEADER: &str = "# Written by the Imperium desktop app (Models dialog). Settings saved there\n\
+                      # win over config.toml, key by key. The app rewrites this file.\n\n";
+
+/// Every local model's settings and every model-table row's, as saved and as in effect.
+pub(crate) fn config(state: &DaemonState) -> ModelConfigResult {
+    let file = state.paths().app_models_file();
+    let saved = read_app_file(&file).unwrap_or_else(|error| {
+        tracing::warn!("{error}");
+        Table::new()
+    });
+    result(state, &state.settings(), &saved)
+}
+
+/// Saves the updates to the app layer and applies them; with `dry_run`, only checks them and
+/// returns what the result would be.
+pub(crate) fn set_config(
+    state: &DaemonState,
+    params: ModelSetConfigParams,
+) -> Result<ModelConfigResult, String> {
+    let _saving = state
+        .config_saves
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let paths = state.paths();
+    let file = paths.app_models_file();
+    // A file that is not valid TOML is not overwritten: what it held would be lost.
+    let mut saved = read_app_file(&file)?;
+    let current = state.settings();
+    for update in &params.local {
+        let model = state
+            .local_runtime()
+            .and_then(|local| {
+                local
+                    .supervisor
+                    .models()
+                    .into_iter()
+                    .find(|m| m.id == update.id)
+            })
+            .ok_or_else(|| format!("local model {}: no such model in models.folders", update.id))?;
+        let settings = &update.settings;
+        if model.format == imperium_local::scan::Format::Safetensors
+            && (settings.cache_type_k.is_some()
+                || settings.cache_type_v.is_some()
+                || settings.flash_attn.is_some()
+                || settings.max_gpu_layers.is_some())
+        {
+            return Err(format!(
+                "local model {}: cache types, flash attention and GPU layers do not apply to a vLLM model",
+                update.id
+            ));
+        }
+        if model.format == imperium_local::scan::Format::Safetensors
+            && settings.draft_model.is_some()
+        {
+            return Err(format!(
+                "local model {}: a draft model does not apply to a vLLM model",
+                update.id
+            ));
+        }
+        if settings.draft_model.as_deref() == Some(update.id.as_str()) {
+            return Err(format!(
+                "local model {}: draft_model may not be the model itself",
+                update.id
+            ));
+        }
+        check_local_model(&to_local(settings))
+            .map_err(|reason| format!("local model {}: {reason}", update.id))?;
+        set_entry(
+            &mut saved,
+            &["runtime", "llamacpp", "models"],
+            &update.id,
+            local_table(settings),
+        );
+    }
+    for update in &params.table {
+        if !current.models.catalog.iter().any(|row| row.id == update.id) {
+            return Err(format!(
+                "model table row {}: no such row in models.catalog",
+                update.id
+            ));
+        }
+        let settings = &update.settings;
+        if settings.input_usd_per_mtok.is_some() != settings.output_usd_per_mtok.is_some() {
+            return Err(format!(
+                "model table row {}: set both prices or neither",
+                update.id
+            ));
+        }
+        imperium_config::check_alias(settings.alias.as_deref())
+            .and_then(|()| imperium_config::check_card(settings.card.as_deref()))
+            .map_err(|reason| format!("model table row {}: {reason}", update.id))?;
+        if settings.context_window == Some(0) {
+            return Err(format!(
+                "model table row {}: context_window needs a value of at least 1",
+                update.id
+            ));
+        }
+        set_entry(
+            &mut saved,
+            &["models", "overrides"],
+            &update.id,
+            table_table(settings),
+        );
+    }
+    if let Some(hidden) = &params.hidden {
+        set_specs(&mut saved, "hidden", hidden);
+    }
+    if let Some(disabled) = &params.disabled {
+        set_specs(&mut saved, "disabled", disabled);
+    }
+    let candidate = candidate(state, &file, &saved)?;
+    refuse_disabled_default(&current, &candidate)?;
+    if params.dry_run {
+        return Ok(result(state, &candidate, &saved));
+    }
+    save_and_apply(state, &file, &saved, &current, &candidate)?;
+    Ok(result(state, &state.settings(), &saved))
+}
+
+/// Writes `saved` as the app file and makes `candidate` (built from it) the live model settings.
+fn save_and_apply(
+    state: &DaemonState,
+    file: &Path,
+    saved: &Table,
+    current: &Settings,
+    candidate: &Settings,
+) -> Result<(), String> {
+    write_app_file(file, saved)?;
+    let mut next = current.clone();
+    next.models = candidate.models.clone();
+    next.runtime.llamacpp.models = candidate.runtime.llamacpp.models.clone();
+    for (id, endpoint) in &mut next.endpoints {
+        if let Some(updated) = candidate.endpoints.get(id) {
+            endpoint.pricing.clone_from(&updated.pricing);
+        }
+    }
+    state.replace_settings(next);
+    let applied = state.settings();
+    if let Some(local) = state.local_runtime() {
+        local.apply_model_settings(&applied);
+    }
+    Ok(())
+}
+
+/// Where a model's card is saved in the app file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CardKind {
+    /// A model table row: `models.overrides."<id>".card`.
+    Table,
+    /// A local model: `runtime.llamacpp.models."<id>".card`.
+    Local,
+}
+
+impl CardKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            CardKind::Table => "table",
+            CardKind::Local => "local",
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<CardKind> {
+        match text {
+            "table" => Some(CardKind::Table),
+            "local" => Some(CardKind::Local),
+            _ => None,
+        }
+    }
+
+    fn path(self) -> &'static [&'static str] {
+        match self {
+            CardKind::Table => &["models", "overrides"],
+            CardKind::Local => &["runtime", "llamacpp", "models"],
+        }
+    }
+}
+
+/// A card written by [`set_card`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CardChange {
+    /// The table row id or local model id the card was saved under.
+    pub id: String,
+    pub kind: CardKind,
+    /// What the app file held before.
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+/// Finds where `model` keeps its card: a model table row by id (or by spec), else a local model
+/// by id (or by its `llamacpp:` / `vllm:` spec).
+pub(crate) fn card_target(state: &DaemonState, model: &str) -> Result<(String, CardKind), String> {
+    let model = model.trim();
+    let settings = state.settings();
+    if let Some(row) = settings.models.catalog.iter().find(|row| row.id == model) {
+        return Ok((row.id.clone(), CardKind::Table));
+    }
+    let local_id = model
+        .strip_prefix("llamacpp:")
+        .or_else(|| model.strip_prefix("vllm:"))
+        .unwrap_or(model);
+    let local = state.local_runtime().and_then(|local| {
+        local
+            .supervisor
+            .models()
+            .into_iter()
+            .find(|found| found.id == local_id)
+    });
+    if let Some(found) = local {
+        return Ok((found.id, CardKind::Local));
+    }
+    if let Some(row) = settings.models.catalog.iter().find(|row| row.spec == model) {
+        return Ok((row.id.clone(), CardKind::Table));
+    }
+    Err(format!(
+        "no model {model}: name a model table id or a local model id, as list_models shows them"
+    ))
+}
+
+/// Sets (or, with `None`, clears) the card of `id` in the app file and applies it at once, like
+/// the model dialog does. With `expect`, the card must still be what it says (for undo), or
+/// nothing is written.
+pub(crate) fn set_card(
+    state: &DaemonState,
+    id: &str,
+    kind: CardKind,
+    card: Option<&str>,
+    expect: Option<Option<&str>>,
+) -> Result<CardChange, String> {
+    let card = card.map(str::trim).filter(|card| !card.is_empty());
+    imperium_config::check_card(card).map_err(|reason| format!("card of {id}: {reason}"))?;
+    let _saving = state
+        .config_saves
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let file = state.paths().app_models_file();
+    let mut saved = read_app_file(&file)?;
+    let mut entry: Table = saved_entry(&saved, kind.path(), id).unwrap_or_default();
+    let before = entry
+        .get("card")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let Some(expected) = expect
+        && before.as_deref() != expected
+    {
+        return Err(format!(
+            "the card of {id} was changed since; edit it in the model settings instead"
+        ));
+    }
+    match card {
+        Some(card) => {
+            entry.insert("card".into(), Value::String(card.to_string()));
+        }
+        None => {
+            entry.remove("card");
+        }
+    }
+    set_entry(&mut saved, kind.path(), id, entry);
+    let current = state.settings();
+    let candidate = candidate(state, &file, &saved)?;
+    save_and_apply(state, &file, &saved, &current, &candidate)?;
+    Ok(CardChange {
+        id: id.to_string(),
+        kind,
+        before,
+        after: card.map(str::to_string),
+    })
+}
+
+/// The settings the configuration layers would give with `saved` as the app layer, checked
+/// strictly: any invalid value refuses the save. The other layers are the ones the live
+/// settings were built from, so edits made to config.toml since the daemon started are not
+/// picked up by a save (they apply on restart); without them (settings given alone) they are
+/// read again.
+fn candidate(state: &DaemonState, file: &Path, saved: &Table) -> Result<Settings, String> {
+    let layers = match state.config_layers() {
+        Some(layers) => layers,
+        None => {
+            load_layers(state.paths(), None, std::env::vars()).map_err(|error| error.to_string())?
+        }
+    };
+    let layers = replace_app_layer(layers, file.to_path_buf(), saved.clone());
+    Config::from_layers(layers)
+        .settings()
+        .map_err(|error| error.to_string())
+}
+
+/// Reads the app file; one that is missing counts as empty, one that cannot be read or is not
+/// valid TOML is an error naming the file.
+fn read_app_file(file: &Path) -> Result<Table, String> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Table::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", file.display())),
+    };
+    text.parse().map_err(|error| {
+        format!(
+            "{} is not valid TOML, so it was not overwritten; fix or remove it first: {error}",
+            file.display()
+        )
+    })
+}
+
+/// Writes the app file through a temporary file, so a crash never leaves half of it.
+fn write_app_file(file: &Path, saved: &Table) -> Result<(), String> {
+    let body = toml::to_string(saved).map_err(|error| error.to_string())?;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
+    }
+    let temp = file.with_extension("toml.tmp");
+    std::fs::write(&temp, format!("{HEADER}{body}"))
+        .map_err(|error| format!("could not write {}: {error}", temp.display()))?;
+    std::fs::rename(&temp, file)
+        .map_err(|error| format!("could not replace {}: {error}", file.display()))
+}
+
+/// Refuses switching off the model new sessions start on (`models.default`): the user picks
+/// another default first (`models.use`), so a new session never starts on a model that is off.
+/// A default that was already off before this save (a hand edit) does not block other changes.
+fn refuse_disabled_default(current: &Settings, candidate: &Settings) -> Result<(), String> {
+    let Some(default) = candidate.models.default.as_deref() else {
+        return Ok(());
+    };
+    // `models.default` may be a model table id as well as a spec.
+    let spec = candidate.models.spec_of(default);
+    if candidate.models.is_disabled(spec) && !current.models.is_disabled(spec) {
+        return Err(format!(
+            "{spec} is the default model for new sessions, so it cannot be turned off. Choose \
+             another default model first, then turn this one off"
+        ));
+    }
+    Ok(())
+}
+
+/// Sets `models.<key>` (a list of model specs, such as `hidden` or `disabled`) to `specs`
+/// (sorted, each once), or removes it when there are none.
+fn set_specs(saved: &mut Table, key: &str, specs: &[String]) {
+    let mut specs: Vec<String> = specs
+        .iter()
+        .map(|spec| spec.trim().to_string())
+        .filter(|spec| !spec.is_empty())
+        .collect();
+    specs.sort();
+    specs.dedup();
+    let Some(models) = saved
+        .entry("models".to_string())
+        .or_insert_with(|| Value::Table(Table::new()))
+        .as_table_mut()
+    else {
+        return;
+    };
+    if specs.is_empty() {
+        models.remove(key);
+    } else {
+        models.insert(key.into(), strings(&specs));
+    }
+}
+
+/// Sets (or, when `entry` is empty, removes) `id` under the table at `path`.
+fn set_entry(saved: &mut Table, path: &[&str], id: &str, entry: Table) {
+    let mut table = &mut *saved;
+    for key in path {
+        let Some(next) = table
+            .entry((*key).to_string())
+            .or_insert_with(|| Value::Table(Table::new()))
+            .as_table_mut()
+        else {
+            return;
+        };
+        table = next;
+    }
+    if entry.is_empty() {
+        table.remove(id);
+    } else {
+        table.insert(id.to_string(), Value::Table(entry));
+    }
+}
+
+fn integer(value: u32) -> Value {
+    Value::Integer(i64::from(value))
+}
+
+fn strings(values: &[String]) -> Value {
+    Value::Array(values.iter().cloned().map(Value::String).collect())
+}
+
+fn local_table(settings: &LocalLaunchSettings) -> Table {
+    let mut table = Table::new();
+    let mut put = |key: &str, value: Option<Value>| {
+        if let Some(value) = value {
+            table.insert(key.to_string(), value);
+        }
+    };
+    put("alias", settings.alias.clone().map(Value::String));
+    put("card", settings.card.clone().map(Value::String));
+    if settings.context_auto {
+        put("context", Some(Value::String("auto".into())));
+    } else {
+        put("context", settings.context.map(integer));
+    }
+    put("pool_tokens", settings.pool_tokens.map(integer));
+    put("slots", settings.slots.map(integer));
+    put(
+        "cache_type_k",
+        settings.cache_type_k.clone().map(Value::String),
+    );
+    put(
+        "cache_type_v",
+        settings.cache_type_v.clone().map(Value::String),
+    );
+    put("flash_attn", settings.flash_attn.clone().map(Value::String));
+    put("max_gpu_layers", settings.max_gpu_layers.map(integer));
+    put(
+        "max_wait_s",
+        settings
+            .max_wait_s
+            .map(|value| Value::Integer(i64::try_from(value).unwrap_or(i64::MAX))),
+    );
+    put("max_output_tokens", settings.max_output_tokens.map(integer));
+    put("extra_args", settings.extra_args.as_deref().map(strings));
+    put(
+        "draft_model",
+        settings.draft_model.clone().map(Value::String),
+    );
+    put("draft_max", settings.draft_max.map(integer));
+    put("draft_min", settings.draft_min.map(integer));
+    put("draft_gpu_layers", settings.draft_gpu_layers.map(integer));
+    table
+}
+
+fn table_table(settings: &TableModelSettings) -> Table {
+    let mut table = Table::new();
+    let mut put = |key: &str, value: Option<Value>| {
+        if let Some(value) = value {
+            table.insert(key.to_string(), value);
+        }
+    };
+    put("alias", settings.alias.clone().map(Value::String));
+    put("card", settings.card.clone().map(Value::String));
+    put("enabled", settings.enabled.map(Value::Boolean));
+    put("tier", settings.tier.clone().map(Value::String));
+    put("tags", settings.tags.as_deref().map(strings));
+    put("context_window", settings.context_window.map(integer));
+    put(
+        "input_usd_per_mtok",
+        settings.input_usd_per_mtok.map(Value::Float),
+    );
+    put(
+        "output_usd_per_mtok",
+        settings.output_usd_per_mtok.map(Value::Float),
+    );
+    table
+}
+
+fn to_local(settings: &LocalLaunchSettings) -> LocalModelSettings {
+    LocalModelSettings {
+        alias: settings.alias.clone(),
+        card: settings.card.clone(),
+        context: if settings.context_auto {
+            Some(ContextLimit::Auto)
+        } else {
+            settings.context.map(ContextLimit::Tokens)
+        },
+        pool_tokens: settings.pool_tokens,
+        slots: settings.slots,
+        cache_type_k: settings.cache_type_k.clone(),
+        cache_type_v: settings.cache_type_v.clone(),
+        flash_attn: settings.flash_attn.clone(),
+        max_gpu_layers: settings.max_gpu_layers,
+        max_wait_s: settings.max_wait_s,
+        max_output_tokens: settings.max_output_tokens,
+        extra_args: settings.extra_args.clone(),
+        // Set in the config file only; the app's dialog leaves it alone.
+        reasoning: None,
+        draft_model: settings.draft_model.clone(),
+        draft_max: settings.draft_max,
+        draft_min: settings.draft_min,
+        draft_gpu_layers: settings.draft_gpu_layers,
+    }
+}
+
+fn from_local(settings: LocalModelSettings) -> LocalLaunchSettings {
+    LocalLaunchSettings {
+        alias: settings.alias,
+        card: settings.card,
+        context: settings.context.and_then(ContextLimit::tokens),
+        context_auto: settings.context == Some(ContextLimit::Auto),
+        pool_tokens: settings.pool_tokens,
+        slots: settings.slots,
+        cache_type_k: settings.cache_type_k,
+        cache_type_v: settings.cache_type_v,
+        flash_attn: settings.flash_attn,
+        max_gpu_layers: settings.max_gpu_layers,
+        max_wait_s: settings.max_wait_s,
+        max_output_tokens: settings.max_output_tokens,
+        extra_args: settings.extra_args,
+        draft_model: settings.draft_model,
+        draft_max: settings.draft_max,
+        draft_min: settings.draft_min,
+        draft_gpu_layers: settings.draft_gpu_layers,
+    }
+}
+
+fn effective(launch: &ModelLaunch) -> LocalLaunchEffective {
+    LocalLaunchEffective {
+        // Unsized `auto` (the defaults) has no number of its own.
+        context: if launch.context == NO_CONTEXT_LIMIT {
+            0
+        } else {
+            launch.context
+        },
+        context_auto: launch.context_auto,
+        pool_tokens: launch.pool_tokens,
+        pool_fixed: launch.pool_fixed,
+        pool_clamped: launch.pool_clamped,
+        slots: launch.slots,
+        cache_type_k: launch.cache_type_k.clone(),
+        cache_type_v: launch.cache_type_v.clone(),
+        flash_attn: launch.flash_attn.clone(),
+        max_gpu_layers: launch.max_gpu_layers,
+        max_wait_s: launch.max_wait_s,
+        max_output_tokens: launch.max_output_tokens,
+        extra_args: launch.extra_args.clone(),
+        draft_model: launch.draft.as_ref().map(|draft| draft.model.clone()),
+        draft_max: launch.draft.as_ref().and_then(|draft| draft.max),
+        draft_min: launch.draft.as_ref().and_then(|draft| draft.min),
+        draft_gpu_layers: launch.draft.as_ref().and_then(|draft| draft.gpu_layers),
+    }
+}
+
+/// The saved entry for `id` under `path`, when it reads as a `T`.
+fn saved_entry<T: serde::de::DeserializeOwned>(
+    saved: &Table,
+    path: &[&str],
+    id: &str,
+) -> Option<T> {
+    let mut table = saved;
+    for key in path {
+        table = table.get(*key)?.as_table()?;
+    }
+    table.get(id)?.clone().try_into().ok()
+}
+
+/// The result for `settings` (live or candidate) with `saved` as the app file's content.
+fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfigResult {
+    let llama = &settings.runtime.llamacpp;
+    let local = state.local_runtime().map_or_else(Vec::new, |runtime| {
+        let supervisor = &runtime.supervisor;
+        let mut models = supervisor.models();
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        let loaded = supervisor.loaded();
+        models
+            .iter()
+            .map(|model| {
+                // Sized for the model like the supervisor sizes it: the context ceiling, and
+                // the pool it starts with (or has grown to).
+                let launch = supervisor.sized(model, &settings.launch_of(&model.id));
+                let (footprint, placement) = supervisor.plan_with(model, &launch);
+                let cpu_lane = settings.cpu_row(&model.id).is_some();
+                let (draft_in_use, draft_notice) = supervisor.draft_state(model, &launch);
+                let vllm = model.format == imperium_local::scan::Format::Safetensors;
+                let spec = format!("{}:{}", if vllm { "vllm" } else { "llamacpp" }, model.id);
+                LocalModelConfig {
+                    id: model.id.clone(),
+                    runtime: if vllm { "vllm" } else { "llamacpp" }.into(),
+                    saved: from_local(
+                        saved_entry(saved, &["runtime", "llamacpp", "models"], &model.id)
+                            .unwrap_or_default(),
+                    ),
+                    effective: effective(&launch),
+                    required_bytes: footprint.required_bytes(),
+                    kv_pool_bytes: footprint.kv_bytes,
+                    placement: runtime.placement_label(placement.as_ref(), cpu_lane).into(),
+                    loaded: loaded.iter().any(|status| status.model_id == model.id),
+                    reload_pending: supervisor
+                        .loaded_launch(&model.id)
+                        .is_some_and(|started| started.restarts_for(&launch)),
+                    cpu_lane,
+                    context_length: model.info.context_length,
+                    metadata_card: imperium_local::card::metadata_card(model),
+                    draft_in_use,
+                    draft_notice,
+                    enabled: !settings.models.is_disabled(&spec),
+                    weights_bytes: footprint.weights_bytes,
+                    layers: footprint.layers,
+                    // What the planner would do with the effective settings: the layers it
+                    // offloads and the memory split between the GPU and system RAM.
+                    gpu_layers: placement
+                        .as_ref()
+                        .and_then(|placed| match footprint.layers {
+                            Some(layers) => Some(placed.gpu_layers.min(layers)),
+                            // "Every layer" with no layer count in the header has no number.
+                            None => (placed.gpu_layers != u32::MAX).then_some(placed.gpu_layers),
+                        }),
+                    vram_bytes: placement.as_ref().map_or(0, |placed| placed.vram_bytes),
+                    ram_bytes: placement.as_ref().map_or(0, |placed| placed.ram_bytes),
+                }
+            })
+            .collect()
+    });
+    let table = settings
+        .models
+        .catalog
+        .iter()
+        .map(|entry| {
+            let (endpoint_id, model) = entry
+                .spec
+                .split_once(':')
+                .unwrap_or((entry.spec.as_str(), ""));
+            let endpoint = settings.endpoints.get(endpoint_id);
+            let pricing = endpoint.and_then(|endpoint| endpoint.pricing.get(model));
+            let own: TableOverride =
+                saved_entry(saved, &["models", "overrides"], &entry.id).unwrap_or_default();
+            TableModelConfig {
+                id: entry.id.clone(),
+                spec: entry.spec.clone(),
+                location: entry.location.as_str().into(),
+                endpoint_configured: endpoint.is_some(),
+                saved: TableModelSettings {
+                    alias: own.alias,
+                    card: own.card,
+                    enabled: own.enabled,
+                    tier: own.tier.map(|tier| tier.as_str().into()),
+                    tags: own.tags,
+                    context_window: own.context_window,
+                    input_usd_per_mtok: own.input_usd_per_mtok,
+                    output_usd_per_mtok: own.output_usd_per_mtok,
+                },
+                effective: TableModelEffective {
+                    alias: entry.alias.clone(),
+                    card: entry.card.clone(),
+                    enabled: entry.enabled,
+                    tier: entry.tier.as_str().into(),
+                    tags: entry.tags.clone(),
+                    context_window: entry.context_window,
+                    input_usd_per_mtok: pricing.map(|p| p.input_usd_per_mtok),
+                    output_usd_per_mtok: pricing.map(|p| p.output_usd_per_mtok),
+                },
+            }
+        })
+        .collect();
+    ModelConfigResult {
+        local,
+        table,
+        defaults: effective(&llama.default_launch()),
+        cache_types: CACHE_TYPES.iter().map(ToString::to_string).collect(),
+        file: state.paths().app_models_file().display().to_string(),
+        hidden: settings.models.hidden.clone(),
+        disabled: settings.models.disabled.clone(),
+        default_model: settings.models.default.clone(),
+    }
+}

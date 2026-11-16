@@ -4,8 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Imperium</title>
+    <link rel="stylesheet" href="/boot.css" />
+    <script src="/boot.js"></script>
   </head>
-  <body>
+  <body aria-busy="true">
+    <div id="boot" role="status" aria-label="Loading Imperium">
+      <svg viewBox="0 0 44 44" aria-hidden="true">
+        <circle class="ring" cx="22" cy="22" r="19" />
+        <path class="mark" d="M22 12l8 20h-4l-1.6-4h-4.8L18 32h-4zm0 7.6L20.6 24h2.8z" />
+      </svg>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

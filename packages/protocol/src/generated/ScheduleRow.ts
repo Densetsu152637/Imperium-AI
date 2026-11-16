@@ -10,9 +10,19 @@ trigger: string,
  */
 action: string, project: string, 
 /**
+ * The environment the schedule runs in (`action.environment`); none for a schedule that
+ * works in a bare `project` folder.
+ */
+environment: string | null, 
+/**
  * RFC 3339 local times.
  */
 next_run: string | null, last_run: string | null, last_ok: boolean | null, running: boolean, 
+/**
+ * Set while a run waits for a quiet machine (`prefer_quiet`, `when_quiet`): why. Run it
+ * now with `schedules.run`.
+ */
+deferred: string | null, 
 /**
  * Why the schedule cannot run, if it cannot.
  */
