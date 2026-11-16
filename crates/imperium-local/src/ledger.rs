@@ -10,6 +10,18 @@
 use std::path::{Path, PathBuf};
 
 const FILE: &str = "children.txt";
+/// How far a process's start time may differ from the one written down, in seconds: the
+/// process table's start times are rounded and, on Linux, move when the clock is stepped.
+const START_SLACK_SECS: u64 = 2;
+
+/// Serialises reads and writes of the ledger: servers may start at the same moment.
+static LEDGER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+    LEDGER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {
@@ -66,12 +78,14 @@ fn identity(system: &mut sysinfo::System, pid: u32) -> Option<(u64, String)> {
 }
 
 fn is_running(system: &mut sysinfo::System, entry: &Entry) -> bool {
-    identity(system, entry.pid)
-        .is_some_and(|(started, name)| started == entry.started && name == entry.name)
+    identity(system, entry.pid).is_some_and(|(started, name)| {
+        started.abs_diff(entry.started) <= START_SLACK_SECS && name == entry.name
+    })
 }
 
 /// Writes down a server the daemon just started, and forgets the ones that have ended.
 pub fn record(dir: &Path, pid: u32) {
+    let _exclusive = exclusive();
     let mut system = sysinfo::System::new();
     let Some((started, name)) = identity(&mut system, pid) else {
         return;
@@ -87,6 +101,7 @@ pub fn record(dir: &Path, pid: u32) {
 /// Ends the servers an earlier daemon left running, and empties the ledger. Returns how many
 /// were ended. Only a process with the recorded id, start time and name is touched.
 pub fn sweep(dir: &Path) -> usize {
+    let _exclusive = exclusive();
     let mut system = sysinfo::System::new();
     let mut ended = 0;
     for entry in read(dir) {
@@ -139,6 +154,20 @@ mod tests {
         assert_eq!(sweep(dir.path()), 1);
         assert!(left.wait().is_ok(), "the server was ended");
         assert!(!dir.path().join(FILE).exists(), "the ledger is empty");
+    }
+
+    #[test]
+    fn a_start_time_within_the_slack_is_still_the_same_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut left = child();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        record(dir.path(), left.id());
+        let mut entries = read(dir.path());
+        // The table's start time moved by a second since it was written down.
+        entries[0].started += 1;
+        write(dir.path(), &entries);
+        assert_eq!(sweep(dir.path()), 1);
+        assert!(left.wait().is_ok());
     }
 
     #[test]
