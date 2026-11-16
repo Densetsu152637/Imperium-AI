@@ -122,7 +122,7 @@ export function Menu({
         close();
         break;
       case "leave":
-        close(false);
+        close();
         return;
     }
     event.preventDefault();

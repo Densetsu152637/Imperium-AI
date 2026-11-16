@@ -205,7 +205,7 @@ export function Select({ value, options, onChange, disabled, inert, placeholder 
         close();
         break;
       case "Tab":
-        close(false);
+        close();
         return;
       default: {
         if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {

@@ -25,7 +25,7 @@ export type MenuKey =
   | { kind: "run"; active: number }
   /** Close and give focus back to the button. */
   | { kind: "close" }
-  /** Close and let Tab move on. */
+  /** Close, give focus back to the button, and let Tab move on from there. */
   | { kind: "leave" };
 
 /** What a key does inside an open menu; null when the menu ignores it. Arrows wrap; Home and End jump; Enter or Space runs the active item; Escape closes; Tab leaves. */

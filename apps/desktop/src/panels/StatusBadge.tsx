@@ -19,7 +19,7 @@ const TONE: Record<SessionStatus, BadgeTone> = {
   idle: "neutral",
   working: "accent",
   needs_attention: "danger",
-  paused: "accent",
+  paused: "warn",
   needs_model: "accent",
   watching: "ok",
   merged: "ok",
