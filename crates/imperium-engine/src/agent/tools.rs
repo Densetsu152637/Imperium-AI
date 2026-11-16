@@ -121,10 +121,30 @@ impl Agent {
         {
             tools.extend([list_knowledge_agents_spec(), ask_agent_spec()]);
         }
-        (
-            tools,
-            vec![(Category::ToolsMcp, mcp), (Category::ToolsPlugins, plugins)],
-        )
+        let groups = vec![(Category::ToolsMcp, mcp), (Category::ToolsPlugins, plugins)];
+        // A named agent's file narrows what it is offered, never widens it.
+        match self.named.as_ref().and_then(|named| named.tools.as_deref()) {
+            Some(allowed) => narrow_tools(tools, groups, allowed),
+            None => (tools, groups),
+        }
+    }
+
+    /// Why a call to `name` is refused when this agent runs as a named agent whose file lists
+    /// tools and `name` is not one of them. Checked where calls run, as the offered list is.
+    pub(super) fn named_refusal(&self, name: &str) -> Option<String> {
+        let named = self.named.as_ref()?;
+        let allowed = named.tools.as_deref()?;
+        (!allowed.iter().any(|tool| tool == name)).then(|| {
+            format!(
+                "{name} is not one of the tools of the agent {} ({}); it was not run",
+                named.name,
+                if allowed.is_empty() {
+                    "none".to_string()
+                } else {
+                    allowed.join(", ")
+                }
+            )
+        })
     }
 
     /// Puts the instruction files of the directories the round's file tools touched into the
@@ -665,6 +685,9 @@ impl Agent {
         {
             return self.tool_finished(call, name, false, format!("error: {why}"), None);
         }
+        if let Some(why) = self.named_refusal(name) {
+            return self.tool_finished(call, name, false, format!("error: {why}"), None);
+        }
         self.enforce_lock();
         if let Some(why) = self.profile_refusal(name) {
             return self.tool_finished(
@@ -1024,4 +1047,36 @@ pub(super) fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
         ToolEvent::PreviewChanged { url, command } => SessionEvent::PreviewChanged { url, command },
         _ => return None,
     })
+}
+
+/// Keeps the tools `allowed` names, and moves the ranges of `groups` to match what is left.
+fn narrow_tools(
+    tools: Vec<ToolSpec>,
+    groups: Vec<(Category, Range<usize>)>,
+    allowed: &[String],
+) -> (Vec<ToolSpec>, Vec<(Category, Range<usize>)>) {
+    let keep: Vec<bool> = tools
+        .iter()
+        .map(|tool| allowed.contains(&tool.name))
+        .collect();
+    // before[i]: how many of the first i tools are kept.
+    let mut before = Vec::with_capacity(keep.len() + 1);
+    let mut kept = 0;
+    before.push(0);
+    for keeps in &keep {
+        if *keeps {
+            kept += 1;
+        }
+        before.push(kept);
+    }
+    let groups = groups
+        .into_iter()
+        .map(|(category, range)| (category, before[range.start]..before[range.end]))
+        .collect();
+    let tools = tools
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(tool, keeps)| keeps.then_some(tool))
+        .collect();
+    (tools, groups)
 }

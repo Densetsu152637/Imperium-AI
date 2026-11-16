@@ -25,11 +25,67 @@ impl Agent {
             access: Option<String>,
             #[serde(default)]
             knowledge: Option<String>,
+            #[serde(default)]
+            agent: Option<String>,
         }
         let args: Args = parse(arguments)?;
         if args.brief.trim().is_empty() {
             return Err("brief must not be empty".into());
         }
+        // A named agent (an agent file): found before anything starts, so a wrong name costs
+        // nothing. Its file may narrow the tools and pick the model; it never widens either.
+        let named_def = match args
+            .agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            Some(name) => {
+                if args.single_call {
+                    return Err(
+                        "agent cannot be combined with single_call: a single_call subagent gets \
+                         no tools and one reply, so there is nothing for a named agent to narrow"
+                            .into(),
+                    );
+                }
+                let extensions = &self.shared.extensions;
+                match extensions.agent(name) {
+                    Some(def) => Some(def.clone()),
+                    None if extensions.agents.is_empty() => {
+                        return Err(format!(
+                            "there is no named agent {name:?}: no agent files are defined"
+                        ));
+                    }
+                    None => {
+                        let known: Vec<&str> = extensions
+                            .agents
+                            .iter()
+                            .map(|agent| agent.name.as_str())
+                            .collect();
+                        return Err(format!(
+                            "there is no named agent {name:?}; the named agents are: {}",
+                            known.join(", ")
+                        ));
+                    }
+                }
+            }
+            None => None,
+        };
+        let (named, named_notes) = match &named_def {
+            Some(def) => {
+                // The tools the delegator has now: a file narrows these, so it can never give a
+                // subagent one that the delegator lacks.
+                let parent: Vec<String> = self
+                    .tool_specs()
+                    .0
+                    .into_iter()
+                    .map(|tool| tool.name)
+                    .collect();
+                let (named, notes) = named_agent(def, &parent);
+                (Some(named), notes)
+            }
+            None => (None, Vec::new()),
+        };
         // A subagent kept as knowledge when its first turn succeeds, and routed to Emperor
         // (or `routing.knowledge_model`) by the `knowledge` tag.
         let knowledge = args
@@ -98,23 +154,96 @@ impl Agent {
             .as_deref()
             .map(str::parse::<Location>)
             .transpose()?;
-        let routed = route_noted(
+        // The model the file asks for, unless the call names one: `inherit` is the delegating
+        // agent's own; anything else goes through the same routing as `model`.
+        let file_model = match (
+            &args.model,
+            named_def.as_ref().and_then(|def| def.model.as_deref()),
+        ) {
+            (None, Some(model)) => Some(model),
+            _ => None,
+        };
+        let inherit_model = file_model == Some("inherit");
+        let file_model = file_model.filter(|_| !inherit_model);
+        let session_id = self.shared.session_id.clone();
+        let request =
+            |named| task_request(named, tier, location, &tags, &session_id, args.single_call);
+        let mut routed = route_noted(
             &self.shared.catalog,
             &self.shared.routing,
             // Only the root delegates, so this is the session's current model.
             &self.model,
-            TaskRequest {
-                named: args.model.as_deref(),
-                tier,
-                location,
-                tags: &tags,
-                session: Some(&self.shared.session_id),
-                needs_tools: !args.single_call,
-            },
+            request(args.model.as_deref().or(file_model)),
             self.shared.local.as_deref(),
         );
-        let route_notes = routed.notes;
+        // The file's model is a preference: it never overrides what the call or the user's
+        // routing rules require of the model: its tier, its location, and the capabilities the
+        // task needs (tools, vision, long context). The location in force is the call's, else a
+        // rule's. A miss is treated alike for `inherit` and a named model: route normally.
+        let confined = crate::model::effective_location(&self.shared.routing, request(None));
+        let location_ok =
+            |local: bool| confined.is_none_or(|wanted| (wanted == Location::Local) == local);
+        // The tier is a floor only when the call (or a rule) sets one: the default is not a
+        // requirement the file's model must meet, though rules written for it still match.
+        let floor = if args.tier.is_some() {
+            tier
+        } else {
+            Tier::Basic
+        };
+        let mut file_notes = Vec::new();
+        if let Some(def) = &named_def {
+            if inherit_model {
+                let fits = location_ok(self.model.local)
+                    && self
+                        .row_fits(&self.model.spec, request(None), floor)
+                        .unwrap_or(true);
+                if fits {
+                    routed.model = self.model.clone();
+                } else {
+                    file_notes.push(format!(
+                        "the agent {} inherits the session's model, which does not meet what \
+                         this task requires (its tier, location or capabilities), so the task \
+                         was routed normally",
+                        def.name
+                    ));
+                }
+            } else if let Some(wanted) = file_model {
+                // The file's model must be one routing found and can use now.
+                let found = self.shared.catalog.iter().any(|row| {
+                    (row.id == wanted || row.model.spec == wanted)
+                        && row.model.spec == routed.model.spec
+                });
+                if !found {
+                    file_notes.push(format!(
+                        "the agent {} asks for the model {wanted}, which is not available, so \
+                         the task was routed normally",
+                        def.name
+                    ));
+                } else if !(location_ok(routed.model.local)
+                    && self
+                        .row_fits(&routed.model.spec, request(None), floor)
+                        .unwrap_or(true))
+                {
+                    file_notes.push(format!(
+                        "the agent {} asks for the model {wanted}, which does not meet what \
+                         this task requires (its tier, location or capabilities), so the task \
+                         was routed normally",
+                        def.name
+                    ));
+                    routed = route_noted(
+                        &self.shared.catalog,
+                        &self.shared.routing,
+                        &self.model,
+                        request(None),
+                        self.shared.local.as_deref(),
+                    );
+                }
+            }
+        }
+        let mut route_notes = routed.notes;
         let model = routed.model;
+        route_notes.extend(file_notes);
+        route_notes.extend(named_notes);
         // A model whose budget is used up and blocks is not started; one that asks is
         // approved at the subagent's first call.
         if let Some(gate) = &self.shared.budget_gate
@@ -212,6 +341,7 @@ impl Agent {
             workspace: workspace.clone(),
             effort,
             single_call: args.single_call,
+            named: named.clone(),
         });
         let mut agent = Agent::new_in(
             task_id.clone(),
@@ -223,6 +353,11 @@ impl Agent {
             writer_note.as_deref(),
         )
         .with_effort(effort);
+        if let Some(named) = &named {
+            // Kept with the subagent's record, so a resumed one is the same agent.
+            self.shared.agents.set_named(&task_id, named.clone());
+            agent = agent.with_named(named.clone());
+        }
         if isolated {
             agent = agent.writing();
         }
@@ -237,6 +372,9 @@ impl Agent {
         }
         self.launch_subagent(agent.pausable(), args.brief, &task_id, retry);
         let mut started = format!("started {task_id}; call await_tasks to collect its report");
+        if let Some(named) = &named {
+            started.push_str(&format!("; it runs as the agent {}", named.name));
+        }
         if knowledge.is_some() {
             started.push_str("; it is kept as a knowledge agent when it finishes");
         }
@@ -247,6 +385,34 @@ impl Agent {
             started.push_str(&format!("\nNote: {notice}."));
         }
         Ok(started)
+    }
+
+    /// Whether routing would take the model-table row `which` (a table id or a spec) for
+    /// `request`, as a ranking of that row alone decides: its tier, location and capabilities
+    /// (tools, vision, long context) must suit, and its queue must not be backed up. `None` when
+    /// no such row exists, so nothing is known about the model.
+    fn row_fits(&self, which: &str, request: TaskRequest<'_>, floor: Tier) -> Option<bool> {
+        let row = self
+            .shared
+            .catalog
+            .iter()
+            .find(|row| row.model.spec == which || row.id == which)?;
+        // Asked for by name, so the row's being reached only by a rule or a name does not count
+        // against it.
+        let mut alone = row.clone();
+        alone.named_only = false;
+        alone.cpu_lane = false;
+        // The rules match at the task's own tier (the default one included), and the row must
+        // meet the floor: the call's tier, or the lowest, and a matching rule's.
+        let picked = crate::model::route_noted_floor(
+            &[alone],
+            &self.shared.routing,
+            &self.model,
+            request,
+            floor,
+            self.shared.local.as_deref(),
+        );
+        Some(!picked.fell_back && picked.model.spec == row.model.spec)
     }
 
     /// Starts `agent` on `brief` as its own task. (A plain function, so the async tool functions
@@ -871,6 +1037,68 @@ pub(super) struct Retry {
     pub(super) workspace: Workspace,
     pub(super) effort: Option<Effort>,
     pub(super) single_call: bool,
+    /// The agent file the task runs as, which the retry runs as too.
+    pub(super) named: Option<crate::agents::NamedAgent>,
+}
+
+/// What a delegating call asks routing for.
+fn task_request<'a>(
+    named: Option<&'a str>,
+    tier: Tier,
+    location: Option<Location>,
+    tags: &'a [String],
+    session: &'a str,
+    single_call: bool,
+) -> TaskRequest<'a> {
+    TaskRequest {
+        named,
+        tier,
+        location,
+        tags,
+        session: Some(session),
+        needs_tools: !single_call,
+    }
+}
+
+/// What a named agent runs with: its instructions, and its tools: those its file lists that
+/// `parent` (the delegator's tools) also has. Claude Code's tool names are mapped to Imperium's.
+/// Names that match nothing are left out, with a note for the user.
+fn named_agent(
+    def: &imperium_extensions::AgentDef,
+    parent: &[String],
+) -> (crate::agents::NamedAgent, Vec<String>) {
+    let mut notes = Vec::new();
+    let tools = def.tools.as_ref().map(|listed| {
+        let mut allowed: Vec<String> = Vec::new();
+        for item in listed {
+            let found = imperium_extensions::agents::resolve_tool(item, parent);
+            if found.is_empty() {
+                notes.push(format!(
+                    "the agent {}: the tool {item} is not one of the tools available here, so it \
+                     was left out",
+                    def.name
+                ));
+            }
+            for name in found {
+                if !allowed.iter().any(|tool| tool == name) {
+                    allowed.push(name.to_string());
+                }
+            }
+        }
+        allowed
+    });
+    if tools.as_ref().is_some_and(Vec::is_empty) {
+        notes.push(format!(
+            "the agent {} has none of the tools its file lists, so it runs with no tools",
+            def.name
+        ));
+    }
+    let named = crate::agents::NamedAgent {
+        name: def.name.clone(),
+        prompt: def.prompt.clone(),
+        tools,
+    };
+    (named, notes)
 }
 
 /// Runs a subagent and, when it fails, runs the task again on a stronger route: up to
@@ -980,6 +1208,9 @@ pub(super) async fn run_escalating(
             None,
         )
         .with_effort(retry.effort);
+        if let Some(named) = &retry.named {
+            next = next.with_named(named.clone());
+        }
         if retry.single_call {
             next = next.single_call();
         }
@@ -1207,6 +1438,10 @@ pub(crate) fn resume_subagent(
         ),
         note.as_deref(),
     );
+    // A named agent resumes as itself: its instructions and its narrowed tools.
+    if let Some(named) = shared.agents.named(agent_id) {
+        agent = agent.with_named(named);
+    }
     if tree.is_some() {
         agent = agent.writing();
     }

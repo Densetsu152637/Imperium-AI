@@ -18,10 +18,10 @@ use imperium_mcp::oauth::{CredentialStore, OAuthSource};
 use imperium_mcp::{McpServers, NEEDS_SIGN_IN};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
-    CatalogServer, McpCatalogResult, McpInstallParams, McpListResult, McpLoginParams,
-    McpLoginResult, McpLogoutParams, McpLogoutResult, McpRemoveParams, McpRemoveResult,
-    McpSaveParams, McpSaveResult, McpServerConfig, McpServerInfo, McpSetEnabledParams, McpStatus,
-    McpTestParams, PluginInfo, SkillInfo,
+    AgentFileInfo, CatalogServer, McpCatalogResult, McpInstallParams, McpListResult,
+    McpLoginParams, McpLoginResult, McpLogoutParams, McpLogoutResult, McpRemoveParams,
+    McpRemoveResult, McpSaveParams, McpSaveResult, McpServerConfig, McpServerInfo,
+    McpSetEnabledParams, McpStatus, McpTestParams, PluginInfo, SkillInfo,
 };
 use serde::Deserialize;
 
@@ -230,6 +230,12 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
     let (skills, mut skill_problems) = imperium_extensions::skills::discover(&skill_dirs);
     problems.append(&mut skill_problems);
 
+    // Named agents of plugins and the user (a project's are loaded per session, for trusted
+    // projects only).
+    let agent_folders = agent_folders(&plugins, &settings.extensions.disabled_plugins, config_dir);
+    let (agents, mut agent_problems) = imperium_extensions::agents::discover(&agent_folders);
+    problems.append(&mut agent_problems);
+
     let plugins = plugins
         .iter()
         .map(|plugin| PluginInfo {
@@ -262,9 +268,39 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
                 dir: skill.dir.display().to_string(),
             })
             .collect(),
+        agents: agents
+            .into_iter()
+            .map(|agent| AgentFileInfo {
+                name: agent.name,
+                description: agent.description,
+                origin: agent.origin,
+                path: agent.path.display().to_string(),
+                tools: agent.tools,
+                model: agent.model,
+            })
+            .collect(),
         user_file: state.paths().user_config_file().display().to_string(),
         problems,
     }
+}
+
+/// Where named agents are read from, lowest precedence first: enabled plugins' `agents/`, then the
+/// user's.
+fn agent_folders(
+    plugins: &[imperium_extensions::plugins::Plugin],
+    disabled: &[String],
+    config_dir: &Path,
+) -> Vec<imperium_extensions::AgentFolder> {
+    let mut folders: Vec<imperium_extensions::AgentFolder> = plugins
+        .iter()
+        .filter(|plugin| !disabled.contains(&plugin.name))
+        .map(|plugin| imperium_extensions::AgentFolder::new(plugin.agents_dir(), plugin.origin()))
+        .collect();
+    folders.push(imperium_extensions::AgentFolder::new(
+        config_dir.join("agents"),
+        "user",
+    ));
+    folders
 }
 
 /// Entries of `dir` that `keep` accepts.
@@ -909,6 +945,31 @@ mod tests {
         serde_json::from_str::<CatalogFile>(BUILT_IN)
             .unwrap()
             .entries
+    }
+
+    #[test]
+    fn agents_of_disabled_plugins_are_not_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["on", "off"] {
+            let root = dir.path().join(name);
+            std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+            std::fs::write(
+                root.join(".claude-plugin/plugin.json"),
+                format!(r#"{{"name": "{name}"}}"#),
+            )
+            .unwrap();
+        }
+        let (plugins, problems) = imperium_extensions::plugins::discover(
+            &[dir.path().to_path_buf()],
+            Duration::from_secs(5),
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        let folders = agent_folders(&plugins, &["off".to_string()], Path::new("config"));
+        let origins: Vec<&str> = folders
+            .iter()
+            .map(|folder| folder.origin.as_str())
+            .collect();
+        assert_eq!(origins, ["plugin:on", "user"]);
     }
 
     #[test]

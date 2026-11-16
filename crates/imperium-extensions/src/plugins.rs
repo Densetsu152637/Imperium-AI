@@ -1,7 +1,7 @@
 //! Plugins in the Claude Code layout: a folder with `.claude-plugin/plugin.json` contributing
-//! `skills/`, `commands/`, `hooks/hooks.json`, and `.mcp.json`. `${CLAUDE_PLUGIN_ROOT}` in
-//! hook commands and server definitions is the plugin folder. `agents/` is reported as not yet
-//! supported.
+//! `skills/`, `commands/`, `agents/` (named subagents, see [`crate::agents`]),
+//! `hooks/hooks.json`, and `.mcp.json`. `${CLAUDE_PLUGIN_ROOT}` in hook commands and server
+//! definitions is the plugin folder.
 //!
 //! `${VAR}` in `.mcp.json` falls back to the daemon's environment, except for a plugin an agent
 //! installed (its folder holds the `.imperium-source.json` the daemon writes, naming the
@@ -41,6 +41,10 @@ impl Plugin {
 
     pub fn commands_dir(&self) -> PathBuf {
         self.root.join("commands")
+    }
+
+    pub fn agents_dir(&self) -> PathBuf {
+        self.root.join("agents")
     }
 }
 
@@ -156,11 +160,6 @@ fn load(root: &Path, server_timeout: Duration) -> Result<(Plugin, Vec<String>), 
             })
             .collect();
     }
-    if root.join("agents").is_dir() {
-        notes.push(format!(
-            "{origin}: agents/ definitions are not supported yet and were skipped"
-        ));
-    }
     Ok((
         Plugin {
             name: manifest.name,
@@ -214,8 +213,8 @@ mod tests {
         assert_eq!(plugin.servers[0].name, "reviewer_lint");
         assert!(matches!(&plugin.servers[0].launch,
             imperium_mcp::Launch::Stdio { command, .. } if command.contains("reviewer")));
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].contains("agents/"));
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(plugin.agents_dir().ends_with("agents"));
         assert!(plugin.skills_dir().ends_with("skills"));
     }
 

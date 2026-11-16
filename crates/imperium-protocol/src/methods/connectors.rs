@@ -23,6 +23,10 @@ pub struct McpListResult {
     pub servers: Vec<McpServerInfo>,
     pub plugins: Vec<PluginInfo>,
     pub skills: Vec<SkillInfo>,
+    // Named subagents found in the user's `agents/` folder and plugins (a project's are loaded
+    // per session, for trusted projects only).
+    #[serde(default)]
+    pub agents: Vec<AgentFileInfo>,
     /// The user config file servers are written to.
     pub user_file: String,
     /// Problems found while reading the config, plugins, and skills.
@@ -124,6 +128,26 @@ pub struct SkillInfo {
     /// Where it was installed from, when an agent installed it (`install_extension`).
     #[serde(default)]
     pub installed_from: Option<InstallSource>,
+}
+
+/// A named subagent defined by a Markdown file in the user's `agents/` folder or a plugin: the
+/// root agent delegates to it by `name` (`spawn_agent`'s `agent`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentFileInfo {
+    pub name: String,
+    pub description: String,
+    /// `user` or `plugin:<name>`.
+    pub origin: String,
+    /// The file.
+    pub path: String,
+    /// The tools the file narrows the agent to, as written; `null` when it takes the parent's.
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
+    /// The model the file asks for (`inherit` for the delegating agent's); `null` when it leaves
+    /// the choice to routing.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// `mcp.save`: adds or replaces `[mcp.servers.<name>]` in the user config. Secret values in

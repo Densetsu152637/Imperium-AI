@@ -620,7 +620,21 @@ and `environments.agent_update` (protocol 0.28)
     protocol, Rust or mod-contract change. The audit, tokens, stages and open questions are in the
     [interface polish plan](plans/ui-polish.md).
 
-Custom agents come from customised open-weight models (Emperor and Consul) rather than a
-separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
+48. **Custom agent files** (implemented). User-defined subagents in Claude Code's format: Markdown
+    with YAML front matter (`name`, `description`, optional `tools` and `model`; the body is the
+    agent's instructions) from plugins' `agents/`, the user's `<config>/agents/` and a trusted
+    project's `.claude/agents/` and `.imperium/agents/` (later sources replace earlier ones by
+    name). `spawn_agent` takes `agent`; the root's prompt lists names and one-line descriptions
+    only. `tools` is intersected with the delegator's tools and can never widen them, and the
+    permission rules, safety floor and agent profiles apply unchanged (a file grants no
+    permission); `model` is a preference that goes through the usual routing, never past a
+    location constraint, and falls back to normal routing with a notice. A project's files load only for a project in `mcp.trusted_projects`. Protocol
+    0.42 (`agents` on `mcp.list` results); `imperium agents list`. No desktop UI yet
+    ([06](06-extensibility.md#named-agents-implemented),
+    [03](03-agent-engine.md#named-agents-implemented)).
+
+Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
+([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
+rather than a separate snapshot store.
 
 Later candidates: fine-tuning plugin (Unsloth), shared team projects, a plugin registry.

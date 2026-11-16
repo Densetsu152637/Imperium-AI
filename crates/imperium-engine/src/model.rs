@@ -225,6 +225,21 @@ pub fn route_noted(
     request: TaskRequest<'_>,
     local: Option<&dyn LocalModels>,
 ) -> Routed {
+    route_noted_floor(catalog, routing, fallback, request, request.tier, local)
+}
+
+/// [`route_noted`] with the lowest tier a model may have given apart from the request's `tier`,
+/// which still decides which rules match: for checking a model that was asked for by name
+/// against a task whose call set no tier (the floor is then the lowest tier, though rules
+/// written for the default tier still match).
+pub(crate) fn route_noted_floor(
+    catalog: &[CatalogModel],
+    routing: &RoutingSettings,
+    fallback: &ResolvedModel,
+    request: TaskRequest<'_>,
+    floor_tier: Tier,
+    local: Option<&dyn LocalModels>,
+) -> Routed {
     let availability = |c: &CatalogModel| match (c.model.local, local) {
         (false, _) => Availability::Loaded,
         (true, Some(local)) => match request.session {
@@ -329,7 +344,7 @@ pub fn route_noted(
     // A user rule's tier is a requirement; a built-in rule's is a preference.
     let tier = user_rule
         .and_then(|rule| rule.tier)
-        .map_or(request.tier, |floor| floor.max(request.tier));
+        .map_or(floor_tier, |floor| floor.max(floor_tier));
     let preferred_tier = builtin_rule
         .as_ref()
         .and_then(|rule| rule.tier)

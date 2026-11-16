@@ -26,6 +26,7 @@ Commands:
   runtime     Inference runtimes
   mcp-serve   Serve the Claude harness: an MCP server on standard input and output that lets an external agent such as Claude Code start sessions, follow them and answer their permission requests through this daemon. Register it in `.mcp.json`. With `--tools` it serves Imperium's own tools instead (files, search, web, memory), each run in an Imperium session under the user's permission rules
   mcp         Remote MCP servers that use OAuth: sign in and out
+  agents      Named agents: subagents defined by Markdown files that the root agent can delegate to
   resources   CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
   help        Print this message or the help of the given subcommand(s)
 
@@ -2967,6 +2968,53 @@ Print this message or the help of the given subcommand(s)
 
 Usage: imperium mcp help help
 
+===== imperium agents =====
+Named agents: subagents defined by Markdown files that the root agent can delegate to
+
+Usage: imperium agents [OPTIONS] <COMMAND>
+
+Commands:
+  list  List the named agents from your agents folder and from plugins: name, source and what each is for. A project's own agent files load per session, for a trusted project only
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium agents list =====
+List the named agents from your agents folder and from plugins: name, source and what each is for. A project's own agent files load per session, for a trusted project only
+
+Usage: imperium agents list [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium agents help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium agents help [COMMAND]
+
+Commands:
+  list  List the named agents from your agents folder and from plugins: name, source and what each is for. A project's own agent files load per session, for a trusted project only
+  help  Print this message or the help of the given subcommand(s)
+
+===== imperium agents help list =====
+List the named agents from your agents folder and from plugins: name, source and what each is for. A project's own agent files load per session, for a trusted project only
+
+Usage: imperium agents help list
+
+===== imperium agents help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium agents help help
+
 ===== imperium resources =====
 CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
 
@@ -3010,6 +3058,7 @@ Commands:
   runtime     Inference runtimes
   mcp-serve   Serve the Claude harness: an MCP server on standard input and output that lets an external agent such as Claude Code start sessions, follow them and answer their permission requests through this daemon. Register it in `.mcp.json`. With `--tools` it serves Imperium's own tools instead (files, search, web, memory), each run in an Imperium session under the user's permission rules
   mcp         Remote MCP servers that use OAuth: sign in and out
+  agents      Named agents: subagents defined by Markdown files that the root agent can delegate to
   resources   CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use
   help        Print this message or the help of the given subcommand(s)
 
@@ -3702,6 +3751,19 @@ Usage: imperium help mcp login
 Sign out of a remote MCP server: revoke its token where the server allows it, and forget the tokens kept in the keychain
 
 Usage: imperium help mcp logout
+
+===== imperium help agents =====
+Named agents: subagents defined by Markdown files that the root agent can delegate to
+
+Usage: imperium help agents [COMMAND]
+
+Commands:
+  list  List the named agents from your agents folder and from plugins: name, source and what each is for. A project's own agent files load per session, for a trusted project only
+
+===== imperium help agents list =====
+List the named agents from your agents folder and from plugins: name, source and what each is for. A project's own agent files load per session, for a trusted project only
+
+Usage: imperium help agents list
 
 ===== imperium help resources =====
 CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use

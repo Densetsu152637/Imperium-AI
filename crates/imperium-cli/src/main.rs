@@ -1,3 +1,4 @@
+mod agents;
 mod api;
 mod approvals;
 mod autostart;
@@ -213,6 +214,11 @@ enum Command {
     Mcp {
         #[command(subcommand)]
         command: McpCommand,
+    },
+    /// Named agents: subagents defined by Markdown files that the root agent can delegate to.
+    Agents {
+        #[command(subcommand)]
+        command: AgentsCommand,
     },
     /// CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use.
     Resources {
@@ -814,6 +820,13 @@ enum McpCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum AgentsCommand {
+    /// List the named agents from your agents folder and from plugins: name, source and what
+    /// each is for. A project's own agent files load per session, for a trusted project only.
+    List,
+}
+
+#[derive(Debug, Subcommand)]
 enum SecretCommand {
     /// Store a secret. The value is read from standard input, or prompted for without echo.
     Set { name: SecretName },
@@ -1061,6 +1074,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Mcp { command } => match command {
             McpCommand::Login { server } => mcp_login::login(server),
             McpCommand::Logout { server } => mcp_login::logout(server),
+        },
+        Command::Agents { command } => match command {
+            AgentsCommand::List => agents::list(),
         },
         Command::Api { command } => match command {
             ApiCommand::Status => api::status(),

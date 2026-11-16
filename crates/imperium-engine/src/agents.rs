@@ -43,6 +43,21 @@ struct Record {
     /// When the agent's latest turn started, in milliseconds since the Unix epoch.
     #[serde(default)]
     turn_started_ms: u64,
+    /// The named agent (an agent file) this subagent runs as, so a resumed one keeps its
+    /// instructions and its narrowed tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    named: Option<NamedAgent>,
+}
+
+/// A subagent started as a named agent: what its file gave it, as it was when it started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NamedAgent {
+    pub name: String,
+    /// The file's body, which follows the subagent's base instructions.
+    pub prompt: String,
+    /// The only tools it may use: what the file listed that its delegator also had. `None`
+    /// when the file lists none (it has what any subagent of the session has).
+    pub tools: Option<Vec<String>>,
 }
 
 /// What kind of agent a record describes.
@@ -184,6 +199,7 @@ fn new_record(id: &str, parent: Option<String>, role: &str, task: &str, model: &
         kind: AgentKind::Ordinary,
         frozen: None,
         turn_started_ms: 0,
+        named: None,
     }
 }
 
@@ -425,6 +441,23 @@ impl AgentStore {
             .records
             .get(id)
             .map_or(0, |record| record.turn_started_ms)
+    }
+
+    /// Notes that `id` runs as the named agent `named`.
+    pub(crate) fn set_named(&self, id: &str, named: NamedAgent) {
+        let mut state = lock(&self.state);
+        if let Some(record) = state.records.get_mut(id) {
+            record.named = Some(named);
+            self.write(record);
+        }
+    }
+
+    /// The named agent `id` runs as, if any.
+    pub(crate) fn named(&self, id: &str) -> Option<NamedAgent> {
+        lock(&self.state)
+            .records
+            .get(id)
+            .and_then(|record| record.named.clone())
     }
 
     pub(crate) fn kind(&self, id: &str) -> AgentKind {

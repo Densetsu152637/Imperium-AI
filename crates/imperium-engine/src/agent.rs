@@ -61,7 +61,7 @@ use tools::*;
 pub(crate) use turn::effective_window;
 use turn::*;
 
-use crate::agents::{AgentKind, Frozen, FrozenTool, task_number};
+use crate::agents::{AgentKind, Frozen, FrozenTool, NamedAgent, task_number};
 use crate::artefacts::{self, handle_message};
 use crate::breakdown::{
     Call, Category, LOAD_SKILL, Measured, Request, Spans, TokenCounter, estimate_tokens,
@@ -233,6 +233,10 @@ pub(crate) struct Agent {
     /// Set for the ephemeral fork that answers a question: it only reads, never asks, and
     /// leaves no record.
     fork: Option<fork::ForkInfo>,
+    /// The agent file this subagent runs as: its tools are offered and run only from the file's
+    /// list (never more than the delegator had); the profile, the rules and the safety floor
+    /// still apply to every call.
+    named: Option<NamedAgent>,
 }
 
 impl Agent {
@@ -336,6 +340,10 @@ impl Agent {
         if let Some(index) = shared.extensions.index() {
             parts.push((Category::SystemSkills, index));
         }
+        // Only the agent that delegates needs the named agents' list.
+        if can_delegate && let Some(agents) = shared.extensions.agents_index() {
+            parts.push((Category::SystemSkills, agents));
+        }
         if let Some(eager) =
             imperium_extensions::skills::eager_instructions(&shared.extensions.skills)
         {
@@ -434,7 +442,30 @@ impl Agent {
             asked_this_turn: 0,
             last_tools: Vec::new(),
             fork: None,
+            named: None,
         }
+    }
+
+    /// Runs this agent as the named agent `named`: its instructions follow the base ones, and
+    /// when its file listed tools only those are offered and run. Nothing here grants a
+    /// permission: every call still goes through the profile, the rules and the safety floor.
+    pub(crate) fn with_named(mut self, named: NamedAgent) -> Self {
+        if let Some(ChatMessage::System { content }) = self.messages.first_mut() {
+            content.push_str(crate::breakdown::PART_SEPARATOR);
+            let start = content.len();
+            content.push_str(&format!(
+                "You are running as the agent {}. Its definition follows; your task comes from \
+                 the agent that started you.\n\n{}",
+                named.name, named.prompt
+            ));
+            let end = content.len();
+            self.spans
+                .entry(0)
+                .or_default()
+                .push((Category::SystemBase, start..end));
+        }
+        self.named = Some(named);
+        self
     }
 
     /// Marks this agent as a writer in worktrees of its own (see [`Agent::writer`]).
