@@ -24,7 +24,9 @@
 - **`imperium-core`** is the only process that holds state. It owns sessions, the agent engine,
   the model scheduler, tool execution, policy resolution, configuration, and telemetry.
 - **Clients** are stateless views. The desktop app embeds or launches a local daemon; the CLI
-  connects to a running daemon or starts an ephemeral one (`imperium run --ephemeral`).
+  connects to a running daemon or starts an ephemeral one (`imperium run --ephemeral`, not built). `imperium run --headless` runs
+  one task through the agent loop with no daemon at all, for evaluations
+  ([03](03-agent-engine.md#running-evals-through-the-harness-implemented)).
 - **Remote hosts** run their own `imperium-core`. The desktop connects through an SSH tunnel to the
   remote daemon's Unix socket, so remote sessions use the remote machine's files, models, and
   GPUs with no special-case code paths (see [isolation](05-tools-and-isolation.md#ssh-hosts)).
@@ -158,7 +160,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-media`      | Image (OpenAI-compatible, ComfyUI), speech, and transcription tools (implemented) |
 | `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours run in the desktop's mod frames, not here ([16](16-pets.md)) |
 | `imperium-core`       | The daemon (`imperium-core` binary, formerly `imperiumd`), also a library for tests |
-| `imperium-cli`        | `imperium` binary: CLI and TUI client, and `imperium mcp-serve` ([20](20-claude-harness.md)) |
+| `imperium-cli`        | `imperium` binary: CLI and TUI client, `imperium mcp-serve` ([20](20-claude-harness.md)), and the headless `imperium run` for evaluations ([03](03-agent-engine.md#running-evals-through-the-harness-implemented)) |
 
 `imperium-api` depends on no other Imperium crate, and crates that only share vocabulary
 depend on it rather than on each other: `imperium-tools`, `imperium-mcp`, `imperium-web`, and

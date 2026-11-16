@@ -194,6 +194,9 @@ pub(crate) struct Agent {
     /// What the next `turn_started` says instead of the text, for chunk and reduce agents
     /// whose real brief holds chunk text that must stay out of the journal and history.
     shown: Option<String>,
+    /// For a chunk or reduce agent: the brief its parent wrote (without chunk text) and which
+    /// agent of the call it is, for an evaluation harness that answers subagents from recordings.
+    replay_key: Option<(String, crate::ReplayRole)>,
     /// The reasoning effort this subagent was spawned with, over the session's.
     effort: Option<Effort>,
     /// How many messages the conversation had when mid-turn compaction last ran or was last
@@ -428,6 +431,7 @@ impl Agent {
             fit_pending: false,
             previous: None,
             shown: None,
+            replay_key: None,
             effort: None,
             compact_mark: None,
             compact_stalled: false,
@@ -883,6 +887,20 @@ mod prompt_tests {
             );
         }
         assert!(!root.contains("  ") && !subagent.contains("  "));
+    }
+
+    /// The Emperor root prompt the training repository vendors carries the engine's proverb,
+    /// word for word, on a line of its own near the top.
+    #[test]
+    fn the_emperor_root_prompt_mirrors_the_proverb() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../imperium-protocol/schemas/prompts/emperor-root.md");
+        let text = std::fs::read_to_string(&path).expect("emperor-root.md");
+        let line = text
+            .lines()
+            .position(|line| line.trim() == PROVERB)
+            .expect("the proverb on a line of its own in emperor-root.md");
+        assert!(line < 12, "the proverb is near the top (line {line})");
     }
 
     #[test]

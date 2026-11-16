@@ -24,6 +24,7 @@ mod launcher;
 mod model;
 mod queue;
 mod quiet;
+mod replay;
 mod sampling_summary;
 mod session;
 mod status;
@@ -44,8 +45,10 @@ pub use model::{
 };
 pub use queue::QueueError;
 pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
+pub use replay::{ReplayAnswer, ReplayRequest, ReplayRole, SubagentReplay};
 pub use session::{
-    BridgeError, Session, SessionClosed, SessionConfig, SessionMemory, new_session_id,
+    BridgeError, Session, SessionClosed, SessionConfig, SessionMemory, SessionOptions,
+    new_session_id,
 };
 pub use status::next_attempt;
 pub use title::task_title;

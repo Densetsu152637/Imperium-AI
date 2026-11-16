@@ -245,13 +245,33 @@ pub async fn stream_chat(
     http: &reqwest::Client,
     endpoint: &Endpoint,
     request: ChatRequest<'_>,
+    on_text: impl FnMut(&str),
+) -> Result<Completion, ModelError> {
+    stream_chat_with(http, endpoint, request, None, on_text).await
+}
+
+/// [`stream_chat`] with the fields of the JSON object `extra_body` added to the request body
+/// (replacing a field of the same name), for options a server takes that the request does not
+/// model, such as `chat_template_kwargs`.
+pub async fn stream_chat_with(
+    http: &reqwest::Client,
+    endpoint: &Endpoint,
+    request: ChatRequest<'_>,
+    extra_body: Option<&serde_json::Value>,
     mut on_text: impl FnMut(&str),
 ) -> Result<Completion, ModelError> {
     let url = format!(
         "{}/chat/completions",
         endpoint.base_url.trim_end_matches('/')
     );
-    let body = request_body(request, ReasoningStyle::for_base_url(&endpoint.base_url));
+    let mut body = request_body(request, ReasoningStyle::for_base_url(&endpoint.base_url));
+    if let (Some(extra), Some(fields)) = (extra_body, body.as_object_mut())
+        && let Some(extra) = extra.as_object()
+    {
+        for (key, value) in extra {
+            fields.insert(key.clone(), value.clone());
+        }
+    }
     let mut builder = http.post(url).json(&body);
     if let Some(key) = &endpoint.api_key {
         builder = builder.bearer_auth(key);
