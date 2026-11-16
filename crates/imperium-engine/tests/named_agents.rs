@@ -250,7 +250,7 @@ async fn turn(session: &Session, text: &str, answer: PermissionDecision) -> Outc
             .expect("an event within 20 s")
             .unwrap();
         match event.event {
-            SessionEvent::TurnCompleted { .. } => return outcome,
+            SessionEvent::TurnCompleted { .. } if event.agent_id == ROOT_AGENT => return outcome,
             SessionEvent::TurnFailed { message } => panic!("{message}"),
             SessionEvent::PermissionRequested {
                 request_id,
