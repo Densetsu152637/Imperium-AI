@@ -127,6 +127,10 @@ pub enum WorkKind {
     Initiative,
     /// GitHub auto-fix or a watched pull request.
     Github,
+    /// A long job: a model download, a benchmark, a runtime install or update, a folder move.
+    Job,
+    /// A request waiting for a paired phone that may approve it.
+    Approval,
 }
 
 /// A client holding the daemon open, as `system.lifetime` lists it.

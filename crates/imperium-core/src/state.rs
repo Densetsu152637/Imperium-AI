@@ -888,6 +888,9 @@ impl DaemonState {
 
     /// Asks the daemon to stop; `main` waits on [`Self::shutdown_requested`].
     pub fn request_shutdown(&self) {
+        // From here on no client may take a lease: it would be attached to a daemon on its way
+        // out.
+        self.lifetime.mark_exiting();
         self.shutdown.notify_one();
     }
 

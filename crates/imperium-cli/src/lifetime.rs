@@ -40,6 +40,8 @@ fn work(kind: WorkKind) -> &'static str {
         WorkKind::Schedule => "schedules",
         WorkKind::Initiative => "agents with initiative",
         WorkKind::Github => "GitHub responders",
+        WorkKind::Job => "long jobs",
+        WorkKind::Approval => "requests waiting for a phone",
     }
 }
 

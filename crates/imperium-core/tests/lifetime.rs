@@ -19,8 +19,9 @@ use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
 use imperium_protocol::jsonrpc::codes;
 use imperium_protocol::methods::{
-    LeaseKind, LifetimeMode, Peer, Ping, PingParams, SessionCreate, SessionCreateParams,
-    SessionSend, SessionSendParams, SystemLifetime, SystemLifetimeParams, WorkKind,
+    LeaseKind, LifetimeMode, ModelDownload, ModelDownloadParams, Peer, Ping, PingParams,
+    SessionCreate, SessionCreateParams, SessionSend, SessionSendParams, Shutdown, ShutdownParams,
+    SystemLifetime, SystemLifetimeParams, WorkKind,
 };
 use tokio::net::TcpListener;
 
@@ -126,7 +127,9 @@ async fn a_lease_whose_process_is_gone_is_reaped_though_its_connection_lingers()
     let daemon = daemon_with("", data.path());
     let alive = Arc::new(AtomicBool::new(true));
     let probe = Arc::clone(&alive);
-    daemon.use_pid_probe(Arc::new(move |_| probe.load(Ordering::SeqCst).then_some(1_000)));
+    daemon.use_pid_probe(Arc::new(move |_| {
+        probe.load(Ordering::SeqCst).then_some(1_000)
+    }));
     daemon.start_lifetime(Some(GRACE));
     let endpoint = serve(&daemon).await;
 
@@ -296,6 +299,99 @@ async fn a_running_turn_holds_the_daemon_until_it_ends() {
         exits(&daemon, Duration::from_secs(20)).await,
         "it exits after the turn has ended and the grace period has passed"
     );
+}
+
+/// A Hub whose one file, `tiny.gguf`, takes `delay` to arrive.
+async fn slow_hub(delay: Duration) -> String {
+    use sha2::{Digest, Sha256};
+    let mut body = b"GGUF".to_vec();
+    body.extend(3u32.to_le_bytes());
+    body.extend(0u64.to_le_bytes());
+    body.extend(0u64.to_le_bytes());
+    let listed = body.clone();
+    let tree = move || {
+        let body = listed.clone();
+        async move {
+            axum::Json(serde_json::json!([{"type": "file", "path": "tiny.gguf",
+                "size": body.len(),
+                "lfs": {"oid": imperium_api::encoding::hex(&Sha256::digest(&body))}}]))
+        }
+    };
+    let resolve = move || {
+        let body = body.clone();
+        async move {
+            tokio::time::sleep(delay).await;
+            body
+        }
+    };
+    let app: Router = Router::new()
+        .route(
+            "/api/models/{owner}/{name}/tree/{revision}",
+            axum::routing::get(tree),
+        )
+        .route(
+            "/{owner}/{name}/resolve/{revision}/{*path}",
+            axum::routing::get(resolve),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    url
+}
+
+#[tokio::test]
+async fn a_running_download_holds_the_daemon_until_it_ends() {
+    let data = tempfile::tempdir().unwrap();
+    let hub = slow_hub(Duration::from_secs(3)).await;
+    let daemon = daemon_with("", data.path());
+    daemon.use_hub(imperium_local::hf::Hub::new(hub, None));
+    daemon.start_lifetime(Some(Duration::from_millis(500)));
+    let endpoint = serve(&daemon).await;
+
+    let holder = leased(&endpoint, "imperium models pull", None).await;
+    let mut client = Client::connect(&endpoint, me()).await.unwrap();
+    client
+        .call::<ModelDownload>(ModelDownloadParams {
+            repo: "acme/tiny-GGUF".into(),
+            quant: None,
+            file: Some("tiny.gguf".into()),
+            revision: None,
+            mmproj: false,
+        })
+        .await
+        .unwrap();
+    wait_for(|| {
+        daemon
+            .lifetime_status()
+            .work
+            .iter()
+            .any(|work| work.kind == WorkKind::Job)
+    })
+    .await;
+    drop(holder);
+
+    assert!(
+        !exits(&daemon, Duration::from_millis(1500)).await,
+        "the download holds it with no lease"
+    );
+    assert!(
+        exits(&daemon, Duration::from_secs(20)).await,
+        "it exits after the download has ended and the grace period has passed"
+    );
+}
+
+#[tokio::test]
+async fn an_explicit_stop_refuses_new_leases() {
+    let data = tempfile::tempdir().unwrap();
+    let daemon = daemon_with("", data.path());
+    let endpoint = serve(&daemon).await;
+    let mut stopper = Client::connect(&endpoint, me()).await.unwrap();
+    stopper.call::<Shutdown>(ShutdownParams {}).await.unwrap();
+    let mut late = Client::connect(&endpoint, me()).await.unwrap();
+    match late.lease(LeaseKind::Cli, "late", None).await {
+        Err(ClientError::Rpc(error)) => assert_eq!(error.code, codes::DAEMON_STOPPING),
+        other => panic!("expected the stopping daemon to refuse the lease, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

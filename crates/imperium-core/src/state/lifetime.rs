@@ -154,6 +154,67 @@ impl DaemonState {
                 .map(|(_, repo, number)| format!("{repo}#{number}")),
         );
         found.extend(work(WorkKind::Github, &github));
+
+        // Long jobs the daemon runs on its own, with no client needed to see them through.
+        let mut jobs: Vec<String> = self
+            .downloads
+            .list()
+            .into_iter()
+            .filter(|job| job.state == "running")
+            .map(|job| format!("download {}", job.repo))
+            .collect();
+        jobs.extend(
+            self.bench
+                .runs()
+                .into_iter()
+                .filter(|run| run.state == "running")
+                .map(|run| format!("benchmark {}", run.run_id)),
+        );
+        let running = |job: Option<&String>| job.is_some_and(|state| state == "running");
+        if running(
+            self.runtime_install
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .map(|job| &job.state),
+        ) {
+            jobs.push("llama.cpp runtime install".into());
+        }
+        if running(
+            self.runtime_update
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .map(|job| &job.state),
+        ) {
+            jobs.push("llama.cpp runtime update".into());
+        }
+        jobs.extend(self.lifetime.jobs());
+        found.extend(work(WorkKind::Job, &jobs));
+
+        // A request that only a paired phone can answer while no client is attached: the
+        // phone listener is on and a device may approve.
+        if self.phone_url().is_some()
+            && self
+                .devices()
+                .list()
+                .iter()
+                .any(|device| device.scopes.iter().any(|scope| scope == "approve"))
+        {
+            let mut waiting: Vec<String> = self
+                .sessions()
+                .iter()
+                .filter(|session| session.status().0 == SessionStatus::NeedsAttention)
+                .map(|session| format!("session {}", session.id()))
+                .collect();
+            waiting.extend(
+                self.approvals()
+                    .list()
+                    .into_iter()
+                    .map(|approval| format!("approval {}", approval.id)),
+            );
+            found.extend(work(WorkKind::Approval, &waiting));
+        }
         found
     }
 }

@@ -108,6 +108,8 @@ impl DaemonState {
     /// the move is refused while any is; idle ones are restarted afterwards so their scratch
     /// folder is the new one. A failure at any step puts everything back.
     pub fn move_workspaces(&self, target: &str) -> Result<WorkspacesMoveResult, String> {
+        // A move that the last client started must be seen through, not cut short by an exit.
+        let _job = self.lifetime.begin_job("moving the working folders");
         let default = imperium_config::default_workspaces_root(&self.paths);
         let target = target.trim();
         let new = if target.is_empty() {

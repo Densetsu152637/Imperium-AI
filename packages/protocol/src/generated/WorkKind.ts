@@ -3,4 +3,4 @@
 /**
  * The kinds of background work that keep the daemon up.
  */
-export type WorkKind = "turn" | "schedule" | "initiative" | "github";
+export type WorkKind = "turn" | "schedule" | "initiative" | "github" | "job" | "approval";
