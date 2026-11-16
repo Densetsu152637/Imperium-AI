@@ -540,7 +540,7 @@ records handoff notes and value changes from the stage's report. Stage pull requ
   `palette.css`, `session.css`, `settings.css`, `connectors.css`, `models.css`,
   `environments.css`, `panels.css`, `tour.css`, `house-models.css`, `mods.css`, and `index.css`
   importing them in order), `apps/desktop/src/main.tsx` (the import),
-  `apps/desktop/test/styleTokens.test.ts`, `apps/desktop/test/boot.test.ts` (reads
+  `apps/desktop/test/styleTokens.test.ts`, `apps/desktop/src/models/modelConfig.css` (its budget comment), `apps/desktop/test/boot.test.ts` (reads
   `styles/tokens.css` instead of `styles.css`), the one-line `native-select` allowance
   comments in the five TSX files listed under guard 4, and docs [07](../07-desktop-ui.md)
   Source layout.
