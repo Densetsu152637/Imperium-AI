@@ -19,7 +19,7 @@ import type {
   SessionRewindResult,
 } from "@imperium/protocol";
 
-import { RowMenu } from "../components/RowMenu";
+import { Menu } from "../components/Menu";
 import type { DaemonClient } from "../daemon/client";
 import { checkpointLabel, filesIn, lineCounts, lineKind, repoName } from "../review/review";
 import type { SessionState } from "../sessions/sessions";
@@ -259,7 +259,7 @@ export function ReviewPanel({
           <RefreshCw aria-hidden="true" />
         </button>
         {rewindItems.length > 0 && !busy && (
-          <RowMenu label="Rewind to a checkpoint" icon={History} items={rewindItems} />
+          <Menu label="Rewind to a checkpoint" icon={History} items={rewindItems} />
         )}
       </div>
       {error && <p className="error" role="alert">{error}</p>}

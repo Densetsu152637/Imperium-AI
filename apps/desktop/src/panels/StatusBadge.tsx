@@ -2,6 +2,7 @@
 
 import type { SessionStatus } from "@imperium/protocol";
 
+import { Badge, type BadgeTone } from "../components/Badge";
 import { formatResumeTime, type SessionState } from "../sessions/sessions";
 
 const STATUS: Record<SessionStatus, { mark: string; label: string }> = {
@@ -12,6 +13,16 @@ const STATUS: Record<SessionStatus, { mark: string; label: string }> = {
   needs_model: { mark: "?", label: "Needs a model" },
   watching: { mark: "◉", label: "Watching" },
   merged: { mark: "✓", label: "Merged" },
+};
+
+const TONE: Record<SessionStatus, BadgeTone> = {
+  idle: "neutral",
+  working: "accent",
+  needs_attention: "danger",
+  paused: "accent",
+  needs_model: "accent",
+  watching: "ok",
+  merged: "ok",
 };
 
 /** Background sessions (started by a schedule or a project agent) say so. */
@@ -37,11 +48,11 @@ function baseStatusText(session: SessionState): string {
 export function StatusBadge({ session }: { session: SessionState }) {
   const text = statusText(session);
   return (
-    <span className={`badge status ${session.status}`} title={session.pause?.reason || text}>
+    <Badge tone={TONE[session.status]} className={`status ${session.status}`} title={session.pause?.reason || text}>
       <span className="status-mark" aria-hidden="true">
         {STATUS[session.status].mark}
       </span>
       {text}
-    </span>
+    </Badge>
   );
 }

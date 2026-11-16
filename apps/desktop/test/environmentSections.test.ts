@@ -146,7 +146,7 @@ test("every section lists controls, and each control is rendered by its source",
 
 test("the window is built on the shared modal and asks before discarding", () => {
   const source = read("environments/EnvironmentWindow.tsx");
-  assert.ok(source.includes("<SettingsModal"));
+  assert.ok(source.includes("<Dialog"));
   assert.ok(!source.includes("createPortal"));
   assert.ok(source.includes("Discard changes?"));
   assert.ok(source.includes("if (!event.repeat) requestClose(true)"));

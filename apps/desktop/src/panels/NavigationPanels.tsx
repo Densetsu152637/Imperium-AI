@@ -12,7 +12,7 @@ import { useState, type KeyboardEvent } from "react";
 
 import type { EnvironmentInfo, SessionStatus } from "@imperium/protocol";
 
-import { RowMenu } from "../components/RowMenu";
+import { Menu } from "../components/Menu";
 import { environmentById } from "../environments/byId";
 import { Select } from "../components/Select";
 import { ProjectIcon, environmentIcon, projectName, sameFolder } from "../environments/projectIcons";
@@ -98,7 +98,7 @@ export function EnvironmentsPanel({
                   <span className="name">{env.name}</span>
                   {env.pinned && <Pin className="pin-mark" aria-label="Pinned" />}
                 </button>
-                <RowMenu
+                <Menu
                   label={`More for ${env.name}`}
                   items={[
                     { label: "Edit", icon: Pencil, onSelect: () => actions.onEdit(env.id), disabled: !connected },
@@ -308,7 +308,7 @@ export function SessionsPanel({
               <span className="session-ago">{formatAgo(at)}</span>
             </button>
           )}
-          <RowMenu
+          <Menu
             label={`More for ${title}`}
             items={[
               { label: "Rename", icon: Pencil, onSelect: () => setRenaming(id), disabled: persistent },

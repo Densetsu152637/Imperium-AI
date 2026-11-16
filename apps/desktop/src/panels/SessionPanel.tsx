@@ -45,7 +45,7 @@ import {
 } from "../sessions/sessions";
 import { describeUsage, formatShare, indicator, modelSpec } from "../models/budgets";
 import { describeRule } from "../components/PermissionsEditor";
-import { RowMenu } from "../components/RowMenu";
+import { Menu } from "../components/Menu";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { ToolCall } from "../components/ToolCall";
@@ -807,7 +807,7 @@ export function EntryView({
               <button className="ghost danger small" onClick={() => onRespond(entry.requestId, "deny")}>
                 Deny
               </button>
-              <RowMenu
+              <Menu
                 label="More ways to allow"
                 items={[
                   { label: "Always this session", icon: ShieldCheck, onSelect: () => onRespond(entry.requestId, "allow_for_session") },
