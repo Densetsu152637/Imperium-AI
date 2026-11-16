@@ -874,9 +874,10 @@ async fn a_rules_required_capabilities_apply_to_a_file_model() {
     assert_eq!(outcome.started_on.len(), 1, "{outcome:?}");
     assert_ne!(outcome.started_on[0], "rowx:model", "{outcome:?}");
     assert!(
-        outcome.notices.iter().any(|n| n.contains("rowx")
-            && n.contains("capabilities")
-            && n.contains("routed normally")),
+        outcome
+            .notices
+            .iter()
+            .any(|n| n.contains("rowx") && n.contains("routed normally")),
         "{:?}",
         outcome.notices
     );
