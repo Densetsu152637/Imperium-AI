@@ -617,7 +617,7 @@ and `environments.agent_update` (protocol 0.28)
     last visual review (ragged Settings navigation, the nursery panel's scrollbars and dark
     select, clipped inputs at 1024 px, no narrow layout, Ctrl+, needing a click, the tight
     shortcut column, overlapping pets) and the light theme's accent contrast. No feature,
-    protocol or Rust change. The audit, tokens, stages and open questions are in the
+    protocol, Rust or mod-contract change. The audit, tokens, stages and open questions are in the
     [interface polish plan](plans/ui-polish.md).
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a

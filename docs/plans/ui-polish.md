@@ -1,7 +1,8 @@
 # Plan: desktop interface polish
 
-Revision: 2026-11-16, measured on `experimental` at `feddfc9e` (last updated). Roadmap
-[item 47](../12-roadmap.md). Status: planned; no stage started.
+Revision: 2026-11-16, revised after plan review round 1 and the user's answers; figures measured
+on `experimental` at `feddfc9e` (last updated). Roadmap [item 47](../12-roadmap.md). Status:
+planned; no stage started.
 
 The user asked for the desktop app to have "as much polish as the claude interface", with UI
 components that are "simple but well stylised". This plan turns that into a token system, a
@@ -17,29 +18,31 @@ Each goal is boolean and has a check. "Guard" means the tests added in
 
 1. **One token system.** Every colour, font size, radius, shadow, duration and z-index in the
    app's CSS comes from `styles/tokens.css`. Check: the style guard passes with every file's
-   budget at zero, and its budget header is removed in [stage 15](#stage-15-motion-and-accessibility-pass).
+   budget at zero, and its budget comments are removed in [stage 15](#stage-15-motion-and-accessibility-pass).
 2. **Shared components.** Buttons, icon buttons, fields, selects, switches, tabs, menus,
    dialogs, tables, cards, badges, empty, loading and notice states each have one
-   implementation, used everywhere. Check: no native `<select>` in `apps/desktop/src` (guard);
+   implementation, used everywhere. Check: no native `<select>` in `apps/desktop/src` (guard 4);
    `rg 'className="(empty|error)"' apps/desktop/src` returns nothing; reviewers find no second
    implementation of a listed component.
-3. **Known defects fixed.** The eight defects in [known defects](#known-defects) are gone.
-   Check: each has a named check in the stage that fixes it.
+3. **Known defects fixed.** The eight defects in [known defects](#known-defects) are gone, except
+   the parts moved to [follow-ups](#follow-ups-outside-item-47). Check: each has a named check in
+   the stage that fixes it.
 4. **Works at every width.** The app is usable at 1280, 1024 and 420 px wide, in light and
    dark, by keyboard alone. Check: the [visual checklist](#visual-checklist) passes for every
    stage.
-5. **Readable and accessible.** Body and secondary text meet WCAG AA (4.5:1), the focus ring
-   and control borders meet 3:1, in both themes and for every accent. Check: the contrast test
-   from [stage 2](#stage-2-tokens-and-base-elements).
-6. **No behaviour change.** No feature, protocol or Rust change. Check: the diff of every
-   stage touches only the paths it owns, and `bash scripts/check-web.sh` passes.
+5. **Readable and accessible.** Body and secondary text meet WCAG AA (4.5:1); the focus ring
+   and control boundaries (`--border-control`) meet 3:1; in both themes and for every accent;
+   controls are at least 24 px tall at every density. Check: the contrast test from
+   [stage 2](#stage-2-tokens-and-base-elements) and the size floors in [tokens](#tokens).
+6. **No behaviour or contract change.** No feature, protocol, Rust or mod-contract change. Check:
+   the diff of every stage touches only the paths it owns, and `bash scripts/check-web.sh` passes.
 
 ## Scope and non-goals
 
 In scope: `apps/desktop/src` (TSX and CSS), `apps/desktop/public/boot.css`, the desktop tests in
-`apps/desktop/test`, the mod frame (`apps/desktop/src/mods/ModFrame.tsx`) and the bundled
-nursery mod's view code (`mods/imperium-nursery/src`), and the desktop UI document
-([07](../07-desktop-ui.md)).
+`apps/desktop/test`, the desktop `package.json` (one font dependency), the mod frame
+(`apps/desktop/src/mods/ModFrame.tsx`) and the bundled nursery mod's view code
+(`mods/imperium-nursery/src`), and the desktop UI document ([07](../07-desktop-ui.md)).
 
 Non-goals:
 
@@ -47,34 +50,38 @@ Non-goals:
   how the window behaves below 600 px wide ([stage 14](#stage-14-narrow-layout)), which today
   has no layout at all. A toast system is not added: nothing in the app needs one today.
 - **No protocol changes.** `PROTOCOL_VERSION` and `packages/protocol` stay as they are.
-- **No Rust changes.** Nothing in `apps/desktop/src-tauri` or `crates/` changes; no native menu
-  accelerators (that is why the Ctrl+, fix is in the web view).
+- **No Rust changes.** Nothing in `apps/desktop/src-tauri` or `crates/` changes. The window
+  backgrounds in `main.rs` and `tauri.conf.json` stay correct because `--bg` keeps today's values
+  ([decision D11](#decisions)).
+- **No mod contract change.** Mods receive `--bg`, `--panel`, `--fg`, `--muted`, `--border`,
+  `--accent`, `--ok`, `--danger`, `--space` and `--radius` (`THEME_TOKENS` in `ModFrame.tsx`;
+  [06](../06-extensibility.md#ui-mods) says theme tokens are copied into the frame). Those names
+  stay, keep their meaning, and no names are added. No new mod-bridge message kinds
+  ([decision D14](#decisions)).
 - **No UI framework.** Plain React and CSS custom properties, as today (see
-  [decision D1](#decisions)). The only possible new dependency is a bundled font
-  ([question Q3](#open-questions-for-the-user)).
-- **No change to the mod theme contract.** Mods receive `--bg`, `--panel`, `--fg`, `--muted`,
-  `--border`, `--accent`, `--ok`, `--danger`, `--space` and `--radius` (`THEME_TOKENS` in
-  `ModFrame.tsx`; [06](../06-extensibility.md#ui-mods) says theme tokens are copied into the
-  frame); those names stay and keep their meaning. Stage 13 may add names, never remove one.
+  [decision D1](#decisions)). The one new dependency is the Inter Variable font
+  ([decision U3](#decided-by-the-user)).
 
 ## Assumptions
 
 - The visual review that found the defects ran at the default UI scale (100 %), comfortable
   density, on Windows. Pixel values below are at that scale: `html` is 15 px, so 1 rem = 15 px.
 - Implementers can run the app with a daemon and take screenshots; this plan was written from
-  the code only (no browser was used), so the defect causes marked *suspected* need confirming
-  first.
-- Stages land one pull request each against `experimental`, in the order below, with the
-  parallel windows noted.
+  the code only (no browser was used), so the defect causes marked *suspected* are confirmed
+  (and K5 reproduced) before their fixes are accepted.
+- Stages land one pull request each against `experimental`, merged as each is ready, in the order
+  below, with the parallel windows noted.
 
 ## Relevant paths
 
 | Path | What it is |
 | --- | --- |
 | `apps/desktop/src/styles.css` | 7,176 lines; every rule in the app except the model dialog's |
-| `apps/desktop/src/models/modelConfig.css` | 255 lines; the model configuration dialog |
+| `apps/desktop/src/models/modelConfig.css` | 255 lines; the model configuration dialog, imported by `ModelConfigDialog.tsx` |
 | `apps/desktop/src/components/` | Today's shared pieces: `Select`, `Switch`, `RowMenu`, `SettingsModal`, `SettingsRow` |
 | `apps/desktop/src/settings/settings.ts` | Writes theme, accent, scales and fonts to the root element |
+| `apps/desktop/src/shared/boot.ts`, `public/boot.css`, `public/boot.js` | The loading screen and the theme before first paint |
+| `apps/desktop/test/boot.test.ts` | Checks that `--bg` and `--accent` agree across the CSS, `boot.css`, `boot.ts`, `main.rs` and `tauri.conf.json` |
 | `apps/desktop/src/mods/ModFrame.tsx` | Mod frames and the theme tokens passed into them |
 | `apps/desktop/src/layout/Columns.tsx` | Columns and stacks, sized as proportions with no minimum |
 | `apps/desktop/test/cssBalance.test.ts` | Existing guard: balanced braces in every `.css` under `src` |
@@ -92,7 +99,8 @@ Non-goals:
 
 Figures come from a scripted count over `styles.css` and `modelConfig.css` (comments removed;
 token definitions excluded where noted) and over every `.tsx` file in `apps/desktop/src`.
-Measure again when stage 1 starts.
+Each stage measures its own files again after merging the latest `experimental`, since the
+counts move as other stages land.
 
 ### Tokens today
 
@@ -124,11 +132,14 @@ The tokens exist, but most rules do not use them:
 
 Other findings:
 
-- **Rules repeat.** 54 selectors are defined more than once (`.settings-nav-item` at lines 4461
-  and 5190, `.turn-summary` and `.error` three times each, `button`, `.prose`, the
-  `.message.assistant` headings), because the file grew by appending: late blocks such as
-  "Settings polish" (line 5189) override earlier ones. Session rules alone sit in at least six
-  separate regions of the file.
+- **Rules repeat.** 54 selectors are repeated (`.settings-nav-item` at lines 4461 and 5190,
+  `.turn-summary` and `.error` three times each, `button`, `.prose`, the `.message.assistant`
+  headings), because the file grew by appending: late blocks such as "Settings polish"
+  (line 5189) override earlier ones. Session rules alone sit in at least six separate regions of
+  the file. *Counting rule:* comments removed; only rules at the top level (not inside `@media`,
+  `@container`, `@supports` or `@keyframes`); each selector list split at commas and its
+  whitespace collapsed; a selector is repeated when it heads two or more such rules. The 1,038
+  top-level rules carry 1,117 distinct selectors.
 - **Four custom properties are read but never defined in CSS:** `--surface-1` (a bug; it falls
   back to `transparent`), plus `--branch-depth`, `--swatch` and `--font-prose`, which are set from
   TSX and are fine.
@@ -146,9 +157,12 @@ Other findings:
 - **Focus is drawn three ways:** `:focus-visible` outlines (30 rules), a 3 px `--accent-soft`
   halo (`box-shadow`, 10 rules), and `outline: none` with no replacement (11 rules, some
   intended).
+- **Input boundaries are faint.** `--border` (`rgb(192 202 218 / 0.13)` dark,
+  `rgb(40 50 66 / 0.14)` light) is the only edge of inputs and selects, well under the 3:1 a
+  control boundary needs.
 - **Responsive rules are few:** two `@media (max-width: 720px)` blocks (Settings and
-  Connectors), seven `@container` width queries, five `(hover: none)` and one `(forced-colors: active)`.
-  Columns have no minimum width.
+  Connectors), seven `@container` width queries, five `(hover: none)` and one
+  `(forced-colors: active)`. Columns have no minimum width.
 
 ### Components today
 
@@ -180,11 +194,11 @@ running app to confirm):
 
 | # | Defect | Cause | Fixed in |
 | --- | --- | --- | --- |
-| K1 | Settings navigation items and icons look ragged | `.settings-nav-item` is styled twice (line 4461: block padding, 0.88 rem; line 5190: flex, gap 0.6 rem, 1 rem icons), items with badges use a column layout (`.settings-nav-item-text`), and group labels use a different inset (0.2 rem 0.6 rem) from items; nothing fixes the row height | [Stage 3](#stage-3-shared-components) (the dialog navigation) |
-| K2 | The nursery panel in the sidebar is about 140 px wide, shows both scrollbars, and has a dark select in the light theme | The frame sets `color-scheme: light dark` (`ModFrame.tsx` line 119), so native controls follow the operating system, not the app theme; the frame body has 8 px padding and the room a 160 px minimum height plus a computed `roomHeight`, so the room overflows the frame both ways at that width | [Stage 13](#stage-13-nursery-and-mod-frames) |
+| K1 | Settings navigation items and icons look ragged | `.settings-nav-item` is styled twice (line 4461: block padding, 0.88 rem; line 5190: flex, gap 0.6 rem, 1 rem icons), items with badges use a column layout (`.settings-nav-item-text`), and group labels use a different inset (0.2 rem 0.6 rem) from items; nothing fixes the row height | [Stage 3](#stage-3-shared-components) (the dialog navigation, in `styles/dialog.css`) |
+| K2 | The nursery panel in the sidebar is about 140 px wide, shows both scrollbars, and has a dark select in the light theme | The frame sets `color-scheme: light dark` (`ModFrame.tsx` line 119), so native controls follow the operating system, not the app theme; the frame body has 8 px padding and the room a 160 px minimum height plus a computed `roomHeight`, so the room overflows the frame both ways at that width | [Stage 13](#stage-13-nursery-and-mod-frames); live theme switching in an open frame is a [follow-up](#follow-ups-outside-item-47) |
 | K3 | Right-hand panels clip inputs at 1024 px | *Suspected:* fixed minimum widths on controls (`min-width: 10rem` on `.models-toolbar input`, `.local-model-table .model-name`, `.hf-download select` and `.row-menu`; `9rem` on `.new-session-subfolder`) inside columns that shrink proportionally with `overflow: hidden`; which panels the review saw needs confirming | [Stage 8](#stage-8-model-configuration-and-model-panels) and [stage 10](#stage-10-side-panels) (panel content), [stage 14](#stage-14-narrow-layout) (column minimums) |
 | K4 | No narrow layout (600 px and below); three columns crush | Column widths are proportions (`Columns.tsx`, `flex-grow` share with `flex-basis: 0`) with no minimum and no breakpoint | [Stage 14](#stage-14-narrow-layout) |
-| K5 | Ctrl+, works only after clicking the page | The handler is a `window` keydown listener (`shared/useWindows.ts`). *Suspected:* the web view has no keyboard focus at launch until clicked, and keys pressed while a sandboxed mod frame has focus never reach the parent window | [Stage 5](#stage-5-shell-sidebar-and-navigation) (launch focus), [stage 13](#stage-13-nursery-and-mod-frames) (keys from mod frames) |
+| K5 | Ctrl+, works only after clicking the page | The handler is a `window` keydown listener (`shared/useWindows.ts`). *Suspected:* the web view's document has no keyboard focus at launch until clicked. Keys pressed while a sandboxed mod frame has focus also never reach the parent window | [Stage 5](#stage-5-shell-sidebar-and-navigation) (launch focus, after reproducing); keys inside mod frames are a [follow-up](#follow-ups-outside-item-47) |
 | K6 | Shortcut text sits tight against its Change button | `.shortcuts td` has no column gap or fixed control column | [Stage 6](#stage-6-settings) |
 | K7 | Pets and labels overlap in the nursery room | *Suspected:* placement in `space.ts` spaces pets by sprite size, while each pet's box is `LABEL_W` wide plus a 14 px label line under it | [Stage 13](#stage-13-nursery-and-mod-frames) |
 | K8 | Light theme accent fails contrast | See [tokens today](#tokens-today): the dark accent is written inline over the light one | [Stage 2](#stage-2-tokens-and-base-elements) |
@@ -197,13 +211,14 @@ running app to confirm):
    and nothing else. Status uses the semantic colours; everything else is neutral.
 2. **Quiet borders.** Hairline borders at low contrast separate regions; elevation (a shadow)
    is reserved for things that float: menus, popovers, dialogs. No gradients on surfaces, no
-   inset highlights on buttons.
-3. **Generous whitespace, few sizes.** Spacing comes from one 4 px-based scale; text from six
-   sizes and three weights. When in doubt, more space and a smaller, lighter label.
+   inset highlights on buttons. The one exception to "quiet" is the edge of an input, select or
+   checkbox, which uses `--border-control` so the control can be found.
+3. **Generous whitespace, few sizes.** Spacing comes from one 4 px scale; text from six sizes
+   and three weights. When in doubt, more space and a smaller, lighter label.
 4. **Consistent rows.** Every list row (sessions, environments, settings navigation, menus,
    model lists) has the same height for its density; controls in a row align to its centre.
-5. **Icons follow text.** Lucide line icons at 16 px beside 13 px text, 14 px in dense rows,
-   20 px only in empty states and the title bar; the stroke width stays the single value set in
+5. **Icons follow text.** Lucide line icons at 16 px beside 13 px text, 13 px in dense rows,
+   19 px only in empty states and the title bar; the stroke width stays the single value set in
    `main.tsx`.
 6. **Every view has its three states.** Empty, loading and error each use the shared
    component, with a one-line explanation and at most one action.
@@ -213,28 +228,34 @@ running app to confirm):
 ### Identity, not a copy
 
 Imperium keeps its own look: cool graphite neutrals in dark mode, cool near-white in light,
-and its cyan accent. It does not use Anthropic's typefaces, logo, warm ivory backgrounds,
-terracotta accent or serif headings. What is borrowed is the discipline: few sizes, calm
-colour, roomy spacing, soft states.
+and its cyan accent; flat surfaces, with the chrome gradient kept only on the title-bar
+wordmark. It does not use Anthropic's typefaces, logo, warm ivory backgrounds, terracotta
+accent or serif headings. What is borrowed is the discipline: few sizes, calm colour, roomy
+spacing, soft states.
 
 ### Tokens
 
-All tokens live in `apps/desktop/src/styles/tokens.css`. Lengths are in rem so `--ui-scale`
-zooms them; spacing, row and control heights also multiply by `--space-scale` (density). Pixel
-values in comments are at 100 %.
+All tokens live in `apps/desktop/src/styles/tokens.css`. Lengths are built from one unit,
+`--px`, one CSS pixel at 100 % UI scale, so `--ui-scale` zooms everything; spacing, row and
+control heights also multiply by `--space-scale` (density). Pixel values in comments are at
+100 % and comfortable density.
+
+```css
+--px: calc(1rem / 15); /* 1px at 100 %; html is calc(15px * var(--ui-scale)) */
+```
 
 **Type scale.** Six sizes, three weights, three line heights. Prose and code keep their own
-user scales.
+user scales. The UI face is Inter Variable, bundled ([U3](#decided-by-the-user)).
 
 ```css
 --font-ui: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
 --font-code: "Cascadia Code", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
---fs-xs: 0.75rem;     /* 11.25px  badges, captions, keyboard hints */
---fs-sm: 0.8125rem;   /* 12.2px   secondary text, meta, table cells */
---fs-md: 0.875rem;    /* 13.1px   controls, rows, labels: the UI default */
---fs-base: 1rem;      /* 15px     transcript prose (times --prose-scale) */
---fs-lg: 1.125rem;    /* 16.9px   section and panel titles */
---fs-xl: 1.375rem;    /* 20.6px   dialog titles, empty-state headings */
+--fs-xs: calc(11 * var(--px));   /* 11px  badges, captions, keyboard hints */
+--fs-sm: calc(12 * var(--px));   /* 12px  secondary text, meta, table cells */
+--fs-md: calc(13 * var(--px));   /* 13px  controls, rows, labels: the UI default */
+--fs-base: calc(15 * var(--px)); /* 15px  transcript prose (times --prose-scale) */
+--fs-lg: calc(17 * var(--px));   /* 17px  section and panel titles */
+--fs-xl: calc(21 * var(--px));   /* 21px  dialog titles, empty-state headings */
 --fw-regular: 400;
 --fw-medium: 500;
 --fw-semibold: 600;
@@ -248,39 +269,44 @@ Today's 35 sizes map as: 0.68 to 0.78 rem → `--fs-xs`; 0.8 to 0.83 → `--fs-s
 `--fs-md`; 0.95 to 1.05 → `--fs-base`; 1.1 to 1.25 → `--fs-lg`; 1.3 and up → `--fs-xl`. Sizes
 in `em` stay only for icons and inline code that must follow their parent.
 
-**Spacing scale.** Multiples of 4 px; `--space` stays as an alias of `--sp-2` for mods.
+**Spacing scale.** True 4 px steps; `--space` stays as an alias of `--sp-2` for mods.
 
 ```css
---sp-1: calc(0.25rem * var(--space-scale));  /* 4px  icon-to-label inside a chip */
---sp-2: calc(0.5rem * var(--space-scale));   /* 8px  between controls in a row */
---sp-3: calc(0.75rem * var(--space-scale));  /* 12px control padding, row padding */
---sp-4: calc(1rem * var(--space-scale));     /* 16px panel padding, between groups */
---sp-5: calc(1.5rem * var(--space-scale));   /* 24px dialog padding, between sections */
---sp-6: calc(2rem * var(--space-scale));     /* 32px empty-state padding */
---sp-8: calc(3rem * var(--space-scale));     /* 48px page margins in wide dialogs */
+--sp-1: calc(4 * var(--px) * var(--space-scale));  /* 4px  icon-to-label inside a chip */
+--sp-2: calc(8 * var(--px) * var(--space-scale));  /* 8px  between controls in a row */
+--sp-3: calc(12 * var(--px) * var(--space-scale)); /* 12px control padding, row padding */
+--sp-4: calc(16 * var(--px) * var(--space-scale)); /* 16px panel padding, between groups */
+--sp-5: calc(24 * var(--px) * var(--space-scale)); /* 24px dialog padding, between sections */
+--sp-6: calc(32 * var(--px) * var(--space-scale)); /* 32px empty-state padding */
+--sp-8: calc(48 * var(--px) * var(--space-scale)); /* 48px page margins in wide dialogs */
 --space: var(--sp-2);
 ```
 
-**Sizes.** Controls and rows share heights so a row and its controls line up.
+**Sizes.** Controls and rows share heights so a row and its controls line up. Rows stay at
+30 px ([U4](#decided-by-the-user)), the one height off the 4 px grid. Every height has a 24 px
+floor, so compact density (0.7) never makes a target smaller than WCAG 2.2's 24 px minimum.
 
 ```css
---control-h-sm: calc(1.625rem * var(--space-scale)); /* 24px: row tools, badges with actions */
---control-h: calc(2rem * var(--space-scale));        /* 30px: buttons, inputs, selects */
---control-h-lg: calc(2.5rem * var(--space-scale));   /* 37.5px: composer send, first-run choices */
---row-h: calc(2rem * var(--space-scale));            /* list rows, menu items, navigation items */
---icon-sm: 0.875rem;  /* 13px */
---icon: 1.0625rem;    /* 16px */
---icon-lg: 1.25rem;   /* 19px */
+--size-floor: calc(24 * var(--px));
+--control-h-sm: var(--size-floor);                                               /* 24px at every density: row tools */
+--control-h: max(var(--size-floor), calc(30 * var(--px) * var(--space-scale)));  /* 30px: buttons, inputs, selects */
+--control-h-lg: max(var(--size-floor), calc(40 * var(--px) * var(--space-scale))); /* 40px: composer send, first-run choices */
+--row-h: var(--control-h);                                                       /* list rows, menu and navigation items */
+--icon-sm: calc(13 * var(--px));
+--icon: calc(16 * var(--px));
+--icon-lg: calc(19 * var(--px));
 ```
 
-**Radii.** Four steps and a pill; `--radius` keeps its name for mods.
+**Radii.** Four steps and a pill; `--radius` keeps its name for mods. Radii scale with
+`--ui-scale` (they are in `--px`) so shapes keep their proportions when zoomed, but not with
+density.
 
 ```css
---radius-xs: 4px;     /* badges, keyboard keys, inline code */
---radius-sm: 6px;     /* buttons, inputs, selects, menu items */
---radius: 8px;        /* cards, rows, menus, popovers, message bubbles */
---radius-lg: 12px;    /* dialogs, the composer */
---radius-full: 999px; /* pills, switches, avatars */
+--radius-xs: calc(4 * var(--px));  /* badges, keyboard keys, inline code */
+--radius-sm: calc(6 * var(--px));  /* buttons, inputs, selects, menu items */
+--radius: calc(8 * var(--px));     /* cards, rows, menus, popovers, message bubbles */
+--radius-lg: calc(12 * var(--px)); /* dialogs, the composer */
+--radius-full: 999px;              /* pills, switches, avatars */
 ```
 
 **Elevation.** Three levels, used only by floating things. Dark mode also lightens the surface
@@ -310,40 +336,53 @@ Entering: fade plus a 4 px rise over `--dur-base`; leaving: fade over `--dur-fas
 `--ease-exit`. Under reduced motion (the operating system's or the app's `reduce-motion`
 class) movement is removed and durations drop to zero, as the existing rule does.
 
-**Colours.** Semantic names; components never use a raw value. Contrast ratios were computed
-for these values (WCAG relative luminance) and are checked again by the stage 2 test.
+**Colours.** Semantic names; components never use a raw value. `--bg` keeps today's values
+(`#0b0c0e`, `#f4f5f7`), which the loading screen, `shared/boot.ts`, `main.rs` and
+`tauri.conf.json` repeat; the surfaces are derived from it. Contrast ratios were computed for
+these values (WCAG relative luminance) and are checked again by the stage 2 test.
 
 | Token | Dark | Light | Use |
 | --- | --- | --- | --- |
-| `--bg` | `#0e1013` | `#f6f7f8` | Window background, behind panels |
-| `--surface` (`--panel` alias) | `#14171a` | `#ffffff` | Panels, dialogs |
-| `--surface-raised` | `#1a1d21` | `#ffffff` | Cards, buttons, menus |
-| `--surface-sunken` | `#0b0d0f` | `#f1f2f4` | Inputs, code blocks, the composer well |
+| `--bg` | `#0b0c0e` (today's) | `#f4f5f7` (today's) | Window background, behind panels |
+| `--surface` (`--panel` alias) | `#121418` | `#ffffff` | Panels, dialogs |
+| `--surface-raised` | `#1a1d22` | `#ffffff` | Cards, buttons, menus |
+| `--surface-sunken` | `#0e1013` | `#eef0f2` | Inputs, code blocks, the composer well |
 | `--surface-hover` | `rgb(255 255 255 / 0.04)` | `rgb(17 24 39 / 0.04)` | Row and ghost-button hover |
 | `--surface-active` | `rgb(255 255 255 / 0.07)` | `rgb(17 24 39 / 0.07)` | Pressed, selected rows |
-| `--border` | `rgb(255 255 255 / 0.08)` | `rgb(17 24 39 / 0.09)` | Dividers, cards, inputs at rest |
-| `--border-strong` | `rgb(255 255 255 / 0.14)` | `rgb(17 24 39 / 0.16)` | Hovered inputs, table heads |
-| `--text` (`--fg` alias) | `#e7e9ec` (15.7:1 on bg) | `#16181b` (16.6:1) | Body text |
-| `--text-muted` (`--muted` alias) | `#a0a6ae` (7.8:1) | `#545a63` (6.5:1) | Secondary text, labels |
-| `--text-subtle` | `#7f8690` (5.2:1) | `#646a73` (about 5:1) | Timestamps, placeholders; never on `--surface-sunken` in light |
+| `--border` | `rgb(255 255 255 / 0.08)` | `rgb(17 24 39 / 0.09)` | Dividers and cards: decorative, no contrast requirement |
+| `--border-strong` | `rgb(255 255 255 / 0.14)` | `rgb(17 24 39 / 0.16)` | Table heads, hovered cards |
+| `--border-control` | `#6a717b` (3.4:1 on raised, 4.0:1 on bg) | `#80868f` (3.2:1 on sunken, 3.7:1 on white) | Edges of inputs, selects, checkboxes, switches |
+| `--text` (`--fg` alias) | `#e7e9ec` (13.9:1 or more) | `#16181b` (15.6:1 or more) | Body text |
+| `--text-muted` (`--muted` alias) | `#a0a6ae` (6.9:1 or more) | `#545a63` (6.1:1 or more) | Secondary text, labels |
+| `--text-subtle` | `#868d97` (5.1:1 or more) | `#5f656e` (5.1:1 or more) | Timestamps, placeholders |
 | `--accent` | `#1fb2c8` | `#0a7186` | Primary fills, selection, links |
 | `--accent-hover` | `#45c6d8` | `#086477` | Primary hover |
 | `--accent-soft` | accent at 14 % | accent at 10 % | Selected rows, active navigation |
 | `--accent-ink` | `#03161a` (7.3:1 on accent) | `#ffffff` (5.7:1 on accent) | Text on accent fills |
-| `--accent-text` | `#5fd0e0` (10.5:1) | `#0a7186` (5.3:1) | Accent used as text or icon |
-| `--focus` | `#5fd0e0` | `#0a7186` | Focus ring (both above 3:1) |
+| `--accent-text` | `#5fd0e0` (9.3:1 or more) | `#0a7186` (4.9:1 or more) | Accent used as text or icon |
+| `--focus` | `#5fd0e0` | `#0a7186` | Focus ring (both above 3:1 on every surface) |
 | `--danger` / `--danger-soft` | `#f2766b` / 14 % | `#b42318` / 10 % | Errors, destructive actions |
 | `--ok` / `--ok-soft` | `#58c98a` / 14 % | `#18794e` / 10 % | Success, running |
 | `--warn` / `--warn-soft` | `#e3b25a` / 14 % | `#8a5a00` / 10 % | Warnings, budgets |
 
-The context-chart colours (`--ctx-*`) stay as a separate data-visualisation set, exempt from
-the one-accent rule. `--silver`, `--bubble`, `--code-bg` and `--ink` become aliases of the
-tokens above and are removed once nothing reads them.
+"Or more" ratios are the lowest over `--bg`, `--surface`, `--surface-raised` and
+`--surface-sunken`. The context-chart colours (`--ctx-*`) stay as a separate
+data-visualisation set, exempt from the one-accent rule. `--silver`, `--bubble`, `--code-bg`
+and `--ink` become aliases of the tokens above and are removed once nothing reads them.
 
 **Accents per theme.** Each of the twelve accents in `settings.ts` gets a dark and a light
-value (light values darkened until white ink reaches 4.5:1). `applySettings` sets
-`data-accent` on the root instead of writing colours inline, and `tokens.css` defines each
-accent under `:root[data-theme…][data-accent…]`, so the light theme's values win (K8).
+value. Dark values are today's (dark ink on them is 5.0:1 or more for all twelve). Light values
+are darkened in lightness, keeping hue and saturation, until white ink reaches about 5.2:1, which
+also makes them pass 4.5:1 as text on `--bg`; cyan keeps the hand-picked `#0a7186` (5.7:1).
+Darkened that far, amber, lime and silver turn brownish or olive (already at 4.6:1 amber is near
+`#9c6b18`, lime near `#647d25` and silver near `#7c7362`). That is accepted for fills and text, the places contrast matters; their
+`--accent-soft` washes use the dark-theme value at 16 % so selected rows keep the accent's
+recognisable hue, and stage 2's screenshots of every accent in light mode are reviewed for
+muddiness before merging (a light value may be nudged in hue only if the contrast test still
+passes). `applySettings` sets `data-accent` on the root instead of writing colours inline, and
+`tokens.css` defines each accent under `:root[data-accent="…"]` and
+`:root[data-theme="light"][data-accent="…"]`, so the light theme's values win (K8). The loading
+screen's light accent becomes `#0a7186`.
 
 **Focus ring.** One rule for every focusable element:
 `outline: 2px solid var(--focus); outline-offset: 2px` on `:focus-visible`, offset 0 inside
@@ -353,8 +392,10 @@ forced-colours mode, which halos do not.
 ## Shared components
 
 Plain React components in `apps/desktop/src/components/` with their CSS in
-`styles/primitives.css`. Each wraps native elements, keeps WAI-ARIA patterns the app already
-uses, and takes `className` for layout only (never colour or size).
+`styles/primitives.css`, except the dialog, navigation column, menu and popover rules, which go
+in `styles/dialog.css`. Stage 3 owns both files. Each component wraps native elements, keeps
+WAI-ARIA patterns the app already uses, and takes `className` for layout only (never colour or
+size).
 
 | Component | Variants and API | Where it is used today | Migration |
 | --- | --- | --- | --- |
@@ -362,9 +403,9 @@ uses, and takes `className` for layout only (never colour or size).
 | IconButton | `<IconButton icon label tooltip? size?>`; `label` is required and becomes `aria-label` and the tooltip | 40 `.icon-only`, panel and title-bar tools, row tools | Surface stages replace `.icon-only` markup |
 | Tooltip | Shown on hover after 400 ms and at once on keyboard focus; `role="tooltip"` with `aria-describedby`; positioned by `shared/floating.ts` | 195 native `title=`; `info-tip` in `ConfigParts.tsx` | Used by IconButton and `info-tip`; other `title=` attributes stay (truncated text) |
 | Field | `<Field label hint error>` around an input, textarea or Select; Input and Textarea are native elements styled globally | 67 inputs, 14 textareas, `FieldRow`, `FormParts` | Surface stages wrap labelled controls; `FormParts` and `FieldRow` become thin users |
-| Select | Existing `components/Select.tsx`, restyled, plus `size="small"` | 28 uses; 6 native selects | The native ones move to Select in their surface stage; the guard then forbids `<select` |
+| Select | Existing `components/Select.tsx`, restyled, plus `size="small"` | 28 uses; 6 native selects | The native ones move to Select in their surface stage, lowering guard 4's allowance |
 | Switch | Existing `components/Switch.tsx`, restyled | 13 uses | None |
-| Checkbox | Native checkbox with `accent-color: var(--accent)` and the focus ring; no component | Permission and connector forms | CSS only |
+| Checkbox | Native checkbox with `accent-color: var(--accent)`, a `--border-control` edge and the focus ring; no component | Permission and connector forms | CSS only |
 | Tabs | `<Tabs items value onChange>` following the WAI-ARIA tabs pattern (arrow keys, Home/End) | Connectors views, Browser tabs | Both move to it in their stages |
 | Menu | `RowMenu` generalised: a trigger plus items with icon, label, shortcut, separator and danger item | `RowMenu` (10 uses), the Notifications *Play* menu | `RowMenu` is renamed and its callers updated in stage 3 |
 | Dialog | `SettingsModal` generalised: `Dialog` (header, body, footer) with an optional `DialogNav` column; focus trap, Esc, scrim click; full-screen sheet below 600 px | Settings, environments, model configuration (`SettingsModal`); Connectors (own shell); command palette | Stage 3 renames it and updates its three importers; Connectors moves in stage 7, the palette in stage 5. The tour keeps its own card (it is not modal) |
@@ -391,7 +432,8 @@ checks each item below. A stage adds its own items.
 - [ ] Light and dark theme, default accent and one other accent.
 - [ ] Keyboard only: every control in the changed surface is reachable with Tab, shows the
       focus ring, and works with Enter, Space, arrows and Esc as before.
-- [ ] Density compact and spacious, UI scale 150 %: rows stay aligned, nothing overflows.
+- [ ] Density compact and spacious, UI scale 150 %: rows stay aligned, nothing overflows, no
+      control is under 24 px tall.
 - [ ] Empty, loading and error states of the surface (force them where needed).
 - [ ] Reduced motion on: nothing moves; fades are instant.
 
@@ -415,22 +457,33 @@ and in CI by `scripts/check-web.sh`:
 3. **Undefined tokens** (same file): every `var(--name)` read in CSS is defined in CSS, or set
    from TSX and listed (`--branch-depth`, `--swatch`, `--font-prose`, `--tile`), or has a
    fallback that is itself a token. Catches the `--surface-1` kind of bug.
-4. **No native select** (same file, from stage 13's merge, the last native select's stage): no
-   `<select` in `apps/desktop/src/**/*.tsx`.
+4. **No native select** (same file, from stage 1): counts `<select` in each
+   `apps/desktop/src/**/*.tsx` file against an allowance declared in that file
+   (`// style-budget: native-select=2`); a file without the comment is allowed none. Stage 1
+   adds the comment to the five files that have one (`BenchmarkSection.tsx`, `LocalForm.tsx`,
+   `ModelConfigDialog.tsx`, `TableForm.tsx`, `ReviewPanel.tsx`); stages 6, 8 and 10, which own
+   them, remove it; stage 15 confirms none is left. The nursery's select lives in
+   `mods/imperium-nursery`, outside this guard, and is handled by stage 13.
 5. **`tokenContrast.test.ts`** (stage 2): parses `styles/tokens.css`, and for both themes and
-   all twelve accents checks text, muted and subtle text on `--bg` and `--surface` (4.5:1),
-   accent ink on accent (4.5:1), and the focus ring and `--border-strong` on `--bg` (3:1).
-6. **Icon buttons are named** (stage 3): `IconButton`'s `label` prop is required by its type, so
+   all twelve accents checks text, muted and subtle text on `--bg`, `--surface`,
+   `--surface-raised` and `--surface-sunken` (4.5:1), accent ink on accent and accent text on
+   `--bg` (4.5:1), and `--focus` and `--border-control` on every surface (3:1).
+6. **`boot.test.ts`** (exists): keeps `--bg` and the boot accent in step across the CSS,
+   `boot.css`, `boot.ts`, `main.rs` and `tauri.conf.json`. Stage 1 points it at
+   `styles/tokens.css`; stage 2 changes its accent pattern to read the cyan
+   `data-accent` definitions.
+7. **Icon buttons are named** (stage 3): `IconButton`'s `label` prop is required by its type, so
    `pnpm typecheck` is the guard; no runtime test.
 
 ## Stages
 
 Stages 1 to 3 run in order. After stage 3 merges, stages 4 to 13 own disjoint files and any two
 (or more) can run in parallel; stage 14 needs stage 5, and stage 15 runs last. Every stage:
-updates its files' style budgets, passes `pnpm --filter @imperium/desktop test` and
-`pnpm --filter @imperium/desktop typecheck` locally and `bash scripts/check-web.sh` in CI,
-passes the [visual checklist](#visual-checklist), and touches no path outside its owned paths
-(a needed change elsewhere goes in its handoff notes for the owning stage).
+merges the latest `experimental` and re-measures its budgets before review; passes
+`pnpm --filter @imperium/desktop test` and `pnpm --filter @imperium/desktop typecheck` locally
+and `bash scripts/check-web.sh` in CI; passes the [visual checklist](#visual-checklist); and
+touches no path outside its owned paths (a needed change elsewhere goes in its handoff notes for
+the owning stage).
 
 "Owned CSS" means the file in `apps/desktop/src/styles/` created by stage 1 for that surface.
 
@@ -440,56 +493,87 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
   the guard tests at today's counts.
 - **Depends on:** none.
 - **Owned paths:** `apps/desktop/src/styles.css` (removed), `apps/desktop/src/styles/` (new:
-  `tokens.css`, `base.css`, `primitives.css`, `shell.css`, `sidebar.css`, `palette.css`,
-  `session.css`, `settings.css`, `connectors.css`, `models.css`, `environments.css`,
-  `panels.css`, `tour.css`, `house-models.css`, `mods.css`, `index.css` importing them in
-  order), `apps/desktop/src/main.tsx` (the import), `apps/desktop/test/styleTokens.test.ts`,
-  docs [07](../07-desktop-ui.md) Source layout.
+  `tokens.css`, `base.css`, `primitives.css`, `dialog.css`, `shell.css`, `sidebar.css`,
+  `palette.css`, `session.css`, `settings.css`, `connectors.css`, `models.css`,
+  `environments.css`, `panels.css`, `tour.css`, `house-models.css`, `mods.css`, and `index.css`
+  importing them in order), `apps/desktop/src/main.tsx` (the import),
+  `apps/desktop/test/styleTokens.test.ts`, `apps/desktop/test/boot.test.ts` (reads
+  `styles/tokens.css` instead of `styles.css`), the one-line `native-select` allowance
+  comments in the five TSX files listed under guard 4, and docs [07](../07-desktop-ui.md)
+  Source layout.
 - **What visibly changes:** nothing.
-- **How:** move rules, do not edit them. First merge each repeated selector into its last
-  occurrence (where it already wins). Then move each rule to its surface file. A rule moved
-  past another rule is a risk only when both have the same specificity and set a property in
-  common; a scratch check (kept out of the repository; its output goes in the pull request)
-  lists every such pair whose order changed, and each pair is either shown not to match the
-  same element or kept in order by placing the rule in the file that preserves it.
-  `modelConfig.css` stays where it is (it is imported by its dialog).
-- **Acceptance checks:** the app's computed styles are unchanged: before and after screenshots
-  of each surface in both themes are pixel-identical (or the differences are listed and
-  explained); the order-check output lists no unresolved pair; `styleTokens.test.ts` passes with
-  budgets equal to today's counts; `cssBalance.test.ts` passes.
-- **Risks:** cascade order changes (mitigated above); a missed rule (the screenshot diff catches
-  it).
+- **How:**
+  1. Merge each repeated selector into its last occurrence (where it already wins), one commit.
+  2. Move each rule to its surface file. At-rule blocks (`@media`, `@container`, `@supports`)
+     move whole, or are split per surface keeping their condition; `@keyframes` go to
+     `base.css` (their names are unique, so order does not matter).
+  3. Check order. Moving a rule (or a merged declaration) past another rule is a risk only when
+     both have the same specificity, apply under the same at-rule conditions, and set a property
+     in common. A script lists every such pair whose order changed, covering the merges of step
+     1 and rules inside at-rules. Each pair is resolved by showing the two selectors cannot match
+     the same element, or by placing the rule where its order is kept. The script stays out of
+     the repository (no one-off checkers in the tree); its source and its full pair list, with
+     each resolution, go in the pull request description.
+  4. Keep the cascade position of `modelConfig.css`. It is imported by `ModelConfigDialog.tsx`,
+     which `App.tsx` pulls in before `main.tsx` imports the stylesheet, so it comes earlier in
+     the cascade than today's `styles.css`. `styles/index.css` replaces that import in the same
+     place (after `import { App }`), so `modelConfig.css` stays earlier.
+- **Acceptance checks:**
+  - Computed styles are unchanged: a dump of `getComputedStyle` for every element of each
+    surface, in both themes, matches before and after, taken in each state reached by real
+    interaction: hover (pointer over each control), keyboard focus (Tab through), disabled
+    controls, open menus, selects, dialogs and popovers, and error states (a failing form, an
+    offline daemon). Differences are listed and explained or fixed.
+  - The order-check pair list in the pull request has no unresolved pair.
+  - `styleTokens.test.ts` passes with budgets equal to today's counts; the repeated-selector
+    count, by the [counting rule](#tokens-today), is zero; `cssBalance.test.ts` and
+    `boot.test.ts` pass.
+- **Risks:** cascade order changes (mitigated above); a missed rule (the computed-style dump
+  catches it).
 - **Status:** pending.
 - **Outcome:** none yet.
 - **Handoff notes:** keep each file's sections in their original relative order. Put rules used
-  by several surfaces (`.muted`, `.error`, `.empty`, `.badge`) in `primitives.css`.
+  by several surfaces (`.muted`, `.error`, `.empty`, `.badge`) in `primitives.css`. Put the
+  shared dialog shell (`.settings-backdrop`, `.settings-window`, its header, content and
+  footer), the dialog navigation (`.settings-nav`, `.settings-group*`, `.settings-nav-item*`,
+  `.settings-search`), the menu (`.row-menu*`) and the floating-list rules of `Select` in
+  `dialog.css`, which stage 3 owns; `settings.css` keeps only rules for the Settings sections'
+  content. Stage 3 can then fix K1 without touching `settings.css`.
 
 ### Stage 2: tokens and base elements
 
 - **Objective:** the token system above, applied to element rules, with today's token names kept
   as aliases.
 - **Depends on:** stage 1.
-- **Owned paths:** `styles/tokens.css`, `styles/base.css`, `apps/desktop/src/settings/settings.ts`
-  (accent per theme, `data-accent`), `apps/desktop/public/boot.css` (loading screen colours),
-  `apps/desktop/test/tokenContrast.test.ts`, the font files and `package.json` if
-  [Q3](#open-questions-for-the-user) chooses a bundled font, docs 07 Theming.
+- **Owned paths:** `styles/tokens.css`, `styles/base.css`; every other `styles/*.css` file only to
+  remove the metal gradients (`--metal*`, `--chrome-text` outside the wordmark), the `--highlight`
+  inset lights and the `--accent-soft` focus halos, lowering those files' budgets to match;
+  `apps/desktop/src/settings/settings.ts` (accents per theme, `data-accent`);
+  `apps/desktop/src/shared/boot.ts` (comments naming `styles.css`; `BOOT_BACKGROUND` values
+  unchanged); `apps/desktop/public/boot.css` (light accent `#0a7186`);
+  `apps/desktop/test/boot.test.ts` (the accent pattern); `apps/desktop/test/tokenContrast.test.ts`;
+  the Inter Variable font (`@fontsource-variable/inter` in `apps/desktop/package.json` and
+  `pnpm-lock.yaml`, imported once in `styles/index.css`); docs 07 Theming.
 - **What visibly changes:** everywhere at once: flat surfaces instead of metal gradients
-  (except the title-bar wordmark, per [Q1](#open-questions-for-the-user)), quieter borders, the
-  new neutrals, one focus ring, restyled buttons, inputs, checkboxes and scrollbars, and a light
-  theme whose accent passes contrast (K8).
+  (except the title-bar wordmark), quieter borders, firmer input edges, the new neutrals derived
+  from today's backgrounds, Inter on every machine, one focus ring, restyled buttons, inputs,
+  checkboxes and scrollbars, and a light theme whose accent passes contrast (K8).
 - **Acceptance checks:** `tokenContrast.test.ts` passes for both themes and all twelve accents;
-  `rg "metal|chrome-text" apps/desktop/src/styles` finds only the wordmark rule; the theme
-  switch in the command palette still flips every surface, and the loading screen matches the
-  theme before first paint.
+  `boot.test.ts` passes with `main.rs` and `tauri.conf.json` untouched;
+  `rg "metal|chrome-text" apps/desktop/src/styles` finds only the wordmark rule and
+  `rg "highlight" apps/desktop/src/styles` finds nothing; screenshots of all twelve accents in
+  light mode are reviewed for muddiness; the theme switch in the command palette still flips
+  every surface, and the loading screen matches the theme before first paint.
 - **Risks:** this is the largest visible change and lands before surfaces are tidied, so some
-  surface overrides will look off until their stage. Accept it, or hold stages 2 to 13 on a
-  long-lived integration branch and merge to `experimental` together (see
-  [Q5](#open-questions-for-the-user)). Mods see new token values under the same names.
+  surface overrides will look off until their stage (accepted: stages merge as ready, U5). Mods
+  see new token values under the same names. The removal edits touch files later stages own, which
+  is why this stage runs before them.
 - **Status:** pending.
 - **Outcome:** none yet.
 - **Handoff notes:** keep `--fast`, `--slow`, `--ease`, `--space`, `--radius`, `--panel`, `--fg`,
   `--muted` as aliases. Stage-specific checks: Settings → Appearance accent swatches, theme
-  System following the operating system.
+  System following the operating system. The font is bundled by Vite into the app (no network
+  fetch), so the content security policy needs no change.
 
 ### Stage 3: shared components
 
@@ -501,17 +585,18 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
   `SettingsModal.tsx`), `Badge.tsx`, `EmptyState.tsx`, `LoadingState.tsx`, `Notice.tsx`,
   `Kbd.tsx`; restyled `Select.tsx`, `Switch.tsx`), `apps/desktop/src/shared/floating.ts`
   (positioning taken from `Select.tsx`), `apps/desktop/src/panels/StatusBadge.tsx`,
-  `styles/primitives.css`, and only the import lines and renamed tags of `RowMenu` and
-  `SettingsModal` callers.
+  `styles/primitives.css`, `styles/dialog.css`, and only the import lines and renamed tags of
+  `RowMenu` and `SettingsModal` callers.
 - **What visibly changes:** dialogs (Settings, environments, model configuration) get the new
   shell and a navigation column with fixed row height, one inset for group labels and items, and
   icons in a fixed 16 px column, which fixes K1; menus and selects share one popover look;
   badges and switches restyle.
 - **Acceptance checks:** K1: every Settings navigation item is `--row-h` tall with its icon and
-  label on the same baselines, checked by screenshot at 1280 and 1024 in both themes; the
-  dialog traps focus, closes on Esc and scrim click, and returns focus to its trigger; Tabs and
-  Menu pass their keyboard patterns (a pure test for their key handling, as `Select` has);
-  `rg "RowMenu|SettingsModal" apps/desktop/src` returns nothing.
+  label on the same baselines, checked by screenshot at 1280 and 1024 in both themes, with
+  `settings.css` unchanged by this stage; the dialog traps focus, closes on Esc and scrim click,
+  and returns focus to its trigger; Tabs and Menu pass their keyboard patterns (a pure test for
+  their key handling, as `Select` has); `rg "RowMenu|SettingsModal" apps/desktop/src` returns
+  nothing.
 - **Risks:** renaming touches callers' import lines in files later stages own; that is why this
   stage runs before them.
 - **Status:** pending.
@@ -558,11 +643,19 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
   headers at one height with the title in `--fs-md` semibold, session and environment rows at
   `--row-h` with the selected row on `--accent-soft`, the palette on the Dialog with `Kbd`
   hints, the panel editor's handles and drop lines on the new tokens.
-- **Acceptance checks:** K5 (launch): after launching the app and pressing Ctrl+, without
-  clicking, Settings opens (the shell focuses the document once panels render); session rows
-  in the sidebar line up with environment rows at every density; budgets for the three files
-  at zero.
-- **Risks:** `App.tsx` is 1,705 lines; change only markup and class names in it.
+- **Acceptance checks:**
+  - K5 reproduced first: the pull request records the exact steps that show Ctrl+, failing
+    before the change (launch, which element has focus per `document.activeElement` and
+    `document.hasFocus()`), and the fix is accepted only against those steps.
+  - K5 fixed: after launching the app and pressing Ctrl+, without clicking, Settings opens.
+    The intended fix focuses the document from the web view once panels render. If the
+    reproduction shows the web view itself lacks operating-system focus (which only a Rust
+    `set_focus` can give), that part moves to the [follow-ups](#follow-ups-outside-item-47) and
+    this stage records it.
+  - Session rows in the sidebar line up with environment rows at every density; budgets for the
+    three CSS files at zero.
+- **Risks:** `App.tsx` is 1,705 lines; change only markup and class names in it, plus the focus
+  call.
 - **Status:** pending.
 - **Outcome:** none yet.
 - **Handoff notes:** do not add narrow-width behaviour here; stage 14 owns it, in these same
@@ -581,12 +674,12 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
   Change and Reset (K6); the benchmark's native select becomes a Select; loading and error states
   use the shared components.
 - **Acceptance checks:** K6: in Settings → Keyboard at 1024 px the chord and the Change button
-  are at least 12 px apart; budgets for `settings.css` at zero; search in Settings still
-  filters and dims as before.
+  are at least 12 px apart; `BenchmarkSection.tsx` has no `native-select` allowance; budgets for
+  `settings.css` at zero; search in Settings still filters and dims as before.
 - **Risks:** none beyond the checklist.
 - **Status:** pending.
 - **Outcome:** none yet.
-- **Handoff notes:** none yet.
+- **Handoff notes:** the navigation column is in `dialog.css` (stage 3), not here.
 
 ### Stage 7: Connectors
 
@@ -616,8 +709,8 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
   first-run setup's three choices become cards with `--control-h-lg` actions.
 - **Acceptance checks:** K3 (model panels): with the default layout at 1024 × 768, the Models and
   Local models panels' toolbars, tables and download form fit their column without clipping, in
-  both themes; budgets for both CSS files at zero; drafts, apply and restart notices behave as
-  before.
+  both themes; the three files have no `native-select` allowance; budgets for both CSS files at
+  zero; drafts, apply and restart notices behave as before.
 - **Risks:** `LocalModelsPanel.tsx` is 792 lines; keep the change to markup and classes.
 - **Status:** pending.
 - **Outcome:** none yet.
@@ -652,7 +745,8 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
   stacking label and control under 22 rem.
 - **Acceptance checks:** K3: with the default layout at 1024 × 768, no input, select or button in
   a right-hand panel is clipped (each control's bounding box lies inside its panel), in both
-  themes; each panel at a 280 px column has no horizontal scroll; budgets at zero.
+  themes; each panel at a 280 px column has no horizontal scroll; `ReviewPanel.tsx` has no
+  `native-select` allowance; budgets at zero.
 - **Risks:** many small panels; split into two pull requests (tables and data panels; browser,
   preview and review) if the diff passes about 800 lines.
 - **Status:** pending.
@@ -689,32 +783,30 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
 
 ### Stage 13: nursery and mod frames
 
-- **Objective:** mod frames that follow the app's theme and size, and a nursery that fits a
-  narrow sidebar: K2, K7 and the mod-frame part of K5.
+- **Objective:** mod frames whose native controls follow the app's theme, and a nursery that fits
+  a narrow sidebar: K2 and K7, with no change to the mod contract or the bridge.
 - **Depends on:** stage 3.
-- **Owned paths:** `apps/desktop/src/mods/ModFrame.tsx`, `styles/mods.css`,
-  `mods/imperium-nursery/src/view.ts`, `panels.ts`, `space.ts` and its tests in
-  `mods/imperium-nursery/test`, docs [06](../06-extensibility.md) (mod tokens) and
-  [16](../16-pets.md) if they describe the frame.
-- **What visibly changes:** frames set `color-scheme` to the resolved app theme (not
-  `light dark`) and update their tokens when the theme or accent changes, so native controls in
-  mods match (K2's dark select); frames receive the new type, spacing and radius tokens under new
-  names (`--fs-sm`, `--sp-1`… added to `THEME_TOKENS`, existing names unchanged); the nursery's
-  controls bar wraps under 220 px, its room fills the frame with one scroll owner, its select is
-  styled with the tokens, and placement keeps each pet's whole box (sprite plus label) apart
-  (K7).
-- **Acceptance checks:** K2: the nursery panel at 140 px wide shows at most one scrollbar and
-  its select matches the light theme; K7: a pure test in `mods/imperium-nursery/test` places
-  ten pets in a 140 × 300 room and finds no two boxes (sprite and label) overlapping; K5
-  (frames): with focus inside a mod frame, Ctrl+, opens Settings (the frame forwards chords
-  that hold Ctrl, Cmd or Alt to the parent through the existing bridge, and the parent runs them
-  through the same shortcut matcher); `pnpm --filter ./mods/imperium-nursery test` passes.
-- **Risks:** forwarding keys from frames must not let a mod trigger anything a key press by the
-  user could not: forward only real keyboard events' chords, never a mod-chosen message, and
-  only the rebindable shortcuts. Review this part as security-relevant.
+- **Owned paths:** `apps/desktop/src/mods/ModFrame.tsx` (the frame's base CSS only),
+  `styles/mods.css`, `mods/imperium-nursery/src/view.ts`, `panels.ts`, `space.ts` and its tests in
+  `mods/imperium-nursery/test`.
+- **What visibly changes:** a frame sets `color-scheme` to the app theme resolved when the frame
+  is built (`dark` or `light`, not `light dark`), so native controls in mods match the app (K2's
+  dark select); the frame body's padding uses the existing `--space`. The nursery's controls bar
+  wraps under 220 px, its room fills the frame with one scroll owner, its select is styled with
+  the existing tokens (`--panel`, `--fg`, `--border`, `--radius`), and placement keeps each pet's
+  whole box (sprite plus label) apart (K7).
+- **Acceptance checks:** K2: with the app in the light theme, the nursery panel at 140 px wide
+  shows at most one scrollbar and its select is light; K7: a pure test in
+  `mods/imperium-nursery/test` places ten pets in a 140 × 300 room and finds no two boxes (sprite
+  and label) overlapping; `THEME_TOKENS` and the bridge's message kinds are unchanged;
+  `pnpm --filter ./mods/imperium-nursery test` passes.
+- **Risks:** a frame opened before a theme switch keeps its old `color-scheme` and tokens until
+  it is reopened, as tokens behave today ([07](../07-desktop-ui.md#theming): "Mod panels pick up
+  the tokens when they open"). Live updates are a [follow-up](#follow-ups-outside-item-47).
 - **Status:** pending.
 - **Outcome:** none yet.
-- **Handoff notes:** after this stage no native `<select>` is left; turn on guard test 4.
+- **Handoff notes:** guard 4 does not cover `mods/`; the nursery's select is checked by the
+  screenshot only.
 
 ### Stage 14: narrow layout
 
@@ -724,11 +816,11 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
   Layout and Scaling.
 - **What visibly changes:** every column gets a minimum width (sidebar 220 px, session 360 px,
   side columns 280 px); when the window cannot fit all columns at their minimums, the
-  rightmost side columns fold into a "More panels" switcher in the title bar; at 600 px and
-  below the window shows one column at a time: the session column fills it, the sidebar opens
-  as an overlay sheet from a title-bar button (closing on selection, Esc or scrim), and side
-  panels open as a full-width sheet. Saved column proportions are kept and restored when the
-  window widens again.
+  rightmost side columns fold into a "More panels" switcher in the title bar; below 600 px the
+  window shows one column at a time ([U4](#decided-by-the-user)): the session column fills it,
+  the sidebar opens as an overlay sheet from a title-bar button (closing on selection, Esc or
+  scrim), and side panels open as a full-width sheet. Saved column proportions are kept and
+  restored when the window widens again.
 - **Acceptance checks:** K4: at 420 × 800 the session is readable without horizontal scroll and
   the sidebar and each side panel can be opened and closed by mouse and keyboard; at 1024 × 768
   no column is narrower than its minimum; a pure test in `apps/desktop/test` for the rule that
@@ -737,7 +829,7 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
   and the panel editor (layout mode) should be disabled below 600 px rather than adapted.
 - **Status:** pending.
 - **Outcome:** none yet.
-- **Handoff notes:** answer [Q4](#open-questions-for-the-user) before starting.
+- **Handoff notes:** none yet.
 
 ### Stage 15: motion and accessibility pass
 
@@ -748,8 +840,8 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
 - **What visibly changes:** menus, popovers, dialogs and sheets enter and leave with the
   token durations; panel folding uses `--dur-base`; hover and press transitions are uniform;
   the forced-colours rules cover the new components.
-- **Acceptance checks:** budget comments removed and the style guard requires zero in every
-  file; with reduced motion on, no transform or animation runs (checked by toggling the
+- **Acceptance checks:** budget and `native-select` comments removed and the guards require zero
+  everywhere; with reduced motion on, no transform or animation runs (checked by toggling the
   setting and the operating-system preference); every surface passes a keyboard-only run;
   `rg "outline: (none|0)" apps/desktop/src/styles` matches only rules that draw another focus
   indicator; docs 07 describe the token system and the components.
@@ -759,9 +851,24 @@ passes the [visual checklist](#visual-checklist), and touches no path outside it
 - **Handoff notes:** when this stage is done, fold the token and component description into
   docs 07 and delete this plan (git keeps it).
 
+## Follow-ups outside item 47
+
+Each needs its own design and review because it changes the mod bridge or Rust, which item 47
+does not.
+
+- **Live theme updates in open mod frames.** A new bridge message (for example
+  `theme_changed` carrying the token values and `color-scheme`) so an open frame restyles when
+  the user switches theme or accent. Adds a message kind to the mod contract
+  ([06](../06-extensibility.md#ui-mods)).
+- **Shortcuts while a mod frame has focus** (the frame part of K5). Forwarding key chords from
+  the frame to the parent needs a new message kind and a security review: a mod must not be able
+  to trigger a shortcut the user did not press.
+- **Native focus at launch,** only if stage 5's reproduction shows the web view lacks
+  operating-system focus: a Rust `set_focus` on the main window after it is shown.
+
 ## Decisions
 
-Made while writing the plan; each can be revisited if its condition changes.
+Made while writing and reviewing the plan; each can be revisited if its condition changes.
 
 - **D1: plain React and CSS, no UI framework.** Rejected: Radix or a shadcn-style kit (a large
   new dependency, and the app already has working ARIA components for select, menu, switch and
@@ -772,37 +879,41 @@ Made while writing the plan; each can be revisited if its condition changes.
   because it enforces the accessible name.
 - **D3: split the stylesheet by surface in a separate, no-change stage.** Rejected: leaving one
   file (parallel stages would conflict constantly, and the 54 repeated selectors would stay) and
-  CSS-in-JS (a runtime cost and a new dependency). The order check and screenshot diff make the
-  move safe.
-- **D4: style budgets live in each CSS file.** A shared baseline file would be edited by every
+  CSS-in-JS (a runtime cost and a new dependency). The order check and the computed-style dump
+  make the move safe.
+- **D4: style budgets live in each file.** A shared baseline file would be edited by every
   parallel stage.
 - **D5: legacy token names stay as aliases until nothing reads them,** and the mod token names
   stay for good.
 - **D6: flat surfaces.** The metal gradients and inset highlights go; elevation is a shadow on
-  floating things only. The wordmark keeps its chrome gradient pending Q1.
+  floating things only (U1).
 - **D7: accents are defined per theme in CSS,** selected with `data-accent`, instead of being
   written inline (fixes K8 and keeps colours in the token file).
 - **D8: no Toast and no Skeleton** (see [shared components](#shared-components)).
-- **D9: K5 is fixed in the web view,** not with native menu accelerators, because Rust changes
-  are out of scope.
-- **D10: one pull request per stage,** merged to `experimental` as each is ready, unless the user
-  prefers an integration branch (Q5).
+- **D9: no Rust in item 47.** K5's fix is in the web view; anything needing Rust is a follow-up.
+- **D10: one pull request per stage,** merged to `experimental` as each is ready (U5).
+- **D11: `--bg` keeps today's values** (`#0b0c0e`, `#f4f5f7`) and the surfaces derive from it, so
+  the copies in `boot.css`, `boot.ts`, `main.rs` and `tauri.conf.json` stay true and no Rust file
+  changes.
+- **D12: a separate `--border-control`** at 3:1 or more for control edges, so decorative borders
+  can stay quiet.
+- **D13: tokens are built on `--px`.** Spacing is on a true 4 px grid; rows and controls have a
+  24 px floor at every density; radii scale with the UI scale but not with density.
+- **D14: no new mod-bridge message kinds and no new mod tokens in item 47.** K2 is fixed with
+  `color-scheme` set when the frame is built; live updates and in-frame shortcuts are
+  [follow-ups](#follow-ups-outside-item-47).
 
-## Open questions for the user
+## Decided by the user
 
-Each has a default the plan uses if unanswered.
+The open questions of the first draft, answered:
 
-- **Q1: metallic identity.** Keep a trace of today's brushed-metal look (the chrome wordmark and
-  a subtle title-bar finish), or go fully flat? Default: keep the wordmark only.
-- **Q2: default accent.** Keep cyan (`#1fb2c8` dark, `#0a7186` light) as the default of the
-  twelve accents? Default: yes.
-- **Q3: font.** Bundle Inter Variable (SIL Open Font License, about 300 KB of `woff2` for Latin,
-  added as `@fontsource-variable/inter` or as files in `public/`) so every machine renders the
-  same, or use each system's own UI font (Segoe UI Variable, San Francisco) with no new
-  dependency? Default: bundle Inter.
-- **Q4: density and narrow behaviour.** Keep comfortable rows at 30 px (today's control height),
-  or move to roomier 36 px rows closer to the reference? And at 600 px and below, is one column at
-  a time with the sidebar as a sheet acceptable? Default: 30 px rows; one column with a sheet.
-- **Q5: rollout.** Merge each stage to `experimental` as it is ready (the app looks mixed between
-  stage 2 and the last surface stage), or collect stages 2 to 13 on an integration branch and
-  merge them together? Default: merge as ready.
+- **U1: look.** Flat surfaces; the chrome gradient stays on the title-bar wordmark only.
+- **U2: default accent.** Cyan stays the default (`#1fb2c8` dark, `#0a7186` light).
+- **U3: font.** Bundle Inter Variable (SIL Open Font License), added as
+  `@fontsource-variable/inter` in stage 2.
+- **U4: density and narrow layout.** Rows stay at 30 px at comfortable density; below 600 px the
+  window shows one column at a time, with the sidebar as a sheet.
+- **U5: rollout.** Each stage merges to `experimental` as it is ready; the app may look mixed
+  between stage 2 and the last surface stage.
+
+No questions are open.
