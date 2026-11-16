@@ -65,10 +65,16 @@ test("the contrast helpers match known ratios", () => {
   assert.equal(ratio([119, 119, 119], [255, 255, 255]).toFixed(2), "4.48");
 });
 
-/** The twelve accents of settings.ts, each defined for both themes in tokens.css. */
-const ACCENTS = ["cyan", "teal", "green", "lime", "amber", "orange", "rose", "magenta", "violet", "indigo", "blue", "silver"];
+/** Every accent of settings.ts, each defined for both themes in tokens.css. */
+const ACCENTS = (() => {
+  // settings.ts pulls in browser-only modules, so read the table's keys from its source instead of importing it.
+  const source = readFileSync(new URL("../src/settings/settings.ts", import.meta.url), "utf8");
+  const table = /export const ACCENTS[^=]*=\s*\{([\s\S]*?)\n\};/.exec(source);
+  assert.ok(table, "settings.ts no longer exports an ACCENTS table");
+  return [...table[1].matchAll(/^\s{2}([a-z][\w]*):\s*\{/gm)].map((match) => match[1]);
+})();
 
-test("tokens.css defines exactly the twelve accents, each for both themes", () => {
+test("tokens.css defines exactly the accents of settings.ts, each for both themes", () => {
   const dark = new Set([...css.matchAll(/(?<!\])\[data-accent="([\w-]+)"\]\s*[{,]/g)].map((match) => match[1]));
   assert.deepEqual([...dark].sort(), [...ACCENTS].sort());
   for (const accent of ACCENTS) assert.ok(css.includes(`:root[data-theme="light"][data-accent="${accent}"]`), accent);

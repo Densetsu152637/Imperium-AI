@@ -39,9 +39,9 @@
 - Display settings: UI scale, prose and code text scale, density, and line length. They are
   stored per viewer in local storage for now and move into the daemon's configuration with
   the settings UI.
-- Light and dark themes follow the system: metallic black and graphite with a petrol-teal
-  accent and silver hairline trims by default, and a matching brushed-silver light theme. Side
-  columns are brushed-metal rails; the conversation is a centred column with the user's turns
+- Light and dark themes follow the system: flat graphite surfaces (dark) and light neutral surfaces
+  (light), quiet hairline borders and one accent, with the chrome finish kept to the wordmark.
+  Side columns are plain panels; the conversation is a centred column with the user's turns
   as pills on the right.
 
 - Detachable panels: every panel, built-in or from a mod, has *Open in its own window* in its
@@ -564,8 +564,8 @@ element and `styles/tokens.css` keys the light tokens on `:root[data-theme="ligh
 palette's *Switch to light/dark theme* flips it. Mod panels pick up the tokens when they open.
 
 **Tokens and accents (implemented):** every length derives from `--px` (one CSS pixel at 100 % UI
-scale), spacing runs on 4 px steps (`--sp-1` to `--sp-8`), controls and rows are at least 24 px
-tall at any density, and there are six type sizes, three weights, five radii, three elevations and
+scale), spacing runs on 4 px steps (`--sp-1` to `--sp-8`), the control-height tokens provide a 24 px floor at any density (surfaces adopt them in their
+stages), and there are six type sizes, three weights, five radii, three elevations and
 the motion and layer tokens, all in `styles/tokens.css`; today's names (`--panel`, `--fg`,
 `--muted`, `--fast`, `--slow`, `--ease`, `--space`, `--radius`) remain as aliases, and the mod
 token names keep their meaning. Surfaces are flat (`--bg`, `--surface`, `--surface-raised`,
@@ -594,7 +594,7 @@ takes a moment) nothing shows white:
   before first paint. When the webview has nothing remembered (first launch after an upgrade,
   cleared data), `main.rs` seeds that key from the saved `settings.json` with an initialization
   script. With "System", `prefers-color-scheme` decides. The loading screen uses the theme's
-  accent (`#1fb2c8` dark, `#005a72` light).
+  accent (`#1fb2c8` dark, `#0a7186` light).
 - **Native window:** the configuration gives the main window the dark `--bg` as its
   `backgroundColor`. `main.rs` creates it hidden, reads the saved theme from `settings.json`
   (the window's system theme under "System"), sets the matching native and webview background,
