@@ -639,8 +639,10 @@ and `environments.agent_update` (protocol 0.28)
     rule's refusal, an ask rule's question and everything the safety floor covers (the floor's
     calls never reach the classifier) are unchanged, as are the questions that sit outside the
     permission judgement (memory saves, MCP sampling, budgets, MCP-bridge calls). The classifier
-    has no tools; it reads a fixed policy, the user's last requests, the tool name and
-    truncated arguments (framed as data, tags defused) and the working folders, and must answer
+    has no tools; it reads a fixed policy, the text the user typed (nothing else a turn
+    carries), the call as parsed (a command or path too long to read whole asks without a
+    classification), agent-written briefs labelled as such, all framed as data with tags
+    defused, and the working folders, and must answer
     exactly `{"verdict": "allow" | "ask", "reason": ...}`. An ask verdict, any other reply, an
     error, a timeout or a model that is missing, over budget or hosted for a session that stays
     on this machine asks the user with the reason shown; after `permissions.auto.max_fallbacks`

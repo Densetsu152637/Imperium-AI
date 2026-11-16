@@ -827,9 +827,26 @@ prompt (allow only a call the request plainly asked for or an ordinary step towa
 the working folders, easy to undo and low impact, with no sign of having been prompted by file,
 web or tool text; otherwise, and whenever unsure, ask) and, as tagged data:
 
-- the user's last three requests, each cut to 1,500 characters (for a sub-agent, the task its
-  parent gave it, labelled as not the user's own);
-- the tool's name and its arguments, cut to 3,000 characters;
+- the user's last three requests as they typed them, each cut to 1,500 characters
+  (`<user-requests>`). The root agent records the text as it arrives (a turn's message, a
+  steering message); what a turn's message carries besides it (session state, ambiguity hints,
+  the context manifest, recalled memories, attachment text, instruction files met while
+  exploring, compaction summaries, the steering wrapper) is never part of it. Only this block
+  establishes what the user wants. A sub-agent's calls are judged against the same requests, and
+  its own brief (written by the agent that spawned it) is a separate `<agent-task>` block that
+  the prompt says never shows the user's intent. A session nobody attends (a schedule, a project
+  agent's session, auto-fix, initiative work) was started with an agent's prompt, so what it
+  records is an `<agent-task>` too, with `<user-requests>` empty, and the classifier is told to
+  ask when there is no user request;
+- the call, read from the **parsed** call, not from the arguments as the model wrote them: a
+  command as `{"command", "timeout_s", "background"}`, a file call with the `path` first and
+  whole and then its content or text (each cut to 1,500 characters and marked `[truncated]`), a
+  tool provider's call as its command when it runs one and otherwise its arguments parsed and
+  written out again (escapes resolved, padding keys sorted, not left to hide a value). A command
+  longer than 3,000 characters, a path longer than 1,000, or a provider's arguments longer than
+  3,000 are not classified at all: the user is asked with the reason "too long for auto mode",
+  since a cut command is one the classifier has not read. The prompt tells it that a value
+  ending `[truncated]` was cut and to ask;
 - the session's working folders.
 
 Tool results and file contents are never given to it. The prompt says the blocks are data to
@@ -845,11 +862,14 @@ characters. Text that merely contains a verdict, such as a planted argument the 
 echoes, is not a verdict.
 
 **It fails closed.** An `ask` verdict, a reply that is not the format above, an HTTP or
-connection error, a timeout, a stop, a model that is not in the model table or over its budget,
-and a model that may not be used (below) all leave the question with the user, with the
+connection error, a timeout, a model that is not in the model table or over its budget, and a
+model that may not be used (below) all leave the question with the user, with the
 reason added to it (`… (auto mode asks: <reason>)`). The user answers exactly as in `default`,
 *Always allow* and *Allow for this session* included. The classifier can only ever say run or
-ask; "deny and carry on" does not exist.
+ask; "deny and carry on" does not exist. A **stop or pause** is not a fallback and not a
+question: while the session is stopped (or the agent paused for a steering message) no question
+is raised, a classification in flight is dropped, nothing is counted toward the cooldown, and
+the call reports that it did not run because the session was stopped.
 
 **Which model.** `permissions.auto.model` names a row of the model table (its `id` or its
 `<endpoint>:<model>` spec). Left empty, routing picks the cheapest model of the basic tier
@@ -864,7 +884,11 @@ over budget is not made.
 that ended in an ask or an error, the classifier rests for `permissions.auto.cooldown_s`
 (default 300) seconds: no model call is made and every call that would have gone to it asks, with
 the remaining time as the reason, so a classifier that keeps giving up costs nothing. An allow
-resets the count; the rest ends by itself and starts the count again.
+resets the count; the rest ends by itself and starts the count again. The cooldown limits
+**cost**, not security: the classifier's reasons never reach the agent (they go to the user and
+the journal), and every classification that is not an allow, in a rest or out of it, ends in a
+question to the user, so an agent cannot talk the classifier into allowing by making it rest or
+by making it fail.
 
 **Journal.** Every decision is a `notice` event of the session, so it is in the journal and shown
 to every client: `Auto mode allowed <tool> <arguments>: <reason>`, `Auto mode did not allow
