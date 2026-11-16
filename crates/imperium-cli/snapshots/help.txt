@@ -3052,6 +3052,9 @@ Options:
       --local
           The root model runs on this machine (a local llama-server): the harness aids that are `auto` count as on, as in the product, where `auto` means on for a local model
 
+      --config-home <DIR>
+          Read the configuration from this folder, laid out as `IMPERIUM_HOME`, instead of the user's own. A headless run uses it for variants and for the isolation check of `--permission-mode full`; it applies none of the other settings
+
       --context-tokens <N>
           The root model's context window in tokens
 
