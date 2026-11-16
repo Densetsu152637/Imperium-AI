@@ -3049,6 +3049,9 @@ Options:
       --api-key-env <VAR>
           The environment variable that holds the endpoint's API key. The key is never printed
 
+      --local
+          The root model runs on this machine (a local llama-server): the harness aids that are `auto` count as on, as in the product, where `auto` means on for a local model
+
       --context-tokens <N>
           The root model's context window in tokens
 
