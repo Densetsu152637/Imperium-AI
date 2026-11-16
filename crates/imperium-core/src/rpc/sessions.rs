@@ -15,6 +15,51 @@ impl Connection {
                 });
                 Ok(result)
             }),
+            SessionEvalCreate::NAME => call::<SessionEvalCreate>(c.params.take(), |params| {
+                let (result, events) = self.create_eval_session(params)?;
+                *c.subscription = Some(Subscription {
+                    session_id: result.session_id.clone(),
+                    events,
+                });
+                Ok(result)
+            }),
+            SessionEvalResult::NAME => {
+                call::<SessionEvalResult>(c.params.take(), |params: SessionEvalResultParams| {
+                    self.eval_forbidden()?;
+                    let run = self.state.eval_run(&params.session_id).ok_or_else(|| {
+                        ErrorObject::new(
+                            codes::INVALID_PARAMS,
+                            format!("{} is not an evaluation session", params.session_id),
+                        )
+                    })?;
+                    let session = self.session(&params.session_id)?;
+                    Ok(run.result(session.project_dir()))
+                })
+            }
+            SessionPromptPreview::NAME => match self.eval_forbidden() {
+                Err(error) => Err(error),
+                Ok(()) => call_later::<SessionPromptPreview, _>(
+                    c.params.take(),
+                    c.later,
+                    |params: SessionEvalCreateParams| {
+                        let state = Arc::clone(&self.state);
+                        async move {
+                            let prepared = crate::eval::Prepared::new(&params.options, true)
+                                .map_err(|message| {
+                                    ErrorObject::new(codes::INVALID_PARAMS, message)
+                                })?;
+                            state
+                                .prompt_preview(
+                                    params.environment_id.as_deref(),
+                                    params.project_dir.as_deref(),
+                                    Arc::new(prepared),
+                                )
+                                .await
+                                .map_err(|message| ErrorObject::new(codes::INTERNAL_ERROR, message))
+                        }
+                    },
+                ),
+            },
             SessionControl::NAME => {
                 call_later::<SessionControl, _>(c.params.take(), c.later, |params| {
                     self.control(params)
@@ -367,6 +412,59 @@ impl Connection {
 }
 
 impl Connection {
+    /// An error unless this connection may start evaluation sessions.
+    pub(super) fn eval_forbidden(&self) -> Result<(), ErrorObject> {
+        if self.may_eval() {
+            Ok(())
+        } else {
+            Err(ErrorObject::new(
+                codes::FORBIDDEN,
+                "evaluation sessions are for the imperium command on this machine, not for \
+                 phones, mods or the API",
+            ))
+        }
+    }
+
+    /// `session.eval_create`: a session with the options of an evaluation run.
+    pub(super) fn create_eval_session(
+        &self,
+        params: SessionEvalCreateParams,
+    ) -> Result<(SessionCreateResult, broadcast::Receiver<AgentEvent>), ErrorObject> {
+        self.eval_forbidden()?;
+        let prepared = crate::eval::Prepared::new(&params.options, false)
+            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+        let (session, events) = self
+            .state
+            .create_eval(
+                params.environment_id.as_deref(),
+                params.project_dir.as_deref(),
+                Arc::new(prepared),
+            )
+            .map_err(|error| {
+                let code = match &error {
+                    CreateError::Project(..)
+                    | CreateError::Environment(_)
+                    | CreateError::Runtime(_)
+                    | CreateError::Worktree(_) => codes::INVALID_PARAMS,
+                    CreateError::Model(_) => codes::MODEL_UNAVAILABLE,
+                    CreateError::Start(_) => codes::INTERNAL_ERROR,
+                };
+                ErrorObject::new(code, error.to_string())
+            })?;
+        let summary = self.state.summary(&session);
+        Ok((
+            SessionCreateResult {
+                session_id: session.id().to_string(),
+                model: session.model(),
+                isolation: session.isolation().to_string(),
+                environment_id: summary.environment_id,
+                folders: summary.folders,
+                worktrees: summary.worktrees,
+            },
+            events,
+        ))
+    }
+
     pub(super) fn create_session(
         &self,
         params: SessionCreateParams,

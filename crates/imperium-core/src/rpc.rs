@@ -41,6 +41,10 @@ use imperium_protocol::methods::{
     EventsSubscribe, EventsSubscribeParams, EventsUnsubscribe, EventsUnsubscribeParams,
 };
 use imperium_protocol::methods::{
+    SessionEvalCreate, SessionEvalCreateParams, SessionEvalResult, SessionEvalResultParams,
+    SessionPromptPreview,
+};
+use imperium_protocol::methods::{
     SystemLease, SystemLeaseParams, SystemLeaseResult, SystemLifetime, SystemLifetimeParams,
 };
 use imperium_protocol::permissions::{
@@ -202,6 +206,8 @@ pub struct Connection {
     handshake_done: bool,
     /// For a paired phone: the only methods it may call.
     allowed: Option<Vec<&'static str>>,
+    /// What the client called itself in the handshake.
+    client_name: Option<String>,
     /// The process id of the other end and when (Unix seconds) the connection was accepted, for
     /// a connection on the local socket.
     peer: Option<(u32, u64)>,
@@ -224,6 +230,7 @@ impl Connection {
             state,
             handshake_done: false,
             allowed: None,
+            client_name: None,
             peer: None,
             resources: None,
             events: crate::events::EventFilter::default(),
@@ -245,11 +252,19 @@ impl Connection {
             state,
             handshake_done: false,
             allowed: Some(allowed),
+            client_name: None,
             peer: None,
             resources: None,
             events: crate::events::EventFilter::default(),
             lease: None,
         }
+    }
+
+    /// Whether this connection may start evaluation sessions: it is not a paired phone's, and it
+    /// says it is the `imperium` command.
+    pub(crate) fn may_eval(&self) -> bool {
+        self.allowed.is_none()
+            && self.client_name.as_deref() == Some(imperium_protocol::methods::EVAL_CLIENT)
     }
 
     /// Whether this connection wants `system.resources_changed` notifications.
@@ -389,6 +404,7 @@ impl Connection {
             return Err(incompatible(params.protocol));
         }
         self.handshake_done = true;
+        self.client_name = Some(params.client.name.clone());
         Ok(HandshakeResult {
             daemon: Peer {
                 name: "imperium-core".into(),
@@ -525,6 +541,49 @@ mod tests {
             let handled = phone.handle_text(&request(2, method, json!({"source": "x"})));
             assert_eq!(error_code(&handled), Some(codes::FORBIDDEN), "{method}");
         }
+    }
+
+    /// Evaluation sessions (replay, variants, a model of their own) are for the `imperium`
+    /// command: neither another client nor a phone may start one or read one's record.
+    #[test]
+    fn evaluation_sessions_are_for_the_imperium_command_only() {
+        let eval = json!({
+            "project_dir": ".",
+            "options": {"model": {"base_url": "http://127.0.0.1:1/v1", "model_id": "m"}}
+        });
+        let named = |name: &str| {
+            json!({
+                "client": {"name": name, "version": "0"},
+                "protocol": {"major": PROTOCOL_VERSION.major, "minor": 0}
+            })
+        };
+        let methods = [
+            (SessionEvalCreate::NAME, eval.clone()),
+            (SessionPromptPreview::NAME, eval.clone()),
+            (SessionEvalResult::NAME, json!({"session_id": "x"})),
+        ];
+        // Another full-token client.
+        let mut other = connection();
+        other.handle_text(&request(1, Handshake::NAME, named("imperium-desktop")));
+        for (method, params) in &methods {
+            let handled = other.handle_text(&request(2, method, params.clone()));
+            assert_eq!(error_code(&handled), Some(codes::FORBIDDEN), "{method}");
+        }
+        // A phone that calls itself the command: its scopes do not list the methods.
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        let mut phone = Connection::restricted(state, vec![Handshake::NAME, "session.list"]);
+        phone.handle_text(&request(1, Handshake::NAME, named("imperium-cli")));
+        for (method, params) in &methods {
+            let handled = phone.handle_text(&request(2, method, params.clone()));
+            assert_eq!(error_code(&handled), Some(codes::FORBIDDEN), "{method}");
+        }
+        // The command itself is let in (here only as far as the missing session).
+        let mut cli = connection();
+        cli.handle_text(&request(1, Handshake::NAME, named("imperium-cli")));
+        let handled = cli.handle_text(&request(2, SessionEvalResult::NAME, methods[2].1.clone()));
+        assert_eq!(error_code(&handled), Some(codes::INVALID_PARAMS));
     }
 
     fn handshaken() -> Connection {

@@ -17,6 +17,7 @@ mod connectors;
 mod downloads;
 mod endpoint;
 mod environments;
+mod eval;
 mod events;
 mod export;
 mod extension_install;

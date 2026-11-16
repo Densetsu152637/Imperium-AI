@@ -1075,7 +1075,7 @@ fn task_request<'a>(
 /// What a named agent runs with: its instructions, and its tools: those its file lists that
 /// `parent` (the delegator's tools) also has. Claude Code's tool names are mapped to Imperium's.
 /// Names that match nothing are left out, with a note for the user.
-fn named_agent(
+pub(super) fn named_agent(
     def: &imperium_extensions::AgentDef,
     parent: &[String],
 ) -> (crate::agents::NamedAgent, Vec<String>) {

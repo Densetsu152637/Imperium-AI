@@ -52,6 +52,7 @@ mod archive;
 mod branch;
 mod create;
 mod environments;
+mod eval;
 mod extensions;
 mod lifetime;
 mod memory_migration;
@@ -134,6 +135,9 @@ pub struct SessionOptions {
     /// Mount the session's folders read-only: its file tools never write there, and commands
     /// run only under a tier that can keep them from writing there. Not with a worktree.
     pub read_only: bool,
+    /// An evaluation session (`session.eval_create`): its own root model, tools, loop flags and
+    /// ceilings, no memory, extensions or project instructions, and not remembered.
+    pub(crate) eval: Option<Arc<crate::eval::Prepared>>,
 }
 
 /// Where a session works: its environment and every folder, the working directory first.
@@ -200,6 +204,8 @@ pub struct DaemonState {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     /// Each session's environment and folders, by session id.
     placements: Mutex<HashMap<String, Placement>>,
+    /// What the evaluation sessions recorded, by session id.
+    evals: Mutex<HashMap<String, Arc<crate::eval::EvalRun>>>,
     environments: Environments,
     /// Set at start when there are model folders, or after the first download.
     local: OnceLock<LocalRuntime>,
@@ -332,6 +338,7 @@ impl DaemonState {
             secrets,
             sessions: Mutex::new(HashMap::new()),
             placements: Mutex::new(HashMap::new()),
+            evals: Mutex::new(HashMap::new()),
             environments,
             local: local.map(OnceLock::from).unwrap_or_default(),
             downloads: Downloads::default(),

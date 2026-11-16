@@ -475,6 +475,25 @@ impl Agent {
         self
     }
 
+    /// Runs this root agent as the named agent `def` (an evaluation harness running an agent
+    /// file as the root): its instructions follow the base ones and only the tools its file
+    /// lists are offered, none when the file lists `tools` with nothing in it. Returns the
+    /// agent and notes for the user.
+    pub(crate) fn as_named_root(self, def: &imperium_extensions::AgentDef) -> (Self, Vec<String>) {
+        let offered: Vec<String> = self
+            .offered_tools()
+            .0
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        let (mut named, notes) = delegation::named_agent(def, &offered);
+        if def.no_tools {
+            named.tools = Some(Vec::new());
+            return (self.with_named(named), Vec::new());
+        }
+        (self.with_named(named), notes)
+    }
+
     /// Marks this agent as a writer in worktrees of its own (see [`Agent::writer`]).
     fn writing(mut self) -> Self {
         self.writer = true;

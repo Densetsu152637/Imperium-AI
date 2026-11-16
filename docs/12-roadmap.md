@@ -685,7 +685,13 @@ and `environments.agent_update` (protocol 0.28)
     model) serve the Imperium-Models evaluations. No protocol change. A subagent-replay hook in the
     engine (`Session::spawn_with`), `OpenAiCompatible::with_extra_body`, and the proverb line in
     the vendored Emperor root prompt, with a test that it matches the engine's
-    ([03](03-agent-engine.md#running-evals-through-the-harness-implemented)).
+    ([03](03-agent-engine.md#running-evals-through-the-harness-implemented)). Through the daemon
+    (protocol 0.45): the run is a session of the shared daemon made by `session.eval_create`, so
+    the user's permission rules, grants, isolation tier and protected folders apply as in the app;
+    variants, recordings (also `once`), the root model and the unattended permission policy are
+    session options validated in the daemon, `session.prompt_preview` serves `--print-prompt`,
+    and only the `imperium` command may use them. `--agent <name>` runs an agent file as the
+    root (`tools: []` means no tools), for single-turn critics.
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based

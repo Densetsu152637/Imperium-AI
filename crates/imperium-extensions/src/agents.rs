@@ -44,6 +44,9 @@ pub struct AgentDef {
     /// The tools the file lists, as written (Claude Code's names are mapped by [`resolve_tool`]);
     /// `None`: not narrowed, so the parent's tools.
     pub tools: Option<Vec<String>>,
+    /// The file lists `tools` with nothing in the list. A subagent treats that as not narrowed
+    /// (`tools` is then `None`); an agent run as the root of an evaluation has no tools.
+    pub no_tools: bool,
     /// A model id or spec, or `inherit` (the delegating agent's model); `None`: the delegation's
     /// ordinary routing.
     pub model: Option<String>,
@@ -262,6 +265,7 @@ pub fn parse(text: &str, origin: &str, path: &Path) -> Result<(AgentDef, Vec<Str
         name,
         description: description.chars().take(DESCRIPTION_CHARS).collect(),
         // An empty list says nothing: the same as leaving `tools` out.
+        no_tools: tools.as_ref().is_some_and(Vec::is_empty),
         tools: tools.filter(|tools| !tools.is_empty()),
         model,
         prompt,

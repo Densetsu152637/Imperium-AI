@@ -128,6 +128,8 @@ pub struct SessionOptions {
     /// Answers every subagent from recordings instead of running it (no model calls for
     /// subagents).
     pub replay: Option<Arc<dyn crate::SubagentReplay>>,
+    /// Runs this agent file as the root agent instead of the standard one.
+    pub root_agent: Option<imperium_extensions::AgentDef>,
 }
 
 /// The answer to a model switch or a compaction.
@@ -341,6 +343,7 @@ impl Session {
                 effort: effort.clone(),
                 bridge: Arc::clone(&bridge),
                 replay: options.replay,
+                root_agent: options.root_agent,
             },
             Arc::clone(&model),
         ));
@@ -956,6 +959,7 @@ struct Started {
     slot: SharedSlot,
     effort: SessionEffort,
     replay: Option<Arc<dyn crate::SubagentReplay>>,
+    root_agent: Option<imperium_extensions::AgentDef>,
 }
 
 /// The root agent's task: one turn at a time, in message order, while
@@ -974,6 +978,7 @@ async fn run(
         slot,
         effort,
         replay,
+        root_agent,
     } = started;
     let checkpoints = config.checkpoints.clone();
     for message in config.notices {
@@ -1059,6 +1064,15 @@ async fn run(
             None => return session_ended(&shared, &config.id, "closed"),
         },
     };
+    if let Some(def) = &root_agent {
+        let (named, notes) = root.as_named_root(def);
+        root = named;
+        for message in notes {
+            shared
+                .emitter
+                .emit(ROOT_AGENT, SessionEvent::Notice { message });
+        }
+    }
     let messages_path = crate::journal::messages_path(&config.journal_path);
     if config.resume {
         if let Some(messages) = std::fs::read_to_string(&messages_path)

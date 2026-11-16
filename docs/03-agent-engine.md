@@ -876,14 +876,19 @@ journal as Markdown or JSON, running or archived (`session.export`,
 
 ## Running evals through the harness (implemented)
 
-`imperium run` runs one task through the real agent loop with no daemon and no desktop, against
-any OpenAI-compatible endpoint, and prints the result as JSON. It exists so a model (Emperor,
-Consul, a baseline) is evaluated inside the same harness it ships in: the engine's own root
-prompt (`crates/imperium-engine/src/agent/prompts.rs`), its real tool schemas and its loop, not a
-copy of them. The session is an ordinary `Session`; the command wraps its model client to keep
-what is sent and received, and answers permission asks and `ask_user` batches itself, because no
-one is there. (The `imperium run --ephemeral` of [02](02-architecture.md) is a different idea
-that was never built: a CLI that starts a daemon of its own. This command starts no daemon.)
+`imperium run` runs one task through the real agent loop, against any OpenAI-compatible
+endpoint, and prints the result as JSON. It exists so a model (Emperor, Consul, a baseline) is
+evaluated inside the same harness it ships in: the engine's own root prompt
+(`crates/imperium-engine/src/agent/prompts.rs`), its real tool schemas and its loop, not a copy
+of them. The session runs in the shared daemon like the app's (the command attaches to the
+running one or starts one, see [02](02-architecture.md#shared-daemon-lifetime-implemented)), made
+by `session.eval_create` (protocol 0.45): the user's permission rules, path grants, isolation
+tier and protected folders apply exactly as they do in the app. The daemon wraps the session's
+model client to keep what is sent and received, and answers permission asks and `ask_user`
+batches itself, because no one is there. Only the `imperium` command may make such a session
+(`session.eval_create`, `session.eval_result`, `session.prompt_preview`): a paired phone, a mod
+or the API cannot, and neither can another client. (The `imperium run --ephemeral` of
+[02](02-architecture.md) was a different idea that was never built.)
 
 ```sh
 imperium run --headless --json \
@@ -898,37 +903,39 @@ imperium run --print-prompt --variant lean --context-tokens 32768 > prompt.json
 | Flag | Meaning |
 | --- | --- |
 | `--task <file.json \| text>` | A JSON file with a `prompt` string (also read: `user_prompt`, `input`, `message`; the id from `id`, `task_id` or `name`), or the prompt itself. Every other field of a file is kept in the output as `task.raw`. |
-| `--workspace <dir>` | The folder the agent works in. Point it at a copy: the tools can change it where the permission mode lets them. |
+| `--workspace <dir>` | The folder the agent works in, as a project of the daemon (made an environment if it is not one). Point it at a copy: the tools can change it where the permissions let them. |
+| `--agent <name>` | Run the agent file `agents/<name>.md` (roadmap 48: the user's `<config>/agents/`, plugins', a trusted project's) as the root agent instead of the standard one: its instructions follow the base ones, and only the tools it lists are offered. A file that lists `tools` with nothing in the list (`tools: []`) has no tools at all, a single-turn critic. Only a root run reads the empty list this way; `spawn_agent` still treats it as not narrowed. |
 | `--root-model <url>[#<id>]`, `--model-id <id>` | The endpoint's OpenAI-compatible base URL and the model id there. `--api-key-env VAR` names the environment variable with the key; it is never printed. |
 | `--context-tokens N` | The model's context window: it drives compaction and fills `{context_tokens}` and `{context_k}` in variant text. |
 | `--effort`, `--thinking on\|off`, `--chat-template-kwargs '<json>'` | Reasoning passthrough: `reasoning_effort`, and `chat_template_kwargs` (`enable_thinking`, anything else a chat template reads) merged into every request body of the root model. |
 | `--variant <name\|path>`, `--prompt-overlay <file>`, `--flag k=v` | See [variants](#harness-variants). |
 | `--subagent-replay <file>` | Answer subagents from recordings, with no model call for them. |
 | `--cost-ceiling USD`, `--token-ceiling N`, `--price-in`, `--price-out` | Prices are per million tokens. A ceiling is checked before each model call (the root's and any real subagent's), so the last call can pass it by its own size. A cost ceiling needs prices. |
-| `--permission-mode` | Default `default`. A call that would ask is always denied (recorded under `permission_requests`); `plan` and `ask` are stricter, `accept_edits` lets edits through, `full` runs everything the safety floor's built-in rules do not stop (no user rules, grants or isolation tier; including `web_fetch`), warns on stderr, and is refused when your configuration sets `isolation.tier` to anything but `policy`; `auto` is refused. |
-| `--config-home <dir>` | Read the configuration from this folder (laid out as `IMPERIUM_HOME`) for variants and the isolation check of `full`; nothing else of it is applied. |
+| `--permission-mode` | Default `default`. A call that would ask is always denied (recorded under `permission_requests`); `plan` and `ask` are stricter, `accept_edits` lets edits through, `full` runs everything the user's deny and ask rules and the safety floor do not stop (including `web_fetch`) and warns on stderr; `auto` is refused (it asks a classifier model). |
+| `--config-home <dir>` | Look up named variants under this folder's `config` folder (laid out as `IMPERIUM_HOME`) instead of the user's. The daemon's own configuration is always the one that applies. |
 | `--local` | The root model runs on this machine, so the harness aids set to `auto` count as on. |
-| `--timeout-s`, `--journal <file>` | A wall-clock limit (default 1800) and a place to keep the session journal. |
-| `--print-prompt` | Print the resolved system prompt (with `{workspace}` where the working folder goes) and tool schemas as JSON and stop. No model is called: the session is built as for a run and answered by a stand-in model, so the output is what a run would first send. |
+| `--timeout-s`, `--journal <file>` | A wall-clock limit (default 1800) and a file the session's events are written to, one JSON object per line. The session itself is not kept: it is deleted when the run ends. |
+| `--print-prompt` | Print the resolved system prompt (with `{workspace}` where the working folder goes) and tool schemas as JSON and stop. No model is called: the daemon builds the session as for a run (`session.prompt_preview`) and answers it with a stand-in model, so the output is what a run would first send. |
 
 The root agent has the engine's own tools, plus `web_search` and `web_fetch`: the schemas and
 citation rules are the real ones, search returns an error ("turned off in headless evals"), and
 `web_fetch` asks, so it is denied unless the mode is `full`. Harness aids that talk to a person
 (`request_clarification`, rewrites, hints) are off unless `--flag attended=true`, and `auto`
-counts as on only with `--local` (the root model runs on this machine, as in the product). No
-memory, skills, hooks, MCP servers or plugins are loaded. Unlike a daemon session, a headless
-run does not inject the working folder's `AGENTS.md` or `CLAUDE.md` when file tools touch it
-(no workflow context is loaded), so the prompt and the files the model reads are the same on any
-machine; and it does not list the repository's other git worktrees, so a worktree's own path is
-the only path in the prompt (replaced by `{workspace}` in `prompt_hash`).
+counts as on only with `--local` (the root model runs on this machine, as in the product). What
+makes a run differ between machines is left out: the user's models (subagents use the run's own
+model), memory, skills, hooks, MCP servers, plugins, personality and project instructions. Unlike
+an app session, an eval session does not inject the working folder's `AGENTS.md` or `CLAUDE.md`
+when file tools touch it, does not list the repository's other git worktrees, and has no
+attachments or scratch folder, so the prompt and the files the model reads are the same on any
+machine; the working folder is the only path in the prompt (replaced by `{workspace}` in
+`prompt_hash`). The user's own path grants do appear in it, as they do in the app.
 
-The headless run builds its own workspace: it reads none of the user's configuration, so the
-user's permission rules, path grants and isolation tier do not apply, and the folders the daemon
-guards (`<config>/mods`, `<config>/plugins`, `<data>/packs`) are not guarded. Only the safety
-floor's built-in rules and the permission mode apply, and commands run in the user's own shell.
-Use `--permission-mode full` only on a machine or account you can afford to lose; commands are
-not confined to the workspace. (A later change will run sessions
-through a daemon, which brings the user's rules, grants, isolation and guarded folders.)
+What the user's configuration decides applies as in the app: a deny rule (say on `write_file`)
+holds in `full` mode, the isolation tier (`os`, `container`) confines commands, and a write into
+a folder the daemon guards (`<config>/mods`, `<config>/plugins`, `<data>/packs`,
+`extensions.plugin_dirs`) asks even in `full` mode and is denied. A call that would ask is denied
+because the daemon answers for the absent user; the same goes for `ask_user` batches, which get
+their recommended answers. The record lists both (`permission_requests`, `questions_asked`).
 
 **Output (schema version 1).** Keys: `schema_version`, `mode` (`run` or `print_prompt`),
 `engine` (`imperium_version`, `protocol_version`), `task` (`id`, `source`, `prompt`, `raw`),
@@ -937,8 +944,9 @@ through a daemon, which brings the user's rules, grants, isolation and guarded f
 `prompt_hash`, `system_prompt` (exactly as sent), `tools` (the schemas, OpenAI `tools` shape),
 `transcript` (the root conversation as the model last read it, then its last reply: `system`,
 `user`, `assistant` with `tool_calls`, `tool` messages; a model's reasoning text is not kept),
-`final_reply`, `plan` (the last `update_plan`), `subagents` (`task_id`, `brief`, `model`,
-`source` `replay` or `model`, `recording` (index into the file), `ok`, `report`), `replay`
+`agent` (the `--agent` name or null), `final_reply`, `plan` (the last `update_plan`), `subagents`
+(`task_id`, `brief`, `model`, `source` `replay` or `model`, `role` (`task`, `chunk`, `reduce`),
+`recording` (index into the file), `ok`, `report`), `replay`
 (`replies`, `unused` indexes), `ledger` (`total`, `root`, `subagents`: `model_calls`,
 `prompt_tokens`, `completion_tokens`, `cached_tokens`, `cost_usd` (null without prices); also
 `calls_without_reported_usage` (counted from text length), `priced`, the ceilings), `wall_time_ms`,
@@ -946,6 +954,9 @@ through a daemon, which brings the user's rules, grants, isolation and guarded f
 `questions_asked`, `compactions`, `notices`, `endpoint_errors`. `prompt_hash` is
 `sha256:` over the system prompt (working folder replaced by `{workspace}`, so a run in any
 folder hashes the same as `--print-prompt`) and the tool schemas, after the variant's edits.
+
+`prompt_hash` and `config_hash` are computed in the daemon, so they differ from the values of the
+first, in-process version of this command (the hashes' inputs are the same).
 
 `exit_reason` is `completed`, `step_limit` (`max_steps` model calls), `cost_ceiling`,
 `token_ceiling`, `timeout`, `rate_limited` (the endpoint refused for a usage limit; a headless
@@ -1006,7 +1017,9 @@ reply needs at least one key. For the chunk and merge agents of `delegate_chunks
 call's own `brief` (chunk agents) or `reduce` text (the merge agent), without the chunk text or
 markers, and `role` (`task`, `chunk`, `reduce`) and `chunk` (the chunk's number, from 1) can
 narrow a reply. A `rename` in a variant may not take a name another tool has (the rename is
-skipped with a warning). `ok: false` makes the root read a failed task. No key matching gives
+skipped with a warning). `ok: false` makes the root read a failed task. `"once": true` makes a
+reply answer one subagent only: once matched it is consumed, and the next subagent with the same
+key falls through to a later reply (or, with none, to the error below). No key matching gives
 the root `replay error: no recording matches task t3 ...` as the report, with `ok` false, and the
 run goes on. A task file may hold the recordings under `subagent_replay` instead. `replay.unused`
 lists the replies nothing asked for.

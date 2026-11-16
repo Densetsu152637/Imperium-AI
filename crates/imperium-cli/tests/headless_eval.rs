@@ -1,5 +1,6 @@
-//! `imperium run --headless`: the engine's real agent loop, driven against a scripted
-//! OpenAI-compatible endpoint, with subagents answered from recordings.
+//! `imperium run --headless`: a session in a real daemon (the user's permission rules, isolation
+//! tier and protected folders apply), driven against a scripted OpenAI-compatible endpoint, with
+//! subagents answered from recordings.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -7,8 +8,18 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use axum::routing::post;
 use clap::Parser;
+use imperium_cli::client::Client;
 use imperium_cli::eval::{Outcome, RunArgs, run};
+use imperium_config::{Config, Layer, Paths, Source};
+use imperium_core::{AccessToken, DaemonState};
+use imperium_protocol::PROTOCOL_VERSION;
+use imperium_protocol::discovery::DaemonEndpoint;
+use imperium_protocol::jsonrpc::codes;
+use imperium_protocol::methods::{
+    EvalModel, EvalOptions, EvalVariant, Peer, SessionEvalCreate, SessionEvalCreateParams,
+};
 use serde_json::{Value, json};
+use tokio::net::TcpListener;
 
 #[derive(Parser)]
 struct Wrap {
@@ -23,6 +34,75 @@ fn args(list: &[String]) -> RunArgs {
 
 fn strings(list: &[&str]) -> Vec<String> {
     list.iter().map(|text| (*text).to_string()).collect()
+}
+
+/// A daemon of its own, in a folder of its own, with `config` as the user's settings.
+struct Daemon {
+    endpoint: DaemonEndpoint,
+    data: tempfile::TempDir,
+}
+
+impl Daemon {
+    async fn start(config: &str) -> Daemon {
+        let data = tempfile::tempdir().unwrap();
+        let settings = Config::from_layers([
+            Layer::defaults(),
+            Layer::new(Source::User("test".into()), config.parse().unwrap()),
+        ])
+        .settings()
+        .unwrap();
+        let state = DaemonState::new(Paths::under(data.path()), settings, None);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let token = AccessToken::generate().unwrap();
+        let endpoint = DaemonEndpoint {
+            url: format!("ws://{}/rpc", listener.local_addr().unwrap()),
+            token: token.as_str().to_string(),
+            pid: std::process::id(),
+            socket: None,
+            protocol: PROTOCOL_VERSION,
+        };
+        tokio::spawn(imperium_core::serve(
+            listener,
+            token,
+            state,
+            std::future::pending(),
+        ));
+        Daemon { endpoint, data }
+    }
+
+    async fn client_named(&self, name: &str) -> Client {
+        Client::connect(
+            &self.endpoint,
+            Peer {
+                name: name.into(),
+                version: "0".into(),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// The `imperium` command's connection.
+    async fn client(&self) -> Client {
+        self.client_named("imperium-cli").await
+    }
+
+    /// `imperium run` with `list` as its arguments.
+    async fn run(&self, list: &[String]) -> Outcome {
+        let mut client = self.client().await;
+        run(&mut client, args(list)).await.unwrap()
+    }
+
+    async fn print_prompt(&self, extra: &[&str]) -> Outcome {
+        let mut list = strings(&["--print-prompt"]);
+        list.extend(strings(extra));
+        self.run(&list).await
+    }
+
+    /// The folder the user's configuration lives in (the daemon's `<config>`).
+    fn config_dir(&self) -> std::path::PathBuf {
+        Paths::under(self.data.path()).config_dir().to_path_buf()
+    }
 }
 
 fn tool_call_body(name: &str, arguments: &Value) -> String {
@@ -103,16 +183,29 @@ fn write(dir: &tempfile::TempDir, name: &str, text: &str) -> String {
     path.display().to_string()
 }
 
-async fn print_prompt(extra: &[&str]) -> Outcome {
-    let mut list = strings(&["--print-prompt"]);
+fn tool_names(json: &Value) -> Vec<String> {
+    json["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The arguments of a run of `task` in `workspace` against `url`, and then `extra`.
+fn run_args(task: &str, workspace: &std::path::Path, url: &str, extra: &[&str]) -> Vec<String> {
+    let mut list = strings(&["--headless", "--task", task, "--root-model", url]);
+    list.push("--workspace".into());
+    list.push(workspace.display().to_string());
     list.extend(strings(extra));
-    run(args(&list)).await.unwrap()
+    list
 }
 
 #[tokio::test]
 async fn print_prompt_hash_is_stable_and_names_the_real_prompt_and_tools() {
-    let first = print_prompt(&["--context-tokens", "32768"]).await;
-    let second = print_prompt(&["--context-tokens", "32768"]).await;
+    let daemon = Daemon::start("").await;
+    let first = daemon.print_prompt(&["--context-tokens", "32768"]).await;
+    let second = daemon.print_prompt(&["--context-tokens", "32768"]).await;
     assert_eq!(first.code, 0);
     assert_eq!(first.json["prompt_hash"], second.json["prompt_hash"]);
     assert_eq!(first.json["system_prompt"], second.json["system_prompt"]);
@@ -122,12 +215,7 @@ async fn print_prompt_hash_is_stable_and_names_the_real_prompt_and_tools() {
     assert!(prompt.starts_with("You are Imperium, a coding agent"));
     assert!(prompt.contains("The fear of God is the beginning of all knowledge"));
     assert!(prompt.contains("{workspace}"));
-    let names: Vec<&str> = first.json["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["function"]["name"].as_str().unwrap())
-        .collect();
+    let names = tool_names(&first.json);
     for expected in [
         "spawn_agent",
         "await_tasks",
@@ -137,21 +225,27 @@ async fn print_prompt_hash_is_stable_and_names_the_real_prompt_and_tools() {
         "web_search",
         "web_fetch",
     ] {
-        assert!(names.contains(&expected), "{expected} in {names:?}");
+        assert!(
+            names.iter().any(|name| name == expected),
+            "{expected} in {names:?}"
+        );
     }
     assert_eq!(first.json["variant"]["id"], "baseline");
 }
 
 #[tokio::test]
 async fn a_variant_overlay_changes_the_prompt_and_the_hash() {
+    let daemon = Daemon::start("").await;
     let dir = tempfile::tempdir().unwrap();
-    let baseline = print_prompt(&[]).await;
+    let baseline = daemon.print_prompt(&[]).await;
     let overlay = write(
         &dir,
         "overlay.txt",
         "Context budget: {context_k}K tokens.\n",
     );
-    let overlaid = print_prompt(&["--prompt-overlay", &overlay, "--context-tokens", "65536"]).await;
+    let overlaid = daemon
+        .print_prompt(&["--prompt-overlay", &overlay, "--context-tokens", "65536"])
+        .await;
     assert_ne!(baseline.json["prompt_hash"], overlaid.json["prompt_hash"]);
     assert_ne!(
         baseline.json["variant"]["config_hash"],
@@ -175,7 +269,7 @@ async fn a_variant_overlay_changes_the_prompt_and_the_hash() {
         update_plan = "Keep the checklist."
         "#,
     );
-    let lean = print_prompt(&["--variant", &file]).await;
+    let lean = daemon.print_prompt(&["--variant", &file]).await;
     assert_eq!(lean.json["variant"]["id"], "lean");
     assert_eq!(lean.json["variant"]["warnings"], json!([]));
     assert!(
@@ -199,7 +293,7 @@ async fn a_variant_overlay_changes_the_prompt_and_the_hash() {
         "missed.toml",
         "[prompt]\nremove = [\"no such paragraph\"]\n",
     );
-    let warned = print_prompt(&["--variant", &missed]).await;
+    let warned = daemon.print_prompt(&["--variant", &missed]).await;
     assert_eq!(
         warned.json["variant"]["warnings"].as_array().unwrap().len(),
         1
@@ -207,7 +301,79 @@ async fn a_variant_overlay_changes_the_prompt_and_the_hash() {
 }
 
 #[tokio::test]
+async fn removing_the_base_paragraph_is_refused_and_a_flag_drops_the_knowledge_line() {
+    let daemon = Daemon::start("").await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(
+        &dir,
+        "remove.toml",
+        "[prompt]\nremove = [\"Research that several later tasks\"]\n",
+    );
+    let removed = daemon.print_prompt(&["--variant", &file]).await;
+    let prompt = removed.json["system_prompt"].as_str().unwrap();
+    assert!(prompt.starts_with("You are Imperium, a coding agent"));
+    assert!(prompt.contains("The fear of God"));
+    assert_eq!(
+        removed.json["variant"]["warnings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let baseline = daemon.print_prompt(&[]).await;
+    let off = daemon.print_prompt(&["--flag", "knowledge=false"]).await;
+    let with = baseline.json["system_prompt"].as_str().unwrap();
+    let without = off.json["system_prompt"].as_str().unwrap();
+    assert!(with.contains("Research that several later tasks"));
+    assert!(!without.contains("Research that several later tasks"));
+    assert!(!tool_names(&off.json).contains(&"keep_as_knowledge".to_string()));
+}
+
+#[tokio::test]
+async fn a_rename_onto_an_existing_tool_is_skipped_with_a_warning() {
+    let daemon = Daemon::start("").await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(
+        &dir,
+        "clash.toml",
+        "[tools]\nrename = { ask_user = \"await_tasks\" }\n",
+    );
+    let clash = daemon.print_prompt(&["--variant", &file]).await;
+    let names = tool_names(&clash.json);
+    assert!(names.contains(&"ask_user".to_string()));
+    assert_eq!(
+        names.iter().filter(|name| *name == "await_tasks").count(),
+        1
+    );
+    assert_eq!(
+        clash.json["variant"]["warnings"].as_array().unwrap().len(),
+        1
+    );
+    let twice = write(
+        &dir,
+        "twice.toml",
+        "[tools.rename]\nask_user = \"x\"\nupdate_plan = \"x\"\n",
+    );
+    let both = strings(&["--print-prompt", "--variant", &twice]);
+    let mut client = daemon.client().await;
+    assert!(run(&mut client, args(&both)).await.is_err());
+}
+
+#[tokio::test]
+async fn local_root_models_get_the_harness_aids_that_are_auto() {
+    let daemon = Daemon::start("").await;
+    let hosted = daemon.print_prompt(&["--flag", "attended=true"]).await;
+    let local = daemon
+        .print_prompt(&["--flag", "attended=true", "--local"])
+        .await;
+    assert!(!tool_names(&hosted.json).contains(&"request_clarification".to_string()));
+    assert!(tool_names(&local.json).contains(&"request_clarification".to_string()));
+}
+
+#[tokio::test]
 async fn a_run_replays_subagents_and_prints_the_documented_json() {
+    let daemon = Daemon::start("").await;
     let workspace = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();
     let recordings = write(
@@ -218,26 +384,24 @@ async fn a_run_replays_subagents_and_prints_the_documented_json() {
         ]}"#,
     );
     let (url, seen) = endpoint(script()).await;
-    let outcome = run(args(&[
-        "--headless".into(),
-        "--json".into(),
-        "--task".into(),
-        "The parser tests fail. Find out why.".into(),
-        "--workspace".into(),
-        workspace.path().display().to_string(),
-        "--root-model".into(),
-        url,
-        "--context-tokens".into(),
-        "32768".into(),
-        "--subagent-replay".into(),
-        recordings,
-        "--price-in".into(),
-        "1".into(),
-        "--price-out".into(),
-        "2".into(),
-    ]))
-    .await
-    .unwrap();
+    let outcome = daemon
+        .run(&run_args(
+            "The parser tests fail. Find out why.",
+            workspace.path(),
+            &url,
+            &[
+                "--json",
+                "--context-tokens",
+                "32768",
+                "--subagent-replay",
+                &recordings,
+                "--price-in",
+                "1",
+                "--price-out",
+                "2",
+            ],
+        ))
+        .await;
     let out = &outcome.json;
     assert_eq!(outcome.code, 0, "{out:#}");
     assert_eq!(out["exit_reason"], "completed");
@@ -253,6 +417,7 @@ async fn a_run_replays_subagents_and_prints_the_documented_json() {
     assert_eq!(
         keys,
         [
+            "agent",
             "compactions",
             "endpoint_errors",
             "engine",
@@ -349,27 +514,26 @@ async fn a_run_replays_subagents_and_prints_the_documented_json() {
 
     // The same run again gives the same hash and the same transcript: nothing random in it.
     let (url, _) = endpoint(script()).await;
-    let again = run(args(&[
-        "--headless".into(),
-        "--task".into(),
-        "The parser tests fail. Find out why.".into(),
-        "--workspace".into(),
-        workspace.path().display().to_string(),
-        "--root-model".into(),
-        url,
-        "--context-tokens".into(),
-        "32768".into(),
-        "--subagent-replay".into(),
-        files.path().join("recordings.json").display().to_string(),
-    ]))
-    .await
-    .unwrap();
+    let again = daemon
+        .run(&run_args(
+            "The parser tests fail. Find out why.",
+            workspace.path(),
+            &url,
+            &[
+                "--context-tokens",
+                "32768",
+                "--subagent-replay",
+                &recordings,
+            ],
+        ))
+        .await;
     assert_eq!(again.json["prompt_hash"], out["prompt_hash"]);
     assert_eq!(again.json["transcript"], out["transcript"]);
 }
 
 #[tokio::test]
 async fn an_unknown_replay_key_is_an_error_result_not_a_hang() {
+    let daemon = Daemon::start("").await;
     let workspace = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();
     let recordings = write(
@@ -378,19 +542,14 @@ async fn an_unknown_replay_key_is_an_error_result_not_a_hang() {
         r#"{"replies": [{"task_id": "t9", "report": "never asked"}]}"#,
     );
     let (url, _) = endpoint(script()).await;
-    let outcome = run(args(&[
-        "--headless".into(),
-        "--task".into(),
-        "Investigate.".into(),
-        "--workspace".into(),
-        workspace.path().display().to_string(),
-        "--root-model".into(),
-        url,
-        "--subagent-replay".into(),
-        recordings,
-    ]))
-    .await
-    .unwrap();
+    let outcome = daemon
+        .run(&run_args(
+            "Investigate.",
+            workspace.path(),
+            &url,
+            &["--subagent-replay", &recordings],
+        ))
+        .await;
     let out = &outcome.json;
     assert_eq!(out["exit_reason"], "completed", "{out:#}");
     let subagent = &out["subagents"][0];
@@ -413,7 +572,47 @@ async fn an_unknown_replay_key_is_an_error_result_not_a_hang() {
 }
 
 #[tokio::test]
+async fn a_once_recording_answers_one_subagent_and_is_then_consumed() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let recordings = write(
+        &files,
+        "recordings.json",
+        r#"{"replies": [
+            {"brief_contains": "parser test", "report": "first look", "once": true},
+            {"brief_contains": "parser test", "report": "later looks"}
+        ]}"#,
+    );
+    let (url, _) = endpoint(vec![
+        spawn_call(),
+        spawn_call(),
+        tool_call_body("await_tasks", &json!({})),
+        text_body("Both reported."),
+    ])
+    .await;
+    let outcome = daemon
+        .run(&run_args(
+            "Investigate twice.",
+            workspace.path(),
+            &url,
+            &["--subagent-replay", &recordings],
+        ))
+        .await;
+    let out = &outcome.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    let reports: Vec<&str> = out["subagents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|agent| agent["report"].as_str().unwrap())
+        .collect();
+    assert_eq!(reports, ["first look", "later looks"]);
+}
+
+#[tokio::test]
 async fn a_variant_changes_what_the_model_is_sent_and_reasoning_is_passed_through() {
+    let daemon = Daemon::start("").await;
     let workspace = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();
     let variant = write(
@@ -435,25 +634,23 @@ async fn a_variant_changes_what_the_model_is_sent_and_reasoning_is_passed_throug
         text_body("Done."),
     ])
     .await;
-    let outcome = run(args(&[
-        "--headless".into(),
-        "--task".into(),
-        "Plan it.".into(),
-        "--workspace".into(),
-        workspace.path().display().to_string(),
-        "--root-model".into(),
-        url,
-        "--variant".into(),
-        variant,
-        "--thinking".into(),
-        "on".into(),
-        "--chat-template-kwargs".into(),
-        r#"{"preserve_thinking": true}"#.into(),
-        "--flag".into(),
-        "max_steps=7".into(),
-    ]))
-    .await
-    .unwrap();
+    let outcome = daemon
+        .run(&run_args(
+            "Plan it.",
+            workspace.path(),
+            &url,
+            &[
+                "--variant",
+                &variant,
+                "--thinking",
+                "on",
+                "--chat-template-kwargs",
+                r#"{"preserve_thinking": true}"#,
+                "--flag",
+                "max_steps=7",
+            ],
+        ))
+        .await;
     let out = &outcome.json;
     assert_eq!(out["exit_reason"], "completed", "{out:#}");
     // The renamed tool ran as the engine's update_plan: there is a plan.
@@ -493,26 +690,25 @@ async fn a_variant_changes_what_the_model_is_sent_and_reasoning_is_passed_throug
 
 #[tokio::test]
 async fn the_cost_ceiling_stops_the_run_with_its_exit_reason() {
+    let daemon = Daemon::start("").await;
     let workspace = tempfile::tempdir().unwrap();
     // The model never stops asking for the subagent list; each call costs 0.12 dollars.
     let (url, seen) = endpoint(vec![tool_call_body("list_agents", &json!({}))]).await;
-    let outcome = run(args(&[
-        "--headless".into(),
-        "--task".into(),
-        "Loop.".into(),
-        "--workspace".into(),
-        workspace.path().display().to_string(),
-        "--root-model".into(),
-        url,
-        "--price-in".into(),
-        "1000".into(),
-        "--price-out".into(),
-        "1000".into(),
-        "--cost-ceiling".into(),
-        "0.1".into(),
-    ]))
-    .await
-    .unwrap();
+    let outcome = daemon
+        .run(&run_args(
+            "Loop.",
+            workspace.path(),
+            &url,
+            &[
+                "--price-in",
+                "1000",
+                "--price-out",
+                "1000",
+                "--cost-ceiling",
+                "0.1",
+            ],
+        ))
+        .await;
     let out = &outcome.json;
     assert_eq!(outcome.code, 3);
     assert_eq!(out["exit_reason"], "cost_ceiling", "{out:#}");
@@ -523,6 +719,7 @@ async fn the_cost_ceiling_stops_the_run_with_its_exit_reason() {
 
 #[tokio::test]
 async fn a_task_file_gives_the_prompt_and_may_carry_its_recordings() {
+    let daemon = Daemon::start("").await;
     let workspace = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();
     let task = write(
@@ -536,17 +733,9 @@ async fn a_task_file_gives_the_prompt_and_may_carry_its_recordings() {
         }"#,
     );
     let (url, _) = endpoint(script()).await;
-    let outcome = run(args(&[
-        "--headless".into(),
-        "--task".into(),
-        task,
-        "--workspace".into(),
-        workspace.path().display().to_string(),
-        "--root-model".into(),
-        url,
-    ]))
-    .await
-    .unwrap();
+    let outcome = daemon
+        .run(&run_args(&task, workspace.path(), &url, &[]))
+        .await;
     let out = &outcome.json;
     assert_eq!(out["exit_reason"], "completed", "{out:#}");
     assert_eq!(out["task"]["id"], "heldout-001");
@@ -555,28 +744,21 @@ async fn a_task_file_gives_the_prompt_and_may_carry_its_recordings() {
     assert_eq!(out["subagents"][0]["report"], "It rejects empty input.");
 }
 
+fn write_script() -> Vec<String> {
+    vec![
+        tool_call_body("write_file", &json!({"path": "notes.txt", "content": "hi"})),
+        text_body("Done."),
+    ]
+}
+
 #[tokio::test]
 async fn asks_are_denied_and_never_wait_for_anyone() {
+    let daemon = Daemon::start("").await;
     let workspace = tempfile::tempdir().unwrap();
-    let (url, _) = endpoint(vec![
-        tool_call_body(
-            "write_file",
-            &json!({"path": "notes.txt", "content": "hello"}),
-        ),
-        text_body("I could not write the file."),
-    ])
-    .await;
-    let outcome = run(args(&[
-        "--headless".into(),
-        "--task".into(),
-        "Write notes.txt.".into(),
-        "--workspace".into(),
-        workspace.path().display().to_string(),
-        "--root-model".into(),
-        url,
-    ]))
-    .await
-    .unwrap();
+    let (url, _) = endpoint(write_script()).await;
+    let outcome = daemon
+        .run(&run_args("Write notes.txt.", workspace.path(), &url, &[]))
+        .await;
     let out = &outcome.json;
     assert_eq!(out["exit_reason"], "completed", "{out:#}");
     assert!(!workspace.path().join("notes.txt").exists());
@@ -585,112 +767,157 @@ async fn asks_are_denied_and_never_wait_for_anyone() {
     assert_eq!(requests[0]["decision"], "denied");
 }
 
-fn tool_names(json: &Value) -> Vec<String> {
-    json["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
-        .collect()
-}
-
 #[tokio::test]
-async fn removing_the_base_paragraph_is_refused_and_a_flag_drops_the_knowledge_line() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = write(
-        &dir,
-        "remove.toml",
-        "[prompt]\nremove = [\"Research that several later tasks\"]\n",
-    );
-    let removed = print_prompt(&["--variant", &file]).await;
-    let prompt = removed.json["system_prompt"].as_str().unwrap();
-    assert!(prompt.starts_with("You are Imperium, a coding agent"));
-    assert!(prompt.contains("The fear of God"));
-    assert_eq!(
-        removed.json["variant"]["warnings"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-
-    let baseline = print_prompt(&[]).await;
-    let off = print_prompt(&["--flag", "knowledge=false"]).await;
-    let with = baseline.json["system_prompt"].as_str().unwrap();
-    let without = off.json["system_prompt"].as_str().unwrap();
-    assert!(with.contains("Research that several later tasks"));
-    assert!(!without.contains("Research that several later tasks"));
-    assert!(!tool_names(&off.json).contains(&"keep_as_knowledge".to_string()));
-}
-
-#[tokio::test]
-async fn a_rename_onto_an_existing_tool_is_skipped_with_a_warning() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = write(
-        &dir,
-        "clash.toml",
-        "[tools]\nrename = { ask_user = \"await_tasks\" }\n",
-    );
-    let clash = print_prompt(&["--variant", &file]).await;
-    let names = tool_names(&clash.json);
-    assert!(names.contains(&"ask_user".to_string()));
-    assert_eq!(
-        names.iter().filter(|name| *name == "await_tasks").count(),
-        1
-    );
-    assert_eq!(
-        clash.json["variant"]["warnings"].as_array().unwrap().len(),
-        1
-    );
-    let twice = write(
-        &dir,
-        "twice.toml",
-        "[tools.rename]\nask_user = \"x\"\nupdate_plan = \"x\"\n",
-    );
-    let both = strings(&["--print-prompt", "--variant", &twice]);
-    assert!(run(args(&both)).await.is_err());
-}
-
-#[tokio::test]
-async fn local_root_models_get_the_harness_aids_that_are_auto() {
-    let hosted = print_prompt(&["--flag", "attended=true"]).await;
-    let local = print_prompt(&["--flag", "attended=true", "--local"]).await;
-    assert!(!tool_names(&hosted.json).contains(&"request_clarification".to_string()));
-    assert!(tool_names(&local.json).contains(&"request_clarification".to_string()));
-}
-
-#[tokio::test]
-async fn full_mode_is_refused_under_a_configured_isolation_tier_and_allowed_without_one() {
+async fn the_users_deny_rules_apply_even_in_full_mode() {
+    let daemon =
+        Daemon::start("[[permissions.rules]]\ntool = \"write_file\"\naction = \"deny\"\n").await;
     let workspace = tempfile::tempdir().unwrap();
-    let isolated = tempfile::tempdir().unwrap();
-    let config = isolated.path().join("config");
-    std::fs::create_dir_all(&config).unwrap();
-    std::fs::write(config.join("config.toml"), "[isolation]\ntier = \"os\"\n").unwrap();
-    let plain = tempfile::tempdir().unwrap();
-    let (url, _) = endpoint(vec![text_body("Done.")]).await;
-    let with = |home: &tempfile::TempDir| {
-        args(&[
-            "--headless".into(),
-            "--task".into(),
-            "Say done.".into(),
-            "--workspace".into(),
-            workspace.path().display().to_string(),
-            "--root-model".into(),
-            url.clone(),
-            "--config-home".into(),
-            home.path().display().to_string(),
-            "--permission-mode".into(),
-            "full".into(),
-        ])
-    };
-    let error = run(with(&isolated)).await.unwrap_err().to_string();
-    assert!(error.contains("isolation.tier"), "{error}");
-    let outcome = run(with(&plain)).await.unwrap();
-    assert_eq!(outcome.json["exit_reason"], "completed");
+    let (url, _) = endpoint(write_script()).await;
+    let outcome = daemon
+        .run(&run_args(
+            "Write notes.txt.",
+            workspace.path(),
+            &url,
+            &["--permission-mode", "full"],
+        ))
+        .await;
+    let out = &outcome.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    assert!(!workspace.path().join("notes.txt").exists());
+    assert_eq!(out["failed_tool_calls"], 1);
+    assert_eq!(out["permission_requests"], json!([]));
+}
+
+#[tokio::test]
+async fn a_write_into_a_protected_folder_asks_even_in_full_mode_and_is_denied() {
+    let daemon = Daemon::start("").await;
+    let mods = daemon.config_dir().join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let (url, _) = endpoint(write_script()).await;
+    let outcome = daemon
+        .run(&run_args(
+            "Write notes.txt.",
+            &mods,
+            &url,
+            &["--permission-mode", "full"],
+        ))
+        .await;
+    let out = &outcome.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    assert!(!mods.join("notes.txt").exists());
+    let requests = out["permission_requests"].as_array().unwrap();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0]["decision"], "denied");
+}
+
+fn eval_params(workspace: &std::path::Path) -> SessionEvalCreateParams {
+    SessionEvalCreateParams {
+        environment_id: None,
+        project_dir: Some(workspace.display().to_string()),
+        options: EvalOptions {
+            model: EvalModel {
+                base_url: "http://127.0.0.1:1/v1".into(),
+                model_id: "m".into(),
+                api_key: None,
+                chat_template_kwargs: None,
+                local: false,
+                effort: None,
+                context_tokens: None,
+                price_in: None,
+                price_out: None,
+            },
+            variant: EvalVariant {
+                id: "baseline".into(),
+                ..EvalVariant::default()
+            },
+            replay: None,
+            agent: None,
+            permission_mode: None,
+            cost_ceiling_usd: None,
+            token_ceiling: None,
+        },
+    }
+}
+
+#[tokio::test]
+async fn the_users_isolation_tier_applies_to_a_headless_session() {
+    let workspace = tempfile::tempdir().unwrap();
+    let plain = Daemon::start("").await;
+    let isolated = Daemon::start("[isolation]\ntier = \"os\"\n").await;
+    let mut client = plain.client().await;
+    let policy = client
+        .call::<SessionEvalCreate>(eval_params(workspace.path()))
+        .await
+        .unwrap();
+    let mut client = isolated.client().await;
+    let os = client
+        .call::<SessionEvalCreate>(eval_params(workspace.path()))
+        .await
+        .unwrap();
+    assert!(policy.isolation.contains("tier 0"), "{}", policy.isolation);
+    assert!(os.isolation.contains("tier 1"), "{}", os.isolation);
+}
+
+#[tokio::test]
+async fn only_the_imperium_command_may_start_an_evaluation_session() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let mut other = daemon.client_named("imperium-desktop").await;
+    let error = other
+        .call::<SessionEvalCreate>(eval_params(workspace.path()))
+        .await
+        .unwrap_err();
+    match error {
+        imperium_cli::client::ClientError::Rpc(error) => assert_eq!(error.code, codes::FORBIDDEN),
+        other => panic!("expected an RPC error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_agent_file_runs_as_the_root_and_none_listed_means_no_tools() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let agents = daemon.config_dir().join("agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("critic.md"),
+        "---\nname: critic\ndescription: Reviews one artefact.\ntools: []\n---\nYou are a strict reviewer. List the defects you find.\n",
+    )
+    .unwrap();
+    let (url, seen) = endpoint(vec![text_body("Defect 1: the loop never ends.")]).await;
+    let outcome = daemon
+        .run(&run_args(
+            "Review this code.",
+            workspace.path(),
+            &url,
+            &["--agent", "critic"],
+        ))
+        .await;
+    let out = &outcome.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    assert_eq!(out["agent"], "critic");
+    assert_eq!(out["final_reply"], "Defect 1: the loop never ends.");
+    assert!(
+        out["system_prompt"]
+            .as_str()
+            .unwrap()
+            .contains("You are a strict reviewer")
+    );
+    assert_eq!(out["tools"], json!([]));
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .get("tools")
+            .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
+        "{}",
+        requests[0]
+    );
 }
 
 #[tokio::test]
 async fn delegate_chunks_agents_are_answered_by_the_calls_bare_brief() {
+    let daemon = Daemon::start("").await;
     let workspace = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();
     let recordings = write(
@@ -725,21 +952,14 @@ async fn delegate_chunks_agents_are_answered_by_the_calls_bare_brief() {
         _ => text_body("Merged."),
     })
     .await;
-    let outcome = run(args(&[
-        "--headless".into(),
-        "--task".into(),
-        input,
-        "--workspace".into(),
-        workspace.path().display().to_string(),
-        "--root-model".into(),
-        url,
-        "--context-tokens".into(),
-        "1000".into(),
-        "--subagent-replay".into(),
-        recordings,
-    ]))
-    .await
-    .unwrap();
+    let outcome = daemon
+        .run(&run_args(
+            &input,
+            workspace.path(),
+            &url,
+            &["--context-tokens", "1000", "--subagent-replay", &recordings],
+        ))
+        .await;
     let out = &outcome.json;
     assert_eq!(out["exit_reason"], "completed", "{out:#}");
     let agents = out["subagents"].as_array().unwrap();
