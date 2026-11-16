@@ -128,7 +128,7 @@ nickname and take out again. A session's pet is its environment's default pet
 (`EnvironmentInfo.pet`, set in the environment window) when that is installed, else the "Pets"
 setting (a mix, one pet, or the same as yours). The **Session nursery** has one pet per agent of
 the selected or pinned session, with a count of working subagents. Pets idle, roam, sleep and
-play `petted` when clicked. Each panel is one shared room
+play `petted` when clicked; a press that moves picks a pet up and drops it where the pointer is released (kept inside the room; arrow keys nudge a focused pet), and it roams on from there. Each panel is one shared room
 that fills it: no cages, the pets walk anywhere in it and may overlap, newer ones in front of older ones (sessions by their `created_at`). It reads session
 snapshots and events, the installed pets and its own storage through the
 [mod SDK](06-extensibility.md), maps events as in [Event mapping](#event-mapping), and sees status only, never
