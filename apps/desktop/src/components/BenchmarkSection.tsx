@@ -1,3 +1,4 @@
+// style-budget: native-select=1
 // Settings → Models → Local model benchmark: runs the daemon's benchmark (`models.bench`) on one
 // local model or all of them and shows the saved results. It only runs when asked, takes its
 // place in the normal model queue as a background call (so it waits while the machine is saturated), and

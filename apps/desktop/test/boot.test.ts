@@ -110,13 +110,13 @@ test("dismissing after the fallback has already fired is a no-op", () => {
 
 test("the background and accent colours agree across the CSS, TypeScript, and Rust copies", () => {
   const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").toLowerCase();
-  const styles = read("../src/styles.css");
+  const styles = read("../src/styles/tokens.css");
   const bootCss = read("../public/boot.css");
   const mainRs = read("../src-tauri/src/main.rs");
   const config = read("../src-tauri/tauri.conf.json");
   const dark = BOOT_BACKGROUND.dark;
   const light = BOOT_BACKGROUND.light;
-  // styles.css: dark tokens in :root, light tokens under data-theme="light".
+  // styles/tokens.css: dark tokens in :root, light tokens under data-theme="light".
   assert.match(styles, new RegExp(`:root \\{[^}]*--bg: ${dark}`));
   assert.match(styles, new RegExp(`:root\\[data-theme="light"\\] \\{[^}]*--bg: ${light}`));
   const accentDark = /:root \{[^}]*--accent: (#[0-9a-f]{6})/.exec(styles)?.[1];

@@ -1,3 +1,4 @@
+// style-budget: native-select=1
 // The Models tab: a model-table row's endpoint, name and settings.
 
 import { Fragment, type ReactNode } from "react";

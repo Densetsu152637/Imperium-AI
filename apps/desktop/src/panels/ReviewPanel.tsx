@@ -1,3 +1,4 @@
+// style-budget: native-select=2
 // The review pane (roadmap item 6): the files the open session changed since one of its
 // checkpoints (the session's start by default), each as a unified diff whose hunks are accepted
 // (kept, and no longer shown) or rejected (reverted in the working tree). Under the files, a

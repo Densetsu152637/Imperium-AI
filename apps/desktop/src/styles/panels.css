@@ -1,0 +1,621 @@
+/* style-budget: colour=1 font-size=14 font-weight=5 radius=3 shadow=0 duration=1 z-index=0 */
+/* The side panels: agents, approvals, browser, preview, resources, telemetry, usage and review. */
+
+/* Telemetry: a Markdown table of the models in use, sized to its content */
+.telemetry {
+  overflow-x: auto;
+}
+
+.telemetry table {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.telemetry td {
+  text-align: right;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.telemetry th {
+  text-align: right;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.telemetry th:first-child,
+.telemetry td:first-child {
+  text-align: left;
+  padding-left: 0;
+}
+
+.telemetry tbody tr {
+  transition: background-color var(--fast) var(--ease);
+}
+
+.telemetry tbody tr:hover {
+  background: var(--hover);
+}
+
+/* Agents panel: one line per subagent, like the session list's rows. */
+.list button.agent-row-main {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.agent-row-main > .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-elapsed {
+  flex: none;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Resources: usage meters with sparklines, then the local models and endpoints in use */
+.resources {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 1.5);
+  font-size: 0.8rem;
+}
+
+.resources .meters {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 0.75);
+}
+
+.resources .gpu {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 0.5);
+}
+
+.meter {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(3rem, 1fr) 2.75rem minmax(3rem, 6rem);
+  grid-template-areas:
+    "label bar value spark"
+    ". detail detail detail";
+  align-items: center;
+  column-gap: var(--space);
+  row-gap: 0.1rem;
+}
+
+.meter-label {
+  grid-area: label;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.meter-bar {
+  grid-area: bar;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.meter-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 400ms var(--ease);
+}
+
+.meter-bar[data-level="busy"] > span {
+  background: var(--warn);
+}
+
+.meter-bar[data-level="high"] > span {
+  background: var(--danger);
+}
+
+.meter-value {
+  grid-area: value;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sparkline {
+  grid-area: spark;
+  width: 100%;
+  height: 1.25rem;
+}
+
+.sparkline polyline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.meter-detail {
+  grid-area: detail;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  margin: 0 0 calc(var(--space) * 0.5);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.resources table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.resources td {
+  text-align: left;
+  padding: 0.3rem 0.35rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.resources th {
+  text-align: left;
+  padding: 0.3rem 0.35rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.resources td:first-child {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.resources tbody tr:hover {
+  background: var(--hover);
+}
+
+.resources td.errors {
+  color: var(--danger);
+}
+
+.resources button.icon-only {
+  width: 1.6rem;
+  height: 1.6rem;
+}
+
+.resources .warning {
+  color: var(--warn);
+  margin: 0;
+}
+
+.resources .daemon-usage {
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+/* Narrow panels drop the sparklines and the less important columns. */
+@container (max-width: 20rem) {
+  .meter {
+    grid-template-columns: 4.5rem minmax(3rem, 1fr) 2.75rem;
+    grid-template-areas:
+      "label bar value"
+      ". detail detail";
+  }
+
+  .sparkline {
+    display: none;
+  }
+
+  .resources th:nth-child(2),
+  .resources td:nth-child(2),
+  .resources th:nth-child(4),
+  .resources td:nth-child(4) {
+    display: none;
+  }
+}
+
+/* Approvals */
+.approvals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.approval {
+  border-bottom: 1px solid var(--border);
+  padding: calc(var(--space) * 0.5) 0;
+  font-size: 0.85rem;
+}
+
+.approval:last-child {
+  border-bottom: 0;
+}
+
+.approval p {
+  margin: 0 0 calc(var(--space) * 0.75);
+}
+
+.approval-actions {
+  display: flex;
+  gap: var(--space);
+}
+
+/* Browser mirror */
+.browser-view {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.browser-view figcaption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: calc(var(--space) * 0.5);
+}
+
+.browser-view img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.browser,
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-height: 0;
+}
+
+.browser-bar,
+.preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.browser-who {
+  flex: 1;
+}
+
+.browser-address {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.browser-address input,
+.preview-bar input {
+  flex: 1;
+  min-width: 0;
+}
+
+.browser-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  overflow-x: auto;
+}
+
+.browser-tab {
+  display: inline-flex;
+  align-items: center;
+  max-width: 12rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.browser-tab.selected {
+  border-color: var(--accent);
+}
+
+.browser-tab.active > button[role="tab"]::before {
+  content: "\25CF  ";
+  color: var(--accent);
+}
+
+.browser-tab > button[role="tab"] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-note,
+.preview-note {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.browser-page {
+  outline: none;
+}
+
+.browser-page:focus-visible img {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.browser-view img.driving {
+  cursor: pointer;
+}
+
+.preview-frame {
+  width: 100%;
+  min-height: 24rem;
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* Pages assume a white canvas whatever the app's theme is. */
+  background: #fff;
+}
+
+.budget-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.budget-row {
+  display: grid;
+  grid-template-columns: minmax(5rem, 9rem) minmax(3rem, 1fr) 2.75rem;
+  grid-template-areas:
+    "label bar value"
+    "detail detail detail";
+  align-items: center;
+  column-gap: var(--space);
+  row-gap: 0.1rem;
+  width: 100%;
+  padding: 0.3rem 0.35rem;
+  text-align: left;
+  font-size: 0.8rem;
+}
+
+.budget-row[aria-pressed="true"] {
+  background: var(--active);
+}
+
+.budget-row-label {
+  grid-area: label;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.budget-row .meter-bar {
+  grid-area: bar;
+}
+
+.budget-row-detail {
+  grid-area: detail;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage .resource-section h3 {
+  flex-wrap: wrap;
+}
+
+.usage-measure {
+  display: inline-flex;
+  gap: 0.25rem;
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.usage-chart {
+  display: block;
+  width: 100%;
+  height: 6rem;
+}
+
+.usage-chart rect {
+  fill: var(--accent);
+}
+
+.usage-chart rect:hover {
+  fill: var(--text);
+}
+
+.usage-total {
+  margin: 0.25rem 0 0;
+  font-size: 0.72rem;
+}
+
+/* The review pane: changed files as quiet unified diffs. Hunk and file tools are row tools,
+   shown on hover or focus; added and removed lines are tinted, context stays plain. */
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space);
+  font-size: var(--fs-sm);
+}
+
+.review-bar,
+.review-actions,
+.review-confirm {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.review-since {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.review-since select {
+  flex: 1;
+  min-width: 0;
+}
+
+.review-notice {
+  color: var(--muted);
+  margin: 0;
+}
+
+.review-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.review-file summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  padding: 0.15rem 0;
+}
+
+.review-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-code);
+}
+
+.review-repo,
+.review-counts {
+  color: var(--muted);
+}
+
+.review-status {
+  font-family: var(--font-code);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  width: 1ch;
+}
+
+.review-added,
+.review-add {
+  color: var(--ok);
+}
+
+.review-deleted,
+.review-del {
+  color: var(--danger);
+}
+
+.review-tools {
+  display: inline-flex;
+  gap: 0.15rem;
+}
+
+.review-file summary:hover button.row-tool,
+.review-file summary:focus-within button.row-tool,
+.review-hunk-header:hover button.row-tool,
+.review-hunk-header:focus-within button.row-tool {
+  opacity: 1;
+}
+
+.review-hunk {
+  margin: 0.25rem 0 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.review-hunk-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.4rem;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.review-lines {
+  margin: 0;
+  padding: 0.2rem 0;
+  font-family: var(--font-code);
+  font-size: var(--fs-xs);
+  overflow-x: auto;
+}
+
+.review-line {
+  display: block;
+  padding: 0 0.4rem;
+  white-space: pre;
+}
+
+.review-line-add {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.review-line-del {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.review-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.review-commit textarea {
+  font-family: var(--font-code);
+  font-size: var(--fs-sm);
+  resize: vertical;
+}
+
+.review-command {
+  margin: 0;
+  padding: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-code);
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+@media (hover: none) {
+  .review button.icon-only.row-tool {
+    opacity: 1;
+  }
+}

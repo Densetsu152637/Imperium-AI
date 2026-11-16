@@ -1,3 +1,4 @@
+// style-budget: native-select=1
 // The Local models tab: a model's runtime settings, memory and the use switch.
 
 import { Fragment, type ReactNode } from "react";
