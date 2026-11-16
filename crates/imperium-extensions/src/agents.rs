@@ -685,7 +685,7 @@ mod tests {
             parse_err("---\nname: a\ndescription: d\njust some words\n---\nBody")
                 .contains("line 3")
         );
-        assert!(parse_err("---\nname: a\n  description: d\n---\nBody").contains("indentation"));
+        assert!(parse_err("---\n  name: a\ndescription: d\n---\nBody").contains("indentation"));
         assert!(
             parse_err("---\nname: a\ndescription: \"x\" y\n---\nBody")
                 .contains("after the closing")
