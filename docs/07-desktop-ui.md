@@ -563,6 +563,21 @@ operating system and its changes), Light, or Dark. `settings/settings.ts` sets `
 element and `styles/tokens.css` keys the light tokens on `:root[data-theme="light"]`; the command
 palette's *Switch to light/dark theme* flips it. Mod panels pick up the tokens when they open.
 
+**Tokens and accents (implemented):** every length derives from `--px` (one CSS pixel at 100 % UI
+scale), spacing runs on 4 px steps (`--sp-1` to `--sp-8`), controls and rows are at least 24 px
+tall at any density, and there are six type sizes, three weights, five radii, three elevations and
+the motion and layer tokens, all in `styles/tokens.css`; today's names (`--panel`, `--fg`,
+`--muted`, `--fast`, `--slow`, `--ease`, `--space`, `--radius`) remain as aliases, and the mod
+token names keep their meaning. Surfaces are flat (`--bg`, `--surface`, `--surface-raised`,
+`--surface-sunken`); only floating things have a shadow, and the title-bar wordmark is the one
+gradient (`--wordmark`). Input, select and switch edges use `--border-control` (3:1 against every
+surface), and focus is one 2 px `--focus` outline. Each of the twelve accents has a dark and a light
+value (fill, hover, wash, ink, accent text, focus) under `:root[data-accent="…"]`; `settings.ts`
+sets `data-accent` rather than writing colours inline, so the light theme's values win.
+`test/tokenContrast.test.ts` checks the contrast of text, accent text, ink, focus and control edges
+for both themes and all accents. The UI face is Inter Variable, bundled with
+`@fontsource-variable/inter`.
+
 ### Loading screen and no white flash (implemented)
 
 Between launching the app and the first panel render (reading the saved settings and layout
