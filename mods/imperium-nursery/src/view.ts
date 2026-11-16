@@ -225,6 +225,8 @@ export class Room {
     hit.addEventListener("pointermove", (e) => {
       const cell = this.cells.get(key);
       if (!cell?.drag || cell.pointer !== e.pointerId) return;
+      // The button was let go where this frame heard nothing (outside it): drop the pet now.
+      if (e.buttons === 0) return free(e);
       const out = follow(cell.drag, room(e), this.bounds());
       cell.drag = out.drag;
       if (!out.feet) return;
@@ -233,6 +235,7 @@ export class Room {
     });
     hit.addEventListener("pointerup", free);
     hit.addEventListener("pointercancel", free);
+    hit.addEventListener("lostpointercapture", free);
     hit.addEventListener("keydown", (e) => {
       const cell = this.cells.get(key);
       if (!cell?.placed || e.altKey || e.ctrlKey || e.metaKey) return;
