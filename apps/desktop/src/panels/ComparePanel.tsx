@@ -179,8 +179,8 @@ export function ComparePanel({
             </header>
             <div className="compare-reply prose">
               {column.state === "failed" ? (
-                <Notice tone="danger" title="The turn failed">
-                  {column.error}
+                <Notice tone="danger" title={column.error ? "The turn failed" : undefined}>
+                  {column.error ?? "The turn failed."}
                 </Notice>
               ) : column.text ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{column.text}</ReactMarkdown>

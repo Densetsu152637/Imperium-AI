@@ -1590,21 +1590,21 @@ button.task-open:hover {
   color: var(--text-muted);
 }
 
-.message.assistant > .message-action {
+.message.assistant .message-action {
   right: 0;
 }
 
-.message.user > .message-action {
+.message.user .message-action {
   left: calc(-1 * (var(--control-h-sm) + var(--sp-1)));
 }
 
-.message:hover > .message-action,
-.message:focus-within > .message-action {
+.message:hover .message-action,
+.message:focus-within .message-action {
   opacity: 0.75;
 }
 
-.message > .message-action:hover,
-.message > .message-action:focus-visible {
+.message .message-action:hover,
+.message .message-action:focus-visible {
   opacity: 1;
 }
 
