@@ -354,32 +354,39 @@ these values (WCAG relative luminance) and are checked again by the stage 2 test
 | `--border-control` | `#6a717b` (3.4:1 on raised, 4.0:1 on bg) | `#80868f` (3.2:1 on sunken, 3.7:1 on white) | Edges of inputs, selects, checkboxes, switches |
 | `--text` (`--fg` alias) | `#e7e9ec` (13.9:1 or more) | `#16181b` (15.6:1 or more) | Body text |
 | `--text-muted` (`--muted` alias) | `#a0a6ae` (6.9:1 or more) | `#545a63` (6.1:1 or more) | Secondary text, labels |
-| `--text-subtle` | `#868d97` (5.1:1 or more) | `#5f656e` (5.1:1 or more) | Timestamps, placeholders |
+| `--text-subtle` | `#959ca5` (6.1:1 or more) | `#5a6069` (5.5:1 or more) | Timestamps, placeholders |
 | `--accent` | `#1fb2c8` | `#0a7186` | Primary fills, selection, links |
 | `--accent-hover` | `#45c6d8` | `#086477` | Primary hover |
-| `--accent-soft` | accent at 14 % | accent at 10 % | Selected rows, active navigation |
+| `--accent-soft` | accent at 12 % | accent at 10 % | Selected rows, active navigation |
 | `--accent-ink` | `#03161a` (7.3:1 on accent) | `#ffffff` (5.7:1 on accent) | Text on accent fills |
-| `--accent-text` | `#5fd0e0` (9.3:1 or more) | `#0a7186` (4.9:1 or more) | Accent used as text or icon |
+| `--accent-text` | `#5fd0e0` (9.3:1 or more) | `#086276` (6.1:1 or more) | Accent used as text or icon |
 | `--focus` | `#5fd0e0` | `#0a7186` | Focus ring (both above 3:1 on every surface) |
 | `--danger` / `--danger-soft` | `#f2766b` / 14 % | `#b42318` / 10 % | Errors, destructive actions |
 | `--ok` / `--ok-soft` | `#58c98a` / 14 % | `#18794e` / 10 % | Success, running |
 | `--warn` / `--warn-soft` | `#e3b25a` / 14 % | `#8a5a00` / 10 % | Warnings, budgets |
 
 "Or more" ratios are the lowest over `--bg`, `--surface`, `--surface-raised` and
-`--surface-sunken`. The context-chart colours (`--ctx-*`) stay as a separate
+`--surface-sunken`. **Selected rows:** text on an `--accent-soft` wash composited over any of
+those four surfaces also passes 4.5:1 for every accent: the lowest computed ratios are `--text`
+11.0:1, `--text-muted` 5.2:1, `--text-subtle` 4.8:1 (dark, lime wash on raised; light, rose wash
+on sunken) and cyan `--accent-text` 7.7:1 dark and 5.3:1 light. That is why dark
+`--text-subtle` is a step lighter than a plain-surface ratio would need (it now sits close to
+`--text-muted`, which is accepted), the dark wash is 12 % rather than 14 %, and light
+`--accent-text` is a step darker than the light accent fill. The context-chart colours (`--ctx-*`) stay as a separate
 data-visualisation set, exempt from the one-accent rule. `--silver`, `--bubble`, `--code-bg`
 and `--ink` become aliases of the tokens above and are removed once nothing reads them.
 
 **Accents per theme.** Each of the twelve accents in `settings.ts` gets a dark and a light
-value. Dark values are today's (dark ink on them is 5.0:1 or more for all twelve). Light values
-are darkened in lightness, keeping hue and saturation, until white ink reaches about 5.2:1, which
-also makes them pass 4.5:1 as text on `--bg`; cyan keeps the hand-picked `#0a7186` (5.7:1).
-Darkened that far, amber, lime and silver turn brownish or olive (already at 4.6:1 amber is near
-`#9c6b18`, lime near `#647d25` and silver near `#7c7362`). That is accepted for fills and text, the places contrast matters; their
-`--accent-soft` washes use the dark-theme value at 16 % so selected rows keep the accent's
-recognisable hue, and stage 2's screenshots of every accent in light mode are reviewed for
-muddiness before merging (a light value may be nudged in hue only if the contrast test still
-passes). `applySettings` sets `data-accent` on the root instead of writing colours inline, and
+value. Dark values are today's (dark ink on them is 5.0:1 or more for all twelve). **Light
+fills target 5.2:1 for white ink:** each is darkened in lightness, keeping hue and saturation,
+until white ink reaches 5.2:1, which also puts it at 4.7:1 or more as text on `--bg`; cyan keeps
+the hand-picked `#0a7186` (5.7:1). **Accent text** is derived separately: light values are
+darkened further, to 6.6:1 against white (cyan `#086276`), and dark values are lightened until
+they reach 5:1 on their own wash over `--surface-raised` (cyan `#5fd0e0`), so accent text passes
+on selected rows too. At 5.2:1 amber, lime and silver turn brownish or olive (amber `#906317`,
+lime `#5d7523`, silver `#736c5c`). That is accepted for fills and text, the places contrast
+matters; stage 2's screenshots of every accent in light mode are reviewed for muddiness before
+merging, and a light value may be nudged in hue only if the contrast test still passes. `applySettings` sets `data-accent` on the root instead of writing colours inline, and
 `tokens.css` defines each accent under `:root[data-accent="…"]` and
 `:root[data-theme="light"][data-accent="…"]`, so the light theme's values win (K8). The loading
 screen's light accent becomes `#0a7186`.
@@ -465,9 +472,12 @@ and in CI by `scripts/check-web.sh`:
    them, remove it; stage 15 confirms none is left. The nursery's select lives in
    `mods/imperium-nursery`, outside this guard, and is handled by stage 13.
 5. **`tokenContrast.test.ts`** (stage 2): parses `styles/tokens.css`, and for both themes and
-   all twelve accents checks text, muted and subtle text on `--bg`, `--surface`,
-   `--surface-raised` and `--surface-sunken` (4.5:1), accent ink on accent and accent text on
-   `--bg` (4.5:1), and `--focus` and `--border-control` on every surface (3:1).
+   all twelve accents checks `--text`, `--text-muted` and `--text-subtle` on `--bg`, `--surface`,
+   `--surface-raised` and `--surface-sunken` (4.5:1); the same three and `--accent-text` on the
+   `--accent-soft` wash composited (alpha-blended) over each of those four surfaces (4.5:1),
+   which is how selected rows and active navigation items are drawn; accent ink on accent and
+   `--accent-text` on `--bg` (4.5:1); and `--focus` and `--border-control` on every surface
+   (3:1).
 6. **`boot.test.ts`** (exists): keeps `--bg` and the boot accent in step across the CSS,
    `boot.css`, `boot.ts`, `main.rs` and `tauri.conf.json`. Stage 1 points it at
    `styles/tokens.css`; stage 2 changes its accent pattern to read the cyan
@@ -553,7 +563,7 @@ the owning stage).
   unchanged); `apps/desktop/public/boot.css` (light accent `#0a7186`);
   `apps/desktop/test/boot.test.ts` (the accent pattern); `apps/desktop/test/tokenContrast.test.ts`;
   the Inter Variable font (`@fontsource-variable/inter` in `apps/desktop/package.json` and
-  `pnpm-lock.yaml`, imported once in `styles/index.css`); docs 07 Theming.
+  `pnpm-lock.yaml`) and `styles/index.css` (one import line for the font); docs 07 Theming.
 - **What visibly changes:** everywhere at once: flat surfaces instead of metal gradients
   (except the title-bar wordmark), quieter borders, firmer input edges, the new neutrals derived
   from today's backgrounds, Inter on every machine, one focus ring, restyled buttons, inputs,
