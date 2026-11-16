@@ -11,6 +11,10 @@
         ],
         "type": "string"
       },
+      "agent": {
+        "description": "The name of a named agent from the list in your instructions: the subagent works under that agent's own instructions, with the tools its file lists (never more than yours), and on its model unless you pass model. The brief is still what it is asked to do.",
+        "type": "string"
+      },
       "brief": {
         "type": "string"
       },

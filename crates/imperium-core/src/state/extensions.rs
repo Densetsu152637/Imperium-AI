@@ -73,7 +73,10 @@ impl DaemonState {
         } else {
             std::borrow::Cow::Borrowed(settings)
         };
-        let mut extensions = imperium_extensions::load_with(
+        // A project's agent files are read only when the user trusts the project, as for its
+        // `.mcp.json` servers.
+        let project_trusted = self.settings().mcp.trusts(project_dir);
+        let mut extensions = imperium_extensions::load_trusting(
             &Sources {
                 config_dir: self.paths.config_dir().to_path_buf(),
                 project_dir: project_dir.to_path_buf(),
@@ -99,6 +102,7 @@ impl DaemonState {
                 eager: self.settings().extensions.eager.clone(),
             },
             &|plugin| profile.is_none_or(|profile| profile.allows_plugin(plugin)),
+            project_trusted,
         );
         // HTTP hooks' `${secret:name}` headers read the keychain, nothing else.
         let secrets = Arc::clone(&self.secrets);

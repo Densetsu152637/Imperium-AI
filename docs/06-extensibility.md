@@ -40,10 +40,68 @@ permissions, UI mod entry points, and router hints.
   `.mcp.json` read the daemon's environment, except in a plugin an agent installed (its folder
   has `.imperium-source.json`, [below](#agents-manage-the-app-config-implemented)): there only
   `${CLAUDE_PLUGIN_ROOT}` expands, so downloaded content cannot put the daemon's secrets into a
-  server's command, arguments, headers, or URL. `agents/` and `imperium-plugin.toml` are
-  reported as not yet supported.
+  server's command, arguments, headers, or URL. A plugin's `agents/` folder contributes
+  [named agents](#named-agents-implemented). `imperium-plugin.toml` is reported as not yet
+  supported.
 - **Hooks:** see below. Problems (a skill without a description, an unsupported hook event)
   are shown as session notices.
+
+### Named agents (implemented)
+
+A named agent is a subagent a file defines, in Claude Code's format, so plugins and projects can
+ship them: a Markdown file whose YAML front matter says who it is and whose body is its
+instructions.
+
+```markdown
+---
+name: code-reviewer
+description: Reviews a diff for bugs and missing tests. Use after a change is written.
+tools: Read, Grep           # or a YAML list; left out: the delegator's tools
+model: inherit              # or a model id or <endpoint>:<model>; left out: normal routing
+---
+You review code. Report only problems you can point to ...
+```
+
+- **Fields.** `name` (required, kebab-case) and `description` (required: when to use it) must be
+  set, and the body must not be empty, or the file is skipped with a notice. `tools` is a comma
+  list or a YAML list; `model` is a model id or spec, or `inherit`. Any other key (`color`,
+  `skills`, ...) is ignored with one notice per file. The front matter is read as the YAML subset
+  these files use (plain, quoted and block scalars, block and inline lists); malformed YAML skips
+  the file with a notice.
+- **Sources, lowest precedence first, by name:** plugins' `agents/`, the user's
+  `<config>/agents/`, the project's `.claude/agents/`, the project's `.imperium/agents/` (a
+  later source replaces an earlier agent of the same name; two files of one folder with one name
+  keep the first by path). Files are found up to three folders deep, `.md` only, at most 64 KiB.
+- **Project files are repository content.** A project's agent files are read only when the
+  project is in `mcp.trusted_projects`, the same trust that starts a project's `.mcp.json`
+  servers ([10](10-configuration.md)); otherwise one notice per folder says how many files
+  were not loaded. A symbolic link in a project's agents folder is skipped.
+- **Delegating.** The root's prompt lists each agent's name and the first line of its
+  description (at most 40 agents, and no body), with how to use them: `spawn_agent` takes
+  `agent` (the name). The subagent runs with the file's body after its own base instructions.
+  Everything else about `spawn_agent` is unchanged (`access`, `effort`, `knowledge`, tiers and
+  tags); `single_call` cannot be combined with `agent`. An unknown name fails the call and lists
+  the defined names.
+- **`tools` narrows, never widens.** The subagent is offered the tools that are in both the
+  file's list and the delegator's own tools at that moment; a name that matches none of them is
+  left out with a notice, and a file whose names all miss gets no tools. Claude Code's names map
+  to Imperium's (`Bash` is `run_command`, `command_output` and `command_stop`; `Read`, `Write`,
+  `Edit` and `MultiEdit`, `LS`, `Glob`, `Grep`, `WebFetch` and `WebSearch` to their equivalents).
+  A call to a tool outside the list is refused where calls run, as well as left out of the list.
+  Left out, `tools` gives what any subagent of the session has. A resumed named agent
+  (`resume_agent`, after a restart too) and a task retried on a stronger route keep the same
+  instructions and tool list.
+- **A file never grants a permission.** Permission rules (deny over ask over allow), the safety
+  floor, plan mode, the agent's permission profile and MCP and plugin allowlists are applied to
+  every call of a named agent exactly as to any subagent's: the file's tool list is only a
+  further filter in front of them.
+- **`model`.** `inherit` is the delegating agent's model. A model id or spec goes through the same
+  routing as `spawn_agent`'s `model` (availability, queue limits, budgets); one that is not
+  available runs on the delegating agent's model, with a notice. `model` on the call overrides
+  the file; with neither, ordinary routing by tier, tags and rules applies.
+- **Clients.** `mcp.list` results carry `agents` (name, description, origin, path, tools, model)
+  for the user's and plugins' agents (protocol 0.42); a project's are loaded per session, for
+  trusted projects only. `imperium agents list` prints them. The desktop shows none yet.
 
 ### Lazy skills and plugins (implemented)
 

@@ -242,6 +242,16 @@ notice; plan mode refuses a writer, and a rule denying `git_commit` keeps its ch
 uncommitted in its worktree. Details, placement and cleanup:
 [worktrees](14-projects-and-automation.md#worktrees).
 
+### Named agents (implemented)
+
+`spawn_agent` takes `agent`, the name of a subagent defined by a Markdown file with YAML front
+matter (Claude Code's format) in a plugin, the user's `agents/` folder or a trusted project's
+`.claude/agents/` or `.imperium/agents/`. The subagent works under the file's instructions and
+tool list (the intersection with the delegator's tools, never more) and on the file's model, and
+every call still meets the permission rules, the safety floor and the agent's profile. The root's
+prompt lists only names and one-line descriptions. Format, precedence, trust and the model rule:
+[06](06-extensibility.md#named-agents-implemented).
+
 ### Knowledge agents (implemented)
 
 A finished subagent the root (or the user) keeps as a **knowledge agent** answers questions from

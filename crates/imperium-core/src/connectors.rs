@@ -18,10 +18,10 @@ use imperium_mcp::oauth::{CredentialStore, OAuthSource};
 use imperium_mcp::{McpServers, NEEDS_SIGN_IN};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
-    CatalogServer, McpCatalogResult, McpInstallParams, McpListResult, McpLoginParams,
-    McpLoginResult, McpLogoutParams, McpLogoutResult, McpRemoveParams, McpRemoveResult,
-    McpSaveParams, McpSaveResult, McpServerConfig, McpServerInfo, McpSetEnabledParams, McpStatus,
-    McpTestParams, PluginInfo, SkillInfo,
+    AgentFileInfo, CatalogServer, McpCatalogResult, McpInstallParams, McpListResult,
+    McpLoginParams, McpLoginResult, McpLogoutParams, McpLogoutResult, McpRemoveParams,
+    McpRemoveResult, McpSaveParams, McpSaveResult, McpServerConfig, McpServerInfo,
+    McpSetEnabledParams, McpStatus, McpTestParams, PluginInfo, SkillInfo,
 };
 use serde::Deserialize;
 
@@ -230,6 +230,19 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
     let (skills, mut skill_problems) = imperium_extensions::skills::discover(&skill_dirs);
     problems.append(&mut skill_problems);
 
+    // Named agents of plugins and the user (a project's are loaded per session, for trusted
+    // projects only).
+    let mut agent_folders: Vec<imperium_extensions::AgentFolder> = plugins
+        .iter()
+        .map(|plugin| imperium_extensions::AgentFolder::new(plugin.agents_dir(), plugin.origin()))
+        .collect();
+    agent_folders.push(imperium_extensions::AgentFolder::new(
+        config_dir.join("agents"),
+        "user",
+    ));
+    let (agents, mut agent_problems) = imperium_extensions::agents::discover(&agent_folders);
+    problems.append(&mut agent_problems);
+
     let plugins = plugins
         .iter()
         .map(|plugin| PluginInfo {
@@ -260,6 +273,17 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
                 installed_from: crate::extension_install::read_source(&skill.dir),
                 origin: skill.origin,
                 dir: skill.dir.display().to_string(),
+            })
+            .collect(),
+        agents: agents
+            .into_iter()
+            .map(|agent| AgentFileInfo {
+                name: agent.name,
+                description: agent.description,
+                origin: agent.origin,
+                path: agent.path.display().to_string(),
+                tools: agent.tools,
+                model: agent.model,
             })
             .collect(),
         user_file: state.paths().user_config_file().display().to_string(),

@@ -9,6 +9,7 @@
 #![warn(unreachable_pub)]
 
 pub mod activation;
+pub mod agents;
 pub mod commands;
 pub mod hooks;
 pub mod plugins;
@@ -19,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use activation::{Activation, LazyPlugin, PluginTools};
+pub use agents::{AgentDef, AgentFolder};
 pub use commands::SlashCommand;
 pub use hooks::{ConfiguredHook, Hook, HookEvent, Hooks, Rewriting, Verdict};
 pub use skills::Skill;
@@ -54,6 +56,8 @@ pub struct Extensions {
     pub skills: Vec<Skill>,
     pub hooks: Hooks,
     pub commands: Vec<SlashCommand>,
+    /// Named subagents, by name, after precedence (see [`agents`]).
+    pub agents: Vec<AgentDef>,
     /// Plugins with MCP servers, which start when activated.
     pub plugins: Arc<PluginTools>,
     /// Problems worth telling the user about.
@@ -111,6 +115,25 @@ impl Extensions {
         }
         Some(text)
     }
+
+    /// The root agent's index of named subagents: one line each, with how to delegate to one.
+    /// `None` when there are none.
+    pub fn agents_index(&self) -> Option<String> {
+        if self.agents.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "Named agents are subagents defined by files, each with its own instructions and \
+             tools. To delegate a task to one, call spawn_agent with its name as agent; its \
+             description says when to use it.\n{}",
+            agents::index_lines(&self.agents)
+        ))
+    }
+
+    /// The named subagent called `name`.
+    pub fn agent(&self, name: &str) -> Option<&AgentDef> {
+        self.agents.iter().find(|agent| agent.name == name)
+    }
 }
 
 /// Loads skills, commands, hooks, and plugins. Skills and commands come from the user's
@@ -126,6 +149,18 @@ pub fn load(sources: &Sources) -> Extensions {
 /// agent's permission profile may refuse a plugin; its skills and commands are only text, but a
 /// hook runs a command).
 pub fn load_with(sources: &Sources, hooks_allowed: &dyn Fn(&str) -> bool) -> Extensions {
+    load_trusting(sources, hooks_allowed, false)
+}
+
+/// [`load_with`], reading the project's agent files (`.claude/agents`, `.imperium/agents`) only
+/// when `project_trusted`: they are repository content that would shape what a subagent is told
+/// and may use, so an untrusted project's are reported, not loaded. Skills and commands of a
+/// project are loaded either way (they are text an agent chooses to load or the user types).
+pub fn load_trusting(
+    sources: &Sources,
+    hooks_allowed: &dyn Fn(&str) -> bool,
+    project_trusted: bool,
+) -> Extensions {
     let mut plugin_dirs = vec![sources.config_dir.join("plugins")];
     plugin_dirs.extend(sources.plugin_dirs.iter().cloned());
     let (mut plugins, mut notices) = plugins::discover(&plugin_dirs, sources.server_timeout);
@@ -179,8 +214,11 @@ pub fn load_with(sources: &Sources, hooks_allowed: &dyn Fn(&str) -> bool) -> Ext
             Err(error) => notices.push(format!("[[hooks]]: {error}")),
         }
     }
+    // Lowest precedence first: plugins (added below), the user's, the project's.
+    let mut agent_folders = Vec::new();
     let mut lazy_plugins = Vec::new();
     for plugin in plugins {
+        agent_folders.push(AgentFolder::new(plugin.agents_dir(), plugin.origin()));
         skill_dirs.push((plugin.skills_dir(), plugin.origin()));
         command_dirs.push((
             plugin.commands_dir(),
@@ -205,8 +243,30 @@ pub fn load_with(sources: &Sources, hooks_allowed: &dyn Fn(&str) -> bool) -> Ext
         skill.eager = eager(&skill.name);
     }
     notices.append(&mut skill_problems);
+    agent_folders.push(AgentFolder::new(sources.config_dir.join("agents"), "user"));
+    let project_agents = [
+        (project.join(".claude/agents"), ".claude/agents"),
+        (project.join(".imperium/agents"), ".imperium/agents"),
+    ];
+    for (dir, shown) in project_agents {
+        if project_trusted {
+            agent_folders.push(AgentFolder::new(dir, "project"));
+        } else {
+            let found = agents::count_files(&dir);
+            if found > 0 {
+                notices.push(format!(
+                    "{shown} holds {found} agent file(s) that were not loaded: a repository's \
+                     agents shape what a subagent is told and may use, so add this project to \
+                     mcp.trusted_projects in your own config to use them"
+                ));
+            }
+        }
+    }
+    let (agents, mut agent_notices) = agents::discover(&agent_folders);
+    notices.append(&mut agent_notices);
     Extensions {
         skills,
+        agents,
         hooks: Hooks::new(hooks),
         commands: commands::discover(&command_dirs),
         plugins: Arc::new(PluginTools::new(lazy_plugins)),
@@ -265,6 +325,83 @@ mod tests {
             r#"{"mcpServers": {"server": {"command": "lint-server"}}}"#,
         );
         (config, project)
+    }
+
+    fn agent_file(name: &str, description: &str) -> String {
+        format!("---\nname: {name}\ndescription: {description}\n---\nSECRET {description} BODY\n")
+    }
+
+    #[test]
+    fn a_projects_agent_files_load_only_for_a_trusted_project() {
+        let (config, project) = fixture();
+        write(
+            &config.path().join("plugins/lint/agents/linter.md"),
+            &agent_file("linter", "from plugin"),
+        );
+        write(
+            &config.path().join("agents/helper.md"),
+            &agent_file("helper", "from user"),
+        );
+        write(
+            &project.path().join(".claude/agents/helper.md"),
+            &agent_file("helper", "from claude"),
+        );
+        write(
+            &project.path().join(".imperium/agents/helper.md"),
+            &agent_file("helper", "from imperium"),
+        );
+        write(
+            &project.path().join(".claude/agents/only-here.md"),
+            &agent_file("only-here", "repository"),
+        );
+        let sources = sources(config.path(), project.path(), true, &[]);
+        let description = |extensions: &Extensions, name: &str| {
+            extensions
+                .agent(name)
+                .map(|agent| (agent.description.clone(), agent.origin.clone()))
+        };
+
+        // Not trusted (the default): the plugin's and the user's agents, and a notice for the
+        // repository's files, which are not read.
+        for untrusted in [load(&sources), load_trusting(&sources, &|_| true, false)] {
+            assert_eq!(
+                description(&untrusted, "helper"),
+                Some(("from user".into(), "user".into()))
+            );
+            assert_eq!(
+                description(&untrusted, "linter"),
+                Some(("from plugin".into(), "plugin:lint".into()))
+            );
+            assert!(untrusted.agent("only-here").is_none());
+            assert_eq!(untrusted.agents.len(), 2);
+            let notices = untrusted.notices.join("\n");
+            assert!(
+                notices.contains(".claude/agents holds 2 agent file(s)")
+                    && notices.contains(".imperium/agents holds 1 agent file(s)")
+                    && notices.contains("mcp.trusted_projects"),
+                "{notices}"
+            );
+        }
+
+        // Trusted: the project's replace the user's and the plugin's by name, and
+        // `.imperium/agents` replaces `.claude/agents`.
+        let trusted = load_trusting(&sources, &|_| true, true);
+        assert_eq!(
+            description(&trusted, "helper"),
+            Some(("from imperium".into(), "project".into()))
+        );
+        assert_eq!(
+            description(&trusted, "only-here"),
+            Some(("repository".into(), "project".into()))
+        );
+        assert_eq!(trusted.agents.len(), 3);
+        assert!(trusted.notices.is_empty(), "{:?}", trusted.notices);
+
+        // The root's index names them and says how to delegate, and holds no instructions.
+        let index = trusted.agents_index().unwrap();
+        assert!(index.contains("spawn_agent") && index.contains("- helper: from imperium"));
+        assert!(!index.contains("SECRET"), "{index}");
+        assert!(Extensions::default().agents_index().is_none());
     }
 
     #[test]
