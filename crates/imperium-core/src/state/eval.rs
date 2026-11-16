@@ -39,7 +39,7 @@ impl DaemonState {
         let options = || SessionOptions {
             permission_mode: Some(prepared.permission_mode),
             effort: prepared.effort,
-            eval: Some(Arc::clone(&prepared)),
+            eval: Some(EvalSetup(Arc::clone(&prepared))),
             ..SessionOptions::default()
         };
         match (environment_id, project_dir) {

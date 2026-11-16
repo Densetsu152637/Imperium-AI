@@ -137,8 +137,13 @@ pub struct SessionOptions {
     pub read_only: bool,
     /// An evaluation session (`session.eval_create`): its own root model, tools, loop flags and
     /// ceilings, no memory, extensions or project instructions, and not remembered.
-    pub(crate) eval: Option<Arc<crate::eval::Prepared>>,
+    #[doc(hidden)]
+    pub eval: Option<EvalSetup>,
 }
+
+/// What an evaluation session is made from (`session.eval_create`).
+#[derive(Debug, Clone)]
+pub struct EvalSetup(pub(crate) Arc<crate::eval::Prepared>);
 
 /// Where a session works: its environment and every folder, the working directory first.
 #[derive(Debug, Clone, Default)]

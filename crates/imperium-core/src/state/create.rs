@@ -387,6 +387,7 @@ impl DaemonState {
         model: Option<&str>,
         options: SessionOptions,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
+        let eval = options.eval.as_ref().map(|setup| Arc::clone(&setup.0));
         // The user's settings, narrowed by the environment's own configuration files.
         let env_config = self.environment_settings(options.environment_id.as_deref());
         let settings = &env_config.settings;
@@ -440,7 +441,7 @@ impl DaemonState {
         // off. A session started on its own worktrees keeps to them, so its edits stay apart
         // from the user's checkout.
         if options.worktrees.is_empty()
-            && options.eval.is_none()
+            && eval.is_none()
             && options
                 .environment_id
                 .as_deref()
@@ -485,7 +486,7 @@ impl DaemonState {
         // switched it off; a new session is refused one.
         // (One that never had a model, resumed, is refused an off default like a new one: it
         // waits for a model instead.)
-        let resolved = if let Some(eval) = &options.eval {
+        let resolved = if let Some(eval) = &eval {
             Ok(eval.model.clone())
         } else if options.resume_id.is_some() && model.is_some() {
             self.resolve_model(model)
@@ -501,7 +502,7 @@ impl DaemonState {
             Err(error) => return Err(error.into()),
         };
         // An evaluation session's subagents use its own model, never one of the user's.
-        let catalog = if options.eval.is_some() {
+        let catalog = if eval.is_some() {
             Vec::new()
         } else {
             self.session_catalog()
@@ -523,7 +524,7 @@ impl DaemonState {
                     .or_insert_with(|| server.clone());
             }
         }
-        let (mut mcp, mcp_notices) = if options.eval.is_some() {
+        let (mut mcp, mcp_notices) = if eval.is_some() {
             (Vec::new(), Vec::new())
         } else {
             crate::mcp::session_servers(&mcp_settings, project_dir_path, |name| {
@@ -532,7 +533,7 @@ impl DaemonState {
         };
         notices.extend(mcp_notices);
         // Plugins' servers are not among `mcp`: they start when an agent activates the plugin.
-        let mut extensions = if options.eval.is_some() {
+        let mut extensions = if eval.is_some() {
             imperium_extensions::Extensions::default()
         } else {
             self.extensions(
@@ -543,7 +544,7 @@ impl DaemonState {
         };
         // An evaluation that runs an agent file as its root reads the file the way a delegation
         // would find it.
-        let root_agent = match options.eval.as_ref().and_then(|eval| eval.agent.as_deref()) {
+        let root_agent = match eval.as_ref().and_then(|eval| eval.agent.as_deref()) {
             Some(name) => Some(
                 self.extensions(project_dir_path, settings, None)
                     .agent(name)
@@ -561,7 +562,7 @@ impl DaemonState {
                 .plugins
                 .set_filter(Arc::new(move |name| profile.allows_plugin(name)));
         }
-        let (context, personality) = if options.eval.is_some() {
+        let (context, personality) = if eval.is_some() {
             (None, None)
         } else {
             (
@@ -575,11 +576,11 @@ impl DaemonState {
             Some(id) => id,
             None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
         };
-        let remember = options.launcher.is_none() && options.eval.is_none();
+        let remember = options.launcher.is_none() && eval.is_none();
         // Files attached from outside the session's folders are copied into its attachments
         // folder, which its tools may read. A remote runtime cannot reach this machine's
         // folders, so it gets no grant (attached text is inlined either way).
-        let workspace = if workspace.runtime().is_none() && options.eval.is_none() {
+        let workspace = if workspace.runtime().is_none() && eval.is_none() {
             let store = crate::attachments::store_dir(self.paths.data_dir(), &id);
             match std::fs::create_dir_all(&store) {
                 Ok(()) => workspace.with_grants(&[imperium_api::PathGrant {
@@ -652,7 +653,7 @@ impl DaemonState {
                 workspace.clone(),
             )
         });
-        if let Some(web) = self.web_tools(downloads).filter(|_| options.eval.is_none()) {
+        if let Some(web) = self.web_tools(downloads).filter(|_| eval.is_none()) {
             if let Some(browser) = &web.browser {
                 self.browsers
                     .lock()
@@ -700,7 +701,7 @@ impl DaemonState {
             session_id: id.clone(),
         }));
         // An evaluation session offers its own tools: the engine's and the offline web tools.
-        if let Some(eval) = &options.eval {
+        if let Some(eval) = &eval {
             tools = eval.tools.clone();
         }
         let model_spec = model.as_ref().map(|model| model.spec.clone());
@@ -739,18 +740,17 @@ impl DaemonState {
             });
         // Nobody reads the turns of a background session, one with pre-approved tools (auto-fix),
         // or a project or persistent agent: the harness aids that talk to a person stay off.
-        let attended = options
-            .eval
+        let attended = eval
             .as_ref()
             .map_or_else(|| session_attended(&options), |eval| eval.flags.attended);
-        let eval_flags = options.eval.as_ref().map(|eval| eval.flags.clone());
+        let eval_flags = eval.as_ref().map(|eval| eval.flags.clone());
         let session = Session::spawn_with(
             SessionConfig {
                 attended,
                 effort,
                 journal_path,
                 budget_gate: {
-                    let gate: Arc<dyn imperium_engine::BudgetGate> = match &options.eval {
+                    let gate: Arc<dyn imperium_engine::BudgetGate> = match &eval {
                         Some(eval) => eval.gate.clone(),
                         None => {
                             Arc::new(crate::budgets::CallGate::new(self.me.clone(), id.clone()))
@@ -766,19 +766,14 @@ impl DaemonState {
                 workspace,
                 model,
                 catalog,
-                clients: options
-                    .eval
+                clients: eval
                     .as_ref()
                     .map_or_else(ChatClients::default, |eval| eval.clients()),
                 routing: settings.routing.clone(),
-                local: self
-                    .local
-                    .get()
-                    .filter(|_| options.eval.is_none())
-                    .map(|local| {
-                        let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
-                        supervisor
-                    }),
+                local: self.local.get().filter(|_| eval.is_none()).map(|local| {
+                    let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
+                    supervisor
+                }),
                 tools,
                 notices,
                 extensions,
@@ -789,7 +784,7 @@ impl DaemonState {
                 resume_policy: self.resume_policy(),
                 launcher: options.launcher,
                 instructions: match (options.instructions, env_config.instructions.as_deref()) {
-                    _ if options.eval.is_some() => None,
+                    _ if eval.is_some() => None,
                     (Some(own), Some(added)) => {
                         Some(format!("{own}\n\n{}", environment_text(added)))
                     }
@@ -801,7 +796,7 @@ impl DaemonState {
                 background: options.background.then(|| Background {
                     load: self.load_view(),
                 }),
-                memory: (self.settings().memory.enabled && options.eval.is_none()).then(|| {
+                memory: (self.settings().memory.enabled && eval.is_none()).then(|| {
                     SessionMemory {
                         // The global store only; an environment's Memory.md lives in its working folder,
                         // outside the project, so a read-only session may write it (under the policy).
@@ -873,10 +868,7 @@ impl DaemonState {
                 },
             },
             imperium_engine::SessionOptions {
-                replay: options
-                    .eval
-                    .as_ref()
-                    .and_then(|eval| eval.subagent_replay.clone()),
+                replay: eval.as_ref().and_then(|eval| eval.subagent_replay.clone()),
                 root_agent,
             },
         )
@@ -915,10 +907,10 @@ impl DaemonState {
             session.run_now().release();
         }
         let events = session.subscribe();
-        if let Some(pets) = self.pets().filter(|_| options.eval.is_none()) {
+        if let Some(pets) = self.pets().filter(|_| eval.is_none()) {
             pets.watch(id.clone(), session.subscribe());
         }
-        if let Some(me) = self.me.upgrade().filter(|_| options.eval.is_none()) {
+        if let Some(me) = self.me.upgrade().filter(|_| eval.is_none()) {
             crate::suggestions::watch(&me, id.clone(), session.subscribe());
             if placement.title.is_none() {
                 titles::watch(&me, id.clone(), session.subscribe());
@@ -932,7 +924,7 @@ impl DaemonState {
             );
         }
         let session = Arc::new(session);
-        if let Some(eval) = &options.eval {
+        if let Some(eval) = &eval {
             crate::eval::watch_asks(&session, Arc::clone(&eval.run));
             self.evals
                 .lock()
