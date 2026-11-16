@@ -43,7 +43,7 @@ transcript text.
     and fidget, fall asleep after a minute, and play `petted` when clicked. Who is there is
     kept across restarts (the `residents` storage key, as in the former My nursery).
 
-Clicking a pet pats it; every pet is also a focusable button, so the keyboard works too.
+Clicking a pet pats it. Press and drag to pick a pet up and carry it anywhere in the room (it stays inside the walls; releasing drops it there and it roams on from that spot); mouse, touch and pen all work. Every pet is also a focusable button, so the keyboard works too: the arrow keys nudge it (shift for a bigger step).
 
 ## One shared room
 

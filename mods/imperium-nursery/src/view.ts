@@ -6,10 +6,12 @@ import { lookIndex } from "./arbiter.ts";
 import type { LoadedPet, PetLibrary } from "./library.ts";
 import type { Entry, Kind, Nursery } from "./nursery.ts";
 import { resolveAnimation } from "./pet.ts";
+import { follow, grab, inRoom, nudge } from "./drag.ts";
+import type { Drag } from "./drag.ts";
 import { angleTo } from "./play.ts";
 import { busyOf, busySubs } from "./route.ts";
 import { fitSize, frameAt } from "./render.ts";
-import { PLAY_SPEED, SPEED, boundsOf, clampTo, edgeTarget, newRoamer, playTarget, reducedLayout, roam, roomHeight, separate, spawnPoint, stepToward } from "./space.ts";
+import { PLAY_SPEED, SPEED, boundsOf, clampTo, edgeTarget, newRoamer, pauseDelay, playTarget, reducedLayout, roam, roomHeight, separate, spawnPoint, stepToward } from "./space.ts";
 import type { Body, Bounds, Metrics, Pos, Roamer } from "./space.ts";
 
 /** Width of a pet's box (the label's width) and the height of its label line, in px. */
@@ -35,7 +37,8 @@ body { margin: 0; padding: 0; }
 .empty:empty { display: none; }
 .room { position: relative; flex: 1 1 auto; min-height: 160px; overflow: hidden; border-radius: var(--radius, 6px); background: linear-gradient(to bottom, transparent 0%, color-mix(in srgb, var(--panel) 80%, transparent) 100%); border: 1px solid var(--border); }
 .pet { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; will-change: transform; }
-.hit { display: flex; flex-direction: column; align-items: center; padding: 0; margin: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; border-radius: 6px; }
+.hit { display: flex; flex-direction: column; align-items: center; padding: 0; margin: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; border-radius: 6px; touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; }
+.pet.dragging .hit { cursor: grabbing; }
 .hit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .stage { position: relative; display: flex; align-items: flex-end; justify-content: center; width: 100%; }
 .shadow { position: absolute; left: 50%; bottom: -3px; width: 60%; height: 8px; margin-left: -30%; border-radius: 50%; background: rgba(0, 0, 0, 0.2); pointer-events: none; }
@@ -89,6 +92,10 @@ type Cell = {
   /** Stacking order by age: older pets behind newer ones. */
   depth: number;
   fade: string;
+  /** Held by the pointer (null when free), and a click to swallow after a drag. */
+  drag: Drag | null;
+  pointer: number;
+  swallow: boolean;
 };
 
 type Moved = { anim: string | null; name: string; since: number; look: number | null };
@@ -188,13 +195,66 @@ export class Room {
     else this.fit();
   }
 
+  /** Pointer events (mouse, touch, pen) pick the pet up; arrow keys move it. */
+  private dragging(key: string, hit: HTMLElement): void {
+    const room = (e: PointerEvent): Pos => inRoom({ x: e.clientX, y: e.clientY }, this.el.getBoundingClientRect());
+    const hold = (cell: Cell, feet: Pos, now: number): void => {
+      cell.r = { ...cell.r, x: feet.x, y: feet.y, tx: feet.x, ty: feet.y, nextAt: now + pauseDelay(Math.random) };
+    };
+    const free = (e: PointerEvent): void => {
+      const cell = this.cells.get(key);
+      if (!cell || cell.pointer !== e.pointerId) return;
+      if (hit.hasPointerCapture?.(e.pointerId)) hit.releasePointerCapture(e.pointerId);
+      cell.pointer = -1;
+      if (cell.drag?.lifted) {
+        // The click that ends a press that moved is not a pat; if none comes, forget it soon.
+        cell.swallow = true;
+        setTimeout(() => (cell.swallow = false), 0);
+      }
+      cell.drag = null;
+      cell.el.classList.remove("dragging");
+    };
+    hit.addEventListener("pointerdown", (e) => {
+      const cell = this.cells.get(key);
+      if (!cell?.placed || e.button > 0 || this.nursery.entries.get(key)?.removeAt != null) return;
+      cell.swallow = false;
+      cell.pointer = e.pointerId;
+      cell.drag = grab(room(e), cell.r);
+      hit.setPointerCapture?.(e.pointerId);
+    });
+    hit.addEventListener("pointermove", (e) => {
+      const cell = this.cells.get(key);
+      if (!cell?.drag || cell.pointer !== e.pointerId) return;
+      const out = follow(cell.drag, room(e), this.bounds());
+      cell.drag = out.drag;
+      if (!out.feet) return;
+      cell.el.classList.add("dragging");
+      hold(cell, out.feet, Date.now());
+    });
+    hit.addEventListener("pointerup", free);
+    hit.addEventListener("pointercancel", free);
+    hit.addEventListener("keydown", (e) => {
+      const cell = this.cells.get(key);
+      if (!cell?.placed || e.altKey || e.ctrlKey || e.metaKey) return;
+      const feet = nudge(e.key, cell.r, this.bounds(), e.shiftKey);
+      if (!feet) return;
+      e.preventDefault();
+      hold(cell, feet, Date.now());
+    });
+  }
+
   private build(key: string, kind: Kind): Cell {
     const el = make("div", "pet");
     el.style.width = `${LABEL_W}px`;
     const hit = make("button", "hit") as HTMLButtonElement;
     hit.type = "button";
     hit.style.width = "100%";
-    hit.addEventListener("click", () => this.opts.onPat(key));
+    hit.addEventListener("click", () => {
+      const cell = this.cells.get(key);
+      if (cell?.swallow) cell.swallow = false;
+      else this.opts.onPat(key);
+    });
+    this.dragging(key, hit);
     const stage = make("div", "stage");
     stage.style.height = `${this.opts.size}px`;
     const shadow = make("div", "shadow");
@@ -236,6 +296,9 @@ export class Room {
       z: "",
       depth: 0,
       fade: "",
+      drag: null,
+      pointer: -1,
+      swallow: false,
     };
   }
 
@@ -265,13 +328,18 @@ export class Room {
       const cur = this.nursery.view(entry, now);
       const idle = cur.name === "idle" && cur.kind === "loop";
       const leaving = entry.removeAt !== null;
-      if (reduced || !pet || !cell.placed || this.width === 0) {
+      if (cell.drag?.lifted) {
+        // Held: the pointer places the pet; the roam, play and guide steps leave it alone.
+        cell.playing = false;
+        cell.dir = 0;
+        cell.r = { ...cell.r, tx: cell.r.x, ty: cell.r.y, nextAt: now + pauseDelay(Math.random) };
+      } else if (reduced || !pet || !cell.placed || this.width === 0) {
         cell.playing = false;
         cell.dir = 0;
       } else {
         moved.set(key, this.move(cell, entry, pet, idle, now, dt, b));
       }
-      if (!reduced && cell.placed && !leaving) bodies.push({ key, x: cell.r.x, y: cell.r.y, movable: idle && !cell.playing, group: this.nursery.playing?.keys.includes(key) ? group : null });
+      if (!reduced && cell.placed && !leaving) bodies.push({ key, x: cell.r.x, y: cell.r.y, movable: idle && !cell.playing && !cell.drag?.lifted, group: this.nursery.playing?.keys.includes(key) ? group : null });
     }
     if (bodies.length > 1) {
       const out = separate(bodies, dt);
@@ -289,6 +357,7 @@ export class Room {
     if (reduced) {
       const spots = reducedLayout(live.length, b);
       live.forEach(({ cell }, i) => {
+        if (cell.drag?.lifted) return;
         const p = spots[i]!;
         cell.r = { ...cell.r, x: p.x, y: p.y, tx: p.x, ty: p.y };
         cell.placed = true;
@@ -367,7 +436,7 @@ export class Room {
       cell.xform = xform;
       cell.el.style.transform = xform;
     }
-    const z = String(cell.depth);
+    const z = String(cell.drag?.lifted ? 100_000 : cell.depth);
     if (z !== cell.z) {
       cell.z = z;
       cell.el.style.zIndex = z;
