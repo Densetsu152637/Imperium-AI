@@ -9,6 +9,8 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ConfigDescribeResult, EnvironmentInfo, LocalModelRow, ModelRow } from "@imperium/protocol";
 
+import { IconButton } from "../components/IconButton";
+import { Notice } from "../components/Notice";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import type { DaemonClient } from "../daemon/client";
@@ -187,9 +189,9 @@ export function NewSessionPanel({
       </div>
 
       {error && (
-        <p className="error new-session-error" role="alert">
+        <Notice tone="danger" className="new-session-error">
           {error}
-        </p>
+        </Notice>
       )}
 
       {houseModels.length > 0 && (
@@ -225,15 +227,15 @@ export function NewSessionPanel({
           }}
           rows={1}
         />
-        <button
+        <IconButton
           type="submit"
+          icon={ArrowUp}
+          label="Start session"
+          tooltip={blocker ?? (draft.trim() ? "Start the session and send this message" : "Start the session")}
+          variant="primary"
           className="send"
           disabled={blocker !== null || creating}
-          aria-label="Start session"
-          title={blocker ?? (draft.trim() ? "Start the session and send this message" : "Start the session")}
-        >
-          <ArrowUp aria-hidden="true" />
-        </button>
+        />
       </form>
 
       <div className="session-footer new-session-options" role="group" aria-label="New session options">
@@ -268,7 +270,7 @@ export function NewSessionPanel({
           <>
             <input
               type="text"
-              className="new-session-subfolder"
+              className="field new-session-subfolder"
               aria-label="Only this subfolder"
               placeholder="Whole environment"
               title="Narrow the session to one folder inside the environment: an absolute path, or relative to its first folder"

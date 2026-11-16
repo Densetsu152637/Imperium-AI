@@ -52,26 +52,26 @@ export function WaitLine({ view, compact = false, ...handlers }: { view: WaitVie
         {elapsed}
       </span>
       {view.action === "stop" && handlers.onStop && (
-        <button type="button" className="ghost danger" onClick={handlers.onStop} title={`Stop: pause the agent and its subagents at their next safe point (${stopKeys})`}>
+        <button type="button" className="ghost danger small" onClick={handlers.onStop} title={`Stop: pause the agent and its subagents at their next safe point (${stopKeys})`}>
           <Square aria-hidden="true" /> Stop
         </button>
       )}
       {view.action === "resume" && handlers.onResume && (
-        <button type="button" className="ghost" onClick={handlers.onResume}>
+        <button type="button" className="ghost small" onClick={handlers.onResume}>
           <Play aria-hidden="true" /> Resume
         </button>
       )}
       {view.action === "resume_now" && handlers.onResumeNow && (
-        <button type="button" className="ghost" onClick={handlers.onResumeNow}>
+        <button type="button" className="ghost small" onClick={handlers.onResumeNow}>
           Resume now
         </button>
       )}
       {view.action === "budget" && handlers.onBudget && (
         <>
-          <button type="button" className="primary" onClick={() => handlers.onBudget?.(true)}>
+          <button type="button" className="primary small" onClick={() => handlers.onBudget?.(true)}>
             Send anyway
           </button>
-          <button type="button" className="ghost" onClick={() => handlers.onBudget?.(false)}>
+          <button type="button" className="ghost small" onClick={() => handlers.onBudget?.(false)}>
             Don&apos;t send
           </button>
         </>

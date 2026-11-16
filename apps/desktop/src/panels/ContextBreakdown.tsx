@@ -103,12 +103,12 @@ function BreakdownDetail({ breakdown }: { breakdown: Breakdown }) {
           />
         )}
       </div>
-      <table className="context-table">
+      <table className="table compact context-table">
         <thead>
           <tr>
             <th scope="col">Category</th>
-            <th scope="col">Tokens</th>
-            <th scope="col">{limit === null ? "Of request" : "Of window"}</th>
+            <th scope="col" className="num">Tokens</th>
+            <th scope="col" className="num">{limit === null ? "Of request" : "Of window"}</th>
           </tr>
         </thead>
         <tbody>
@@ -118,8 +118,8 @@ function BreakdownDetail({ breakdown }: { breakdown: Breakdown }) {
                 <span className={`context-swatch ctx-${category.key}`} aria-hidden="true" />
                 {category.label}
               </th>
-              <td>{formatCount(category.tokens)}</td>
-              <td>{percent(category.tokens, scale)}</td>
+              <td className="num">{formatCount(category.tokens)}</td>
+              <td className="num">{percent(category.tokens, scale)}</td>
             </tr>
           ))}
           {free !== null && (
@@ -128,16 +128,16 @@ function BreakdownDetail({ breakdown }: { breakdown: Breakdown }) {
                 <span className="context-swatch ctx-free" aria-hidden="true" />
                 Free space
               </th>
-              <td>{formatCount(free)}</td>
-              <td>{percent(free, scale)}</td>
+              <td className="num">{formatCount(free)}</td>
+              <td className="num">{percent(free, scale)}</td>
             </tr>
           )}
         </tbody>
         <tfoot>
           <tr>
             <th scope="row">In the request</th>
-            <td>{formatCount(used)}</td>
-            <td>{percent(used, scale)}</td>
+            <td className="num">{formatCount(used)}</td>
+            <td className="num">{percent(used, scale)}</td>
           </tr>
         </tfoot>
       </table>

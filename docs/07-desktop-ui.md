@@ -106,6 +106,34 @@ The view's composer messages the subagent directly, as the root composer does th
   message re-briefs it.
 - A message sent just as the subagent finished is sent again as a follow-up.
 
+### Session column (implemented)
+
+The session panel, a subagent's log and the new-session view share one column (`styles/session.css`).
+Everything under the header sits in it: the transcript, the plan, banners, the queue, the footer
+drawer, the composer and the footer share one reading width and one side gutter
+(`--session-gutter`: 16 px, 12 px when the panel is narrower than 36 rem) and are separated by
+`--sp-2`, so no component touches the prompt box's side padding and the footer's controls sit
+under the well's own padding. The width is the *Max prose width* setting times the prose scale,
+resolved once on `.session` (`--col-max`, a registered length) so a rule's own font size never changes it.
+
+- **Transcript:** the user's turn is a soft `--surface-active` bubble at `--radius` on the right of
+  the column; the assistant's turn is unboxed prose at `--fs-base` and `--lh-prose` (times the
+  prose scale); headings, lists, block quotes, tables and code use the type scale. Tables and code
+  blocks scroll inside themselves, so a narrow column never scrolls sideways. Failures and
+  notes in the transcript are `Notice`s (*Turn failed* with the daemon's reason); the error paragraph
+  elsewhere keeps `.error`.
+- **Tool calls:** one quiet row each, 24 px tall: a chevron, the state, the tool's name in the code
+  face, the summary (which ellipsizes), and the run time. Opened, the arguments and result hang off a
+  hairline under the chevron.
+- **Composer:** one `--radius-lg` well on `--surface-sunken` with a `--border-control` edge, holding
+  the attach and microphone buttons (`IconButton`), the message field, and a `--control-h-lg` send
+  button. Typing in it draws the one 2 px `--focus` ring on the well's edge. Attachment chips and the
+  push-to-talk status sit above it; queued messages stack above them. The footer under it (model,
+  effort, approval mode, cost, options, context meter) is `--fs-sm` and muted; the effort control
+  stays, greyed out, for a model that cannot reason.
+- **Waiting:** the *Working…* line, the core's wait line (spinner, text, elapsed time and one action)
+  and steering marks use the same type scale; the spinner and dots stop under reduced motion.
+
 ### Tool calls (implemented)
 
 Every tool call, the session's own in the transcript and each subagent's in its log
