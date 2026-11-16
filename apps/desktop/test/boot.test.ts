@@ -119,8 +119,9 @@ test("the background and accent colours agree across the CSS, TypeScript, and Ru
   // styles/tokens.css: dark tokens in :root, light tokens under data-theme="light".
   assert.match(styles, new RegExp(`:root \\{[^}]*--bg: ${dark}`));
   assert.match(styles, new RegExp(`:root\\[data-theme="light"\\] \\{[^}]*--bg: ${light}`));
-  const accentDark = /:root \{[^}]*--accent: (#[0-9a-f]{6})/.exec(styles)?.[1];
-  const accentLight = /:root\[data-theme="light"\] \{[^}]*--accent: (#[0-9a-f]{6})/.exec(styles)?.[1];
+  // The cyan accent definitions (the default); settings.ts selects the others with data-accent.
+  const accentDark = /:root\[data-accent="cyan"\] \{[^}]*--accent: (#[0-9a-f]{6})/.exec(styles)?.[1];
+  const accentLight = /:root\[data-theme="light"\]\[data-accent="cyan"\] \{[^}]*--accent: (#[0-9a-f]{6})/.exec(styles)?.[1];
   assert.ok(accentDark && accentLight);
   // boot.css: each pair appears in both of its theme rules.
   for (const value of [`--boot-bg: ${dark}`, `--boot-bg: ${light}`, `--boot-accent: ${accentDark}`, `--boot-accent: ${accentLight}`]) {

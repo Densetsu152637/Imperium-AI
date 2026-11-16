@@ -1,4 +1,4 @@
-/* style-budget: colour=3 font-size=17 font-weight=3 radius=1 shadow=1 duration=0 z-index=0 */
+/* style-budget: colour=2 font-size=17 font-weight=3 radius=1 shadow=0 duration=0 z-index=0 */
 /* The environment window and its sections: folders, agents, the icon picker, runtime fields and knowledge. */
 
 .environment-config-lines {
@@ -79,7 +79,6 @@ button.tile-choice {
   border-radius: var(--radius-sm);
   background: var(--surface-2);
   color: var(--text);
-  box-shadow: var(--highlight);
 }
 
 button.tile-choice .lucide {
@@ -94,12 +93,10 @@ button.tile-choice:hover:not(:disabled) {
 button.tile-choice[aria-checked="true"] {
   border-color: var(--accent);
   background: var(--accent-soft);
-  box-shadow: 0 0 0 2px var(--accent-soft), var(--highlight);
 }
 
 button.colour-choice {
   border-color: rgb(0 0 0 / 0.25);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22);
 }
 
 button.colour-choice:hover:not(:disabled) {

@@ -6,9 +6,8 @@
 }
 
 .connect input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline-offset: 0;
+  border-color: var(--focus);
 }
 
 .app {
@@ -18,7 +17,7 @@
   background: var(--bg);
 }
 
-/* Title bar: a brushed-metal strip with a chrome wordmark */
+/* Title bar: a flat strip with a chrome wordmark */
 .titlebar {
   position: relative;
   z-index: 3;
@@ -27,8 +26,7 @@
   gap: calc(var(--space) * 1.5);
   padding: calc(var(--space) * 0.75) calc(var(--space) * 2);
   border-bottom: 1px solid var(--border);
-  background: var(--metal-bar);
-  box-shadow: var(--highlight);
+  background: var(--surface);
 }
 
 .titlebar .brand {
@@ -39,7 +37,7 @@
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  background: var(--chrome-text);
+  background: var(--wordmark);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -53,7 +51,6 @@
   border-radius: 50%;
   background: radial-gradient(circle, var(--accent) 0 32%, transparent 36%);
   border: 1.5px solid var(--silver);
-  box-shadow: var(--highlight);
 }
 
 .connection {
@@ -266,7 +263,7 @@
 
 /* Side rails: brushed graphite, panels are open sections rather than boxes. */
 .rail {
-  background: var(--metal);
+  background: var(--surface);
 }
 
 .rail-left {
@@ -375,10 +372,10 @@ button.icon-only.panel-tool .lucide {
   flex-direction: column;
   gap: calc(var(--space) * 1.5);
   padding: calc(var(--space) * 2);
-  background: var(--metal-card);
+  background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  box-shadow: var(--highlight), var(--shadow);
+  box-shadow: var(--shadow);
   animation: rise-in var(--slow) var(--ease);
   max-height: calc(100vh - 4.5rem);
   overflow-y: auto;
@@ -461,7 +458,7 @@ button.icon-only.panel-tool .lucide {
   font-size: 0.85rem;
 }
 
-/* Connect screen: one metal card in the middle of the window */
+/* Connect screen: one card in the middle of the window */
 .connect {
   flex: 1;
   display: flex;
@@ -470,16 +467,16 @@ button.icon-only.panel-tool .lucide {
   min-height: 0;
   overflow: auto;
   padding: calc(var(--space) * 3) 1rem;
-  background: radial-gradient(60rem 30rem at 50% -10%, var(--accent-soft), transparent 70%), var(--bg);
+  background: var(--bg);
 }
 
 .connect-card {
   width: min(30rem, 100%);
   padding: calc(var(--space) * 3.5);
-  background: var(--metal-card);
+  background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  box-shadow: var(--highlight), var(--shadow);
+  box-shadow: var(--shadow);
   animation: rise-in var(--slow) var(--ease);
 }
 
@@ -572,8 +569,7 @@ button.icon-only.panel-tool .lucide {
   position: static;
   width: auto;
   border-bottom: 1px solid var(--border);
-  background: var(--metal-bar);
-  box-shadow: var(--highlight);
+  background: var(--surface);
 }
 
 .panel-pin[aria-pressed="true"] {
@@ -751,7 +747,7 @@ button.icon-only.panel-tool .lucide {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg);
-  background: var(--metal-card, var(--surface));
+  background: var(--surface-raised);
   border: 1px solid var(--accent);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -817,7 +813,7 @@ button.icon-only.panel-tool .lucide {
 }
 
 .panel.drop-into {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: -2px;
   background: var(--accent-soft);
 }

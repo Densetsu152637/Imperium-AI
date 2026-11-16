@@ -8,10 +8,10 @@
   margin: 12vh auto auto;
   padding: 0;
   color: var(--fg);
-  background: var(--metal-card);
+  background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  box-shadow: var(--highlight), var(--shadow);
+  box-shadow: var(--shadow);
   overflow: hidden;
   animation: pop-in var(--fast) var(--ease);
 }
@@ -121,7 +121,6 @@
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 5px;
-  box-shadow: var(--highlight);
   white-space: nowrap;
 }
 

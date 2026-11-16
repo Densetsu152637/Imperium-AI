@@ -2,7 +2,7 @@
 // rendered, and the theme it (and each window's native background) uses before the saved
 // settings are read.
 
-/** `--bg` of each theme (styles.css); also the native window backgrounds (main.rs). */
+/** `--bg` of each theme (styles/tokens.css); also the native window backgrounds (main.rs). */
 export const BOOT_BACKGROUND = { dark: "#0b0c0e", light: "#f4f5f7" } as const;
 
 /** localStorage key holding the last theme, read by public/boot.js (linked from index.html). */

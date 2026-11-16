@@ -15,7 +15,7 @@ mod update;
 use tauri::Manager;
 
 /// Colours the window's native background to the saved theme (the system's under "system"),
-/// matching `--bg` in styles.css. The configuration's dark colour covers the gap before this runs.
+/// matching `--bg` in styles/tokens.css. The configuration's dark colour covers the gap before this runs.
 fn paint_background(window: &tauri::WebviewWindow) {
     let light = match store::saved_theme() {
         Some("light") => true,
