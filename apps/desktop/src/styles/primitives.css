@@ -1,0 +1,511 @@
+/* style-budget: colour=5 font-size=6 font-weight=2 radius=4 shadow=3 duration=4 z-index=0 */
+/* Shared components: icon and small buttons, fields, the select trigger, switches, badge variants, status dots. Imported last: in the original stylesheet these came after the surfaces and win ties with them. */
+
+.muted {
+  color: var(--muted);
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: calc(var(--space) * 0.5);
+}
+
+.badge.running {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.badge.finished {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  color: var(--ok);
+}
+
+.badge.failed {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  color: var(--danger);
+}
+
+/* Paused for a steering message: waiting for the root or the user to resume or cancel it */
+.badge.paused {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+  color: var(--warn);
+}
+
+.status-dot.task-running {
+  background: var(--accent);
+  opacity: 1;
+  animation: status-dot-pulse 1.6s ease-in-out infinite;
+}
+
+.status-dot.task-finished {
+  background: var(--ok);
+  opacity: 1;
+}
+
+.status-dot.task-failed {
+  background: var(--danger);
+  opacity: 1;
+}
+
+.status-dot.task-paused {
+  background: transparent;
+  border: 1px solid var(--warn);
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.task-running {
+    animation: none;
+  }
+}
+
+.badge.local {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  color: var(--ok);
+}
+
+.badge.cloud {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.notice {
+  font-size: 0.85rem;
+  color: var(--muted);
+  border-left: 2px solid var(--silver);
+  padding-left: var(--space);
+}
+
+.status-dot.working {
+  background: var(--accent);
+  opacity: 1;
+  animation: status-dot-pulse 1.6s ease-in-out infinite;
+}
+
+.status-dot.watching,
+.status-dot.merged {
+  background: var(--ok);
+  opacity: 1;
+}
+
+.status-dot.needs_attention {
+  background: var(--danger);
+  opacity: 1;
+}
+
+.status-dot.needs_model,
+.status-dot.paused {
+  background: transparent;
+  border: 1px solid var(--accent);
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.working {
+    animation: none;
+  }
+}
+
+/* Session status: a mark and words, with colour as a third cue */
+.badge.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-mark {
+  font-size: 0.7rem;
+}
+
+.badge.status.idle {
+  color: var(--muted);
+  background: transparent;
+}
+
+.badge.status.working {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.badge.status.needs_attention {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.badge.status.needs_model {
+  border-color: var(--accent);
+  border-style: dashed;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.badge.status.paused {
+  border-style: dashed;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.badge.status.watching {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  color: var(--ok);
+}
+
+.badge.status.merged {
+  border-color: var(--ok);
+  background: var(--ok);
+  color: var(--ink);
+}
+
+.row-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.settings-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.8rem 1.4rem 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: 0.85rem;
+}
+
+.path {
+  display: block;
+  max-width: 22rem;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch.on .switch-knob {
+  left: calc(100% - 1.15rem);
+  background: #fff;
+}
+
+.wrap-code pre,
+.wrap-code code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Icons: Lucide line icons, one stroke (set in main.tsx), sized by the text around them ---- */
+.lucide {
+  flex: none;
+  width: 1.15em;
+  height: 1.15em;
+  vertical-align: -0.2em;
+}
+
+button:has(> .lucide) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4em;
+}
+
+/* A square button holding only an icon; its name comes from aria-label. */
+button.icon-only {
+  width: var(--control-h);
+  height: var(--control-h);
+  padding: 0;
+  flex: none;
+}
+
+button.icon-only .lucide {
+  width: var(--icon);
+  height: var(--icon);
+}
+
+button.small {
+  padding: 0.2rem var(--control-pad-sm);
+  font-size: var(--fs-sm);
+}
+
+/* Row tools (edit, remove, the queue's and folders' small buttons): hidden until their row is
+   hovered or holds focus, so a list at rest shows its content, not its buttons. Keyboard users
+   reach them by tabbing, which reveals them. */
+button.icon-only.row-tool {
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease);
+}
+
+button.icon-only.row-tool .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+:is(li, tr):hover button.row-tool,
+:is(li, tr):focus-within button.row-tool,
+button.row-tool:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  button.icon-only.row-tool {
+    opacity: 1;
+  }
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+.tool-icon {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
+}
+
+.tool-icon.ok {
+  color: var(--ok);
+}
+
+.tool-icon.failed {
+  color: var(--danger);
+}
+
+.tool-icon.spin {
+  color: var(--muted);
+}
+
+.field {
+  padding: 0.4rem 0.65rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.25);
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+  width: 100%;
+}
+
+textarea.field {
+  resize: vertical;
+  font-family: var(--font-code);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.field:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.field:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.field:disabled {
+  opacity: 0.6;
+}
+
+.field::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
+}
+
+/* A search box with a magnifier inside its left edge. */
+.search-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-field > .lucide {
+  position: absolute;
+  left: 0.6rem;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.search-field input {
+  width: 100%;
+  padding: 0.4rem 0.65rem 0.4rem 2rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.25);
+}
+
+.search-field input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ---- Select: a raised key that opens a floating list with a check by the choice ---- */
+button.select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 10rem;
+  max-width: 100%;
+  padding: 0.38rem 0.55rem 0.38rem 0.75rem;
+  text-align: left;
+  background: var(--metal-card);
+}
+
+button.select .select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.select .select-value.placeholder {
+  color: var(--muted);
+}
+
+button.select .select-chevron {
+  color: var(--muted);
+  transition: transform var(--fast) var(--ease);
+}
+
+button.select.open {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+button.select.open .select-chevron {
+  transform: rotate(180deg);
+}
+
+/* A switch: a pill with a knob that slides to the accent when on. */
+.switch {
+  position: relative;
+  width: 2.4rem;
+  height: 1.35rem;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong, var(--border));
+  box-shadow: none;
+  flex: none;
+  transition:
+    background-color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+
+.switch-knob {
+  position: absolute;
+  top: 50%;
+  left: 0.15rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--silver, #c9c3b6);
+  transform: translateY(-50%);
+  transition: left var(--fast, 120ms) ease;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.status-dot {
+  flex: none;
+  opacity: 0.5;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.badge.persistent {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.badge.worktree {
+  border-color: var(--border-strong);
+}
+
+.budget-number {
+  width: 5rem;
+}
+
+.panel-grip {
+  flex: none;
+  width: 0.9rem;
+  height: 0.9rem;
+  color: var(--muted);
+}
+
+.composer .composer-tool svg {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.attachment-chip button {
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+}
+
+/* Knowledge agents (docs/21-knowledge-agents.md): the badge on an agent's row and the section in its view. */
+.badge.knowledge {
+  flex: none;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.badge.answered {
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  color: var(--ok);
+}
+
+.badge.timeout,
+.badge.cancelled,
+.badge.refused {
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  color: var(--danger);
+}

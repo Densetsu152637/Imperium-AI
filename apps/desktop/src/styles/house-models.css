@@ -1,0 +1,48 @@
+/* style-budget: colour=0 font-size=3 font-weight=0 radius=1 shadow=0 duration=0 z-index=0 */
+/* The first-run suggestion of the house models. */
+
+/* First-run suggestion of the house models (Emperor and Consul). */
+.house-models {
+  margin-bottom: calc(var(--space) * 1.5);
+}
+
+.house-models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.house-models h3 {
+  margin: 0 0 calc(var(--space) * 0.5);
+  font-size: 0.9rem;
+}
+
+.house-models p {
+  margin: 0 0 var(--space);
+  font-size: 0.8rem;
+}
+
+.house-model-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space);
+}
+
+.house-model-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space);
+  padding: var(--space);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.house-model-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.8rem;
+}

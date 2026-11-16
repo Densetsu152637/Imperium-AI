@@ -6,7 +6,7 @@ import { App } from "./App";
 import { armSplash, bootTheme, THEME_KEY } from "./shared/boot";
 import { applySettings, loadSettings, resolvedTheme } from "./settings/settings";
 import { loadStore } from "./shared/store";
-import "./styles.css";
+import "./styles/index.css";
 
 // The loading screen in index.html stays until the panels render (App calls splashDone); the
 // timer inside armSplash removes it anyway if they never do.
@@ -28,7 +28,7 @@ void loadStore().finally(() => {
   applySettings(loadSettings());
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      {/* One stroke for every icon; their size follows the text around them (styles.css). */}
+      {/* One stroke for every icon; their size follows the text around them (styles/primitives.css). */}
       <LucideProvider strokeWidth={1.75}>
         <App />
       </LucideProvider>

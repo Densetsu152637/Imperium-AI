@@ -1,3 +1,4 @@
+// style-budget: native-select=1
 // Model configuration: llama.cpp / vLLM settings of local models and the editable settings of
 // model-table rows, drawn as tables: one row per setting (its name with an (i) icon that says in
 // plain words what it affects, its value, a reset), grouped (modelSettingsTable.ts holds the

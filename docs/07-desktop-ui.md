@@ -287,7 +287,7 @@ be served to a browser for remote use.
 ### Source layout (implemented)
 
 `apps/desktop/src` holds `App.tsx` (the daemon connection, the panels and the layout), `main.tsx`
-and `styles.css`, and these folders: `sessions/` (the session store hook, sessions, branching,
+and `styles/` (the stylesheets, below), and these folders: `sessions/` (the session store hook, sessions, branching,
 the queue, waits, tool calls, attachments, the transcript's follow-scroll and voice),
 `models/` (model names, options, availability, preferences, settings table and memory, the
 model configuration dialog and its forms, telemetry and budgets), `environments/` (the
@@ -298,6 +298,25 @@ and `shared/` (the connection banner, the daemon cache, the windows hook, notifi
 store, panel windows and the icon registry), beside `panels/`, `components/`, `layout/`, `mods/`,
 `commands/` and `daemon/`. Pure rules live in `.ts` files, tested under `apps/desktop/test/` (for example
 `models/spec.ts` by `modelSpec.test.ts`); only those files are loaded by the tests.
+
+**Stylesheets (implemented):** `main.tsx` imports `styles/index.css`, which imports one file per
+surface in cascade order: `tokens.css` (every custom property, dark and light), `base.css`
+(the page, element defaults, the keyframes), `dialog.css` (the dialog shell, its navigation,
+menus and the floating lists of `Select`), `shell.css` (title bar, columns, panel headers, the
+panel editor, the connect screen), `sidebar.css`, `palette.css`, `session.css` (the session
+column, including the model picker in its footer), `settings.css`, `connectors.css`,
+`models.css`, `environments.css`, `panels.css` (the side panels), `tour.css`,
+`house-models.css`, `mods.css` and `primitives.css` (the shared components: small and
+icon-only buttons, fields, the select trigger, switches, badge variants, status dots). The order
+matters: rules of equal specificity are decided by it, so `primitives.css` stays last, where
+those rules sat in the original single file, and a rule that must beat or lose to one in another
+file is placed to keep that order. `models/modelConfig.css` belongs to the model configuration
+dialog, which imports it before `styles/index.css` loads. Each stylesheet except `tokens.css`
+starts with a `/* style-budget: … */` comment counting the literal colours, font sizes and
+weights, radii, shadows, durations and z-indexes it still holds; `test/styleTokens.test.ts`
+fails when the count differs, so every cleanup lowers its budget in the same change, and
+it also checks that every `var(--name)` is defined and counts native `<select>` elements
+(`// style-budget: native-select=N` in a component file).
 
 ### The bundled daemon belongs to the app (implemented)
 
@@ -518,7 +537,7 @@ including ligatures for code.
 **Icons (implemented):** every icon is a [Lucide](https://lucide.dev) line icon from
 `lucide-react` (pinned in `apps/desktop/package.json`), the same thin, rounded style as
 ChatGPT's and Claude's apps. One stroke width is set for all of them in `main.tsx`
-(`LucideProvider`), and their size follows the text around them (`.lucide` in `styles.css`),
+(`LucideProvider`), and their size follows the text around them (`.lucide` in `styles/primitives.css`),
 so they scale with the interface. Icons beside a label are hidden from screen readers; a
 button with only an icon (`.icon-only`, such as a panel's close button) carries an
 `aria-label` and a tooltip. Project glyphs, the send button, tool-call states (spinner, check,
@@ -536,7 +555,7 @@ use it.
 
 **Theme (implemented):** Settings → Appearance → Theme picks System (the default, following the
 operating system and its changes), Light, or Dark. `settings/settings.ts` sets `data-theme` on the root
-element and `styles.css` keys the light tokens on `:root[data-theme="light"]`; the command
+element and `styles/tokens.css` keys the light tokens on `:root[data-theme="light"]`; the command
 palette's *Switch to light/dark theme* flips it. Mod panels pick up the tokens when they open.
 
 ### Loading screen and no white flash (implemented)
@@ -589,7 +608,7 @@ click away, never removed.
   Settings → Notifications plays its three sounds from one *Play* menu.
 - **Tokens:** control heights (`--control-h`, `--control-h-sm`), paddings, icon sizes (`--icon`,
   `--icon-sm`) and type steps (`--fs-xs`, `--fs-sm`, `--fs-md`) are shared custom properties in
-  `styles.css`; `.icon-only`, `.small`, `.panel-tool`, and `.row-tool` buttons use them instead
+  `styles/tokens.css`; `.icon-only`, `.small`, `.panel-tool`, and `.row-tool` buttons use them instead
   of one-off sizes.
 
 Every moved action keeps its accessible name: menu buttons follow the WAI-ARIA menu button
