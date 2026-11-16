@@ -1255,6 +1255,9 @@ fn block_on<T>(future: impl std::future::Future<Output = anyhow::Result<T>>) -> 
 /// Set to anything but `0`, `false`, `no` or `off` to stop `imperium` commands from starting
 /// `imperium-core` when none runs (for CI and tests).
 const NO_SPAWN_ENV: &str = "IMPERIUM_NO_DAEMON_SPAWN";
+/// Set in the environment of every command the daemon runs for an agent
+/// (`imperium_tools::SPAWNED_MARK`).
+const SPAWNED_MARK: &str = "IMPERIUM_SPAWNED_BY_DAEMON";
 /// How many seconds a daemon an `imperium` command starts waits with no client and no work
 /// before it exits (the daemon's own default is 10).
 const IDLE_SECS_ENV: &str = "IMPERIUM_DAEMON_IDLE_SECS";
@@ -1317,7 +1320,11 @@ async fn connect_as(kind: LeaseKind, start: bool) -> anyhow::Result<(Client, Str
         Some(name) => remote::endpoint_file(&paths, name),
         None => paths.daemon_endpoint_file(),
     };
-    let launch = if remote.is_none() && start {
+    // A command the daemon's own agents run (`run_command`, hooks, MCP servers) is a
+    // descendant of the daemon: it takes no lease, which would keep the daemon up for as long
+    // as the agent waits on it, and starts no daemon.
+    let spawned_by_daemon = std::env::var_os(SPAWNED_MARK).is_some();
+    let launch = if remote.is_none() && start && !spawned_by_daemon {
         daemon_launch(&paths)
     } else {
         None
@@ -1332,7 +1339,8 @@ async fn connect_as(kind: LeaseKind, start: bool) -> anyhow::Result<(Client, Str
         // A forwarded daemon is on another machine, where this process id means nothing.
         pid: remote.is_none().then(std::process::id),
     };
-    match attach(&file, me, Some(lease), launch.as_ref()).await {
+    let lease = (!spawned_by_daemon).then_some(lease);
+    match attach(&file, me, lease, launch.as_ref()).await {
         Ok((client, endpoint)) => Ok((client, endpoint.url)),
         Err(error @ ClientError::Connect(_)) => Err(anyhow::Error::new(error).context(format!(
             "imperium-core did not answer; it may have stopped without removing {}",

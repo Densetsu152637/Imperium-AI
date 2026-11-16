@@ -9,9 +9,12 @@ use crate::{block_on, connect_existing};
 pub fn status() -> anyhow::Result<()> {
     block_on(async {
         let (mut client, url) = connect_existing().await?;
-        let status = client
+        let mut status = client
             .call::<SystemLifetime>(SystemLifetimeParams { persistent: None })
             .await?;
+        // This command's own lease is not what the report is about.
+        let own = std::process::id();
+        status.leases.retain(|lease| lease.pid != Some(own));
         let daemon = client.daemon();
         println!(
             "{} {} (protocol {}) at {url}",
