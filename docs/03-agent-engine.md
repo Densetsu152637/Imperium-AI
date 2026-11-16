@@ -905,7 +905,8 @@ imperium run --print-prompt --variant lean --context-tokens 32768 > prompt.json
 | `--variant <name\|path>`, `--prompt-overlay <file>`, `--flag k=v` | See [variants](#harness-variants). |
 | `--subagent-replay <file>` | Answer subagents from recordings, with no model call for them. |
 | `--cost-ceiling USD`, `--token-ceiling N`, `--price-in`, `--price-out` | Prices are per million tokens. A ceiling is checked before each model call (the root's and any real subagent's), so the last call can pass it by its own size. A cost ceiling needs prices. |
-| `--permission-mode` | Default `default`. A call that would ask is always denied (recorded under `permission_requests`); `plan` and `ask` are stricter, `accept_edits` lets edits through, `full` runs everything the user's deny and ask rules and the safety floor do not stop (including `web_fetch`); `auto` is refused. |
+| `--permission-mode` | Default `default`. A call that would ask is always denied (recorded under `permission_requests`); `plan` and `ask` are stricter, `accept_edits` lets edits through, `full` runs everything the safety floor's built-in rules do not stop (no user rules, grants or isolation tier; including `web_fetch`), warns on stderr, and is refused when your configuration sets `isolation.tier` to anything but `policy`; `auto` is refused. |
+| `--config-home <dir>` | Read the configuration from this folder (laid out as `IMPERIUM_HOME`) for variants and the isolation check of `full`; nothing else of it is applied. |
 | `--local` | The root model runs on this machine, so the harness aids set to `auto` count as on. |
 | `--timeout-s`, `--journal <file>` | A wall-clock limit (default 1800) and a place to keep the session journal. |
 | `--print-prompt` | Print the resolved system prompt (with `{workspace}` where the working folder goes) and tool schemas as JSON and stop. No model is called: the session is built as for a run and answered by a stand-in model, so the output is what a run would first send. |
@@ -925,7 +926,8 @@ The headless run builds its own workspace: it reads none of the user's configura
 user's permission rules, path grants and isolation tier do not apply, and the folders the daemon
 guards (`<config>/mods`, `<config>/plugins`, `<data>/packs`) are not guarded. Only the safety
 floor's built-in rules and the permission mode apply, and commands run in the user's own shell.
-Use `--permission-mode full` only in a throwaway workspace. (A later change will run sessions
+Use `--permission-mode full` only on a machine or account you can afford to lose; commands are
+not confined to the workspace. (A later change will run sessions
 through a daemon, which brings the user's rules, grants, isolation and guarded folders.)
 
 **Output (schema version 1).** Keys: `schema_version`, `mode` (`run` or `print_prompt`),

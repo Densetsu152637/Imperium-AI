@@ -660,6 +660,36 @@ async fn local_root_models_get_the_harness_aids_that_are_auto() {
 }
 
 #[tokio::test]
+async fn full_mode_is_refused_under_a_configured_isolation_tier_and_allowed_without_one() {
+    let workspace = tempfile::tempdir().unwrap();
+    let isolated = tempfile::tempdir().unwrap();
+    let config = isolated.path().join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("config.toml"), "[isolation]\ntier = \"os\"\n").unwrap();
+    let plain = tempfile::tempdir().unwrap();
+    let (url, _) = endpoint(vec![text_body("Done.")]).await;
+    let with = |home: &tempfile::TempDir| {
+        args(&[
+            "--headless".into(),
+            "--task".into(),
+            "Say done.".into(),
+            "--workspace".into(),
+            workspace.path().display().to_string(),
+            "--root-model".into(),
+            url.clone(),
+            "--config-home".into(),
+            home.path().display().to_string(),
+            "--permission-mode".into(),
+            "full".into(),
+        ])
+    };
+    let error = run(with(&isolated)).await.unwrap_err().to_string();
+    assert!(error.contains("isolation.tier"), "{error}");
+    let outcome = run(with(&plain)).await.unwrap();
+    assert_eq!(outcome.json["exit_reason"], "completed");
+}
+
+#[tokio::test]
 async fn delegate_chunks_agents_are_answered_by_the_calls_bare_brief() {
     let workspace = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();

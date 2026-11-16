@@ -127,6 +127,11 @@ pub struct RunArgs {
     /// `auto` count as on, as in the product, where `auto` means on for a local model.
     #[arg(long)]
     pub local: bool,
+    /// Read the configuration from this folder, laid out as `IMPERIUM_HOME`, instead of the
+    /// user's own. A headless run uses it for variants and for the isolation check of
+    /// `--permission-mode full`; it applies none of the other settings.
+    #[arg(long, value_name = "DIR")]
+    pub config_home: Option<PathBuf>,
     /// The root model's context window in tokens.
     #[arg(long, value_name = "N")]
     pub context_tokens: Option<u64>,
@@ -197,6 +202,13 @@ pub async fn run(args: RunArgs) -> anyhow::Result<Outcome> {
         bail!(
             "--permission-mode auto asks a classifier model about each call, which a \
              deterministic eval does not do: use default, plan, ask, accept_edits or full"
+        );
+    }
+    if args.permission_mode == PermissionMode::Full {
+        check_full_allowed(args.config_home.as_deref())?;
+        eprintln!(
+            "warning: --permission-mode full runs commands unconfined, in your own shell and \
+             account, under only the safety floor's built-in rules"
         );
     }
     let setup = Setup::new(&args)?;
@@ -338,6 +350,28 @@ pub async fn run(args: RunArgs) -> anyhow::Result<Outcome> {
         3
     };
     Ok(Outcome { json, code })
+}
+
+/// Refuses `full` mode when the user has configured an isolation tier (`os` or `container`):
+/// this run builds none of it, so `full` would run commands with less protection than the user
+/// asked for. Until runs go through the daemon, that is an error rather than a surprise.
+fn check_full_allowed(config_home: Option<&Path>) -> anyhow::Result<()> {
+    let paths = match config_home {
+        Some(home) => Paths::under(home),
+        None => Paths::from_env().context("could not find the configuration folder")?,
+    };
+    let settings = imperium_config::load(&paths, None, std::env::vars())
+        .and_then(|config| config.settings())
+        .context("could not read the configuration to check the isolation tier")?;
+    let tier = &settings.isolation.tier;
+    if tier != "policy" {
+        bail!(
+            "--permission-mode full is refused: your configuration sets isolation.tier = {tier:?}, \
+             and a headless run does not build that isolation, so commands would run unconfined. \
+             Use another permission mode, or set isolation.tier = \"policy\" to accept that"
+        );
+    }
+    Ok(())
 }
 
 /// How the run ended.
@@ -634,9 +668,12 @@ impl Setup {
 
         let mut variant = match &args.variant {
             Some(spec) => {
-                let config_dir = Paths::from_env()
-                    .ok()
-                    .map(|paths| paths.config_dir().to_path_buf());
+                let config_dir = match &args.config_home {
+                    Some(home) => Some(Paths::under(home).config_dir().to_path_buf()),
+                    None => Paths::from_env()
+                        .ok()
+                        .map(|paths| paths.config_dir().to_path_buf()),
+                };
                 Variant::load(spec, config_dir.as_deref())?
             }
             None => Variant::baseline(),
