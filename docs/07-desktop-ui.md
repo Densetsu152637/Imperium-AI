@@ -657,7 +657,10 @@ click away, never removed.
 - **Launch focus:** once the panels have rendered, the app asks for document focus and moves it to
   the app's root element (`useLaunchFocus` in `shared/useWindows.ts`) unless a field already has it,
   so Ctrl+, and Ctrl+K do not need a click first. Only the web view's own focus is requested; if
-  the web view lacks operating-system focus a native `set_focus` is needed (a follow-up).
+  the web view lacks operating-system focus the shell asks for it: the Tauri shell (`src-tauri/src/main.rs`)
+  calls `set_focus` once on each window it builds, right after `show`, so the OS gives the window
+  (and its web view) keyboard focus at launch. It is a single call at creation, not repeated on
+  events, and the login-time background run builds no window, so it never takes focus.
 - **Rows:** a row's secondary actions show on hover or focus: a model row's favourite and hide
   toggles (shown while set), a queued message's *Edit* and *Remove* (*Steer* stays visible), an
   environment folder's remove. Connector rows keep their on/off switch and put *Test
@@ -1023,7 +1026,7 @@ share a left edge; a session row's time gives way to its *⋯* menu the same way
 allows it without a folder: its sessions work in their own scratch folders.
 
 *New environment* (the *+* in the Environments header) and *Edit* open the **environment window**,
-built on the same shared modal as Settings, Connectors and the model editor (`SettingsModal`: a
+built on the same shared modal as Settings, Connectors and the model editor (`Dialog`: a
 navigation column on the left, a header with the selected section's title and a close button, the
 scrolling rows, and a footer; Escape or a click outside closes it, Ctrl+S saves). Its sections are
 laid out as the shared `Row`s (title and help text on the left, the control on the right), so
@@ -1568,7 +1571,7 @@ on the card, checksum verification, and making the model the default after the d
 
 ## Model configuration dialog (implemented)
 
-A modal edits model settings. It uses the Settings window's shell (`SettingsModal`: the same
+A modal edits model settings. It uses the Settings window's shell (`Dialog`: the same
 sheet, sizing, header with the title and ×, navigation column, and Esc or a click on the backdrop
 to close), with a footer for its actions. It opens from *Configure models* in Settings (Models and
 Local runtime), from *Configure* in the Local models panel (on that model) and from *Configure* in

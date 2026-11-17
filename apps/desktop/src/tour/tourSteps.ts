@@ -91,7 +91,7 @@ export type AppReadiness = {
   mainWindow: boolean;
 };
 
-/** Dialogs other than the tour's own card: modal sheets, the (native) palette, confirmations. */
+/** Dialogs other than the tour's own card: modal sheets (the shared Dialog, which the command palette also uses), confirmations. */
 export const MODAL_SELECTOR = '[aria-modal="true"]:not(.tour-card), dialog[open], [role="alertdialog"]';
 
 /** Whether any modal is open: the one definition the tour, its auto-start and the Esc guards share. */
