@@ -272,7 +272,7 @@ export const ESTIMATE_ROWS = [
   {
     key: "kv",
     label: "KV cache (conversation memory)",
-    help: "The memory that holds the conversations the model is working on. It grows with the KV pool and the cache types, so lowering the context, the pool, or the cache precision is the quickest way to cut memory.",
+    help: "The memory that holds the conversations the model is working on, worked out for the pool at its largest: the max context (times the slots when several agents share the pool), or the fixed pool. A pool you leave empty starts smaller and grows only as agents need it, so this is the most it may reserve, not what it takes at first. Lowering the context, the pool, or the cache precision is the quickest way to cut memory.",
   },
   {
     key: "placement",

@@ -142,7 +142,7 @@ export function LocalForm({
       </SettingRow>
     ),
     pool_tokens: text("pool_tokens", eff.pool_fixed ? eff.pool_tokens : null, {
-      hint: eff.pool_fixed ? "Fixed: shared by every slot." : `Empty: starts at ${eff.pool_tokens} and grows on demand up to the max context.`,
+      hint: eff.pool_fixed ? "Fixed: shared by every slot." : `Empty: starts at ${eff.pool_tokens} and grows on demand up to ${eff.pool_max} tokens (the memory estimate counts that much).`,
     }),
     slots: text("slots", eff.slots),
     cache_type_k: select("cache_type_k", cacheTypes, defaults.cache_type_k),

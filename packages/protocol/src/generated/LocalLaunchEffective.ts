@@ -18,6 +18,11 @@ context_auto: boolean,
  */
 pool_tokens: number, 
 /**
+ * The most the pool may grow to: the tokens the memory estimate's KV cache is worked out
+ * for. The fixed pool when a setting fixes it.
+ */
+pool_max: number, 
+/**
  * A setting fixes the pool, so it never grows.
  */
 pool_fixed: boolean, 

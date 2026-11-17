@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import type { LocalModelConfig } from "@imperium/protocol";
 
-import { approx, estimateValue, formatBytes, localEstimate, placementText, rowEstimate, summaryLine } from "../src/models/modelMemory.ts";
+import { approx, estimateValue, formatBytes, kvLabel, localEstimate, placementText, rowEstimate, summaryLine } from "../src/models/modelMemory.ts";
 
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;
@@ -98,4 +98,15 @@ test("a hosted row runs remotely; a row that names a local model shows that mode
 test("weights of an unknown size are not shown as zero", () => {
   const estimate = localEstimate(model({ weights_bytes: 0 }));
   assert.equal(estimateValue(estimate, "weights"), "unknown");
+});
+
+test("the KV cache row says which size it is worked out for: the pool at its ceiling", () => {
+  const effective = (pool_max: number) => ({ context: 32_768, pool_tokens: 8192, pool_max }) as LocalModelConfig["effective"];
+  const one = localEstimate(model({ effective: effective(32_768) }));
+  assert.equal(kvLabel(one), "KV cache (conversation memory) at max context 32,768");
+  if (one.kind === "local") assert.equal(one.kvTokens, 32_768, "not the 8,192 the pool starts with");
+  const shared = localEstimate(model({ effective: effective(131_072) }));
+  assert.equal(kvLabel(shared), "KV cache (conversation memory) at the full pool of 131,072 tokens");
+  assert.equal(kvLabel(localEstimate(model())), "KV cache (conversation memory)", "no size known: no claim");
+  assert.equal(kvLabel({ kind: "remote" }), "KV cache (conversation memory)");
 });

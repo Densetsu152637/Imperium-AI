@@ -12,6 +12,7 @@ const effective = {
   context: 8192,
   context_auto: false,
   pool_tokens: 8192,
+  pool_max: 32768,
   pool_fixed: false,
   pool_clamped: false,
   slots: 4,

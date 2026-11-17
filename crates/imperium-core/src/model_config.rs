@@ -520,6 +520,16 @@ fn from_local(settings: LocalModelSettings) -> LocalLaunchSettings {
     }
 }
 
+/// `launch` with its KV pool at the ceiling it may grow to ([`ModelLaunch::pool_max`]): the
+/// settings the memory estimate is worked out for. A pool no setting fixes starts small and
+/// grows when calls need more, so the memory the model may reserve is that of the full pool.
+fn at_max_pool(launch: &ModelLaunch) -> ModelLaunch {
+    ModelLaunch {
+        pool_tokens: launch.pool_max.max(launch.pool_tokens),
+        ..launch.clone()
+    }
+}
+
 fn effective(launch: &ModelLaunch) -> LocalLaunchEffective {
     LocalLaunchEffective {
         // Unsized `auto` (the defaults) has no number of its own.
@@ -530,6 +540,7 @@ fn effective(launch: &ModelLaunch) -> LocalLaunchEffective {
         },
         context_auto: launch.context_auto,
         pool_tokens: launch.pool_tokens,
+        pool_max: launch.pool_max.max(launch.pool_tokens),
         pool_fixed: launch.pool_fixed,
         pool_clamped: launch.pool_clamped,
         slots: launch.slots,
@@ -572,9 +583,10 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
             .iter()
             .map(|model| {
                 // Sized for the model like the supervisor sizes it: the context ceiling, and
-                // the pool it starts with (or has grown to).
+                // the pool it starts with (or has grown to). The memory figures are those of
+                // the pool at its ceiling, what the model may reserve, not of its start.
                 let launch = supervisor.sized(model, &settings.launch_of(&model.id));
-                let (footprint, placement) = supervisor.plan_with(model, &launch);
+                let (footprint, placement) = supervisor.plan_with(model, &at_max_pool(&launch));
                 let cpu_lane = settings.cpu_row(&model.id).is_some();
                 let (draft_in_use, draft_notice) = supervisor.draft_state(model, &launch);
                 let vllm = model.format == imperium_local::scan::Format::Safetensors;
@@ -667,5 +679,56 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
         hidden: settings.models.hidden.clone(),
         disabled: settings.models.disabled.clone(),
         default_model: settings.models.default.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn launch(pool_tokens: u32, pool_max: u32, pool_fixed: bool) -> ModelLaunch {
+        ModelLaunch {
+            context: 32_768,
+            context_auto: false,
+            pool_tokens,
+            pool_fixed,
+            pool_clamped: false,
+            pool_max,
+            slots: 4,
+            cache_type_k: "f16".into(),
+            cache_type_v: "f16".into(),
+            flash_attn: "auto".into(),
+            max_gpu_layers: None,
+            max_wait_s: 600,
+            max_output_tokens: 0,
+            extra_args: Vec::new(),
+            draft: None,
+        }
+    }
+
+    #[test]
+    fn the_estimate_is_worked_out_for_the_pool_at_its_ceiling() {
+        // A pool that starts small and grows is estimated at what it may grow to.
+        let sized = launch(8192, 131_072, false);
+        let estimated = at_max_pool(&sized);
+        assert_eq!(estimated.pool_tokens, 131_072);
+        assert_eq!(estimated.context, sized.context);
+        assert_eq!(effective(&sized).pool_tokens, 8192, "what it starts with");
+        assert_eq!(effective(&sized).pool_max, 131_072, "what it may reserve");
+    }
+
+    #[test]
+    fn a_fixed_pool_is_estimated_as_itself() {
+        let fixed = launch(65_536, 65_536, true);
+        assert_eq!(at_max_pool(&fixed).pool_tokens, 65_536);
+        assert_eq!(effective(&fixed).pool_max, 65_536);
+    }
+
+    #[test]
+    fn a_ceiling_below_the_start_never_shrinks_the_estimate() {
+        assert_eq!(
+            at_max_pool(&launch(16_384, 4096, false)).pool_tokens,
+            16_384
+        );
     }
 }

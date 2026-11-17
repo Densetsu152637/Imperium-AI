@@ -1617,7 +1617,11 @@ second formula in the app: the debounced (500 ms) `models.set_config` dry run re
 draft model; calibrated by the measured memory of earlier loads), and the table follows them,
 greyed with *updating…* while the answer is on its way. The total is weights + KV pool + runtime
 overhead (+ a draft model); the KV pool is its tokens times the bytes per token, which the cache
-types scale; the planner then fills the GPU with as many layers as fit and puts the rest, with
+types scale, worked out for the pool at its ceiling (`effective.pool_max`: the fixed pool, or the most an
+empty pool may grow to, which is the max context times the slots, cut to what fits), because that is
+the most the model may reserve; a pool that starts small and grows with use does not make the figures
+creep up. The KV cache row says so (*KV cache at max context 32,768*, or *at the full pool of
+131,072 tokens* when the slots share more than one context); the planner then fills the GPU with as many layers as fit and puts the rest, with
 their share of the pool, in RAM (all of it in RAM on the CPU lane). They are estimates beside what
 else is loaded, and the real figures also depend on the driver. A table row that names a local
 model (`llamacpp:` or `vllm:`) shows that model's estimate; a hosted row says it *runs remotely*.
