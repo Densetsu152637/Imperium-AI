@@ -596,6 +596,11 @@ impl Environments {
         if let Some(env) = self.existing_for_folder(folder)? {
             return Ok(env);
         }
+        self.create_for_folder(folder)
+    }
+
+    /// Creates an environment named after `folder`, without looking for one first.
+    fn create_for_folder(&self, folder: &str) -> Result<EnvironmentInfo, EnvironmentError> {
         let folder = existing_folder(folder)?;
         let name = Path::new(&folder)
             .file_name()
@@ -645,7 +650,10 @@ impl Environments {
             }
             return Ok(env);
         }
-        let env = self.for_folder(folder)?;
+        // Created here, never looked up again: only an environment this call made is marked, so
+        // one the user made in between (a lost race gives two, which is harmless) is never
+        // taken for the run's and deleted.
+        let env = self.create_for_folder(folder)?;
         made.insert(env.id.clone(), 1);
         write_run_made(&self.path, &made.keys().cloned().collect());
         Ok(env)
@@ -709,6 +717,17 @@ impl Environments {
             changed = Some(env.clone());
             Ok(())
         })?;
+        // The user changed it (an edit, a folder, an agent): it is theirs now, so neither the
+        // end of the run nor the next start deletes it.
+        {
+            let mut made = self
+                .run_made
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if made.remove(id).is_some() {
+                write_run_made(&self.path, &made.keys().cloned().collect());
+            }
+        }
         Ok(changed.expect("set when the change succeeds"))
     }
 }
@@ -1162,6 +1181,29 @@ mod tests {
         envs.release_run(&claims[0]);
         assert!(envs.get(&claims[0]).is_none(), "deleted by the last run");
         assert!(!data.path().join("environments-run-made.json").exists());
+    }
+
+    #[test]
+    fn an_environment_the_user_changed_is_no_longer_the_runs_to_delete() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        let claimed = envs.claim_for_run(&path(&folder)).unwrap();
+        envs.add_folder(&claimed.id, &path(&extra)).unwrap();
+        assert!(
+            !data.path().join("environments-run-made.json").exists(),
+            "no longer marked"
+        );
+        envs.release_run(&claimed.id);
+        assert!(
+            envs.get(&claimed.id).is_some(),
+            "kept at the end of the run"
+        );
+        assert!(
+            store(data.path()).get(&claimed.id).is_some(),
+            "kept at the next start"
+        );
     }
 
     #[test]
