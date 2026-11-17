@@ -611,9 +611,10 @@ async fn a_long_lived_session_compacts_itself_when_a_turn_starts_over_budget() {
 
 struct Stuck {
     a: Arc<Fake>,
+    b: Arc<Fake>,
     c: Arc<Fake>,
     url_c: String,
-    session: Session,
+    session: Arc<Session>,
     _dir: tempfile::TempDir,
 }
 
@@ -653,20 +654,24 @@ async fn stuck_on_summary() -> Stuck {
         .set_model(model("b:small", &url_b, Some(window)))
         .await
         .unwrap();
-    a.hang_summaries
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    // Whichever model is asked to summarise stalls.
+    for fake in [&a, &b] {
+        fake.hang_summaries
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     Stuck {
         a,
+        b,
         c,
         url_c,
-        session,
+        session: Arc::new(session),
         _dir: dir,
     }
 }
 
-async fn summary_asked(fake: &Fake) {
+async fn summary_asked(stuck: &Stuck) {
     for _ in 0..100 {
-        if !fake.summaries().is_empty() {
+        if !stuck.a.summaries().is_empty() || !stuck.b.summaries().is_empty() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -682,10 +687,10 @@ async fn summary_asked(fake: &Fake) {
 #[tokio::test]
 async fn a_switch_while_the_turn_is_preparing_is_refused_and_stop_frees_the_session() {
     let stuck = stuck_on_summary().await;
-    let session = &stuck.session;
+    let session = Arc::clone(&stuck.session);
     let mut events = session.subscribe();
     session.send("hello again".into()).unwrap();
-    summary_asked(&stuck.a).await;
+    summary_asked(&stuck).await;
 
     let switched = tokio::time::timeout(
         Duration::from_secs(3),
@@ -722,12 +727,12 @@ async fn a_switch_while_the_turn_is_preparing_is_refused_and_stop_frees_the_sess
 #[tokio::test]
 async fn a_compaction_that_hangs_refuses_switches_and_stop_ends_it() {
     let stuck = stuck_on_summary().await;
-    let session = Arc::new(stuck.session);
+    let session = Arc::clone(&stuck.session);
     let compacting = {
         let session = Arc::clone(&session);
         tokio::spawn(async move { session.compact().await })
     };
-    summary_asked(&stuck.a).await;
+    summary_asked(&stuck).await;
 
     let switched = tokio::time::timeout(
         Duration::from_secs(3),
