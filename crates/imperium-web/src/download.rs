@@ -479,21 +479,23 @@ impl Web {
         if let Some(why) = refuse(&dir.join(&name)) {
             return Err(WebError::Http(why));
         }
-        let (path, reserved_file) = create_unique(&dir, &name).await?;
-        drop(reserved_file);
+        // The files are made with plain (synchronous) calls, with nothing awaited between making
+        // one and the guard that removes it: a cancellation can only land at an await, and a
+        // blocking call started by a dropped future still finishes, creating a file that no
+        // guard knows about.
+        let path = create_unique(&dir, &name)?;
         let mut part_name = path.file_name().unwrap_or_default().to_os_string();
         part_name.push(".part");
         let part = path.with_file_name(part_name);
         let mut guard = Partial {
             paths: vec![path.clone(), part.clone()],
         };
-        let mut file = match tokio::fs::OpenOptions::new()
+        let mut file = match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&part)
-            .await
         {
-            Ok(file) => file,
+            Ok(file) => tokio::fs::File::from_std(file),
             Err(error) => {
                 return Err(WebError::Http(format!(
                     "could not create the file: {error}"
@@ -579,7 +581,7 @@ impl Web {
 
 /// Creates `name` in `dir`, or `name (2)`, `name (3)` and so on if it is taken, without ever
 /// opening an existing file.
-async fn create_unique(dir: &Path, name: &str) -> Result<(PathBuf, tokio::fs::File), WebError> {
+fn create_unique(dir: &Path, name: &str) -> Result<PathBuf, WebError> {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), format!(".{ext}")),
         _ => (name.to_string(), String::new()),
@@ -591,13 +593,12 @@ async fn create_unique(dir: &Path, name: &str) -> Result<(PathBuf, tokio::fs::Fi
             format!("{stem} ({number}){ext}")
         };
         let path = dir.join(&candidate);
-        match tokio::fs::OpenOptions::new()
+        match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
-            .await
         {
-            Ok(file) => return Ok((path, file)),
+            Ok(_) => return Ok(path),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(WebError::Http(format!(
