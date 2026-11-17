@@ -83,11 +83,48 @@ impl Channel {
 /// Whether `remote` is offered to a build at `current`. Within a channel only a newer version is;
 /// when the user has chosen the other channel (`switching`), the channel's latest build is,
 /// whatever its number, unless it is the build already installed.
-fn offers(switching: bool, current: &Version, remote: &Version) -> bool {
+///
+/// A switch also requires the offered version to belong to `channel`: the feed's version string
+/// is not covered by its signature, so a feed claiming another channel's version is refused.
+fn offers(switching: bool, channel: Channel, current: &Version, remote: &Version) -> bool {
     if switching {
-        remote != current
+        remote != current && Channel::of_version(&remote.to_string()) == channel
     } else {
         remote > current
+    }
+}
+
+/// What a check found, without the build itself.
+enum Found<'a> {
+    Empty,
+    Current,
+    Newer { current: &'a str, version: &'a str },
+}
+
+/// What a check does with what it found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Plan {
+    NoRelease,
+    UpToDate,
+    /// Offer the cross-channel build and wait for confirmation: it is never downloaded, and
+    /// never put where an install on quit would find it.
+    Confirm {
+        older: bool,
+    },
+    /// The build is already downloaded and waiting.
+    AlreadyDownloaded,
+    Download,
+}
+
+fn plan(switching: bool, downloaded: Option<&str>, found: &Found) -> Plan {
+    match found {
+        Found::Empty => Plan::NoRelease,
+        Found::Current => Plan::UpToDate,
+        Found::Newer { current, version } if switching => Plan::Confirm {
+            older: is_older(current, version),
+        },
+        Found::Newer { version, .. } if downloaded == Some(*version) => Plan::AlreadyDownloaded,
+        Found::Newer { .. } => Plan::Download,
     }
 }
 
@@ -453,24 +490,43 @@ async fn check<R: Runtime>(app: &AppHandle<R>) {
             inner.retry_at = Some(now_secs() + RETRY_AFTER.as_secs());
         }
     }
-    let state = match found {
-        Ok(Feed::Empty) => {
+    let feed = match found {
+        Ok(feed) => feed,
+        Err(message) => {
+            updater.set_state(app, UpdateState::Failed { message });
+            return;
+        }
+    };
+    // The channel changed while the check ran: this result is stale, and the change started a
+    // new check, so it is dropped.
+    let fresh = || updater.inner.lock().expect("updater state").channel == channel;
+    if !fresh() {
+        return;
+    }
+    let seen = match &feed {
+        Feed::Empty => Found::Empty,
+        Feed::Current => Found::Current,
+        Feed::Newer(update) => Found::Newer {
+            current: &update.current_version,
+            version: &update.version,
+        },
+    };
+    let plan = plan(switching, downloaded.as_deref(), &seen);
+    let state = match (plan, feed) {
+        (Plan::NoRelease | Plan::UpToDate, _) => {
             let mut inner = updater.inner.lock().expect("updater state");
             inner.ready = None;
             inner.switch = None;
-            UpdateState::NoRelease
+            if plan == Plan::NoRelease {
+                UpdateState::NoRelease
+            } else {
+                UpdateState::UpToDate
+            }
         }
-        Ok(Feed::Current) => {
-            let mut inner = updater.inner.lock().expect("updater state");
-            inner.ready = None;
-            inner.switch = None;
-            UpdateState::UpToDate
-        }
-        Ok(Feed::Newer(update)) if switching => {
-            // Nothing is downloaded until the user confirms the switch.
+        (Plan::Confirm { older }, Feed::Newer(update)) => {
             let state = UpdateState::SwitchAvailable {
                 version: update.version.clone(),
-                older: is_older(&update.current_version, &update.version),
+                older,
                 notes: update.body.clone(),
             };
             let mut inner = updater.inner.lock().expect("updater state");
@@ -478,13 +534,11 @@ async fn check<R: Runtime>(app: &AppHandle<R>) {
             inner.switch = Some(*update);
             state
         }
-        Ok(Feed::Newer(update)) if downloaded.as_deref() == Some(&update.version) => {
-            UpdateState::Ready {
-                version: update.version,
-                notes: update.body,
-            }
-        }
-        Ok(Feed::Newer(update)) => {
+        (Plan::AlreadyDownloaded, Feed::Newer(update)) => UpdateState::Ready {
+            version: update.version,
+            notes: update.body,
+        },
+        (_, Feed::Newer(update)) => {
             updater.inner.lock().expect("updater state").switch = None;
             updater.set_state(
                 app,
@@ -493,7 +547,7 @@ async fn check<R: Runtime>(app: &AppHandle<R>) {
                 },
             );
             match update.download(|_, _| {}, || {}).await {
-                Ok(bytes) => {
+                Ok(bytes) if fresh() => {
                     let state = UpdateState::Ready {
                         version: update.version.clone(),
                         notes: update.body.clone(),
@@ -501,12 +555,13 @@ async fn check<R: Runtime>(app: &AppHandle<R>) {
                     updater.inner.lock().expect("updater state").ready = Some((*update, bytes));
                     state
                 }
+                Ok(_) => return,
                 Err(error) => UpdateState::Failed {
                     message: format!("Downloading {} failed: {error}", update.version),
                 },
             }
         }
-        Err(message) => UpdateState::Failed { message },
+        (_, _) => return,
     };
     updater.set_state(app, state);
 }
@@ -546,7 +601,7 @@ async fn find<R: Runtime>(
         .and_then(|builder| builder.header("User-Agent", "imperium-desktop"))
         .map(|builder| {
             builder.version_comparator(move |current, remote| {
-                offers(switching, &current, &remote.version)
+                offers(switching, channel, &current, &remote.version)
             })
         })
         .and_then(|builder| builder.build())
@@ -695,19 +750,30 @@ pub async fn update_switch_install<R: Runtime>(app: AppHandle<R>) -> Result<(), 
         Ok(bytes) => bytes,
         Err(error) => {
             let message = format!("Downloading {version} failed: {error}");
-            updater.set_state(
-                &app,
-                UpdateState::Failed {
-                    message: message.clone(),
-                },
-            );
+            // The offer stays, so the Install button is still there to retry; the error reaches
+            // the interface through this command's result.
+            let state = UpdateState::SwitchAvailable {
+                version,
+                older: is_older(&update.current_version, &update.version),
+                notes: update.body.clone(),
+            };
             updater.inner.lock().expect("updater state").switch = Some(update);
+            updater.set_state(&app, state);
             return Err(message);
         }
     };
     updater.inner.lock().expect("updater state").ready = Some((update, bytes));
     crate::daemon::stop_bundled(&app).await;
-    install_and_restart(&app, &updater)
+    let installed = install_and_restart(&app, &updater);
+    if let Err(message) = &installed {
+        updater.set_state(
+            &app,
+            UpdateState::Failed {
+                message: message.clone(),
+            },
+        );
+    }
+    installed
 }
 
 /// Installs the downloaded update and starts the new version.
@@ -833,22 +899,25 @@ mod tests {
             Channel::Experimental
         );
         // The chosen channel (main) differs from the installed one, so the build is offered.
-        assert!(offers(true, &installed, &main));
+        assert!(offers(true, Channel::Main, &installed, &main));
         assert!(is_older("0.2.163-experimental", "0.2.0"));
         // Without the switch the same build is not offered: the old no-downgrade behaviour.
-        assert!(!offers(false, &installed, &main));
+        assert!(!offers(false, Channel::Main, &installed, &main));
     }
 
     #[test]
     fn switching_from_main_to_experimental_offers_the_latest_build() {
+        let exp = Channel::Experimental;
         assert!(offers(
             true,
+            exp,
             &version("0.2.0"),
             &version("0.2.163-experimental")
         ));
         // Also when the experimental build's number is lower than main's.
         assert!(offers(
             true,
+            exp,
             &version("0.3.0"),
             &version("0.2.163-experimental")
         ));
@@ -859,18 +928,38 @@ mod tests {
     #[test]
     fn a_switch_does_not_offer_the_build_already_installed() {
         let installed = version("0.2.0");
-        assert!(!offers(true, &installed, &installed));
+        assert!(!offers(true, Channel::Main, &installed, &installed));
     }
 
     #[test]
     fn within_a_channel_the_updater_never_downgrades() {
         let installed = version("0.2.163-experimental");
-        assert!(!offers(false, &installed, &version("0.2.0")));
-        assert!(!offers(false, &installed, &version("0.2.150-experimental")));
-        assert!(!offers(false, &installed, &installed));
-        assert!(offers(false, &installed, &version("0.2.164-experimental")));
-        assert!(offers(false, &version("0.2.0"), &version("0.2.1")));
-        assert!(!offers(false, &version("0.2.1"), &version("0.2.0")));
+        assert!(!offers(false, Channel::Main, &installed, &version("0.2.0")));
+        assert!(!offers(
+            false,
+            Channel::Main,
+            &installed,
+            &version("0.2.150-experimental")
+        ));
+        assert!(!offers(false, Channel::Main, &installed, &installed));
+        assert!(offers(
+            false,
+            Channel::Main,
+            &installed,
+            &version("0.2.164-experimental")
+        ));
+        assert!(offers(
+            false,
+            Channel::Main,
+            &version("0.2.0"),
+            &version("0.2.1")
+        ));
+        assert!(!offers(
+            false,
+            Channel::Main,
+            &version("0.2.1"),
+            &version("0.2.0")
+        ));
     }
 
     #[test]
@@ -878,7 +967,12 @@ mod tests {
         // The running build now carries the new channel's version, so it matches the saved
         // choice and the no-downgrade rule applies again.
         assert_eq!(Channel::of_version("0.2.0"), Channel::Main);
-        assert!(!offers(false, &version("0.2.0"), &version("0.1.9")));
+        assert!(!offers(
+            false,
+            Channel::Main,
+            &version("0.2.0"),
+            &version("0.1.9")
+        ));
     }
 
     #[test]
@@ -894,6 +988,51 @@ mod tests {
                 .iter()
                 .any(|release| Channel::Main.follows(release))
         );
+    }
+
+    #[test]
+    fn a_switch_refuses_a_version_that_belongs_to_another_channel() {
+        // The feed's version string is not signed: an experimental feed claiming 0.1.0, or a
+        // main feed claiming an experimental version, is not offered.
+        assert!(!offers(
+            true,
+            Channel::Experimental,
+            &version("0.2.0"),
+            &version("0.1.0")
+        ));
+        assert!(!offers(
+            true,
+            Channel::Main,
+            &version("0.2.163-experimental"),
+            &version("0.2.164-experimental")
+        ));
+    }
+
+    #[test]
+    fn a_switch_is_confirmed_and_never_downloaded_or_made_ready() {
+        let newer = Found::Newer {
+            current: "0.2.163-experimental",
+            version: "0.2.0",
+        };
+        assert_eq!(plan(true, None, &newer), Plan::Confirm { older: true });
+        // Even when a build with that version was already downloaded.
+        assert_eq!(
+            plan(true, Some("0.2.0"), &newer),
+            Plan::Confirm { older: true }
+        );
+        let higher = Found::Newer {
+            current: "0.2.0",
+            version: "0.2.164-experimental",
+        };
+        assert_eq!(plan(true, None, &higher), Plan::Confirm { older: false });
+        // Within a channel the build downloads, or is already downloaded.
+        assert_eq!(plan(false, None, &higher), Plan::Download);
+        assert_eq!(
+            plan(false, Some("0.2.164-experimental"), &higher),
+            Plan::AlreadyDownloaded
+        );
+        assert_eq!(plan(true, None, &Found::Empty), Plan::NoRelease);
+        assert_eq!(plan(false, None, &Found::Current), Plan::UpToDate);
     }
 
     #[test]
