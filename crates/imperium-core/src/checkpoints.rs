@@ -534,8 +534,18 @@ impl SessionCheckpoints {
     }
 
     /// Whether a root turn is running (between `before_turn` and `after_turn`).
+    ///
+    /// A turn starts beside the checkpoint of its files, which holds the lock for as long as
+    /// reading the folders takes: a busy lock means a turn is starting (or ending), not that
+    /// the caller should wait for it.
     pub(crate) fn turn_running(&self) -> bool {
-        self.lock().pending.is_some()
+        match self.inner.try_lock() {
+            Ok(inner) => inner.pending.is_some(),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                poisoned.into_inner().pending.is_some()
+            }
+            Err(std::sync::TryLockError::WouldBlock) => true,
+        }
     }
 
     /// The session's checkpoints, oldest first.
