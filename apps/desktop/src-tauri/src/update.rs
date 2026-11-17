@@ -475,7 +475,7 @@ async fn check<R: Runtime>(app: &AppHandle<R>) {
             };
             let mut inner = updater.inner.lock().expect("updater state");
             inner.ready = None;
-            inner.switch = Some(update);
+            inner.switch = Some(*update);
             state
         }
         Ok(Feed::Newer(update)) if downloaded.as_deref() == Some(&update.version) => {
@@ -498,7 +498,7 @@ async fn check<R: Runtime>(app: &AppHandle<R>) {
                         version: update.version.clone(),
                         notes: update.body.clone(),
                     };
-                    updater.inner.lock().expect("updater state").ready = Some((update, bytes));
+                    updater.inner.lock().expect("updater state").ready = Some((*update, bytes));
                     state
                 }
                 Err(error) => UpdateState::Failed {
@@ -518,7 +518,7 @@ enum Feed {
     /// The channel's latest build is not an update for this build.
     Current,
     /// A build to install.
-    Newer(Update),
+    Newer(Box<Update>),
 }
 
 /// The build `channel`'s feed offers: newer within the installed build's channel, the latest
@@ -566,7 +566,7 @@ async fn find<R: Runtime>(
     if let Some(asset) = file.and_then(|file| release.asset(&file)) {
         update.download_url = asset.url.clone();
     }
-    Ok(Feed::Newer(update))
+    Ok(Feed::Newer(Box::new(update)))
 }
 
 #[derive(Deserialize)]
