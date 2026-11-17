@@ -208,8 +208,9 @@ pub struct Connection {
     allowed: Option<Vec<&'static str>>,
     /// What the client called itself in the handshake.
     client_name: Option<String>,
-    /// The evaluation sessions this connection made: deleted when it ends.
-    eval_sessions: Vec<String>,
+    /// The evaluation sessions this connection made (a prompt preview's too, while it runs):
+    /// deleted when it ends.
+    eval_sessions: Arc<EvalSessions>,
     /// The process id of the other end and when (Unix seconds) the connection was accepted, for
     /// a connection on the local socket.
     peer: Option<(u32, u64)>,
@@ -233,7 +234,7 @@ impl Connection {
             handshake_done: false,
             allowed: None,
             client_name: None,
-            eval_sessions: Vec::new(),
+            eval_sessions: Arc::default(),
             peer: None,
             resources: None,
             events: crate::events::EventFilter::default(),
@@ -256,7 +257,7 @@ impl Connection {
             handshake_done: false,
             allowed: Some(allowed),
             client_name: None,
-            eval_sessions: Vec::new(),
+            eval_sessions: Arc::default(),
             peer: None,
             resources: None,
             events: crate::events::EventFilter::default(),
@@ -426,8 +427,58 @@ impl Drop for Connection {
     /// The evaluation sessions this connection made go with it, so a client that vanishes
     /// leaves no session running (or the model's key held).
     fn drop(&mut self) {
-        for id in std::mem::take(&mut self.eval_sessions) {
-            let _ = self.state.delete_session(&id, false);
+        self.eval_sessions.close(&self.state);
+    }
+}
+
+/// The evaluation sessions one connection made, shared with the previews it started (which run
+/// on after the request returns). Closing it deletes them all, and any registered later.
+#[derive(Debug, Default)]
+pub(crate) struct EvalSessions {
+    inner: std::sync::Mutex<EvalSessionList>,
+}
+
+#[derive(Debug, Default)]
+struct EvalSessionList {
+    closed: bool,
+    ids: Vec<String>,
+}
+
+impl EvalSessions {
+    fn list(&self) -> std::sync::MutexGuard<'_, EvalSessionList> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Takes `id` on; or, when the connection has already ended, deletes it at once and says
+    /// so (`false`).
+    pub(crate) fn add(&self, state: &DaemonState, id: &str) -> bool {
+        let mut list = self.list();
+        if list.closed {
+            drop(list);
+            let _ = state.delete_session(id, false);
+            false
+        } else {
+            list.ids.push(id.to_string());
+            true
+        }
+    }
+
+    /// Lets go of `id`: its owner deleted it.
+    pub(crate) fn remove(&self, id: &str) {
+        self.list().ids.retain(|known| known != id);
+    }
+
+    /// The connection ended: its sessions go, and so does any made after this.
+    fn close(&self, state: &DaemonState) {
+        let ids = {
+            let mut list = self.list();
+            list.closed = true;
+            std::mem::take(&mut list.ids)
+        };
+        for id in ids {
+            let _ = state.delete_session(&id, false);
         }
     }
 }
@@ -1496,5 +1547,71 @@ mod tests {
         assert_eq!(done["trusted"], false);
         let note = done["notes"][0].as_str().unwrap_or_default();
         assert!(note.contains("not counted"), "{done}");
+    }
+
+    fn preview_params(folder: &std::path::Path) -> Value {
+        json!({
+            "project_dir": folder.to_string_lossy(),
+            "options": {"model": {"base_url": "http://127.0.0.1:1/v1", "model_id": "m"}}
+        })
+    }
+
+    /// The daemon's environments, minus Home.
+    fn made_environments(state: &DaemonState) -> usize {
+        state
+            .environments()
+            .list()
+            .iter()
+            .filter(|env| !env.builtin)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_preview_session_goes_with_a_connection_that_ends_first() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut connection = connection().with_peer(Some((std::process::id(), 0)));
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            json!({
+                "client": {"name": imperium_protocol::methods::EVAL_CLIENT, "version": "0"},
+                "protocol": {"major": PROTOCOL_VERSION.major, "minor": 0}
+            }),
+        ));
+        let state = connection.state();
+        let params: SessionEvalCreateParams =
+            serde_json::from_value(preview_params(folder.path())).unwrap();
+        let prepared = Arc::new(crate::eval::Prepared::new(&params.options, true).unwrap());
+        // The preview is under way: its session exists, in an environment made for the run.
+        let (session, _events) = state
+            .create_eval(None, params.project_dir.as_deref(), prepared)
+            .unwrap();
+        let id = session.id().to_string();
+        drop(session);
+        assert!(connection.eval_sessions.add(&state, &id));
+        assert_eq!(made_environments(&state), 1);
+        // The client disconnects.
+        drop(connection);
+        assert!(state.sessions().is_empty(), "the preview session is gone");
+        assert_eq!(made_environments(&state), 0, "so is its environment");
+    }
+
+    #[tokio::test]
+    async fn a_preview_that_registers_after_its_connection_ended_is_deleted_at_once() {
+        let folder = tempfile::tempdir().unwrap();
+        let connection = connection();
+        let state = connection.state();
+        let owner = Arc::clone(&connection.eval_sessions);
+        drop(connection);
+        let params: SessionEvalCreateParams =
+            serde_json::from_value(preview_params(folder.path())).unwrap();
+        let prepared = Arc::new(crate::eval::Prepared::new(&params.options, true).unwrap());
+        // The connection ended between the request and the session's creation.
+        let preview = state
+            .prompt_preview(None, params.project_dir.as_deref(), prepared, &owner)
+            .await;
+        assert!(preview.is_err(), "no preview for a client that has gone");
+        assert!(state.sessions().is_empty());
+        assert_eq!(made_environments(&state), 0);
     }
 }

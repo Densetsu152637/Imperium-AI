@@ -90,9 +90,9 @@ service) is **persistent** and never exits for want of clients.
   `CREATE_BREAKAWAY_FROM_JOB`, so it stays open when the daemon exits; model servers, MCP
   servers, the speech server, the browser and agents' commands stay in the job. Elsewhere a
   killed daemon cannot take its children down without unsafe code, so every `llama-server` or
-  `vllm` it starts is written to `<data>/logs/children.txt` with its start time and name, and
-  the next daemon ends what is still running under that id, start time and name before it
-  loads anything. The local speech server is not in the ledger.
+  `vllm` it starts, and the local speech server (`whisper-server`), is written to
+  `<data>/logs/children.txt` with its start time and name, and the next daemon ends what is
+  still running under that id, start time and name before it loads anything.
 - **Exiting.** When there is no lease and no work for the grace period (10 seconds, long enough
   that one command after another reuses the daemon; `--exit-when-idle=SECONDS` on the daemon,
   `IMPERIUM_DAEMON_IDLE_SECS` for the daemon an `imperium` command starts) the daemon exits

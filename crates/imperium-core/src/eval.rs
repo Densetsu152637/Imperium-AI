@@ -327,7 +327,7 @@ impl EvalRun {
         });
     }
 
-    /// Remembers the environment this run made for its folder.
+    /// Remembers the environment this run claimed for its folder (released when it ends).
     pub(crate) fn set_ephemeral_env(&self, id: Option<String>) {
         *self
             .ephemeral_env
