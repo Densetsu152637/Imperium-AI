@@ -23,6 +23,8 @@ const SUMMARY: &str = "Summary: the user sent two long alpha reports; nothing is
 #[derive(Default)]
 struct Fake {
     requests: Mutex<Vec<Value>>,
+    /// Summary requests never get an answer (an endpoint that accepts and then stalls).
+    hang_summaries: std::sync::atomic::AtomicBool,
 }
 
 impl Fake {
@@ -72,6 +74,12 @@ async fn serve(fake: Arc<Fake>) -> String {
                 let from_user = last["role"] == "user";
                 let said = last["content"].as_str().unwrap_or_default().to_string();
                 let reply = if is_summary(&body) {
+                    if fake
+                        .hang_summaries
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        std::future::pending::<()>().await;
+                    }
                     text(SUMMARY)
                 } else if from_user && said.ends_with("read a.txt") {
                     stream(json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
@@ -599,4 +607,154 @@ async fn a_long_lived_session_compacts_itself_when_a_turn_starts_over_budget() {
     // Under the budget, nothing more is summarised.
     turn(&session, "and now?").await;
     assert_eq!(fake.summaries().len(), 1);
+}
+
+struct Stuck {
+    a: Arc<Fake>,
+    b: Arc<Fake>,
+    c: Arc<Fake>,
+    url_c: String,
+    session: Arc<Session>,
+    _dir: tempfile::TempDir,
+}
+
+/// A session on `a` whose conversation does not fit `b:small`, switched to it, with `a`'s
+/// summaries set to never answer.
+async fn stuck_on_summary() -> Stuck {
+    let (a, b, c) = (
+        Arc::new(Fake::default()),
+        Arc::new(Fake::default()),
+        Arc::new(Fake::default()),
+    );
+    let (url_a, url_b, url_c) = (
+        serve(Arc::clone(&a)).await,
+        serve(Arc::clone(&b)).await,
+        serve(Arc::clone(&c)).await,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(model("a:old", &url_a, None), dir.path(), false);
+    let report = "alpha ".repeat(8_000);
+    let first = turn(&session, &format!("first report: {report}")).await;
+    turn(&session, &format!("second report: {report}")).await;
+    // A manual compaction keeps the last two turns, so it needs older ones to summarise.
+    turn(&session, "and a short one").await;
+    let base: i64 = first
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::ContextBreakdown { categories, .. } => Some(
+                categories
+                    .iter()
+                    .filter(|c| c.key.starts_with("system_") || c.key.starts_with("tools_"))
+                    .map(|c| c.tokens)
+                    .sum(),
+            ),
+            _ => None,
+        })
+        .unwrap();
+    let window = (u64::try_from(base).unwrap() + 3_000) * 2;
+    session
+        .set_model(model("b:small", &url_b, Some(window)))
+        .await
+        .unwrap();
+    // Whichever model is asked to summarise stalls.
+    for fake in [&a, &b] {
+        fake.hang_summaries
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    Stuck {
+        a,
+        b,
+        c,
+        url_c,
+        session: Arc::new(session),
+        _dir: dir,
+    }
+}
+
+async fn summary_asked(stuck: &Stuck) {
+    for _ in 0..100 {
+        if !stuck.a.summaries().is_empty() || !stuck.b.summaries().is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the summary was asked for");
+}
+
+/// A switch asked while the next turn is still preparing (its first step compacts the
+/// conversation for the model switched to, and the model summarising never answers) is
+/// refused at once instead of waiting behind it: the picker would otherwise show "Switching"
+/// forever. Stop ends the stuck preparation, the turn fails cleanly, and the session can
+/// switch again.
+#[tokio::test]
+async fn a_switch_while_the_turn_is_preparing_is_refused_and_stop_frees_the_session() {
+    let stuck = stuck_on_summary().await;
+    let session = Arc::clone(&stuck.session);
+    let mut events = session.subscribe();
+    session.send("hello again".into()).unwrap();
+    summary_asked(&stuck).await;
+
+    let switched = tokio::time::timeout(
+        Duration::from_secs(3),
+        session.set_model(model("c:big", &stuck.url_c, None)),
+    )
+    .await
+    .expect("the switch is answered while the turn is stuck");
+    assert_eq!(switched.unwrap_err(), SwitchError::Busy);
+    assert_eq!(session.model().as_deref(), Some("b:small"));
+
+    session.stop();
+    loop {
+        let AgentEvent { event, .. } = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("Stop ends the stuck turn promptly")
+            .unwrap();
+        if matches!(event, SessionEvent::TurnFailed { .. }) {
+            break;
+        }
+    }
+    let switched = tokio::time::timeout(
+        Duration::from_secs(3),
+        session.set_model(model("c:big", &stuck.url_c, None)),
+    )
+    .await
+    .expect("answered");
+    switched.unwrap();
+    assert_eq!(session.model().as_deref(), Some("c:big"));
+    assert!(stuck.c.requests().is_empty());
+}
+
+/// Compacting now with a summariser that never answers: a switch is refused as busy, and
+/// Stop ends the compaction with an error.
+#[tokio::test]
+async fn a_compaction_that_hangs_refuses_switches_and_stop_ends_it() {
+    let stuck = stuck_on_summary().await;
+    let session = Arc::clone(&stuck.session);
+    let compacting = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move { session.compact().await })
+    };
+    summary_asked(&stuck).await;
+
+    let switched = tokio::time::timeout(
+        Duration::from_secs(3),
+        session.set_model(model("c:big", &stuck.url_c, None)),
+    )
+    .await
+    .expect("the switch is answered while the compaction is stuck");
+    assert_eq!(switched.unwrap_err(), SwitchError::Busy);
+
+    session.stop();
+    let result = tokio::time::timeout(Duration::from_secs(5), compacting)
+        .await
+        .expect("Stop ends the compaction promptly")
+        .unwrap();
+    assert!(matches!(result, Err(SwitchError::Summary(_))), "{result:?}");
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        session.set_model(model("c:big", &stuck.url_c, None)),
+    )
+    .await
+    .expect("answered")
+    .unwrap();
 }

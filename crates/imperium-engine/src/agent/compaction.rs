@@ -417,7 +417,10 @@ impl Agent {
                 failures.push(format!("{}: {message}", model.spec));
                 continue;
             }
-            let (client, lease) = match self.client_for(model, &holder, None, false).await {
+            let (client, lease) = match self
+                .until_stopped(self.client_for(model, &holder, None, false))
+                .await?
+            {
                 Ok(client) => client,
                 Err(error) => {
                     failures.push(format!("{}: {error}", model.spec));
@@ -426,8 +429,8 @@ impl Agent {
             };
             let mut ignore = |_: &str| {};
             let started = Instant::now();
-            let completion = client
-                .stream(
+            let completion = self
+                .until_stopped(client.stream(
                     ChatRequest {
                         model: &model.model,
                         messages: &request,
@@ -438,9 +441,10 @@ impl Agent {
                         effort: None,
                     },
                     &mut ignore,
-                )
+                ))
                 .await;
             drop(lease);
+            let completion = completion?;
             // The summary was a paid call: it counts toward budgets like any other.
             if let Ok(done) = &completion
                 && let Some(usage) = &done.usage
@@ -476,19 +480,34 @@ impl Agent {
         scale: Option<f64>,
     ) -> Result<Measured, SwitchError> {
         let (client, _lease) = self
-            .client_for(model, &self.holder(), None, false)
-            .await
+            .until_stopped(self.client_for(model, &self.holder(), None, false))
+            .await?
             .map_err(SwitchError::Unavailable)?;
         let request = Request {
             messages,
             spans,
             tools,
         };
-        Ok(self
-            .shared
-            .tokens
-            .measure(client.as_ref(), model, &request, scale)
-            .await)
+        self.until_stopped(
+            self.shared
+                .tokens
+                .measure(client.as_ref(), model, &request, scale),
+        )
+        .await
+    }
+
+    /// Runs `work` (a model call or load that may never return) until the user stops the
+    /// session, which ends it with [`SwitchError::Summary`] ("stopped"): the compaction or fit
+    /// fails, the switch stays pending, and the turn is dropped cleanly.
+    async fn until_stopped<T>(
+        &self,
+        work: impl std::future::Future<Output = T>,
+    ) -> Result<T, SwitchError> {
+        let mut stop = self.shared.controls.stop_signal();
+        tokio::select! {
+            output = work => Ok(output),
+            Ok(_) = stop.wait_for(|stopped| *stopped) => Err(SwitchError::Summary("stopped".into())),
+        }
     }
 
     /// How far the heuristic was off on the latest call that reported its prompt size: the
