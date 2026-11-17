@@ -609,25 +609,29 @@ async fn a_long_lived_session_compacts_itself_when_a_turn_starts_over_budget() {
     assert_eq!(fake.summaries().len(), 1);
 }
 
-/// A switch asked while the next turn is still preparing (its first step compacts the
-/// conversation for the model switched to, and the model summarising never answers) is
-/// refused at once instead of waiting behind it: the picker would otherwise show "Switching"
-/// forever. The session keeps its model and can switch once the turn ends or is stopped.
-#[tokio::test]
-async fn a_switch_while_the_turn_is_preparing_is_refused_instead_of_hanging() {
+struct Stuck {
+    a: Arc<Fake>,
+    c: Arc<Fake>,
+    url_c: String,
+    session: Session,
+    _dir: tempfile::TempDir,
+}
+
+/// A session on `a` whose conversation does not fit `b:small`, switched to it, with `a`'s
+/// summaries set to never answer.
+async fn stuck_on_summary() -> Stuck {
     let (a, b, c) = (
         Arc::new(Fake::default()),
         Arc::new(Fake::default()),
         Arc::new(Fake::default()),
     );
-    let urls = (
+    let (url_a, url_b, url_c) = (
         serve(Arc::clone(&a)).await,
         serve(Arc::clone(&b)).await,
         serve(Arc::clone(&c)).await,
     );
     let dir = tempfile::tempdir().unwrap();
-    let session = start(model("a:old", &urls.0, None), dir.path(), false);
-
+    let session = start(model("a:old", &url_a, None), dir.path(), false);
     let report = "alpha ".repeat(8_000);
     let first = turn(&session, &format!("first report: {report}")).await;
     turn(&session, &format!("second report: {report}")).await;
@@ -646,29 +650,104 @@ async fn a_switch_while_the_turn_is_preparing_is_refused_instead_of_hanging() {
         .unwrap();
     let window = (u64::try_from(base).unwrap() + 3_000) * 2;
     session
-        .set_model(model("b:small", &urls.1, Some(window)))
+        .set_model(model("b:small", &url_b, Some(window)))
         .await
         .unwrap();
-
-    // The next turn starts by asking the model switched from (a) to summarise: it stalls.
     a.hang_summaries
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    session.send("hello again".into()).unwrap();
+    Stuck {
+        a,
+        c,
+        url_c,
+        session,
+        _dir: dir,
+    }
+}
+
+async fn summary_asked(fake: &Fake) {
     for _ in 0..100 {
-        if !a.summaries().is_empty() {
-            break;
+        if !fake.summaries().is_empty() {
+            return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(!a.summaries().is_empty(), "the summary was asked for");
+    panic!("the summary was asked for");
+}
+
+/// A switch asked while the next turn is still preparing (its first step compacts the
+/// conversation for the model switched to, and the model summarising never answers) is
+/// refused at once instead of waiting behind it: the picker would otherwise show "Switching"
+/// forever. Stop ends the stuck preparation, the turn fails cleanly, and the session can
+/// switch again.
+#[tokio::test]
+async fn a_switch_while_the_turn_is_preparing_is_refused_and_stop_frees_the_session() {
+    let stuck = stuck_on_summary().await;
+    let session = &stuck.session;
+    let mut events = session.subscribe();
+    session.send("hello again".into()).unwrap();
+    summary_asked(&stuck.a).await;
 
     let switched = tokio::time::timeout(
         Duration::from_secs(3),
-        session.set_model(model("c:big", &urls.2, None)),
+        session.set_model(model("c:big", &stuck.url_c, None)),
     )
     .await
     .expect("the switch is answered while the turn is stuck");
     assert_eq!(switched.unwrap_err(), SwitchError::Busy);
     assert_eq!(session.model().as_deref(), Some("b:small"));
-    assert!(c.requests().is_empty());
+
+    session.stop();
+    loop {
+        let AgentEvent { event, .. } = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("Stop ends the stuck turn promptly")
+            .unwrap();
+        if matches!(event, SessionEvent::TurnFailed { .. }) {
+            break;
+        }
+    }
+    let switched = tokio::time::timeout(
+        Duration::from_secs(3),
+        session.set_model(model("c:big", &stuck.url_c, None)),
+    )
+    .await
+    .expect("answered");
+    switched.unwrap();
+    assert_eq!(session.model().as_deref(), Some("c:big"));
+    assert!(stuck.c.requests().is_empty());
+}
+
+/// Compacting now with a summariser that never answers: a switch is refused as busy, and
+/// Stop ends the compaction with an error.
+#[tokio::test]
+async fn a_compaction_that_hangs_refuses_switches_and_stop_ends_it() {
+    let stuck = stuck_on_summary().await;
+    let session = Arc::new(stuck.session);
+    let compacting = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move { session.compact().await })
+    };
+    summary_asked(&stuck.a).await;
+
+    let switched = tokio::time::timeout(
+        Duration::from_secs(3),
+        session.set_model(model("c:big", &stuck.url_c, None)),
+    )
+    .await
+    .expect("the switch is answered while the compaction is stuck");
+    assert_eq!(switched.unwrap_err(), SwitchError::Busy);
+
+    session.stop();
+    let result = tokio::time::timeout(Duration::from_secs(5), compacting)
+        .await
+        .expect("Stop ends the compaction promptly")
+        .unwrap();
+    assert!(matches!(result, Err(SwitchError::Summary(_))), "{result:?}");
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        session.set_model(model("c:big", &stuck.url_c, None)),
+    )
+    .await
+    .expect("answered")
+    .unwrap();
 }

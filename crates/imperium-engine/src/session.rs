@@ -1157,7 +1157,20 @@ async fn run(
                     continue;
                 }
                 Some(Command::Compact { reply }) => {
-                    let result = root.compact_now().await;
+                    // Commands that arrive meanwhile are answered (a switch is refused as
+                    // busy); Stop ends a summary that never comes.
+                    let mut compacting_open = true;
+                    let Ok(result) = busy_wait(
+                        root.compact_now(),
+                        &shared,
+                        &bridge,
+                        &mut commands,
+                        &mut compacting_open,
+                    )
+                    .await
+                    else {
+                        return session_ended(&shared, &config.id, "stopped");
+                    };
                     if result.is_ok() {
                         save_messages(
                             &shared,
