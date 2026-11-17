@@ -909,10 +909,57 @@ pub(crate) struct Shared {
     pub knowledge: crate::knowledge::Knowledge,
     /// Answers subagents from recordings (an evaluation harness), when set.
     pub replay: Option<Arc<dyn crate::SubagentReplay>>,
+    /// Whether the files-before-the-turn checkpoint is taken: `false` while it is being taken
+    /// beside the turn's first model call, `true` otherwise. Tools wait for it
+    /// ([`Shared::snapshot_ready`]) so none changes a file before it is recorded.
+    snapshot_ready: tokio::sync::watch::Sender<bool>,
     next_task: AtomicU32,
 }
 
+/// Opens the checkpoint gate when dropped, so a checkpoint that panics cannot hold tools up.
+struct OpenGate(Arc<Shared>);
+
+impl Drop for OpenGate {
+    fn drop(&mut self) {
+        self.0.snapshot_ready.send_replace(true);
+    }
+}
+
 impl Shared {
+    /// Waits until the checkpoint of the files before the running turn is taken. Reading every
+    /// file of a large folder takes seconds to minutes (on Windows, writing each blob is slow),
+    /// so the turn starts beside it and only a tool call, which could change a file, waits.
+    ///
+    /// False when the user stopped the session while it waited: what waited does not go on.
+    pub(crate) async fn snapshot_ready(&self) -> bool {
+        let mut ready = self.snapshot_ready.subscribe();
+        if *ready.borrow_and_update() {
+            return true;
+        }
+        let mut stop = self.controls.stop_signal();
+        tokio::select! {
+            _ = ready.wait_for(|ready| *ready) => true,
+            Ok(_) = stop.wait_for(|stopped| *stopped) => false,
+        }
+    }
+
+    /// Takes the checkpoint on the blocking pool without making the turn wait for it. The turn
+    /// awaits the returned task before it records what the turn changed, so one checkpoint is
+    /// never still being taken when the next turn starts.
+    fn snapshot_in_background(
+        self: &Arc<Self>,
+        checkpoints: Arc<dyn crate::TurnCheckpoints>,
+        prompt: String,
+    ) -> JoinHandle<()> {
+        self.snapshot_ready.send_replace(false);
+        checkpoints.begin_turn();
+        let gate = OpenGate(Arc::clone(self));
+        tokio::task::spawn_blocking(move || {
+            let _gate = gate;
+            checkpoints.before_turn(&prompt);
+        })
+    }
+
     pub(crate) fn next_task_id(&self) -> String {
         format!("t{}", self.next_task.fetch_add(1, Ordering::Relaxed) + 1)
     }
@@ -1035,6 +1082,7 @@ async fn run(
         questions: QuestionBroker::default(),
         chunk_gate: Arc::new(Semaphore::new(MAX_PARALLEL_CHUNKS)),
         chunk_agents: AtomicUsize::new(0),
+        snapshot_ready: tokio::sync::watch::channel(true).0,
         effort,
         knowledge: crate::knowledge::Knowledge::new(config.knowledge),
         replay,
@@ -1253,10 +1301,9 @@ async fn run(
                 ),
             }
         }
-        if let Some(checkpoints) = checkpoints.clone() {
-            let prompt = text.clone();
-            let _ = tokio::task::spawn_blocking(move || checkpoints.before_turn(&prompt)).await;
-        }
+        let snapshot = checkpoints
+            .clone()
+            .map(|checkpoints| shared.snapshot_in_background(checkpoints, text.clone()));
         let recalled = shared.recall(&text);
         let handles_open = {
             let turn = root.run_turn_with(text, attachments, recalled);
@@ -1310,6 +1357,11 @@ async fn run(
             false,
         );
         if let Some(checkpoints) = checkpoints.clone() {
+            // What the turn changed is found against the files as they were: after they are
+            // recorded, even for a turn that ended before the checkpoint was done.
+            if let Some(snapshot) = snapshot {
+                let _ = snapshot.await;
+            }
             let _ = tokio::task::spawn_blocking(move || checkpoints.after_turn()).await;
         }
         shared.observe_in(

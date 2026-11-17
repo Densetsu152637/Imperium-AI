@@ -59,8 +59,8 @@ fn repository() -> tempfile::TempDir {
     repo
 }
 
-/// Root: `edit` deletes `b.txt` and `notes/u.txt` (as a command would) and writes `a.txt` and
-/// `new.txt`; a tool result ends the turn; anything else is answered `ok`.
+/// Root: `edit` writes `a.txt` and `new.txt`; the tool results make it delete `b.txt` and
+/// `notes/u.txt` (as a command would) and end the turn; anything else is answered `ok`.
 async fn serve(repo: PathBuf) -> String {
     serve_with(repo, None).await
 }
@@ -75,21 +75,29 @@ async fn serve_with(repo: PathBuf, second: Option<PathBuf>) -> String {
             let repo = Arc::clone(&repo);
             let second = Arc::clone(&second);
             async move {
-                if let Some(second) = second.as_ref()
-                    && second.join("d").is_dir()
-                    && body.to_string().contains("\"edit\"")
-                {
-                    let _ = std::fs::remove_dir_all(second.join("d"));
-                    let _ = std::fs::write(second.join("d"), "in the way\n");
-                }
                 let messages = body["messages"].as_array().cloned().unwrap_or_default();
                 let last = messages.last().cloned().unwrap_or_default();
                 let said = last["content"].as_str().unwrap_or_default().to_string();
                 let delta = if last["role"] == "tool" {
+                    // The command's work is done once the tools have run: the checkpoint of the
+                    // files before the turn is taken beside the model's first call, and no tool
+                    // runs before it is.
+                    let editing = messages
+                        .iter()
+                        .rfind(|message| message["role"] == "user")
+                        .is_some_and(|message| message["content"].as_str() == Some("edit"));
+                    if editing {
+                        let _ = std::fs::remove_file(repo.join("b.txt"));
+                        let _ = std::fs::remove_file(repo.join("notes/u.txt"));
+                        if let Some(second) = second.as_ref()
+                            && second.join("d").is_dir()
+                        {
+                            let _ = std::fs::remove_dir_all(second.join("d"));
+                            let _ = std::fs::write(second.join("d"), "in the way\n");
+                        }
+                    }
                     json!({"content": "done"})
                 } else if last["role"] == "user" && said.trim() == "edit" {
-                    let _ = std::fs::remove_file(repo.join("b.txt"));
-                    let _ = std::fs::remove_file(repo.join("notes/u.txt"));
                     let call = |index: u32, path: &str, content: &str| {
                         json!({"index": index, "id": format!("w{index}"), "function": {
                             "name": "write_file",
