@@ -460,9 +460,15 @@ impl Agent {
         if let Some(ChatMessage::System { content }) = self.messages.first_mut() {
             content.push_str(crate::breakdown::PART_SEPARATOR);
             let start = content.len();
+            // A root agent takes its task from the user, a subagent from the agent that started it.
+            let source = if self.can_delegate {
+                "the user"
+            } else {
+                "the agent that started you"
+            };
             content.push_str(&format!(
                 "You are running as the agent {}. Its definition follows; your task comes from \
-                 the agent that started you.\n\n{}",
+                 {source}.\n\n{}",
                 named.name, named.prompt
             ));
             let end = content.len();
@@ -473,6 +479,28 @@ impl Agent {
         }
         self.named = Some(named);
         self
+    }
+
+    /// Runs this root agent as the named agent `def` (an evaluation harness running an agent
+    /// file as the root): its instructions follow the base ones and only the tools its file
+    /// lists are offered, none when the file lists `tools` with nothing in it. Returns the
+    /// agent and notes for the user.
+    pub(crate) fn into_named_root(
+        self,
+        def: &imperium_extensions::AgentDef,
+    ) -> (Self, Vec<String>) {
+        let offered: Vec<String> = self
+            .offered_tools()
+            .0
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        let (mut named, notes) = delegation::named_agent(def, &offered);
+        if def.no_tools {
+            named.tools = Some(Vec::new());
+            return (self.with_named(named), Vec::new());
+        }
+        (self.with_named(named), notes)
     }
 
     /// Marks this agent as a writer in worktrees of its own (see [`Agent::writer`]).

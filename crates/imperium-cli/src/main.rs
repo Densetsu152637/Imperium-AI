@@ -1049,7 +1049,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 },
         } => vllm::remove(yes),
         Command::Run(args) => {
-            let outcome = block_on(imperium_cli::eval::run(*args))?;
+            let outcome = block_on(async {
+                let (mut client, _) = connect().await?;
+                imperium_cli::eval::run(&mut client, *args).await
+            })?;
             println!("{}", serde_json::to_string_pretty(&outcome.json)?);
             std::io::Write::flush(&mut std::io::stdout())?;
             if outcome.code != 0 {

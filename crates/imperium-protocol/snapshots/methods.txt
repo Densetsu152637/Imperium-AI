@@ -91,8 +91,11 @@ method session.compare_pick
 method session.control
 method session.create
 method session.delete
+method session.eval_create
+method session.eval_result
 method session.export
 method session.list
+method session.prompt_preview
 method session.queue
 method session.respond
 method session.review

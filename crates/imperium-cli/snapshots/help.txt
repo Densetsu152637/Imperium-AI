@@ -3042,7 +3042,7 @@ Usage: imperium run [OPTIONS]
 
 Options:
       --headless
-          Run without the daemon or the desktop. Required to run a task (`--print-prompt` needs neither)
+          Run a task and print its result. Required to run a task (`--print-prompt` needs it not)
 
       --remote <REMOTE>
           Talk to a remote daemon connected with `imperium remote connect`
@@ -3057,7 +3057,7 @@ Options:
           The task: a JSON file with a `prompt` (its other fields are kept in the output), or the prompt itself
 
       --workspace <WORKSPACE>
-          The folder the agent works in. Its tools can read and, where the permission mode lets them, change it: point it at a copy
+          The folder the agent works in, as a project of the daemon: the user's permission rules, grants and isolation tier for it apply. Point it at a copy: the tools can change it where the permission mode lets them
 
       --root-model <ROOT_MODEL>
           The root model's endpoint: an OpenAI-compatible base URL such as `http://127.0.0.1:8080/v1`, optionally followed by `#<model id>`
@@ -3072,7 +3072,10 @@ Options:
           The root model runs on this machine (a local llama-server): the harness aids that are `auto` count as on, as in the product, where `auto` means on for a local model
 
       --config-home <DIR>
-          Read the configuration from this folder, laid out as `IMPERIUM_HOME`, instead of the user's own. A headless run uses it for variants and for the isolation check of `--permission-mode full`; it applies none of the other settings
+          Look up named variants under this folder's `config` folder (laid out as `IMPERIUM_HOME`) instead of the user's own
+
+      --agent <NAME>
+          Run the named agent file (`agents/<name>.md`) as the root agent instead of the standard root: its instructions follow the base ones and only the tools it lists are offered; a file that lists `tools` with nothing in the list has none (a single-turn critic)
 
       --context-tokens <N>
           The root model's context window in tokens
@@ -3113,7 +3116,7 @@ Options:
           Price of a million completion tokens in US dollars, for the cost ledger
 
       --permission-mode <PERMISSION_MODE>
-          How the agent's tool calls are checked. A call that would ask is always denied: nobody answers. `full` runs everything the rules and the safety floor do not stop
+          How the agent's tool calls are checked, on top of the user's permission rules and the isolation tier. A call that would ask is always denied: nobody answers. `full` runs everything the rules and the safety floor do not stop
           
           [default: default]
 
@@ -3123,7 +3126,7 @@ Options:
           [default: 1800]
 
       --journal <FILE>
-          Keep the session's journal at this path (events, one JSON object per line)
+          Write the session's events, one JSON object per line, to this file
 
   -h, --help
           Print help

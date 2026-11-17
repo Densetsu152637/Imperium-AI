@@ -1,55 +1,39 @@
-//! `imperium run`: one task through the real Imperium agent loop with no daemon and no desktop,
-//! against any OpenAI-compatible endpoint, with the result printed as JSON. It is the harness
-//! evaluations of Imperium's own models run through (see "Running evals through the harness" in
-//! docs/03-agent-engine.md).
+//! `imperium run`: one task through the real Imperium agent loop, against any OpenAI-compatible
+//! endpoint, with the result printed as JSON. It is the harness evaluations of Imperium's own
+//! models run through (see "Running evals through the harness" in docs/03-agent-engine.md).
 //!
-//! The session is the engine's own (`imperium_engine::Session`): the same root prompt, tool
-//! schemas and loop as the daemon's. A [`record::Recorder`] wraps the model client, so the
-//! output holds exactly what was sent and what came back; a [`variant::Variant`] edits what the
-//! root agent is given; a [`replay::Replay`] answers subagents from recordings.
+//! The session runs in the shared daemon (`session.eval_create`), so the user's permission rules,
+//! path grants, isolation tier and protected folders apply exactly as they do in the app. This
+//! module reads the command line, the task, the variant and the recordings, starts the session,
+//! follows its events and prints what the daemon recorded.
 
-pub mod record;
 pub mod replay;
 pub mod variant;
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, bail};
 use clap::ValueEnum;
-use imperium_api::encoding::hex;
-use imperium_api::{Effort, PermissionMode, Pricing, ToolProvider};
-use imperium_config::{
-    Enforce, HarnessMode, HarnessSettings, KnowledgeSettings, Paths, RoutingSettings,
-};
-use imperium_engine::{
-    ChatClient, ChatClients, Endpoint, KnowledgeConfig, ResolvedModel, Session, SessionConfig,
-    SessionOptions, SubagentReplay,
-};
-use imperium_models::OpenAiCompatible;
-use imperium_policy::permissions::Permissions;
+use imperium_api::{Effort, PermissionMode};
+use imperium_client::Client;
+use imperium_config::Paths;
 use imperium_protocol::PROTOCOL_VERSION;
-use imperium_protocol::session::{AgentEvent, PermissionDecision, Plan, ROOT_AGENT, SessionEvent};
-use imperium_tools::Workspace;
-use imperium_web::{SearchFuture, SearchProvider, Web, WebError, WebTools};
+use imperium_protocol::methods::{
+    EvalModel, EvalOptions, EvalReply, EvalResult, EvalVariant, SessionDelete, SessionDeleteParams,
+    SessionEvalCreate, SessionEvalCreateParams, SessionEvalResult, SessionEvalResultParams,
+    SessionPromptPreview, SessionSend, SessionSendParams,
+};
+use imperium_protocol::session::{
+    AgentEvent, Plan, ROOT_AGENT, SESSION_EVENT, SessionEvent, SessionEventParams,
+};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-use tokio::sync::broadcast::error::RecvError;
-
-use record::{Ceilings, Record, Recorder, Shared};
-use replay::{Recordings, Replay};
-use variant::{Placeholders, Variant};
 
 /// The version of the JSON this command prints.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// What `{workspace}` stands for in a prompt that is hashed or printed without a real folder.
+/// What `{workspace}` stands for in a prompt that is printed without a real folder.
 const WORKSPACE_PLACEHOLDER: &str = "{workspace}";
-
-/// The text the stand-in model is sent in `--print-prompt` mode.
-const PRINT_PROMPT_MESSAGE: &str = "print-prompt";
 
 /// The loop flags `--flag key=value` (and a variant file's `[flags]`) understand.
 pub const FLAGS: &[(&str, &str)] = &[
@@ -91,11 +75,10 @@ pub enum Switch {
     Off,
 }
 
-/// `imperium run`: run one task headlessly and print the result as JSON.
+/// `imperium run`: run one task through the agent loop and print the result as JSON.
 #[derive(Debug, Clone, clap::Args)]
 pub struct RunArgs {
-    /// Run without the daemon or the desktop. Required to run a task (`--print-prompt` needs
-    /// neither).
+    /// Run a task and print its result. Required to run a task (`--print-prompt` needs it not).
     #[arg(long, required_unless_present = "print_prompt")]
     pub headless: bool,
     /// Print the result as JSON. It is the only output format; scripts pass it to say so.
@@ -109,8 +92,9 @@ pub struct RunArgs {
     /// prompt itself.
     #[arg(long, required_unless_present = "print_prompt")]
     pub task: Option<String>,
-    /// The folder the agent works in. Its tools can read and, where the permission mode lets
-    /// them, change it: point it at a copy.
+    /// The folder the agent works in, as a project of the daemon: the user's permission rules,
+    /// grants and isolation tier for it apply. Point it at a copy: the tools can change it where
+    /// the permission mode lets them.
     #[arg(long, required_unless_present = "print_prompt")]
     pub workspace: Option<PathBuf>,
     /// The root model's endpoint: an OpenAI-compatible base URL such as
@@ -127,11 +111,15 @@ pub struct RunArgs {
     /// `auto` count as on, as in the product, where `auto` means on for a local model.
     #[arg(long)]
     pub local: bool,
-    /// Read the configuration from this folder, laid out as `IMPERIUM_HOME`, instead of the
-    /// user's own. A headless run uses it for variants and for the isolation check of
-    /// `--permission-mode full`; it applies none of the other settings.
+    /// Look up named variants under this folder's `config` folder (laid out as
+    /// `IMPERIUM_HOME`) instead of the user's own.
     #[arg(long, value_name = "DIR")]
     pub config_home: Option<PathBuf>,
+    /// Run the named agent file (`agents/<name>.md`) as the root agent instead of the standard
+    /// root: its instructions follow the base ones and only the tools it lists are offered; a
+    /// file that lists `tools` with nothing in the list has none (a single-turn critic).
+    #[arg(long, value_name = "NAME")]
+    pub agent: Option<String>,
     /// The root model's context window in tokens.
     #[arg(long, value_name = "N")]
     pub context_tokens: Option<u64>,
@@ -173,14 +161,15 @@ pub struct RunArgs {
     /// Price of a million completion tokens in US dollars, for the cost ledger.
     #[arg(long, value_name = "USD")]
     pub price_out: Option<f64>,
-    /// How the agent's tool calls are checked. A call that would ask is always denied: nobody
-    /// answers. `full` runs everything the rules and the safety floor do not stop.
+    /// How the agent's tool calls are checked, on top of the user's permission rules and the
+    /// isolation tier. A call that would ask is always denied: nobody answers. `full` runs
+    /// everything the rules and the safety floor do not stop.
     #[arg(long, default_value_t = PermissionMode::Default)]
     pub permission_mode: PermissionMode,
     /// Stop the run after this many seconds.
     #[arg(long, default_value_t = 1800, value_name = "SECONDS")]
     pub timeout_s: u64,
-    /// Keep the session's journal at this path (events, one JSON object per line).
+    /// Write the session's events, one JSON object per line, to this file.
     #[arg(long, value_name = "FILE")]
     pub journal: Option<PathBuf>,
 }
@@ -194,184 +183,204 @@ pub struct Outcome {
     pub code: i32,
 }
 
-/// Runs the command: one task, or the prompt printout.
-pub async fn run(args: RunArgs) -> anyhow::Result<Outcome> {
-    let started = Instant::now();
+/// Runs the command in the daemon `client` is connected to: one task, or the prompt printout.
+pub async fn run(client: &mut Client, args: RunArgs) -> anyhow::Result<Outcome> {
     let printing = args.print_prompt;
-    if args.permission_mode == PermissionMode::Auto {
-        bail!(
-            "--permission-mode auto asks a classifier model about each call, which a \
-             deterministic eval does not do: use default, plan, ask, accept_edits or full"
-        );
-    }
     if args.permission_mode == PermissionMode::Full {
-        check_full_allowed(args.config_home.as_deref())?;
         eprintln!(
-            "warning: --permission-mode full runs commands unconfined, in your own shell and \
-             account, under only the safety floor's built-in rules"
+            "warning: --permission-mode full runs everything your permission rules and the \
+             safety floor do not stop"
         );
     }
     let setup = Setup::new(&args)?;
-    let scratch = Scratch::new(args.journal.as_deref())?;
-    let workspace_dir = match (&args.workspace, printing) {
-        (Some(dir), _) => dir.clone(),
-        (None, true) => scratch.dir().join("workspace"),
-        (None, false) => bail!("--workspace is required"),
+    let project_dir = match &args.workspace {
+        Some(dir) => {
+            let dir = std::path::absolute(dir)
+                .with_context(|| format!("the workspace {}", dir.display()))?;
+            if !dir.is_dir() {
+                bail!("the workspace {} is not a folder", dir.display());
+            }
+            Some(dir.to_string_lossy().into_owned())
+        }
+        None => None,
+    };
+    let params = SessionEvalCreateParams {
+        environment_id: None,
+        project_dir,
+        options: setup.options.clone(),
     };
     if printing {
-        std::fs::create_dir_all(&workspace_dir).context("could not make a folder to print for")?;
+        let preview = client.call::<SessionPromptPreview>(params).await?;
+        return Ok(Outcome {
+            json: json!({
+                "schema_version": SCHEMA_VERSION,
+                "mode": "print_prompt",
+                "engine": engine_json(),
+                "variant": variant_json(&setup.options.variant, &preview.variant_config_hash, &preview.warnings),
+                "context_tokens": args.context_tokens,
+                "prompt_hash": preview.prompt_hash,
+                "system_prompt": preview.system_prompt,
+                "workspace_placeholder": WORKSPACE_PLACEHOLDER,
+                "tools": preview.tools,
+            }),
+            code: 0,
+        });
     }
-    let workspace = Workspace::new(&workspace_dir)
-        .with_context(|| format!("the workspace {} is not a folder", workspace_dir.display()))?
-        .with_permissions(Permissions::default().with_mode(args.permission_mode));
 
-    let record: Shared = Shared::default();
-    let model = setup.model(&record, printing);
-    let replay = setup.replay.clone();
-    let config = setup.session_config(&workspace, model, &record, &scratch);
-    let session = Session::spawn_with(
-        config,
-        SessionOptions {
-            replay: replay
-                .clone()
-                .map(|replay| -> Arc<dyn SubagentReplay> { replay }),
-        },
-    )
-    .context("could not start the session")?;
-    let (earlier, mut events) = session.subscribe_with_history();
-    let prompt = if printing {
-        PRINT_PROMPT_MESSAGE.to_string()
-    } else {
-        setup.task.prompt.clone()
-    };
-    session.send(prompt).map_err(|error| anyhow!("{error}"))?;
-
+    let started = std::time::Instant::now();
+    let created = client.call::<SessionEvalCreate>(params).await?;
+    let session_id = created.session_id.clone();
+    let sent = client
+        .call::<SessionSend>(SessionSendParams {
+            session_id: session_id.clone(),
+            text: setup.task.prompt.clone(),
+            mode: None,
+            agent_id: None,
+            confirm_budget: None,
+            attachments: Vec::new(),
+        })
+        .await;
+    if let Err(error) = sent {
+        let _ = delete(client, &session_id).await;
+        return Err(error.into());
+    }
     let mut log = EventLog::default();
-    // Events taken in so far: after a lag the history says what was missed, so an ask whose
-    // event was dropped is still answered.
-    let mut seen = earlier.len();
-    let deadline = tokio::time::sleep(Duration::from_secs(args.timeout_s));
-    tokio::pin!(deadline);
-    let end = loop {
-        let received = tokio::select! {
-            () = &mut deadline => None,
-            event = events.recv() => Some(event),
-        };
-        let Some(received) = received else {
-            session.stop();
-            break End::Timeout;
-        };
-        let batch = match received {
-            Ok(event) => {
-                seen += 1;
-                vec![event]
-            }
-            Err(RecvError::Lagged(_)) => {
-                let (history, fresh) = session.subscribe_with_history();
-                events = fresh;
-                let missed = history.len().saturating_sub(seen);
-                seen = history.len();
-                history.into_iter().skip(seen - missed).collect()
-            }
-            Err(RecvError::Closed) => break End::Failed("the session closed".into()),
-        };
-        let ended = batch
-            .into_iter()
-            .find_map(|event| log.observe(&session, event));
-        if let Some(end) = ended {
-            break end;
-        }
-    };
+    let end = follow(client, &session_id, args.timeout_s, &mut log).await;
     let wall_time_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let workspace_root = session.project_dir().to_string();
-    session.stop();
-    drop(session);
-
-    let record = record::lock(&record);
-    let exit_reason = exit_reason(&end, &record);
-    let variant = setup.variant_json(&record);
-    for warning in &record.warnings {
-        eprintln!("warning: variant {}: {warning}", setup.variant.id);
+    let result = client
+        .call::<SessionEvalResult>(SessionEvalResultParams {
+            session_id: session_id.clone(),
+        })
+        .await;
+    let _ = delete(client, &session_id).await;
+    let result = result?;
+    if let Some(path) = &args.journal {
+        write_journal(path, &log.events)?;
     }
-    let (prompt_hash, system_prompt, tools) = prompt_parts(&record, &workspace_root);
-    let json = if printing {
-        json!({
-            "schema_version": SCHEMA_VERSION,
-            "mode": "print_prompt",
-            "engine": engine_json(),
-            "variant": variant,
-            "context_tokens": args.context_tokens,
-            "prompt_hash": prompt_hash,
-            "system_prompt": system_prompt,
-            "workspace_placeholder": WORKSPACE_PLACEHOLDER,
-            "tools": tools,
-        })
-    } else {
-        let priced = setup.pricing.is_some();
-        json!({
-            "schema_version": SCHEMA_VERSION,
-            "mode": "run",
-            "engine": engine_json(),
-            "task": setup.task.json(),
-            "model": setup.model_json(),
-            "variant": variant,
-            "prompt_hash": prompt_hash,
-            "system_prompt": record.last_root.as_ref().map(|request| request.system_prompt.clone()),
-            "tools": tools,
-            "transcript": transcript(&record),
-            "final_reply": final_reply(&record),
-            "plan": log.plan.as_ref().and_then(|plan| serde_json::to_value(plan).ok()),
-            "subagents": subagents_json(&log, replay.as_deref()),
-            "replay": replay.as_ref().map(|replay| replay.summary()),
-            "ledger": {
-                "total": total_ledger(&record, priced),
-                "root": record.root.to_json(priced),
-                "subagents": record.subagents.to_json(priced),
-                "calls_without_reported_usage": record.estimated_calls,
-                "priced": priced,
-                "cost_ceiling_usd": args.cost_ceiling,
-                "token_ceiling": args.token_ceiling,
-            },
-            "wall_time_ms": wall_time_ms,
-            "exit_reason": exit_reason,
-            "error": end.error(),
-            "root_tool_calls": log.tool_calls,
-            "failed_tool_calls": log.failed_tool_calls,
-            "permission_requests": log.permissions,
-            "questions_asked": log.questions,
-            "compactions": log.compactions,
-            "notices": log.notices,
-            "endpoint_errors": record.errors,
-        })
-    };
-    let code = if printing || exit_reason == "completed" {
-        0
-    } else {
-        3
-    };
+    for warning in &result.warnings {
+        eprintln!("warning: variant {}: {warning}", setup.options.variant.id);
+    }
+    let exit_reason = exit_reason(&end, &result);
+    let priced = setup.options.model.price_in.is_some() || setup.options.model.price_out.is_some();
+    let json = json!({
+        "schema_version": SCHEMA_VERSION,
+        "mode": "run",
+        "engine": engine_json(),
+        "task": setup.task.json(),
+        "agent": args.agent,
+        "model": setup.model_json(),
+        "variant": variant_json(&setup.options.variant, &result.variant_config_hash, &result.warnings),
+        "prompt_hash": result.prompt_hash,
+        "system_prompt": result.last_request.as_ref().map(|request| request.system_prompt.clone()),
+        "tools": result.first_request.as_ref().map_or_else(Vec::new, |request| request.tools.clone()),
+        "transcript": transcript(&result),
+        "final_reply": final_reply(&result),
+        "plan": result
+            .plan
+            .clone()
+            .or_else(|| log.plan.as_ref().and_then(|plan| serde_json::to_value(plan).ok())),
+        "subagents": subagents_json(&log, &result),
+        "replay": result.replay,
+        "ledger": {
+            "total": total_ledger(&result, priced),
+            "root": ledger_json(&result.root, priced),
+            "subagents": ledger_json(&result.subagents, priced),
+            "calls_without_reported_usage": result.estimated_calls,
+            "priced": priced,
+            "cost_ceiling_usd": args.cost_ceiling,
+            "token_ceiling": args.token_ceiling,
+        },
+        "wall_time_ms": wall_time_ms,
+        "exit_reason": exit_reason,
+        "error": end.error(),
+        "root_tool_calls": log.tool_calls,
+        "failed_tool_calls": log.failed_tool_calls,
+        "permission_requests": result.permissions,
+        "questions_asked": result.questions,
+        "compactions": log.compactions,
+        "notices": log.notices,
+        "endpoint_errors": result.errors,
+    });
+    let code = if exit_reason == "completed" { 0 } else { 3 };
     Ok(Outcome { json, code })
 }
 
-/// Refuses `full` mode when the user has configured an isolation tier (`os` or `container`):
-/// this run builds none of it, so `full` would run commands with less protection than the user
-/// asked for. Until runs go through the daemon, that is an error rather than a surprise.
-fn check_full_allowed(config_home: Option<&Path>) -> anyhow::Result<()> {
-    let paths = match config_home {
-        Some(home) => Paths::under(home),
-        None => Paths::from_env().context("could not find the configuration folder")?,
-    };
-    let settings = imperium_config::load(&paths, None, std::env::vars())
-        .and_then(|config| config.settings())
-        .context("could not read the configuration to check the isolation tier")?;
-    let tier = &settings.isolation.tier;
-    if tier != "policy" {
-        bail!(
-            "--permission-mode full is refused: your configuration sets isolation.tier = {tier:?}, \
-             and a headless run does not build that isolation, so commands would run unconfined. \
-             Use another permission mode, or set isolation.tier = \"policy\" to accept that"
-        );
+/// Deletes the evaluation session: it is not kept.
+async fn delete(client: &mut Client, session_id: &str) -> Result<(), imperium_client::ClientError> {
+    client
+        .call::<SessionDelete>(SessionDeleteParams {
+            session_id: session_id.to_string(),
+            remove_worktrees: false,
+        })
+        .await
+        .map(|_| ())
+}
+
+/// How often the daemon is asked how the run stands when no event has come: the daemon is the
+/// authority on how the turn ended, and a notification can be missed.
+const POLL: Duration = Duration::from_secs(2);
+
+/// Reads the session's events until the root agent's turn ends, the session pauses for a usage
+/// limit, the connection fails, or `timeout_s` passes. When the events are quiet it asks the
+/// daemon for the run's end.
+async fn follow(client: &mut Client, session_id: &str, timeout_s: u64, log: &mut EventLog) -> End {
+    let deadline = tokio::time::sleep(Duration::from_secs(timeout_s));
+    tokio::pin!(deadline);
+    loop {
+        let received = tokio::select! {
+            () = &mut deadline => return End::Timeout,
+            () = tokio::time::sleep(POLL) => None,
+            notification = client.next_notification() => Some(notification),
+        };
+        let Some(received) = received else {
+            let asked = client
+                .call::<SessionEvalResult>(SessionEvalResultParams {
+                    session_id: session_id.to_string(),
+                })
+                .await;
+            match asked.map(|result| result.ended) {
+                Ok(Some(ended)) => return end_of(&ended),
+                Ok(None) => continue,
+                Err(error) => return End::Failed(error.to_string()),
+            }
+        };
+        let notification = match received {
+            Ok(notification) => notification,
+            Err(error) => return End::Failed(error.to_string()),
+        };
+        if notification.method != SESSION_EVENT {
+            continue;
+        }
+        let Ok(params) = serde_json::from_value::<SessionEventParams>(notification.params) else {
+            continue;
+        };
+        if params.session_id != session_id {
+            continue;
+        }
+        if let Some(end) = log.observe(params.agent_event) {
+            return end;
+        }
     }
-    Ok(())
+}
+
+/// The run's end as the daemon recorded it.
+fn end_of(ended: &imperium_protocol::methods::EvalEnd) -> End {
+    let message = ended.message.clone().unwrap_or_default();
+    match ended.reason.as_str() {
+        "completed" => End::Completed,
+        "timeout" => End::Timeout,
+        "paused" => End::Paused(message),
+        _ => End::Failed(message),
+    }
+}
+
+fn write_journal(path: &Path, events: &[AgentEvent]) -> anyhow::Result<()> {
+    let mut text = String::new();
+    for event in events {
+        text.push_str(&serde_json::to_string(event)?);
+        text.push('\n');
+    }
+    std::fs::write(path, text).with_context(|| format!("could not write {}", path.display()))
 }
 
 /// How the run ended.
@@ -392,33 +401,30 @@ impl End {
     }
 }
 
-fn exit_reason(end: &End, record: &Record) -> &'static str {
+fn exit_reason(end: &End, result: &EvalResult) -> &'static str {
     match end {
         End::Completed => "completed",
         End::Timeout => "timeout",
         End::Paused(_) => "rate_limited",
-        End::Failed(message) => {
-            if let Some(ceiling) = record.ceiling {
-                ceiling
-            } else if message.starts_with("stopped after") && message.contains("model calls") {
+        End::Failed(message) => match result.ceiling.as_deref() {
+            Some("cost_ceiling") => "cost_ceiling",
+            Some("token_ceiling") => "token_ceiling",
+            _ if message.starts_with("stopped after") && message.contains("model calls") => {
                 "step_limit"
-            } else if record.errors.is_empty() {
-                "error"
-            } else {
-                "model_error"
             }
-        }
+            _ if result.errors.is_empty() => "error",
+            _ => "model_error",
+        },
     }
 }
 
 /// What the run saw happen, from the session's events.
 #[derive(Debug, Default)]
 struct EventLog {
+    events: Vec<AgentEvent>,
     plan: Option<Plan>,
     subagents: Vec<SubagentRow>,
     notices: Vec<String>,
-    permissions: Vec<Value>,
-    questions: Vec<Value>,
     compactions: u64,
     tool_calls: u64,
     failed_tool_calls: u64,
@@ -433,75 +439,65 @@ struct SubagentRow {
 }
 
 impl EventLog {
-    /// Takes in one event; answers what needs an answer (nobody is there to), and says when the
-    /// root agent's turn ended.
-    fn observe(&mut self, session: &Session, event: AgentEvent) -> Option<End> {
+    /// Takes in one event and says when the root agent's turn ended.
+    fn observe(&mut self, event: AgentEvent) -> Option<End> {
         let root = event.agent_id == ROOT_AGENT;
-        match event.event {
-            SessionEvent::PermissionRequested {
-                request_id,
-                tool,
-                summary,
-                ..
-            } => {
-                let _ = session.respond(request_id, PermissionDecision::Deny);
-                self.permissions.push(json!({
-                    "agent": event.agent_id,
-                    "tool": tool,
-                    "summary": summary,
-                    "decision": "denied",
-                }));
+        let end = match &event.event {
+            SessionEvent::PlanUpdated { plan } if root => {
+                self.plan = Some(plan.clone());
+                None
             }
-            SessionEvent::QuestionsAsked {
-                request_id,
-                questions,
-            } => {
-                let _ = session.answer(request_id, vec![String::new(); questions.len()]);
-                self.questions.push(json!({
-                    "agent": event.agent_id,
-                    "questions": questions.iter().map(|question| question.question.clone()).collect::<Vec<_>>(),
-                    "answered_with": "the recommended answers",
-                }));
-            }
-            SessionEvent::PlanUpdated { plan } if root => self.plan = Some(plan),
             SessionEvent::TaskSpawned {
                 task_id,
                 brief,
                 model,
                 ..
-            } => self.subagents.push(SubagentRow {
-                task_id,
-                brief,
-                model,
-                finished: None,
-            }),
+            } => {
+                self.subagents.push(SubagentRow {
+                    task_id: task_id.clone(),
+                    brief: brief.clone(),
+                    model: model.clone(),
+                    finished: None,
+                });
+                None
+            }
             SessionEvent::TaskFinished {
                 task_id,
                 ok,
                 report,
                 ..
             } => {
-                if let Some(row) = self.subagents.iter_mut().find(|row| row.task_id == task_id) {
-                    row.finished = Some((ok, report));
+                if let Some(row) = self
+                    .subagents
+                    .iter_mut()
+                    .find(|row| row.task_id == *task_id)
+                {
+                    row.finished = Some((*ok, report.clone()));
                 }
+                None
             }
             SessionEvent::ToolFinished { ok, .. } if root => {
                 self.tool_calls += 1;
                 if !ok {
                     self.failed_tool_calls += 1;
                 }
+                None
             }
-            SessionEvent::Notice { message } => self.notices.push(message),
-            SessionEvent::ContextCompacted { .. } if root => self.compactions += 1,
-            SessionEvent::Paused { reason, .. } => {
-                session.stop();
-                return Some(End::Paused(reason));
+            SessionEvent::Notice { message } => {
+                self.notices.push(message.clone());
+                None
             }
-            SessionEvent::TurnCompleted { .. } if root => return Some(End::Completed),
-            SessionEvent::TurnFailed { message } if root => return Some(End::Failed(message)),
-            _ => {}
-        }
-        None
+            SessionEvent::ContextCompacted { .. } if root => {
+                self.compactions += 1;
+                None
+            }
+            SessionEvent::Paused { reason, .. } => Some(End::Paused(reason.clone())),
+            SessionEvent::TurnCompleted { .. } if root => Some(End::Completed),
+            SessionEvent::TurnFailed { message } if root => Some(End::Failed(message.clone())),
+            _ => None,
+        };
+        self.events.push(event);
+        end
     }
 }
 
@@ -559,97 +555,10 @@ impl Task {
     }
 }
 
-/// The loop flags, typed.
-#[derive(Debug, Clone, PartialEq)]
-struct LoopFlags {
-    max_steps: u32,
-    effort: Option<Effort>,
-    auto_compact: bool,
-    auto_compact_at: Option<f64>,
-    knowledge: bool,
-    attended: bool,
-    harness: HarnessMode,
-}
-
-impl LoopFlags {
-    fn parse(flags: &BTreeMap<String, String>) -> anyhow::Result<Self> {
-        let mut parsed = LoopFlags {
-            max_steps: 50,
-            effort: None,
-            auto_compact: false,
-            auto_compact_at: None,
-            knowledge: true,
-            attended: false,
-            harness: HarnessMode::Auto,
-        };
-        for (key, value) in flags {
-            let bad = |what: &str| anyhow!("flag {key}={value}: expected {what}");
-            match key.as_str() {
-                "max_steps" => {
-                    parsed.max_steps = value
-                        .parse::<u32>()
-                        .ok()
-                        .filter(|steps| *steps > 0)
-                        .ok_or_else(|| bad("a whole number above 0"))?;
-                }
-                "effort" => {
-                    parsed.effort = Some(
-                        value
-                            .parse::<Effort>()
-                            .map_err(|_| bad("low, medium, high or max"))?,
-                    );
-                }
-                "auto_compact" => {
-                    parsed.auto_compact = value.parse().map_err(|_| bad("true or false"))?;
-                }
-                "auto_compact_at" => {
-                    let share: f64 = value.parse().map_err(|_| bad("a number from 0 to 1"))?;
-                    if !(0.0..=1.0).contains(&share) {
-                        return Err(bad("a number from 0 to 1"));
-                    }
-                    parsed.auto_compact_at = Some(share);
-                }
-                "knowledge" => {
-                    parsed.knowledge = value.parse().map_err(|_| bad("true or false"))?;
-                }
-                "attended" => {
-                    parsed.attended = value.parse().map_err(|_| bad("true or false"))?;
-                }
-                "harness" => {
-                    parsed.harness = match value.as_str() {
-                        "on" => HarnessMode::On,
-                        "off" => HarnessMode::Off,
-                        "auto" => HarnessMode::Auto,
-                        _ => return Err(bad("on, off or auto")),
-                    };
-                }
-                other => {
-                    let known: Vec<&str> = FLAGS.iter().map(|(name, _)| *name).collect();
-                    bail!("unknown flag {other:?}; the flags are {}", known.join(", "));
-                }
-            }
-        }
-        Ok(parsed)
-    }
-}
-
 /// Everything resolved from the command line before the session starts.
 struct Setup {
-    local: bool,
     task: Task,
-    variant: Arc<Variant>,
-    flags: LoopFlags,
-    placeholders: Placeholders,
-    replay: Option<Arc<Replay>>,
-    pricing: Option<Pricing>,
-    base_url: String,
-    model_id: String,
-    api_key: Option<String>,
-    effort: Option<Effort>,
-    extra_body: Option<Value>,
-    context_tokens: Option<u64>,
-    cost_ceiling: Option<f64>,
-    token_ceiling: Option<u64>,
+    options: EvalOptions,
 }
 
 impl Setup {
@@ -658,7 +567,7 @@ impl Setup {
         let task = if printing {
             Task {
                 id: None,
-                prompt: PRINT_PROMPT_MESSAGE.into(),
+                prompt: String::new(),
                 source: "print-prompt".into(),
                 raw: None,
             }
@@ -666,7 +575,7 @@ impl Setup {
             Task::load(args.task.as_deref().context("--task is required")?)?
         };
 
-        let mut variant = match &args.variant {
+        let mut eval_variant = match &args.variant {
             Some(spec) => {
                 let config_dir = match &args.config_home {
                     Some(home) => Some(Paths::under(home).config_dir().to_path_buf()),
@@ -674,19 +583,18 @@ impl Setup {
                         .ok()
                         .map(|paths| paths.config_dir().to_path_buf()),
                 };
-                Variant::load(spec, config_dir.as_deref())?
+                variant::load(spec, config_dir.as_deref())?
             }
-            None => Variant::baseline(),
+            None => variant::baseline(),
         };
-        variant = variant.with_flags(&args.flags)?;
+        eval_variant = variant::with_flags(eval_variant, &args.flags)?;
         if let Some(path) = &args.prompt_overlay {
             let text = std::fs::read_to_string(path)
                 .with_context(|| format!("could not read the overlay {}", path.display()))?;
-            variant = variant.with_overlay(text.trim_end().to_string());
+            eval_variant = variant::with_overlay(eval_variant, text.trim_end().to_string());
         }
-        let flags = LoopFlags::parse(&variant.flags)?;
 
-        let replay = if printing {
+        let replay: Option<Vec<EvalReply>> = if printing {
             None
         } else {
             let from_task = task
@@ -695,26 +603,11 @@ impl Setup {
                 .filter(|raw| raw.get("subagent_replay").is_some())
                 .cloned();
             match (&args.subagent_replay, from_task) {
-                (Some(path), _) => Some(Recordings::load(path)?),
-                (None, Some(raw)) => Some(Recordings::from_value(raw)?),
+                (Some(path), _) => Some(replay::load(path)?),
+                (None, Some(raw)) => Some(replay::from_value(raw)?),
                 (None, None) => None,
             }
-            .map(|recordings| Arc::new(Replay::new(recordings)))
         };
-
-        let pricing = match (args.price_in, args.price_out) {
-            (None, None) => None,
-            (input, output) => Some(Pricing {
-                input_usd_per_mtok: input.unwrap_or(0.0),
-                output_usd_per_mtok: output.unwrap_or(0.0),
-                cached_input_usd_per_mtok: None,
-            }),
-        };
-        if args.cost_ceiling.is_some() && pricing.is_none() {
-            bail!(
-                "--cost-ceiling needs prices: give --price-in and --price-out (per million tokens)"
-            );
-        }
 
         let (base_url, model_id) = if printing {
             (
@@ -753,166 +646,56 @@ impl Setup {
             };
             kwargs.extend(map);
         }
-        let extra_body =
-            (!kwargs.is_empty()).then(|| json!({ "chat_template_kwargs": Value::Object(kwargs) }));
 
         Ok(Setup {
-            local: args.local,
             task,
-            variant: Arc::new(variant),
-            effort: args.effort.or(flags.effort),
-            flags,
-            placeholders: Placeholders {
-                context_tokens: args.context_tokens,
-            },
-            replay,
-            pricing,
-            base_url,
-            model_id,
-            api_key,
-            extra_body,
-            context_tokens: args.context_tokens,
-            cost_ceiling: args.cost_ceiling,
-            token_ceiling: args.token_ceiling,
-        })
-    }
-
-    /// The root model, whose calls go through the recorder.
-    fn model(&self, record: &Shared, printing: bool) -> (ResolvedModel, ChatClients) {
-        let mut clients = ChatClients::default();
-        let record = Arc::clone(record);
-        let variant = Arc::clone(&self.variant);
-        let placeholders = self.placeholders;
-        let pricing = self.pricing;
-        let extra = self.extra_body.clone();
-        clients.register("openai", move |http, endpoint| {
-            let mut real = OpenAiCompatible::new(http.clone(), endpoint);
-            if let Some(extra) = &extra {
-                real = real.with_extra_body(extra.clone());
-            }
-            Arc::new(Recorder {
-                inner: (!printing).then(|| -> Arc<dyn ChatClient> { Arc::new(real) }),
-                record: Arc::clone(&record),
-                variant: Arc::clone(&variant),
-                placeholders,
-                pricing,
-            })
-        });
-        let model = ResolvedModel {
-            spec: format!("eval:{}", self.model_id),
-            endpoint: Endpoint {
-                base_url: self.base_url.clone(),
-                api_key: self.api_key.clone(),
-            },
-            model: self.model_id.clone(),
-            pricing: self.pricing,
-            local: false,
-            context_window: self.context_tokens,
-            kind: "openai".into(),
-            reasoning: self.effort.map(|_| true),
-        };
-        (model, clients)
-    }
-
-    fn session_config(
-        &self,
-        workspace: &Workspace,
-        model: (ResolvedModel, ChatClients),
-        record: &Shared,
-        scratch: &Scratch,
-    ) -> SessionConfig {
-        let (model, clients) = model;
-        let web: Arc<dyn ToolProvider> = Arc::new(WebTools {
-            web: Web::new(Some(Arc::new(OfflineSearch))),
-            allow_domains: Vec::new(),
-            browser: None,
-            downloads: None,
-        });
-        // `auto` means on for a model that runs on this machine, which the engine cannot tell
-        // here (it has no local runtime), so `--local` says it.
-        let mode = match self.flags.harness {
-            HarnessMode::Auto if self.local => HarnessMode::On,
-            other => other,
-        };
-        SessionConfig {
-            id: "eval".into(),
-            workspace: workspace.clone(),
-            effort: self.effort.unwrap_or_default(),
-            model: Some(model),
-            catalog: Vec::new(),
-            routing: RoutingSettings::default(),
-            clients,
-            local: None,
-            tools: vec![web],
-            notices: Vec::new(),
-            extensions: Default::default(),
-            memory: None,
-            context: None,
-            enforce: Enforce::Warn,
-            pre_approved: Vec::new(),
-            launcher: None,
-            resume: false,
-            resume_policy: imperium_engine::default_resume_policy(),
-            instructions: None,
-            personality: None,
-            max_steps: self.flags.max_steps,
-            background: None,
-            checkpoints: None,
-            budget_gate: Some(Arc::new(Ceilings {
-                record: Arc::clone(record),
-                cost_usd: self.cost_ceiling,
-                tokens: self.token_ceiling,
-            })),
-            auto_compact: self.flags.auto_compact,
-            auto_compact_at: self.flags.auto_compact_at,
-            attended: self.flags.attended,
-            attachments: Default::default(),
-            auto_permissions: Default::default(),
-            harness: HarnessSettings {
-                dereference: mode,
-                state: mode,
-                hints: mode,
-                clarify: mode,
-                ..HarnessSettings::default()
-            },
-            keep_agent_state: false,
-            journal_path: scratch.journal(),
-            knowledge: KnowledgeConfig {
-                settings: KnowledgeSettings {
-                    enabled: self.flags.knowledge,
-                    ..KnowledgeSettings::default()
+            options: EvalOptions {
+                model: EvalModel {
+                    base_url,
+                    model_id,
+                    api_key,
+                    chat_template_kwargs: (!kwargs.is_empty()).then_some(Value::Object(kwargs)),
+                    local: args.local,
+                    effort: args.effort.map(|effort| effort.as_str().to_string()),
+                    context_tokens: args.context_tokens,
+                    price_in: args.price_in,
+                    price_out: args.price_out,
                 },
-                ..KnowledgeConfig::default()
+                variant: eval_variant,
+                replay,
+                agent: args.agent.clone(),
+                permission_mode: Some(args.permission_mode.as_str().to_string()),
+                cost_ceiling_usd: args.cost_ceiling,
+                token_ceiling: args.token_ceiling,
+                timeout_s: Some(args.timeout_s),
             },
-        }
+        })
     }
 
     fn model_json(&self) -> Value {
+        let model = &self.options.model;
         json!({
-            "base_url": self.base_url,
-            "model_id": self.model_id,
-            "context_tokens": self.context_tokens,
-            "effort": self.effort.map(|effort| effort.as_str()),
-            "chat_template_kwargs": self
-                .extra_body
-                .as_ref()
-                .and_then(|body| body.get("chat_template_kwargs")),
-            "price_in_usd_per_mtok": self.pricing.map(|pricing| pricing.input_usd_per_mtok),
-            "price_out_usd_per_mtok": self.pricing.map(|pricing| pricing.output_usd_per_mtok),
+            "base_url": model.base_url,
+            "model_id": model.model_id,
+            "context_tokens": model.context_tokens,
+            "effort": model.effort,
+            "chat_template_kwargs": model.chat_template_kwargs,
+            "price_in_usd_per_mtok": model.price_in,
+            "price_out_usd_per_mtok": model.price_out,
         })
     }
+}
 
-    fn variant_json(&self, record: &Record) -> Value {
-        json!({
-            "id": self.variant.id,
-            "description": self.variant.description,
-            "source": self.variant.source,
-            "config_hash": self.variant.config_hash(),
-            "flags": self.variant.flags,
-            "overlay": self.variant.overlay.is_some(),
-            "warnings": record.warnings,
-        })
-    }
+fn variant_json(variant: &EvalVariant, config_hash: &str, warnings: &[String]) -> Value {
+    json!({
+        "id": variant.id,
+        "description": variant.description,
+        "source": variant.source,
+        "config_hash": config_hash,
+        "flags": variant.flags,
+        "overlay": variant.overlay.is_some(),
+        "warnings": warnings,
+    })
 }
 
 /// The base URL and model id from `--root-model` (`<url>` or `<url>#<id>`) and `--model-id`.
@@ -932,40 +715,20 @@ fn split_model(root_model: &str, model_id: Option<&str>) -> anyhow::Result<(Stri
     Ok((url.to_string(), id.to_string()))
 }
 
-/// The hash of the prompt and tools the root agent was first given, the prompt (with the working
-/// folder as `{workspace}`) and the tools.
-fn prompt_parts(record: &Record, workspace_root: &str) -> (Value, Value, Value) {
-    let Some(first) = &record.first_root else {
-        return (Value::Null, Value::Null, json!([]));
-    };
-    let prompt = first
-        .system_prompt
-        .replace(workspace_root, WORKSPACE_PLACEHOLDER);
-    let digest = Sha256::digest(
-        serde_json::to_vec(&json!({"system_prompt": prompt, "tools": first.tools}))
-            .unwrap_or_default(),
-    );
-    (
-        json!(format!("sha256:{}", hex(&digest))),
-        json!(prompt),
-        json!(first.tools),
-    )
-}
-
 /// The root agent's conversation as the model last read it, plus the reply it got.
-fn transcript(record: &Record) -> Value {
-    let Some(last) = &record.last_root else {
+fn transcript(result: &EvalResult) -> Value {
+    let Some(last) = &result.last_request else {
         return json!([]);
     };
     let mut messages = last.messages.clone();
-    if let Some(reply) = &record.last_reply {
+    if let Some(reply) = &result.last_reply {
         messages.push(reply.clone());
     }
     Value::Array(messages)
 }
 
-fn final_reply(record: &Record) -> Value {
-    record
+fn final_reply(result: &EvalResult) -> Value {
+    result
         .last_reply
         .as_ref()
         .and_then(|reply| reply.get("content"))
@@ -973,23 +736,39 @@ fn final_reply(record: &Record) -> Value {
         .unwrap_or(Value::Null)
 }
 
-fn total_ledger(record: &Record, priced: bool) -> Value {
-    let mut total = record.root;
-    total.calls += record.subagents.calls;
-    total.prompt_tokens += record.subagents.prompt_tokens;
-    total.completion_tokens += record.subagents.completion_tokens;
-    total.cached_tokens += record.subagents.cached_tokens;
-    total.cost_usd += record.subagents.cost_usd;
-    total.to_json(priced)
+fn ledger_json(ledger: &imperium_protocol::methods::EvalLedger, priced: bool) -> Value {
+    json!({
+        "model_calls": ledger.calls,
+        "prompt_tokens": ledger.prompt_tokens,
+        "completion_tokens": ledger.completion_tokens,
+        "cached_tokens": ledger.cached_tokens,
+        "cost_usd": if priced { json!(ledger.cost_usd) } else { Value::Null },
+    })
 }
 
-fn subagents_json(log: &EventLog, replay: Option<&Replay>) -> Value {
-    let answered = replay.map(Replay::answered).unwrap_or_default();
+fn total_ledger(result: &EvalResult, priced: bool) -> Value {
+    let (root, subagents) = (&result.root, &result.subagents);
+    ledger_json(
+        &imperium_protocol::methods::EvalLedger {
+            calls: root.calls + subagents.calls,
+            prompt_tokens: root.prompt_tokens + subagents.prompt_tokens,
+            completion_tokens: root.completion_tokens + subagents.completion_tokens,
+            cached_tokens: root.cached_tokens + subagents.cached_tokens,
+            cost_usd: root.cost_usd + subagents.cost_usd,
+        },
+        priced,
+    )
+}
+
+fn subagents_json(log: &EventLog, result: &EvalResult) -> Value {
     Value::Array(
         log.subagents
             .iter()
             .map(|row| {
-                let recorded = answered.iter().find(|answer| answer.task_id == row.task_id);
+                let recorded = result
+                    .answered
+                    .iter()
+                    .find(|answer| answer.task_id == row.task_id);
                 let (ok, report) = match (recorded, &row.finished) {
                     (Some(answer), _) => (Some(answer.ok), Some(answer.report.clone())),
                     (None, Some((ok, report))) => (Some(*ok), Some(report.clone())),
@@ -1017,58 +796,21 @@ fn engine_json() -> Value {
     })
 }
 
-/// Web search with no results: the tool is offered (its schema is part of the prompt under
-/// test) but nothing leaves the machine.
-#[derive(Debug)]
-struct OfflineSearch;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl SearchProvider for OfflineSearch {
-    fn search<'a>(
-        &'a self,
-        _http: &'a reqwest::Client,
-        _query: &'a str,
-        _count: usize,
-    ) -> SearchFuture<'a> {
-        Box::pin(async {
-            Err(WebError::Http(
-                "web search is turned off in headless evals".into(),
-            ))
-        })
-    }
-}
-
-/// A temporary folder for the run's journal (and the working folder `--print-prompt` shows),
-/// removed when the run ends.
-struct Scratch {
-    dir: PathBuf,
-    journal: PathBuf,
-}
-
-impl Scratch {
-    fn new(journal: Option<&Path>) -> anyhow::Result<Self> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos());
-        let dir =
-            std::env::temp_dir().join(format!("imperium-eval-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).context("could not make a temporary folder")?;
-        Ok(Scratch {
-            journal: journal.map_or_else(|| dir.join("session.jsonl"), Path::to_path_buf),
-            dir,
-        })
-    }
-
-    fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    fn journal(&self) -> PathBuf {
-        self.journal.clone()
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+    #[test]
+    fn the_model_comes_from_the_url_fragment_or_the_flag() {
+        assert_eq!(
+            split_model("http://h/v1#m", None).unwrap(),
+            ("http://h/v1".to_string(), "m".to_string())
+        );
+        assert_eq!(
+            split_model("http://h/v1#a", Some("b")).unwrap().1,
+            "b".to_string()
+        );
+        assert!(split_model("http://h/v1", None).is_err());
+        assert!(split_model("ftp://h#m", None).is_err());
     }
 }

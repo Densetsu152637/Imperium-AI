@@ -286,6 +286,7 @@ impl DaemonState {
             );
         }
         self.forget_session(id);
+        self.forget_eval(id);
         // Files copied into its attachments folder go with it.
         let _ = std::fs::remove_dir_all(crate::attachments::store_dir(self.paths.data_dir(), id));
         let sessions = self.paths.data_dir().join("sessions");
