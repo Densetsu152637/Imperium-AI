@@ -497,7 +497,7 @@ impl Agent {
             if completion.tool_calls.is_empty() || self.single_call {
                 // The turn ends after the files before it are recorded, so what changes once
                 // it has ended (the user's edits) is not mistaken for the turn's.
-                self.shared.snapshot_ready().await;
+                let _ = self.shared.snapshot_ready().await;
                 self.checkpoint();
                 self.emit(SessionEvent::TurnCompleted {
                     usage: token_usage(&total),

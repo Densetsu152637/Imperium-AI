@@ -929,9 +929,18 @@ impl Shared {
     /// Waits until the checkpoint of the files before the running turn is taken. Reading every
     /// file of a large folder takes seconds to minutes (on Windows, writing each blob is slow),
     /// so the turn starts beside it and only a tool call, which could change a file, waits.
-    pub(crate) async fn snapshot_ready(&self) {
+    ///
+    /// False when the user stopped the session while it waited: what waited does not go on.
+    pub(crate) async fn snapshot_ready(&self) -> bool {
         let mut ready = self.snapshot_ready.subscribe();
-        let _ = ready.wait_for(|ready| *ready).await;
+        if *ready.borrow_and_update() {
+            return true;
+        }
+        let mut stop = self.controls.stop_signal();
+        tokio::select! {
+            _ = ready.wait_for(|ready| *ready) => true,
+            Ok(_) = stop.wait_for(|stopped| *stopped) => false,
+        }
     }
 
     /// Takes the checkpoint on the blocking pool without making the turn wait for it. The turn

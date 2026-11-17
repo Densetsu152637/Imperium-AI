@@ -684,7 +684,9 @@ impl Agent {
         let arguments = call.function.arguments.as_str();
         // The files as they were before the turn are being recorded beside the model call; no
         // tool runs (and so none changes a file) until they are.
-        self.shared.snapshot_ready().await;
+        if !self.shared.snapshot_ready().await {
+            return self.tool_finished(call, name, false, STOPPED_BEFORE_RUNNING.into(), None);
+        }
         // A question's fork may read and search, and nothing else: checked here, where a call
         // is dispatched, so the tool list it was given (and its cached prefix) stays as it was.
         if self.fork.is_some()
