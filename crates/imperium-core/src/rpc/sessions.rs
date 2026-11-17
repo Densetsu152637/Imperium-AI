@@ -17,7 +17,7 @@ impl Connection {
             }),
             SessionEvalCreate::NAME => call::<SessionEvalCreate>(c.params.take(), |params| {
                 let (result, events) = self.create_eval_session(params)?;
-                self.eval_sessions.push(result.session_id.clone());
+                self.eval_sessions.add(&self.state, &result.session_id);
                 *c.subscription = Some(Subscription {
                     session_id: result.session_id.clone(),
                     events,
@@ -42,6 +42,7 @@ impl Connection {
                 c.later,
                 |params: SessionEvalCreateParams| {
                     let state = Arc::clone(&self.state);
+                    let owner = Arc::clone(&self.eval_sessions);
                     let forbidden = self.eval_forbidden().err();
                     async move {
                         if let Some(error) = forbidden {
@@ -54,6 +55,7 @@ impl Connection {
                                 params.environment_id.as_deref(),
                                 params.project_dir.as_deref(),
                                 Arc::new(prepared),
+                                &owner,
                             )
                             .await
                             .map_err(|message| ErrorObject::new(codes::INTERNAL_ERROR, message))

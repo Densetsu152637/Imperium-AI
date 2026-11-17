@@ -657,7 +657,10 @@ click away, never removed.
 - **Launch focus:** once the panels have rendered, the app asks for document focus and moves it to
   the app's root element (`useLaunchFocus` in `shared/useWindows.ts`) unless a field already has it,
   so Ctrl+, and Ctrl+K do not need a click first. Only the web view's own focus is requested; if
-  the web view lacks operating-system focus a native `set_focus` is needed (a follow-up).
+  the web view lacks operating-system focus the shell asks for it: the Tauri shell (`src-tauri/src/main.rs`)
+  calls `set_focus` once on each window it builds, right after `show`, so the OS gives the window
+  (and its web view) keyboard focus at launch. It is a single call at creation, not repeated on
+  events, and the login-time background run builds no window, so it never takes focus.
 - **Rows:** a row's secondary actions show on hover or focus: a model row's favourite and hide
   toggles (shown while set), a queued message's *Edit* and *Remove* (*Steer* stays visible), an
   environment folder's remove. Connector rows keep their on/off switch and put *Test
@@ -1023,7 +1026,7 @@ share a left edge; a session row's time gives way to its *⋯* menu the same way
 allows it without a folder: its sessions work in their own scratch folders.
 
 *New environment* (the *+* in the Environments header) and *Edit* open the **environment window**,
-built on the same shared modal as Settings, Connectors and the model editor (`SettingsModal`: a
+built on the same shared modal as Settings, Connectors and the model editor (`Dialog`: a
 navigation column on the left, a header with the selected section's title and a close button, the
 scrolling rows, and a footer; Escape or a click outside closes it, Ctrl+S saves). Its sections are
 laid out as the shared `Row`s (title and help text on the left, the control on the right), so
@@ -1568,7 +1571,7 @@ on the card, checksum verification, and making the model the default after the d
 
 ## Model configuration dialog (implemented)
 
-A modal edits model settings. It uses the Settings window's shell (`SettingsModal`: the same
+A modal edits model settings. It uses the Settings window's shell (`Dialog`: the same
 sheet, sizing, header with the title and ×, navigation column, and Esc or a click on the backdrop
 to close), with a footer for its actions. It opens from *Configure models* in Settings (Models and
 Local runtime), from *Configure* in the Local models panel (on that model) and from *Configure* in
@@ -1620,9 +1623,19 @@ second formula in the app: the debounced (500 ms) `models.set_config` dry run re
 draft model; calibrated by the measured memory of earlier loads), and the table follows them,
 greyed with *updating…* while the answer is on its way. The total is weights + KV pool + runtime
 overhead (+ a draft model); the KV pool is its tokens times the bytes per token, which the cache
-types scale; the planner then fills the GPU with as many layers as fit and puts the rest, with
-their share of the pool, in RAM (all of it in RAM on the CPU lane). They are estimates beside what
-else is loaded, and the real figures also depend on the driver. A table row that names a local
+types scale, worked out for the pool at its ceiling (`effective.pool_max`: the fixed pool, or the most an
+empty pool may grow to, which is the max context times the slots, cut to what fits), because that is
+the most the model may reserve; a pool that starts small and grows with use does not make the figures
+creep up. The KV cache row says so (*KV cache at max context 32,768*, or *at the full pool of
+131,072 tokens* when the slots share more than one context; with no figure for the model's KV size
+per token it names no size). The planner then fills the GPU with as many layers as fit and puts the
+rest, with their share of the pool, in RAM (all of it in RAM on the CPU lane). The machine state it
+assumes is an empty one: the memory measured when the daemon started, the same the context ceiling
+and the pool were sized against, so nothing else loaded counts and a drift of the live readings
+cannot show a pool that fits as split between the GPU and RAM. The *Local models* row's badge is
+different: it shows what loading the model now needs, at the pool it has now (the smaller, starting
+one until calls grow it), against the live memory, while the dialog shows the most it may reserve.
+The figures are estimates, and the real ones also depend on the driver. A table row that names a local
 model (`llamacpp:` or `vllm:`) shows that model's estimate; a hosted row says it *runs remotely*.
 
 **Use this model.** The switch turns a model off without forgetting its settings. Off, the model

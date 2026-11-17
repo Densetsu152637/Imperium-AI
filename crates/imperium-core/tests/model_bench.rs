@@ -281,6 +281,35 @@ fn saved_result(index: usize) -> Value {
            "placement": "gpu", "machine": "quiet", "prompts": []})
 }
 
+/// The most tokens per second the fake server's schedule allows a prompt's reply to measure.
+///
+/// The client times the reply from the first token it sees to the last. Sleeps only run long, so
+/// the last token cannot arrive before `FIRST_MS` plus the gaps after the request was sent; but
+/// the first token can be seen late (the test process, or the machine, was busy at that moment),
+/// which shortens the measured window and so raises the speed. The window is therefore at least
+/// the schedule minus the first token's measured lateness (`ttft_ms` is taken from the same
+/// request), which gives a ceiling that holds however busy the machine is. A small factor covers
+/// the timer's millisecond resolution.
+fn gen_speed_ceiling(prompt: &Value) -> f64 {
+    let ttft_ms = prompt["ttft_ms"].as_f64().unwrap();
+    let schedule_ms = (FIRST_MS + (TOKENS - 1) * GAP_MS) as f64;
+    let window_ms = schedule_ms - ttft_ms;
+    if window_ms <= 0.0 {
+        return f64::INFINITY;
+    }
+    (TOKENS - 1) as f64 * 1000.0 / window_ms * 1.01
+}
+
+/// The ceiling for a result's overall speed: the best of its prompts' ceilings.
+fn result_gen_speed_ceiling(result: &Value) -> f64 {
+    result["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(gen_speed_ceiling)
+        .fold(0.0, f64::max)
+}
+
 /// Whether a result's numbers are within what the fake server's schedule allows, tightly: a
 /// formula over the whole request would give about 100 tok/s for the prompt and 5 tok/s for the
 /// reply, outside these ranges.
@@ -292,12 +321,12 @@ fn timing_in_range(result: &Value) -> bool {
     };
     within(&result["ttft_ms"], 395.0, 700.0)
         && within(&result["prompt_tok_s"], 150.0, 256.0)
-        && within(&result["gen_tok_s"], 5.6, 6.7)
+        && within(&result["gen_tok_s"], 5.6, result_gen_speed_ceiling(result))
         && result["prompts"].as_array().is_some_and(|prompts| {
             prompts.iter().all(|prompt| {
                 within(&prompt["ttft_ms"], 395.0, 700.0)
                     && within(&prompt["prompt_tok_s"], 150.0, 256.0)
-                    && within(&prompt["gen_tok_s"], 5.6, 6.7)
+                    && within(&prompt["gen_tok_s"], 5.6, gen_speed_ceiling(prompt))
             })
         })
 }
@@ -387,9 +416,14 @@ async fn a_benchmark_measures_the_stream_through_the_normal_launch_path_and_save
         assert_eq!(prompt["prompt_tokens"], PROMPT_TOKENS);
         assert_eq!(prompt["prompt_tokens_estimated"], false);
         assert_eq!(prompt["completion_tokens"], TOKENS);
-        // Sleeps only run long: nothing is quicker than the schedule.
+        // Sleeps only run long: nothing is quicker than the schedule. The reply's speed is held
+        // to the schedule less the first token's lateness, not to a fixed 6.7 tok/s: a first token
+        // seen late shortens the measured window.
         assert!(prompt["ttft_ms"].as_f64().unwrap() >= 395.0, "{prompt}");
-        assert!(prompt["gen_tok_s"].as_f64().unwrap() <= 6.7, "{prompt}");
+        assert!(
+            prompt["gen_tok_s"].as_f64().unwrap() <= gen_speed_ceiling(prompt),
+            "{prompt}"
+        );
         assert!(
             prompt["prompt_tok_s"].as_f64().unwrap() <= 256.0,
             "{prompt}"
@@ -603,12 +637,13 @@ async fn a_server_without_usage_claims_no_prompt_speed() {
         assert_eq!(prompt["prompt_tokens_estimated"], true, "{prompt}");
         // The streamed chunks stand in for the reply tokens.
         assert_eq!(prompt["completion_tokens"], TOKENS);
-        // At most the schedule's 4 tokens in 0.6 s (sleeps only run long); the floor is loose
+        // At most the schedule's 4 tokens in 0.6 s (sleeps only run long, less a first token seen
+        // late: see `gen_speed_ceiling`); the floor is loose
         // because a slow or busy machine (a macOS CI runner) stretches every sleep, and this
         // test is about the missing usage, not the speed (the stream test pins the formula).
-        range(&prompt["gen_tok_s"], 2.0, 6.7);
+        range(&prompt["gen_tok_s"], 2.0, gen_speed_ceiling(prompt));
     }
-    range(&result["gen_tok_s"], 2.0, 6.7);
+    range(&result["gen_tok_s"], 2.0, result_gen_speed_ceiling(result));
 }
 
 #[tokio::test]

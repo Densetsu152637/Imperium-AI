@@ -3,7 +3,7 @@
 import { Info } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { Switch } from "../components/Switch";
-import { estimateValue, type MemoryEstimate } from "./modelMemory";
+import { estimateValue, kvLabel, type MemoryEstimate } from "./modelMemory";
 import { affectsText, ASPECT_LABELS, ESTIMATE_ROWS, type SettingGroup, type SettingSpec } from "./modelSettingsTable";
 
 /**
@@ -190,22 +190,25 @@ export function MemoryTable({
     <table className={`model-table model-memory${updating || failed ? " updating" : ""}`}>
       {caption}
       <tbody>
-        {ESTIMATE_ROWS.map((row) => (
-          <tr key={row.key} className={`model-setting-row${estimate.fits ? "" : " warn"}`}>
-            <th scope="row">
-              <span className="model-setting-name">
-                {row.label}
-                <InfoTip label={row.label}>
-                  <span>{row.help}</span>
-                </InfoTip>
-              </span>
-            </th>
-            <td className="model-setting-value">
-              <output aria-live="off">{estimateValue(estimate, row.key)}</output>
-            </td>
-            <td className="model-setting-reset" />
-          </tr>
-        ))}
+        {ESTIMATE_ROWS.map((row) => {
+          const label = row.key === "kv" ? kvLabel(estimate) : row.label;
+          return (
+            <tr key={row.key} className={`model-setting-row${estimate.fits ? "" : " warn"}`}>
+              <th scope="row">
+                <span className="model-setting-name">
+                  {label}
+                  <InfoTip label={label}>
+                    <span>{row.help}</span>
+                  </InfoTip>
+                </span>
+              </th>
+              <td className="model-setting-value">
+                <output aria-live="off">{estimateValue(estimate, row.key)}</output>
+              </td>
+              <td className="model-setting-reset" />
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );

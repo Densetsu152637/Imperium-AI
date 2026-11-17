@@ -123,10 +123,15 @@
   }
 }
 
+/* Standard clip pattern. Absolute, so it needs a positioned ancestor to stay inside: panel bodies
+   (shell.css) and dialogs are one, so a hidden label cannot widen the page. */
 .visually-hidden {
   position: absolute;
   width: 1px;
   height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;

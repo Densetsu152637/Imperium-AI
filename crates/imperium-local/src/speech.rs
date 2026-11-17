@@ -276,6 +276,11 @@ impl ProcessSpeechLauncher {
                 spec.binary.display()
             ))
         })?;
+        // Written down beside the language-model servers, so a daemon that dies without
+        // stopping it does not leave it running: the next one's startup sweep ends it.
+        if let (Some(pid), Some(logs)) = (child.id(), spec.log.parent()) {
+            crate::ledger::record(logs, pid);
+        }
         let root = format!("http://127.0.0.1:{port}");
         let ready = tokio::time::timeout(
             spec.start_timeout,
@@ -1081,5 +1086,64 @@ mod tests {
             error.to_string().contains("voice.local.binary"),
             "names the setting: {error}"
         );
+    }
+
+    /// A stand-in `whisper-server` that runs for a few seconds and never serves.
+    #[cfg(windows)]
+    fn silent_server(dir: &Path) -> PathBuf {
+        let path = dir.join("whisper-server.cmd");
+        std::fs::write(
+            &path,
+            "@echo off
+ping -n 4 127.0.0.1 >nul
+",
+        )
+        .unwrap();
+        path
+    }
+
+    /// A stand-in `whisper-server` that runs for a few seconds and never serves.
+    #[cfg(unix)]
+    fn silent_server(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("whisper-server");
+        std::fs::write(
+            &path,
+            "#!/bin/sh
+exec sleep 4
+",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn a_started_server_is_written_in_the_children_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        let spec = SpeechLaunch {
+            binary: silent_server(dir.path()),
+            model: dir.path().join("model.bin"),
+            gpu: false,
+            threads: 0,
+            language: "en".into(),
+            convert: false,
+            extra_args: Vec::new(),
+            start_timeout: Duration::from_millis(500),
+            log: logs.join("whisper.log"),
+        };
+        // It never answers, so the start times out; it was running, and written down, by then.
+        assert!(ProcessSpeechLauncher::new().launch(&spec).await.is_err());
+        let ledger = std::fs::read_to_string(logs.join("children.txt")).expect("a ledger");
+        let line = ledger.lines().next().expect("one server written down");
+        let mut parts = line.splitn(3, ' ');
+        assert!(parts.next().unwrap().parse::<u32>().is_ok(), "its id");
+        assert!(
+            parts.next().unwrap().parse::<u64>().is_ok(),
+            "its start time"
+        );
+        assert!(!parts.next().unwrap().is_empty(), "its name");
+        assert_eq!(ledger.lines().count(), 1);
     }
 }

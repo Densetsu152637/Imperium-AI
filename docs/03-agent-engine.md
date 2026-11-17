@@ -934,9 +934,19 @@ machine; the working folder is the only path in the prompt (replaced by `{worksp
 
 The folder is an environment of the daemon: an existing environment whose first folder it is is
 used, otherwise one is made for the run and deleted with the session (nobody is told of it, and
-`environments.list` is as before once the run is over). The session is not announced and not in
-`session.list`, so other clients, a paired phone included, do not see it. The daemon, not the
-command's view of the notifications, is the authority on how the root's turn ended: `exit_reason`
+`environments.list` is as before once the run is over). Runs on the same new folder at once
+share the one environment, which is created under a lock and counted: it is deleted when the last
+session using it ends, never under another run. An environment a run made is marked in
+`environments-run-made.json` beside `environments.json`, and the daemon removes any still marked
+when it starts, so one that died mid-run leaves none behind. The mark is dropped as soon as the
+user edits the environment (a setting, a folder, an agent), so one the user has adopted is never
+deleted. A `session.prompt_preview` is owned by its connection like an evaluation session: if the
+command disconnects mid-preview, the preview session and its environment are deleted at once
+rather than at the session deadline.
+
+The session is not announced and not in
+`session.list`, so other clients, a paired phone included, do not see it. The daemon, not
+the command's view of the notifications, is the authority on how the root's turn ended: `exit_reason`
 comes from what the daemon recorded (`session.eval_result` has `ended` and `plan`), and the
 command asks for it whenever two seconds pass without an event.
 

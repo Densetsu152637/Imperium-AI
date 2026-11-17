@@ -73,6 +73,11 @@ pub struct Environments {
     /// Agents made from a legacy persistent session when the file was loaded, until each starts
     /// for the first time (its session is then titled after the agent).
     migrated: Mutex<std::collections::HashSet<String>>,
+    /// The environments evaluation runs made for their folders, with how many runs still use
+    /// each. Held for the whole of a claim or release, so runs on one new folder cannot each
+    /// create (or each delete) it. The ids are also kept in a file beside the store, so a
+    /// daemon that dies mid-run does not leave them behind: the next one sweeps them.
+    run_made: Mutex<std::collections::HashMap<String, usize>>,
 }
 
 impl Environments {
@@ -119,6 +124,25 @@ impl Environments {
             }
         };
         let mut list = list;
+        // Environments an evaluation run made for its folder, whose daemon ended before the run
+        // did, are not the user's: they go.
+        if read_only.is_none() {
+            let left = read_run_made(&path);
+            if !left.is_empty() {
+                let before = list.len();
+                list.retain(|env| env.builtin || !left.contains(&env.id));
+                if list.len() != before {
+                    tracing::info!(
+                        removed = before - list.len(),
+                        "removed environments an evaluation run left behind"
+                    );
+                    if let Err(error) = save(&path, &list) {
+                        tracing::warn!(path = %path.display(), %error, "could not save the environments after removing a run's");
+                    }
+                }
+                write_run_made(&path, &std::collections::HashSet::new());
+            }
+        }
         // Environments saved before multiple agents had one persistent session: it becomes
         // the environment's agent, with the session it had (history and all).
         let mut migrated = false;
@@ -151,6 +175,7 @@ impl Environments {
             list: Mutex::new(list),
             read_only,
             migrated: Mutex::new(pending),
+            run_made: Mutex::new(std::collections::HashMap::new()),
         };
         store.ensure_home(save_home);
         store
@@ -571,6 +596,11 @@ impl Environments {
         if let Some(env) = self.existing_for_folder(folder)? {
             return Ok(env);
         }
+        self.create_for_folder(folder)
+    }
+
+    /// Creates an environment named after `folder`, without looking for one first.
+    fn create_for_folder(&self, folder: &str) -> Result<EnvironmentInfo, EnvironmentError> {
         let folder = existing_folder(folder)?;
         let name = Path::new(&folder)
             .file_name()
@@ -602,6 +632,50 @@ impl Environments {
                         .is_some_and(|first| same(first, &folder))
             })
             .cloned())
+    }
+
+    /// The environment of `folder` for an evaluation run, which is to call [`Self::release_run`]
+    /// with its id when it ends. A folder that has an environment uses it; any other gets one
+    /// made for the runs only. Runs on the same new folder share the one made (the first
+    /// creates it, under the lock the others wait on), and it is deleted when the last of them
+    /// releases it.
+    pub fn claim_for_run(&self, folder: &str) -> Result<EnvironmentInfo, EnvironmentError> {
+        let mut made = self
+            .run_made
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(env) = self.existing_for_folder(folder)? {
+            if let Some(users) = made.get_mut(&env.id) {
+                *users += 1;
+            }
+            return Ok(env);
+        }
+        // Created here, never looked up again: only an environment this call made is marked, so
+        // one the user made in between (a lost race gives two, which is harmless) is never
+        // taken for the run's and deleted.
+        let env = self.create_for_folder(folder)?;
+        made.insert(env.id.clone(), 1);
+        write_run_made(&self.path, &made.keys().cloned().collect());
+        Ok(env)
+    }
+
+    /// Ends a run's use of the environment [`Self::claim_for_run`] gave it: one the run made is
+    /// deleted once no run uses it. Any other environment is left alone.
+    pub fn release_run(&self, id: &str) {
+        let mut made = self
+            .run_made
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(users) = made.get_mut(id) else {
+            return;
+        };
+        *users -= 1;
+        if *users > 0 {
+            return;
+        }
+        made.remove(id);
+        let _ = self.delete(id);
+        write_run_made(&self.path, &made.keys().cloned().collect());
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<EnvironmentInfo>> {
@@ -643,6 +717,17 @@ impl Environments {
             changed = Some(env.clone());
             Ok(())
         })?;
+        // The user changed it (an edit, a folder, an agent): it is theirs now, so neither the
+        // end of the run nor the next start deletes it.
+        {
+            let mut made = self
+                .run_made
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if made.remove(id).is_some() {
+                write_run_made(&self.path, &made.keys().cloned().collect());
+            }
+        }
         Ok(changed.expect("set when the change succeeds"))
     }
 }
@@ -891,6 +976,37 @@ fn pending_path(environments: &Path) -> PathBuf {
     environments.with_file_name("agents-to-retitle.json")
 }
 
+fn run_made_path(environments: &Path) -> PathBuf {
+    environments.with_file_name("environments-run-made.json")
+}
+
+fn read_run_made(environments: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(run_made_path(environments))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
+        .map(|ids| ids.into_iter().collect())
+        .unwrap_or_default()
+}
+
+fn write_run_made(environments: &Path, ids: &std::collections::HashSet<String>) {
+    let path = run_made_path(environments);
+    let result = if ids.is_empty() {
+        match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    } else {
+        let mut sorted: Vec<&String> = ids.iter().collect();
+        sorted.sort();
+        serde_json::to_string(&sorted)
+            .map_err(std::io::Error::other)
+            .and_then(|text| std::fs::write(&path, text))
+    };
+    if let Err(error) = result {
+        tracing::warn!(path = %path.display(), %error, "could not record the environments evaluation runs made");
+    }
+}
+
 fn read_pending(environments: &Path) -> std::collections::HashSet<String> {
     std::fs::read_to_string(pending_path(environments))
         .ok()
@@ -1016,6 +1132,90 @@ mod tests {
 
     fn store(dir: &Path) -> Environments {
         Environments::load(dir.join("environments.json"))
+    }
+
+    #[test]
+    fn environments_a_run_made_are_swept_at_startup_and_others_kept() {
+        let data = tempfile::tempdir().unwrap();
+        let kept_folder = tempfile::tempdir().unwrap();
+        let run_folder = tempfile::tempdir().unwrap();
+        let (kept, run) = {
+            let envs = store(data.path());
+            let kept = new(&envs, "kept", None, &[path(&kept_folder)]).unwrap();
+            // A daemon that dies mid-run: the run's environment is saved and marked.
+            let run = envs.claim_for_run(&path(&run_folder)).unwrap();
+            (kept, run)
+        };
+        assert!(data.path().join("environments-run-made.json").exists());
+        let envs = store(data.path());
+        assert!(envs.get(&run.id).is_none(), "the run's environment is gone");
+        assert!(envs.get(&kept.id).is_some(), "the user's is untouched");
+        assert!(envs.get(HOME_ID).is_some());
+        assert!(!data.path().join("environments-run-made.json").exists());
+        // And it stays gone on the next start.
+        assert!(store(data.path()).get(&run.id).is_none());
+    }
+
+    #[test]
+    fn runs_on_one_new_folder_share_its_environment_until_the_last_ends() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let envs = std::sync::Arc::new(store(data.path()));
+        let folder = path(&folder);
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let (envs, folder) = (std::sync::Arc::clone(&envs), folder.clone());
+                std::thread::spawn(move || envs.claim_for_run(&folder).unwrap().id)
+            })
+            .collect();
+        let claims: Vec<String> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert!(claims.iter().all(|id| *id == claims[0]), "one environment");
+        assert_eq!(envs.list().len(), 2, "Home and the one made");
+        for _ in 0..7 {
+            envs.release_run(&claims[0]);
+            assert!(envs.get(&claims[0]).is_some(), "still used by another run");
+        }
+        envs.release_run(&claims[0]);
+        assert!(envs.get(&claims[0]).is_none(), "deleted by the last run");
+        assert!(!data.path().join("environments-run-made.json").exists());
+    }
+
+    #[test]
+    fn an_environment_the_user_changed_is_no_longer_the_runs_to_delete() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        let claimed = envs.claim_for_run(&path(&folder)).unwrap();
+        envs.add_folder(&claimed.id, &path(&extra)).unwrap();
+        assert!(
+            !data.path().join("environments-run-made.json").exists(),
+            "no longer marked"
+        );
+        envs.release_run(&claimed.id);
+        assert!(
+            envs.get(&claimed.id).is_some(),
+            "kept at the end of the run"
+        );
+        assert!(
+            store(data.path()).get(&claimed.id).is_some(),
+            "kept at the next start"
+        );
+    }
+
+    #[test]
+    fn a_run_on_a_folder_that_has_an_environment_never_deletes_it() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        let mine = new(&envs, "mine", None, &[path(&folder)]).unwrap();
+        let claimed = envs.claim_for_run(&path(&folder)).unwrap();
+        assert_eq!(claimed.id, mine.id);
+        envs.release_run(&claimed.id);
+        assert!(envs.get(&mine.id).is_some());
     }
 
     fn path(dir: &tempfile::TempDir) -> String {

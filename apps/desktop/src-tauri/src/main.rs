@@ -67,6 +67,9 @@ fn main() {
                     let built = builder.build()?;
                     paint_background(&built);
                     built.show()?;
+                    // Once, after the first show: the OS then gives the window keyboard focus, so
+                    // shortcuts (Ctrl+,) work without a click first. Best effort.
+                    let _ = built.set_focus();
                 }
             }
             update::setup(app.handle());
