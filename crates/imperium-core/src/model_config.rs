@@ -576,7 +576,7 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                 // the pool it starts with (or has grown to). The memory figures are those of
                 // the pool at its ceiling, what the model may reserve, not of its start.
                 let (launch, footprint, placement) =
-                    supervisor.estimate(model, &settings.launch_of(&model.id));
+                    supervisor.config_estimate(model, &settings.launch_of(&model.id));
                 let cpu_lane = settings.cpu_row(&model.id).is_some();
                 let (draft_in_use, draft_notice) = supervisor.draft_state(model, &launch);
                 let vllm = model.format == imperium_local::scan::Format::Safetensors;

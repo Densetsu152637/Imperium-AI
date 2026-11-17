@@ -2094,7 +2094,7 @@ impl Supervisor {
     /// against the memory measured at start ([`Supervisor::start_budget`]), the budget the
     /// ceiling was sized against, so a pool that fits does not show as split between the GPU
     /// and RAM because the live readings drifted.
-    pub fn estimate(
+    pub fn config_estimate(
         &self,
         model: &LocalModel,
         configured: &ModelLaunch,
@@ -5506,7 +5506,7 @@ mod tests {
             Arc::new(FakeLauncher::default()),
         );
         let main = the_main(&supervisor);
-        let (sized, footprint, _) = supervisor.estimate(&main, &llama.launch("main", None));
+        let (sized, footprint, _) = supervisor.config_estimate(&main, &llama.launch("main", None));
         assert!(
             sized.pool_max > sized.pool_tokens,
             "the pool starts below its ceiling ({} < {})",
