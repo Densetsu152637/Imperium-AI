@@ -934,18 +934,20 @@ impl Shared {
         let _ = ready.wait_for(|ready| *ready).await;
     }
 
-    /// Takes the checkpoint on the blocking pool without making the turn wait for it.
+    /// Takes the checkpoint on the blocking pool without making the turn wait for it. The turn
+    /// awaits the returned task before it records what the turn changed, so one checkpoint is
+    /// never still being taken when the next turn starts.
     fn snapshot_in_background(
         self: &Arc<Self>,
         checkpoints: Arc<dyn crate::TurnCheckpoints>,
         prompt: String,
-    ) {
+    ) -> JoinHandle<()> {
         self.snapshot_ready.send_replace(false);
         let gate = OpenGate(Arc::clone(self));
-        std::mem::drop(tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let _gate = gate;
             checkpoints.before_turn(&prompt);
-        }));
+        })
     }
 
     pub(crate) fn next_task_id(&self) -> String {
@@ -1289,9 +1291,9 @@ async fn run(
                 ),
             }
         }
-        if let Some(checkpoints) = checkpoints.clone() {
-            shared.snapshot_in_background(checkpoints, text.clone());
-        }
+        let snapshot = checkpoints
+            .clone()
+            .map(|checkpoints| shared.snapshot_in_background(checkpoints, text.clone()));
         let recalled = shared.recall(&text);
         let handles_open = {
             let turn = root.run_turn_with(text, attachments, recalled);
@@ -1345,6 +1347,11 @@ async fn run(
             false,
         );
         if let Some(checkpoints) = checkpoints.clone() {
+            // What the turn changed is found against the files as they were: after they are
+            // recorded, even for a turn that ended before the checkpoint was done.
+            if let Some(snapshot) = snapshot {
+                let _ = snapshot.await;
+            }
             let _ = tokio::task::spawn_blocking(move || checkpoints.after_turn()).await;
         }
         shared.observe_in(
