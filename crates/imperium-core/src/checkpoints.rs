@@ -794,10 +794,6 @@ impl imperium_engine::TurnCheckpoints for SessionCheckpoints {
         });
     }
 
-    fn after_turn_without_tools(&self) {
-        self.lock().pending = None;
-    }
-
     fn after_turn(&self) {
         let mut inner = self.lock();
         let Some(pending) = inner.pending.take() else {

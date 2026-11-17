@@ -16,10 +16,4 @@ pub trait TurnCheckpoints: std::fmt::Debug + Send + Sync {
     fn before_turn(&self, prompt: &str);
     /// After the turn ended, however it ended.
     fn after_turn(&self);
-    /// After a turn in which no tool ran, so nothing the agent did can have changed a file:
-    /// the turn is over without comparing the files with what `before_turn` recorded (a change
-    /// since is the user's, not the turn's).
-    fn after_turn_without_tools(&self) {
-        self.after_turn();
-    }
 }

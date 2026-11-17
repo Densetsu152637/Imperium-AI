@@ -913,8 +913,6 @@ pub(crate) struct Shared {
     /// beside the turn's first model call, `true` otherwise. Tools wait for it
     /// ([`Shared::snapshot_ready`]) so none changes a file before it is recorded.
     snapshot_ready: tokio::sync::watch::Sender<bool>,
-    /// Whether a tool call has waited for the checkpoint, so may have changed a file.
-    tool_called: AtomicBool,
     next_task: AtomicU32,
 }
 
@@ -932,7 +930,6 @@ impl Shared {
     /// file of a large folder takes seconds to minutes (on Windows, writing each blob is slow),
     /// so the turn starts beside it and only a tool call, which could change a file, waits.
     pub(crate) async fn snapshot_ready(&self) {
-        self.tool_called.store(true, Ordering::SeqCst);
         let mut ready = self.snapshot_ready.subscribe();
         let _ = ready.wait_for(|ready| *ready).await;
     }
@@ -945,7 +942,6 @@ impl Shared {
         checkpoints: Arc<dyn crate::TurnCheckpoints>,
         prompt: String,
     ) -> JoinHandle<()> {
-        self.tool_called.store(false, Ordering::SeqCst);
         self.snapshot_ready.send_replace(false);
         checkpoints.begin_turn();
         let gate = OpenGate(Arc::clone(self));
@@ -1078,7 +1074,6 @@ async fn run(
         chunk_gate: Arc::new(Semaphore::new(MAX_PARALLEL_CHUNKS)),
         chunk_agents: AtomicUsize::new(0),
         snapshot_ready: tokio::sync::watch::channel(true).0,
-        tool_called: AtomicBool::new(false),
         effort,
         knowledge: crate::knowledge::Knowledge::new(config.knowledge),
         replay,
@@ -1358,15 +1353,7 @@ async fn run(
             if let Some(snapshot) = snapshot {
                 let _ = snapshot.await;
             }
-            let tools = shared.tool_called.load(Ordering::SeqCst);
-            let _ = tokio::task::spawn_blocking(move || {
-                if tools {
-                    checkpoints.after_turn();
-                } else {
-                    checkpoints.after_turn_without_tools();
-                }
-            })
-            .await;
+            let _ = tokio::task::spawn_blocking(move || checkpoints.after_turn()).await;
         }
         shared.observe_in(
             &shared.workspace,
