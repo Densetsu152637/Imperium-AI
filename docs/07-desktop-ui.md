@@ -640,8 +640,9 @@ takes a moment) nothing shows white:
 Panels and windows show their content and at most one primary action; everything else is one
 click away, never removed.
 
-- **Panel headers:** the fold chevron, the title, the primary action, and one ⋯ menu
-  (`RowMenu`, the same menu button session rows use) that stays invisible until the header is
+- **Panel headers:** every header is one height (`--panel-header-h`, a control plus 8 px, following
+  density), with the fold chevron, the title (13 px semibold), the primary action, and one ⋯ menu
+  (`Menu`, the same menu button session rows use) that stays invisible until the header is
   hovered or holds focus (always shown on touch screens). The menu lists the panel's own
   secondary actions (`PanelSpec.menu`) first, then *Collapse all / Expand all in this column* on
   a stack's first panel, the *Move…* entries (the keyboard alternatives to dragging, see
@@ -649,7 +650,14 @@ click away, never removed.
   and *Close panel* (`layout/panelMenu.ts`).
   Header actions are small icon-only buttons with an `aria-label` and tooltip: *+* for New
   environment and New session (beside the Sessions sort), the sliders for *Configure models*.
-- **Title bar:** Connectors, the panel editor toggle, and Settings are one group of icon buttons.
+- **Title bar:** a flat strip with the wordmark (the one place the chrome gradient stays), the
+  connection state and the version; Connectors, the panel editor toggle and Settings are one group of
+  `IconButton`s, each with a tooltip that also shows on keyboard focus. A project layout is marked
+  with an accent `Badge`.
+- **Launch focus:** once the panels have rendered, the app asks for document focus and moves it to
+  the app's root element (`useLaunchFocus` in `shared/useWindows.ts`) unless a field already has it,
+  so Ctrl+, and Ctrl+K do not need a click first. Only the web view's own focus is requested; if
+  the web view lacks operating-system focus a native `set_focus` is needed (a follow-up).
 - **Rows:** a row's secondary actions show on hover or focus: a model row's favourite and hide
   toggles (shown while set), a queued message's *Edit* and *Remove* (*Steer* stays visible), an
   environment folder's remove. Connector rows keep their on/off switch and put *Test
@@ -670,8 +678,8 @@ tabbed to.
 ## Command palette (implemented)
 
 **Ctrl+K** (Cmd+K on macOS) opens the command palette in the main window and in detached panel
-windows; pressing it again closes it. It is a modal dialog near the top of the window with one
-search box over:
+windows; pressing it again closes it. It is the shared `Dialog` (one column, no navigation, near the
+top of the window) with one search box over:
 
 - **Actions:** new session, new session in each environment, new environment, Open Settings,
   Open Connectors, Configure models, switch to the light or dark theme, check for updates, and
@@ -692,7 +700,8 @@ environment, a model's details), or a command's keywords, as a substring (best a
 or as letters in order. With nothing typed, the last few commands run lead under **Recent**;
 while typing, recently run commands are lifted above equal matches. The last 20 are kept in the
 layout document. Arrow keys and Page Up/Down move, Enter runs, Tab and Shift+Tab jump between
-groups, Escape (or a click outside) closes, and the mouse works too. Commands with a shortcut
+groups, Escape (or a click outside, or the close button) closes only the palette (not a window under
+it), and the mouse works too. Key hints are `Kbd` chips. Commands with a shortcut
 show their current binding (Open Settings: Ctrl+, unless rebound).
 
 **Registry:** `src/commands/registry.ts` holds named command sources; a feature registers one
@@ -999,12 +1008,15 @@ read-only session is marked `[read-only]` in `imperium session list`
 
 The Environments panel lists the daemon's
 [environments](14-projects-and-automation.md#environments-implemented), one row each: the
-environment's icon and name, a pin mark when pinned, and a *⋯* menu on the right with *Edit*,
+environment's icon and name, a pin mark when pinned, and a *⋯* menu that takes the pin mark's place on
+hover or focus, with *Edit*,
 *Pin*/*Unpin*, and *Delete*. The built-in [Home](14-projects-and-automation.md#home-implemented)
 environment (a house icon) is always listed first, then pinned environments, and has no *Delete*
 (its environment window has no delete button either). Clicking a row selects the
 environment (new sessions start there) and shows its sessions; double-clicking opens it for
-editing. The new-session composer starts on Home when no other environment is selected, and
+editing. Environment and session rows are `--row-h` tall at every density, the selected one on the
+accent wash, with the project tile or the session's status dot centred in one 20 px column so titles
+share a left edge; a session row's time gives way to its *⋯* menu the same way. The new-session composer starts on Home when no other environment is selected, and
 allows it without a folder: its sessions work in their own scratch folders.
 
 *New environment* (the *+* in the Environments header) and *Edit* open the **environment window**,

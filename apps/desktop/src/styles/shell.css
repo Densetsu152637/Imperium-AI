@@ -1,13 +1,14 @@
-/* style-budget: colour=3 font-size=18 font-weight=6 radius=10 shadow=0 duration=3 z-index=7 */
-/* The window: title bar, columns, dividers, panels and their headers, the panel editor, the connect screen and the connection banner. */
+/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
+/* The window: title bar, columns, dividers, panels and their headers, the panel editor and the connection banner. */
 
-.connect input:hover {
-  border-color: var(--border-strong);
-}
-
-.connect input:focus-visible {
-  outline-offset: 0;
-  border-color: var(--focus);
+:root {
+  /* One height for every panel header; it follows density like a control. */
+  --panel-header-h: calc(var(--control-h) + var(--sp-2));
+  --dur-pulse: 1400ms;
+  /* Layers inside the workspace: dividers, then drop lines, then the editor's column edges. */
+  --z-divider: 2;
+  --z-drop: 3;
+  --z-edge: 4;
 }
 
 .app {
@@ -17,24 +18,32 @@
   background: var(--bg);
 }
 
-/* Title bar: a flat strip with a chrome wordmark */
+/* The app root takes keyboard focus at launch (shared/useWindows.ts) so shortcuts work without a click. */
+.app:focus,
+.app:focus-visible {
+  outline: none;
+}
+
+/* Title bar: a flat strip, the wordmark on the left and the window's tools on the right. */
 .titlebar {
   position: relative;
-  z-index: 3;
+  z-index: var(--z-raised);
   display: flex;
   align-items: center;
-  gap: calc(var(--space) * 1.5);
-  padding: calc(var(--space) * 0.75) calc(var(--space) * 2);
+  gap: var(--sp-3);
+  min-height: calc(var(--control-h) + var(--sp-3));
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-4);
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 
+/* The one place the chrome gradient is kept. */
 .titlebar .brand {
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
-  font-size: 0.85rem;
-  font-weight: 700;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   letter-spacing: 0.16em;
   text-transform: uppercase;
   background: var(--wordmark);
@@ -43,39 +52,47 @@
   color: transparent;
 }
 
+/* Forced colours: the gradient wordmark falls back to plain text. */
+@media (forced-colors: active) {
+  .titlebar .brand {
+    background: none;
+    color: CanvasText;
+  }
+}
+
 /* A small accent-cored ring before the wordmark */
 .titlebar .brand::before {
   content: "";
-  width: 0.8rem;
-  height: 0.8rem;
-  border-radius: 50%;
+  width: calc(12 * var(--px));
+  height: calc(12 * var(--px));
+  border-radius: var(--radius-full);
   background: radial-gradient(circle, var(--accent) 0 32%, transparent 36%);
-  border: 1.5px solid var(--silver);
+  border: calc(1.5 * var(--px)) solid var(--silver);
 }
 
 .connection {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  font-size: 0.8rem;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
 }
 
 .connection::before {
   content: "";
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 50%;
-  background: var(--muted);
+  width: calc(7 * var(--px));
+  height: calc(7 * var(--px));
+  border-radius: var(--radius-full);
+  background: var(--text-subtle);
 }
 
 .connection[data-state="connected"]::before {
   background: var(--ok);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
+  box-shadow: 0 0 0 calc(3 * var(--px)) var(--ok-soft);
 }
 
 .connection[data-state="connecting"]::before {
   background: var(--accent);
-  animation: pulse 1.4s var(--ease) infinite;
+  animation: pulse var(--dur-pulse) var(--ease-standard) infinite;
 }
 
 .connection[data-state="failed"]::before {
@@ -86,9 +103,34 @@
   flex: 1;
 }
 
+/* The window's tools (connectors, layout, settings) sit together as one icon group. */
+.titlebar-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.layout-toggle[aria-pressed="true"],
+.layout-toggle[aria-pressed="true"]:hover:not(:disabled) {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+/* Updates: the version button carries the channel. */
+.update-version {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Clipped so a panel's overflowing content (a wide table, a hidden label) never scrolls the page. */
 .workspace {
+  position: relative;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 /* Columns and stacks. Columns meet at hairlines; dividers show an accent line while hovered. */
@@ -130,7 +172,7 @@
 
 /* Folding a stacked panel: it shrinks to its header and the open ones grow into its room. */
 .split-column > .split-cell {
-  transition: flex-grow var(--slow) var(--ease);
+  transition: flex-grow var(--dur-base) var(--ease-standard);
 }
 
 .split-column.dragging > .split-cell {
@@ -147,7 +189,7 @@
 
 .rail .panel-header h2 {
   flex: 0 1 auto;
-  min-width: 3.5rem;
+  min-width: calc(56 * var(--px));
   margin-right: auto;
 }
 
@@ -159,36 +201,29 @@
 @container (max-width: 17rem) {
   .rail .panel-header > button:not(.icon-only):has(> .lucide) {
     gap: 0;
-    padding-inline: 0.35rem;
-    font-size: 0;
+    padding-inline: var(--sp-1);
+    font-size: 0em;
   }
 
   .rail .panel-header > button:not(.icon-only) > .lucide {
-    width: 0.95rem;
-    height: 0.95rem;
+    width: var(--icon-sm);
+    height: var(--icon-sm);
   }
 }
 
 /* The chevron and title sit at the left, the panel's buttons at the right; the title keeps a
    few letters however narrow the rail. */
 .rail .panel-header {
-  gap: calc(var(--space) * 0.5);
   cursor: default;
   user-select: none;
 }
 
-.panel-header button.panel-fold.icon-only {
-  width: 1.4rem;
-  height: 1.4rem;
-  margin-left: calc(var(--space) * -0.6);
-  margin-right: calc(var(--space) * -0.5);
-  padding: 0;
+.panel-header .panel-fold {
+  margin-left: calc(-1 * var(--sp-1));
 }
 
-.panel-header button.panel-fold .lucide {
-  width: 0.95rem;
-  height: 0.95rem;
-  transition: transform var(--slow) var(--ease);
+.panel-header .panel-fold .lucide {
+  transition: transform var(--dur-base) var(--ease-standard);
 }
 
 .panel.collapsed .panel-fold .lucide {
@@ -200,7 +235,7 @@
    action only. */
 .panel-header .panel-menu-button {
   opacity: 0;
-  transition: opacity var(--fast) var(--ease);
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
 .panel-header:hover .panel-menu-button,
@@ -217,7 +252,7 @@
 
 .divider {
   position: absolute;
-  z-index: 2;
+  z-index: var(--z-divider);
   touch-action: none;
 }
 
@@ -226,34 +261,34 @@
   position: absolute;
   inset: 0;
   margin: auto;
-  border-radius: 2px;
+  border-radius: calc(2 * var(--px));
   background: var(--accent);
   opacity: 0;
-  transition: opacity var(--fast) var(--ease);
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
 .divider-row {
   top: 0;
   bottom: 0;
-  right: -4px;
-  width: 8px;
+  right: calc(-4 * var(--px));
+  width: calc(8 * var(--px));
   cursor: col-resize;
 }
 
 .divider-row::after {
-  width: 2px;
+  width: calc(2 * var(--px));
 }
 
 .divider-column {
   left: 0;
   right: 0;
-  bottom: -4px;
-  height: 8px;
+  bottom: calc(-4 * var(--px));
+  height: calc(8 * var(--px));
   cursor: row-resize;
 }
 
 .divider-column::after {
-  height: 2px;
+  height: calc(2 * var(--px));
 }
 
 .divider:hover::after,
@@ -261,7 +296,7 @@
   opacity: 0.75;
 }
 
-/* Side rails: brushed graphite, panels are open sections rather than boxes. */
+/* Side rails: flat surfaces; panels are open sections rather than boxes. */
 .rail {
   background: var(--surface);
 }
@@ -289,18 +324,18 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: calc(var(--space) * 0.5);
-  min-height: 2.35rem;
-  padding: calc(var(--space) * 0.6) calc(var(--space) * 1.25) calc(var(--space) * 0.2);
+  gap: var(--sp-1);
+  flex: none;
+  height: var(--panel-header-h);
+  padding: 0 var(--sp-3);
 }
 
 .panel-header h2 {
   margin: 0;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--muted);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -309,34 +344,38 @@
 .panel-header button {
   flex: none;
   font-size: var(--fs-sm);
-  padding: 0.2rem var(--control-pad-sm);
   background: transparent;
   box-shadow: none;
 }
 
+.panel-header button:not(.icon-only) {
+  height: var(--control-h-sm);
+  padding: 0 var(--control-pad-sm);
+}
+
+.panel-header button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
 /* Header and toolbar tools (the primary action, the ⋯ menu, pin and dock): small squares. */
-.panel-header button.icon-only,
+.panel-header .icon-only,
 button.icon-only.panel-tool {
   width: var(--control-h-sm);
   height: var(--control-h-sm);
   padding: 0;
 }
 
-.panel-header button.icon-only .lucide,
+.panel-header .icon-only .lucide,
 button.icon-only.panel-tool .lucide {
   width: var(--icon-sm);
   height: var(--icon-sm);
-}
-
-.panel-header button:hover:not(:disabled) {
-  background: var(--hover);
 }
 
 .panel-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: calc(var(--space) * 0.5) var(--space) var(--space);
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
 }
 
 /* The session is the canvas: no header bar, edge to edge. Its title stays for screen readers. */
@@ -361,173 +400,53 @@ button.icon-only.panel-tool .lucide {
   white-space: nowrap;
 }
 
-/* Settings: a popover under the title bar */
-.settings-menu {
-  position: absolute;
-  top: 3.25rem;
-  right: 1rem;
-  z-index: 10;
-  width: min(22rem, calc(100vw - 2rem));
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--space) * 1.5);
-  padding: calc(var(--space) * 2);
-  background: var(--surface-raised);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  animation: rise-in var(--slow) var(--ease);
-  max-height: calc(100vh - 4.5rem);
-  overflow-y: auto;
-}
-
-.settings-menu > button {
-  align-self: flex-end;
-}
-
-/* Updates: the version button carries the channel; the menu sits under it. */
-.update-version {
-  font-variant-numeric: tabular-nums;
-  font-size: 0.8rem;
-}
-
-.channel-tag {
-  margin-left: 0.4rem;
-  padding: 0.05rem 0.4rem;
-  border-radius: 999px;
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.settings-heading {
-  margin: 0;
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
-
 /* Daemon: a status line with a light, the actions, and an optional log tail. */
 .daemon-state {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: var(--sp-2);
   margin: 0;
 }
 
 .daemon-dot {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: var(--muted);
+  width: calc(8 * var(--px));
+  height: calc(8 * var(--px));
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--text-subtle);
 }
 
 .daemon-state[data-running="true"] .daemon-dot {
   background: var(--ok);
-  box-shadow: 0 0 6px var(--ok);
+  box-shadow: 0 0 calc(6 * var(--px)) var(--ok);
 }
 
 .daemon-log pre {
-  max-height: 14rem;
+  max-height: calc(210 * var(--px));
   overflow: auto;
-  margin: 0.3rem 0 0;
-  padding: 0.5rem;
-  font-size: 0.72rem;
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-2);
+  font-family: var(--font-code);
+  font-size: var(--fs-sm);
   white-space: pre-wrap;
   word-break: break-all;
-  background: var(--bg);
+  background: var(--surface-sunken);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .daemon-log-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: var(--space);
-  font-size: 0.72rem;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
   overflow-wrap: anywhere;
 }
 
 .update-state {
   margin: 0;
-  font-size: 0.85rem;
-}
-
-/* Connect screen: one card in the middle of the window */
-.connect {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 0;
-  overflow: auto;
-  padding: calc(var(--space) * 3) 1rem;
-  background: var(--bg);
-}
-
-.connect-card {
-  width: min(30rem, 100%);
-  padding: calc(var(--space) * 3.5);
-  background: var(--surface-raised);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
-  animation: rise-in var(--slow) var(--ease);
-}
-
-.connect h1 {
-  margin: 0 0 calc(var(--space) * 1.5);
-  font-size: 1.3rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.connect p {
-  margin: 0 0 var(--space);
-}
-
-.connect code {
-  padding: 0.05em 0.35em;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.connect form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space);
-  margin-top: calc(var(--space) * 2.5);
-}
-
-/* Text fields share one look: a recessed graphite well that lights up on focus. */
-.connect input {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  transition:
-    border-color var(--fast) var(--ease),
-    box-shadow var(--fast) var(--ease);
-  padding: var(--space) calc(var(--space) * 1.5);
-}
-
-.connect form button,
-.connect-card > button {
-  margin-top: calc(var(--space) * 0.5);
-  padding-block: calc(var(--space) * 0.9);
-}
-
-/* Forced colours: the gradient wordmark falls back to plain text. */
-@media (forced-colors: active) {
-  .titlebar .brand {
-    background: none;
-    color: CanvasText;
-  }
+  font-size: var(--fs-md);
 }
 
 /* The connection bar above the workspace while the daemon is away. */
@@ -535,29 +454,33 @@ button.icon-only.panel-tool .lucide {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.45rem 1rem;
-  font-size: 0.82rem;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-md);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
 .connection-banner[data-state="offline"] {
-  background: rgb(224 96 126 / 0.08);
+  background: var(--danger-soft);
 }
 
 .connection-banner[data-state="offline"] .daemon-dot {
-  background: var(--danger, #e0607e);
+  background: var(--danger);
 }
 
 .connection-message {
   flex: 1;
-  min-width: 12rem;
+  min-width: calc(180 * var(--px));
+}
+
+.connection-error {
+  flex: 1 1 100%;
 }
 
 .connection-form {
   display: flex;
-  gap: 0.4rem;
+  gap: var(--sp-2);
 }
 
 /* A detached panel's window: the panel fills it under its own header (layout/PanelWindow.tsx). */
@@ -568,56 +491,47 @@ button.icon-only.panel-tool .lucide {
 .app-panel .panel-window > .panel-header {
   position: static;
   width: auto;
+  height: var(--panel-header-h);
+  padding: 0 var(--sp-3);
+  overflow: visible;
+  clip-path: none;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 
 .panel-pin[aria-pressed="true"] {
-  color: var(--accent-strong);
+  color: var(--accent-text);
   background: var(--accent-soft);
 }
 
-.titlebar-button {
-  font-size: var(--fs-md);
-  padding: 0.3rem var(--control-pad);
-}
-
-/* The titlebar's tools (connectors, layout, settings) sit together as one icon group. */
-.titlebar-button.icon-only + .titlebar-button.icon-only {
-  margin-left: calc(var(--space) * -1.25);
-}
-
-/* ---- Panel editor (the layout toggle beside Settings): quiet handles, drop lines, Done. ---- */
-.layout-marker {
-  padding: 0.1rem 0.5rem;
-  font-size: 0.7rem;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius);
+.panel-pin[aria-pressed="true"] .lucide {
+  fill: currentColor;
 }
 
 .settings-row-note.error {
-  color: var(--danger, #e5484d);
+  color: var(--danger);
 }
 
-.titlebar-button.layout-toggle.active {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
+/* ---- Panel editor (the layout toggle beside Settings): quiet handles, drop lines, Done. ---- */
 .layout-editor-bar {
   display: flex;
   align-items: center;
-  gap: var(--space);
-  padding: 0.35rem 1rem;
-  font-size: 0.8rem;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-sm);
   background: var(--accent-soft);
   border-bottom: 1px solid var(--border);
-  animation: fade-in var(--fast, 120ms) ease-out;
+  animation: fade-in var(--dur-fast) var(--ease-standard);
 }
 
 .layout-editor-bar > span {
+  min-width: 0;
   margin-right: auto;
+}
+
+.layout-editor-bar button {
+  flex: none;
+  white-space: nowrap;
 }
 
 .editing-layout .panel {
@@ -632,7 +546,7 @@ button.icon-only.panel-tool .lucide {
 }
 
 .editing-layout .panel-header:hover {
-  background: var(--hover);
+  background: var(--surface-hover);
 }
 
 .editing-layout .panel-body {
@@ -643,9 +557,9 @@ button.icon-only.panel-tool .lucide {
 .editing-layout .panel[data-panel="session"] > .panel-header {
   position: static;
   width: auto;
-  height: auto;
-  min-height: 2.6rem;
-  padding: calc(var(--space) * 0.75) calc(var(--space) * 1.5) calc(var(--space) * 0.25);
+  height: var(--panel-header-h);
+  min-height: 0;
+  padding: 0 var(--sp-3);
   overflow: visible;
   clip-path: none;
   justify-content: flex-start;
@@ -659,12 +573,12 @@ button.icon-only.panel-tool .lucide {
 .panel.drop-before::before {
   content: "";
   position: absolute;
-  left: 0.5rem;
-  right: 0.5rem;
-  height: 2px;
-  border-radius: 1px;
+  left: var(--sp-2);
+  right: var(--sp-2);
+  height: calc(2 * var(--px));
+  border-radius: var(--radius-full);
   background: var(--accent);
-  z-index: 3;
+  z-index: var(--z-drop);
   pointer-events: none;
   top: 0;
 }
@@ -672,22 +586,22 @@ button.icon-only.panel-tool .lucide {
 .layout-column.drop-end::after {
   content: "";
   position: absolute;
-  left: 0.5rem;
-  right: 0.5rem;
-  height: 2px;
-  border-radius: 1px;
+  left: var(--sp-2);
+  right: var(--sp-2);
+  height: calc(2 * var(--px));
+  border-radius: var(--radius-full);
   background: var(--accent);
-  z-index: 3;
+  z-index: var(--z-drop);
   pointer-events: none;
-  bottom: 2px;
+  bottom: calc(2 * var(--px));
 }
 
 .layout-edge {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 0.8rem;
-  z-index: 4;
+  width: var(--sp-3);
+  z-index: var(--z-edge);
 }
 
 .layout-edge.left {
@@ -701,15 +615,15 @@ button.icon-only.panel-tool .lucide {
 .layout-edge::after {
   content: "";
   position: absolute;
-  top: 0.5rem;
-  bottom: 0.5rem;
+  top: var(--sp-2);
+  bottom: var(--sp-2);
   left: 50%;
-  width: 3px;
-  border-radius: 2px;
+  width: calc(3 * var(--px));
+  border-radius: var(--radius-full);
   background: var(--accent);
   transform: translateX(-50%);
   opacity: 0;
-  transition: opacity var(--fast, 120ms) ease-out;
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
 .layout-edge.active::after {
@@ -722,9 +636,11 @@ button.icon-only.panel-tool .lucide {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
-  border-style: dashed;
+  gap: var(--sp-2);
+  margin: var(--sp-2);
+  font-size: var(--fs-sm);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
 }
 
 .layout-column.drop-end > .layout-empty-column {
@@ -737,27 +653,25 @@ button.icon-only.panel-tool .lucide {
 
 .layout-drag-ghost {
   position: fixed;
-  z-index: 2000;
+  z-index: var(--z-tour);
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.3rem 0.6rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg);
-  background: var(--surface-raised);
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  background: var(--surface-overlay);
   border: 1px solid var(--accent);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow: var(--elev-2);
   transform: translate(12px, 12px);
   pointer-events: none;
 }
 
 .layout-drag-ghost .lucide {
-  width: 0.85rem;
-  height: 0.85rem;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 
 /* Modules inside panels, the editor's window strip, and where a dragged module lands. */
@@ -778,33 +692,33 @@ button.icon-only.panel-tool .lucide {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: calc(var(--space) * 0.5);
-  padding: 0.3rem 1rem;
-  font-size: 0.75rem;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-sm);
   border-bottom: 1px solid var(--border);
 }
 
 .layout-window-zone {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.25rem 0.6rem;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
   margin-right: auto;
-  color: var(--muted);
-  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  border: 1px dashed var(--border-strong);
   border-radius: var(--radius);
 }
 
 .layout-window-zone.active {
-  color: var(--fg);
+  color: var(--text);
   border-color: var(--accent);
   background: var(--accent-soft);
 }
 
 .layout-window-zone .lucide,
 .layout-window-chip .lucide {
-  width: 0.85rem;
-  height: 0.85rem;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 
 .layout-window-chip {
@@ -814,12 +728,12 @@ button.icon-only.panel-tool .lucide {
 
 .panel.drop-into {
   outline: 2px solid var(--focus);
-  outline-offset: -2px;
+  outline-offset: calc(-2 * var(--px));
   background: var(--accent-soft);
 }
 
 .panel-module {
-  margin-top: var(--space);
+  margin-top: var(--sp-2);
   border-top: 1px solid var(--border);
 }
 
@@ -827,21 +741,19 @@ button.icon-only.panel-tool .lucide {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: calc(var(--space) * 0.5);
-  padding: calc(var(--space) * 0.5) 0;
+  gap: var(--sp-1);
+  padding: var(--sp-1) 0;
 }
 
 .panel-module-header h3 {
   margin: 0;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
 }
 
 .panel-module-body {
-  min-height: 12rem;
+  min-height: calc(180 * var(--px));
   display: flex;
   flex-direction: column;
 }
@@ -849,18 +761,18 @@ button.icon-only.panel-tool .lucide {
 .panel-module-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.3rem;
+  gap: var(--sp-1);
   margin: 0;
-  padding: 0.3rem var(--space);
+  padding: var(--sp-1) var(--sp-2);
   list-style: none;
 }
 
 .panel-module-chip {
   display: flex;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.15rem 0.5rem;
-  font-size: 0.72rem;
+  gap: var(--sp-1);
+  padding: calc(2 * var(--px)) var(--sp-2);
+  font-size: var(--fs-sm);
   cursor: grab;
   user-select: none;
   touch-action: none;

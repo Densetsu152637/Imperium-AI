@@ -6,6 +6,7 @@ import { Play, RefreshCw, RotateCw, ScrollText, Square } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+import { Notice } from "../components/Notice";
 import { Row, RowNote } from "../components/SettingsRow";
 import { Switch } from "../components/Switch";
 import { insideTauri } from "../daemon/connection";
@@ -133,7 +134,7 @@ export function DaemonSettings({ daemon }: { daemon: Daemon }) {
       </Row>
       {(daemon.error || !status.can_start) && (
         <RowNote sub>
-          {daemon.error && <p className="error">{daemon.error}</p>}
+          {daemon.error && <Notice tone="danger">{daemon.error}</Notice>}
           {!status.can_start && (
             <p className="muted">This build has no bundled imperium-core; start and stop it where you run it.</p>
           )}

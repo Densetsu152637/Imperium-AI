@@ -19,6 +19,7 @@
 import { ChevronDown, ChevronsDownUp, ChevronsUpDown, ExternalLink, GripVertical, MoveRight, X } from "lucide-react";
 import { useState, useRef, type MouseEvent, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
 
+import { IconButton } from "../components/IconButton";
 import { Menu, type MenuItem } from "../components/Menu";
 import type { DropTarget } from "./arrangement";
 import { panelMenuEntries } from "./panelMenu";
@@ -225,16 +226,16 @@ function Panel({ panel, fold, edit }: { panel: PanelSpec; fold?: Fold; edit?: Ed
       <header className="panel-header" onDoubleClick={onDoubleClick} onPointerDown={edit?.onGrab}>
         {edit && <GripVertical className="panel-grip" aria-hidden="true" />}
         {!edit && fold && (
-          <button
-            className="ghost panel-fold icon-only"
+          <IconButton
+            icon={ChevronDown}
+            size="sm"
+            className="panel-fold"
             onClick={fold.onToggle}
             aria-expanded={!collapsed}
             aria-controls={bodyId}
-            aria-label={`${collapsed ? "Expand" : "Collapse"} ${panel.title}`}
-            title={collapsed ? "Expand panel" : "Collapse panel (or double-click the header)"}
-          >
-            <ChevronDown aria-hidden="true" />
-          </button>
+            label={`${collapsed ? "Expand" : "Collapse"} ${panel.title}`}
+            tooltip={collapsed ? "Expand panel" : "Collapse panel (or double-click the header)"}
+          />
         )}
         <h2 id={`panel-${panel.id}`}>{panel.title}</h2>
         {!edit && !collapsed && panel.actions}
