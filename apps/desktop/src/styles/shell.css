@@ -372,6 +372,7 @@ button.icon-only.panel-tool .lucide {
 }
 
 .panel-body {
+  position: relative; /* contains .visually-hidden labels so they cannot escape the panel */
   flex: 1;
   min-height: 0;
   overflow: auto;
