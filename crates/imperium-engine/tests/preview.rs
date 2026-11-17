@@ -19,7 +19,10 @@ use imperium_web::{BrowserSetup, PreviewTools, USER_DRIVING, Web, WebTools};
 use serde_json::{Value, json};
 
 async fn serve(app: Router) -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // From the same issued-port set as `free_port`, so the two never hand out one number.
+    let listener = bind_issued();
+    listener.set_nonblocking(true).unwrap();
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await });
     url
@@ -185,26 +188,30 @@ async fn run(session: &Session, decision: PermissionDecision) -> Turn {
     }
 }
 
-/// A port nothing listens on now and that no other test in this binary has been given.
+/// Binds a loopback port that no other test in this binary has been given, and records it. The
+/// listener is returned still bound.
 ///
-/// The probe socket is closed again before the stand-in server (a child process) binds the port,
-/// so the operating system may hand the same number to the next `bind(0)`, most readily on
-/// Windows. Tests run in parallel: one test's "this port is not listening" check then finds
-/// another test's stand-in server on it. Never issuing a number twice rules that out.
-fn free_port() -> u16 {
+/// The operating system may hand the same number to the next `bind(0)` once a socket is closed,
+/// most readily on Windows. Tests run in parallel: one test's "this port is not listening"
+/// check then finds another test's server on it. Never issuing a number twice rules that out.
+fn bind_issued() -> std::net::TcpListener {
     static ISSUED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
     loop {
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
         let mut issued = ISSUED.lock().unwrap();
         if !issued.contains(&port) {
             issued.push(port);
-            return port;
+            return listener;
         }
     }
+}
+
+/// A port nothing listens on now and that no other test in this binary has been given.
+///
+/// The probe socket is closed again before the stand-in server (a child process) binds the port.
+fn free_port() -> u16 {
+    bind_issued().local_addr().unwrap().port()
 }
 
 async fn listening(port: u16) -> bool {

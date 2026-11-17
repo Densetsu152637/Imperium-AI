@@ -479,10 +479,12 @@ impl Web {
         if let Some(why) = refuse(&dir.join(&name)) {
             return Err(WebError::Http(why));
         }
-        // The files are made with plain (synchronous) calls, with nothing awaited between making
-        // one and the guard that removes it: a cancellation can only land at an await, and a
-        // blocking call started by a dropped future still finishes, creating a file that no
-        // guard knows about.
+        // The files are made with plain (synchronous) calls on the async thread, on purpose:
+        // with nothing awaited between making one and the guard that removes it, a cancellation
+        // (which can only land at an await) cannot fall in between. Moving the creation into
+        // `spawn_blocking` would put an await there, and a blocking call started by a dropped
+        // future still finishes, creating a file that no guard knows about. Creating an empty
+        // file is brief, so blocking the thread for it costs next to nothing.
         let path = create_unique(&dir, &name)?;
         let mut part_name = path.file_name().unwrap_or_default().to_os_string();
         part_name.push(".part");

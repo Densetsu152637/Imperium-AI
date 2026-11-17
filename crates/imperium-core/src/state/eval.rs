@@ -32,7 +32,7 @@ impl DaemonState {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(id);
         if let Some(env) = run.and_then(|run| run.take_ephemeral_env()) {
-            let _ = self.environments().delete(&env);
+            self.environments().release_run(&env);
         }
     }
 
@@ -64,26 +64,22 @@ impl DaemonState {
             ..SessionOptions::default()
         };
         // A folder that is already an environment's uses it. Any other gets an environment for
-        // the run only: it is deleted with the session, and nobody is told of it.
-        let mut made = None;
+        // the runs only, shared by runs on the same folder and deleted with the last of their
+        // sessions; nobody is told of it.
+        let mut claimed = None;
         let environment = match (environment_id, project_dir) {
             (Some(env), _) => env.to_string(),
-            (None, Some(dir)) => match self.environments().existing_for_folder(dir)? {
-                Some(env) => env.id,
-                None => {
-                    let env = self.environments().for_folder(dir)?;
-                    made = Some(env.id.clone());
-                    env.id
-                }
-            },
+            (None, Some(dir)) => {
+                let env = self.environments().claim_for_run(dir)?;
+                claimed = Some(env.id.clone());
+                env.id
+            }
             (None, None) => crate::environments::HOME_ID.to_string(),
         };
         let created = self.create_in_environment(&environment, None, options());
-        match (&created, made) {
-            (Ok(_), made) => prepared.run.set_ephemeral_env(made),
-            (Err(_), Some(made)) => {
-                let _ = self.environments().delete(&made);
-            }
+        match (&created, claimed) {
+            (Ok(_), claimed) => prepared.run.set_ephemeral_env(claimed),
+            (Err(_), Some(claimed)) => self.environments().release_run(&claimed),
             (Err(_), None) => {}
         }
         if let (Ok((session, _)), Some(seconds), Some(me)) =
@@ -116,12 +112,18 @@ impl DaemonState {
         environment_id: Option<&str>,
         project_dir: Option<&str>,
         prepared: Arc<Prepared>,
+        owner: &crate::rpc::EvalSessions,
     ) -> Result<PromptPreview, String> {
         let run = Arc::clone(&prepared.run);
         let (session, mut events) = self
             .create_eval(environment_id, project_dir, prepared)
             .map_err(|error| error.to_string())?;
         let id = session.id().to_string();
+        // The connection that asked owns it: if that goes before the preview ends, the session
+        // goes with it (and the wait below ends, as its events close) rather than lingering.
+        if !owner.add(self, &id) {
+            return Err("the client that asked for the preview has gone".to_string());
+        }
         let root = session.project_dir().to_string();
         let waited = async {
             session
@@ -150,6 +152,7 @@ impl DaemonState {
         let outcome = tokio::time::timeout(PREVIEW_WAIT, waited).await;
         drop(session);
         let _ = self.delete_session(&id, false);
+        owner.remove(&id);
         match outcome {
             Ok(Ok(())) => run
                 .preview(&root)
