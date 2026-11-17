@@ -1190,7 +1190,21 @@ async fn run(
         // From here until the message's turn ends (or is given up on), the message it answers can
         // be told: a message taken off the queue is never out of sight.
         shared.controls.set_turn_message(Some(message_id));
-        let Some(text) = shared.prepare_prompt(text).await else {
+        // Until the turn itself runs, the session is just as busy: whatever the steps before it
+        // await (hooks, loading the model, compacting for it) must not leave commands unanswered.
+        let mut handles_open = true;
+        let Ok(prepared) = busy_wait(
+            shared.prepare_prompt(text),
+            &shared,
+            &bridge,
+            &mut commands,
+            &mut handles_open,
+        )
+        .await
+        else {
+            return session_ended(&shared, &config.id, "stopped");
+        };
+        let Some(text) = prepared else {
             shared.controls.set_turn_message(None);
             continue;
         };
@@ -1203,7 +1217,18 @@ async fn run(
         if root.fit_pending() {
             // The first turn on a model switched to: measure the conversation with it (loading
             // a local model) and compact it if it does not fit, before the message is added.
-            match root.settle_model().await {
+            let Ok(settled) = busy_wait(
+                root.settle_model(),
+                &shared,
+                &bridge,
+                &mut commands,
+                &mut handles_open,
+            )
+            .await
+            else {
+                return session_ended(&shared, &config.id, "stopped");
+            };
+            match settled {
                 Ok(Some(fit)) if fit.compaction.is_some() => {
                     save_messages(
                         &shared,
@@ -1234,7 +1259,18 @@ async fn run(
             }
         } else if auto_compact {
             // Over the budget, older turns are summarised before the new message is added.
-            match root.fit_current().await {
+            let Ok(fitted) = busy_wait(
+                root.fit_current(),
+                &shared,
+                &bridge,
+                &mut commands,
+                &mut handles_open,
+            )
+            .await
+            else {
+                return session_ended(&shared, &config.id, "stopped");
+            };
+            match fitted {
                 Ok(fit) if fit.compaction.is_some() => {
                     save_messages(
                         &shared,
@@ -1258,49 +1294,20 @@ async fn run(
             let _ = tokio::task::spawn_blocking(move || checkpoints.before_turn(&prompt)).await;
         }
         let recalled = shared.recall(&text);
-        let handles_open = {
+        {
             let turn = root.run_turn_with(text, attachments, recalled);
             tokio::pin!(turn);
-            let mut handles_open = true;
             loop {
                 tokio::select! {
                     _ = &mut turn => break,
-                    command = commands.recv(), if handles_open => match command {
-                        Some(Command::Respond { request_id, decision }) => {
-                            shared.broker.resolve(request_id, decision);
-                        }
-                        Some(Command::Answer { request_id, answers }) => {
-                            shared.questions.resolve(request_id, answers);
-                        }
-                        // Busy: the message waits, or (steering) joins the turn at its next
-                        // safe point.
-                        Some(Command::Message(message)) => shared.inboxes.queue_for_root(message),
-                        // Never mid-turn: the conversation is in use.
-                        Some(Command::SetModel { reply, .. } | Command::Compact { reply }) => {
-                            let _ = reply.send(Err(SwitchError::Busy));
-                        }
-                        Some(Command::RunTool(run)) => bridge.finish(
-                            &run.id,
-                            false,
-                            "error: the session is running a turn; call the tool again when it ends"
-                                .into(),
-                        ),
-                        // Every handle is gone and the session is stopped: its agents would
-                        // wait forever, so the turn is dropped (a restart reports it as cut off).
-                        None if shared.controls.is_stopped() => {
+                    command = commands.recv(), if handles_open => {
+                        if serve_busy(command, &shared, &bridge, &mut handles_open) {
                             return session_ended(&shared, &config.id, "stopped");
                         }
-                        // Every handle is gone: nobody can answer, so deny what is pending.
-                        None => {
-                            handles_open = false;
-                            shared.broker.deny_all();
-                            shared.questions.close();
-                        }
-                    },
+                    }
                 }
             }
-            handles_open
-        };
+        }
         shared.controls.set_turn_message(None);
         save_messages(
             &shared,
@@ -1320,6 +1327,70 @@ async fn run(
         );
         if !handles_open {
             return session_ended(&shared, &config.id, "closed");
+        }
+    }
+}
+
+/// Answers one command that arrives while the session is busy (before a turn or during one).
+/// Returns whether the session must end (every handle is gone and it is stopped).
+fn serve_busy(
+    command: Option<Command>,
+    shared: &Shared,
+    bridge: &BridgeResults,
+    handles_open: &mut bool,
+) -> bool {
+    match command {
+        Some(Command::Respond {
+            request_id,
+            decision,
+        }) => shared.broker.resolve(request_id, decision),
+        Some(Command::Answer {
+            request_id,
+            answers,
+        }) => shared.questions.resolve(request_id, answers),
+        // Busy: the message waits, or (steering) joins the turn at its next safe point.
+        Some(Command::Message(message)) => shared.inboxes.queue_for_root(message),
+        // Never while busy: the conversation is in use. Answered at once, so a picker never
+        // waits on a turn (or the model call before it) that is stuck.
+        Some(Command::SetModel { reply, .. } | Command::Compact { reply }) => {
+            let _ = reply.send(Err(SwitchError::Busy));
+        }
+        Some(Command::RunTool(run)) => bridge.finish(
+            &run.id,
+            false,
+            "error: the session is running a turn; call the tool again when it ends".into(),
+        ),
+        // Every handle is gone and the session is stopped: its agents would wait forever, so
+        // the turn is dropped (a restart reports it as cut off).
+        None if shared.controls.is_stopped() => return true,
+        // Every handle is gone: nobody can answer, so deny what is pending.
+        None => {
+            *handles_open = false;
+            shared.broker.deny_all();
+            shared.questions.close();
+        }
+    }
+    false
+}
+
+/// Runs `work` while answering the session's commands as [`serve_busy`] does. `Err` when the
+/// session must end.
+async fn busy_wait<T>(
+    work: impl std::future::Future<Output = T>,
+    shared: &Shared,
+    bridge: &BridgeResults,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    handles_open: &mut bool,
+) -> Result<T, ()> {
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            output = &mut work => return Ok(output),
+            command = commands.recv(), if *handles_open => {
+                if serve_busy(command, shared, bridge, handles_open) {
+                    return Err(());
+                }
+            }
         }
     }
 }

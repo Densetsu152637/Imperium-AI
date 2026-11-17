@@ -23,6 +23,8 @@ const SUMMARY: &str = "Summary: the user sent two long alpha reports; nothing is
 #[derive(Default)]
 struct Fake {
     requests: Mutex<Vec<Value>>,
+    /// Summary requests never get an answer (an endpoint that accepts and then stalls).
+    hang_summaries: std::sync::atomic::AtomicBool,
 }
 
 impl Fake {
@@ -72,6 +74,12 @@ async fn serve(fake: Arc<Fake>) -> String {
                 let from_user = last["role"] == "user";
                 let said = last["content"].as_str().unwrap_or_default().to_string();
                 let reply = if is_summary(&body) {
+                    if fake
+                        .hang_summaries
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        std::future::pending::<()>().await;
+                    }
                     text(SUMMARY)
                 } else if from_user && said.ends_with("read a.txt") {
                     stream(json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
@@ -599,4 +607,68 @@ async fn a_long_lived_session_compacts_itself_when_a_turn_starts_over_budget() {
     // Under the budget, nothing more is summarised.
     turn(&session, "and now?").await;
     assert_eq!(fake.summaries().len(), 1);
+}
+
+/// A switch asked while the next turn is still preparing (its first step compacts the
+/// conversation for the model switched to, and the model summarising never answers) is
+/// refused at once instead of waiting behind it: the picker would otherwise show "Switching"
+/// forever. The session keeps its model and can switch once the turn ends or is stopped.
+#[tokio::test]
+async fn a_switch_while_the_turn_is_preparing_is_refused_instead_of_hanging() {
+    let (a, b, c) = (
+        Arc::new(Fake::default()),
+        Arc::new(Fake::default()),
+        Arc::new(Fake::default()),
+    );
+    let urls = (
+        serve(Arc::clone(&a)).await,
+        serve(Arc::clone(&b)).await,
+        serve(Arc::clone(&c)).await,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(model("a:old", &urls.0, None), dir.path(), false);
+
+    let report = "alpha ".repeat(8_000);
+    let first = turn(&session, &format!("first report: {report}")).await;
+    turn(&session, &format!("second report: {report}")).await;
+    let base: i64 = first
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::ContextBreakdown { categories, .. } => Some(
+                categories
+                    .iter()
+                    .filter(|c| c.key.starts_with("system_") || c.key.starts_with("tools_"))
+                    .map(|c| c.tokens)
+                    .sum(),
+            ),
+            _ => None,
+        })
+        .unwrap();
+    let window = (u64::try_from(base).unwrap() + 3_000) * 2;
+    session
+        .set_model(model("b:small", &urls.1, Some(window)))
+        .await
+        .unwrap();
+
+    // The next turn starts by asking the model switched from (a) to summarise: it stalls.
+    a.hang_summaries
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    session.send("hello again".into()).unwrap();
+    for _ in 0..100 {
+        if !a.summaries().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!a.summaries().is_empty(), "the summary was asked for");
+
+    let switched = tokio::time::timeout(
+        Duration::from_secs(3),
+        session.set_model(model("c:big", &urls.2, None)),
+    )
+    .await
+    .expect("the switch is answered while the turn is stuck");
+    assert_eq!(switched.unwrap_err(), SwitchError::Busy);
+    assert_eq!(session.model().as_deref(), Some("b:small"));
+    assert!(c.requests().is_empty());
 }
