@@ -17,6 +17,7 @@
 use imperium_api::time::unix_ms;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -483,6 +484,10 @@ pub(crate) struct SessionCheckpoints {
     journal: PathBuf,
     folders: Vec<PathBuf>,
     inner: Mutex<Inner>,
+    /// Whether a root turn is running: from [`begin_turn`](imperium_engine::TurnCheckpoints::begin_turn)
+    /// until `after_turn` is done. Kept apart from `inner`, which the checkpoint of the files
+    /// holds for as long as reading the folders takes.
+    turn_active: AtomicBool,
     /// Told about each checkpoint, to announce it (`session.checkpoint`).
     daemon: Weak<DaemonState>,
 }
@@ -517,6 +522,7 @@ impl SessionCheckpoints {
             journal,
             folders,
             inner: Mutex::default(),
+            turn_active: AtomicBool::new(false),
             daemon,
         }
     }
@@ -544,19 +550,11 @@ impl SessionCheckpoints {
         working_files(top, inner.caches.entry(top.to_path_buf()).or_default())
     }
 
-    /// Whether a root turn is running (between `before_turn` and `after_turn`).
-    ///
-    /// A turn starts beside the checkpoint of its files, which holds the lock for as long as
-    /// reading the folders takes: a busy lock means a turn is starting (or ending), not that
-    /// the caller should wait for it.
+    /// Whether a root turn is running (between `begin_turn` and the end of `after_turn`). Never
+    /// waits: the checkpoint of the files holds `inner` while it reads the folders, and a turn
+    /// runs beside it.
     pub(crate) fn turn_running(&self) -> bool {
-        match self.inner.try_lock() {
-            Ok(inner) => inner.pending.is_some(),
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                poisoned.into_inner().pending.is_some()
-            }
-            Err(std::sync::TryLockError::WouldBlock) => true,
-        }
+        self.turn_active.load(Ordering::SeqCst)
     }
 
     /// The session's checkpoints, oldest first.
@@ -760,6 +758,7 @@ impl SessionCheckpoints {
 
 impl imperium_engine::TurnCheckpoints for SessionCheckpoints {
     fn begin_turn(&self) {
+        self.turn_active.store(true, Ordering::SeqCst);
         let journal_offset = std::fs::metadata(&self.journal).map_or(0, |meta| meta.len());
         let messages = std::fs::read(imperium_engine::messages_path(&self.journal)).ok();
         self.lock().begun = Some(Begun {
@@ -795,6 +794,14 @@ impl imperium_engine::TurnCheckpoints for SessionCheckpoints {
     }
 
     fn after_turn(&self) {
+        /// Ends the turn however `after_turn` returns.
+        struct Ended<'a>(&'a AtomicBool);
+        impl Drop for Ended<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let _ended = Ended(&self.turn_active);
         let mut inner = self.lock();
         let Some(pending) = inner.pending.take() else {
             return;
@@ -979,6 +986,57 @@ pub(crate) fn rewind(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use imperium_engine::TurnCheckpoints;
+
+    /// Holds `inner` from another thread, as the checkpoint of a large folder does, until the
+    /// returned sender is used.
+    fn hold(
+        checkpoints: &Arc<SessionCheckpoints>,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let held = Arc::clone(checkpoints);
+        let thread = std::thread::spawn(move || {
+            let _inner = held.lock();
+            locked_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        locked_rx.recv().unwrap();
+        (release_tx, thread)
+    }
+
+    #[test]
+    fn a_turn_is_running_from_its_start_whatever_the_slow_checkpoint_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoints = Arc::new(SessionCheckpoints::new(
+            Weak::new(),
+            dir.path(),
+            "s",
+            dir.path().join("journal.jsonl"),
+            Vec::new(),
+        ));
+        assert!(!checkpoints.turn_running());
+        // A busy lock is not a turn.
+        let (release, thread) = hold(&checkpoints);
+        assert!(!checkpoints.turn_running(), "no turn has begun");
+        release.send(()).unwrap();
+        thread.join().unwrap();
+
+        // The turn has begun, its files are not recorded yet, and the lock is busy.
+        checkpoints.begin_turn();
+        assert!(checkpoints.turn_running());
+        let (release, thread) = hold(&checkpoints);
+        assert!(checkpoints.turn_running(), "answered without the lock");
+        release.send(()).unwrap();
+        thread.join().unwrap();
+
+        checkpoints.before_turn("hello");
+        assert!(checkpoints.turn_running());
+        checkpoints.after_turn();
+        assert!(!checkpoints.turn_running(), "the turn is over");
+    }
+
     #[cfg(unix)]
     fn git(dir: &std::path::Path, args: &[&str]) -> (bool, String) {
         let out = std::process::Command::new("git")
@@ -998,7 +1056,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn snapshots_do_not_follow_linked_folders_out_of_the_tree() {
-        use super::*;
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("secret"), "private key\n").unwrap();
         let repo = tempfile::tempdir().unwrap();
