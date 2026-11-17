@@ -14,12 +14,16 @@ import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { insideTauri } from "../daemon/connection";
 import type { AppSettings, UpdateInterval } from "../settings/settings";
+import { noReleaseMessage, switchMessage } from "./updateSwitch";
 
 export type Channel = "main" | "experimental";
 
 export type UpdateStatus = {
   current_version: string;
+  /** The channel updates come from; it differs from `installed_channel` while a switch waits. */
   channel: Channel;
+  /** The channel the installed build was released on. */
+  installed_channel: Channel;
   automatic: boolean;
   /** Days between automatic checks. */
   interval_days: number;
@@ -29,6 +33,8 @@ export type UpdateStatus = {
   next_check_ms: number | null;
 } & (
   | { state: "idle" | "checking" | "up_to_date" }
+  | { state: "no_release" }
+  | { state: "switch_available"; version: string; older: boolean; notes: string | null }
   | { state: "downloading"; version: string }
   | { state: "ready"; version: string; notes: string | null }
   | { state: "failed"; message: string }
@@ -48,6 +54,8 @@ export type Updates = {
   installNow: () => void;
   /** Installs an already downloaded build and restarts. */
   restart: () => void;
+  /** Downloads and installs the other channel's build the last check found, once the user confirmed. */
+  switchInstall: () => void;
 };
 
 const CHANNELS: { id: Channel; label: string; hint: string }[] = [
@@ -85,6 +93,10 @@ function describe(status: UpdateStatus): string {
       return `Downloading ${status.version}…`;
     case "ready":
       return `${status.version} is ready. It installs when you quit, or restart now.`;
+    case "no_release":
+      return noReleaseMessage(status.channel);
+    case "switch_available":
+      return `The ${status.channel} build ${status.version} is available. Confirm below to install it.`;
     case "failed":
       return status.message;
   }
@@ -129,6 +141,11 @@ export function useUpdates(): Updates | null {
       void run(invoke<UpdateStatus>("update_install_now").then(setStatus)).finally(() => setInstalling(false));
     },
     restart: () => void run(invoke("update_restart")),
+    switchInstall: () => {
+      setInstalling(true);
+      // On success the app restarts; otherwise the error says why it did not.
+      void run(invoke("update_switch_install")).finally(() => setInstalling(false));
+    },
   };
 }
 
@@ -145,7 +162,7 @@ export function UpdateControl({ updates, onOpen }: { updates: Updates | null; on
       )}
       <button className="ghost update-version" onClick={onOpen} title="Updates">
         v{status.current_version}
-        {status.channel === "experimental" && <Badge tone="accent">experimental</Badge>}
+        {status.installed_channel === "experimental" && <Badge tone="accent">experimental</Badge>}
       </button>
     </>
   );
@@ -174,12 +191,12 @@ export function UpdateSettings({
   const channelHint = CHANNELS.find((channel) => channel.id === status.channel)?.hint;
   return (
     <>
-      <Row label="Installed version" description={`v${status.current_version} · ${status.channel} channel`}>
+      <Row label="Installed version" description={`v${status.current_version} · ${status.installed_channel} channel`}>
         <div className="row-actions">
-          <button onClick={updates.check} disabled={busy} title="Look for a newer build now; it downloads and waits for a restart">
+          <button onClick={updates.check} disabled={busy} title="Look for a newer build now; it downloads and waits for a restart. A build from the other channel is only offered, and installs after you confirm.">
             <RefreshCw aria-hidden="true" /> Check for updates
           </button>
-          <button className="primary" onClick={updates.installNow} disabled={busy} title="Check now, and install and restart if there is a newer build">
+          <button className="primary" onClick={updates.installNow} disabled={busy} title="Check now, and install and restart if there is a newer build. A build from the other channel asks you to confirm first.">
             <Download aria-hidden="true" /> {busy ? "Updating…" : "Check and install"}
           </button>
         </div>
@@ -192,6 +209,22 @@ export function UpdateSettings({
           <button className="primary" onClick={updates.restart}>
             <RotateCw aria-hidden="true" /> Restart to update
           </button>
+        )}
+        {status.state === "switch_available" && (
+          <Notice
+            tone="warn"
+            title={`Switch to the ${status.channel} channel?`}
+            action={
+              <button className="primary" onClick={updates.switchInstall} disabled={busy}>
+                <Download aria-hidden="true" /> Install {status.version}
+              </button>
+            }
+          >
+            {switchMessage(
+              { channel: status.installed_channel, version: status.current_version },
+              { channel: status.channel, version: status.version, older: status.older },
+            )}
+          </Notice>
         )}
         {updates.error && <Notice tone="danger">{updates.error}</Notice>}
       </RowNote>

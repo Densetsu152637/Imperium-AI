@@ -82,9 +82,22 @@ restarts). It also chooses the channel (main or experimental) and the schedule:
 Both are app settings, kept in the interface's `settings` document (`updateIntervalDays`,
 `checkUpdatesAtLogin`); the interface passes changes to the native side
 (`update_set_schedule`), and the app reads the document again at every start, before any
-window opens, and adds or removes the login entry to match. A build follows the channel it was released on
-until the user changes it; switching from experimental to main moves to the next main release newer than the
-installed build (the updater never downgrades).
+window opens, and adds or removes the login entry to match.
+
+**Channels and switching.** A build belongs to the channel its version names (a `-experimental`
+suffix means experimental, anything else main), so the installed build's channel is known after
+a restart without being stored; the chosen channel (`channel` in `update.json`) defaults to it.
+Within its own channel the updater never downgrades: only a higher version is offered. After the
+user picks the other channel, the next check targets that channel's newest release even when its
+version number is lower than the installed one (a main build `0.2.0` is lower than
+`0.2.163-experimental`), in both directions. That build is offered, not downloaded: Settings →
+Updates says it will install the *channel* build *version* (and that it is an older version
+number when it is) and asks for confirmation (`update_switch_install`). Nothing is installed on
+quit or by a login check while a switch waits. Once the switch is installed the running build
+carries the new channel's version, the chosen and installed channels match again, and the
+no-downgrade rule resumes. When the chosen channel has no release (or its release has no
+`latest.json`) the status says so. The signature check and the feed handling are the same for a
+switch.
 
 Each release carries `latest.json`, written by `scripts/ci/updater-manifest.sh` from the signed
 installers: the AppImage on Linux, the NSIS installer on Windows, and the `.app.tar.gz` on
