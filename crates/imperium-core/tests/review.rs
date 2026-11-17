@@ -78,9 +78,11 @@ async fn serve(repo: PathBuf) -> String {
                 let last = messages.last().cloned().unwrap_or_default();
                 let said = last["content"].as_str().unwrap_or_default().to_string();
                 let delta = if last["role"] == "tool" {
+                    // The command's work, once the tools have run: the files before the turn are
+                    // recorded beside the model's first call, and no tool runs before they are.
+                    let _ = std::fs::remove_file(repo.join("b.txt"));
                     json!({"content": "done"})
                 } else if last["role"] == "user" && said.trim() == "edit" {
-                    let _ = std::fs::remove_file(repo.join("b.txt"));
                     let call = |index: u32, path: &str, content: &str| {
                         json!({"index": index, "id": format!("w{index}"), "function": {
                             "name": "write_file",
