@@ -636,6 +636,8 @@ async fn stuck_on_summary() -> Stuck {
     let report = "alpha ".repeat(8_000);
     let first = turn(&session, &format!("first report: {report}")).await;
     turn(&session, &format!("second report: {report}")).await;
+    // A manual compaction keeps the last two turns, so it needs older ones to summarise.
+    turn(&session, "and a short one").await;
     let base: i64 = first
         .iter()
         .find_map(|event| match event {
