@@ -19,11 +19,12 @@ saved: LocalLaunchSettings,
  */
 effective: LocalLaunchEffective, 
 /**
- * Memory the model needs with the effective settings.
+ * Memory the model needs with the effective settings and its KV pool at its ceiling.
  */
 required_bytes: number, 
 /**
- * The part of `required_bytes` that is the KV cache pool.
+ * The part of `required_bytes` that is the KV cache pool, at its ceiling
+ * (`effective.pool_max` tokens), not at the size it starts with.
  */
 kv_pool_bytes: number, 
 /**

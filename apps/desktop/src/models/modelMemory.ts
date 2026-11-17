@@ -6,6 +6,10 @@
 //   total = weights + KV pool + runtime overhead (+ a draft model's memory)
 //   KV pool = tokens in the pool x bytes per token, which scales with the K and V cache types
 //
+// The pool starts small and grows as agents need it, up to its ceiling; the figures are those of
+// the pool at that ceiling (`effective.pool_max`), the most the model may reserve, so they do not
+// creep up as the pool grows.
+//
 // and the planner then splits the total between VRAM and RAM: every layer on the GPU when it fits,
 // else as many layers as fit (the rest, with their share of the pool, in RAM), or all in RAM on
 // the CPU lane. The figures are an estimate: real use also depends on the driver and on what
@@ -38,6 +42,10 @@ export type MemoryEstimate =
       totalBytes: number;
       weightsBytes: number;
       kvBytes: number;
+      /** Tokens the KV cache above is worked out for: the pool at its ceiling; null when unknown. */
+      kvTokens: number | null;
+      /** The most tokens one agent may use (the max context); null when unknown. */
+      contextTokens: number | null;
       /** What is left of the total after the weights and the KV pool: buffers, and a draft model. */
       otherBytes: number;
       placement: Placement;
@@ -46,6 +54,8 @@ export type MemoryEstimate =
       /** False when the planner could not place the model (too large for this machine now). */
       fits: boolean;
     };
+
+const positive = (tokens: number | undefined): number | null => (tokens !== undefined && tokens > 0 ? tokens : null);
 
 /** The estimate of a local model with the settings the daemon last computed for it. */
 export function localEstimate(model: LocalModelConfig): MemoryEstimate {
@@ -58,6 +68,8 @@ export function localEstimate(model: LocalModelConfig): MemoryEstimate {
     totalBytes: total,
     weightsBytes: model.weights_bytes,
     kvBytes: model.kv_pool_bytes,
+    kvTokens: positive(model.effective?.pool_max),
+    contextTokens: positive(model.effective?.context),
     otherBytes: Math.max(0, total - model.weights_bytes - model.kv_pool_bytes),
     placement: model.placement,
     gpuLayers: model.gpu_layers,
@@ -105,6 +117,35 @@ export function placementText(estimate: Extract<MemoryEstimate, { kind: "local" 
     case "gpu":
       return estimate.layers !== null ? `All ${estimate.layers} layers on the GPU` : "All layers on the GPU";
   }
+}
+
+/**
+ * The name of the KV cache row, saying what size it is worked out for: "KV cache at max context
+ * 32,768" when the pool at its ceiling is one context, else the pool's own size (several agents
+ * share it).
+ */
+export function kvLabel(estimate: MemoryEstimate): string {
+  const base = "KV cache (conversation memory)";
+  if (estimate.kind === "remote" || estimate.kvTokens === null) return base;
+  const tokens = estimate.kvTokens.toLocaleString("en-US");
+  return estimate.kvTokens === estimate.contextTokens
+    ? `${base} at max context ${tokens}`
+    : `${base} at the full pool of ${tokens} tokens`;
+}
+
+/**
+ * The hint under the KV pool setting when it is left empty: where the pool starts, and the
+ * ceiling the memory estimate is worked out for. `pool_max` is absent from an older daemon and 0
+ * when the model's KV size is unknown; neither claims a ceiling.
+ */
+export function poolHint(eff: Pick<LocalModelConfig["effective"], "pool_tokens"> & { pool_max?: number }): string {
+  const start = eff.pool_tokens.toLocaleString("en-US");
+  const max = eff.pool_max ?? 0;
+  if (max <= 0) return `Empty: starts at ${start} tokens and grows on demand.`;
+  if (max > eff.pool_tokens) {
+    return `Empty: starts at ${start} tokens and grows on demand up to ${max.toLocaleString("en-US")} (the memory estimate counts that much).`;
+  }
+  return `Empty: ${start} tokens, as many as fit beside the weights on the GPU (the memory estimate counts that much).`;
 }
 
 /** The figure of an estimate row, as drawn: "≈ 5.3 GiB", "none", or "runs remotely". */

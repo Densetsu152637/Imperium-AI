@@ -1620,9 +1620,19 @@ second formula in the app: the debounced (500 ms) `models.set_config` dry run re
 draft model; calibrated by the measured memory of earlier loads), and the table follows them,
 greyed with *updating…* while the answer is on its way. The total is weights + KV pool + runtime
 overhead (+ a draft model); the KV pool is its tokens times the bytes per token, which the cache
-types scale; the planner then fills the GPU with as many layers as fit and puts the rest, with
-their share of the pool, in RAM (all of it in RAM on the CPU lane). They are estimates beside what
-else is loaded, and the real figures also depend on the driver. A table row that names a local
+types scale, worked out for the pool at its ceiling (`effective.pool_max`: the fixed pool, or the most an
+empty pool may grow to, which is the max context times the slots, cut to what fits), because that is
+the most the model may reserve; a pool that starts small and grows with use does not make the figures
+creep up. The KV cache row says so (*KV cache at max context 32,768*, or *at the full pool of
+131,072 tokens* when the slots share more than one context; with no figure for the model's KV size
+per token it names no size). The planner then fills the GPU with as many layers as fit and puts the
+rest, with their share of the pool, in RAM (all of it in RAM on the CPU lane). The machine state it
+assumes is an empty one: the memory measured when the daemon started, the same the context ceiling
+and the pool were sized against, so nothing else loaded counts and a drift of the live readings
+cannot show a pool that fits as split between the GPU and RAM. The *Local models* row's badge is
+different: it shows what loading the model now needs, at the pool it has now (the smaller, starting
+one until calls grow it), against the live memory, while the dialog shows the most it may reserve.
+The figures are estimates, and the real ones also depend on the driver. A table row that names a local
 model (`llamacpp:` or `vllm:`) shows that model's estimate; a hosted row says it *runs remotely*.
 
 **Use this model.** The switch turns a model off without forgetting its settings. Off, the model
