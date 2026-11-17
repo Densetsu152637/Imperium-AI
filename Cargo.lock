@@ -2494,6 +2494,7 @@ dependencies = [
  "imperium-config",
  "imperium-protocol",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sysinfo",

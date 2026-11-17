@@ -104,6 +104,7 @@ fn main() {
             update::update_set_schedule,
             update::update_restart,
             update::update_install_now,
+            update::update_switch_install,
         ])
         .build(tauri::generate_context!())
         .expect("the Imperium window could not start")

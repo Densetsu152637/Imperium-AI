@@ -827,7 +827,10 @@ every setting:
   hide each panel, reset the layout), Keyboard (the shortcuts, rebindable; see [rebindable shortcuts](#rebindable-shortcuts-implemented)), Daemon (start, stop, restart, log, keep
   running), Updates (installed version with **Check for updates** and **Check and install**,
   channel, how often to check, and checking when the computer starts; see
-  [desktop updates](11-ci-cd.md#desktop-updates)), and Connectors (opens the Connectors
+  [desktop updates](11-ci-cd.md#desktop-updates); choosing the other channel and checking
+  offers that channel's latest build even when its version number is lower: the section says
+  which build it would install, notes when the number is older, and installs only after
+  **Install** is pressed, and a channel with no release says so), and Connectors (opens the Connectors
   window, with the MCP and plugin settings).
 - **Accent colours:** twelve, shown as a row of swatches in hue order (cyan, teal, green, lime,
   amber, orange, rose, magenta, violet, indigo, blue, silver); the chosen one is ringed.

@@ -14,11 +14,19 @@
 //! Each channel's feed is the `latest.json` asset of its newest GitHub Release: main follows
 //! stable releases (`vX.Y.Z`), experimental follows `vX.Y.N-experimental` pre-releases. The
 //! signature in the feed is checked against the public key in `tauri.conf.json`.
+//!
+//! A build belongs to the channel its version names (`-experimental` or not), so it is known
+//! after a restart. Within its channel the updater never downgrades. Once the user picks the
+//! other channel the next check targets that channel's newest release even when its version
+//! number is lower: it is offered, not downloaded, and installs only when the user confirms
+//! ([`update_switch_install`]). The installed build then belongs to the new channel and the
+//! normal rules resume.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_autostart::ManagerExt as _;
@@ -72,12 +80,42 @@ impl Channel {
     }
 }
 
+/// Whether `remote` is offered to a build at `current`. Within a channel only a newer version is;
+/// when the user has chosen the other channel (`switching`), the channel's latest build is,
+/// whatever its number, unless it is the build already installed.
+fn offers(switching: bool, current: &Version, remote: &Version) -> bool {
+    if switching {
+        remote != current
+    } else {
+        remote > current
+    }
+}
+
+/// Whether `remote` has a lower version than `current`, so installing it is a downgrade by
+/// number. Unparsable versions are not called older.
+fn is_older(current: &str, remote: &str) -> bool {
+    match (Version::parse(current), Version::parse(remote)) {
+        (Ok(current), Ok(remote)) => remote < current,
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum UpdateState {
     Idle,
     Checking,
     UpToDate,
+    /// The chosen channel (the status's `channel`) has no release with an update feed yet.
+    NoRelease,
+    /// The chosen channel is not the installed build's: its latest build waits for the user's
+    /// confirmation before it is downloaded and installed.
+    SwitchAvailable {
+        version: String,
+        /// Whether `version` is lower than the installed one.
+        older: bool,
+        notes: Option<String>,
+    },
     Downloading {
         version: String,
     },
@@ -146,7 +184,10 @@ impl Schedule {
 #[derive(Clone, Debug, Serialize)]
 pub struct UpdateStatus {
     current_version: String,
+    /// The channel updates come from; it differs from `installed_channel` while a switch waits.
     channel: Channel,
+    /// The channel the installed build was released on.
+    installed_channel: Channel,
     /// Whether the app checks on its own; development builds only check when asked.
     automatic: bool,
     #[serde(flatten)]
@@ -189,6 +230,8 @@ struct Inner {
     state: UpdateState,
     /// A downloaded update waiting to be installed.
     ready: Option<(Update, Vec<u8>)>,
+    /// A cross-channel build found but not yet confirmed or downloaded.
+    switch: Option<Update>,
 }
 
 impl Updater {
@@ -197,6 +240,7 @@ impl Updater {
         UpdateStatus {
             current_version: app.package_info().version.to_string(),
             channel: inner.channel,
+            installed_channel: installed_channel(app),
             automatic: automatic(),
             schedule: inner.schedule,
             last_checked_ms: inner.last_checked.map(|secs| secs * 1000),
@@ -220,6 +264,11 @@ impl Inner {
             .map_or(0, |last| last + self.schedule.interval().as_secs());
         self.retry_at.unwrap_or(due)
     }
+}
+
+/// The channel the running build was released on.
+fn installed_channel<R: Runtime>(app: &AppHandle<R>) -> Channel {
+    Channel::of_version(&app.package_info().version.to_string())
 }
 
 fn automatic() -> bool {
@@ -299,6 +348,7 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) {
             retry_at: None,
             state: UpdateState::Idle,
             ready: None,
+            switch: None,
         }),
         check_requested: Notify::new(),
         schedule_changed: Notify::new(),
@@ -386,7 +436,8 @@ async fn check<R: Runtime>(app: &AppHandle<R>) {
         (inner.channel, downloaded)
     };
     updater.set_state(app, UpdateState::Checking);
-    let found = find(app, channel).await;
+    let switching = channel != installed_channel(app);
+    let found = find(app, channel, switching).await;
     {
         // A check that reached the feed counts, whatever the download does next.
         let mut inner = updater.inner.lock().expect("updater state");
@@ -403,15 +454,38 @@ async fn check<R: Runtime>(app: &AppHandle<R>) {
         }
     }
     let state = match found {
-        Ok(None) => {
-            updater.inner.lock().expect("updater state").ready = None;
+        Ok(Feed::Empty) => {
+            let mut inner = updater.inner.lock().expect("updater state");
+            inner.ready = None;
+            inner.switch = None;
+            UpdateState::NoRelease
+        }
+        Ok(Feed::Current) => {
+            let mut inner = updater.inner.lock().expect("updater state");
+            inner.ready = None;
+            inner.switch = None;
             UpdateState::UpToDate
         }
-        Ok(Some(update)) if downloaded.as_deref() == Some(&update.version) => UpdateState::Ready {
-            version: update.version,
-            notes: update.body,
-        },
-        Ok(Some(update)) => {
+        Ok(Feed::Newer(update)) if switching => {
+            // Nothing is downloaded until the user confirms the switch.
+            let state = UpdateState::SwitchAvailable {
+                version: update.version.clone(),
+                older: is_older(&update.current_version, &update.version),
+                notes: update.body.clone(),
+            };
+            let mut inner = updater.inner.lock().expect("updater state");
+            inner.ready = None;
+            inner.switch = Some(update);
+            state
+        }
+        Ok(Feed::Newer(update)) if downloaded.as_deref() == Some(&update.version) => {
+            UpdateState::Ready {
+                version: update.version,
+                notes: update.body,
+            }
+        }
+        Ok(Feed::Newer(update)) => {
+            updater.inner.lock().expect("updater state").switch = None;
             updater.set_state(
                 app,
                 UpdateState::Downloading {
@@ -437,41 +511,62 @@ async fn check<R: Runtime>(app: &AppHandle<R>) {
     updater.set_state(app, state);
 }
 
-/// A newer build on `channel`, if its feed offers one.
+/// What a channel's feed offers the installed build.
+enum Feed {
+    /// The channel has no release, or its release has no update feed.
+    Empty,
+    /// The channel's latest build is not an update for this build.
+    Current,
+    /// A build to install.
+    Newer(Update),
+}
+
+/// The build `channel`'s feed offers: newer within the installed build's channel, the latest
+/// whatever its number when `switching` to the other channel.
 ///
 /// The feed and the installer are fetched through the GitHub API's asset URLs rather than the
 /// `github.com/.../releases/download` links in `latest.json`: the API serves the same files with
 /// `Accept: application/octet-stream`, and keeps working when the download links do not (they
 /// have returned 504 for hours at a time).
-async fn find<R: Runtime>(app: &AppHandle<R>, channel: Channel) -> Result<Option<Update>, String> {
+async fn find<R: Runtime>(
+    app: &AppHandle<R>,
+    channel: Channel,
+    switching: bool,
+) -> Result<Feed, String> {
     let Some(release) = newest_release(channel).await? else {
-        return Ok(None);
+        return Ok(Feed::Empty);
     };
     let Some(feed) = release.asset("latest.json") else {
-        return Ok(None);
+        return Ok(Feed::Empty);
     };
     let update = app
         .updater_builder()
         .endpoints(vec![feed.url.clone()])
         .and_then(|builder| builder.header("Accept", "application/octet-stream"))
         .and_then(|builder| builder.header("User-Agent", "imperium-desktop"))
+        .map(|builder| {
+            builder.version_comparator(move |current, remote| {
+                offers(switching, &current, &remote.version)
+            })
+        })
         .and_then(|builder| builder.build())
         .map_err(|error| error.to_string())?
         .check()
         .await
         .map_err(|error| format!("Checking for updates failed: {error}"))?;
-    Ok(update.map(|mut update| {
-        // The installer the feed names, by file name, from the same release.
-        let file = update
-            .download_url
-            .path_segments()
-            .and_then(|mut segments| segments.next_back())
-            .map(str::to_owned);
-        if let Some(asset) = file.and_then(|file| release.asset(&file)) {
-            update.download_url = asset.url.clone();
-        }
-        update
-    }))
+    let Some(mut update) = update else {
+        return Ok(Feed::Current);
+    };
+    // The installer the feed names, by file name, from the same release.
+    let file = update
+        .download_url
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .map(str::to_owned);
+    if let Some(asset) = file.and_then(|file| release.asset(&file)) {
+        update.download_url = asset.url.clone();
+    }
+    Ok(Feed::Newer(update))
 }
 
 #[derive(Deserialize)]
@@ -572,10 +667,47 @@ pub fn update_set_channel<R: Runtime>(
         let mut inner = updater.inner.lock().expect("updater state");
         inner.channel = channel;
         inner.ready = None;
+        inner.switch = None;
         inner.state = UpdateState::Idle;
     }
     updater.check_requested.notify_one();
     Ok(updater.status(&app))
+}
+
+/// Downloads the cross-channel build the last check found, which the user has confirmed, then
+/// installs it and starts it. The installed build then belongs to the new channel.
+#[tauri::command]
+pub async fn update_switch_install<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let updater = app.state::<Updater>();
+    let _checking = updater.checking.lock().await;
+    let found = updater.inner.lock().expect("updater state").switch.take();
+    let Some(update) = found else {
+        return Err("Check for updates first: no build to switch to is waiting.".into());
+    };
+    let version = update.version.clone();
+    updater.set_state(
+        &app,
+        UpdateState::Downloading {
+            version: version.clone(),
+        },
+    );
+    let bytes = match update.download(|_, _| {}, || {}).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let message = format!("Downloading {version} failed: {error}");
+            updater.set_state(
+                &app,
+                UpdateState::Failed {
+                    message: message.clone(),
+                },
+            );
+            updater.inner.lock().expect("updater state").switch = Some(update);
+            return Err(message);
+        }
+    };
+    updater.inner.lock().expect("updater state").ready = Some((update, bytes));
+    crate::daemon::stop_bundled(&app).await;
+    install_and_restart(&app, &updater)
 }
 
 /// Installs the downloaded update and starts the new version.
@@ -587,7 +719,8 @@ pub async fn update_restart<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
 }
 
 /// Checks the channel now and, when it offers a newer build, downloads and installs it and
-/// starts the new version. Returns the status when there is nothing to install.
+/// starts the new version. Returns the status when there is nothing to install, or when the
+/// build is on the other channel and waits for the user's confirmation.
 #[tauri::command]
 pub async fn update_install_now<R: Runtime>(app: AppHandle<R>) -> Result<UpdateStatus, String> {
     check(&app).await;
@@ -635,6 +768,7 @@ mod tests {
             retry_at,
             state: UpdateState::Idle,
             ready: None,
+            switch: None,
         };
         // Never checked: due at once.
         assert_eq!(inner(1, None, None).next_check(), 0);
@@ -684,5 +818,87 @@ mod tests {
         assert!(!Channel::Main.follows(&experimental));
         assert!(Channel::Experimental.follows(&experimental));
         assert!(!Channel::Experimental.follows(&stable));
+    }
+
+    fn version(text: &str) -> Version {
+        Version::parse(text).unwrap()
+    }
+
+    #[test]
+    fn switching_from_experimental_to_main_offers_the_lower_numbered_build() {
+        let installed = version("0.2.163-experimental");
+        let main = version("0.2.0");
+        assert_eq!(
+            Channel::of_version("0.2.163-experimental"),
+            Channel::Experimental
+        );
+        // The chosen channel (main) differs from the installed one, so the build is offered.
+        assert!(offers(true, &installed, &main));
+        assert!(is_older("0.2.163-experimental", "0.2.0"));
+        // Without the switch the same build is not offered: the old no-downgrade behaviour.
+        assert!(!offers(false, &installed, &main));
+    }
+
+    #[test]
+    fn switching_from_main_to_experimental_offers_the_latest_build() {
+        assert!(offers(
+            true,
+            &version("0.2.0"),
+            &version("0.2.163-experimental")
+        ));
+        // Also when the experimental build's number is lower than main's.
+        assert!(offers(
+            true,
+            &version("0.3.0"),
+            &version("0.2.163-experimental")
+        ));
+        assert!(!is_older("0.2.0", "0.2.163-experimental"));
+        assert!(is_older("0.3.0", "0.2.163-experimental"));
+    }
+
+    #[test]
+    fn a_switch_does_not_offer_the_build_already_installed() {
+        let installed = version("0.2.0");
+        assert!(!offers(true, &installed, &installed));
+    }
+
+    #[test]
+    fn within_a_channel_the_updater_never_downgrades() {
+        let installed = version("0.2.163-experimental");
+        assert!(!offers(false, &installed, &version("0.2.0")));
+        assert!(!offers(false, &installed, &version("0.2.150-experimental")));
+        assert!(!offers(false, &installed, &installed));
+        assert!(offers(false, &installed, &version("0.2.164-experimental")));
+        assert!(offers(false, &version("0.2.0"), &version("0.2.1")));
+        assert!(!offers(false, &version("0.2.1"), &version("0.2.0")));
+    }
+
+    #[test]
+    fn the_switch_completes_once_the_other_channels_build_is_installed() {
+        // The running build now carries the new channel's version, so it matches the saved
+        // choice and the no-downgrade rule applies again.
+        assert_eq!(Channel::of_version("0.2.0"), Channel::Main);
+        assert!(!offers(false, &version("0.2.0"), &version("0.1.9")));
+    }
+
+    #[test]
+    fn a_channel_with_no_release_follows_nothing() {
+        let releases = [release("v0.2.0", false), release("v0.2.0-beta.1", true)];
+        assert!(
+            !releases
+                .iter()
+                .any(|release| Channel::Experimental.follows(release))
+        );
+        assert!(
+            !releases[1..]
+                .iter()
+                .any(|release| Channel::Main.follows(release))
+        );
+    }
+
+    #[test]
+    fn unparsable_versions_are_not_called_older() {
+        assert!(!is_older("garbage", "0.1.0"));
+        assert!(!is_older("0.1.0", "garbage"));
     }
 }

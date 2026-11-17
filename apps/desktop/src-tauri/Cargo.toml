@@ -15,6 +15,7 @@ imperium-client = { version = "0.2.0", path = "../../../crates/imperium-client" 
 imperium-config = { version = "0.2.0", path = "../../../crates/imperium-config" }
 imperium-protocol = { version = "0.2.0", path = "../../../crates/imperium-protocol" }
 reqwest = "0.13.5"
+semver = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }

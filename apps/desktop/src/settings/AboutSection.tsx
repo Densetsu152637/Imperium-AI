@@ -9,7 +9,7 @@ export function AboutSection({ updates, client, onStartTour }: { updates: Update
   return (
     <>
       <Row label="Imperium" description="The desktop app.">
-        <span>{updates ? `v${updates.status.current_version} · ${updates.status.channel}` : "browser preview"}</span>
+        <span>{updates ? `v${updates.status.current_version} · ${updates.status.installed_channel}` : "browser preview"}</span>
       </Row>
       <Row label="imperium-core" description="The daemon this window is connected to.">
         <span>{daemon ? `${daemon.daemon.version} · protocol ${daemon.protocol.major}.${daemon.protocol.minor}` : "not connected"}</span>
