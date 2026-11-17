@@ -193,10 +193,10 @@ export function UpdateSettings({
     <>
       <Row label="Installed version" description={`v${status.current_version} · ${status.installed_channel} channel`}>
         <div className="row-actions">
-          <button onClick={updates.check} disabled={busy} title="Look for a newer build now; it downloads and waits for a restart">
+          <button onClick={updates.check} disabled={busy} title="Look for a newer build now; it downloads and waits for a restart. A build from the other channel is only offered, and installs after you confirm.">
             <RefreshCw aria-hidden="true" /> Check for updates
           </button>
-          <button className="primary" onClick={updates.installNow} disabled={busy} title="Check now, and install and restart if there is a newer build">
+          <button className="primary" onClick={updates.installNow} disabled={busy} title="Check now, and install and restart if there is a newer build. A build from the other channel asks you to confirm first.">
             <Download aria-hidden="true" /> {busy ? "Updating…" : "Check and install"}
           </button>
         </div>
