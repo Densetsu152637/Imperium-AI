@@ -4,7 +4,7 @@
 import { Fragment, type ReactNode } from "react";
 import type { LocalModelConfig, ModelConfigResult } from "@imperium/protocol";
 import { FLASH, MAX_ALIAS_CHARS, MAX_CARD_CHARS, type LocalDraft } from "./modelConfigDrafts";
-import { localEstimate } from "./modelMemory";
+import { localEstimate, poolHint } from "./modelMemory";
 import { groupedSettings, LOCAL_GROUPS, LOCAL_SETTINGS } from "./modelSettingsTable";
 import { GroupTable, SettingRow, MemoryTable, UseRow } from "./ConfigParts";
 
@@ -142,7 +142,7 @@ export function LocalForm({
       </SettingRow>
     ),
     pool_tokens: text("pool_tokens", eff.pool_fixed ? eff.pool_tokens : null, {
-      hint: eff.pool_fixed ? "Fixed: shared by every slot." : `Empty: starts at ${eff.pool_tokens} and grows on demand up to ${eff.pool_max} tokens (the memory estimate counts that much).`,
+      hint: eff.pool_fixed ? "Fixed: shared by every slot." : poolHint(eff),
     }),
     slots: text("slots", eff.slots),
     cache_type_k: select("cache_type_k", cacheTypes, defaults.cache_type_k),

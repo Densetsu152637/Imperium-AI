@@ -520,16 +520,6 @@ fn from_local(settings: LocalModelSettings) -> LocalLaunchSettings {
     }
 }
 
-/// `launch` with its KV pool at the ceiling it may grow to ([`ModelLaunch::pool_max`]): the
-/// settings the memory estimate is worked out for. A pool no setting fixes starts small and
-/// grows when calls need more, so the memory the model may reserve is that of the full pool.
-fn at_max_pool(launch: &ModelLaunch) -> ModelLaunch {
-    ModelLaunch {
-        pool_tokens: launch.pool_max.max(launch.pool_tokens),
-        ..launch.clone()
-    }
-}
-
 fn effective(launch: &ModelLaunch) -> LocalLaunchEffective {
     LocalLaunchEffective {
         // Unsized `auto` (the defaults) has no number of its own.
@@ -585,8 +575,8 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                 // Sized for the model like the supervisor sizes it: the context ceiling, and
                 // the pool it starts with (or has grown to). The memory figures are those of
                 // the pool at its ceiling, what the model may reserve, not of its start.
-                let launch = supervisor.sized(model, &settings.launch_of(&model.id));
-                let (footprint, placement) = supervisor.plan_with(model, &at_max_pool(&launch));
+                let (launch, footprint, placement) =
+                    supervisor.estimate(model, &settings.launch_of(&model.id));
                 let cpu_lane = settings.cpu_row(&model.id).is_some();
                 let (draft_in_use, draft_notice) = supervisor.draft_state(model, &launch);
                 let vllm = model.format == imperium_local::scan::Format::Safetensors;
@@ -598,7 +588,23 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                         saved_entry(saved, &["runtime", "llamacpp", "models"], &model.id)
                             .unwrap_or_default(),
                     ),
-                    effective: effective(&launch),
+                    effective: LocalLaunchEffective {
+                        // Without the model's KV size per token the planner estimates the
+                        // cache from the file size, whatever the pool: no token count then.
+                        pool_max: if model
+                            .info
+                            .kv_bytes_per_token_kv(
+                                imperium_local::planner::cache_element_bytes(&launch.cache_type_k),
+                                imperium_local::planner::cache_element_bytes(&launch.cache_type_v),
+                            )
+                            .is_some()
+                        {
+                            effective(&launch).pool_max
+                        } else {
+                            0
+                        },
+                        ..effective(&launch)
+                    },
                     required_bytes: footprint.required_bytes(),
                     kv_pool_bytes: footprint.kv_bytes,
                     placement: runtime.placement_label(placement.as_ref(), cpu_lane).into(),
@@ -707,28 +713,19 @@ mod tests {
     }
 
     #[test]
-    fn the_estimate_is_worked_out_for_the_pool_at_its_ceiling() {
-        // A pool that starts small and grows is estimated at what it may grow to.
+    fn the_pool_it_starts_with_and_the_most_it_may_grow_to_are_both_reported() {
         let sized = launch(8192, 131_072, false);
-        let estimated = at_max_pool(&sized);
-        assert_eq!(estimated.pool_tokens, 131_072);
-        assert_eq!(estimated.context, sized.context);
         assert_eq!(effective(&sized).pool_tokens, 8192, "what it starts with");
         assert_eq!(effective(&sized).pool_max, 131_072, "what it may reserve");
     }
 
     #[test]
-    fn a_fixed_pool_is_estimated_as_itself() {
-        let fixed = launch(65_536, 65_536, true);
-        assert_eq!(at_max_pool(&fixed).pool_tokens, 65_536);
-        assert_eq!(effective(&fixed).pool_max, 65_536);
+    fn a_fixed_pool_is_its_own_ceiling() {
+        assert_eq!(effective(&launch(65_536, 65_536, true)).pool_max, 65_536);
     }
 
     #[test]
-    fn a_ceiling_below_the_start_never_shrinks_the_estimate() {
-        assert_eq!(
-            at_max_pool(&launch(16_384, 4096, false)).pool_tokens,
-            16_384
-        );
+    fn a_ceiling_below_the_start_is_not_reported_below_it() {
+        assert_eq!(effective(&launch(16_384, 4096, false)).pool_max, 16_384);
     }
 }

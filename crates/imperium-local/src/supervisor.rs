@@ -2083,6 +2083,37 @@ impl Supervisor {
         model: &LocalModel,
         launch: &ModelLaunch,
     ) -> (Footprint, Option<Placement>) {
+        self.plan_against(model, launch, self.budget())
+    }
+
+    /// What the configuration dialog shows for `model` configured with `configured`: the launch
+    /// sized for the model ([`Supervisor::sized`]), and the footprint and placement of that
+    /// launch with its KV pool at the ceiling it may grow to ([`ModelLaunch::pool_max`]), the
+    /// most the model may reserve, not the pool it starts with. A pool no setting fixes starts
+    /// small and grows as calls need more, so the figures do not creep up with use. Planned
+    /// against the memory measured at start ([`Supervisor::start_budget`]), the budget the
+    /// ceiling was sized against, so a pool that fits does not show as split between the GPU
+    /// and RAM because the live readings drifted.
+    pub fn estimate(
+        &self,
+        model: &LocalModel,
+        configured: &ModelLaunch,
+    ) -> (ModelLaunch, Footprint, Option<Placement>) {
+        let sized = self.sized(model, configured);
+        let at_max = ModelLaunch {
+            pool_tokens: sized.pool_max.max(sized.pool_tokens),
+            ..sized.clone()
+        };
+        let (footprint, placement) = self.plan_against(model, &at_max, self.start_budget);
+        (sized, footprint, placement)
+    }
+
+    fn plan_against(
+        &self,
+        model: &LocalModel,
+        launch: &ModelLaunch,
+        budget: Budget,
+    ) -> (Footprint, Option<Placement>) {
         let cpu = self.cpu_slots(&model.id).is_some();
         let drafting = self.drafting(model, launch, launch.pool_tokens);
         let footprint = drafted_footprint(
@@ -2094,9 +2125,9 @@ impl Supervisor {
         );
         let placement = self.backend(model.format).and_then(|backend| {
             if cpu {
-                backend.place_on_cpu(footprint, self.budget())
+                backend.place_on_cpu(footprint, budget)
             } else {
-                backend.place(footprint, self.budget())
+                backend.place(footprint, budget)
             }
         });
         (footprint, placement)
@@ -5461,6 +5492,35 @@ mod tests {
             .into_iter()
             .find(|m| m.id == "main")
             .unwrap()
+    }
+
+    #[test]
+    fn the_dialog_estimate_is_for_the_pool_at_its_ceiling() {
+        let mut llama = settings();
+        llama.context = 32_768.into();
+        let supervisor = Supervisor::start(
+            vec![model("main", 2)],
+            llama.clone(),
+            Runtimes::default(),
+            &big_machine(),
+            Arc::new(FakeLauncher::default()),
+        );
+        let main = the_main(&supervisor);
+        let (sized, footprint, _) = supervisor.estimate(&main, &llama.launch("main", None));
+        assert!(
+            sized.pool_max > sized.pool_tokens,
+            "the pool starts below its ceiling ({} < {})",
+            sized.pool_tokens,
+            sized.pool_max
+        );
+        let per_token = main
+            .info
+            .kv_bytes_per_token_kv(
+                crate::planner::cache_element_bytes("f16"),
+                crate::planner::cache_element_bytes("f16"),
+            )
+            .unwrap();
+        assert_eq!(footprint.kv_bytes, per_token * u64::from(sized.pool_max));
     }
 
     #[tokio::test]

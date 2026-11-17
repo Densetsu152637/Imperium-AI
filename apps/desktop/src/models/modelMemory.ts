@@ -133,6 +133,21 @@ export function kvLabel(estimate: MemoryEstimate): string {
     : `${base} at the full pool of ${tokens} tokens`;
 }
 
+/**
+ * The hint under the KV pool setting when it is left empty: where the pool starts, and the
+ * ceiling the memory estimate is worked out for. `pool_max` is absent from an older daemon and 0
+ * when the model's KV size is unknown; neither claims a ceiling.
+ */
+export function poolHint(eff: Pick<LocalModelConfig["effective"], "pool_tokens"> & { pool_max?: number }): string {
+  const start = eff.pool_tokens.toLocaleString("en-US");
+  const max = eff.pool_max ?? 0;
+  if (max <= 0) return `Empty: starts at ${start} tokens and grows on demand.`;
+  if (max > eff.pool_tokens) {
+    return `Empty: starts at ${start} tokens and grows on demand up to ${max.toLocaleString("en-US")} (the memory estimate counts that much).`;
+  }
+  return `Empty: ${start} tokens, as many as fit beside the weights on the GPU (the memory estimate counts that much).`;
+}
+
 /** The figure of an estimate row, as drawn: "≈ 5.3 GiB", "none", or "runs remotely". */
 export function estimateValue(estimate: MemoryEstimate, key: "vram" | "ram" | "total" | "weights" | "kv" | "placement"): string {
   if (estimate.kind === "remote") return "runs remotely";

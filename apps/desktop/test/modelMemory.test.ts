@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import type { LocalModelConfig } from "@imperium/protocol";
 
-import { approx, estimateValue, formatBytes, kvLabel, localEstimate, placementText, rowEstimate, summaryLine } from "../src/models/modelMemory.ts";
+import { approx, estimateValue, formatBytes, kvLabel, localEstimate, poolHint, placementText, rowEstimate, summaryLine } from "../src/models/modelMemory.ts";
 
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;
@@ -109,4 +109,16 @@ test("the KV cache row says which size it is worked out for: the pool at its cei
   assert.equal(kvLabel(shared), "KV cache (conversation memory) at the full pool of 131,072 tokens");
   assert.equal(kvLabel(localEstimate(model())), "KV cache (conversation memory)", "no size known: no claim");
   assert.equal(kvLabel({ kind: "remote" }), "KV cache (conversation memory)");
+});
+
+test("the pool hint names the ceiling only when there is one to name", () => {
+  assert.match(poolHint({ pool_tokens: 8192, pool_max: 131_072 }), /starts at 8,192 tokens and grows on demand up to 131,072/);
+  assert.match(poolHint({ pool_tokens: 16_384, pool_max: 16_384 }), /as many as fit beside the weights/);
+  assert.equal(poolHint({ pool_tokens: 8192, pool_max: 0 }), "Empty: starts at 8,192 tokens and grows on demand.");
+  assert.equal(poolHint({ pool_tokens: 8192 }), "Empty: starts at 8,192 tokens and grows on demand.", "an older daemon");
+});
+
+test("with no KV size per token (pool_max 0) the row makes no claim about a size", () => {
+  const unknown = localEstimate(model({ effective: { context: 32_768, pool_tokens: 8192, pool_max: 0 } as LocalModelConfig["effective"] }));
+  assert.equal(kvLabel(unknown), "KV cache (conversation memory)");
 });

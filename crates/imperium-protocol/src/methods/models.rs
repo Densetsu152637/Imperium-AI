@@ -1088,7 +1088,8 @@ pub struct LocalLaunchEffective {
     /// The KV pool the model starts with (or is running with), or the fixed pool.
     pub pool_tokens: u32,
     /// The most the pool may grow to: the tokens the memory estimate's KV cache is worked out
-    /// for. The fixed pool when a setting fixes it.
+    /// for. The fixed pool when a setting fixes it. 0 in a `models.config` row whose model does
+    /// not say how big its KV cache is per token (the estimate then does not depend on it).
     #[serde(default)]
     pub pool_max: u32,
     /// A setting fixes the pool, so it never grows.
