@@ -460,7 +460,18 @@ struct Pending {
 #[derive(Debug, Default)]
 struct Inner {
     caches: HashMap<PathBuf, HashCache>,
+    /// Where the session's conversation stood when the turn began, noted before the turn adds
+    /// to it (the files are recorded beside the turn, later).
+    begun: Option<Begun>,
     pending: Option<Pending>,
+}
+
+/// The conversation as a turn found it.
+#[derive(Debug)]
+struct Begun {
+    at_unix_ms: u64,
+    journal_offset: u64,
+    messages: Option<Vec<u8>>,
 }
 
 /// One session's checkpoints: told about each root turn by the engine.
@@ -748,6 +759,16 @@ impl SessionCheckpoints {
 }
 
 impl imperium_engine::TurnCheckpoints for SessionCheckpoints {
+    fn begin_turn(&self) {
+        let journal_offset = std::fs::metadata(&self.journal).map_or(0, |meta| meta.len());
+        let messages = std::fs::read(imperium_engine::messages_path(&self.journal)).ok();
+        self.lock().begun = Some(Begun {
+            at_unix_ms: unix_ms(),
+            journal_offset,
+            messages,
+        });
+    }
+
     fn before_turn(&self, prompt: &str) {
         let mut inner = self.lock();
         let mut snapshots = Vec::new();
@@ -759,13 +780,16 @@ impl imperium_engine::TurnCheckpoints for SessionCheckpoints {
                 }
             }
         }
-        let journal_offset = std::fs::metadata(&self.journal).map_or(0, |meta| meta.len());
-        let messages = std::fs::read(imperium_engine::messages_path(&self.journal)).ok();
+        let begun = inner.begun.take().unwrap_or_else(|| Begun {
+            at_unix_ms: unix_ms(),
+            journal_offset: std::fs::metadata(&self.journal).map_or(0, |meta| meta.len()),
+            messages: std::fs::read(imperium_engine::messages_path(&self.journal)).ok(),
+        });
         inner.pending = Some(Pending {
             prompt: prompt.to_string(),
-            at_unix_ms: unix_ms(),
-            journal_offset,
-            messages,
+            at_unix_ms: begun.at_unix_ms,
+            journal_offset: begun.journal_offset,
+            messages: begun.messages,
             snapshots,
         });
     }

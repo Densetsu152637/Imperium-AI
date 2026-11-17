@@ -947,6 +947,7 @@ impl Shared {
     ) -> JoinHandle<()> {
         self.tool_called.store(false, Ordering::SeqCst);
         self.snapshot_ready.send_replace(false);
+        checkpoints.begin_turn();
         let gate = OpenGate(Arc::clone(self));
         tokio::task::spawn_blocking(move || {
             let _gate = gate;
