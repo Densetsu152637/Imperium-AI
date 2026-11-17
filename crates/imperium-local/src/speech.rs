@@ -1089,18 +1089,33 @@ mod tests {
     }
 
     /// A stand-in `whisper-server` that runs for a few seconds and never serves.
+    #[cfg(windows)]
     fn silent_server(dir: &Path) -> PathBuf {
-        if cfg!(windows) {
-            let path = dir.join("whisper-server.cmd");
-            std::fs::write(&path, "@echo off\r\nping -n 4 127.0.0.1 >nul\r\n").unwrap();
-            path
-        } else {
-            use std::os::unix::fs::PermissionsExt;
-            let path = dir.join("whisper-server");
-            std::fs::write(&path, "#!/bin/sh\nexec sleep 4\n").unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            path
-        }
+        let path = dir.join("whisper-server.cmd");
+        std::fs::write(
+            &path,
+            "@echo off
+ping -n 4 127.0.0.1 >nul
+",
+        )
+        .unwrap();
+        path
+    }
+
+    /// A stand-in `whisper-server` that runs for a few seconds and never serves.
+    #[cfg(unix)]
+    fn silent_server(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("whisper-server");
+        std::fs::write(
+            &path,
+            "#!/bin/sh
+exec sleep 4
+",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
     }
 
     #[tokio::test]
