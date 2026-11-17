@@ -82,13 +82,19 @@ async fn serve_with(repo: PathBuf, second: Option<PathBuf>) -> String {
                     // The command's work is done once the tools have run: the checkpoint of the
                     // files before the turn is taken beside the model's first call, and no tool
                     // runs before it is.
-                    let _ = std::fs::remove_file(repo.join("b.txt"));
-                    let _ = std::fs::remove_file(repo.join("notes/u.txt"));
-                    if let Some(second) = second.as_ref()
-                        && second.join("d").is_dir()
-                    {
-                        let _ = std::fs::remove_dir_all(second.join("d"));
-                        let _ = std::fs::write(second.join("d"), "in the way\n");
+                    let editing = messages
+                        .iter()
+                        .rfind(|message| message["role"] == "user")
+                        .is_some_and(|message| message["content"].as_str() == Some("edit"));
+                    if editing {
+                        let _ = std::fs::remove_file(repo.join("b.txt"));
+                        let _ = std::fs::remove_file(repo.join("notes/u.txt"));
+                        if let Some(second) = second.as_ref()
+                            && second.join("d").is_dir()
+                        {
+                            let _ = std::fs::remove_dir_all(second.join("d"));
+                            let _ = std::fs::write(second.join("d"), "in the way\n");
+                        }
                     }
                     json!({"content": "done"})
                 } else if last["role"] == "user" && said.trim() == "edit" {
