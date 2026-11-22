@@ -118,6 +118,27 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
     }
   };
 
+  // While driving, each tab choice is a real `switch_tab` in the agent's browser. The shared Tabs
+  // selects on every arrow key, so here the arrows (and Home and End) only move focus; Enter,
+  // Space or a click choose. Caught before Tabs sees the key.
+  const moveTabFocus = (event: KeyboardEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.getAttribute("role") !== "tab") return;
+    const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]:not(:disabled)')];
+    const from = tabs.indexOf(target);
+    const last = tabs.length - 1;
+    const next =
+      event.key === "ArrowRight" ? (from + 1) % tabs.length
+      : event.key === "ArrowLeft" ? (from - 1 + tabs.length) % tabs.length
+      : event.key === "Home" ? 0
+      : event.key === "End" ? last
+      : -1;
+    if (next < 0 || from < 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    tabs[next]?.focus();
+  };
+
   const click = (event: MouseEvent<HTMLImageElement>) => {
     const target = clickFraction(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
     if (!target) return;
@@ -207,7 +228,7 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
         )}
       </div>
       {tabs.length > 0 && (
-        <div className="browser-tabs">
+        <div className="browser-tabs" onKeyDownCapture={driving ? moveTabFocus : undefined}>
           <Tabs
             className="browser-tab-list"
             items={tabItems}
