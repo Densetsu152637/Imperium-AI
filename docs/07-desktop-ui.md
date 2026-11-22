@@ -725,7 +725,7 @@ a panel and the chevron that turns with it use `--dur-base`; hover and press col
 exit animation would need the component to stay mounted after it closes, which is a behaviour
 change. With reduced motion (the operating system's preference, or Settings → Appearance → Reduce
 motion, which sets `.reduce-motion` on the root; a mod frame gets the same class on its root,
-so the nursery stops roaming for either) `base.css` turns off every animation and
+so the nursery stops roaming for either; the class is applied when the frame is built, like the tokens) `base.css` turns off every animation and
 transition and smooth scrolling, so nothing moves and elements settle in their final state at
 once; a switch's knob and a chevron jump to their new position.
 
