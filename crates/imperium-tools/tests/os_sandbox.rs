@@ -55,6 +55,8 @@ async fn sandbox_works(root: &Path) -> bool {
 /// inside it.
 struct Fixture {
     _dir: tempfile::TempDir,
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    root: std::path::PathBuf,
     endpoint: std::path::PathBuf,
     socket: std::path::PathBuf,
     workspace: std::path::PathBuf,
@@ -63,7 +65,7 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let dir = tempfile::Builder::new()
-        .prefix(".os-tier-")
+        .prefix(".t")
         .tempdir_in(env!("CARGO_MANIFEST_DIR"))
         .unwrap();
     let data = dir.path().join("data");
@@ -78,6 +80,7 @@ fn fixture() -> Fixture {
     let listener = UnixListener::bind(&socket).unwrap();
     hide_from_os_sandbox([endpoint.clone(), ipc]);
     Fixture {
+        root: dir.path().to_path_buf(),
         _dir: dir,
         endpoint,
         socket,
@@ -121,7 +124,7 @@ async fn a_command_cannot_read_the_endpoint_file_or_see_the_socket() {
     #[cfg(target_os = "macos")]
     {
         // `nc` must work at all (an open socket outside the hidden folder), or this proves nothing.
-        let open = fixture.workspace.join("open.sock");
+        let open = fixture.root.join("o.sock");
         let _open = UnixListener::bind(&open).unwrap();
         let (control, _) = in_sandbox(
             &fixture.workspace,
