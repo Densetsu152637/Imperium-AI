@@ -1,35 +1,32 @@
-/* style-budget: colour=2 font-size=2 font-weight=0 radius=2 shadow=1 duration=0 z-index=1 */
+/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The first-run tour. */
 
 /* First-run tour: a dimmed workspace with a cut-out around the step's element and a card beside it. */
 .tour-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1100;
+  z-index: var(--z-tour);
 }
 
 .tour-dim {
   position: absolute;
   inset: 0;
-  background: rgb(0 0 0 / 0.55);
+  background: var(--scrim);
 }
 
 .tour-spotlight {
   position: absolute;
-  border-radius: 8px;
+  border-radius: var(--radius);
   outline: 2px solid var(--focus);
-  box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.55);
+  box-shadow: 0 0 0 100vmax var(--scrim);
   pointer-events: none;
 }
 
+/* The card is a .card (raised surface, border, radius, padding) floating at elevation 2. */
 .tour-card {
   position: absolute;
   width: min(360px, calc(100vw - 24px));
-  padding: 1rem 1.1rem;
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--elev-2);
   color: var(--text);
 }
 
@@ -39,24 +36,52 @@
 }
 
 .tour-card h2 {
-  margin: 0.15rem 0 0.4rem;
-  font-size: 1.05rem;
+  margin: var(--sp-1) 0 var(--sp-2);
+  font-size: var(--fs-lg);
 }
 
 .tour-card p {
   margin: 0;
+  font-size: var(--fs-md);
   line-height: 1.45;
 }
 
-.tour-card .tour-progress {
-  font-size: 0.8rem;
+.tour-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+/* Step dots: the current one is the accent, those behind it are a stronger edge colour. */
+.tour-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.tour-dot {
+  width: calc(6 * var(--px));
+  height: calc(6 * var(--px));
+  border-radius: var(--radius-full);
+  background: var(--border-control);
+  opacity: 0.45;
+}
+
+.tour-dot.done {
+  opacity: 1;
+}
+
+.tour-dot.current {
+  background: var(--accent);
+  opacity: 1;
 }
 
 .tour-actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.9rem;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
 }
 
 .tour-sr {

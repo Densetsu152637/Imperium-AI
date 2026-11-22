@@ -2,10 +2,13 @@
 // with Download / Not now / Don't ask again, then the download's progress and, once it is
 // ready, a button that switches the session to it. Nothing downloads without a click.
 
+import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { DownloadJob, SessionControlResult, SuggestionRespondResult } from "@imperium/protocol";
 
+import { IconButton } from "../components/IconButton";
+import { Notice } from "../components/Notice";
 import type { DaemonClient } from "../daemon/client";
 import type { SuggestionEntry } from "../sessions/sessions";
 
@@ -73,59 +76,71 @@ export function ModelSuggestionCard({ entry, sessionId, client, onSetModel }: Pr
   const percent = job && job.total_bytes > 0 ? Math.floor((job.done_bytes / job.total_bytes) * 100) : 0;
   const label = `${entry.repo} ${entry.quant}`;
   return (
-    <div className="permission suggestion" role="group" aria-label="Model download suggestion">
-      <div className="suggestion-body">
-        <span>
-          Download <strong>{entry.repo}</strong> ({entry.quant}, {gib(entry.sizeBytes)}, {FIT[entry.fit] ?? entry.fit})?
-        </span>
-        <span className="muted">Suggested because {entry.reason}.</span>
-        {entry.state === "downloading" && (
-          <>
-            <progress max={100} value={percent} aria-label={`${label} progress`} />
-            <span className="muted">
-              {job ? `${percent}% (${gib(job.done_bytes)} of ${gib(job.total_bytes)})` : "Starting…"}
-            </span>
-          </>
-        )}
-        {entry.state === "ready" && <span className="muted">Downloaded — available as {entry.model}.</span>}
-        {(entry.state === "failed" || entry.state === "cancelled") && (
-          <span className="error" role="alert">
-            Download {entry.state}: {entry.message ?? "no reason given"}
-          </span>
-        )}
-        {entry.state === "dismissed" && <span className="muted">Not now.</span>}
-        {entry.state === "disabled" && (
-          <span className="muted">
-            Suggestions are off; turn them on again in Settings (Suggest model downloads).
-            {entry.message ? ` ${entry.message}` : ""}
-          </span>
-        )}
-        {error && (
-          <span className="error" role="alert">
-            {error}
-          </span>
+    <section className="card model-suggestion" role="group" aria-label="Model download suggestion">
+      <div className="house-models-head">
+        <h3>Download {entry.repo}?</h3>
+        {entry.state === "pending" && (
+          <IconButton icon={X} label="Not now" disabled={busy || !client} onClick={() => answer("dismiss")} />
         )}
       </div>
+      <table className="table compact model-suggestion-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Quant</th>
+            <th className="num">Size</th>
+            <th>Fit</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <strong>{entry.repo}</strong>
+            </td>
+            <td>{entry.quant}</td>
+            <td className="num">{gib(entry.sizeBytes)}</td>
+            <td>{FIT[entry.fit] ?? entry.fit}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p className="muted">Suggested because {entry.reason}.</p>
+      {entry.state === "downloading" && (
+        <>
+          <progress max={100} value={percent} aria-label={`${label} progress`} />
+          <p className="muted">{job ? `${percent}% (${gib(job.done_bytes)} of ${gib(job.total_bytes)})` : "Starting…"}</p>
+        </>
+      )}
+      {entry.state === "ready" && <p className="muted">Downloaded — available as {entry.model}.</p>}
+      {(entry.state === "failed" || entry.state === "cancelled") && (
+        <Notice tone="danger">
+          Download {entry.state}: {entry.message ?? "no reason given"}
+        </Notice>
+      )}
+      {entry.state === "dismissed" && <p className="muted">Not now.</p>}
+      {entry.state === "disabled" && (
+        <p className="muted">
+          Suggestions are off; turn them on again in Settings (Suggest model downloads).
+          {entry.message ? ` ${entry.message}` : ""}
+        </p>
+      )}
+      {error && <Notice tone="danger">{error}</Notice>}
       {entry.state === "pending" && (
-        <span className="buttons">
+        <div className="model-suggestion-actions">
           <button className="primary" disabled={busy || !client} onClick={() => answer("download")}>
             Download
           </button>
-          <button disabled={busy || !client} onClick={() => answer("dismiss")}>
-            Not now
-          </button>
-          <button disabled={busy || !client} onClick={() => answer("never")}>
+          <button className="ghost" disabled={busy || !client} onClick={() => answer("never")}>
             Don't ask again
           </button>
-        </span>
+        </div>
       )}
       {entry.state === "ready" && (
-        <span className="buttons">
+        <div className="model-suggestion-actions">
           <button className="primary" disabled={busy || switched} onClick={switchTo}>
             {switched ? "Switched" : "Switch to it"}
           </button>
-        </span>
+        </div>
       )}
-    </div>
+    </section>
   );
 }
