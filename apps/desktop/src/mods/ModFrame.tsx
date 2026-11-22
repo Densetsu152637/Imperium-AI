@@ -7,7 +7,8 @@
 // policy would block a `srcdoc` frame's scripts; in a plain browser it uses `srcdoc`.
 
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { prefersReducedMotion } from "../settings/settings";
 
 import type { PetPackage, SessionSnapshot } from "@imperium/mod-sdk";
 import type { ModInfo, PetListResult, PetStripResult, SessionEventParams } from "@imperium/protocol";
@@ -142,7 +143,7 @@ function frameDocument(mod: ModInfo, panelId: string): string {
   const sdk = `data:text/javascript;base64,${btoa(SDK)}`;
   const behaviour = `data:text/javascript;base64,${btoa(behaviourSource)}`;
   const config = JSON.stringify({ panelId, permissions: mod.permissions }).replace(/</g, "\\u003c");
-  return `<!doctype html><html><head><meta charset="utf-8"><style>${themeCss()}</style>
+  return `<!doctype html><html${prefersReducedMotion() ? ' class="reduce-motion"' : ""}><head><meta charset="utf-8"><style>${themeCss()}</style>
 <script type="importmap">${JSON.stringify({ imports: { "@imperium/mod-sdk": sdk, "@imperium/behaviour": behaviour } })}</script>
 <script>${escapeScript(BRIDGE.replace("__CONFIG__", config))}</script>
 <script type="module">${BEHAVIOUR_START}</script>
@@ -256,8 +257,8 @@ export function ModFrame({ mod, panelId, bus, host }: { mod: ModInfo; panelId: s
   const latest = useRef(host);
   latest.current = host;
   // A frame can start before the app has connected; its daemon requests wait for the client.
-  const gate = useRef(new Gate<DaemonClient>());
-  useEffect(() => gate.current.set(host.client), [host.client]);
+  const [gate] = useState(() => new Gate<DaemonClient>());
+  useEffect(() => gate.set(host.client), [gate, host.client]);
   const page = useMemo(framePage, []);
 
   // Hands the frame page its document when it says it is ready (desktop app only).
@@ -294,7 +295,7 @@ export function ModFrame({ mod, panelId, bus, host }: { mod: ModInfo; panelId: s
       if (!needs) return reply({ error: `unknown method ${method}` });
       if (!mod.permissions.includes(needs)) return reply({ error: `${method} needs the ${needs} permission` });
       const { sessions, selected } = latest.current;
-      const daemon = () => gate.current.get(CONNECT_WAIT_MS, "not connected to imperiumd");
+      const daemon = () => gate.get(CONNECT_WAIT_MS, "not connected to imperiumd");
       const run = async (): Promise<unknown> => {
         switch (method) {
           case "sessions.list":

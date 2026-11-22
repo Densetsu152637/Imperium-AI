@@ -1,24 +1,4 @@
-/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The session column: header, transcript, tool calls, composer, queue, attachments, context breakdown, new session and compare. */
-
-/* The reading column's width. Registered as a length so it resolves once, on .session, and every
-   element in the column inherits the same pixels: a bare `90ch` would differ with each element's own
-   font size, and the transcript, tool rows, composer and footer would not share an edge. */
-@property --col-max {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 720px;
-}
-
-/* Tokens this surface adds (stage 15 promotes them into tokens.css). */
-:root {
-  --fs-prose: calc(var(--fs-base) * var(--prose-scale)); /* transcript prose: the reading size times the user's prose scale */
-  --fs-code: calc(var(--fs-md) * var(--code-scale)); /* code in the transcript: the UI size times the user's code scale */
-  --session-gutter-wide: var(--sp-4);
-  --session-gutter-narrow: var(--sp-3);
-  --dur-pulse: 1400ms; /* the breathing dots: working, recording */
-  --dur-spin: 1200ms; /* the wait line's spinner */
-}
 
 /* Disclosure rows: a chevron that turns as the section opens. */
 .plan > summary {
@@ -201,8 +181,8 @@
 }
 
 .session-footer button.icon-only {
-  width: 1.7rem;
-  height: 1.7rem;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
 }
 
 .session-footer .footer-button[aria-expanded="true"],
@@ -652,7 +632,7 @@
   max-width: none;
 }
 
-/* ---- Cards the agent raises: a permission request, a model suggestion, questions ---- */
+/* ---- Cards the agent raises: a permission request and questions (the model suggestion is a .card, house-models.css) ---- */
 .permission,
 .questions {
   padding: var(--sp-3) var(--sp-4);
@@ -668,17 +648,6 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
-}
-
-.suggestion-body {
-  display: flex;
-  flex: 1 1 18rem;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-
-.suggestion-body progress {
-  width: 100%;
 }
 
 .permission .buttons {
@@ -764,9 +733,6 @@
   animation: spin var(--dur-spin) linear infinite;
 }
 
-.reduce-motion .wait-line .wait-spinner {
-  animation: none;
-}
 
 .wait-line button svg {
   width: var(--icon-sm);

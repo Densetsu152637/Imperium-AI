@@ -1,16 +1,4 @@
-/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The dialog shell (Settings, the environment window, the model editor), its navigation column, and every floating thing: menus, select lists, tooltips. */
-
-:root {
-  /* The one left edge of a dialog: header, notice, body and footer all start here. */
-  --dialog-gutter: var(--sp-5);
-  /* Floating surfaces: raised, and in dark one step lighter so a shadow is not the only cue. */
-  --surface-overlay: color-mix(in srgb, var(--surface-raised), var(--text) 4%);
-}
-
-:root[data-theme="light"] {
-  --surface-overlay: var(--surface-raised);
-}
 
 /* ---- Popovers: menus, select lists and tooltips share one look ---- */
 .row-menu,
@@ -201,6 +189,7 @@
   animation: rise-in var(--dur-slow) var(--ease-standard);
 }
 
+/* The window takes focus from script when it has nothing focusable to give it to; a ring round the whole dialog would say nothing. */
 .settings-window:focus {
   outline: none;
 }
@@ -435,10 +424,6 @@
     border-radius: 0;
     box-shadow: none;
     animation-name: sheet-up;
-  }
-
-  :root {
-    --dialog-gutter: var(--sp-4);
   }
 }
 

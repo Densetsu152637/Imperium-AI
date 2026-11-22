@@ -16,7 +16,7 @@ export type ColumnKind = "sidebar" | "session" | "side";
 export type FoldColumn = { id: string; kind: ColumnKind };
 
 /**
- * Minimum widths in layout pixels. styles/shell.css repeats them as `--col-min-*` (the columns'
+ * Minimum widths in layout pixels. styles/tokens.css repeats them as `--col-min-*` (the columns'
  * `min-width`), and test/fold.test.ts fails when the two drift apart.
  */
 export const COLUMN_MIN: Readonly<Record<ColumnKind, number>> = { sidebar: 220, session: 360, side: 280 };

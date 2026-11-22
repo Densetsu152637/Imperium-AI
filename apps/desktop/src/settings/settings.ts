@@ -256,6 +256,11 @@ export function applySettings(settings: AppSettings): void {
 
 /** The current settings, for components that follow them (chat input, rendering). */
 export const SettingsContext = createContext<AppSettings>(DEFAULT_SETTINGS);
+/** Whether motion is reduced: the app's Reduce motion setting (the root's `reduce-motion` class) or the operating system's preference. For motion started from script, which the CSS rule cannot stop. */
+export function prefersReducedMotion(): boolean {
+  return document.documentElement.classList.contains("reduce-motion") || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 export const useSettings = () => useContext(SettingsContext);
 
 /** Changes the settings from inside a panel: applied at once, saved, and shared with the other windows. */

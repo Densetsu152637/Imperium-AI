@@ -1,4 +1,4 @@
-// The environment window's layout rules (docs/plans/ui-polish.md, stage 9): sections use the shared
+// The environment window's layout rules (docs/07-desktop-ui.md, Environments): sections use the shared
 // Field, the Danger zone is one danger Notice with one destructive button, and agent and folder
 // lists are rows at --row-h. Source checks, like the section tests beside this one. Run with
 // `pnpm test` in apps/desktop.

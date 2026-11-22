@@ -1,10 +1,4 @@
-/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The environment window, drawn inside the shared Dialog: its sections (Field layout, one left edge), the icon and colour pickers, folder and agent rows at --row-h, the danger notice, the agent initiative block and the knowledge card. The dialog, fields, notices, badges, empty states and icon buttons are shared components (primitives.css, dialog.css). */
-
-:root {
-  /* A text field or select in the window is at most this wide; the dialog gutter is the only left inset. */
-  --environment-control-w: calc(360 * var(--px));
-}
 
 /* ---- Notices between the header and the body, on the dialog's gutter ---- */
 .settings-content > .environment-notices {
