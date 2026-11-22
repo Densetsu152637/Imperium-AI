@@ -7,9 +7,13 @@
 // tabs (the page the agent's tools work on is the active one).
 
 import { ArrowLeft, ArrowRight, Plus, RotateCw, X } from "lucide-react";
-import { type FormEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import type { BrowserAction, BrowserActResult, BrowserControlResult } from "@imperium/protocol";
 
+import { EmptyState } from "../components/EmptyState";
+import { IconButton } from "../components/IconButton";
+import { Notice } from "../components/Notice";
+import { type TabItem, Tabs, tabPanelProps } from "../components/Tabs";
 import type { DaemonClient } from "../daemon/client";
 import { browserAddress, clickFraction, keyAction, shownTab } from "../sessions/preview";
 import type { SessionState } from "../sessions/sessions";
@@ -35,6 +39,7 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
   const queue = useRef<Promise<void>>(Promise.resolve());
   const typing = useRef({ text: "", timer: 0 });
   const image = useRef<HTMLImageElement | null>(null);
+  const tabsBase = useId();
 
   const act = useCallback(
     (action: BrowserAction) => {
@@ -149,23 +154,35 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
   };
 
   if (!session || !client) {
-    return <p className="empty">The browser appears here when an agent opens a page.</p>;
+    return <EmptyState className="compact" title="No browser yet" body="The browser appears here when an agent opens a page." />;
   }
+
+  // The shared tabs; the agent's active tab carries a dot after its title.
+  const tabItems: TabItem[] = tabs.map((tab) => ({
+    id: tab.id,
+    label: (
+      <span title={tab.active ? `${tab.url} (the agent's active tab)` : tab.url}>
+        {tab.title || tab.url || "New tab"}
+      </span>
+    ),
+    badge: tab.active ? (
+      <span role="img" aria-label="the agent's active tab">
+        ●
+      </span>
+    ) : undefined,
+  }));
+  const shownInfo = tabs.find((tab) => tab.id === shown);
 
   return (
     <div className="browser">
       <div className="browser-bar">
         {driving ? (
           <>
-            <button className="ghost icon-only" onClick={() => act({ type: "back" })} aria-label="Back" title="Back">
-              <ArrowLeft aria-hidden="true" />
-            </button>
-            <button className="ghost icon-only" onClick={() => act({ type: "forward" })} aria-label="Forward" title="Forward">
-              <ArrowRight aria-hidden="true" />
-            </button>
-            <button className="ghost icon-only" onClick={() => act({ type: "reload" })} aria-label="Reload" title="Reload">
-              <RotateCw aria-hidden="true" />
-            </button>
+            <span className="browser-nav">
+              <IconButton icon={ArrowLeft} label="Back" onClick={() => act({ type: "back" })} />
+              <IconButton icon={ArrowRight} label="Forward" onClick={() => act({ type: "forward" })} />
+              <IconButton icon={RotateCw} label="Reload" onClick={() => act({ type: "reload" })} />
+            </span>
             <form className="browser-address" onSubmit={go}>
               <input
                 key={view?.url ?? ""}
@@ -176,7 +193,7 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
                 spellCheck={false}
               />
             </form>
-            <button className="ghost" onClick={() => void control(false)} disabled={working}>
+            <button className="ghost browser-give" onClick={() => void control(false)} disabled={working}>
               Give back to agent
             </button>
           </>
@@ -190,54 +207,36 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
         )}
       </div>
       {tabs.length > 0 && (
-        <div className="browser-tabs" role="tablist" aria-label="Browser tabs">
-          {tabs.map((tab) => (
-            <span key={tab.id} className={`browser-tab${tab.id === shown ? " selected" : ""}${tab.active ? " active" : ""}`}>
-              <button
-                role="tab"
-                className="ghost"
-                aria-selected={tab.id === shown}
-                title={tab.active ? `${tab.url} (the agent's active tab)` : tab.url}
-                onClick={() => selectTab(tab.id)}
-              >
-                {tab.title || tab.url || "New tab"}
-              </button>
-              {driving && tabs.length > 1 && (
-                <button
-                  className="ghost icon-only"
-                  aria-label={`Close ${tab.title || tab.url || "tab"}`}
-                  title="Close tab"
-                  onClick={() => act({ type: "close_tab", tab: tab.id })}
-                >
-                  <X aria-hidden="true" />
-                </button>
-              )}
-            </span>
-          ))}
+        <div className="browser-tabs">
+          <Tabs
+            className="browser-tab-list"
+            items={tabItems}
+            value={shown ?? ""}
+            onChange={selectTab}
+            label="Browser tabs"
+            idBase={tabsBase}
+          />
           {driving && (
-            <button
-              className="ghost icon-only"
-              aria-label="New tab"
-              title="New tab"
-              onClick={() => act({ type: "new_tab" })}
-            >
-              <Plus aria-hidden="true" />
-            </button>
+            <span className="browser-tab-tools">
+              {tabs.length > 1 && shownInfo && (
+                <IconButton
+                  icon={X}
+                  label={`Close ${shownInfo.title || shownInfo.url || "tab"}`}
+                  tooltip="Close tab"
+                  onClick={() => act({ type: "close_tab", tab: shownInfo.id })}
+                />
+              )}
+              <IconButton icon={Plus} label="New tab" onClick={() => act({ type: "new_tab" })} />
+            </span>
           )}
         </div>
       )}
       {driving && (
-        <p className="muted browser-note" role="status">
-          You are driving. The agent's browser tools are unavailable until you give the browser back.
-        </p>
+        <Notice tone="info">You are driving. The agent's browser tools are unavailable until you give the browser back.</Notice>
       )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+      {error && <Notice tone="danger">{error}</Notice>}
       {view ? (
-        <figure className="browser-view">
+        <figure className="browser-view" {...(shown && tabs.length > 0 ? { ...tabPanelProps(tabsBase, shown), tabIndex: -1 } : {})}>
           <figcaption title={view.url}>
             <strong>{view.title || "Untitled"}</strong> <span className="muted">{view.url}</span>
           </figcaption>
@@ -253,7 +252,11 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
           </div>
         </figure>
       ) : (
-        <p className="empty">The browser appears here when an agent opens a page, or take it over to open one.</p>
+        <EmptyState
+          className="compact"
+          title="No page open"
+          body="The browser appears here when an agent opens a page, or take it over to open one."
+        />
       )}
     </div>
   );

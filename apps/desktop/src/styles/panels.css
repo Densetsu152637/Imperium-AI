@@ -1,4 +1,4 @@
-/* style-budget: colour=1 font-size=2 font-weight=0 radius=2 shadow=0 duration=0 z-index=0 */
+/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The side panels: agents, approvals, browser, preview, resources, telemetry, usage and review. */
 
 /* Empty states inside a panel are quieter than a full view's. */
@@ -267,17 +267,116 @@
   gap: var(--sp-2);
 }
 
-/* Browser mirror */
+/* Browser and preview: a toolbar that wraps, then the page. The panel is the container; under
+   22 rem the address field takes a row of its own. */
+.browser,
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+  min-height: 0;
+}
+
+.browser-bar,
+.preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.browser-who {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.browser-nav,
+.browser-tab-tools {
+  display: inline-flex;
+  flex: none;
+  gap: var(--sp-1);
+}
+
+.browser-address {
+  display: flex;
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.browser-address input,
+.preview-bar input {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.browser-give {
+  flex: none;
+}
+
+@container (max-width: 22rem) {
+  .browser-address,
+  .preview-bar input {
+    flex-basis: 100%;
+  }
+
+  .browser-address {
+    order: 3;
+  }
+
+  .browser-give {
+    margin-inline-start: auto;
+  }
+}
+
+/* The shared tabs beside the new and close tools; a crowded strip wraps onto more rows instead of
+   scrolling, and a long title ends in an ellipsis. */
+.browser-tabs {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.browser-tabs .browser-tab-list {
+  flex: 1 1 0;
+  flex-wrap: wrap;
+  min-width: 0;
+  border-bottom: 0;
+}
+
+.browser-tabs .tabs-tab {
+  min-width: 0;
+  max-width: 100%;
+  margin-bottom: 0;
+}
+
+/* The tab's label span (the shared Tabs wraps the title in one) gives way, ending in an ellipsis. */
+.browser-tabs .tabs-tab > span:first-of-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-tabs .tabs-badge {
+  flex: none;
+  color: var(--accent-text);
+}
+
 .browser-view {
+  min-width: 0;
   margin: 0;
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
 }
 
 .browser-view figcaption {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-bottom: calc(var(--space) * 0.5);
+  margin-bottom: var(--sp-1);
 }
 
 .browser-view img {
@@ -285,74 +384,6 @@
   height: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-}
-
-.browser,
-.preview {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  min-height: 0;
-}
-
-.browser-bar,
-.preview-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.browser-who {
-  flex: 1;
-}
-
-.browser-address {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-}
-
-.browser-address input,
-.preview-bar input {
-  flex: 1;
-  min-width: 0;
-}
-
-.browser-tabs {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  overflow-x: auto;
-}
-
-.browser-tab {
-  display: inline-flex;
-  align-items: center;
-  max-width: 12rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.browser-tab.selected {
-  border-color: var(--accent);
-}
-
-.browser-tab.active > button[role="tab"]::before {
-  content: "\25CF  ";
-  color: var(--accent);
-}
-
-.browser-tab > button[role="tab"] {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.browser-note,
-.preview-note {
-  margin: 0;
-  font-size: 0.8rem;
 }
 
 .browser-page {
@@ -374,8 +405,9 @@
   flex: 1;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  /* Pages assume a white canvas whatever the app's theme is. */
-  background: #fff;
+  /* Pages assume a white canvas whatever the app's theme is: a light-scheme canvas is white. */
+  background: Canvas;
+  color-scheme: light;
 }
 
 .budget-list {
@@ -471,11 +503,13 @@
 }
 
 /* The review pane: changed files as quiet unified diffs. Hunk and file tools are row tools,
-   shown on hover or focus; added and removed lines are tinted, context stays plain. */
+   shown on hover or focus; added and removed lines are tinted, context stays plain. Every row
+   wraps instead of scrolling sideways; the panel is the container. */
 .review {
   display: flex;
   flex-direction: column;
-  gap: var(--space);
+  gap: var(--sp-2);
+  min-width: 0;
   font-size: var(--fs-sm);
 }
 
@@ -483,27 +517,49 @@
 .review-actions,
 .review-confirm {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--sp-2);
+  min-width: 0;
 }
 
 .review-since {
   display: flex;
+  flex: 1 1 10rem;
   align-items: center;
-  gap: 0.4rem;
-  flex: 1;
+  gap: var(--sp-2);
   min-width: 0;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
-.review-since select {
+.review-since button.select {
   flex: 1;
   min-width: 0;
 }
 
-.review-notice {
-  color: var(--muted);
-  margin: 0;
+.review-bar-tools {
+  display: inline-flex;
+  flex: none;
+  gap: var(--sp-1);
+}
+
+.review-commit button.select {
+  width: 100%;
+  min-width: 0;
+}
+
+.review-confirm > span {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+/* Under 22 rem the label sits over its control. */
+@container (max-width: 22rem) {
+  .review-since {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-1);
+  }
 }
 
 .review-files {
@@ -512,15 +568,15 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--sp-1);
 }
 
 .review-file summary {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--sp-2);
   cursor: pointer;
-  padding: 0.15rem 0;
+  padding: var(--sp-1) 0;
 }
 
 .review-path {
@@ -534,13 +590,17 @@
 
 .review-repo,
 .review-counts {
-  color: var(--muted);
+  color: var(--text-muted);
+}
+
+.review-counts {
+  flex: none;
 }
 
 .review-status {
   font-family: var(--font-code);
   font-size: var(--fs-xs);
-  color: var(--muted);
+  color: var(--text-muted);
   width: 1ch;
 }
 
@@ -556,7 +616,8 @@
 
 .review-tools {
   display: inline-flex;
-  gap: 0.15rem;
+  flex: none;
+  gap: var(--sp-1);
 }
 
 .review-file summary:hover button.row-tool,
@@ -567,9 +628,9 @@
 }
 
 .review-hunk {
-  margin: 0.25rem 0 0.5rem;
+  margin: var(--sp-1) 0 var(--sp-2);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
@@ -577,23 +638,31 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 0.4rem;
-  color: var(--muted);
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2);
+  color: var(--text-muted);
   font-size: var(--fs-xs);
+}
+
+.review-hunk-header code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .review-lines {
   margin: 0;
-  padding: 0.2rem 0;
+  padding: var(--sp-1) 0;
   font-family: var(--font-code);
   font-size: var(--fs-xs);
-  overflow-x: auto;
 }
 
 .review-line {
   display: block;
-  padding: 0 0.4rem;
-  white-space: pre;
+  padding: 0 var(--sp-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .review-line-add {
@@ -607,10 +676,12 @@
 .review-commit {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: var(--sp-2);
+  min-width: 0;
 }
 
 .review-commit textarea {
+  min-width: 0;
   font-family: var(--font-code);
   font-size: var(--fs-sm);
   resize: vertical;
@@ -618,11 +689,12 @@
 
 .review-command {
   margin: 0;
-  padding: 0.4rem;
+  padding: var(--sp-2);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-family: var(--font-code);
   font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
   user-select: text;
 }
