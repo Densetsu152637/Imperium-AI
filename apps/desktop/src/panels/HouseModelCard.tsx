@@ -66,7 +66,6 @@ export function HouseModelCard({
         <thead>
           <tr>
             <th>Model</th>
-            <th className="num">Size</th>
             <th>
               <span className="visually-hidden">Action</span>
             </th>
@@ -79,11 +78,12 @@ export function HouseModelCard({
                 <span className="house-model-text">
                   <strong>{model.name}</strong>
                   <span className="muted">{model.role}</span>
+                  <span className="muted">{approxSize(model.approxBytes)}</span>
+                  {!downloadable(model) && <Badge>Not yet available: still in training</Badge>}
                 </span>
               </td>
-              <td className="num">{approxSize(model.approxBytes)}</td>
               <td className="house-model-action">
-                {downloadable(model) ? (
+                {downloadable(model) && (
                   <button
                     className="primary"
                     disabled={!client || busy !== null || started[model.id]}
@@ -91,8 +91,6 @@ export function HouseModelCard({
                   >
                     {started[model.id] ? "Downloading" : `Download ${model.name}`}
                   </button>
-                ) : (
-                  <Badge>Not yet available: still in training</Badge>
                 )}
               </td>
             </tr>

@@ -36,6 +36,7 @@
 .house-model-text {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: var(--sp-1);
 }
 
@@ -62,8 +63,13 @@
 }
 
 /* Sizes and quantisations stay on one line; the model name and the sentence-like cells wrap. */
-.house-model-table td.num,
 .model-suggestion-table td.num,
 .model-suggestion-table td:nth-child(2) {
   white-space: nowrap;
+}
+
+/* In a narrow column the unavailable badge wraps instead of widening the table. */
+.house-model-table .badge {
+  white-space: normal;
+  text-align: left;
 }

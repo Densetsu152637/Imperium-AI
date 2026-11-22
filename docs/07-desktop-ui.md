@@ -1586,7 +1586,7 @@ Emperor (the root agent and planner, on a base of about 4B) and Consul (its crit
 which checks Emperor's plans and delegated work and can reject them, on a base of about 9B),
 Imperium's own fine-tuned open-weight models, each with a role blurb and an approximate size
 in a `.table` like the model lists (placeholders until the models are published). The catalogue is `apps/desktop/src/models/houseModels.ts`; an entry with no download
-source (both, today) shows a *Not yet available: still in training* badge in place of the button. An entry
+source (both, today) shows a *Not yet available: still in training* badge under its name and has no button. An entry
 with a Hugging Face source gets a *Download* button that runs the same `models.hf_files` and
 `models.download` calls as the Local models panel's form. The ghost × icon button dismisses the card for good (the
 `houseModelsDismissed` setting), and it never shows once any model is present. Not built, until
