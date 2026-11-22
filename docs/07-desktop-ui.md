@@ -1555,6 +1555,34 @@ message waits in the queue while the agent is busy and waits on the session's bu
 message. `/init` is a command of the session composer only: in a subagent's view it is sent as
 text.
 
+**`/code-review` and `/security-review`.** Two more built-in commands of the session composer,
+sent the same way: the app calls `session.builtin` (`command` `code_review` or
+`security_review`, `args` the text after the name; `session.init` is the same call for `init`
+and stays for older clients), and the daemon sends the built-in prompt of
+`imperium_engine::review_prompt` as an ordinary user message. The agent reviews with its normal
+tools (`git`, `gh` when installed, the file tools) under the session's permissions; no tool was
+added, and the prompt tells it to report and not to edit, so an edit still goes through the
+approval path. One agent does the whole review (no `spawn_agent` fan-out in this version). The
+arguments are an optional effort word, then an optional target:
+
+- **Effort**: `low` (a few findings it is highly confident of), `medium` (the default), `high`
+  (thorough, with moderately confident findings marked) or `max` (`xhigh` is the same: exhaustive,
+  uncertain findings included with their confidence). It steers the review's depth only; the
+  session's own reasoning effort is separate.
+- **Target**: none reviews the uncommitted changes (`git diff HEAD`, untracked files) and the
+  branch's commits against its base; a number, `#123` or a pull request URL reviews that pull
+  request with `gh pr diff` (when `gh` is missing the agent says so and may offer a
+  `git fetch origin pull/N/head`, which is approved like any command); anything else is a branch
+  (reviewed against its base) or a path (its current content and changes), whichever it turns
+  out to be.
+
+Every finding is reported with `path:line`, a severity, a confidence and a suggested fix.
+`/security-review` covers injection, authentication and authorisation, secrets, path traversal,
+SSRF, XSS and CSRF, unsafe deserialisation, cryptography, trust-boundary races, unsafe code and
+dependencies, and each finding carries exploitability reasoning. Examples: `/code-review`,
+`/code-review 123`, `/code-review high feat/x`, `/security-review max src/auth`. The registry
+(`sessions/slash.ts`) holds each command's description and argument hint.
+
 #### Images for a model that cannot see them (implemented)
 
 When the session's model has no vision, an attached image (and the page images of a PDF with
