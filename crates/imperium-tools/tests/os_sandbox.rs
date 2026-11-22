@@ -18,6 +18,10 @@ use imperium_tools::{
     GrantedPath, Sandbox, guard_from_commands, hide_from_os_sandbox, leave_writable_in_guards,
 };
 
+/// The tests register paths in the process-wide hide list and then delete them; run one at a
+/// time, so a command never starts while another test is tearing down a folder it would mask.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const TOKEN: &str = "TOKEN-THE-SANDBOX-MUST-NOT-SEE";
 
 /// Whether a skipped check is a failure (CI sets `IMPERIUM_REQUIRE_OS_SANDBOX`).
@@ -136,6 +140,7 @@ fn fixture(guard: bool) -> Fixture {
 
 #[tokio::test]
 async fn a_command_cannot_read_the_endpoint_file_or_see_the_sockets() {
+    let _serial = SERIAL.lock().await;
     let fixture = fixture(false);
     if !sandbox_works(&fixture.workspace).await {
         return;
@@ -207,6 +212,7 @@ async fn a_command_cannot_read_the_endpoint_file_or_see_the_sockets() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn the_real_runtime_folder_is_not_reachable() {
+    let _serial = SERIAL.lock().await;
     use std::os::unix::fs::MetadataExt;
     let fixture = fixture(false);
     if !sandbox_works(&fixture.workspace).await {
@@ -234,6 +240,7 @@ async fn the_real_runtime_folder_is_not_reachable() {
 /// it. (Bubblewrap cannot do so for a mount point; Seatbelt denies it by path.)
 #[tokio::test]
 async fn a_grant_around_the_data_folder_does_not_reopen_a_hidden_file() {
+    let _serial = SERIAL.lock().await;
     let fixture = fixture(false);
     if !sandbox_works(&fixture.workspace).await {
         return;
@@ -282,6 +289,7 @@ async fn a_grant_around_the_data_folder_does_not_reopen_a_hidden_file() {
 /// stay writable.
 #[tokio::test]
 async fn a_workspace_of_the_home_folder_cannot_write_config_or_data() {
+    let _serial = SERIAL.lock().await;
     let fixture = fixture(true);
     if !sandbox_works(&fixture.workspace).await {
         return;
@@ -354,6 +362,7 @@ async fn a_workspace_of_the_home_folder_cannot_write_config_or_data() {
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_command_cannot_connect_to_the_daemons_port() {
+    let _serial = SERIAL.lock().await;
     let fixture = fixture(false);
     if !sandbox_works(&fixture.workspace).await {
         return;
@@ -391,6 +400,7 @@ async fn a_command_cannot_connect_to_the_daemons_port() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_renamed_ancestor_does_not_unmask_the_daemons_folders() {
+    let _serial = SERIAL.lock().await;
     let dir = tempfile::Builder::new()
         .prefix(".t")
         .tempdir_in(env!("CARGO_MANIFEST_DIR"))
