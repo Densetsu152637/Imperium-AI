@@ -652,6 +652,18 @@ and `environments.agent_update` (protocol 0.28)
     permission-mode values); `auto` is in the CLI's `/mode` and the desktop's mode selector
     ([05](05-tools-and-isolation.md#auto-mode-implemented)).
 <!-- markdownlint-disable-next-line MD029 -->
+51. **Plugin marketplace** (planned). Claude Code's plugin marketplaces in Imperium: add a
+    marketplace (a git URL, a local folder, or a GitHub `owner/repo` holding
+    `.claude-plugin/marketplace.json`), refresh and remove it, browse its plugins with their
+    descriptions and components, and install, enable, disable (for the user or one environment),
+    update and uninstall them, from the desktop's Plugins window, `imperium plugin …` and new
+    `plugins.*` methods. Nothing runs at add, refresh, browse or install; a plugin with hooks or
+    MCP servers runs only after the user approves what it runs, bound to its commit and content
+    hash, and any change of its content asks again; its MCP secrets go to the keychain. Builds on
+    the Claude Code plugin loading of phase 5 and the agent installs of [item 22](#next-in-order).
+    The security model, storage, protocol, nine stages and open questions are in the
+    [plugin marketplace plan](plans/plugin-marketplace.md).
+<!-- markdownlint-disable-next-line MD029 -->
 56. **Shared daemon lifetime** (implemented). One `imperium-core` per user, shared like a
     reference-counted pointer. The desktop app, every `imperium` command and the MCP bridge
     (`imperium mcp-serve`) find the daemon through `daemon.json` and start
