@@ -17,6 +17,7 @@ import {
   edgeTarget,
   fitMetrics,
   fitScale,
+  isTight,
   MIN_LABEL,
   nearestPartner,
   newRoamer,
@@ -356,4 +357,21 @@ test("after the boxes grow, only pets that cannot move are put back; walking and
   expect(stranded(pets, m)).toEqual([2]);
   // Remove the sleeper: nobody is put back, the dropped pet stays where it was.
   expect(stranded([pets[0]!, pets[1]!, pets[3]!], m)).toEqual([]);
+});
+
+test("a room is tight only when the pets cannot fit with room to move", () => {
+  const tightFor = (room: { width: number; height: number }, count: number): boolean => {
+    const { scale, metrics } = fitMetrics(room, count, FULL);
+    return isTight(room, count, metrics, scale);
+  };
+  // Sized to fit exactly is not tight: these pets wander.
+  expect(tightFor({ width: 122, height: 220 }, 1)).toBe(false);
+  expect(tightFor({ width: 122, height: 220 }, 2)).toBe(false);
+  expect(tightFor({ width: 122, height: 222 }, 3)).toBe(false);
+  expect(tightFor({ width: 122, height: 500 }, 3)).toBe(false);
+  // More pets than boxes at the smallest size, or no box to spare there: tight.
+  expect(tightFor(narrow, 200)).toBe(true);
+  const m = scaleMetrics(FULL, MIN_SCALE, false);
+  expect(isTight(narrow, boxSlots(narrow, m).length, m, MIN_SCALE)).toBe(true);
+  expect(isTight(narrow, 1, m, MIN_SCALE)).toBe(false);
 });

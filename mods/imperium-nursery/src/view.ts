@@ -11,7 +11,7 @@ import type { Drag } from "./drag.ts";
 import { angleTo } from "./play.ts";
 import { busyOf, busySubs } from "./route.ts";
 import { fitSize, frameAt } from "./render.ts";
-import { PLAY_SPEED, SPEED, boundsOf, boxSize, boxSlots, clampTo, clearTarget, edgeTarget, fitMetrics, newRoamer, pauseDelay, pickTarget, playTarget, roam, roomHeight, separate, spawnPoint, spreadSpots, stepToward, stranded } from "./space.ts";
+import { PLAY_SPEED, SPEED, boundsOf, boxSize, clampTo, clearTarget, edgeTarget, fitMetrics, isTight, newRoamer, pauseDelay, pickTarget, playTarget, roam, roomHeight, separate, spawnPoint, spreadSpots, stepToward, stranded } from "./space.ts";
 import type { Body, Bounds, Metrics, Pos, Roamer } from "./space.ts";
 
 /** Width of a pet's box (the label's width) and the height of its label line, in px. */
@@ -130,7 +130,7 @@ export class Room {
   private height = 0;
   /** A pet's metrics as drawn: smaller than full size when the crowd's whole boxes would not fit the room. */
   private fitted: Metrics | null = null;
-  /** No spare box in the room: free pets stand where they are instead of wandering into each other. */
+  /** The room cannot hold the pets with room to move (see `isTight`): free pets stand where they are instead of wandering into each other. */
   private tight = false;
   private observer: ResizeObserver | null = null;
 
@@ -191,8 +191,9 @@ export class Room {
   /** Sizes the pets so that the whole box (sprite plus label) of each fits in the room without overlapping, down to a minimum. */
   private rescale(): void {
     const count = [...this.cells.keys()].filter((key) => this.nursery.entries.get(key)?.removeAt == null).length;
-    const next = this.width > 0 && this.height > 0 ? fitMetrics({ width: this.width, height: this.height }, count, this.base).metrics : this.base;
-    this.tight = this.width > 0 && boxSlots({ width: this.width, height: this.height }, next).length <= count;
+    const fitted = this.width > 0 && this.height > 0 ? fitMetrics({ width: this.width, height: this.height }, count, this.base) : null;
+    const next = fitted?.metrics ?? this.base;
+    this.tight = fitted !== null && isTight({ width: this.width, height: this.height }, count, next, fitted.scale);
     const now = this.metrics;
     if (next.half === now.half && next.above === now.above) return;
     this.fitted = next;
@@ -547,14 +548,14 @@ export class Room {
     return true;
   }
 
-  /** A spot for pet `key` to walk to that keeps its whole box clear of where the other pets stand and are heading; any spot when the room has none. */
+  /** A spot for pet `key` to walk to that keeps its whole box clear of where the other pets stand and are heading; where it stands (no walk) when the room has none. */
   private clearSpot(key: string, from: Pos, b: Bounds): Pos {
     const others: Pos[] = [];
     for (const [other, cell] of this.cells) {
       if (other === key || !cell.placed || this.nursery.entries.get(other)?.removeAt != null) continue;
       others.push({ x: cell.r.x, y: cell.r.y }, { x: cell.r.tx, y: cell.r.ty });
     }
-    return clearTarget(b, from, others, this.metrics, { width: this.width, height: this.height }, Math.random) ?? pickTarget(b, from, Math.random);
+    return clearTarget(b, from, others, this.metrics, { width: this.width, height: this.height }, Math.random) ?? (this.tight ? pickTarget(b, from, Math.random) : from);
   }
 
   private move(cell: Cell, entry: Entry, pet: LoadedPet, idle: boolean, now: number, dt: number, b: Bounds): Moved {

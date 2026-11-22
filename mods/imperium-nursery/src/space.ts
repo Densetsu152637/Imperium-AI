@@ -94,6 +94,16 @@ export function fitMetrics(room: Size, count: number, base: Metrics, min = MIN_S
 export const fitScale = (room: Size, count: number, base: Metrics, min = MIN_SCALE): number => fitMetrics(room, count, base, min).scale;
 
 /**
+ * Whether a room has no room to move in for `count` pets drawn as `metrics` (at `scale`): fewer
+ * whole boxes than pets, or, at the smallest size, no box to spare. Exactly as many boxes as pets
+ * at a larger size is not tight: the pets were sized to fit and may still wander to spots clear of the others.
+ */
+export function isTight(room: Size, count: number, metrics: Metrics, scale: number, min = MIN_SCALE): boolean {
+  const slots = boxSlots(room, metrics).length;
+  return slots < count || (scale <= min && slots <= count);
+}
+
+/**
  * Which pets to put back on a free spot after the boxes grew: those that cannot move by
  * themselves (`moves` false: asleep, at work) and overlap an earlier pet. Pets that can move are
  * never listed; the separation pass pushes them apart.
