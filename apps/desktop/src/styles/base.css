@@ -1,8 +1,7 @@
-/* style-budget: colour=0 font-size=4 font-weight=0 radius=0 shadow=0 duration=2 z-index=0 */
 /* Base: the page, element defaults (buttons, links, focus, code), global motion and the keyframes. */
 
 html {
-  font-size: calc(15px * var(--ui-scale));
+  font-size: var(--fs-root);
 }
 
 * {
@@ -16,7 +15,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 1rem;
+  font-size: var(--fs-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
@@ -42,19 +41,19 @@ button {
   padding: calc(var(--space) * 0.5) calc(var(--space) * 1.5);
   cursor: pointer;
   transition:
-    background-color var(--fast) var(--ease),
-    border-color var(--fast) var(--ease),
-    color var(--fast) var(--ease),
-    box-shadow var(--fast) var(--ease);
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 button:hover:not(:disabled) {
-  background: var(--surface-3);
+  background: var(--surface-raised-hover);
   border-color: var(--border-strong);
 }
 
 button:active:not(:disabled) {
-  background: var(--active);
+  background: var(--surface-active);
 }
 
 button:disabled {
@@ -70,7 +69,7 @@ button.primary {
 }
 
 button.primary:hover:not(:disabled) {
-  background: var(--accent-strong);
+  background: var(--accent-hover);
   border-color: transparent;
 }
 
@@ -83,7 +82,7 @@ button.ghost {
 
 button.ghost:hover:not(:disabled),
 button.ghost[aria-expanded="true"] {
-  background: var(--hover);
+  background: var(--surface-hover);
   color: var(--text);
 }
 
@@ -117,12 +116,12 @@ input[type="range"] {
 
 code {
   font-family: var(--font-code);
-  font-size: calc(0.9rem * var(--code-scale));
+  font-size: var(--fs-code);
 }
 
 pre {
   font-family: var(--font-code);
-  font-size: calc(0.9rem * var(--code-scale));
+  font-size: var(--fs-code);
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
@@ -156,20 +155,25 @@ button.danger:hover:not(:disabled) {
   }
 }
 
+/* Reduced motion, from the operating system or Settings → Appearance → Reduce motion (the
+   .reduce-motion class on the root): nothing animates or transitions and nothing scrolls smoothly.
+   Elements settle in their final state at once: every keyframe here only animates *from* a resting
+   state, so with the animation gone they simply appear. State changes that move something (a
+   switch's knob, a chevron's turn) become instant jumps. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
+    animation: none !important;
+    transition: none !important;
   }
 }
 
 .reduce-motion *,
 .reduce-motion *::before,
 .reduce-motion *::after {
+  scroll-behavior: auto !important;
   animation: none !important;
   transition: none !important;
 }

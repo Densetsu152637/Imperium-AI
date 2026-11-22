@@ -1,8 +1,7 @@
-// Style guards (docs/plans/ui-polish.md, guard tests 2 to 4): every stylesheet declares how many
-// literal colours, font sizes, font weights, radii, shadows, durations and z-indexes it still holds,
-// and the count must match exactly, so each cleanup lowers the number in its own pull request and
-// nothing new slips in; custom properties that are read are defined; and no new native <select>
-// appears. Run with `pnpm test` (node's test runner).
+// Style guards (docs/07-desktop-ui.md, Theming): no stylesheet except styles/tokens.css spells out a
+// literal colour, font size, font weight, radius, shadow, duration or z-index; no custom property is
+// set on the root outside tokens.css; every custom property that is read is defined; and no component
+// uses a native <select>. Run with `pnpm test` (node's test runner).
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -65,17 +64,6 @@ function count(css: string): Counts {
   return counts;
 }
 
-/** The allowance in a file's first-line comment, `/* style-budget: colour=3 font-size=12 … *\/`; a category it does not name is zero. */
-function budget(css: string): Counts {
-  const budgets = Object.fromEntries(CATEGORIES.map((category) => [category, 0])) as Counts;
-  const line = /^\/\* style-budget:([^*]*)\*\//.exec(css)?.[1] ?? "";
-  for (const match of line.matchAll(/([\w-]+)=(\d+)/g)) {
-    assert.ok((CATEGORIES as readonly string[]).includes(match[1]), `unknown style-budget category ${match[1]}`);
-    budgets[match[1] as Category] = Number(match[2]);
-  }
-  return budgets;
-}
-
 test("the counter reads colours, sizes, weights, radii, shadows, durations and z-indexes", () => {
   const css = `/* #fff red */
     .a { color: #fff; background: rgb(0 0 0 / 0.5); border: 1px solid white; content: "red"; }
@@ -89,21 +77,28 @@ test("the counter reads colours, sizes, weights, radii, shadows, durations and z
   assert.deepEqual(count(css), { colour: 4, "font-size": 1, "font-weight": 1, radius: 1, shadow: 1, duration: 2, "z-index": 1 });
 });
 
-test("a budget comment names categories, and a missing one is zero", () => {
-  assert.deepEqual(budget("/* style-budget: colour=3 z-index=2 */\n.a {}"), { colour: 3, "font-size": 0, "font-weight": 0, radius: 0, shadow: 0, duration: 0, "z-index": 2 });
-  assert.deepEqual(budget(".a {}"), { colour: 0, "font-size": 0, "font-weight": 0, radius: 0, shadow: 0, duration: 0, "z-index": 0 });
-});
+const ZERO = Object.fromEntries(CATEGORIES.map((category) => [category, 0])) as Counts;
 
-test("every stylesheet except tokens.css holds exactly the literals its style-budget comment allows", () => {
+test("every stylesheet except tokens.css reads its colours, sizes, weights, radii, shadows, durations and layers from tokens", () => {
   const sheets = files(srcDir, ".css").filter((file) => rel(file) !== "styles/tokens.css");
   assert.ok(sheets.length > 1, "no stylesheets found");
   const problems: string[] = [];
   for (const file of sheets) {
-    const css = readFileSync(file, "utf8");
-    const allowed = budget(css), actual = count(css);
+    const actual = count(readFileSync(file, "utf8"));
     for (const category of CATEGORIES) {
-      if (actual[category] > allowed[category]) problems.push(`${rel(file)}: ${category} is ${actual[category]}, over its budget of ${allowed[category]}`);
-      if (actual[category] < allowed[category]) problems.push(`${rel(file)}: ${category} is ${actual[category]}, under its budget of ${allowed[category]}: lower the budget comment`);
+      if (actual[category] > ZERO[category]) problems.push(`${rel(file)}: ${actual[category]} literal ${category} value(s): use a token from styles/tokens.css`);
+    }
+  }
+  assert.deepEqual(problems, []);
+});
+
+test("custom properties are set on the root only in tokens.css", () => {
+  const problems: string[] = [];
+  for (const file of files(srcDir, ".css").filter((file) => rel(file) !== "styles/tokens.css")) {
+    const css = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const rule of css.matchAll(/(?:^|[}\s{])((?::root|html)[^{,]*(?:,[^{]*)?)\{([^{}]*)\}/g)) {
+      const names = [...rule[2].matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1]);
+      if (names.length) problems.push(`${rel(file)}: ${rule[1].trim()} sets ${names.join(", ")}: define root tokens in styles/tokens.css`);
     }
   }
   assert.deepEqual(problems, []);
@@ -143,13 +138,11 @@ test("every var(--name) read in CSS is defined, set from TSX, or falls back to a
 
 // ---- no new native <select> ----------------------------------------------------------------------
 
-test("a component file has as many native <select> elements as its `// style-budget: native-select=N` comment allows", () => {
+test("no component uses a native <select>: the shared Select is the one implementation", () => {
   const problems: string[] = [];
   for (const file of files(srcDir, ".tsx")) {
-    const source = readFileSync(file, "utf8");
-    const selects = (source.match(/<select\b/g) ?? []).length;
-    const allowed = Number(/^\/\/ style-budget: native-select=(\d+)$/m.exec(source)?.[1] ?? 0);
-    if (selects !== allowed) problems.push(`${rel(file)}: ${selects} native <select>, allowed ${allowed}`);
+    const selects = (readFileSync(file, "utf8").match(/<select/g) ?? []).length;
+    if (selects > 0) problems.push(`${rel(file)}: ${selects} native <select>`);
   }
   assert.deepEqual(problems, []);
 });

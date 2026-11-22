@@ -1,10 +1,21 @@
-/* Design tokens (docs/plans/ui-polish.md). Every length derives from one unit, --px (one CSS pixel
+/* Design tokens (docs/07-desktop-ui.md, Theming). Every length derives from one unit, --px (one CSS pixel
    at 100 % UI scale), so --ui-scale zooms everything; spacing, row and control heights also
    multiply by --space-scale (density). Pixel values in comments are at 100 % and comfortable
    density. Colours are semantic: components never use a raw value. UI mods inherit --bg, --panel,
    --fg, --muted, --border, --accent, --ok, --danger, --space and --radius (see mods/ModFrame.tsx),
    so those names stay. Accents are defined per theme at the end of the file and selected with
-   data-accent on the root element (settings.ts). */
+   data-accent on the root element (settings.ts). Every custom property set at :root lives in this file;
+   a rule may still set its own local ones (a row's --branch-depth, a swatch's --swatch). */
+
+/* The reading column's width. Registered as a length so it resolves once, on .session, and every
+   element in the column inherits the same pixels: a bare `90ch` would differ with each element's own
+   font size, and the transcript, tool rows, composer and footer would not share an edge. */
+@property --col-max {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 720px;
+}
+
 :root {
   /* The user's scales */
   --ui-scale: 1;
@@ -24,6 +35,9 @@
   --fs-base: calc(15 * var(--px)); /* transcript prose (times --prose-scale) */
   --fs-lg: calc(17 * var(--px)); /* section and panel titles */
   --fs-xl: calc(21 * var(--px)); /* dialog titles, empty-state headings */
+  --fs-root: calc(15px * var(--ui-scale)); /* the root element: 1rem, so rem lengths follow the UI scale */
+  --fs-prose: calc(var(--fs-base) * var(--prose-scale)); /* transcript prose: the reading size times the user's prose scale */
+  --fs-code: calc(var(--fs-md) * var(--code-scale)); /* code: the UI size times the user's code scale */
   --fw-regular: 400;
   --fw-medium: 500;
   --fw-semibold: 600;
@@ -53,6 +67,21 @@
   --icon-sm: calc(13 * var(--px));
   --icon: calc(16 * var(--px));
   --icon-lg: calc(19 * var(--px));
+  --panel-header-h: calc(var(--control-h) + var(--sp-2)); /* one height for every panel header; follows density like a control */
+  --dialog-gutter: var(--sp-5); /* the one left edge of a dialog: header, notice, body and footer */
+  --settings-control-w: calc(320 * var(--px)); /* a text field, select or text area in a Settings row */
+  --settings-number-w: calc(144 * var(--px));
+  --settings-swatch: calc(28 * var(--px));
+  --environment-control-w: calc(360 * var(--px)); /* a text field or select in the environment window */
+  --palette-w: calc(640 * var(--px));
+  --palette-top: 12vh;
+  --session-gutter-wide: var(--sp-4);
+  --session-gutter-narrow: var(--sp-3);
+  /* Minimum column widths (layout/fold.ts repeats them; test/fold.test.ts checks they agree) */
+  --col-min-sidebar: calc(220 * var(--px));
+  --col-min-session: calc(360 * var(--px));
+  --col-min-side: calc(280 * var(--px));
+  --sheet-w: calc(340 * var(--px)); /* a sheet: the sidebar or a side panel moved to the window's edge */
 
   /* Radii: scale with the UI scale, not with density */
   --radius-xs: calc(4 * var(--px)); /* badges, keyboard keys, inline code */
@@ -65,6 +94,9 @@
   --dur-fast: 120ms; /* hover, press, colour */
   --dur-base: 180ms; /* menus, popovers, folding a panel */
   --dur-slow: 260ms; /* dialogs, sheets, the narrow sidebar */
+  --dur-pulse: 1400ms; /* the breathing dots: working, connecting, recording */
+  --dur-spin: 1200ms; /* the wait line's spinner */
+  --dur-spin-fast: 900ms; /* the small .spin spinner */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 
@@ -74,6 +106,11 @@
   --z-overlay: 1000;
   --z-popover: 1100;
   --z-tour: 2000;
+  /* Inside the workspace: dividers, then drop lines, then the editor's column edges; a sheet sits above its scrim (--z-sticky) */
+  --z-divider: 2;
+  --z-drop: 3;
+  --z-edge: 4;
+  --z-sheet: 11;
 
   /* Surfaces */
   --bg: #0b0c0e;
@@ -82,6 +119,8 @@
   --surface-sunken: #0e1013;
   --surface-hover: rgb(255 255 255 / 0.04);
   --surface-active: rgb(255 255 255 / 0.07);
+  --surface-raised-hover: color-mix(in srgb, var(--surface-raised), var(--text) 7%); /* a raised control under the pointer */
+  --surface-overlay: color-mix(in srgb, var(--surface-raised), var(--text) 4%); /* floating surfaces: one step lighter in dark, so a shadow is not the only cue */
 
   /* Borders */
   --border: rgb(255 255 255 / 0.08);
@@ -128,25 +167,10 @@
   --ctx-results: var(--text-muted);
   --ctx-overhead: #6b717b;
 
-  /* Aliases: names mods read, and today's names, kept until nothing reads them */
+  /* Aliases: the names mods read (docs/06-extensibility.md), kept for good */
   --panel: var(--surface);
   --fg: var(--text);
   --muted: var(--text-muted);
-  --fast: var(--dur-fast);
-  --slow: var(--dur-base);
-  --ease: var(--ease-standard);
-  --surface-2: var(--surface-raised);
-  --surface-3: color-mix(in srgb, var(--surface-raised), var(--text) 7%);
-  --hover: var(--surface-hover);
-  --active: var(--surface-active);
-  --bubble: var(--surface-raised);
-  --code-bg: var(--surface-sunken);
-  --silver: var(--text-muted);
-  --silver-soft: var(--surface-hover);
-  --ink: var(--accent-ink);
-  --accent-strong: var(--accent-hover);
-  --shadow: var(--elev-3);
-  --radius-bubble: var(--radius-lg);
 
   color-scheme: dark;
 }
@@ -160,6 +184,7 @@
   --surface-sunken: #eef0f2;
   --surface-hover: rgb(17 24 39 / 0.04);
   --surface-active: rgb(17 24 39 / 0.07);
+  --surface-overlay: var(--surface-raised);
 
   --border: rgb(17 24 39 / 0.09);
   --border-strong: rgb(17 24 39 / 0.16);
@@ -419,4 +444,11 @@
   --accent-ink: #ffffff;
   --accent-text: #625c4e;
   --focus: #736c5c;
+}
+
+/* A dialog is a full-screen sheet below 600 px (dialog.css), and its gutter tightens with it. */
+@media (max-width: 600px) {
+  :root {
+    --dialog-gutter: var(--sp-4);
+  }
 }

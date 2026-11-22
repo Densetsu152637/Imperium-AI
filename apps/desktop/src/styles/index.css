@@ -1,4 +1,3 @@
-/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The desktop stylesheet: one file per surface, imported in cascade order. Rules that compete at the
    same specificity are decided by this order, so keep it. models/modelConfig.css is imported by its
    dialog and loads before all of these. */
@@ -20,3 +19,4 @@
 @import "./house-models.css";
 @import "./mods.css";
 @import "./primitives.css";
+@import "./forced-colors.css";

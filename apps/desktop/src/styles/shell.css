@@ -1,21 +1,4 @@
-/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The window: title bar, columns, dividers, panels and their headers, the panel editor and the connection banner. */
-
-:root {
-  /* One height for every panel header; it follows density like a control. */
-  --panel-header-h: calc(var(--control-h) + var(--sp-2));
-  --dur-pulse: 1400ms;
-  /* Layers inside the workspace: dividers, then drop lines, then the editor's column edges. */
-  --z-divider: 2;
-  --z-drop: 3;
-  --z-edge: 4;
-  --z-sheet: 11; /* above the scrim (--z-sticky) */
-  /* Minimum column widths (layout/fold.ts repeats them; test/fold.test.ts checks they agree). */
-  --col-min-sidebar: calc(220 * var(--px));
-  --col-min-session: calc(360 * var(--px));
-  --col-min-side: calc(280 * var(--px));
-  --sheet-w: calc(340 * var(--px));
-}
 
 .app {
   height: 100vh;
@@ -58,14 +41,6 @@
   color: transparent;
 }
 
-/* Forced colours: the gradient wordmark falls back to plain text. */
-@media (forced-colors: active) {
-  .titlebar .brand {
-    background: none;
-    color: CanvasText;
-  }
-}
-
 /* A small accent-cored ring before the wordmark */
 .titlebar .brand::before {
   content: "";
@@ -73,7 +48,7 @@
   height: calc(12 * var(--px));
   border-radius: var(--radius-full);
   background: radial-gradient(circle, var(--accent) 0 32%, transparent 36%);
-  border: calc(1.5 * var(--px)) solid var(--silver);
+  border: calc(1.5 * var(--px)) solid var(--text-muted);
 }
 
 .connection {
@@ -844,14 +819,6 @@ button.icon-only.panel-tool .lucide {
   height: calc(7 * var(--px));
   border-radius: var(--radius-full);
   background: var(--warn);
-}
-
-/* Forced colours drop background colours: the dot keeps a system colour. */
-@media (forced-colors: active) {
-  .sidebar-toggle[data-attention]::after {
-    background: Highlight;
-    forced-color-adjust: none;
-  }
 }
 
 /* Sheets (layout/Sheet.tsx): a folded column's own cell, moved to the window's edge over a scrim; the

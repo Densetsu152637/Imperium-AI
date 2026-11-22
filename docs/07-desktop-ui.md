@@ -350,29 +350,24 @@ store, panel windows and the icon registry), beside `panels/`, `components/`, `l
 `models/spec.ts` by `modelSpec.test.ts`); only those files are loaded by the tests.
 
 **Stylesheets (implemented):** `main.tsx` imports `styles/index.css`, which imports one file per
-surface in cascade order: `tokens.css` (every custom property, dark and light), `base.css`
-(the page, element defaults, the keyframes), `dialog.css` (the dialog shell, its navigation,
-menus and the floating lists of `Select`), `shell.css` (title bar, columns, panel headers, the
-panel editor, the connect screen), `sidebar.css`, `palette.css`, `session.css` (the session
-column, including the model picker in its footer), `settings.css`, `connectors.css`,
-`models.css`, `environments.css`, `panels.css` (the side panels), `tour.css`,
-`house-models.css`, `mods.css` and `primitives.css` (the shared components: small and
-icon-only buttons, fields, the select trigger, switches, badge variants, status dots). The order
-matters: rules of equal specificity are decided by it, so `primitives.css` stays last, where
-those rules sat in the original single file, and a rule that must beat or lose to one in another
-file is placed to keep that order. `tokens.css` holds the shared tokens, but a few surface-local custom properties live in
-their surface files (`--tile` in `environments.css`, `--session-gutter` and the `--ctx-color`
-set in `session.css`, `--settings-control-w`, `--settings-number-w` and `--settings-swatch` in `settings.css`), and the `.badge` base rule, `.error`
-and the model picker rules (`.model-select`, `.effort-select`, `.mode-select`,
-`.model-status`, `.model-note`) sit in `session.css` because of their cascade position.
-`models/modelConfig.css` belongs to the model configuration
-dialog, which imports it before `styles/index.css` loads; it and `models.css` hold no literals
-(their budgets are zero). Each stylesheet except `tokens.css`
-starts with a `/* style-budget: … */` comment counting the literal colours, font sizes and
-weights, radii, shadows, durations and z-indexes it still holds; `test/styleTokens.test.ts`
-fails when the count differs, so every cleanup lowers its budget in the same change, and
-it also checks that every `var(--name)` is defined and counts native `<select>` elements
-(`// style-budget: native-select=N` in a component file).
+surface in cascade order: `tokens.css` (every custom property set on the root, dark and light),
+`base.css` (the page, element defaults, reduced motion and the keyframes), `dialog.css` (the dialog
+shell, its navigation, menus and the floating lists of `Select`), `shell.css` (title bar, columns,
+panel headers, sheets, the panel editor, the connect screen), `sidebar.css`, `palette.css`,
+`session.css` (the session column, including the model picker in its footer), `settings.css`,
+`connectors.css`, `models.css`, `environments.css`, `panels.css` (the side panels), `tour.css`,
+`house-models.css`, `mods.css`, `primitives.css` (the shared components: small and icon-only
+buttons, fields, the select trigger, switches, checkboxes, tabs, badges, chips, notices, empty and
+loading states, status dots) and `forced-colors.css`. The order matters: rules of equal specificity
+are decided by it, so `primitives.css` and `forced-colors.css` stay last, and a rule that must
+beat or lose to one in another file is placed to keep that order. Only `tokens.css` sets custom
+properties on the root; a rule may still set its own local ones (`--tile` on a project icon,
+`--ctx-color` on a context segment, `--switch-pad` on a switch). `models/modelConfig.css` belongs to
+the model configuration dialog, which imports it before `styles/index.css` loads.
+`test/styleTokens.test.ts` holds every stylesheet except `tokens.css` to zero literal colours,
+font sizes, font weights, radii, shadows, durations and z-indexes, fails on a custom property set
+on the root outside `tokens.css`, on a `var(--name)` that nothing defines, and on a native
+`<select>` in a component.
 
 ### The app shares the daemon (implemented)
 
@@ -667,20 +662,69 @@ has space at that minimum size, new and wandering pets are placed where their bo
 the others; a very crowded room cannot guarantee it, and pets that walk past each other may
 overlap briefly.
 
-**Tokens and accents (implemented):** every length derives from `--px` (one CSS pixel at 100 % UI
-scale), spacing runs on 4 px steps (`--sp-1` to `--sp-8`), the control-height tokens provide a 24 px floor at any density (surfaces adopt them in their
-stages), and there are six type sizes, three weights, five radii, three elevations and
-the motion and layer tokens, all in `styles/tokens.css`; today's names (`--panel`, `--fg`,
-`--muted`, `--fast`, `--slow`, `--ease`, `--space`, `--radius`) remain as aliases, and the mod
-token names keep their meaning. Surfaces are flat (`--bg`, `--surface`, `--surface-raised`,
-`--surface-sunken`); only floating things have a shadow, and the title-bar wordmark is the one
-gradient (`--wordmark`). Input, select and switch edges use `--border-control` (3:1 against every
-surface), and focus is one 2 px `--focus` outline. Each of the twelve accents has a dark and a light
-value (fill, hover, wash, ink, accent text, focus) under `:root[data-accent="…"]`; `settings.ts`
-sets `data-accent` rather than writing colours inline, so the light theme's values win.
+**Tokens (implemented):** every colour, size, radius, shadow, duration and layer in the app's CSS
+comes from `styles/tokens.css`; components never use a raw value. Lengths derive from one unit,
+`--px` (one CSS pixel at 100 % UI scale, because `html` is `15px * --ui-scale`), so Settings →
+Appearance → UI scale zooms everything. Spacing, row and control heights also multiply by
+`--space-scale` (density). Values below are at 100 % and comfortable density.
+
+| Group | Tokens |
+| --- | --- |
+| Type | `--font-ui` (Inter Variable, bundled with `@fontsource-variable/inter`), `--font-code`; six sizes `--fs-xs` 11, `--fs-sm` 12, `--fs-md` 13 (controls, rows, labels), `--fs-base` 15 (prose), `--fs-lg` 17, `--fs-xl` 21 px, plus `--fs-prose` and `--fs-code` (the prose and code sizes times the user's scales); `--fw-regular`, `--fw-medium`, `--fw-semibold`; `--lh-tight`, `--lh-ui`, `--lh-prose`; `--tracking-caps` |
+| Spacing | `--sp-1` to `--sp-8` on 4 px steps (4, 8, 12, 16, 24, 32, 48); `--space` is `--sp-2` |
+| Sizes | `--control-h-sm` (24 px at every density), `--control-h` (30 px, floor 24), `--control-h-lg` (40 px), `--row-h` (a row, menu or navigation item is a control tall), `--icon-sm`, `--icon`, `--icon-lg`, `--panel-header-h`, `--dialog-gutter`, the column minimums `--col-min-*` and `--sheet-w` |
+| Radii | `--radius-xs` 4 (badges, keys), `--radius-sm` 6 (buttons, inputs), `--radius` 8 (cards, rows, menus), `--radius-lg` 12 (dialogs, the composer), `--radius-full`; radii follow the UI scale, not density |
+| Elevation | `--elev-1` to `--elev-3`, used only by floating things (menus, popovers, dialogs, sheets), `--scrim`, and `--surface-overlay` (floating surfaces are one step lighter in dark mode, where a shadow barely shows) |
+| Motion | `--dur-fast` 120 ms (hover, press, colour), `--dur-base` 180 ms (menus, popovers, folding a panel), `--dur-slow` 260 ms (dialogs, sheets), `--ease-standard`, `--ease-exit`; `--dur-pulse`, `--dur-spin` and `--dur-spin-fast` for the looping dots and spinners |
+| Layers | `--z-raised`, `--z-sticky`, `--z-overlay`, `--z-popover`, `--z-tour`, and the workspace's own `--z-divider`, `--z-drop`, `--z-edge`, `--z-sheet` |
+| Colour | `--bg`, `--surface`, `--surface-raised`, `--surface-sunken`, `--surface-hover`, `--surface-active`; `--border` and `--border-strong` (decorative) and `--border-control` (3:1 or more, for the edges of inputs, selects, checkboxes and switches); `--text`, `--text-muted`, `--text-subtle`; `--accent`, `--accent-hover`, `--accent-soft`, `--accent-ink`, `--accent-text`, `--focus`; `--danger`, `--ok`, `--warn` with `-soft` washes; the context chart's `--ctx-*` set (data colours, exempt from the one-accent rule) |
+
+`--panel`, `--fg`, `--muted`, `--space` and `--radius` are the names UI mods read
+([06](06-extensibility.md#ui-mods)); they keep their meaning for good. No other alias remains.
+Surfaces are flat; only floating things have a shadow, and the title-bar wordmark is the one
+gradient (`--wordmark`). `--bg` keeps its values (`#0b0c0e`, `#f4f5f7`) because the loading screen,
+`shared/boot.ts`, `main.rs` and `tauri.conf.json` repeat them (`test/boot.test.ts`). Each of the
+twelve accents has a dark and a light value (fill, hover, wash, ink, accent text, focus) under
+`:root[data-accent="…"]` and `:root[data-theme="light"][data-accent="…"]`; `settings.ts` sets
+`data-accent` rather than writing colours inline, so the light theme's values win.
 `test/tokenContrast.test.ts` checks the contrast of text, accent text, ink, focus and control edges
-for both themes and all accents. The UI face is Inter Variable, bundled with
-`@fontsource-variable/inter`.
+for both themes and all accents.
+
+**Shared components (implemented):** plain React and CSS, in `components/` with their rules in
+`styles/primitives.css` (the dialog, menu and popover rules in `styles/dialog.css`). A component
+takes `className` for layout only, never colour or size.
+
+- **Button:** a native `<button>` styled by element and class: `primary`, `ghost`, `danger`, the
+  default (secondary), and `small`. **IconButton** (`<IconButton icon label tooltip?>`) is the
+  only way to draw an icon-only button: `label` is required by its type and becomes the
+  `aria-label` and the **Tooltip**, which shows after 400 ms of hover and at once on keyboard focus
+  (`role="tooltip"`, `aria-describedby`).
+- **Field** wraps an input, textarea or **Select** with a label, a hint and an error; inputs and
+  textareas are styled as elements. **Select** and **Switch** follow the WAI-ARIA select-only
+  combobox and switch patterns. The checkbox is a drawn native checkbox (a `--border-control`
+  edge, an accent fill and a masked check); the chip is a pill toggle (`aria-pressed`).
+- **Tabs** follow the WAI-ARIA tabs pattern (arrows, Home and End); **Menu** is a trigger plus
+  items with an icon, a label, a shortcut, separators and danger items, and follows the menu
+  button pattern. `shared/keyNav.ts` holds the roving-focus rules both share.
+- **Dialog** (header, body, footer, an optional `DialogNav` column) traps focus, closes on Esc and
+  on a click on the scrim, returns focus to its trigger and is a full-screen sheet below 600 px.
+  Settings, the environment window, the model configuration dialog, Connectors and the command
+  palette use it; the tour keeps its own card because it is not modal.
+- **Table** (`.table`, with a compact variant) and **Card** (`.card`, `.card.interactive`) are CSS
+  classes. **Badge** has the tones neutral, accent, ok, warn and danger; **EmptyState**,
+  **LoadingState** (a spinner shown after 300 ms, so fast loads do not flash) and **Notice**
+  (`info`, `ok`, `warn`, `danger`, with an icon; failures are `role="alert"`) replace bare
+  paragraphs; **Kbd** draws a key chord.
+
+**Motion (implemented):** menus and popovers enter over `--dur-base` with a 4 px rise and a fade;
+tooltips and scrims fade over `--dur-fast`; dialogs and sheets enter over `--dur-slow`; folding a
+panel and the chevron that turns with it use `--dur-base`; hover and press colour changes use
+`--dur-fast` with `--ease-standard`. Things appear with an animation and leave without one: an
+exit animation would need the component to stay mounted after it closes, which is a behaviour
+change. With reduced motion (the operating system's preference, or Settings → Appearance → Reduce
+motion, which sets `.reduce-motion` on the root) `base.css` turns off every animation and
+transition and smooth scrolling, so nothing moves and elements settle in their final state at
+once; a switch's knob and a chevron jump to their new position.
 
 ### Loading screen and no white flash (implemented)
 
@@ -861,10 +905,34 @@ title at `--fs-lg`; the highlight is a `--radius` ring in `--focus` and the dimm
 Sequencing, skipping missing targets, the persisted outcome, and card placement are pure functions
 tested in `test/tourSteps.test.ts`.
 
-## Accessibility
+## Accessibility (implemented)
 
-Full keyboard navigation, visible focus, screen-reader labels, reduced-motion support, and
-WCAG AA contrast for shipped themes.
+- **Keyboard:** every control is reachable with Tab and works with Enter, Space, arrows and Esc
+  as its pattern says (menus, selects, tabs, dialogs, sheets, the palette, the tour). A dialog or a
+  sheet moves focus in, keeps focus from reaching what is behind it, closes on Esc and returns
+  focus to what opened it; switching from one More panels sheet to another moves focus into the
+  new one. Shortcuts are rebindable ([Rebindable shortcuts](#rebindable-shortcuts-implemented)).
+- **Focus:** one rule for every focusable element, a 2 px `--focus` outline offset 2 px (0 inside
+  inputs, whose edge also takes `--focus`). The only `outline: none` rules are on containers that
+  take focus from script (the app root, a dialog, a sheet, a menu list, whose active item is the
+  indicator) and on fields whose wrapper draws the ring (the composer, the palette and sidebar
+  search). Outlines, unlike shadows, survive forced colours.
+- **Names:** an icon-only button is an `IconButton` and cannot be built without a `label`; a
+  field's label, hint and error are tied to it by `Field`; status is never colour alone (badges
+  and notices carry words and icons, status dots sit beside a label).
+- **Contrast:** text and secondary text 4.5:1 on every surface, the focus ring and control edges
+  3:1, in both themes and for all twelve accents (`test/tokenContrast.test.ts`); controls are at
+  least 24 px tall at every density.
+- **Reduced motion:** see [Theming](#theming).
+- **Forced colours:** `styles/forced-colors.css` is the one place for `@media (forced-colors:
+  active)`. A state drawn by a soft background (selected, pressed, active) gets a `Highlight`
+  border or inset outline; shapes drawn only by a background (dots, a bar's fill, a switch's knob,
+  the check in a checkbox, panel-editor handles) take system colours; data colours (context
+  categories, the accent and project colour pickers) keep their own. Text, icons and borders need
+  nothing. The browser tooling the project uses cannot emulate forced colours, so these rules
+  were reviewed against the markup and not run in a contrast theme: after changing any of them,
+  check the switches, checkboxes, selected rows, meters, dots and the panel editor under a
+  Windows contrast theme (Settings → Accessibility → Contrast themes).
 
 ## Connectors (implemented)
 

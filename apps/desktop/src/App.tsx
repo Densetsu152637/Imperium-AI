@@ -1758,7 +1758,7 @@ export function App() {
         {sheetColumn && (
           <>
             <SheetScrim onClose={closeSheet} />
-            <SheetBehaviour onClose={closeSheet} returnFocus={openSheet?.kind === "nav" ? sidebarButton : undefined} />
+            <SheetBehaviour onClose={closeSheet} returnFocus={openSheet?.kind === "nav" ? sidebarButton : undefined} id={openSheet?.kind === "nav" ? "nav" : sheetPanel?.id} />
           </>
         )}
       </main>

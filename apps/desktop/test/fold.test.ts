@@ -98,8 +98,8 @@ test("no columns, and a width that is not a number, are handled", () => {
   assert.deepEqual(foldColumns(Number.NaN, DEFAULT), { narrow: false, shown: ["left", "main", "right"], folded: [] });
 });
 
-test("styles/shell.css repeats the minimums as the columns' min-width", () => {
-  const css = readFileSync(fileURLToPath(new URL("../src/styles/shell.css", import.meta.url)), "utf8");
+test("styles/tokens.css repeats the minimums as the columns' min-width", () => {
+  const css = readFileSync(fileURLToPath(new URL("../src/styles/tokens.css", import.meta.url)), "utf8");
   for (const [kind, min] of Object.entries(COLUMN_MIN)) {
     assert.match(css, new RegExp(`--col-min-${kind}:\\s*calc\\(${min} \\* var\\(--px\\)\\)`), `--col-min-${kind} is ${min}`);
   }

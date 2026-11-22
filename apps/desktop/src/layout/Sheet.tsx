@@ -44,20 +44,37 @@ export function SheetScrim({ onClose }: { onClose: () => void }) {
  * opens, Esc closes it, and focus goes back to `returnFocus`, or whatever had it when the sheet
  * opened. When that trigger is gone (the window widened and took the button with it) focus goes to
  * the app root instead of falling to the page.
+ *
+ * `id` names the sheet that is open. Switching from one sheet to another (a More panels entry
+ * chosen while another panel's sheet, or the sidebar's, is open) keeps the sheet open, so Esc and
+ * the way back stay as they were, but focus moves into the new sheet, and the control that was
+ * focused when it was chosen becomes the one focus returns to.
  */
-export function useSheet(open: boolean, onClose: () => void, returnFocus?: RefObject<HTMLElement | null>): void {
+export function useSheet(open: boolean, onClose: () => void, returnFocus?: RefObject<HTMLElement | null>, id?: string): void {
   const close = useRef(onClose);
   close.current = onClose;
+  const returnRef = useRef(returnFocus);
+  returnRef.current = returnFocus;
+  const opener = useRef<HTMLElement | null>(null);
+
+  // For each sheet that opens: remember who asked for it, and move focus in.
   useEffect(() => {
     if (!open) return;
     const root = document.querySelector<HTMLElement>("[data-sheet]");
+    const active = document.activeElement;
     // Taken now: by the time the sheet closes the trigger's ref may already be cleared.
-    const opener = returnFocus?.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
-    if (root && !root.contains(document.activeElement)) {
+    const asked = active instanceof HTMLElement && active !== document.body && !root?.contains(active) ? active : null;
+    opener.current = returnRef.current?.current ?? asked ?? opener.current;
+    if (root && !root.contains(active)) {
       const reachable = focusable(root);
       // The first control after the close button is the content's own.
       (reachable[1] ?? reachable[0] ?? root).focus();
     }
+  }, [open, id]);
+
+  // For as long as a sheet is open: Esc closes it, and when the last one closes focus goes back.
+  useEffect(() => {
+    if (!open) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       // A dialog above the sheet (Settings, opened from a panel's menu) closes first.
@@ -68,14 +85,15 @@ export function useSheet(open: boolean, onClose: () => void, returnFocus?: RefOb
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
-      const target = opener?.isConnected ? opener : document.querySelector<HTMLElement>(".app");
+      const target = opener.current?.isConnected ? opener.current : document.querySelector<HTMLElement>(".app");
+      opener.current = null;
       target?.focus();
     };
-  }, [open, returnFocus]);
+  }, [open]);
 }
 
 /** `useSheet` for a place that cannot call a hook (App renders it after its early return for panel windows). */
-export function SheetBehaviour({ onClose, returnFocus }: { onClose: () => void; returnFocus?: RefObject<HTMLElement | null> }) {
-  useSheet(true, onClose, returnFocus);
+export function SheetBehaviour({ onClose, returnFocus, id }: { onClose: () => void; returnFocus?: RefObject<HTMLElement | null>; id?: string }) {
+  useSheet(true, onClose, returnFocus, id);
   return null;
 }

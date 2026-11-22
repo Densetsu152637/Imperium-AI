@@ -1,15 +1,7 @@
-/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The Settings sections' content: rows, swatches, permissions and budget editors, shortcuts.
    One left edge: the dialog body's padding (--dialog-gutter, dialog.css) is the only horizontal
    inset, so every label, description, control and table starts at the same x as the dialog title.
    Nothing here adds padding, margin or an indent on the left. */
-
-:root {
-  /* A control in a row is this wide: a text field, a select, a text area. */
-  --settings-control-w: calc(320 * var(--px));
-  --settings-number-w: calc(144 * var(--px));
-  --settings-swatch: calc(28 * var(--px));
-}
 
 /* ---- Rows: label and description on top, the control under them, all flush left ---- */
 .settings-row {
