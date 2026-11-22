@@ -1,113 +1,70 @@
-/* style-budget: colour=0 font-size=24 font-weight=6 radius=0 shadow=0 duration=0 z-index=0 */
-/* Models: the model picker in the session footer, the model and local model panels, first-run setup and downloads. */
+/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
+/* Models: the model and local model panels, the first-run setup cards and downloads. Panels
+   are narrow columns (about 300 px at 1024 wide), so nothing here has a fixed minimum width:
+   controls shrink and wrap, and tables drop columns by container width instead of clipping.
+   The tables use the shared `.table`; primitives.css loads after this file and wins ties, so
+   rules that must beat it are scoped under `.models`. */
 
-.models-toolbar input:hover {
-  border-color: var(--border-strong);
-}
-
-.models-toolbar input:focus-visible {
-  outline-offset: 0;
-  border-color: var(--focus);
-}
-
-.models tbody tr {
-  transition: background-color var(--fast) var(--ease);
-}
-
-.models tbody tr:hover {
-  background: var(--hover);
-}
-
-/* Model table */
+/* ---- Toolbars ---- */
 .models-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space);
-  margin-bottom: var(--space);
-  font-size: 0.8rem;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-sm);
 }
 
-.models-toolbar input {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  transition:
-    border-color var(--fast) var(--ease),
-    box-shadow var(--fast) var(--ease);
-  flex: 1;
-  min-width: 10rem;
-  padding: calc(var(--space) * 0.6) var(--space);
+.models .models-toolbar input.field {
+  flex: 1 1 calc(120 * var(--px));
+  width: auto;
+  min-width: 0;
+  font-size: var(--fs-md);
 }
 
-.models-toolbar button {
-  font-size: 0.78rem;
-  padding: 0.2rem 0.65rem;
+.models .models-toolbar > .muted {
+  min-width: 0;
+}
+
+.models .models-toolbar button.small,
+.models .local-model-table button.small {
+  min-height: var(--control-h-sm);
 }
 
 /* Local models: Rescan and Configure, small and to the side. */
 .local-models-toolbar {
   justify-content: flex-end;
-  gap: calc(var(--space) * 0.5);
-  margin-bottom: calc(var(--space) * 0.5);
+  gap: var(--sp-1);
 }
 
-.local-models-toolbar button {
-  color: var(--muted);
-  padding: 0.15rem 0.45rem;
+/* ---- Tables ---- */
+.models .table {
+  font-size: var(--fs-sm);
 }
 
-.models table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.8rem;
-}
-
-.models td {
-  text-align: left;
-  padding: 0.3rem 0.35rem;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-.models th {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--muted);
-  text-align: left;
-  padding: 0.3rem 0.35rem;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-.models td:last-child {
-  white-space: normal;
-  color: var(--muted);
-}
-
-.models tr.unusable {
-  opacity: 0.55;
-}
-
-/* Favourite and hide toggles (panels/ModelMarks.tsx); hidden models sit dimmed in their own group. */
-.model-marks {
+.models .table th button.sort {
   display: inline-flex;
-  gap: 0.1rem;
-  white-space: nowrap;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
 }
 
-.model-marks button.model-mark {
-  padding: 0.15rem 0.3rem;
-  color: var(--muted);
+.models .table th button.sort:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
 }
 
-.model-marks button.model-mark.on {
-  color: var(--accent);
+.models .table th button.sort .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 
-.model-marks button.model-mark svg {
-  width: 0.9rem;
-  height: 0.9rem;
+.models .table tr.unusable {
+  opacity: 0.55;
 }
 
 tr.model-hidden {
@@ -118,425 +75,55 @@ tr.model-hidden.unusable {
   opacity: 0.35;
 }
 
-tr.model-hidden-group td {
-  padding-top: 0.4rem;
-}
-
-tr.model-hidden-group button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.75rem;
-  color: var(--muted);
-  padding: 0.15rem 0.4rem;
-}
-
-tr.model-hidden-group svg {
-  width: 0.85rem;
-  height: 0.85rem;
-}
-
-button.sort {
-  background: none;
-  border: none;
-  box-shadow: none;
-  padding: 0;
-  font-weight: 600;
-  color: var(--muted);
-}
-
-button.sort:hover:not(:disabled) {
-  background: none;
-  color: var(--text);
-}
-
-@container (max-width: 24rem) {
-  .models th:nth-child(5),
-  .models td:nth-child(5) {
-    display: none;
-  }
-}
-
-/* Local models */
-.local-models .warning {
-  font-size: 0.8rem;
-  color: var(--warn, var(--danger));
-  margin: 0 0 var(--space);
-}
-
-.local-models .badge {
-  white-space: nowrap;
-}
-
-/* Sections of the Local models panel: folders, the runtime, then the models. */
-.local-models .section-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space);
-  margin-bottom: calc(var(--space) * 0.5);
-}
-
-.local-models .section-head h3 {
-  margin: 0;
-  font-size: 0.85rem;
-  font-weight: 600;
-  flex: 1;
-}
-
-.local-models .section-head button {
-  font-size: 0.78rem;
-  padding: 0.2rem 0.65rem;
-}
-
-.runtime-card .candidates,
-.skipped ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--space) * 0.4);
-}
-
-.runtime-card .candidates li {
-  display: flex;
-  align-items: center;
-  gap: var(--space);
-  min-width: 0;
-}
-
-.local-model-table button.icon {
-  padding: 0.15rem 0.3rem;
-}
-
-.runtime-card {
-  margin-top: calc(var(--space) * 1.5);
-  margin-bottom: calc(var(--space) * 1.5);
-  font-size: 0.8rem;
-  padding: var(--space);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-}
-
-.runtime-card.attention {
-  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
-}
-
-.runtime-card p {
-  margin: 0 0 calc(var(--space) * 0.5);
-}
-
-.runtime-card .runtime-path code {
-  display: block;
-}
-
-.runtime-card code,
-.skipped code {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  font-size: 0.75rem;
-  font-weight: 400;
-}
-
-.runtime-card .models-toolbar {
-  margin: calc(var(--space) * 0.5) 0 0;
-}
-
-.runtime-install progress {
-  width: 100%;
-}
-
-.runtime-card .runtime-facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: calc(var(--space) * 0.2) var(--space);
-  margin: 0 0 calc(var(--space) * 0.5);
-}
-
-.runtime-card .runtime-facts dt {
-  color: var(--muted);
-}
-
-.runtime-card .runtime-facts dd {
-  margin: 0;
-}
-
-.runtime-card .runtime-update,
-.runtime-card .runtime-candidates {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space);
-  margin: 0 0 calc(var(--space) * 0.5);
-}
-
-.runtime-card .runtime-update p {
-  flex: 1 1 100%;
-  margin: 0;
-}
-
-.runtime-card .runtime-candidates > :nth-child(2) {
-  flex: 1;
-  min-width: 0;
-}
-
-.runtime-card .runtime-output {
-  max-height: 10rem;
-  overflow: auto;
-  font-size: 0.72rem;
-  white-space: pre-wrap;
-  margin: 0;
-}
-
-.local-model-table .model-name {
+.models .table td.model-id-cell,
+.models .table td.model-tags {
   white-space: normal;
-  min-width: 10rem;
+  overflow-wrap: anywhere;
 }
 
-.local-model-table .model-id {
-  display: block;
-  font-weight: 500;
-  color: var(--text);
-  word-break: break-all;
+.models .table td.model-id-cell .badge {
+  margin-left: var(--sp-1);
 }
 
-/* The fit column is hidden in a narrow panel; the fit then shows under the model's name. */
-.local-model-table .fit-inline {
+.models .table td.model-tags {
+  color: var(--text-muted);
+}
+
+.models .table td.model-price {
+  white-space: nowrap;
+}
+
+.models .table td.model-marks-cell {
+  text-align: right;
+}
+
+/* Where and which tier, shown under the name when those columns are hidden. */
+.models .model-sub {
   display: none;
 }
 
-@container (max-width: 40rem) {
-  .local-model-table .fit-inline {
-    display: inline;
-  }
-
-  .local-model-table th:nth-child(5),
-  .local-model-table td:nth-child(5) {
-    display: none;
-  }
-}
-
-.local-model-table .model-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  align-items: center;
-  font-size: 0.72rem;
-}
-
-.local-model-table td.model-actions {
-  display: flex;
-  gap: 0.3rem;
-  align-items: center;
-  justify-content: flex-end;
-  white-space: nowrap;
-  color: inherit;
-}
-
-.local-model-table .model-actions button {
-  font-size: 0.75rem;
-  padding: 0.15rem 0.55rem;
-}
-
-.local-model-table .default-mark {
+.model-marks {
   display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-  font-size: 0.75rem;
-}
-
-.local-model-table .default-mark svg,
-.local-model-table .model-actions svg {
-  width: 0.85rem;
-  height: 0.85rem;
-}
-
-.local-model-table tr.model-note td {
-  white-space: normal;
-  font-size: 0.78rem;
-  border-bottom-style: dashed;
-}
-
-.local-models details.skipped {
-  margin-top: var(--space);
-  font-size: 0.78rem;
-}
-
-.local-models details.skipped li {
-  margin: 0.2rem 0;
-  display: block;
-}
-
-/* First-run setup: three large choices, then the endpoint form when chosen. */
-.model-setup {
-  margin-bottom: calc(var(--space) * 1.5);
-}
-
-.model-setup h3 {
-  margin: 0 0 calc(var(--space) * 0.5);
-  font-size: 0.9rem;
-}
-
-.model-setup p {
-  margin: 0 0 var(--space);
-  font-size: 0.8rem;
-}
-
-.setup-actions {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-  gap: var(--space);
-  margin-bottom: var(--space);
-}
-
-button.setup-action {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space);
-  text-align: left;
-  padding: var(--space);
-  white-space: normal;
-}
-
-button.setup-action svg {
-  flex: none;
-  width: 1.1rem;
-  height: 1.1rem;
-  margin-top: 0.1rem;
-}
-
-button.setup-action span {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-button.setup-action small {
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
-.endpoint-form {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-  gap: var(--space);
-  font-size: 0.8rem;
-}
-
-.endpoint-form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  color: var(--muted);
-}
-
-.endpoint-form input {
-  padding: calc(var(--space) * 0.5) var(--space);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-}
-
-.endpoint-form p,
-.endpoint-form .error {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-
-.endpoint-form button {
-  justify-self: start;
-}
-
-.new-session-view .model-setup {
-  width: min(100%, 46rem);
-  margin: 0 auto calc(var(--space) * 1.5);
-}
-
-/* Download from Hugging Face: the same toolbar look, with progress in words and bars. */
-.hf-download {
-  margin-top: calc(var(--space) * 2);
-  padding-top: calc(var(--space) * 1.5);
-  border-top: 1px solid var(--border);
-}
-
-.hf-download h3 {
-  margin: 0 0 var(--space);
-  font-size: 0.85rem;
-  font-weight: 600;
-}
-
-.hf-download label {
-  color: var(--muted);
-}
-
-.hf-download select {
-  flex: 1;
-  min-width: 10rem;
-  padding: calc(var(--space) * 0.5) var(--space);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-
-.hf-download select:focus-visible {
-  outline-offset: 0;
-  border-color: var(--focus);
-}
-
-.hf-download .error,
-.hf-download p {
-  font-size: 0.8rem;
-  margin: 0 0 var(--space);
-}
-
-.downloads {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space);
-  font-size: 0.8rem;
-}
-
-.download-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space);
-}
-
-.download-head span:first-child {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  gap: var(--sp-1);
   white-space: nowrap;
 }
 
-.download-head button {
-  font-size: 0.75rem;
-  padding: 0.1rem 0.55rem;
+.model-marks button.model-mark {
+  color: var(--text-muted);
 }
 
-.download progress {
-  width: 100%;
-  height: 0.4rem;
-  margin: calc(var(--space) * 0.5) 0;
-  accent-color: var(--accent);
+.model-marks button.model-mark.on {
+  color: var(--accent-text);
 }
 
-.download p {
-  margin: 0;
-  overflow-wrap: anywhere;
+.model-marks button.model-mark.favourite.on svg {
+  fill: currentColor;
 }
 
 /* The favourite and hide toggles of a model row: shown on hover or focus, and while set. */
 .model-marks button.model-mark:not(.on) {
   opacity: 0;
-  transition: opacity var(--fast) var(--ease);
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
 tr:hover .model-marks button.model-mark,
@@ -550,12 +137,468 @@ tr:focus-within .model-marks button.model-mark {
   }
 }
 
-button.sort .lucide {
-  width: 0.9em;
-  height: 0.9em;
-  margin-left: 0.2em;
+tr.model-hidden-group td {
+  padding-top: var(--sp-2);
 }
 
-.models tr.off .badge.off {
-  margin-left: 0.4rem;
+tr.model-hidden-group button {
+  color: var(--text-muted);
+}
+
+/* Narrower panels drop columns before anything clips: Tags first, then Where and Tier, which move to a line under the name. */
+@container (max-width: 44rem) {
+  .models .models-table th:nth-child(5),
+  .models .models-table td:nth-child(5) {
+    display: none;
+  }
+
+  .models .model-sub.sub-tags {
+    display: block;
+  }
+}
+
+@container (max-width: 36rem) {
+  .models .models-table th:nth-child(2),
+  .models .models-table td:nth-child(2),
+  .models .models-table th:nth-child(3),
+  .models .models-table td:nth-child(3) {
+    display: none;
+  }
+
+  .models .model-sub.sub-where {
+    display: block;
+  }
+
+  /* What is left (name, price, toggles) shares the width: tight padding, and the price header may wrap. */
+  .models .models-table th,
+  .models .models-table td {
+    padding-inline: var(--sp-1);
+  }
+
+  .models .models-table th {
+    white-space: normal;
+  }
+}
+
+/* ---- Local models ---- */
+.local-models .update-warning {
+  color: var(--warn);
+}
+
+.local-models .badge {
+  white-space: nowrap;
+}
+
+.local-models .setup-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* Sections of the Local models panel: folders, the runtime, then the models. */
+.local-models .section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.local-models .section-head h3 {
+  flex: 1;
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.runtime-card .candidates,
+.skipped ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runtime-card .candidates li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.local-models .card.runtime-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-4) 0;
+  padding: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.local-models .card.runtime-card.attention {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
+.runtime-card p {
+  margin: 0;
+}
+
+.runtime-card .runtime-path code {
+  display: block;
+}
+
+.runtime-card code,
+.skipped code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+}
+
+.runtime-card .models-toolbar {
+  margin: 0;
+}
+
+.runtime-install progress {
+  width: 100%;
+}
+
+.runtime-card .runtime-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-1) var(--sp-2);
+  margin: 0;
+}
+
+.runtime-card .runtime-facts dt {
+  color: var(--text-muted);
+}
+
+.runtime-card .runtime-facts dd {
+  margin: 0;
+}
+
+.runtime-card .runtime-update,
+.runtime-card .runtime-candidates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.runtime-card .runtime-update p {
+  flex: 1 1 100%;
+}
+
+.runtime-card .runtime-candidates button.select {
+  flex: 1 1 calc(120 * var(--px));
+  min-width: 0;
+}
+
+.runtime-card .runtime-output {
+  max-height: calc(150 * var(--px));
+  margin: 0;
+  overflow: auto;
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+}
+
+.local-model-table .model-name {
+  min-width: 0;
+  white-space: normal;
+}
+
+.local-model-table .model-id {
+  display: block;
+  color: var(--text);
+  font-weight: var(--fw-medium);
+  word-break: break-all;
+}
+
+/* The fit and the quantisation, size and context show under a model's name when their columns are hidden. */
+.local-model-table .fit-inline,
+.local-model-table .spec-inline {
+  display: none;
+}
+
+@container (max-width: 52rem) {
+  .local-model-table .fit-inline {
+    display: inline;
+  }
+
+  .local-model-table th:nth-child(5),
+  .local-model-table td:nth-child(5) {
+    display: none;
+  }
+}
+
+.local-model-table .model-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+}
+
+.local-model-table td.model-actions {
+  white-space: nowrap;
+}
+
+.local-model-table td.model-fit .badge {
+  white-space: normal;
+  text-align: left;
+}
+
+.local-model-table .model-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+}
+
+.local-model-table .default-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.local-model-table .default-mark svg,
+.local-model-table .model-actions svg {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.local-model-table tr.model-note td {
+  white-space: normal;
+  border-bottom-style: dashed;
+}
+
+.local-model-table tr.model-note .notice-box {
+  font-size: var(--fs-sm);
+}
+
+.local-models details.skipped {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.local-models details.skipped li {
+  display: block;
+  margin: var(--sp-1) 0;
+}
+
+/* Narrow panel: each model is a block (name and facts, then its actions) instead of clipped columns. */
+@container (max-width: 44rem) {
+  .local-model-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .local-model-table,
+  .local-model-table tbody {
+    display: block;
+  }
+
+  .local-model-table tr {
+    display: block;
+    padding: var(--sp-2) 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .local-model-table tr.model-note {
+    padding: 0 0 var(--sp-2);
+  }
+
+  .models .table.local-model-table td {
+    display: block;
+    padding: 0 var(--sp-1);
+    border: 0;
+  }
+
+  .models .table.local-model-table td:nth-child(2),
+  .models .table.local-model-table td:nth-child(3),
+  .models .table.local-model-table td:nth-child(4),
+  .models .table.local-model-table td:nth-child(5) {
+    display: none;
+  }
+
+  .local-model-table .spec-inline {
+    display: inline;
+  }
+
+  .models .table.local-model-table td.model-actions {
+    padding-top: var(--sp-1);
+  }
+
+  .local-model-table .model-actions-row {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
+
+/* ---- First-run setup: three cards, each with one large action, then the endpoint form ---- */
+.model-setup {
+  margin-bottom: var(--sp-4);
+}
+
+.model-setup h3 {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.model-setup p {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.setup-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(200 * var(--px))), 1fr));
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.model-setup .card.setup-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.setup-icon {
+  width: var(--icon-lg);
+  height: var(--icon-lg);
+  color: var(--accent-text);
+}
+
+.setup-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+}
+
+.setup-text strong {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.model-setup button.setup-action {
+  width: 100%;
+  min-height: var(--control-h-lg);
+}
+
+.model-setup .setup-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.endpoint-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(180 * var(--px))), 1fr));
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.endpoint-form p,
+.endpoint-form .notice-box {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.endpoint-form button {
+  justify-self: start;
+}
+
+.new-session-view .model-setup {
+  width: min(100%, calc(690 * var(--px)));
+  margin: 0 auto var(--sp-4);
+}
+
+/* ---- Download from Hugging Face: the same toolbar look, with progress in words and bars ---- */
+.hf-download {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+
+.hf-download h3 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.hf-download .models-toolbar {
+  margin: 0;
+}
+
+.hf-download .field-label {
+  flex-basis: 100%;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.hf-download .models-toolbar button.select {
+  flex: 1 1 calc(120 * var(--px));
+  min-width: 0;
+}
+
+.hf-download .check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-muted);
+}
+
+.hf-download p {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.downloads {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+
+.download-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.download-head span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download progress {
+  width: 100%;
+  height: calc(6 * var(--px));
+  margin: var(--sp-1) 0;
+  accent-color: var(--accent);
+}
+
+.download p {
+  margin: 0;
+  overflow-wrap: anywhere;
 }

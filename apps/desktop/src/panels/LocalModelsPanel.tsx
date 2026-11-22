@@ -17,7 +17,13 @@ import type {
   RuntimeStatusResult,
   RuntimeUpdateJob,
 } from "@imperium/protocol";
+import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
+import { IconButton } from "../components/IconButton";
+import { Notice } from "../components/Notice";
 import { Select } from "../components/Select";
+import { Spinner } from "../components/LoadingState";
+import { Tooltip } from "../components/Tooltip";
 import type { DaemonClient } from "../daemon/client";
 import { pickFile } from "../daemon/connection";
 import { ModelSetup } from "./ModelSetup";
@@ -102,10 +108,12 @@ export function LocalModelsPanel({
   return (
     <div className="models local-models">
       <div className="models-toolbar local-models-toolbar">
-        <button className="ghost" onClick={onRefresh} title="Scan the model folders again (set them in Settings → Models)">
-          <RefreshCw aria-hidden="true" /> Rescan
-        </button>
-        <button className="ghost" onClick={() => onConfigure()}>
+        <Tooltip text="Scan the model folders again (set them in Settings → Models)">
+          <button className="ghost small" onClick={onRefresh}>
+            <RefreshCw aria-hidden="true" /> Rescan
+          </button>
+        </Tooltip>
+        <button className="ghost small" onClick={() => onConfigure()}>
           <SlidersHorizontal aria-hidden="true" /> Configure
         </button>
       </div>
@@ -246,19 +254,21 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
   const candidates = status?.candidates ?? [];
   const picked = candidates.includes(candidate) ? candidate : (candidates[0] ?? "");
   return (
-    <section className={`runtime-card${ready ? " ready" : status ? " attention" : ""}`} aria-labelledby="runtime-title">
+    <section className={`card runtime-card${ready ? " ready" : status ? " attention" : ""}`} aria-labelledby="runtime-title">
       <div className="section-head">
         <h3 id="runtime-title">llama.cpp runtime</h3>
         {status && (
-          <span className={`badge ${ready ? "finished" : "failed"}`}>{ready ? "ready" : status.runs ? "check" : "not ready"}</span>
+          <Badge tone={ready ? "ok" : "danger"}>{ready ? "ready" : status.runs ? "check" : "not ready"}</Badge>
         )}
-        <button className="ghost" onClick={() => void check()} disabled={checking} title="Run llama-server again to check">
-          <RefreshCw aria-hidden="true" /> Check
-        </button>
+        <Tooltip text="Run llama-server again to check">
+          <button className="ghost small" onClick={() => void check()} disabled={checking}>
+            <RefreshCw aria-hidden="true" /> Check
+          </button>
+        </Tooltip>
       </div>
       {!status && checking && (
-        <p className="muted" role="status">
-          Checking llama-server…
+        <p className="muted setup-status" role="status">
+          <Spinner /> Checking llama-server…
         </p>
       )}
       {status && (
@@ -289,21 +299,17 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
                 : "No llama.cpp runtime yet, and automatic installation is off: install the official build, or choose a llama-server you already have."}
             </p>
           )}
-          {status.problem && status.installed && (
-            <p className="warning" role="alert">
-              {status.problem}
-            </p>
-          )}
+          {status.problem && status.installed && <Notice tone="warn">{status.problem}</Notice>}
           {status.update && (
             <div className="runtime-update">
-              <p className={status.update.action === "managed" ? "muted" : "warning"}>{status.update.message}</p>
+              <p className={status.update.action === "managed" ? "muted" : "update-warning"}>{status.update.message}</p>
               {status.update.action === "package_manager" && (
-                <button onClick={startUpdate} disabled={updating || checking} title={status.update.command ?? undefined}>
+                <button className="small" onClick={startUpdate} disabled={updating || checking} title={status.update.command ?? undefined}>
                   <Download aria-hidden="true" /> Update
                 </button>
               )}
               {status.update.action === "use_managed" && (
-                <button onClick={() => void useOfficial()} disabled={installing || checking}>
+                <button className="small" onClick={() => void useOfficial()} disabled={installing || checking}>
                   <Download aria-hidden="true" /> Use Imperium's build instead
                 </button>
               )}
@@ -320,14 +326,14 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
                 onChange={setCandidate}
                 options={candidates.map((path) => ({ value: path, label: shortPath(path), description: path }))}
               />
-              <button onClick={() => void useServer(picked)} disabled={checking || !picked}>
+              <button className="small" onClick={() => void useServer(picked)} disabled={checking || !picked}>
                 Use this
               </button>
             </div>
           )}
           <div className="models-toolbar">
             <button
-              className={status.source === "pack" && !status.installed ? "primary" : undefined}
+              className={status.source === "pack" && !status.installed ? "primary small" : "small"}
               onClick={() => void useOfficial()}
               disabled={installing}
               title={`Downloads llama.cpp ${status.llama_cpp_ref} for this computer from ggml-org/llama.cpp on GitHub, verified against its checksums`}
@@ -335,11 +341,11 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
               <Download aria-hidden="true" /> {status.installed && status.source === "pack" ? "Reinstall" : "Install"} official build (
               {status.suggested_pack})
             </button>
-            <button onClick={() => void choose()} disabled={checking}>
+            <button className="small" onClick={() => void choose()} disabled={checking}>
               Choose file…
             </button>
             {status.source === "custom" && (
-              <button onClick={() => void useServer(null)} disabled={checking}>
+              <button className="small" onClick={() => void useServer(null)} disabled={checking}>
                 Stop using my llama-server
               </button>
             )}
@@ -349,30 +355,28 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
       {install && (install.state === "running" || install.state === "failed") && (
         <div className="runtime-install">
           <progress max={100} value={percent} aria-label={`Installing ${install.pack}`} />
-          <p className={install.state === "failed" ? "error" : "muted"} role={install.state === "failed" ? "alert" : "status"}>
-            {install.state === "failed"
-              ? `Installing ${install.pack} failed — ${install.message ?? "no reason given"}`
-              : `Installing ${install.pack} — ${percent}%${install.total_bytes > 0 ? ` of ${(install.total_bytes / MIB).toFixed(0)} MiB` : ""}`}
-          </p>
+          {install.state === "failed" ? (
+            <Notice tone="danger">{`Installing ${install.pack} failed — ${install.message ?? "no reason given"}`}</Notice>
+          ) : (
+            <p className="muted" role="status">
+              {`Installing ${install.pack} — ${percent}%${install.total_bytes > 0 ? ` of ${(install.total_bytes / MIB).toFixed(0)} MiB` : ""}`}
+            </p>
+          )}
         </div>
       )}
       {update && (
         <div className="runtime-install">
-          <p className={update.state === "failed" ? "error" : "muted"} role={update.state === "failed" ? "alert" : "status"}>
-            {update.state === "running"
-              ? `Updating llama.cpp: ${update.command}`
-              : update.state === "done"
-                ? `Updated llama.cpp with ${update.command}`
-                : `Updating llama.cpp failed (${update.command})`}
-          </p>
+          {update.state === "failed" ? (
+            <Notice tone="danger">{`Updating llama.cpp failed (${update.command})`}</Notice>
+          ) : (
+            <p className="muted" role="status">
+              {update.state === "running" ? `Updating llama.cpp: ${update.command}` : `Updated llama.cpp with ${update.command}`}
+            </p>
+          )}
           {update.output && <pre className="runtime-output">{update.output}</pre>}
         </div>
       )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+      {error && <Notice tone="danger">{error}</Notice>}
     </section>
   );
 }
@@ -399,7 +403,12 @@ function ModelTable({
   const { marks, toggle } = useModelMarks();
 
   if (listing.models.length === 0) {
-    return <p className="empty">No models in {listing.folders.join(", ")} yet. GGUF files and Hugging Face folders are recognised.</p>;
+    return (
+      <EmptyState
+        title={`No models in ${listing.folders.join(", ")} yet`}
+        body="GGUF files and Hugging Face folders are recognised."
+      />
+    );
   }
   const use = (row: LocalModelRow) => {
     setError(null);
@@ -447,7 +456,7 @@ function ModelTable({
   };
   return (
     <>
-      <table className="local-model-table">
+      <table className="table compact local-model-table">
         <thead>
           <tr>
             <th>Model</th>
@@ -468,11 +477,7 @@ function ModelTable({
           {showHidden && arranged.hidden.map((row) => modelRows(row, true))}
         </tbody>
       </table>
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+      {error && <Notice tone="danger">{error}</Notice>}
     </>
   );
 }
@@ -516,18 +521,17 @@ function ModelRows({
           <span className="model-meta">
             {row.alias && <span className="muted">{row.id}</span>}
             {row.repo && <span className="muted">{row.repo}</span>}
-            {row.runtime === "vllm" && <span className="badge">vLLM</span>}
-            {row.mmproj && (
-              <span className="badge" title={row.mmproj}>
-                vision
-              </span>
-            )}
-            {isDefault && <span className="badge local">default</span>}
+            {row.runtime === "vllm" && <Badge>vLLM</Badge>}
+            {row.mmproj && <Badge title={row.mmproj}>vision</Badge>}
+            {isDefault && <Badge tone="ok">default</Badge>}
             {!row.enabled && (
-              <span className="badge off" title="Switched off in the model settings (Use this model): never routed to, offered or chosen">
+              <Badge className="off" title="Switched off in the model settings (Use this model): never routed to, offered or chosen">
                 off
-              </span>
+              </Badge>
             )}
+            <span className="muted spec-inline">
+              {row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?")} · {gib(row.size_bytes)} · {context(row.context_length)} context
+            </span>
             <span className="muted fit-inline">{fit}</span>
           </span>
         </td>
@@ -543,28 +547,34 @@ function ModelRows({
           {context(row.context_length)}
           {row.context > 0 && row.context !== row.context_length && <span className="muted"> · {context(row.context)}/agent</span>}
         </td>
-        <td>
-          <span className={`badge ${row.loaded ? "local" : ""}`} title={row.problem ?? `needs ${gib(row.required_bytes)}`}>
+        <td className="model-fit">
+          <Badge tone={row.loaded ? "ok" : "neutral"} title={row.problem ?? `needs ${gib(row.required_bytes)}`}>
             {fit}
-          </span>
+          </Badge>
         </td>
         <td className="model-actions">
+          <div className="model-actions-row">
           {isDefault ? (
             <span className="muted default-mark">
               <Check aria-hidden="true" /> Default
             </span>
           ) : (
-            <button onClick={onUse} disabled={row.problem != null || !row.enabled} title={row.enabled ? `Use for new sessions: ${localDescription(row)}` : "Switched off: turn it on in its settings first"}>
+            <button className="small" onClick={onUse} disabled={row.problem != null || !row.enabled} title={row.enabled ? `Use for new sessions: ${localDescription(row)}` : "Switched off: turn it on in its settings first"}>
               Use
             </button>
           )}
-          <button onClick={onTest} disabled={busy || unusable} title="Load it and send one short prompt">
+          <button className="small" onClick={onTest} disabled={busy || unusable} title="Load it and send one short prompt">
             <FlaskConical aria-hidden="true" /> {testing ? "Testing…" : "Test"}
           </button>
-          <button className="ghost icon" onClick={onSettings} aria-label={`Settings for ${row.alias ?? row.id}`} title="Context, slots, GPU layers…">
-            <SlidersHorizontal aria-hidden="true" />
-          </button>
+          <IconButton
+            size="sm"
+            icon={SlidersHorizontal}
+            onClick={onSettings}
+            label={`Settings for ${row.alias ?? row.id}`}
+            tooltip="Context, slots, GPU layers…"
+          />
           <ModelMarkButtons name={row.id} mark={mark} onToggle={onMark} />
+          </div>
         </td>
       </tr>
       {row.problem && (
@@ -585,9 +595,7 @@ function ModelRows({
         <tr className="model-note">
           <td colSpan={6}>
             {"error" in result ? (
-              <span className="error" role="alert">
-                Test failed — {result.error}
-              </span>
+              <Notice tone="danger">Test failed — {result.error}</Notice>
             ) : result.ok ? (
               <span role="status">
                 <strong>“{result.reply}”</strong>{" "}
@@ -598,9 +606,7 @@ function ModelRows({
                 </span>
               </span>
             ) : (
-              <span className="error" role="alert">
-                Test failed — {result.message ?? "no reason given"}
-              </span>
+              <Notice tone="danger">Test failed — {result.message ?? "no reason given"}</Notice>
             )}
           </td>
         </tr>
@@ -691,9 +697,12 @@ function HfDownload({
     <section className="hf-download" aria-labelledby="hf-download-title">
       <h3 id="hf-download-title">Download from Hugging Face</h3>
       <form className="models-toolbar" onSubmit={list}>
-        <label htmlFor="hf-repo">Repository</label>
+        <label htmlFor="hf-repo" className="field-label">
+          Repository
+        </label>
         <input
           id="hf-repo"
+          className="field"
           ref={inputRef}
           value={repo}
           placeholder="owner/name, e.g. Qwen/Qwen3-8B-GGUF"
@@ -701,26 +710,22 @@ function HfDownload({
           autoComplete="off"
           onChange={(event) => setRepo(event.target.value)}
         />
-        <button type="submit" disabled={!client || busy || !repo.trim()}>
+        <button type="submit" className="small" disabled={!client || busy || !repo.trim()}>
           <Search aria-hidden="true" /> List files
         </button>
       </form>
       {busy && (
-        <p className="muted" role="status">
-          Working…
+        <p className="muted setup-status" role="status">
+          <Spinner /> Working…
         </p>
       )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-      {files && files.variants.length === 0 && (
-        <p className="empty">{files.repo} has no GGUF or safetensors weights to download.</p>
-      )}
+      {error && <Notice tone="danger">{error}</Notice>}
+      {files && files.variants.length === 0 && <Notice tone="info">{files.repo} has no GGUF or safetensors weights to download.</Notice>}
       {files && files.variants.length > 0 && (
         <div className="models-toolbar">
-          <label htmlFor="hf-variant">Quantisation</label>
+          <label htmlFor="hf-variant" className="field-label">
+            Quantisation
+          </label>
           <Select
             id="hf-variant"
             value={variant}
@@ -732,12 +737,12 @@ function HfDownload({
             }))}
           />
           {files.projectors.length > 0 && (
-            <label>
+            <label className="check-label">
               <input type="checkbox" checked={mmproj} onChange={(event) => setMmproj(event.target.checked)} /> Include
               vision projector
             </label>
           )}
-          <button className="primary" onClick={start} disabled={busy || !variant}>
+          <button className="primary small" onClick={start} disabled={busy || !variant}>
             <Download aria-hidden="true" /> Download
           </button>
         </div>
@@ -776,17 +781,17 @@ function DownloadRow({ job, onCancel }: { job: DownloadJob; onCancel: () => void
     <li className={`download ${job.state}`}>
       <div className="download-head">
         <span>{label}</span>
-        <span className={`badge ${job.state === "done" ? "finished" : job.state}`}>{job.state}</span>
+        <Badge tone={job.state === "done" ? "ok" : job.state === "running" ? "accent" : job.state === "failed" ? "danger" : "neutral"}>
+          {job.state}
+        </Badge>
         {job.state === "running" && (
-          <button onClick={onCancel} aria-label={`Cancel download of ${label}`}>
+          <button className="small" onClick={onCancel} aria-label={`Cancel download of ${label}`}>
             <X aria-hidden="true" /> Cancel
           </button>
         )}
       </div>
       <progress max={100} value={job.state === "done" ? 100 : percent} aria-label={`${label} progress`} />
-      <p className={job.state === "failed" ? "error" : "muted"} role={job.state === "failed" ? "alert" : undefined}>
-        {status}
-      </p>
+      {job.state === "failed" ? <Notice tone="danger">{status}</Notice> : <p className="muted">{status}</p>}
     </li>
   );
 }

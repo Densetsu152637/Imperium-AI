@@ -1,4 +1,3 @@
-// style-budget: native-select=1
 // The Models tab: a model-table row's endpoint, name and settings.
 
 import { Fragment, type ReactNode } from "react";
@@ -6,6 +5,8 @@ import type { LocalModelConfig, TableModelConfig } from "@imperium/protocol";
 import { MAX_ALIAS_CHARS, MAX_CARD_CHARS, TIERS, type TableDraft } from "./modelConfigDrafts";
 import { rowEstimate, summaryLine } from "./modelMemory";
 import { groupedSettings, TABLE_GROUPS, TABLE_SETTINGS } from "./modelSettingsTable";
+import { Notice } from "../components/Notice";
+import { Select } from "../components/Select";
 import { GroupTable, SettingRow, MemoryTable, UseRow } from "./ConfigParts";
 
 export function TableForm({
@@ -39,6 +40,7 @@ export function TableForm({
   const priceField = (key: "input_usd_per_mtok" | "output_usd_per_mtok", hint?: string) => (
     <SettingRow key={key} spec={spec(key)} filled={draft[key] !== ""} onReset={() => onChange({ [key]: "" })} hint={hint}>
       <input
+        className="field"
         type="text"
         inputMode="decimal"
         aria-label={spec(key).label}
@@ -69,6 +71,7 @@ export function TableForm({
         hint={`Empty shows ${row.saved.alias === null && eff.alias ? "the configured alias" : "the id"} (${row.id}).`}
       >
         <input
+          className="field"
           type="text"
           aria-label={spec("alias").label}
           value={draft.alias}
@@ -82,6 +85,7 @@ export function TableForm({
     card: (
       <SettingRow key="card" spec={spec("card")} filled={draft.card !== ""} onReset={() => onChange({ card: "" })}>
         <textarea
+          className="field"
           rows={4}
           aria-label={spec("card").label}
           value={draft.card}
@@ -93,19 +97,19 @@ export function TableForm({
     ),
     tier: (
       <SettingRow key="tier" spec={spec("tier")} filled={draft.tier !== ""} onReset={() => onChange({ tier: "" })}>
-        <select aria-label={spec("tier").label} value={draft.tier} onChange={(e) => onChange({ tier: e.target.value })}>
-          <option value="">default ({eff.tier})</option>
-          {TIERS.map((tier) => (
-            <option key={tier} value={tier}>
-              {tier}
-            </option>
-          ))}
-        </select>
+        <Select
+          aria-label={spec("tier").label}
+          className="setting-select"
+          value={draft.tier}
+          onChange={(value) => onChange({ tier: value })}
+          options={[{ value: "", label: `default (${eff.tier})` }, ...TIERS.map((tier) => ({ value: tier, label: tier }))]}
+        />
       </SettingRow>
     ),
     tags: (
       <SettingRow key="tags" spec={spec("tags")} filled={draft.tags !== ""} onReset={() => onChange({ tags: "" })}>
         <input
+          className="field"
           type="text"
           aria-label={spec("tags").label}
           value={draft.tags}
@@ -117,6 +121,7 @@ export function TableForm({
     context_window: (
       <SettingRow key="context_window" spec={spec("context_window")} filled={draft.context_window !== ""} onReset={() => onChange({ context_window: "" })}>
         <input
+          className="field"
           type="text"
           inputMode="numeric"
           aria-label={spec("context_window").label}
@@ -134,8 +139,8 @@ export function TableForm({
     <div className={`model-config${on ? "" : " model-off"}`}>
       <div className="model-summary">
         <span className="muted">{eff.alias ? `${row.id} · ${row.spec}` : row.spec}</span>
-        {!on && <span className="warning">This model is off: it is never routed to, offered or chosen. Turn it on below to use it again.</span>}
-        {!row.endpoint_configured && <span className="warning">This row names an endpoint that is not configured.</span>}
+        {!on && <Notice tone="warn">This model is off: it is never routed to, offered or chosen. Turn it on below to use it again.</Notice>}
+        {!row.endpoint_configured && <Notice tone="warn">This row names an endpoint that is not configured.</Notice>}
         {estimate.kind === "local" && <span className="muted">Runs locally: {summaryLine(estimate)}.</span>}
       </div>
       <MemoryTable estimate={estimate} updating={false} />
@@ -150,7 +155,7 @@ export function TableForm({
         <button type="button" onClick={onResetAll}>
           Reset model
         </button>
-        {previewError && <span className="error">{previewError}</span>}
+        {previewError && <Notice tone="danger">{previewError}</Notice>}
       </div>
     </div>
   );

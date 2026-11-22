@@ -1,4 +1,3 @@
-// style-budget: native-select=1
 // The Local models tab: a model's runtime settings, memory and the use switch.
 
 import { Fragment, type ReactNode } from "react";
@@ -6,6 +5,8 @@ import type { LocalModelConfig, ModelConfigResult } from "@imperium/protocol";
 import { FLASH, MAX_ALIAS_CHARS, MAX_CARD_CHARS, type LocalDraft } from "./modelConfigDrafts";
 import { localEstimate, poolHint } from "./modelMemory";
 import { groupedSettings, LOCAL_GROUPS, LOCAL_SETTINGS } from "./modelSettingsTable";
+import { Notice } from "../components/Notice";
+import { Select } from "../components/Select";
 import { GroupTable, SettingRow, MemoryTable, UseRow } from "./ConfigParts";
 
 export function LocalForm({
@@ -53,6 +54,7 @@ export function LocalForm({
     return (
       <SettingRow spec={setting} filled={draft[key] !== ""} onReset={() => onChange({ [key]: "" })} hint={options.hint} unavailable={noVllm(key)}>
         <input
+          className="field"
           type="text"
           inputMode="numeric"
           aria-label={setting.label}
@@ -68,14 +70,14 @@ export function LocalForm({
     const setting = spec(key);
     return (
       <SettingRow spec={setting} filled={draft[key] !== ""} onReset={() => onChange({ [key]: "" })} unavailable={noVllm(key)}>
-        <select aria-label={setting.label} value={draft[key]} disabled={vllm} onChange={(e) => onChange({ [key]: e.target.value })}>
-          <option value="">default ({fallback})</option>
-          {values.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
+        <Select
+          aria-label={setting.label}
+          className="setting-select"
+          value={draft[key]}
+          disabled={vllm}
+          onChange={(value) => onChange({ [key]: value })}
+          options={[{ value: "", label: `default (${fallback})` }, ...values.map((value) => ({ value, label: value }))]}
+        />
       </SettingRow>
     );
   };
@@ -91,6 +93,7 @@ export function LocalForm({
         hint={`Empty shows the id (${model.id}).`}
       >
         <input
+          className="field"
           type="text"
           aria-label={spec("alias").label}
           value={draft.alias}
@@ -104,6 +107,7 @@ export function LocalForm({
     card: (
       <SettingRow key="card" spec={spec("card")} filled={draft.card !== ""} onReset={() => onChange({ card: "" })}>
         <textarea
+          className="field"
           rows={4}
           aria-label={spec("card").label}
           value={draft.card}
@@ -129,6 +133,7 @@ export function LocalForm({
     context: (
       <SettingRow key="context" spec={spec("context")} filled={draft.context !== ""} onReset={() => onChange({ context: "" })} hint="A number, or auto.">
         <input
+          className="field"
           type="text"
           list="model-context-choices"
           aria-label={spec("context").label}
@@ -158,6 +163,7 @@ export function LocalForm({
         unavailable={noVllm("draft_model")}
       >
         <input
+          className="field"
           type="text"
           list="model-draft-choices"
           aria-label={spec("draft_model").label}
@@ -181,6 +187,7 @@ export function LocalForm({
     extra_args: (
       <SettingRow key="extra_args" spec={spec("extra_args")} filled={draft.extra_args !== ""} onReset={() => onChange({ extra_args: "" })}>
         <textarea
+          className="field"
           rows={3}
           aria-label={spec("extra_args").label}
           value={draft.extra_args}
@@ -200,24 +207,22 @@ export function LocalForm({
           {model.context_length ? ` · trained for ${model.context_length.toLocaleString()} tokens` : ""}
           {` · up to ${estimate.effective.context.toLocaleString()} per agent${estimate.effective.context_auto ? " (auto)" : ""}`}
         </span>
-        {!on && <span className="warning">This model is off: it is never routed to, offered or chosen. Turn it on below to use it again.</span>}
-        {model.reload_pending && (
-          <span className="warning">Loaded with other settings; the new ones apply once no session uses it.</span>
-        )}
+        {!on && <Notice tone="warn">This model is off: it is never routed to, offered or chosen. Turn it on below to use it again.</Notice>}
+        {model.reload_pending && <Notice tone="warn">Loaded with other settings; the new ones apply once no session uses it.</Notice>}
         {estimate.effective.pool_clamped && (
-          <span className="warning">
+          <Notice tone="warn">
             The KV pool does not fit beside the weights on the GPU; it is cut to {estimate.effective.pool_tokens.toLocaleString()} tokens so
             every layer stays on the GPU.
-          </span>
+          </Notice>
         )}
         {estimate.draft_in_use && (
           <span className="muted">
             Drafting with {estimate.draft_in_use} (speculative decoding); its memory is in the figures below.
           </span>
         )}
-        {estimate.draft_notice && <span className="warning">{estimate.draft_notice}</span>}
+        {estimate.draft_notice && <Notice tone="warn">{estimate.draft_notice}</Notice>}
         {estimate.placement === "partial" && !vllm && (
-          <span className="warning">The weights do not fit on the GPU: some layers run on the CPU, which is much slower.</span>
+          <Notice tone="warn">The weights do not fit on the GPU: some layers run on the CPU, which is much slower.</Notice>
         )}
       </div>
       <MemoryTable estimate={localEstimate(estimate)} updating={updating} failed={previewError !== null} />
@@ -232,7 +237,7 @@ export function LocalForm({
         <button type="button" onClick={onResetAll}>
           Reset model
         </button>
-        {previewError && <span className="error">{previewError}</span>}
+        {previewError && <Notice tone="danger">{previewError}</Notice>}
       </div>
     </div>
   );

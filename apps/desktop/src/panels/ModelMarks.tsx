@@ -3,6 +3,7 @@
 
 import { ChevronDown, ChevronRight, Eye, EyeOff, Star } from "lucide-react";
 
+import { IconButton } from "../components/IconButton";
 import type { ModelMark } from "../models/modelPrefs";
 
 /** A star (favourite) and an eye (hide / show again) for one model. */
@@ -19,26 +20,24 @@ export function ModelMarkButtons({
   const hidden = mark === "hidden";
   return (
     <span className="model-marks">
-      <button
-        type="button"
-        className={`ghost icon model-mark${favourite ? " on" : ""}`}
+      <IconButton
+        size="sm"
+        icon={Star}
+        className={`model-mark favourite${favourite ? " on" : ""}`}
         aria-pressed={favourite}
-        aria-label={`Favourite ${name}`}
-        title={favourite ? "Favourite — listed first; click to unfavourite" : "Favourite: list it first when choosing a model"}
+        label={`Favourite ${name}`}
+        tooltip={favourite ? "Favourite — listed first; click to unfavourite" : "Favourite: list it first when choosing a model"}
         onClick={() => onToggle("favourite")}
-      >
-        <Star aria-hidden="true" fill={favourite ? "currentColor" : "none"} />
-      </button>
-      <button
-        type="button"
-        className={`ghost icon model-mark${hidden ? " on" : ""}`}
+      />
+      <IconButton
+        size="sm"
+        icon={hidden ? Eye : EyeOff}
+        className={`model-mark${hidden ? " on" : ""}`}
         aria-pressed={hidden}
-        aria-label={`Hide ${name}`}
-        title={hidden ? "Hidden — click to show it again" : "Hide: leave it out of the session model lists"}
+        label={`Hide ${name}`}
+        tooltip={hidden ? "Hidden — click to show it again" : "Hide: leave it out of the session model lists"}
         onClick={() => onToggle("hidden")}
-      >
-        {hidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
-      </button>
+      />
     </span>
   );
 }
@@ -48,7 +47,7 @@ export function HiddenGroupRow({ count, open, colSpan, onToggle }: { count: numb
   return (
     <tr className="model-hidden-group">
       <td colSpan={colSpan}>
-        <button type="button" className="ghost" aria-expanded={open} onClick={onToggle}>
+        <button type="button" className="ghost small" aria-expanded={open} onClick={onToggle}>
           {open ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />} Hidden ({count})
         </button>
       </td>

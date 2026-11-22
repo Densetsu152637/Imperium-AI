@@ -1,4 +1,3 @@
-// style-budget: native-select=1
 // Model configuration: llama.cpp / vLLM settings of local models and the editable settings of
 // model-table rows, drawn as tables: one row per setting (its name with an (i) icon that says in
 // plain words what it affects, its value, a reset), grouped (modelSettingsTable.ts holds the
@@ -13,6 +12,11 @@ import { Boxes, Cpu, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { LocalModelConfig, ModelConfigResult, ModelSetConfigParams, TableModelConfig, TableModelSettings, LocalLaunchSettings } from "@imperium/protocol";
 import { matches, DialogNavGroup, DialogNavItem, Dialog } from "../components/Dialog";
+import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
+import { Notice } from "../components/Notice";
+import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
 import { defaultTurnedOff, disabledToSave, offSpecs, replacementDefaults, type AvailabilityInput, type Switches } from "./modelAvailability";
 import { EMPTY_LOCAL, EMPTY_TABLE, localDraft, localSettings, normLocal, normTable, same, tableDraft, tableSettings, type LocalDraft, type TableDraft } from "./modelConfigDrafts";
@@ -308,14 +312,14 @@ export function ModelConfigDialog({
         }}
         badges={
           <>
-            {isOff && <span className="badge off">off</span>}
-            {mark === "favourite" && <span className="badge">favourite</span>}
-            {mark === "hidden" && <span className="badge off">hidden</span>}
-            {local && <span className="badge">{local.runtime}</span>}
-            {row && <span className={`badge ${row.location}`}>{row.location}</span>}
-            {local?.loaded && <span className="badge local">loaded</span>}
-            {local?.reload_pending && <span className="badge">reload pending</span>}
-            {changed(item.id, kind) && <span className="badge">edited</span>}
+            {isOff && <Badge className="off">off</Badge>}
+            {mark === "favourite" && <Badge>favourite</Badge>}
+            {mark === "hidden" && <Badge className="off">hidden</Badge>}
+            {local && <Badge>{local.runtime}</Badge>}
+            {row && <Badge tone={row.location === "local" ? "ok" : "accent"}>{row.location}</Badge>}
+            {local?.loaded && <Badge tone="ok">loaded</Badge>}
+            {local?.reload_pending && <Badge>reload pending</Badge>}
+            {changed(item.id, kind) && <Badge tone="accent">edited</Badge>}
           </>
         }
       >
@@ -362,11 +366,6 @@ export function ModelConfigDialog({
 
   const footer = (
     <>
-      {error && (
-        <span className="error" role="alert">
-          {error}
-        </span>
-      )}
       {config && !error && <span className="muted">saved to {config.file}</span>}
       {applied && (
         <span className="muted" role="status">
@@ -388,15 +387,14 @@ export function ModelConfigDialog({
     defaultOff === spec ? (
       <div className="model-default-choice">
         <span>This is your default model for new sessions. Choose the one to use instead:</span>
-        <select aria-label="New default model" value={newDefault} onChange={(event) => setNewDefault(event.target.value)}>
-          <option value="">choose a model…</option>
-          {replacements.map((replacement) => (
-            <option key={replacement} value={replacement}>
-              {replacement}
-            </option>
-          ))}
-        </select>
-        {replacements.length === 0 && <span className="warning">No other model is on to take over.</span>}
+        <Select
+          aria-label="New default model"
+          className="setting-select"
+          value={newDefault}
+          onChange={setNewDefault}
+          options={[{ value: "", label: "choose a model…" }, ...replacements.map((replacement) => ({ value: replacement, label: replacement }))]}
+        />
+        {replacements.length === 0 && <Notice tone="warn">No other model is on to take over.</Notice>}
       </div>
     ) : null;
 
@@ -406,6 +404,7 @@ export function ModelConfigDialog({
       title={selected ? (selectedAlias ?? selected) : "Models"}
       nav={nav}
       footer={footer}
+      notice={error ? <Notice tone="danger">{error}</Notice> : undefined}
       onClose={onClose}
       onKeyDown={(event) => {
         // Ctrl+S (Cmd+S on macOS) applies without closing.
@@ -415,8 +414,8 @@ export function ModelConfigDialog({
         }
       }}
     >
-      {!config && !error && <p className="muted">Loading…</p>}
-      {config && !selectedLocal && !selectedTable && <p className="muted">No models to configure.</p>}
+      {!config && !error && <LoadingState />}
+      {config && !selectedLocal && !selectedTable && <EmptyState title="No models to configure" />}
       {selectedLocal && config && (
         <LocalForm
           model={selectedLocal}
