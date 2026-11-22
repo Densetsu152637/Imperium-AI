@@ -5,7 +5,7 @@ import { useId, useState } from "react";
 import type { CatalogField, CatalogServer, McpSaveResult, McpServerInfo } from "@imperium/protocol";
 import type { DaemonClient } from "../daemon/client";
 import { Field } from "../components/Field";
-import { message, NAME_PATTERN } from "./common";
+import { message, nameProblem, urlProblem } from "./common";
 import { FormShell, focusField } from "./FormParts";
 
 const suggestName = (base: string, taken: Set<string>) => {
@@ -38,16 +38,19 @@ export function AddForm({
   const clear = (key: string) => setProblems((all) => (key in all ? Object.fromEntries(Object.entries(all).filter(([k]) => k !== key)) : all));
 
   const submit = async () => {
+    setError(null);
     const found: Record<string, string> = {};
-    if (!NAME_PATTERN.test(name)) found.name = "Use lowercase letters, digits, '_' or '-' for the name.";
+    const named = nameProblem(name, new Set(), true);
+    if (named) found.name = named;
     for (const field of entry.fields) {
-      if (field.required && !values[field.id]?.trim()) found[field.id] = `${field.label} is required.`;
+      const value = values[field.id] ?? "";
+      if (field.required && !value.trim()) found[field.id] = `${field.label} is required.`;
+      else if (field.kind === "url" && urlProblem(value, false)) found[field.id] = `${field.label} must be a full http:// or https:// address.`;
     }
     setProblems(found);
     const first = ["name", ...entry.fields.map((field) => field.id)].find((key) => key in found);
     if (first) return focusField(`${base}-${first}`);
     setBusy(true);
-    setError(null);
     try {
       const result = await client.call<McpSaveResult>("mcp.install", { catalog_id: entry.id, name, values });
       onSaved(result.server);
