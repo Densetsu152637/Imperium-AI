@@ -4,8 +4,9 @@ import { KeyRound } from "lucide-react";
 import { useId, useState } from "react";
 import type { CatalogField, CatalogServer, McpSaveResult, McpServerInfo } from "@imperium/protocol";
 import type { DaemonClient } from "../daemon/client";
+import { Field } from "../components/Field";
 import { message, NAME_PATTERN } from "./common";
-import { FormShell, FormField } from "./FormParts";
+import { FormShell, focusField } from "./FormParts";
 
 const suggestName = (base: string, taken: Set<string>) => {
   if (!taken.has(base)) return base;
@@ -31,12 +32,20 @@ export function AddForm({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Problems with one field, by field id ("name" for the name), shown under that field.
+  const [problems, setProblems] = useState<Record<string, string>>({});
   const base = useId();
+  const clear = (key: string) => setProblems((all) => (key in all ? Object.fromEntries(Object.entries(all).filter(([k]) => k !== key)) : all));
 
   const submit = async () => {
-    if (!NAME_PATTERN.test(name)) return setError("Use lowercase letters, digits, '_' or '-' for the name.");
-    const missing = entry.fields.find((field) => field.required && !values[field.id]?.trim());
-    if (missing) return setError(`${missing.label} is required.`);
+    const found: Record<string, string> = {};
+    if (!NAME_PATTERN.test(name)) found.name = "Use lowercase letters, digits, '_' or '-' for the name.";
+    for (const field of entry.fields) {
+      if (field.required && !values[field.id]?.trim()) found[field.id] = `${field.label} is required.`;
+    }
+    setProblems(found);
+    const first = ["name", ...entry.fields.map((field) => field.id)].find((key) => key in found);
+    if (first) return focusField(`${base}-${first}`);
     setBusy(true);
     setError(null);
     try {
@@ -81,11 +90,19 @@ export function AddForm({
       busy={busy}
       error={error}
     >
-      <FormField label="Name" htmlFor={`${base}-name`} required description="Agents see its tools as mcp__name__tool.">
-        <input id={`${base}-name`} className="field" value={name} onChange={(event) => setName(event.target.value.toLowerCase())} spellCheck={false} />
-      </FormField>
+      <Field label="Name" required hint="Agents see its tools as mcp__name__tool." error={problems.name}>
+        <input
+          id={`${base}-name`}
+          value={name}
+          onChange={(event) => {
+            setName(event.target.value.toLowerCase());
+            clear("name");
+          }}
+          spellCheck={false}
+        />
+      </Field>
       {entry.fields.map((field) => (
-        <CatalogInput key={field.id} id={`${base}-${field.id}`} field={field} value={values[field.id] ?? ""} onChange={(value) => setValues((all) => ({ ...all, [field.id]: value }))} />
+        <CatalogInput key={field.id} id={`${base}-${field.id}`} field={field} value={values[field.id] ?? ""} error={problems[field.id]} onChange={(value) => { setValues((all) => ({ ...all, [field.id]: value })); clear(field.id); }} />
       ))}
       <p className="muted connector-runs">
         <code>{runs}</code>
@@ -94,8 +111,8 @@ export function AddForm({
   );
 }
 
-function CatalogInput({ id, field, value, onChange }: { id: string; field: CatalogField; value: string; onChange: (value: string) => void }) {
-  const description =
+function CatalogInput({ id, field, value, error, onChange }: { id: string; field: CatalogField; value: string; error?: string; onChange: (value: string) => void }) {
+  const hint =
     field.kind === "secret" ? (
       <>
         <KeyRound aria-hidden="true" /> {field.description ? `${field.description} ` : ""}Saved to your system keychain; it is not
@@ -108,13 +125,13 @@ function CatalogInput({ id, field, value, onChange }: { id: string; field: Catal
       field.description
     );
   return (
-    <FormField label={field.label} htmlFor={id} required={field.required} description={description}>
+    <Field label={field.label} required={field.required} hint={hint} error={error}>
       {field.kind === "path_list" ? (
-        <textarea id={id} className="field" rows={3} value={value} placeholder={field.placeholder ?? undefined} onChange={(event) => onChange(event.target.value)} spellCheck={false} />
+        <textarea id={id} rows={3} value={value} placeholder={field.placeholder ?? undefined} onChange={(event) => onChange(event.target.value)} spellCheck={false} />
       ) : (
         <input
           id={id}
-          className="field"
+         
           type={field.kind === "secret" ? "password" : field.kind === "url" ? "url" : "text"}
           autoComplete={field.kind === "secret" ? "new-password" : "off"}
           value={value}
@@ -123,6 +140,6 @@ function CatalogInput({ id, field, value, onChange }: { id: string; field: Catal
           spellCheck={false}
         />
       )}
-    </FormField>
+    </Field>
   );
 }

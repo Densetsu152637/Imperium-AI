@@ -796,22 +796,28 @@ WCAG AA contrast for shipped themes.
 ## Connectors (implemented)
 
 **Connectors** (the plug icon in the title bar, or Settings → Connectors) opens a window like Claude's and
-ChatGPT's connector directories, with a search box and two tabs:
+ChatGPT's connector directories. It is the shared `Dialog` (one column, a header, the scrolling body; below
+600 px wide it is the full-screen sheet, with no rule of its own for narrow windows), with `Tabs` (*Installed*
+with its count, and *Browse*) and a search box between the header and the body. Escape steps back from a form,
+then closes the window. Failures show as a `Notice`; empty and loading states are the shared `EmptyState` and
+`LoadingState`.
 
-- **Installed:** MCP servers, each with its icon, command or URL, and status (*Not tested*,
+- **Installed:** rows one `--row-h` tall (the sidebar's row height) with the detail lines under the name.
+  MCP servers, each with its icon, command or URL, and status badge (*Not tested*,
   *Connected · N tools* with the tool names, *Error* with the reason, or *Off*), and buttons
   to test the connection, configure, remove (optionally deleting its saved secrets), and a
   switch to turn it off. Missing keychain secrets are flagged. Below them, plugins (skills,
   commands, hooks, and servers they bring, with an on/off switch) and skills; one an agent
   installed says where it came from (the URL and commit, or the folder).
-- **Browse:** a card grid of the connector directory, filtered by category chips and search,
-  each card with an icon, publisher, description, category, local or remote, and *Add* (or
+- **Browse:** an even grid of `.card.interactive` cards (the whole card opens *Add*), filtered by category
+  chips and search, each card with an icon, publisher, description, category, local or remote, and *Add* (or
   *Added*). *Add* opens a form for the connector's settings: a name, then its fields (folders,
   paths, URLs, tokens). Secret fields are password inputs saved to the system keychain and
   never shown again. A *Custom connector* card adds any server by command (arguments,
   environment, secret variables) or URL (bearer token, headers), with the tools that run
   without asking and a timeout; *Configure* opens the same form for an installed server, where
-  saved secrets are kept unless replaced.
+  saved secrets are kept unless replaced. Forms use `Field`: a hint under each control and a problem (a
+  bad name, a missing required value) under the field it belongs to, with focus moved to the first one.
 
 Adding or saving a connector tests it straight away. The window talks to the daemon's `mcp.*`
 methods and the directory comes from the daemon; see

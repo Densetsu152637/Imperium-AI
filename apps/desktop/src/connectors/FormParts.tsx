@@ -1,7 +1,9 @@
-// The frame and the fields the connector forms share.
+// The frame and the group field the connector forms share. Single controls use the shared `Field`.
 
-import { ArrowLeft, LoaderCircle } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
+import { Notice } from "../components/Notice";
+import { Spinner } from "../components/LoadingState";
 import { ConnectorIcon } from "./connectorIcons";
 
 export function FormShell({
@@ -22,12 +24,14 @@ export function FormShell({
   onSubmit: () => void;
   submitLabel: string;
   busy: boolean;
+  /** A failure that belongs to the whole form (the daemon refused the save); field problems show under their field. */
   error: string | null;
   children: ReactNode;
 }) {
   return (
     <form
       className="connector-form"
+      noValidate
       onSubmit={(event: FormEvent) => {
         event.preventDefault();
         onSubmit();
@@ -40,48 +44,58 @@ export function FormShell({
         <ConnectorIcon icon={icon} size="large" />
         <div>
           <h3>{title}</h3>
-          {subtitle && <div className="muted">{subtitle}</div>}
+          {subtitle && <div className="connector-form-subtitle">{subtitle}</div>}
         </div>
       </div>
       {children}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+      {error && <Notice tone="danger">{error}</Notice>}
       <div className="connector-form-actions">
         <button type="button" onClick={onBack}>
           Cancel
         </button>
         <button type="submit" className="primary" disabled={busy}>
-          {busy && <LoaderCircle className="spin" aria-hidden="true" />} {submitLabel}
+          {busy && <Spinner />} {submitLabel}
         </button>
       </div>
     </form>
   );
 }
 
-export function FormField({
+/** A labelled set of controls that `Field` cannot wrap (one label over several inputs), in the same stack as a `Field`. */
+export function FieldGroup({
   label,
-  description,
-  required,
+  hint,
+  error,
+  id,
   children,
-  htmlFor,
 }: {
   label: string;
-  description?: ReactNode;
-  required?: boolean;
+  hint?: ReactNode;
+  error?: ReactNode;
+  id: string;
   children: ReactNode;
-  htmlFor: string;
 }) {
   return (
-    <div className="form-field">
-      <label htmlFor={htmlFor}>
+    <div className="field-stack" role="group" aria-labelledby={`${id}-label`} aria-describedby={error ? `${id}-error` : hint ? `${id}-hint` : undefined}>
+      <span id={`${id}-label`} className="field-label">
         {label}
-        {required && <span className="required" aria-hidden="true"> *</span>}
-      </label>
+      </span>
       {children}
-      {description && <span className="form-field-description">{description}</span>}
+      {hint && (
+        <p id={`${id}-hint`} className="field-hint">
+          {hint}
+        </p>
+      )}
+      {error && (
+        <p id={`${id}-error`} className="field-error" role="alert">
+          {error}
+        </p>
+      )}
     </div>
   );
+}
+
+/** Moves focus to the first control that has an error, once the errors are on screen. */
+export function focusField(id: string) {
+  window.requestAnimationFrame(() => document.getElementById(id)?.focus());
 }
