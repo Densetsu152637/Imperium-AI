@@ -6,7 +6,7 @@
 // `?panel=<id>`: it connects to the daemon itself but shows only that panel. The main window
 // owns the layout and the list of detached panels; see panelWindows.ts.
 
-import { Check, Plug, Plus, Settings } from "lucide-react";
+import { Check, PanelLeft, PanelRight, Plug, Plus, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
@@ -53,7 +53,10 @@ import type {
 import { DaemonClient, type DaemonConnection } from "./daemon/client";
 import { findDaemon, rememberDevConnection } from "./daemon/connection";
 import { addColumn, reconcile, removeColumn, sameArrangement, visibleColumns, type Arrangement, type DropTarget } from "./layout/arrangement";
+import { classifyColumns, foldColumns, isNarrow } from "./layout/fold";
 import { Columns, type PanelSpec } from "./layout/Columns";
+import { SheetBehaviour, SheetScrim } from "./layout/Sheet";
+import { useLayoutWidth } from "./layout/useWidth";
 import { PanelWindow } from "./layout/PanelWindow";
 import { getLayout, resetLayout, updateLayout, type DetachedPanel } from "./layout/state";
 import { applyMove, panelMoves } from "./layout/moves";
@@ -144,6 +147,7 @@ import { useSessionStore } from "./sessions/useSessionStore";
 import { useLaunchFocus, useWindows } from "./shared/useWindows";
 import { Badge } from "./components/Badge";
 import { IconButton } from "./components/IconButton";
+import { Menu } from "./components/Menu";
 
 let migrating: Promise<EnvironmentInfo[]> | null = null;
 
@@ -252,6 +256,15 @@ export function App() {
     showConnectors,
     setShowConnectors,
   } = useWindows(isDetached, settings.shortcuts);
+  // Below 600 px one column shows at a time (layout/fold.ts), and the panel editor is off.
+  const layoutWidth = useLayoutWidth(settings.uiScale);
+  const narrow = isNarrow(layoutWidth);
+  /** What is open over the workspace: the sidebar, or a panel from a column the window has no room for. */
+  const [sheet, setSheet] = useState<{ kind: "nav" } | { kind: "panel"; id: string } | null>(null);
+  const sidebarButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (narrow && editingLayout) setEditingLayout(false);
+  }, [narrow, editingLayout, setEditingLayout]);
   /** What the last preset export or import did, shown in Settings → Panels. */
   const [presetNotice, setPresetNotice] = useState<LayoutNotice | null>(null);
   /** A preset file that was read and is valid, waiting for the user to confirm replacing the layout. */
@@ -1479,6 +1492,37 @@ export function App() {
     shownPanels.set(sessionPanel.id, { ...decorate(sessionPanel), span: true });
   }
   const columns = visibleColumns(layoutColumns, (id) => shownPanels.get(id), editingLayout);
+  // The columns the window can show; the panel editor shows them all, to drag between.
+  const fold = editingLayout
+    ? { narrow: false, shown: columns.map((column) => column.id), folded: [] as string[] }
+    : foldColumns(layoutWidth, classifyColumns(columns.map((column) => ({ id: column.id, span: column.panels.some((panel) => panel.span) }))));
+  const sessionColumn = columns.findIndex((column) => column.panels.some((panel) => panel.span));
+  const foldedColumns = columns.filter((column) => fold.folded.includes(column.id));
+  // Below 600 px the columns left of the session are the sidebar; every other folded panel is in "More panels".
+  // (One column: the first one left of the session; another one's panels are in More panels.)
+  const navColumns = fold.narrow ? foldedColumns.filter((column) => columns.indexOf(column) < sessionColumn).slice(0, 1) : [];
+  const morePanels = foldedColumns.filter((column) => !navColumns.includes(column)).flatMap((column) => column.panels);
+  const navPanels = navColumns.flatMap((column) => column.panels);
+  const openSheet = sheet?.kind === "nav" ? (navPanels.length > 0 ? sheet : null) : sheet && morePanels.some((panel) => panel.id === sheet.id) ? sheet : null;
+  // A sheet whose columns came back (the window widened) or went (its panel was closed) is forgotten, not reopened later.
+  if (sheet && !openSheet) setSheet(null);
+  const sheetPanel = openSheet?.kind === "panel" ? morePanels.find((panel) => panel.id === openSheet.id) : undefined;
+  /** The folded column that is open as a sheet, and from where (Columns moves that cell to the window's edge). */
+  const closeSheet = () => setSheet(null);
+  const sheetColumn =
+    openSheet?.kind === "nav"
+      ? { column: navColumns[0].id, label: "Sidebar", heading: "Sidebar", side: "left" as const, full: false, onClose: closeSheet }
+      : sheetPanel
+        ? {
+            column: columns.find((column) => column.panels.some((panel) => panel.id === sheetPanel.id))?.id ?? "",
+            panel: sheetPanel.id,
+            label: sheetPanel.title,
+            heading: "More panels",
+            side: "right" as const,
+            full: narrow,
+            onClose: closeSheet,
+          }
+        : undefined;
   /** Keeps an arrangement the editor changed; an unchanged one is not written. */
   const arrange = (next: Arrangement) => {
     if (!sameArrangement(next, layoutColumns)) setArrangement(next);
@@ -1527,8 +1571,20 @@ export function App() {
   return (
     <SettingsContext.Provider value={settings}>
       <ChangeSettingsContext.Provider value={changeSettings}>
-    <div className="app" ref={appRoot} tabIndex={-1}>
+    <div className="app" ref={appRoot} tabIndex={-1} data-narrow={narrow ? "" : undefined}>
       <header className="titlebar">
+        {navPanels.length > 0 && (
+          <IconButton
+            icon={PanelLeft}
+            ref={sidebarButton}
+            className="sidebar-toggle"
+            onClick={() => setSheet(openSheet?.kind === "nav" ? null : { kind: "nav" })}
+            aria-expanded={openSheet?.kind === "nav"}
+            data-attention={approvalsWaiting ? "" : undefined}
+            label={approvalsWaiting ? "Sidebar (approvals waiting)" : "Sidebar"}
+            tooltip="Environments and sessions"
+          />
+        )}
         <strong className="brand">Imperium</strong>
         {projectLayout && (
           <Badge tone="accent" title={`${environmentName ?? "This environment"} uses its own layout; Settings → Panels switches back to the global one`}>
@@ -1544,6 +1600,15 @@ export function App() {
         </span>
         <span className="spacer" />
         <UpdateControl updates={updates} onOpen={() => setShowSettings(true)} />
+        {morePanels.length > 0 && (
+          <Menu
+            label="More panels"
+            icon={PanelRight}
+            className="more-panels"
+            text={narrow ? undefined : "More panels"}
+            items={morePanels.map((panel) => ({ label: panel.title, onSelect: () => setSheet({ kind: "panel", id: panel.id }) }))}
+          />
+        )}
         <div className="titlebar-tools">
           <IconButton
             icon={Plug}
@@ -1557,9 +1622,10 @@ export function App() {
             className="layout-toggle"
             onClick={() => setEditingLayout((editing) => !editing)}
             aria-pressed={editingLayout}
+            disabled={narrow}
             data-tour="layout"
             label="Edit layout"
-            tooltip={editingLayout ? "Done editing the layout (Esc)" : "Edit layout"}
+            tooltip={narrow ? "Editing the layout needs a window at least 600 px wide" : editingLayout ? "Done editing the layout (Esc)" : "Edit layout"}
           />
           <IconButton
             icon={Settings}
@@ -1670,11 +1736,17 @@ export function App() {
           </button>
         </div>
       )}
-      <main className={`workspace${editingLayout ? " editing-layout" : ""}`}>
+      <main
+        className={`workspace${editingLayout ? " editing-layout" : ""}`}
+        // Choosing a session ends the sidebar sheet's job; picking an environment only filters the sessions beside it.
+        onClick={(event) => openSheet?.kind === "nav" && (event.target as HTMLElement).closest("[data-sheet] .session-row-main") && closeSheet()}
+      >
         <Columns
           initial={arrangement === null && columns.length === 3 ? [0.2, 0.55, 0.25] : undefined}
           columns={columns}
           editing={editingLayout}
+          away={fold.folded}
+          sheet={sheetColumn}
           windows={Object.keys(detached).flatMap((id) => {
             const spec = findPanel(id);
             return spec ? [{ id, title: spec.title }] : [];
@@ -1683,6 +1755,12 @@ export function App() {
           onDock={dock}
           onRemoveColumn={(column) => arrange(removeColumn(layoutColumns, column, (id) => shownPanels.has(id), editingLayout))}
         />
+        {sheetColumn && (
+          <>
+            <SheetScrim onClose={closeSheet} />
+            <SheetBehaviour onClose={closeSheet} returnFocus={openSheet?.kind === "nav" ? sidebarButton : undefined} />
+          </>
+        )}
       </main>
     </div>
     </ChangeSettingsContext.Provider>

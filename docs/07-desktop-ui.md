@@ -588,6 +588,40 @@ Three independent controls, each per window and per monitor:
 - Layout uses CSS container queries, so panes adapt to their own width, not the window's.
 - Per-monitor DPI changes are handled live when windows move between displays.
 
+### Narrow windows and column minimums (implemented)
+
+Every column has a minimum width, in layout pixels (window pixels over the UI scale, so a column
+keeps its size on screen at every scale): the sidebar (the columns left of the session's) 220, the
+session 360, and the side columns (right of it) 280. They are `--col-min-sidebar`, `--col-min-session`
+and `--col-min-side` in `styles/shell.css` and `COLUMN_MIN` in `layout/fold.ts`; a test fails when
+the two drift apart. A column never draws narrower than its minimum, whatever proportion was saved.
+
+- **Folding.** When the window cannot fit every column at its minimum, the rightmost side
+  columns fold away until the rest fit (a width equal to the total fits). The session's column never
+  folds. A folded column keeps its share of the saved proportions, so widening the window brings it back as it was; nothing
+  about folding is written to the layout document. A folded column stays mounted, hidden, so its panels keep their state (a
+  browser tab, scroll, typed text, a mod's frame) across a resize. The title bar's *More panels* menu lists the panels of
+  the folded columns; choosing one opens it in a sheet from the right, 340 px wide over a dimmed workspace. The sheet is the
+  folded column's own cell moved to the window's edge (`layout/Sheet.tsx`, `.sheet-cell` in `styles/shell.css`), so the panel is the
+  same instance, not a copy.
+- **Dragging a divider** never takes a column below its minimum: the drag stops there, and dragging back answers at once
+  (`dragShares` in `layout/fold.ts`).
+- **Below 600 px** the window shows one column at a time. The session fills the window; the
+  sidebar's panels (the first column left of the session: Environments, Sessions, Approvals) open from a button at the left of the title bar
+  as a sheet from the left that leaves a strip of scrim to tap, and the other panels open from *More
+  panels* as a sheet that fills the window. The title bar drops the connection text and the project-layout badge, and the
+  sidebar button carries a dot while approvals are waiting. A sheet closes on Esc, a click on the scrim or its close button (and
+  the sidebar sheet when a session is chosen; choosing an environment only filters the sessions beside it). The sheet is not
+  modal: every other column is inert while it is open, so focus cannot reach the dimmed workspace, but the title bar stays in reach
+  (the button that opened the sheet closes it). Focus moves in when it opens and goes back to the button that opened it; when
+  that button is gone (the window widened past 600 px with the sheet open, which closes it) focus goes to the app root. A menu or dialog opened from inside
+  the sheet takes Esc first.
+- **The panel editor is off below 600 px** (its button is disabled with a tooltip, and a window
+  narrowed while editing leaves the editor). In the editor, wider than that, no column folds and the
+  minimums are not applied, so every column can be a drop target.
+- The rule is the pure function `foldColumns` (`layout/fold.ts`, tested in `test/fold.test.ts`);
+  `App.tsx` measures the window (`layout/useWidth.ts`; a reading of 0, a minimised window, keeps the last width) and `layout/Columns.tsx` draws what it returns.
+
 ## Theming
 
 Design tokens (colour, type, spacing, radius, motion) are CSS custom properties. Themes are

@@ -15,6 +15,10 @@
 // A header shows the chevron, the title and the panel's primary action; the panel's secondary
 // actions, collapse all, detach and close sit in one ⋯ menu (panelMenu.ts) that stays quiet until
 // the header is hovered or focused.
+// Every column has a minimum width (fold.ts); the columns the window cannot fit are `away`: they keep
+// their share of the saved proportions and stay mounted, hidden (a panel keeps its state across a
+// resize), and one of them can be open as a sheet over the workspace (Sheet.tsx): the same cell,
+// moved to the window's edge, so the panel is never shown twice.
 
 import { ChevronDown, ChevronsDownUp, ChevronsUpDown, ExternalLink, GripVertical, MoveRight, X } from "lucide-react";
 import { useState, useRef, type MouseEvent, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
@@ -22,6 +26,8 @@ import { useState, useRef, type MouseEvent, type ReactNode, type PointerEvent as
 import { IconButton } from "../components/IconButton";
 import { Menu, type MenuItem } from "../components/Menu";
 import type { DropTarget } from "./arrangement";
+import { classifyColumns, dragShares } from "./fold";
+import { SheetBar } from "./Sheet";
 import { panelMenuEntries } from "./panelMenu";
 import { getLayout, updateLayout } from "./state";
 
@@ -65,6 +71,9 @@ function Split({
   initial,
   className,
   collapsed,
+  away,
+  kinds,
+  sheet,
   children,
 }: {
   storageKey: string;
@@ -74,6 +83,12 @@ function Split({
   className?: string;
   /** Children folded to their header (stacks only): they keep their header's height. */
   collapsed?: boolean[];
+  /** Children the window has no room for: they draw nothing and give their share to the others, but keep it in the saved sizes. */
+  away?: boolean[];
+  /** What each child is (a column's kind, fold.ts), for its minimum width in styles/shell.css. */
+  kinds?: (string | undefined)[];
+  /** The child open as a sheet (an away one), what it is called and where it opens from; the others are out of reach meanwhile. */
+  sheet?: { index: number; label: string; heading: string; side: "left" | "right"; full: boolean; onClose: () => void };
   children: ReactNode[];
 }) {
   const [sizes, setSizes] = useState(() =>
@@ -85,7 +100,8 @@ function Split({
     setSizes(loadSizes(storageKey, children.length));
   }
   const container = useRef<HTMLDivElement>(null);
-  const folded = (index: number) => collapsed?.[index] ?? false;
+  const gone = (index: number) => away?.[index] ?? false;
+  const folded = (index: number) => (collapsed?.[index] ?? false) || gone(index);
 
   /** The open cells a divider below cell `index` moves between: the nearest above and below. */
   const neighbours = (index: number): [number, number] | null => {
@@ -106,15 +122,20 @@ function Split({
     const total = (axis === "row" ? box.width : box.height) / (open || 1);
     const origin = axis === "row" ? event.clientX : event.clientY;
     const startSizes = sizes;
+    // A column cannot go below its minimum width: its floor as a share, so a drag past it moves nothing.
+    const minShare = (index: number) => {
+      const cell = container.current?.children[index];
+      const px = axis === "row" && cell ? Number.parseFloat(getComputedStyle(cell).minWidth) : 0;
+      return Number.isFinite(px) && total > 0 ? px / total : 0;
+    };
     // Folding animates the cells; a drag follows the pointer directly.
     container.current?.classList.add("dragging");
     const move = (moveEvent: PointerEvent) => {
       const delta = ((axis === "row" ? moveEvent.clientX : moveEvent.clientY) - origin) / total;
-      const both = startSizes[a] + startSizes[b];
-      const first = Math.min(Math.max(startSizes[a] + delta, 0.08), both - 0.08);
+      const [first, second] = dragShares([startSizes[a], startSizes[b]], delta, [minShare(a), minShare(b)]);
       const next = [...startSizes];
       next[a] = first;
-      next[b] = both - first;
+      next[b] = second;
       setSizes(next);
       saveSizes(storageKey, next);
     };
@@ -138,11 +159,18 @@ function Split({
         return (
           <div
             key={index}
-            className={`split-cell${folded(index) ? " collapsed" : ""}`}
+            className={`split-cell${gone(index) ? " away" : folded(index) ? " collapsed" : ""}${sheet?.index === index ? ` sheet-cell sheet-${sheet.side}${sheet.full ? " sheet-full" : ""}` : ""}`}
+            data-kind={kinds?.[index]}
+            data-sheet={sheet?.index === index ? "" : undefined}
+            role={sheet?.index === index ? "dialog" : undefined}
+            aria-label={sheet?.index === index ? sheet.label : undefined}
+            tabIndex={sheet?.index === index ? -1 : undefined}
+            inert={sheet && sheet.index !== index ? true : undefined}
             style={folded(index) ? undefined : { flexGrow: sizes[index] / openShare, flexBasis: 0 }}
           >
+            {sheet?.index === index && <SheetBar label={sheet.label} heading={sheet.heading} onClose={sheet.onClose} />}
             {child}
-            {pair && (
+            {!gone(index) && pair && (
               <div
                 className={`divider divider-${axis}`}
                 role="separator"
@@ -310,6 +338,8 @@ export function Columns({
   initial,
   editing = false,
   windows = [],
+  away = [],
+  sheet,
   onDrop,
   onDock,
   onRemoveColumn,
@@ -320,6 +350,10 @@ export function Columns({
   editing?: boolean;
   /** Panels in windows of their own, shown in the editor as chips to drag back into a column (or press to dock). */
   windows?: { id: string; title: string }[];
+  /** Ids of the columns the window has no room for (fold.ts); each keeps its saved share. None in the panel editor. */
+  away?: string[];
+  /** An away column shown as a sheet over the workspace, from one edge: all its panels, or just `panel`. */
+  sheet?: { column: string; panel?: string; label: string; heading: string; side: "left" | "right"; full: boolean; onClose: () => void };
   /** A panel dropped in the editor. */
   onDrop?: (panel: string, target: DropTarget) => void;
   /** A panel's window chip pressed: dock it where it was. */
@@ -329,13 +363,26 @@ export function Columns({
 }) {
   const [collapsed, setCollapsed] = useState<string[]>(() => getLayout().collapsed ?? []);
   const [drag, setDrag] = useState<Drag | null>(null);
+  // A sheet draws a folded column's panels in a second Columns; what either changed is read back
+  // from the layout when the other next shows those columns, and every write starts from the layout.
+  const awayKey = away.join(",");
+  const [seenAway, setSeenAway] = useState(awayKey);
+  if (seenAway !== awayKey) {
+    setSeenAway(awayKey);
+    setCollapsed(getLayout().collapsed ?? []);
+  }
   const save = (next: string[]) => {
     setCollapsed(next);
     updateLayout({ collapsed: next });
   };
-  const toggle = (id: string) => save(collapsed.includes(id) ? collapsed.filter((other) => other !== id) : [...collapsed, id]);
-  const setAll = (ids: string[], fold: boolean) =>
-    save(fold ? [...new Set([...collapsed, ...ids])] : collapsed.filter((id) => !ids.includes(id)));
+  const toggle = (id: string) => {
+    const current = getLayout().collapsed ?? [];
+    save(current.includes(id) ? current.filter((other) => other !== id) : [...current, id]);
+  };
+  const setAll = (ids: string[], fold: boolean) => {
+    const current = getLayout().collapsed ?? [];
+    save(fold ? [...new Set([...current, ...ids])] : current.filter((id) => !ids.includes(id)));
+  };
 
   // Leaving the editor mid-drag drops nothing.
   if (!editing && drag) setDrag(null);
@@ -407,6 +454,9 @@ export function Columns({
   const weights = columns.map((column) => (column.panels.some((panel) => panel.span) ? 2.2 : 1));
   const total = weights.reduce((sum, weight) => sum + weight, 0) || 1;
   const startSizes = defaultSet && initial ? initial : weights.map((weight) => weight / total);
+  // Minimum widths hold everywhere except the editor, which shows every column to drag between.
+  const sheetIndex = sheet ? columns.findIndex((column) => column.id === sheet.column) : -1;
+  const kinds = editing ? undefined : classifyColumns(columns.map((column) => ({ id: column.id, span: column.panels.some((panel) => panel.span) }))).map((column) => column.kind);
 
   return (
     <div className="columns-root">
@@ -428,7 +478,16 @@ export function Columns({
           ))}
         </div>
       )}
-      <Split key={sizesKey} storageKey={sizesKey} axis="row" initial={startSizes} className={editing ? "editing" : undefined}>
+      <Split
+        key={sizesKey}
+        storageKey={sizesKey}
+        axis="row"
+        initial={startSizes}
+        className={editing ? "editing" : undefined}
+        away={columns.map((column) => away.includes(column.id))}
+        kinds={kinds}
+        sheet={sheetIndex >= 0 && sheet ? { ...sheet, index: sheetIndex } : undefined}
+      >
         {columns.map((column, index) => {
           const ids = column.panels.map((panel) => panel.id);
           const side = sessionIndex >= 0 && index < sessionIndex ? "left" : "right";
@@ -455,7 +514,8 @@ export function Columns({
                 storageKey={`stack.${column.id}.${column.panels.length}`}
                 axis="column"
                 className={`rail rail-${column.id} rail-${side}`}
-                collapsed={ids.map((id) => collapsed.includes(id))}
+                collapsed={ids.map((id) => collapsed.includes(id) && !(sheet?.column === column.id && sheet.panel === id))}
+                away={sheet?.column === column.id && sheet.panel ? ids.map((id) => id !== sheet.panel) : undefined}
               >
                 {column.panels.map((panel, panelIndex) => (
                   <Panel
@@ -463,7 +523,7 @@ export function Columns({
                     panel={panel}
                     edit={editFor(panel, column.id)}
                     fold={
-                      panel.span
+                      panel.span || (sheet?.column === column.id && sheet.panel === panel.id)
                         ? undefined
                         : {
                             collapsed: collapsed.includes(panel.id),

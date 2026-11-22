@@ -9,6 +9,12 @@
   --z-divider: 2;
   --z-drop: 3;
   --z-edge: 4;
+  --z-sheet: 11; /* above the scrim (--z-sticky) */
+  /* Minimum column widths (layout/fold.ts repeats them; test/fold.test.ts checks they agree). */
+  --col-min-sidebar: calc(220 * var(--px));
+  --col-min-session: calc(360 * var(--px));
+  --col-min-side: calc(280 * var(--px));
+  --sheet-w: calc(340 * var(--px));
 }
 
 .app {
@@ -155,6 +161,29 @@
   display: flex;
   min-width: 0;
   min-height: 0;
+}
+
+/* Every column keeps its minimum width; what does not fit is folded away (layout/fold.ts). */
+.split-row > .split-cell[data-kind="sidebar"] {
+  min-width: var(--col-min-sidebar);
+}
+
+.split-row > .split-cell[data-kind="session"] {
+  min-width: var(--col-min-session);
+}
+
+.split-row > .split-cell[data-kind="side"] {
+  min-width: var(--col-min-side);
+}
+
+/* A folded column keeps its share of the saved proportions and draws nothing; a sheet shows its panels. */
+.split-cell.away {
+  display: none;
+}
+
+/* Below 600 px the session fills the window, whatever its minimum. */
+.app[data-narrow] .split-row > .split-cell {
+  min-width: 0;
 }
 
 /* One column of the workspace (Columns.tsx): a spanning panel, a stack, or (in the editor) an empty column. */
@@ -481,7 +510,16 @@ button.icon-only.panel-tool .lucide {
 
 .connection-form {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--sp-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* In a narrow window the fields shrink and the button wraps under them, so the bar never scrolls the page sideways. */
+.connection-form input {
+  flex: 1 1 calc(120 * var(--px));
+  min-width: 0;
 }
 
 /* A detached panel's window: the panel fills it under its own header (layout/PanelWindow.tsx). */
@@ -779,4 +817,125 @@ button.icon-only.panel-tool .lucide {
   touch-action: none;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+/* Narrow window (below 600 px, layout/fold.ts): the title bar keeps only what is needed to work. */
+.app[data-narrow] .titlebar {
+  gap: var(--sp-2);
+  padding-inline: var(--sp-2);
+}
+
+.app[data-narrow] .titlebar .connection,
+.app[data-narrow] .titlebar .badge {
+  display: none;
+}
+
+/* Approvals sit in the sidebar, out of sight below 600 px: the sidebar button carries a dot. */
+.sidebar-toggle[data-attention] {
+  position: relative;
+}
+
+.sidebar-toggle[data-attention]::after {
+  content: "";
+  position: absolute;
+  top: calc(4 * var(--px));
+  right: calc(4 * var(--px));
+  width: calc(7 * var(--px));
+  height: calc(7 * var(--px));
+  border-radius: var(--radius-full);
+  background: var(--warn);
+}
+
+/* Forced colours drop background colours: the dot keeps a system colour. */
+@media (forced-colors: active) {
+  .sidebar-toggle[data-attention]::after {
+    background: Highlight;
+    forced-color-adjust: none;
+  }
+}
+
+/* Sheets (layout/Sheet.tsx): a folded column's own cell, moved to the window's edge over a scrim; the
+   sidebar from the left, a side panel from the right. The cell stays where Columns keeps it, so its
+   panels are mounted once. */
+.sheet-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-sticky);
+  background: var(--scrim);
+  animation: fade-in var(--dur-fast) var(--ease-standard);
+}
+
+.split-cell.away.sheet-cell {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: var(--z-sheet);
+  display: flex;
+  flex-direction: column;
+  width: min(var(--sheet-w), 100%);
+  background: var(--surface);
+  box-shadow: var(--elev-3);
+}
+
+.split-cell.sheet-cell:focus {
+  outline: none;
+}
+
+.sheet-cell.sheet-left {
+  left: 0;
+  border-right: 1px solid var(--border-strong);
+  animation: sheet-in-left var(--dur-base) var(--ease-standard);
+}
+
+.sheet-cell.sheet-right {
+  right: 0;
+  border-left: 1px solid var(--border-strong);
+  animation: sheet-in-right var(--dur-base) var(--ease-standard);
+}
+
+.split-cell.away.sheet-cell.sheet-full {
+  width: 100%;
+  border-left: none;
+}
+
+/* The sidebar leaves a strip of scrim to tap beside it. */
+.app[data-narrow] .split-cell.away.sheet-cell.sheet-left {
+  width: min(var(--sheet-w), calc(100% - 48 * var(--px)));
+}
+
+.sheet-cell > .layout-column {
+  min-height: 0;
+}
+
+.sheet-cell .rail {
+  border: none;
+}
+
+.sheet-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--panel-header-h);
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.sheet-heading {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+@keyframes sheet-in-left {
+  from {
+    transform: translateX(calc(-24 * var(--px)));
+    opacity: 0;
+  }
+}
+
+@keyframes sheet-in-right {
+  from {
+    transform: translateX(calc(24 * var(--px)));
+    opacity: 0;
+  }
 }
