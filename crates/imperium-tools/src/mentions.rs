@@ -37,7 +37,7 @@ const CACHE_SLOTS: usize = 8;
 /// How long a failed listing is remembered, so waiters and the keystrokes that follow get its
 /// error at once instead of each trying again (a remote attempt can take [`REMOTE_TIMEOUT`]).
 const FAILURE_TTL: Duration = if cfg!(test) {
-    Duration::from_millis(400)
+    Duration::from_millis(1500)
 } else {
     Duration::from_secs(3)
 };
