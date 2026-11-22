@@ -1,7 +1,11 @@
 // The Browse view: the catalog of servers, plugins and skills.
 
-import { Check, Plus } from "lucide-react";
+import { Check, Plus, SearchX } from "lucide-react";
 import type { CatalogServer } from "@imperium/protocol";
+import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
+import { Notice } from "../components/Notice";
 import { ConnectorIcon } from "./connectorIcons";
 import { matches } from "./common";
 
@@ -34,7 +38,7 @@ export function BrowseView({
       (!category || entry.category === category) &&
       matches(query, entry.name, entry.description, entry.category, entry.publisher, entry.id),
   );
-  if (loading) return <p className="connectors-empty muted">Loading the directory…</p>;
+  if (loading) return <LoadingState label="Loading the directory…" />;
   return (
     <>
       <div className="chips" role="group" aria-label="Categories">
@@ -45,31 +49,38 @@ export function BrowseView({
         ))}
       </div>
       {problems.map((problem) => (
-        <p key={problem} className="warning">
+        <Notice key={problem} tone="warn" className="connectors-notice">
           {problem}
-        </p>
+        </Notice>
       ))}
       <div className="connector-grid">
         {shown.map((entry) => (
-          <article key={entry.id} className="connector-card">
+          <article key={entry.id} className={`card connector-card${added.has(entry.id) ? "" : " interactive"}`} onClick={added.has(entry.id) ? undefined : () => onAdd(entry)}>
             <div className="connector-card-head">
               <ConnectorIcon icon={entry.icon} />
               <div className="connector-card-title">
                 <h3>{entry.name}</h3>
-                {entry.publisher && <span className="muted">{entry.publisher}</span>}
+                {entry.publisher && <span className="connector-card-publisher">{entry.publisher}</span>}
               </div>
             </div>
             <p className="connector-card-description">{entry.description}</p>
             <div className="connector-card-foot">
-              <span className="tag">{entry.category}</span>
-              <span className="tag">{entry.url ? "Remote" : "Local"}</span>
-              <span className="spacer" />
+              <Badge>{entry.category}</Badge>
+              <Badge>{entry.url ? "Remote" : "Local"}</Badge>
+              <span className="connector-card-gap" />
               {added.has(entry.id) ? (
-                <span className="added" title="Already installed">
-                  <Check aria-hidden="true" /> Added
-                </span>
+                <Badge tone="ok" icon={Check} title="Already installed">
+                  Added
+                </Badge>
               ) : (
-                <button className="primary small" onClick={() => onAdd(entry)} aria-label={`Add ${entry.name}`}>
+                <button
+                  className="primary small"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onAdd(entry);
+                  }}
+                  aria-label={`Add ${entry.name}`}
+                >
                   <Plus aria-hidden="true" /> Add
                 </button>
               )}
@@ -77,25 +88,33 @@ export function BrowseView({
           </article>
         ))}
         {!query && !category && (
-          <article className="connector-card custom">
+          <article className="card interactive connector-card custom" onClick={onCustom}>
             <div className="connector-card-head">
               <ConnectorIcon icon="terminal" />
               <div className="connector-card-title">
                 <h3>Custom connector</h3>
-                <span className="muted">Any MCP server</span>
+                <span className="connector-card-publisher">Any MCP server</span>
               </div>
             </div>
             <p className="connector-card-description">Add a server by the command that starts it or the URL it serves on.</p>
             <div className="connector-card-foot">
-              <span className="spacer" />
-              <button className="small" onClick={onCustom}>
+              <span className="connector-card-gap" />
+              <button
+                className="small"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCustom();
+                }}
+              >
                 <Plus aria-hidden="true" /> Add custom
               </button>
             </div>
           </article>
         )}
       </div>
-      {shown.length === 0 && <p className="connectors-empty muted">No connectors match “{query}”.</p>}
+      {shown.length === 0 && (
+        <EmptyState icon={SearchX} title={query ? `No connectors match “${query}”` : "Nothing in this category"} body="Try another word, or pick All." />
+      )}
       {overrideFile && (
         <p className="muted connectors-footnote">
           Add your own entries to the directory in <code>{overrideFile}</code>.
