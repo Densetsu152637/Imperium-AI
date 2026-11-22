@@ -1,70 +1,140 @@
-/* style-budget: colour=2 font-size=17 font-weight=3 radius=1 shadow=0 duration=0 z-index=0 */
-/* The environment window and its sections: folders, agents, the icon picker, runtime fields and knowledge. */
+/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
+/* The environment window, drawn inside the shared Dialog: its sections (Field layout, one left edge), the icon and colour pickers, folder and agent rows at --row-h, the danger notice, the agent initiative block and the knowledge card. The dialog, fields, notices, badges, empty states and icon buttons are shared components (primitives.css, dialog.css). */
 
-.environment-config-lines {
-  margin: 0;
-  padding-left: 1.1rem;
-  font-size: 0.8rem;
-  overflow-wrap: anywhere;
+:root {
+  /* A text field or select in the window is at most this wide; the dialog gutter is the only left inset. */
+  --environment-control-w: calc(360 * var(--px));
 }
 
-.environment-config-lines.refused {
-  color: var(--muted, inherit);
+/* ---- Notices between the header and the body, on the dialog's gutter ---- */
+.settings-content > .environment-notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-3) var(--dialog-gutter) 0;
 }
 
-.environment-preview .project-icon {
-  --tile: 3rem;
-  border-radius: calc(var(--radius) * 1.1);
+.environment-notice-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
 }
 
-.environment-label {
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
-
+/* ---- A section: stacked fields, rows and lists on one left edge ---- */
 .environment-section {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  align-items: stretch;
+  gap: var(--sp-4);
+  padding-top: var(--sp-2);
 }
 
-.environment-section-head {
+.environment-section[hidden] {
+  display: none;
+}
+
+/* The gap is the spacing; a settings row inside adds none of its own. */
+.environment-section > .settings-row,
+.environment-section > .settings-row-note {
+  padding: 0;
+}
+
+.environment-section > .field-stack {
+  max-width: var(--environment-control-w);
+}
+
+.environment-section > p,
+.environment-hint,
+.environment-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--text-muted);
+}
+
+.environment-subhead {
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.environment-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.environment-actions.start {
+  justify-content: flex-start;
+}
+
+.environment-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.environment-inline > input {
+  flex: 1 1 calc(180 * var(--px));
+  min-width: 0;
+}
+
+/* ---- Icon and colour pickers ---- */
+.environment-icon-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.environment-icon-choices {
+  display: flex;
+  align-self: stretch;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.environment-preview {
+  display: inline-flex;
+  flex: none;
+}
+
+.environment-preview .project-icon {
+  --tile: calc(48 * var(--px));
+  border-radius: var(--radius);
 }
 
 .environment-icon-search {
-  flex: 0 1 14rem;
-}
-
-.environment-icon-search input {
-  padding-top: 0.28rem;
-  padding-bottom: 0.28rem;
-  font-size: 0.85rem;
+  max-width: calc(256 * var(--px));
 }
 
 /* Icon and colour choices share one look: rounded-square tiles in a grid. */
 .tile-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(2.3rem, 1fr));
-  gap: 0.4rem;
+  grid-template-columns: repeat(auto-fill, minmax(calc(36 * var(--px)), 1fr));
+  gap: var(--sp-2);
 }
 
 .icon-choices {
-  max-height: 12.5rem;
+  max-height: calc(200 * var(--px));
   overflow-y: auto;
-  padding: 0.15rem;
+  padding: calc(2 * var(--px));
 }
 
 .tile-grid-empty {
   grid-column: 1 / -1;
-  margin: 0.4rem 0;
-  font-size: 0.85rem;
+  margin: var(--sp-2) 0;
+  font-size: var(--fs-sm);
 }
 
 button.tile-choice {
@@ -73,21 +143,21 @@ button.tile-choice {
   justify-content: center;
   aspect-ratio: 1;
   width: 100%;
-  min-height: 2.3rem;
+  min-height: var(--control-h);
   padding: 0;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  background: var(--surface-raised);
   color: var(--text);
 }
 
 button.tile-choice .lucide {
-  width: 1.15rem;
-  height: 1.15rem;
+  width: var(--icon);
+  height: var(--icon);
 }
 
 button.tile-choice:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  border-color: var(--text-muted);
 }
 
 button.tile-choice[aria-checked="true"] {
@@ -95,8 +165,9 @@ button.tile-choice[aria-checked="true"] {
   background: var(--accent-soft);
 }
 
+/* The chosen colour carries a double ring, a shape cue as well as a colour one. */
 button.colour-choice {
-  border-color: rgb(0 0 0 / 0.25);
+  border-color: var(--border-strong);
 }
 
 button.colour-choice:hover:not(:disabled) {
@@ -106,50 +177,43 @@ button.colour-choice:hover:not(:disabled) {
 button.colour-choice[aria-checked="true"] {
   border-color: var(--text);
   box-shadow:
-    0 0 0 2px var(--bg),
-    0 0 0 4px var(--text);
+    0 0 0 calc(2 * var(--px)) var(--surface),
+    0 0 0 calc(4 * var(--px)) var(--text);
 }
 
-button.colour-choice[aria-checked="true"]::after {
-  content: "";
-  width: 0.45rem;
-  height: 0.8rem;
-  margin-top: -0.15rem;
-  border: solid #fff;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
-}
-
-.environment-section-head button {
-  font-size: 0.8rem;
-  padding: 0.25rem 0.65rem;
-}
-
+/* ---- Rows: folders and agents, each at least --row-h tall ---- */
+.environment-list,
 .environment-folders {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  font-size: 0.85rem;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-md);
 }
 
-.environment-folders li {
+/* The permission editor's lists share the class `environment-folders` and keep their own, plain rows. */
+.environment-folders > li {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--sp-2);
   min-width: 0;
-  padding: 0.2rem 0.2rem 0.2rem 0.6rem;
+}
+
+.environment-list > li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  min-height: var(--row-h);
+  padding: 0 var(--sp-1) 0 var(--sp-3);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  background: var(--surface-raised);
 }
 
-.environment-folders li.muted {
-  padding: 0.5rem 0.6rem;
-  background: transparent;
-}
-
+.environment-list .folder-path,
 .environment-folders .folder-path {
   flex: 1;
   min-width: 0;
@@ -158,101 +222,12 @@ button.colour-choice[aria-checked="true"]::after {
   white-space: nowrap;
 }
 
-.folder-badge {
+.environment-list .agent-name {
   flex: none;
-  font-size: 0.7rem;
-  color: var(--muted);
+  font-weight: var(--fw-semibold);
 }
 
-.environment-agents {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 0.85rem;
-}
-
-.environment-agents > li {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  min-width: 0;
-  padding: 0.2rem 0.2rem 0.4rem 0.6rem;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-}
-
-.agent-initiative {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding-right: 0.4rem;
-}
-
-.agent-initiative-head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.agent-initiative-line {
-  margin: 0;
-  font-size: 0.8rem;
-}
-
-.agent-suggestions,
-.agent-suggestions-done,
-.agent-digest ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.8rem;
-}
-
-.agent-suggestions > li {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.35rem 0.5rem;
-  border-radius: var(--radius-sm);
-  background: var(--surface-1, transparent);
-  border: 1px solid var(--border);
-}
-
-.agent-suggestion-text {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
-}
-
-.agent-suggestion-actions {
-  display: flex;
-  gap: 0.35rem;
-  flex: none;
-}
-
-.agent-digest p {
-  margin: 0;
-}
-
-.environment-agents li.muted {
-  padding: 0.5rem 0.6rem;
-  background: transparent;
-}
-
-.environment-agents .agent-name {
-  flex: none;
-  font-weight: 600;
-}
-
-.environment-agents .agent-role {
+.environment-list .agent-role {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -260,93 +235,110 @@ button.colour-choice[aria-checked="true"]::after {
   white-space: nowrap;
 }
 
-.environment-agents button.icon-only {
-  width: 1.7rem;
-  height: 1.7rem;
-}
-
-.environment-agents .agent-limits {
+.environment-list > li > .badge {
   flex: none;
-  font-size: 0.7rem;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 0 0.35rem;
 }
 
 .environment-folders button.icon-only {
-  width: 1.7rem;
-  height: 1.7rem;
-}
-
-.working-folder-path {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.8rem;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
 }
 
 .environment-delete-confirm {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.85rem;
+  gap: var(--sp-2);
+  margin-left: auto;
+  font-size: var(--fs-sm);
 }
 
-/* The environment window is the shared modal (Dialog); these fit its rows. */
-.settings-row-note > .environment-folders,
-.settings-row-note > .environment-agents,
-.settings-row-note > .environment-icon-picker,
-.settings-row-note > .environment-config,
-.settings-row-note > .tile-grid {
-  align-self: stretch;
+.working-folder-path {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
 }
 
-.environment-icon-picker,
+/* ---- The configuration file report ---- */
 .environment-config {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: var(--sp-2);
   min-width: 0;
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
 }
 
-.environment-icon-picker .environment-icon-search {
-  flex: none;
-  max-width: 16rem;
-}
-
-.settings-row-control .environment-preview {
-  display: inline-flex;
-}
-
-.runtime-test {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.6rem;
-  min-width: 0;
-}
-
-.settings-row-control .row-actions {
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.environment-agents .agent-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.agent-access-hint {
+.environment-config-lines {
   margin: 0;
+  padding-left: var(--sp-4);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
 }
 
-/* Runtime rows of the environment window. */
+.environment-config-lines.refused {
+  color: var(--text-muted);
+}
+
+/* ---- An agent's initiative, in its edit view ---- */
+.agent-initiative {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+.agent-initiative > .field-stack {
+  max-width: var(--environment-control-w);
+}
+
+.agent-initiative-line {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.agent-suggestions,
+.agent-suggestions-done,
+.agent-digest ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+
+.agent-suggestions > li.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+}
+
+.agent-suggestion-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.agent-digest {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.agent-digest p {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+/* The runtime rows of the permissions editor (Settings and the environment window). */
 .runtime-row {
   display: flex;
   align-items: center;
@@ -354,52 +346,38 @@ button.colour-choice[aria-checked="true"]::after {
   gap: var(--space);
 }
 
-.runtime-label {
-  font-size: 0.85rem;
+/* Buttons that sit in a settings row's control column (the daemon and update controls use it too). */
+.settings-row-control .row-actions {
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-.runtime-hint,
-.runtime-result {
-  margin: 0;
-  font-size: 0.8rem;
-}
-
-.runtime-result.ok {
-  color: var(--ok);
-}
-
-.runtime-result.error {
-  color: var(--danger);
-}
-
+/* ---- The knowledge card of a subagent's view ---- */
 .knowledge {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  margin: 0.5rem 1rem;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-  font-size: 0.85rem;
+  gap: var(--sp-2);
+  margin: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-md);
 }
 
 .knowledge-head {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--sp-2);
 }
 
 .knowledge-topic {
   flex: 1;
   min-width: 0;
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 
 .knowledge-facts {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 0.15rem 0.75rem;
+  gap: var(--sp-1) var(--sp-3);
   margin: 0;
 }
 
@@ -408,7 +386,7 @@ button.colour-choice[aria-checked="true"]::after {
 }
 
 .knowledge-facts dt {
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .knowledge-facts dd {
@@ -417,8 +395,8 @@ button.colour-choice[aria-checked="true"]::after {
 }
 
 .knowledge-sources ul {
-  margin: 0.25rem 0 0;
-  padding-left: 1.1rem;
+  margin: var(--sp-1) 0 0;
+  padding-left: var(--sp-4);
 }
 
 .knowledge-sources li.stale {
@@ -426,56 +404,52 @@ button.colour-choice[aria-checked="true"]::after {
 }
 
 .knowledge-questions {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .knowledge-questions-title {
   margin: 0;
-  font-size: 0.8rem;
-  color: var(--muted);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }
 
 .knowledge-question-head {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--sp-2);
 }
 
 .knowledge-question-text {
-  margin: 0.15rem 0 0;
+  margin: var(--sp-1) 0 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .knowledge-answer {
-  margin: 0.15rem 0 0;
+  margin: var(--sp-1) 0 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  padding-left: 0.6rem;
-  border-left: 2px solid var(--border);
+  padding-left: var(--sp-3);
+  border-left: calc(2 * var(--px)) solid var(--border-strong);
 }
 
 .knowledge-ask,
 .knowledge-keep {
   display: flex;
   align-items: flex-end;
-  gap: 0.5rem;
+  gap: var(--sp-2);
 }
 
-.knowledge-ask input,
-.knowledge-keep input {
+.knowledge-ask input {
   flex: 1;
   min-width: 0;
 }
 
-.knowledge-keep label {
+.knowledge-keep-field {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
 }

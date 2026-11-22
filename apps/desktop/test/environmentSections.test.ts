@@ -83,7 +83,7 @@ test("switching sections only hides the Agents pane, so its state is kept", () =
   assert.equal(paneHidden("agents", "agents"), false);
   for (const other of all.filter((id) => id !== "agents")) assert.equal(paneHidden(other, "agents"), true);
   const source = read("environments/EnvironmentWindow.tsx");
-  assert.ok(/<div hidden=\{paneHidden\(current\.id, "agents"\)\}>\s*<EnvironmentAgents/.test(source));
+  assert.ok(/<div className="environment-section" hidden=\{paneHidden\(current\.id, "agents"\)\}>\s*<EnvironmentAgents/.test(source));
   assert.ok(!source.includes('current.id === "agents"'));
 });
 
@@ -109,11 +109,11 @@ test("suggestions waiting show as a badge", () => {
 const SECTION_CONTROLS: Record<EnvironmentSectionId, { file: string; controls: string[] }> = {
   general: {
     file: "environments/EnvironmentWindow.tsx",
-    controls: ["Environment name", "Search icons", 'aria-label="Icon"', 'aria-label="Colour"', 'aria-label="Pet"'],
+    controls: ['label="Name"', "Search icons", 'aria-label="Icon"', 'aria-label="Colour"', 'label="Pet"'],
   },
   folders: {
     file: "environments/EnvironmentWindow.tsx",
-    controls: ["Add folder", "Folder inside the runtime", "Add path", "Remove ${folder}", "<EnvironmentRuntimeFields"],
+    controls: ["Add folder", 'aria-label="Folder path"', "Add path", "Remove ${folder}", "<EnvironmentRuntimeFields"],
   },
   agents: {
     file: "panels/EnvironmentAgents.tsx",

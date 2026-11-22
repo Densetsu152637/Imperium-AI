@@ -1046,10 +1046,16 @@ allows it without a folder: its sessions work in their own scratch folders.
 *New environment* (the *+* in the Environments header) and *Edit* open the **environment window**,
 built on the same shared modal as Settings, Connectors and the model editor (`Dialog`: a
 navigation column on the left, a header with the selected section's title and a close button, the
-scrolling rows, and a footer; Escape or a click outside closes it, Ctrl+S saves). Its sections are
-laid out as the shared `Row`s (title and help text on the left, the control on the right), so
-fields, spacing and light/dark theming match the other modals, and below the narrow breakpoint the
-navigation stacks above the content like theirs:
+scrolling rows, and a footer; Escape or a click outside closes it, Ctrl+S saves). Its sections use
+the shared `Field` (label above the control, hint and error under it) and, for switches and
+buttons, the Settings `Row`, all on the dialog's one left edge (`--dialog-gutter`, the same x as the
+title) with `--sp-4` between them; text fields and selects are at most 360 px wide
+(`--environment-control-w`). An error from a save or a folder change is a `danger` `Notice` between
+the header and the rows, and *Discard changes?* a `warn` one. Folder and agent lists are rows at
+least `--row-h` tall (`.environment-list`), with a `Badge` for *working directory*, limits and
+initiative and `IconButton`s for the row tools; styles are in `styles/environments.css` with its
+style budgets at zero. Below the narrow breakpoint the dialog is the shared full-screen sheet and
+the navigation stacks above the content like the other dialogs:
 
 - **General:** the name; the icon, picked from a searchable grid of every icon the app uses
   (`shared/icons.ts`, the shared registry — Settings sections, Connectors, the titlebar, and project
@@ -1068,7 +1074,8 @@ navigation stacks above the content like theirs:
 - **Memory & working folder** and **Configuration file** (existing environments only): see
   below.
 - **Permissions:** the environment's path grants and rules ([permissions](#permissions-implemented)).
-- **Danger zone** (existing environments other than Home): *Delete environment*.
+- **Danger zone** (existing environments other than Home): a `danger` `Notice` with one destructive
+  button, *Delete…*, which becomes *Delete* and *Keep* after one more question.
 
 A new environment is created with all of it at once (it has no working folder, configuration file,
 agents to edit or delete yet); for an existing one, folder changes and agents apply at once and the
