@@ -24,8 +24,10 @@ pub use mentions::{
 };
 pub use processes::Processes;
 pub use runtime::{ProcessRunner, ProcessSpec, Remote, RunOutput, Runner};
+#[cfg(feature = "test-support")]
+pub use sandbox::forget_daemon_paths;
 pub use sandbox::{
-    Sandbox, forget_daemon_paths, guard_from_commands, hide_from_os_sandbox, hide_loopback_port,
+    Sandbox, guard_from_commands, hide_from_os_sandbox, hide_loopback_port,
     leave_writable_in_guards, require_present,
 };
 pub use search::{GrepQuery, Scope};

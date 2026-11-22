@@ -1013,7 +1013,10 @@ Whether a writable grant around the data folder can reopen a hidden file differs
   does not stop commands, and they are hidden whenever they exist. The daemon **creates
   `<config>` and `<data>` at startup**, so the guards always apply: a folder that is missing
   cannot be guarded, and nothing else creates `<config>`, so a command could otherwise create it
-  and write a `config.toml` of hooks or MCP servers that the daemon would then run.
+  and write a `config.toml` of hooks or MCP servers that the daemon would then run. If a folder
+  cannot be created (a read-only home, a file in the way), it is still recorded, so it counts as
+  missing and every command in the OS and container tiers is refused with the same error
+  instead of running without the guard.
 - **macOS:** Seatbelt works by path, so for every hidden path it also denies `file-write*` (which
   covers deleting or renaming it) and `file-link` (a hard link to a readable path), and it denies
   `file-write-unlink` on every folder around it, so the folder cannot be renamed away to carry

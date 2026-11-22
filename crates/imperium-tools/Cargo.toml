@@ -22,9 +22,15 @@ tokio = { version = "1.54.1", features = ["process", "fs", "time", "io-util", "r
 # Background commands run in a Job Object that kills every process in it when it is closed.
 win32job = "2.0.3"
 
+[features]
+# Test helpers for the process-wide lists the daemon registers (`forget_daemon_paths`). Enabled
+# only by this crate's own dev-dependency below; no production build turns it on.
+test-support = []
+
 [lints]
 workspace = true
 
 [dev-dependencies]
+imperium-tools = { path = ".", features = ["test-support"] }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt", "macros", "process", "fs", "time"] }

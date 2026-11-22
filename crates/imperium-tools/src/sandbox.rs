@@ -55,8 +55,10 @@ pub fn guard_from_commands(paths: impl IntoIterator<Item = PathBuf>) {
     for path in paths {
         // A folder that does not exist cannot be guarded (a mount needs it), and a command could
         // create it and write what the daemon then runs: it is made here.
+        // If it cannot be made it is recorded all the same: it is missing, so commands are refused
+        // rather than run without the guard.
         let _ = std::fs::create_dir_all(&path);
-        if path.is_dir() && !hidden.present.contains(&path) {
+        if !hidden.present.contains(&path) {
             hidden.present.push(path.clone());
         }
         if !hidden.guarded.contains(&path) {
@@ -193,8 +195,9 @@ pub fn hide_from_os_sandbox(paths: impl IntoIterator<Item = PathBuf>) {
 }
 
 /// Forgets everything registered for `paths` (guarded, hidden, open, required). For tests that
-/// register folders in a process-wide list and then delete them; the daemon never needs it.
-#[doc(hidden)]
+/// register folders in a process-wide list and then delete them; the daemon never needs it, so it
+/// exists only in tests and behind the `test-support` feature.
+#[cfg(any(test, feature = "test-support"))]
 pub fn forget_daemon_paths(paths: impl IntoIterator<Item = PathBuf>) {
     let mut hidden = HIDDEN.lock().unwrap_or_else(PoisonError::into_inner);
     for path in paths {
@@ -1676,6 +1679,7 @@ mod tests {
 
     #[test]
     fn a_command_is_refused_when_a_guarded_path_around_it_has_gone_missing() {
+        let _only = MISSING.lock().unwrap_or_else(PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("a").join("data");
         std::fs::create_dir_all(&data).unwrap();
@@ -1720,6 +1724,37 @@ mod tests {
         assert_eq!(missing_among(&[dir.path().to_path_buf()]), None);
         // Put back (or forgotten), commands run again.
         forget_daemon_paths([data]);
+        for sandbox in tiers() {
+            assert!(
+                sandbox
+                    .named_command(&[dir.path()], &[], "x", None, false)
+                    .is_ok()
+            );
+        }
+    }
+
+    /// Tests that leave a registered path missing for a while refuse every command in the process;
+    /// they, and the ones that expect commands to run, take this lock.
+    static MISSING: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_guard_that_cannot_be_created_refuses_commands() {
+        let _only = MISSING.lock().unwrap_or_else(PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        // The parent is a file, so the folder cannot be made.
+        let file = dir.path().join("not-a-folder");
+        std::fs::write(&file, "x").unwrap();
+        let guard = file.join("imperium");
+        guard_from_commands([guard.clone()]);
+        assert!(!guard.exists());
+        for sandbox in tiers() {
+            let error = sandbox
+                .named_command(&[dir.path()], &[], "x", None, false)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("is missing"), "{error}");
+        }
+        forget_daemon_paths([guard]);
         for sandbox in tiers() {
             assert!(
                 sandbox
