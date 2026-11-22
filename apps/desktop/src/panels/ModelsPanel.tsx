@@ -7,6 +7,9 @@ import { useMemo, useState } from "react";
 
 import type { ModelListResult, ModelRow } from "@imperium/protocol";
 
+import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
+import { IconButton } from "../components/IconButton";
 import { arrangeModels, markOf } from "../models/modelPrefs";
 import { useModelMarks } from "../settings/settings";
 import { HiddenGroupRow, ModelMarkButtons } from "./ModelMarks";
@@ -53,9 +56,14 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
 
   if (!table || table.models.length === 0) {
     return (
-      <p className="empty">
-        No model table yet. Add <code>[[models.catalog]]</code> entries (id, spec, location, tier) to your config.
-      </p>
+      <EmptyState
+        title="No model table yet"
+        body={
+          <>
+            Add <code>[[models.catalog]]</code> entries (id, spec, location, tier) to your config.
+          </>
+        }
+      />
     );
   }
 
@@ -78,17 +86,21 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
       className={[row.endpoint_configured && row.enabled ? null : "unusable", hidden ? "model-hidden" : null].filter(Boolean).join(" ") || undefined}
       title={row.alias ? `${row.id} · ${row.spec}` : row.spec}
     >
-      <td>
+      <td className="model-id-cell">
         {row.alias ?? row.id}
-        {!row.enabled && <span className="badge off">off</span>}
+        {!row.enabled && <Badge className="off">off</Badge>}
+        <span className="model-sub sub-where muted">
+          {row.location} · {row.tier}
+        </span>
+        {row.tags.length > 0 && <span className="model-sub sub-tags muted">{row.tags.join(", ")}</span>}
       </td>
       <td>
-        <span className={`badge ${row.location}`}>{row.location}</span>
+        <Badge tone={row.location === "local" ? "ok" : "accent"}>{row.location}</Badge>
       </td>
       <td>{row.tier}</td>
-      <td>{formatPrice(row)}</td>
-      <td>{row.tags.join(", ")}</td>
-      <td>
+      <td className="model-price">{formatPrice(row)}</td>
+      <td className="model-tags">{row.tags.join(", ")}</td>
+      <td className="model-marks-cell">
         <ModelMarkButtons name={row.id} mark={markOf(marks, row.spec)} onToggle={(mark) => toggle(row.spec, mark)} />
       </td>
     </tr>
@@ -99,6 +111,7 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
       <div className="models-toolbar">
         <input
           type="search"
+          className="field"
           placeholder="Filter by id, model, location, tier, or tag"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -107,16 +120,15 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
         <span className="muted">
           prefer {table.prefer} · {table.rules} rule{table.rules === 1 ? "" : "s"}
         </span>
-        <button
-          className="ghost icon-only panel-tool"
+        <IconButton
+          icon={SlidersHorizontal}
+          className="panel-tool"
           onClick={onConfigure}
-          aria-label="Configure models"
-          title="Configure models: the table, routing rules, and endpoints"
-        >
-          <SlidersHorizontal aria-hidden="true" />
-        </button>
+          label="Configure models"
+          tooltip="Configure models: the table, routing rules, and endpoints"
+        />
       </div>
-      <table>
+      <table className="table compact models-table">
         <thead>
           <tr>
             {header("id", "Id")}

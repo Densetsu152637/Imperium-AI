@@ -351,7 +351,8 @@ set in `session.css`, `--settings-control-w`, `--settings-number-w` and `--setti
 and the model picker rules (`.model-select`, `.effort-select`, `.mode-select`,
 `.model-status`, `.model-note`) sit in `session.css` because of their cascade position.
 `models/modelConfig.css` belongs to the model configuration
-dialog, which imports it before `styles/index.css` loads. Each stylesheet except `tokens.css`
+dialog, which imports it before `styles/index.css` loads; it and `models.css` hold no literals
+(their budgets are zero). Each stylesheet except `tokens.css`
 starts with a `/* style-budget: … */` comment counting the literal colours, font sizes and
 weights, radii, shadows, durations and z-indexes it still holds; `test/styleTokens.test.ts`
 fails when the count differs, so every cleanup lowers its budget in the same change, and
@@ -1469,15 +1470,23 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
 
 - **First run.** While no model is usable (no default, no table row with a configured endpoint,
   no runnable local model), the new-session composer and the Local models panel show three
-  choices: *Add a model folder* (the native folder picker; the folder is scanned at once and the
-  number of models found is reported), *Download from Hugging Face* (opens the Local models
-  panel's download form), and *Connect an API endpoint* (a name, base URL, API key, and an
-  optional model, which then becomes the default; the key goes to the system keychain,
-  `models.add_endpoint`).
+  cards, each with an icon, one line of explanation and one large action (`--control-h-lg`):
+  *Add a model folder* (*Add folder*: the native folder picker; the folder is scanned at once and the
+  number of models found is reported), *Download from Hugging Face* (*Download*: opens the Local
+  models panel's download form), and *Connect an API endpoint* (*Connect*: a form of `Field`s for a
+  name, base URL, API key, and an optional model, which then becomes the default; the key goes to
+  the system keychain, `models.add_endpoint`). The cards stack in a narrow column and sit side by
+  side in a wide one; failures show as `Notice`s.
 - **Layout.** The Local models panel lists the models first, with a small, quiet *Rescan* (scan
   the folders again) and *Configure* above them; then the skipped items and the Hugging Face
   download form; and the *llama.cpp runtime* card at the bottom. It shows no free-memory summary
-  (the [Resources panel](#resources-panel-implemented) does).
+  (the [Resources panel](#resources-panel-implemented) does). The model tables use the shared
+  `.table` and nothing in these panels has a fixed minimum width, so a side column of about 255 px
+  (the default layout at 1024 px wide) shows every control inside it: the Models table drops its
+  Tags column below 44 rem of panel width and its Where and Tier columns below 36 rem (they move
+  to lines under the name), and the Local models table drops the *On this machine* column below 52
+  rem (the fit moves under the name) and below 44 rem becomes one block per model, its name and
+  facts above its actions.
 - **Model folders.** Model folders are set in Settings → *Models*: *Add folder…* (the native
   folder picker; the folder is added to `models.folders` and scanned at once) and the *Model
   folders* list, one path per line, where a folder is removed (nothing in it is deleted). The
@@ -1599,10 +1608,15 @@ Each model's settings are tables, one row per setting, in groups (the rows, thei
 wording of their explanations are one declarative table, `models/modelSettingsTable.ts`). A row has the
 setting's name with a small *(i)* button, a line saying what it affects (memory, speed, quality,
 routing, cost, names, availability, reliability), the value and a *reset* that clears the saved
-value. The *(i)* is a keyboard-focusable button: hovering or focusing it opens a popover that says
-in plain words what the setting does and what changing it trades off (it is the button's
-`aria-describedby`, so a screen reader reads it too), and Esc closes the popover without closing
-the dialog. A local model's groups:
+value. The *(i)* is a keyboard-focusable button with a shared `Tooltip`: hovering it (after 400 ms)
+or focusing it from the keyboard opens a tooltip that says in plain words what the setting does and
+what changing it trades off (it is the button's `aria-describedby` while it shows, so a screen
+reader reads it too), and Esc closes the tooltip without closing the dialog. A touch tap (or a click
+where hover is unavailable) toggles the same help inline under the setting's name instead, with
+`aria-expanded` on the button; Esc closes the tooltip only while the button has focus. The settings tables are the shared `.table`; the tier, cache-type, flash-attention and
+new-default pickers are `Select`s (no native select is left in the dialog); in-body warnings and
+the dry run's validation message are `Notice`s, and a failed save shows as a `Notice` between the
+header and the settings. A local model's groups:
 
 - *Identity and availability*: **Use this model** (a switch, below), *Display name* (the alias
   shown instead of the id everywhere a model is named, with the id as the placeholder; empty shows

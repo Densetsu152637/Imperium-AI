@@ -1,126 +1,120 @@
-/* style-budget: colour=0 font-size=12 font-weight=5 radius=1 shadow=0 duration=0 z-index=1 */
+/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* Model configuration dialog: each model's settings as tables (one row per setting), the (i) icon
-   with its popover, the estimated-memory table, and the greyed-out look of a model that is off. */
+   with its tooltip, the estimated-memory table, and the greyed-out look of a model that is off.
+   This file loads before primitives.css, which wins ties, so the rules that restyle the shared
+   `.table` are written as `.table.model-table`. */
 
 .model-config {
-  padding-top: 0.9rem;
   display: flex;
   flex-direction: column;
-  gap: calc(var(--space) * 2);
+  gap: var(--sp-5);
+  padding-top: var(--sp-2);
 }
 
 .model-summary {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
-  font-size: 0.85rem;
-}
-
-.model-summary .warning,
-.model-default-choice .warning {
-  color: var(--warn, var(--danger));
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
 }
 
 .model-form-actions {
   display: flex;
-  gap: var(--space);
+  flex-wrap: wrap;
   align-items: center;
+  gap: var(--sp-2);
 }
 
-.model-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
+/* ---- One table per group of settings: name, value, reset ---- */
+.table.model-table {
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  font-size: 0.88rem;
+  border-collapse: separate;
+  border-radius: var(--radius);
+  border-spacing: 0;
+  background: var(--surface-raised);
+  font-size: var(--fs-md);
 }
 
-.model-table caption {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  padding: 0 0 0.4rem;
+.table.model-table caption {
+  padding: 0 0 var(--sp-2);
   text-align: left;
   caption-side: top;
 }
 
 .model-table-title {
-  font-weight: 600;
-  font-size: 0.92rem;
+  display: block;
+  margin-bottom: var(--sp-1);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
 }
 
-.model-table caption small {
-  font-size: 0.78rem;
+.table.model-table caption small {
+  display: block;
+  font-size: var(--fs-sm);
 }
 
-.model-setting-row > * {
-  border-top: 1px solid var(--border);
-  padding: calc(var(--space) * 0.6) calc(var(--space) * 1);
+.table.model-table .model-setting-row > * {
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 0;
+  border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
 
-.model-table tbody tr:first-child > * {
-  border-top: 0;
+.table.model-table tbody tr:last-child > * {
+  border-bottom: 0;
 }
 
-.model-setting-row th {
+.table.model-table tbody tr:hover {
+  background: transparent;
+}
+
+.table.model-table .model-setting-row th {
   width: 36%;
-  text-align: left;
-  font-weight: 500;
+  color: var(--text);
+  font-weight: var(--fw-medium);
+  white-space: normal;
 }
 
 .model-setting-name {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.3rem;
+  gap: var(--sp-1);
 }
 
 .model-setting-aspects {
   display: block;
-  font-size: 0.72rem;
-  letter-spacing: 0.01em;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
 }
 
-.model-setting-value {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  align-items: flex-start;
+.table.model-table td.model-setting-value {
+  white-space: normal;
+}
+
+.model-setting-value > * + * {
+  margin-top: var(--sp-1);
 }
 
 .model-setting-value small {
-  font-size: 0.78rem;
+  display: block;
+  font-size: var(--fs-sm);
 }
 
-.model-setting-reset {
+.table.model-table td.model-setting-reset {
   width: 1%;
+  text-align: right;
   white-space: nowrap;
 }
 
-.model-setting-value input[type="text"],
-.model-setting-value select,
-.model-setting-value textarea {
+.model-setting-value .field,
+.model-setting-value button.select.setting-select {
   width: 100%;
-  box-sizing: border-box;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: calc(var(--space) * 0.5);
-  font-family: inherit;
-}
-
-.model-setting-value input:focus-visible,
-.model-setting-value select:focus-visible,
-.model-setting-value textarea:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  min-width: 0;
 }
 
 .model-setting-value input:disabled,
-.model-setting-value select:disabled {
+.model-setting-value button.select:disabled {
   opacity: 0.5;
 }
 
@@ -130,31 +124,30 @@
 }
 
 .model-setting-row.warn output {
-  color: var(--warn, var(--danger));
+  color: var(--warn);
 }
 
 .model-setting-reset button.reset,
 .model-card-metadata button.reset {
-  padding: 0 0.4rem;
-  font-size: 0.75rem;
+  min-height: var(--control-h-sm);
 }
 
 .model-card-metadata summary {
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
 }
 
 .model-card-metadata pre {
-  margin: 0.3rem 0 0;
+  margin: var(--sp-1) 0 0;
   white-space: pre-wrap;
   font-family: inherit;
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
 }
 
-/* The estimate */
+/* ---- The estimate ---- */
 .model-memory output {
   font-variant-numeric: tabular-nums;
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 
 .model-memory.updating output {
@@ -162,78 +155,67 @@
 }
 
 .badge.estimate {
-  margin-left: 0.3rem;
-  font-weight: 400;
+  margin-left: var(--sp-1);
 }
 
-/* The (i) icon and its popover */
-.info-tip {
-  position: relative;
-  display: inline-flex;
-}
-
+/* ---- The (i) icon and its tooltip ---- */
 .info-tip-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.25rem;
-  height: 1.25rem;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
   padding: 0;
-  border: 0;
-  border-radius: 50%;
+  border-color: transparent;
+  border-radius: var(--radius-full);
   background: transparent;
-  color: var(--muted);
+  color: var(--text-muted);
   cursor: help;
 }
 
 .info-tip-button svg {
-  width: 0.95rem;
-  height: 0.95rem;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
 }
 
-.info-tip-button:hover,
-.info-tip-button[aria-expanded="true"] {
-  color: var(--accent);
+.info-tip-button:hover:not(:disabled) {
+  border-color: transparent;
   background: var(--accent-soft);
+  color: var(--accent-text);
 }
 
-.info-tip-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.info-tip-pop {
-  position: absolute;
-  z-index: 5;
-  top: calc(100% + 0.35rem);
-  left: -0.4rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  width: max-content;
-  max-width: min(23rem, 70vw);
-  padding: 0.6rem 0.75rem;
-  border: 1px solid var(--border-strong);
+/* Touch: a tap shows the help under the name instead of in a tooltip. */
+.info-tip-inline {
+  display: block;
+  flex-basis: 100%;
+  padding: var(--sp-2);
+  background: var(--surface-sunken);
   border-radius: var(--radius-sm);
-  background: var(--surface-3);
-  box-shadow: var(--shadow);
-  color: var(--text);
-  font-size: 0.82rem;
-  font-weight: 400;
-  line-height: 1.4;
-  white-space: normal;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-regular);
 }
 
-.info-tip-pop[hidden] {
-  display: none;
+.info-tip-inline .info-tip-help,
+.info-tip-inline .info-tip-affects {
+  display: block;
 }
 
-.info-tip-affects {
-  color: var(--muted);
-  font-size: 0.78rem;
+.info-tip-inline .info-tip-affects {
+  margin-top: var(--sp-1);
 }
 
-/* "Use this model" off: the model's tables are greyed, the switch row stays readable. */
+.tooltip .info-tip-help,
+.tooltip .info-tip-affects {
+  display: block;
+}
+
+.tooltip .info-tip-affects {
+  margin-top: var(--sp-1);
+  color: var(--text-muted);
+}
+
+/* ---- "Use this model" off: the model's tables are greyed, the switch row stays readable ---- */
 .model-off .model-table:not(:has(.switch)) {
   opacity: 0.55;
 }
@@ -245,12 +227,12 @@
 .model-default-choice {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.8rem;
   align-items: flex-start;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
 }
 
-.model-default-choice select {
+.model-default-choice button.select {
   width: auto;
-  min-width: 14rem;
+  min-width: min(100%, calc(224 * var(--px)));
 }

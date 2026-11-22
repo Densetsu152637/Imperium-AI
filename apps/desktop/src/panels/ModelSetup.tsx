@@ -3,11 +3,14 @@
 // from Hugging Face, or connect a hosted API endpoint. Nothing here needs a config file edit or a
 // daemon restart.
 
-import { Cloud, Download, FolderPlus } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { Cloud, Download, FolderPlus, type LucideIcon } from "lucide-react";
+import { useId, useState, type FormEvent, type ReactNode } from "react";
 
 import type { LocalModelListResult, ModelAddEndpointResult } from "@imperium/protocol";
 
+import { Field } from "../components/Field";
+import { Notice } from "../components/Notice";
+import { Spinner } from "../components/LoadingState";
 import type { DaemonClient } from "../daemon/client";
 import { pickFolder } from "../daemon/connection";
 
@@ -71,48 +74,42 @@ export function ModelSetup({
         </>
       )}
       <div className="setup-actions">
-        <button className="setup-action" onClick={addFolder} disabled={!client || busy}>
-          <FolderPlus aria-hidden="true" />
-          <span>
-            <strong>Add a model folder</strong>
-            <small>GGUF files, LM Studio or Hugging Face cache folders on this computer</small>
-          </span>
-        </button>
-        <button className="setup-action" onClick={onDownload} disabled={!client}>
-          <Download aria-hidden="true" />
-          <span>
-            <strong>Download from Hugging Face</strong>
-            <small>Pick a quantisation that fits this machine</small>
-          </span>
-        </button>
-        <button
-          className="setup-action"
-          onClick={() => setEndpointOpen((open) => !open)}
-          aria-expanded={endpointOpen}
-          disabled={!client}
+        <SetupCard icon={FolderPlus} title="Add a model folder" body="GGUF files, LM Studio or Hugging Face cache folders on this computer">
+          <button className="setup-action" onClick={addFolder} disabled={!client || busy}>
+            Add folder
+          </button>
+        </SetupCard>
+        <SetupCard icon={Download} title="Download from Hugging Face" body="Pick a quantisation that fits this machine">
+          <button className="setup-action" onClick={onDownload} disabled={!client}>
+            Download
+          </button>
+        </SetupCard>
+        <SetupCard
+          icon={Cloud}
+          title="Connect an API endpoint"
+          body="OpenRouter, OpenAI, a server on your network — anything OpenAI-compatible"
         >
-          <Cloud aria-hidden="true" />
-          <span>
-            <strong>Connect an API endpoint</strong>
-            <small>OpenRouter, OpenAI, a server on your network — anything OpenAI-compatible</small>
-          </span>
-        </button>
+          <button
+            className="setup-action"
+            onClick={() => setEndpointOpen((open) => !open)}
+            aria-expanded={endpointOpen}
+            disabled={!client}
+          >
+            Connect
+          </button>
+        </SetupCard>
       </div>
       {busy && (
-        <p className="muted" role="status">
-          Scanning…
+        <p className="muted setup-status" role="status">
+          <Spinner /> Scanning…
         </p>
       )}
       {note && (
-        <p className="muted" role="status">
+        <p className="muted setup-status" role="status">
           {note}
         </p>
       )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+      {error && <Notice tone="danger">{error}</Notice>}
       {endpointOpen && client && (
         <EndpointForm
           client={client}
@@ -128,6 +125,21 @@ export function ModelSetup({
         />
       )}
     </section>
+  );
+}
+
+/** One of the three choices: an icon, what it does, and one large action. */
+function SetupCard({ icon: Icon, title, body, children }: { icon: LucideIcon; title: string; body: string; children: ReactNode }) {
+  const titleId = useId();
+  return (
+    <div className="card setup-card" role="group" aria-labelledby={titleId}>
+      <Icon className="setup-icon" aria-hidden="true" />
+      <div className="setup-text">
+        <strong id={titleId}>{title}</strong>
+        <span className="muted">{body}</span>
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -162,12 +174,10 @@ function EndpointForm({ client, onAdded }: { client: DaemonClient; onAdded: (res
 
   return (
     <form className="endpoint-form" onSubmit={submit} aria-label="Connect an API endpoint">
-      <label>
-        Name
+      <Field label="Name">
         <input value={id} placeholder="openrouter" spellCheck={false} onChange={(e) => setId(e.target.value)} required />
-      </label>
-      <label>
-        Base URL
+      </Field>
+      <Field label="Base URL">
         <input
           value={baseUrl}
           placeholder="https://openrouter.ai/api/v1"
@@ -175,9 +185,8 @@ function EndpointForm({ client, onAdded }: { client: DaemonClient; onAdded: (res
           onChange={(e) => setBaseUrl(e.target.value)}
           required
         />
-      </label>
-      <label>
-        API key
+      </Field>
+      <Field label="API key">
         <input
           type="password"
           value={apiKey}
@@ -185,17 +194,12 @@ function EndpointForm({ client, onAdded }: { client: DaemonClient; onAdded: (res
           autoComplete="off"
           onChange={(e) => setApiKey(e.target.value)}
         />
-      </label>
-      <label>
-        Model
+      </Field>
+      <Field label="Model">
         <input value={model} placeholder="openai/gpt-4.1-mini (optional)" spellCheck={false} onChange={(e) => setModel(e.target.value)} />
-      </label>
+      </Field>
       <p className="muted">With a model, it becomes the default for new sessions.</p>
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+      {error && <Notice tone="danger">{error}</Notice>}
       <button type="submit" className="primary" disabled={busy || !id.trim() || !baseUrl.trim()}>
         Connect
       </button>
