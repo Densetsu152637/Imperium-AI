@@ -26,8 +26,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type {
   EnvironmentInfo,
@@ -39,6 +38,10 @@ import type {
   WorkspacesWhereResult,
 } from "@imperium/protocol";
 
+import { Badge } from "../components/Badge";
+import { Field } from "../components/Field";
+import { IconButton } from "../components/IconButton";
+import { Notice } from "../components/Notice";
 import { PermissionsEditor, samePermissions } from "../components/PermissionsEditor";
 import { Select } from "../components/Select";
 import { DialogNavGroup, DialogNavItem, Dialog } from "../components/Dialog";
@@ -58,8 +61,21 @@ import {
 import { searchIcons } from "../shared/icons";
 import { EnvironmentAgents, type EnvironmentAgentsHandle } from "../panels/EnvironmentAgents";
 import { EnvironmentConfigSection } from "../panels/EnvironmentConfigSection";
-import { EnvironmentRuntimeFields, draftOf, isRemote, runtimeOf, sameRuntime } from "../panels/EnvironmentRuntimeFields";
-import { GlyphSvg, ICON_COLORS, ProjectIcon, environmentIcon, sameFolder, type ProjectIconChoice } from "./projectIcons";
+import {
+  EnvironmentRuntimeFields,
+  draftOf,
+  isRemote,
+  runtimeOf,
+  sameRuntime,
+} from "../panels/EnvironmentRuntimeFields";
+import {
+  GlyphSvg,
+  ICON_COLORS,
+  ProjectIcon,
+  environmentIcon,
+  sameFolder,
+  type ProjectIconChoice,
+} from "./projectIcons";
 
 type Props = {
   /** The environment to edit; null to create one. */
@@ -93,6 +109,17 @@ const cleaned = (set: PermissionSet): PermissionSet => ({
   rules: set.rules.filter((rule) => rule.tool.trim()),
 });
 
+/** A labelled group of controls that are not one input (the icon and colour pickers), laid out like a Field. */
+function Group({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="field-stack">
+      <span className="field-label">{label}</span>
+      {children}
+      {hint && <p className="field-hint">{hint}</p>}
+    </div>
+  );
+}
+
 export function EnvironmentWindow({
   environment,
   client,
@@ -116,7 +143,10 @@ export function EnvironmentWindow({
   const [typedFolder, setTypedFolder] = useState("");
   const [pet, setPet] = useState(environment?.pet ?? "");
   const [installedPets, setInstalledPets] = useState<{ id: string; name: string }[]>([]);
-  const savedPermissions: PermissionSet = environment?.permissions ?? { grants: [], rules: [] };
+  const savedPermissions: PermissionSet = environment?.permissions ?? {
+    grants: [],
+    rules: [],
+  };
   const [permissions, setPermissions] = useState<PermissionSet>(savedPermissions);
   const [presets, setPresets] = useState<PathPreset[]>([]);
   const [working, setWorking] = useState<WorkspacesWhereResult["environments"][number] | null>(null);
@@ -150,7 +180,10 @@ export function EnvironmentWindow({
     if (environment) {
       client
         ?.call<WorkspacesWhereResult>("workspaces.where", {})
-        .then((result) => live && setWorking(result.environments.find((env) => env.environment_id === environment.id) ?? null))
+        .then(
+          (result) =>
+            live && setWorking(result.environments.find((env) => env.environment_id === environment.id) ?? null),
+        )
         .catch(() => {});
     }
     return () => {
@@ -188,7 +221,12 @@ export function EnvironmentWindow({
       setNewFolders((all) => (all.some((known) => sameFolder(known, folder)) ? all : [...all, folder]));
       return;
     }
-    const env = await attempt((c) => c.call<EnvironmentInfo>("environments.add_folder", { id: environment.id, folder }));
+    const env = await attempt((c) =>
+      c.call<EnvironmentInfo>("environments.add_folder", {
+        id: environment.id,
+        folder,
+      }),
+    );
     if (env) onSaved(env);
   };
 
@@ -198,7 +236,10 @@ export function EnvironmentWindow({
       return;
     }
     const env = await attempt((c) =>
-      c.call<EnvironmentInfo>("environments.remove_folder", { id: environment.id, folder }),
+      c.call<EnvironmentInfo>("environments.remove_folder", {
+        id: environment.id,
+        folder,
+      }),
     );
     if (env) onSaved(env);
   };
@@ -303,7 +344,12 @@ export function EnvironmentWindow({
   const nav = (
     <DialogNavGroup label={creating ? "New environment" : environment.name}>
       {sections.map((entry) => (
-        <DialogNavItem key={entry.id} icon={SECTION_ICONS[entry.id]} active={entry.id === current.id} onClick={() => setSection(entry.id)}>
+        <DialogNavItem
+          key={entry.id}
+          icon={SECTION_ICONS[entry.id]}
+          active={entry.id === current.id}
+          onClick={() => setSection(entry.id)}
+        >
           {entry.label}
         </DialogNavItem>
       ))}
@@ -312,11 +358,6 @@ export function EnvironmentWindow({
 
   const footer = (
     <>
-      {error && (
-        <span className="error" role="alert" title={error}>
-          {error}
-        </span>
-      )}
       <button type="button" onClick={() => requestClose()}>
         Cancel
       </button>
@@ -325,12 +366,43 @@ export function EnvironmentWindow({
         className="primary"
         onClick={saveEnvironment}
         disabled={busy || !client || !name.trim() || footerSaveBlocked(agentForm.dirty)}
-        title={footerSaveBlocked(agentForm.dirty) ? "Save or cancel the agent you are editing first (Agents section)" : undefined}
+        title={
+          footerSaveBlocked(agentForm.dirty)
+            ? "Save or cancel the agent you are editing first (Agents section)"
+            : undefined
+        }
       >
         {creating ? "Create" : "Save"}
       </button>
     </>
   );
+
+  const notices =
+    error || discarding ? (
+      <div className="environment-notices">
+        {error && <Notice tone="danger">{error}</Notice>}
+        {discarding && (
+          <div role="alertdialog" aria-label="Discard changes?">
+            <Notice
+              tone="warn"
+              title="Discard changes?"
+              action={
+                <span className="environment-notice-actions">
+                  <button type="button" onClick={() => setDiscarding(false)} autoFocus>
+                    Keep editing
+                  </button>
+                  <button type="button" className="danger" onClick={onClose}>
+                    Discard
+                  </button>
+                </span>
+              }
+            >
+              Unsaved edits to this environment will be lost.
+            </Notice>
+          </div>
+        )}
+      </div>
+    ) : undefined;
 
   return (
     <Dialog
@@ -338,21 +410,7 @@ export function EnvironmentWindow({
       title={current.label}
       nav={nav}
       footer={footer}
-      notice={
-        discarding && (
-          <div className="settings-notice" role="alertdialog" aria-label="Discard changes?">
-            <span>Discard changes? Unsaved edits to this environment will be lost.</span>
-            <span className="row-actions">
-              <button type="button" onClick={() => setDiscarding(false)} autoFocus>
-                Keep editing
-              </button>
-              <button type="button" className="danger" onClick={onClose}>
-                Discard
-              </button>
-            </span>
-          </div>
-        )
-      }
+      notice={notices}
       onClose={() => requestClose()}
       onKeyDown={(event) => {
         // Esc is handled here (preventDefault stops the modal's own close): a held key's repeats
@@ -370,12 +428,11 @@ export function EnvironmentWindow({
       }}
     >
       {current.id === "general" && (
-        <>
-          <Row label="Name" description="Shown in the Environments panel and wherever the environment is picked.">
+        <div className="environment-section">
+          <Field label="Name" hint="Shown in the Environments panel and wherever the environment is picked.">
             <input
               ref={nameInput}
               type="text"
-              aria-label="Environment name"
               value={name}
               placeholder="Environment name"
               onChange={(event) => setName(event.target.value)}
@@ -386,53 +443,52 @@ export function EnvironmentWindow({
                 }
               }}
             />
-          </Row>
-          <Row label="Icon" description="Drawn beside the environment's name; pick a glyph, then a colour.">
-            <span className="environment-preview">
-              <ProjectIcon choice={choice} />
-            </span>
-          </Row>
-          <RowNote>
+          </Field>
+          <Group label="Icon" hint="Drawn beside the environment's name; pick a glyph, then a colour.">
             <div className="environment-icon-picker">
-              <label className="search-field environment-icon-search">
-                <Search aria-hidden="true" />
-                <input
-                  type="search"
-                  placeholder="Search icons"
-                  aria-label="Search icons"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    // Escape clears the search first, then closes the window.
-                    if (event.key === "Escape" && query) {
-                      event.stopPropagation();
-                      event.nativeEvent.stopImmediatePropagation();
-                      setQuery("");
-                    }
-                  }}
-                />
-              </label>
-              <div className="tile-grid icon-choices" role="radiogroup" aria-label="Icon">
-                {icons.map((glyph) => (
-                  <button
-                    key={glyph}
-                    type="button"
-                    role="radio"
-                    className="tile-choice"
-                    title={glyph}
-                    aria-label={glyph}
-                    aria-checked={glyph === choice.icon}
-                    onClick={() => setChoice((value) => ({ ...value, icon: glyph }))}
-                  >
-                    <GlyphSvg glyph={glyph} />
-                  </button>
-                ))}
-                {icons.length === 0 && <p className="muted tile-grid-empty">No icon matches “{query}”.</p>}
+              <span className="environment-preview">
+                <ProjectIcon choice={choice} />
+              </span>
+              <div className="environment-icon-choices">
+                <label className="search-field environment-icon-search">
+                  <Search aria-hidden="true" />
+                  <input
+                    type="search"
+                    placeholder="Search icons"
+                    aria-label="Search icons"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      // Escape clears the search first, then closes the window.
+                      if (event.key === "Escape" && query) {
+                        event.stopPropagation();
+                        event.nativeEvent.stopImmediatePropagation();
+                        setQuery("");
+                      }
+                    }}
+                  />
+                </label>
+                <div className="tile-grid icon-choices" role="radiogroup" aria-label="Icon">
+                  {icons.map((glyph) => (
+                    <button
+                      key={glyph}
+                      type="button"
+                      role="radio"
+                      className="tile-choice"
+                      title={glyph}
+                      aria-label={glyph}
+                      aria-checked={glyph === choice.icon}
+                      onClick={() => setChoice((value) => ({ ...value, icon: glyph }))}
+                    >
+                      <GlyphSvg glyph={glyph} />
+                    </button>
+                  ))}
+                  {icons.length === 0 && <p className="muted tile-grid-empty">No icon matches “{query}”.</p>}
+                </div>
               </div>
             </div>
-          </RowNote>
-          <Row label="Colour" description="The icon's background." />
-          <RowNote>
+          </Group>
+          <Group label="Colour" hint="The icon's background.">
             <div className="tile-grid" role="radiogroup" aria-label="Colour">
               {ICON_COLORS.map((color, index) => (
                 <button
@@ -448,10 +504,12 @@ export function EnvironmentWindow({
                 />
               ))}
             </div>
-          </RowNote>
-          <Row label="Pet" description="The default pet for this environment's sessions in the nursery, unless the nursery says otherwise.">
+          </Group>
+          <Field
+            label="Pet"
+            hint="The default pet for this environment's sessions in the nursery, unless the nursery says otherwise."
+          >
             <Select
-              aria-label="Pet"
               value={pet}
               disabled={disabled}
               options={[
@@ -462,12 +520,12 @@ export function EnvironmentWindow({
               ]}
               onChange={setPet}
             />
-          </Row>
-        </>
+          </Field>
+        </div>
       )}
 
       {current.id === "folders" && (
-        <>
+        <div className="environment-section">
           <Row
             label="Folders"
             description={
@@ -483,11 +541,10 @@ export function EnvironmentWindow({
             )}
           </Row>
           {isRemote(runtime) && (
-            <Row label="Folder path" description="A path inside the runtime, such as /home/me/project." sub>
-              <span className="row-actions">
+            <Field label="Folder path" hint="A path inside the runtime, such as /home/me/project.">
+              <span className="environment-inline">
                 <input
                   type="text"
-                  aria-label="Folder inside the runtime"
                   placeholder="/home/me/project"
                   value={typedFolder}
                   onChange={(event) => setTypedFolder(event.target.value)}
@@ -504,37 +561,34 @@ export function EnvironmentWindow({
                   <FolderPlus aria-hidden="true" /> Add path
                 </button>
               </span>
-            </Row>
+            </Field>
           )}
-          <RowNote>
-            <ul className="environment-folders" aria-label="Folders">
+          {folders.length > 0 ? (
+            <ul className="environment-list" aria-label="Folders">
               {folders.map((folder, index) => (
-                <li key={folder}>
+                <li key={folder} className="environment-list-row">
                   <span className="folder-path" title={folder}>
                     {folder}
                   </span>
-                  {index === 0 && <span className="folder-badge">working directory</span>}
-                  <button
-                    type="button"
-                    className="ghost icon-only row-tool"
-                    aria-label={`Remove ${folder}`}
-                    title="Remove folder (the folder itself is untouched)"
+                  {index === 0 && <Badge>working directory</Badge>}
+                  <IconButton
+                    icon={X}
+                    size="sm"
+                    label={`Remove ${folder}`}
+                    tooltip="Remove folder (the folder itself is untouched)"
                     disabled={disabled}
                     onClick={() => void removeFolder(folder)}
-                  >
-                    <X />
-                  </button>
+                  />
                 </li>
               ))}
-              {folders.length === 0 && (
-                <li className="muted">
-                  {environment?.builtin
-                    ? "Home has no project folders: its sessions work in their own scratch folders. Add a folder only to open a project to them."
-                    : "No folders yet. Add one to start sessions here; the first is the working directory."}
-                </li>
-              )}
             </ul>
-          </RowNote>
+          ) : (
+            <p className="muted environment-empty">
+              {environment?.builtin
+                ? "Home has no project folders: its sessions work in their own scratch folders. Add a folder only to open a project to them."
+                : "No folders yet. Add one to start sessions here; the first is the working directory."}
+            </p>
+          )}
           <EnvironmentRuntimeFields
             draft={runtime}
             onChange={setRuntime}
@@ -548,11 +602,11 @@ export function EnvironmentWindow({
               return client.call<RuntimeTestResult>("environments.test_runtime", { id: environment.id });
             }}
           />
-        </>
+        </div>
       )}
 
       {/* Always mounted, hidden from other sections: switching away keeps an open agent form. */}
-      <div hidden={paneHidden(current.id, "agents")}>
+      <div className="environment-section" hidden={paneHidden(current.id, "agents")}>
         <EnvironmentAgents
           ref={agentsRef}
           environment={environment}
@@ -567,7 +621,7 @@ export function EnvironmentWindow({
       </div>
 
       {current.id === "memory" && !creating && (
-        <>
+        <div className="environment-section">
           <Row
             label="Memory.md"
             description="Notes for this environment only: agents read it at the start of every session here and can add to it."
@@ -596,57 +650,63 @@ export function EnvironmentWindow({
               </span>
             )}
           </RowNote>
-        </>
+        </div>
       )}
 
-      {current.id === "config" && !creating && <EnvironmentConfigSection environment={environment} client={client} />}
+      {current.id === "config" && !creating && (
+        <div className="environment-section">
+          <EnvironmentConfigSection environment={environment} client={client} />
+        </div>
+      )}
 
       {current.id === "permissions" && (
-        <>
+        <div className="environment-section">
           <Row
             label="Permissions"
             description="Added to the global permissions in Settings → Permissions; applied with Save. Rules reach running sessions at their next tool call, paths reach sessions started afterwards."
           />
-          <RowNote>
-            <PermissionsEditor
-              value={permissions}
-              onChange={setPermissions}
-              presets={presets}
-              remote={isRemote(runtime)}
-              disabled={disabled}
-            />
-          </RowNote>
-        </>
+          <PermissionsEditor
+            value={permissions}
+            onChange={setPermissions}
+            presets={presets}
+            remote={isRemote(runtime)}
+            disabled={disabled}
+          />
+        </div>
       )}
 
       {current.id === "danger" && !creating && !builtin && (
-        <Row
-          label="Delete environment"
-          description="Removes the environment and its settings. Its folders on disk are untouched."
-        >
-          {deleting ? (
-            <span className="environment-delete-confirm" role="group" aria-label="Confirm delete">
-              <span>Delete {environment.name}?</span>
-              <button type="button" className="danger" onClick={() => void remove()} disabled={busy} autoFocus>
-                Delete
-              </button>
-              <button type="button" onClick={() => setDeleting(false)}>
-                Keep
-              </button>
-            </span>
-          ) : (
-            <button
-              type="button"
-              className="danger"
-              onClick={() => setDeleting(true)}
-              disabled={disabled}
-              aria-label="Delete environment"
-              title="Delete environment (folders on disk are untouched)"
-            >
-              <Trash aria-hidden="true" /> Delete…
-            </button>
-          )}
-        </Row>
+        <div className="environment-section">
+          <Notice
+            tone="danger"
+            title={deleting ? `Delete ${environment.name}?` : "Delete environment"}
+            action={
+              deleting ? (
+                <span className="environment-notice-actions" role="group" aria-label="Confirm delete">
+                  <button type="button" className="danger" onClick={() => void remove()} disabled={busy} autoFocus>
+                    Delete
+                  </button>
+                  <button type="button" onClick={() => setDeleting(false)}>
+                    Keep
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => setDeleting(true)}
+                  disabled={disabled}
+                  aria-label="Delete environment"
+                  title="Delete environment (folders on disk are untouched)"
+                >
+                  <Trash aria-hidden="true" /> Delete…
+                </button>
+              )
+            }
+          >
+            Removes the environment and its settings. Its folders on disk are untouched.
+          </Notice>
+        </div>
       )}
     </Dialog>
   );

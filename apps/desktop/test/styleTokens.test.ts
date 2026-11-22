@@ -114,7 +114,7 @@ test("every stylesheet except tokens.css holds exactly the literals its style-bu
 /** Set from TypeScript, not CSS: the style attribute of a row (`--branch-depth`, `--swatch`) and the root element (`--font-prose`). */
 const SET_FROM_TSX = ["--branch-depth", "--swatch", "--font-prose"];
 /** Read but never defined, with a fallback that is not a token: it resolves to transparent today. The stage that defines it removes the entry. */
-const KNOWN_UNDEFINED = ["--surface-1"];
+const KNOWN_UNDEFINED: string[] = [];
 
 function reads(css: string): { name: string; fallback: string | undefined }[] {
   const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
