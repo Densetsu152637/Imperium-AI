@@ -615,9 +615,11 @@ opened before a theme switch keeps its old scheme and tokens until it is reopene
 unchanged: the same tokens (`THEME_TOKENS`) and bridge messages. The bundled Imperium Nursery
 fills its frame with one scroll owner (its own panel; the frame document and the room do not
 scroll), wraps its controls bar into one column under 220 px, styles its selects with the
-tokens, draws pets smaller (never below 30 %) so that the whole box of every pet, sprite plus
-label, fits the room with spare room to wander, and puts new and wandering pets where their
-boxes stay clear of the others.
+tokens, and draws pets smaller only when their whole boxes (sprite plus label) would not fit the
+room (labels keep at least 72 px while they can, and sprites never go below 30 %). When the room
+has space at that minimum size, new and wandering pets are placed where their boxes stay clear of
+the others; a very crowded room cannot guarantee it, and pets that walk past each other may
+overlap briefly.
 
 **Tokens and accents (implemented):** every length derives from `--px` (one CSS pixel at 100 % UI
 scale), spacing runs on 4 px steps (`--sp-1` to `--sp-8`), the control-height tokens provide a 24 px floor at any density (surfaces adopt them in their

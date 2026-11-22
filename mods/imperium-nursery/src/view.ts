@@ -11,7 +11,7 @@ import type { Drag } from "./drag.ts";
 import { angleTo } from "./play.ts";
 import { busyOf, busySubs } from "./route.ts";
 import { fitSize, frameAt } from "./render.ts";
-import { PLAY_SPEED, SPEED, boundsOf, boxSize, boxesOverlap, clampTo, clearTarget, edgeTarget, fitScale, newRoamer, pauseDelay, pickTarget, playTarget, roam, roomHeight, scaleMetrics, separate, spawnPoint, spreadSpots, stepToward } from "./space.ts";
+import { PLAY_SPEED, SPEED, boundsOf, boxSize, boxSlots, clampTo, clearTarget, edgeTarget, fitMetrics, newRoamer, pauseDelay, pickTarget, playTarget, roam, roomHeight, separate, spawnPoint, spreadSpots, stepToward, stranded } from "./space.ts";
 import type { Body, Bounds, Metrics, Pos, Roamer } from "./space.ts";
 
 /** Width of a pet's box (the label's width) and the height of its label line, in px. */
@@ -19,6 +19,8 @@ const LABEL_W = 112;
 const LABEL_H = 18;
 /** How long a finished pet takes to fade out before it is removed, in ms. */
 const FADE_MS = 2500;
+/** How long a pet just let go of is left where it was dropped, in ms. */
+const DROP_HOLD_MS = 1500;
 
 export const CSS = `
 html, body { height: 100%; overflow: hidden; }
@@ -106,6 +108,8 @@ type Cell = {
   drag: Drag | null;
   pointer: number;
   swallow: boolean;
+  /** When it was last let go of after a drag (ms since epoch; 0 when never). */
+  droppedAt: number;
 };
 
 type Moved = { anim: string | null; name: string; since: number; look: number | null };
@@ -124,8 +128,10 @@ export class Room {
   private last = 0;
   private width = 0;
   private height = 0;
-  /** How big pets are drawn, as a fraction of full size: shrinks so the crowd's whole boxes fit the room. */
-  private scale = 1;
+  /** A pet's metrics as drawn: smaller than full size when the crowd's whole boxes would not fit the room. */
+  private fitted: Metrics | null = null;
+  /** No spare box in the room: free pets stand where they are instead of wandering into each other. */
+  private tight = false;
   private observer: ResizeObserver | null = null;
 
   private nursery: Nursery;
@@ -152,7 +158,7 @@ export class Room {
 
   /** A pet's metrics as drawn: smaller when the room is crowded (see `rescale`). */
   private get metrics(): Metrics {
-    return scaleMetrics(this.base, this.scale);
+    return this.fitted ?? this.base;
   }
 
   private bounds(): Bounds {
@@ -185,10 +191,12 @@ export class Room {
   /** Sizes the pets so that the whole box (sprite plus label) of each fits in the room without overlapping, down to a minimum. */
   private rescale(): void {
     const count = [...this.cells.keys()].filter((key) => this.nursery.entries.get(key)?.removeAt == null).length;
-    const scale = this.width > 0 && this.height > 0 ? fitScale({ width: this.width, height: this.height }, count, this.base) : 1;
-    if (scale === this.scale) return;
-    this.scale = scale;
-    const { half, above } = this.metrics;
+    const next = this.width > 0 && this.height > 0 ? fitMetrics({ width: this.width, height: this.height }, count, this.base).metrics : this.base;
+    this.tight = this.width > 0 && boxSlots({ width: this.width, height: this.height }, next).length <= count;
+    const now = this.metrics;
+    if (next.half === now.half && next.above === now.above) return;
+    this.fitted = next;
+    const { half, above } = next;
     for (const cell of this.cells.values()) {
       cell.el.style.width = `${half * 2}px`;
       const stage = cell.el.querySelector<HTMLElement>(".stage");
@@ -197,16 +205,17 @@ export class Room {
       cell.sized = "";
       cell.xform = "";
     }
-    // Bigger boxes may now overlap pets that stand still (asleep, at work): those pets that
-    // overlap an earlier one are put back in the room again, on a free spot.
-    const kept: Pos[] = [];
-    for (const [key, cell] of this.cells) {
-      if (!cell.placed) continue;
-      const here = { x: cell.r.x, y: cell.r.y };
-      const fixed = cell.drag?.lifted || this.nursery.entries.get(key)?.removeAt != null;
-      if (!fixed && kept.some((q) => boxesOverlap(here, q, this.metrics))) cell.placed = false;
-      else kept.push(here);
-    }
+    // Bigger boxes may now overlap pets that cannot move by themselves (asleep, at work): those
+    // that overlap an earlier pet are put back in the room on a free spot. Pets that walk, and
+    // one just let go of, stay where they are; the separation pass pushes them apart.
+    const at = Date.now();
+    const placed = [...this.cells].filter(([, cell]) => cell.placed);
+    const pets = placed.map(([key, cell]) => {
+      const entry = this.nursery.entries.get(key);
+      const stuck = entry ? entry.removeAt === null && (busyOf(entry.arbiter) !== null || this.nursery.view(entry, at).name === "sleeping") : false;
+      return { pos: { x: cell.r.x, y: cell.r.y }, moves: !stuck || !!cell.drag?.lifted || at - cell.droppedAt < DROP_HOLD_MS };
+    });
+    for (const i of stranded(pets, next)) placed[i]![1].placed = false;
   }
 
   /** Where pet `key` stands, or null when it has no place yet. */
@@ -261,6 +270,7 @@ export class Room {
       if (cell.drag?.lifted) {
         // The click that ends a press that moved is not a pat; if none comes, forget it soon.
         cell.swallow = true;
+        cell.droppedAt = Date.now();
         setTimeout(() => (cell.swallow = false), 0);
       }
       cell.drag = null;
@@ -355,6 +365,7 @@ export class Room {
       drag: null,
       pointer: -1,
       swallow: false,
+      droppedAt: 0,
     };
   }
 
@@ -577,6 +588,9 @@ export class Room {
       } else if (info.pose.mode === "sleep" && resolveAnimation(pet.catalog, "sleeping") !== "idle") anim = resolveAnimation(pet.catalog, "sleeping");
     } else if (this.guided(cell, entry, now, dt, b, (x, y) => { dx = x; dy = y; })) {
       // A WebAssembly behaviour steers this pet; nothing else to do.
+    } else if (this.tight) {
+      // Not a box to spare in this room: stand still rather than walk into the others.
+      cell.r = { ...cell.r, tx: cell.r.x, ty: cell.r.y, nextAt: now + pauseDelay(Math.random) };
     } else {
       // Play just ended or was cut short: stand a while, then roam again.
       const r = wasPlaying ? { ...newRoamer(cell.r, now, Math.random), tx: cell.r.x, ty: cell.r.y } : cell.r;

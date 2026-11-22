@@ -15,7 +15,9 @@ import {
   clampTo,
   clearTarget,
   edgeTarget,
+  fitMetrics,
   fitScale,
+  MIN_LABEL,
   nearestPartner,
   newRoamer,
   pickTarget,
@@ -24,6 +26,7 @@ import {
   roam,
   roomHeight,
   scaleMetrics,
+  stranded,
   separate,
   spawnPoint,
   spreadSpots,
@@ -246,7 +249,7 @@ test("ten pets in a 140 x 300 room never have overlapping boxes", () => {
   const scale = fitScale(narrow, 10, FULL);
   expect(scale).toBeLessThan(1);
   expect(scale).toBeGreaterThanOrEqual(MIN_SCALE);
-  const m = scaleMetrics(FULL, scale);
+  const m = fitMetrics(narrow, 10, FULL).metrics;
   // Laid out in one go (reduced motion).
   const laid = spreadSpots(10, narrow, m);
   expect(laid).toHaveLength(10);
@@ -277,9 +280,9 @@ test("the slots are whole boxes that stay inside the room", () => {
 test("pets are drawn at full size while they fit, and shrink as the room fills, down to a minimum", () => {
   expect(fitScale({ width: 500, height: 300 }, 2, FULL)).toBe(1);
   // Pets get spare room to wander in: more boxes fit than there are pets, unless already at the minimum.
-  const sized = fitScale({ width: 105, height: 515 }, 6, FULL);
-  expect(sized).toBeLessThan(1);
-  expect(boxSlots({ width: 105, height: 515 }, scaleMetrics(FULL, sized)).length).toBeGreaterThanOrEqual(9);
+  const sized = fitMetrics({ width: 105, height: 515 }, 6, FULL);
+  expect(sized.scale).toBeLessThan(1);
+  expect(boxSlots({ width: 105, height: 515 }, sized.metrics).length).toBeGreaterThanOrEqual(7);
   const few = fitScale(narrow, 3, FULL);
   const many = fitScale(narrow, 10, FULL);
   expect(many).toBeLessThan(few);
@@ -305,7 +308,7 @@ test("separation by box keeps the slots of a grid where they are", () => {
 });
 
 test("a roaming pet picks a spot whose whole box is clear of the others, when the room has one", () => {
-  const m = scaleMetrics(FULL, fitScale(narrow, 6, FULL));
+  const m = fitMetrics(narrow, 6, FULL).metrics;
   const bounds = boundsOf(narrow, m);
   const standing = spreadSpots(6, narrow, m);
   for (let seed = 1; seed <= 20; seed++) {
@@ -317,4 +320,40 @@ test("a roaming pet picks a spot whose whole box is clear of the others, when th
   // Nowhere clear (every grid spot taken): null, and the caller takes any spot.
   const all = boxSlots(narrow, m);
   expect(clearTarget(bounds, { x: -999, y: -999 }, all, m, narrow, seeded(3))).toBeNull();
+});
+
+test("pets shrink only when their boxes do not fit, and labels stay readable", () => {
+  // A 122 px wide room at its minimum height: one pet at full size, two a little smaller.
+  const room122 = { width: 122, height: 220 };
+  expect(fitScale(room122, 1, FULL)).toBe(1);
+  expect(fitScale(room122, 2, FULL)).toBeGreaterThanOrEqual(0.7);
+  expect(fitScale(room122, 0, FULL)).toBe(1);
+  // A room as tall as the nursery makes it for ten pets 121 px wide: the sprite shrinks, the label stays.
+  const tall = { width: 121, height: roomHeight(10, 121) };
+  const { scale, metrics } = fitMetrics(tall, 10, FULL);
+  expect(scale).toBeLessThan(1);
+  expect(scale).toBeGreaterThanOrEqual(MIN_SCALE);
+  expect(metrics.half * 2).toBeGreaterThanOrEqual(MIN_LABEL);
+  const spots = spreadSpots(10, tall, metrics);
+  expect(crowding(spots, metrics, tall)).toEqual({ pairs: 0, outside: 0 });
+  // A label is never wider than it was.
+  expect(scaleMetrics(FULL, 1).half).toBe(FULL.half);
+  expect(scaleMetrics({ ...FULL, half: 20 }, 0.5).half).toBe(20);
+  expect(scaleMetrics(FULL, 0.3).half).toBe(MIN_LABEL / 2);
+  expect(scaleMetrics(FULL, 0.3, false).half).toBe(17);
+});
+
+test("after the boxes grow, only pets that cannot move are put back; walking and just-dropped pets stay", () => {
+  const m = scaleMetrics(FULL, 1);
+  const a = { x: 60, y: 130 };
+  // The second pet was dropped on the first (it can move), the third is asleep on the first, the fourth asleep far away.
+  const pets = [
+    { pos: a, moves: true },
+    { pos: { x: 70, y: 150 }, moves: true },
+    { pos: { x: 65, y: 140 }, moves: false },
+    { pos: { x: 60, y: 600 }, moves: false },
+  ];
+  expect(stranded(pets, m)).toEqual([2]);
+  // Remove the sleeper: nobody is put back, the dropped pet stays where it was.
+  expect(stranded([pets[0]!, pets[1]!, pets[3]!], m)).toEqual([]);
 });

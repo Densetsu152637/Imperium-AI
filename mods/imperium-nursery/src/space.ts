@@ -35,8 +35,18 @@ export const boxesOverlap = (a: Pos, b: Pos, m: Metrics): boolean => {
   return Math.abs(a.x - b.x) < box.width && Math.abs(a.y - b.y) < box.height;
 };
 
-/** A pet drawn at `scale` of full size: the sprite and the label's width shrink, the label line and margins do not. Whole pixels. */
-export const scaleMetrics = (m: Metrics, scale: number): Metrics => ({ ...m, half: Math.round(m.half * scale), above: Math.round(m.above * scale) });
+/** The narrowest a label is drawn while there is room for it: a name stays readable when the sprite shrinks. */
+export const MIN_LABEL = 72;
+
+/**
+ * A pet drawn at `scale` of full size: the sprite shrinks, and so does the label's width, but not
+ * below `MIN_LABEL` (or its full width) unless `labelFloor` is off. The label line and margins do not shrink. Whole pixels.
+ */
+export const scaleMetrics = (m: Metrics, scale: number, labelFloor = true): Metrics => ({
+  ...m,
+  half: Math.max(labelFloor ? Math.min(m.half, MIN_LABEL / 2) : 0, Math.round(m.half * scale)),
+  above: Math.round(m.above * scale),
+});
 
 /**
  * Feet spots of a grid of boxes that do not overlap (row-major): as many columns and rows of whole
@@ -61,20 +71,41 @@ export function boxSlots(room: Size, m: Metrics): Pos[] {
   return slots;
 }
 
-/** Boxes the room holds, per pet, before pets are drawn smaller: spare room to wander in and be pushed apart in. */
-export const ROOM_SLACK = 1.5;
+/** Up to this many pets need no spare boxes; above it a tenth more (at least one) leave room to wander in. */
+export const SLACK_FROM = 4;
 
 /**
- * How big `count` pets can be drawn, as a fraction of `base` (1 down to `min`, in steps of 0.05),
- * so that `slack` times as many whole boxes as pets fit in the room without overlapping; `min` when
- * even that is too tight.
+ * How big `count` pets can be drawn, as a fraction of `base` (1 down to `min`, in steps of 0.05):
+ * the largest at which all their whole boxes fit in the room without overlapping (one more per ten
+ * pets once there are more than `SLACK_FROM`, for wandering). Labels keep at least `MIN_LABEL`
+ * unless no size fits that way, and only then narrow with the sprite. `min` when even that is too tight.
  */
-export function fitScale(room: Size, count: number, base: Metrics, min = MIN_SCALE, slack = ROOM_SLACK): number {
-  const need = Math.ceil(count * slack);
-  for (let percent = 100; percent > min * 100; percent -= 5) {
-    if (boxSlots(room, scaleMetrics(base, percent / 100)).length >= need) return percent / 100;
+export function fitMetrics(room: Size, count: number, base: Metrics, min = MIN_SCALE): { scale: number; metrics: Metrics } {
+  const need = count <= SLACK_FROM ? count : count + Math.ceil(count / 10);
+  for (const floor of [true, false]) {
+    for (let percent = 100; percent > min * 100; percent -= 5) {
+      const metrics = scaleMetrics(base, percent / 100, floor);
+      if (boxSlots(room, metrics).length >= need) return { scale: percent / 100, metrics };
+    }
   }
-  return min;
+  return { scale: min, metrics: scaleMetrics(base, min, false) };
+}
+
+export const fitScale = (room: Size, count: number, base: Metrics, min = MIN_SCALE): number => fitMetrics(room, count, base, min).scale;
+
+/**
+ * Which pets to put back on a free spot after the boxes grew: those that cannot move by
+ * themselves (`moves` false: asleep, at work) and overlap an earlier pet. Pets that can move are
+ * never listed; the separation pass pushes them apart.
+ */
+export function stranded(pets: { pos: Pos; moves: boolean }[], m: Metrics): number[] {
+  const out: number[] = [];
+  const kept: Pos[] = [];
+  pets.forEach((pet, i) => {
+    if (!pet.moves && kept.some((q) => boxesOverlap(pet.pos, q, m))) out.push(i);
+    else kept.push(pet.pos);
+  });
+  return out;
 }
 
 /** The room's feet bounds; a room too small for a pet collapses to its middle. */
