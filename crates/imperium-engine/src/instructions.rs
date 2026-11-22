@@ -32,6 +32,45 @@ pub(crate) const REFERENCE_PREFIX: &str = "instructions:";
 const INTRO: &str = "Instruction files for directories you opened, outermost first. The nearest \
                      file comes last and takes precedence where they differ.";
 
+/// The project instruction file `/init` writes: the one Imperium reads from the project folder
+/// first (it also reads `CLAUDE.md`).
+pub const INIT_FILE: &str = "AGENTS.md";
+
+/// The built-in prompt `/init` sends as an ordinary user message (`session.init`): the agent
+/// explores with its tools and writes the project's instruction file with its edit tools, so
+/// permissions and approvals apply as for any edit. An existing file is updated, not replaced.
+/// `guidance` is what the user asked to emphasise.
+pub fn init_prompt(guidance: Option<&str>) -> String {
+    let mut prompt = format!(
+        "Analyse this project and write its instruction file for coding agents: `{INIT_FILE}` in \
+         the project folder (it is loaded as project instructions, together with `CLAUDE.md`).\n\
+         \n\
+         1. Look before you write. List the folder; read the README, the manifests and build files \
+         (package.json, Cargo.toml, pyproject.toml, Makefile and the like), the CI workflows, the \
+         lint and format configuration, and a sample of the source and the tests. Read any \
+         existing `{INIT_FILE}`, `CLAUDE.md` and `.imperium/policy/` files. Use read-only tools; \
+         do not run builds or other long commands.\n\
+         2. Never overwrite an existing file. If `{INIT_FILE}` exists, read it, find what is \
+         missing, out of date or wrong against what you found, and make targeted edits that keep \
+         its structure and the user's wording. If only `CLAUDE.md` exists, update that file \
+         instead of creating a second one with the same content. Otherwise create `{INIT_FILE}`.\n\
+         3. Put in it: what the project is (a line or two); the exact commands to build, test, \
+         lint and run it, taken from the manifests and CI; the layout and where to look for what; \
+         conventions that the code does not make obvious (style, naming, error handling, commit \
+         and review rules); and the pitfalls (generated files, files not to edit, tools or \
+         environment it needs). Keep it short, under about 100 lines, specific to this project and \
+         free of generic advice. State only what the files confirm; leave out what you cannot \
+         verify.\n\
+         4. Write it with your file tools (the user approves the edit as for any other), then say \
+         in a few lines what you wrote or changed."
+    );
+    if let Some(guidance) = guidance.map(str::trim).filter(|text| !text.is_empty()) {
+        prompt.push_str("\n\nThe user asks you to pay particular attention to this: ");
+        prompt.push_str(guidance);
+    }
+    prompt
+}
+
 /// One instruction file, rendered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Loaded {
@@ -444,5 +483,22 @@ mod tests {
         ];
         let tracker = Tracker::from_messages(&messages);
         assert!(tracker.loaded.contains("/p/a/AGENTS.md"));
+    }
+}
+
+#[cfg(test)]
+mod init_tests {
+    use super::*;
+
+    #[test]
+    fn the_init_prompt_names_the_file_and_updates_rather_than_overwrites() {
+        let prompt = init_prompt(None);
+        assert!(prompt.contains("`AGENTS.md`"));
+        assert!(prompt.contains("Never overwrite an existing file"));
+        assert!(prompt.contains("CLAUDE.md"));
+        assert!(!prompt.contains("particular attention"));
+        let guided = init_prompt(Some("  the build commands  "));
+        assert!(guided.ends_with("this: the build commands"), "{guided}");
+        assert_eq!(init_prompt(Some("  ")), prompt);
     }
 }

@@ -7,6 +7,7 @@
 mod exec;
 mod files;
 mod invocation;
+mod mentions;
 mod processes;
 mod project_worktrees;
 mod remote_files;
@@ -18,6 +19,9 @@ mod writer_trees;
 
 pub use exec::{SPAWNED_MARK, shell};
 pub use invocation::{Access, Invocation, ToolError, specs};
+pub use mentions::{
+    FileMatch, FileSearch, MAX_MATCHES, find_files, fuzzy_score, mention_withheld, read_remote_file,
+};
 pub use processes::Processes;
 pub use runtime::{ProcessRunner, ProcessSpec, Remote, RunOutput, Runner};
 pub use sandbox::Sandbox;

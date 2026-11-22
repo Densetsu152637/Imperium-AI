@@ -94,6 +94,8 @@ method session.delete
 method session.eval_create
 method session.eval_result
 method session.export
+method session.files
+method session.init
 method session.list
 method session.prompt_preview
 method session.queue
