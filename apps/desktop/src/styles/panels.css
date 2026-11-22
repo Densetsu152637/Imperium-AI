@@ -1,4 +1,3 @@
-/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The side panels: agents, approvals, browser, preview, resources, telemetry, usage and review. */
 
 /* Empty states inside a panel are quieter than a full view's. */
@@ -121,7 +120,7 @@
   grid-area: bar;
   height: var(--sp-2);
   border-radius: var(--radius-full);
-  background: var(--surface-3);
+  background: var(--surface-raised-hover);
   overflow: hidden;
 }
 
@@ -130,7 +129,7 @@
   height: 100%;
   border-radius: inherit;
   background: var(--accent);
-  transition: width var(--slow) var(--ease);
+  transition: width var(--dur-base) var(--ease-standard);
 }
 
 .meter-bar[data-level="busy"] > span {
@@ -386,6 +385,7 @@
   border-radius: var(--radius);
 }
 
+/* The page image draws the ring (.browser-page:focus-visible img below). */
 .browser-page {
   outline: none;
 }

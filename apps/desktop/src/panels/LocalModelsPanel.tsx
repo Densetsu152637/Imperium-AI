@@ -28,7 +28,7 @@ import type { DaemonClient } from "../daemon/client";
 import { pickFile } from "../daemon/connection";
 import { ModelSetup } from "./ModelSetup";
 import { arrangeModels, markOf, type ModelMark } from "../models/modelPrefs";
-import { useModelMarks } from "../settings/settings";
+import { prefersReducedMotion, useModelMarks } from "../settings/settings";
 import { HiddenGroupRow, ModelMarkButtons } from "./ModelMarks";
 import { localDescription, localSpec, memoryPlan } from "./ModelSelect";
 
@@ -92,7 +92,7 @@ export function LocalModelsPanel({
 }) {
   const hfInput = useRef<HTMLInputElement>(null);
   const showDownload = () => {
-    hfInput.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    hfInput.current?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "center" });
     hfInput.current?.focus();
   };
   const download = <HfDownload client={client} onDone={onRefresh} inputRef={hfInput} />;

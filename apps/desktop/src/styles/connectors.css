@@ -1,4 +1,3 @@
-/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The Connectors window, drawn inside the shared Dialog: the tab and search toolbar, the card directory, the installed rows and the connector forms. The window itself, tabs, fields, badges, notices and empty states are shared components (primitives.css, dialog.css). */
 
 /* ---- Toolbar: Tabs on the left, search on the right, between the header and the body ---- */
@@ -59,28 +58,6 @@
 
 .connectors-footnote {
   margin-top: var(--sp-2);
-}
-
-/* ---- Category chips (also used by the permission presets and the usage panel) ---- */
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-}
-
-.chip {
-  min-height: var(--control-h-sm);
-  padding: 0 var(--sp-3);
-  border-radius: var(--radius-full);
-  font-size: var(--fs-sm);
-  background: transparent;
-  color: var(--text-muted);
-}
-
-.chip[aria-pressed="true"] {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  color: var(--text);
 }
 
 /* ---- Browse: an even grid of cards, the foot of each pinned to its bottom edge ---- */

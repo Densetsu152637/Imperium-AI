@@ -1,4 +1,3 @@
-/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* Models: the model and local model panels, the first-run setup cards and downloads. Panels
    are narrow columns (about 300 px at 1024 wide), so nothing here has a fixed minimum width:
    controls shrink and wrap, and tables drop columns by container width instead of clipping.
@@ -46,6 +45,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
+  min-height: var(--control-h-sm);
   padding: 0;
   background: none;
   border: none;
