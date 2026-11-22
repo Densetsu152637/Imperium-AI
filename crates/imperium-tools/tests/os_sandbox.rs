@@ -1,7 +1,8 @@
 //! A command in the OS isolation tier must not be able to obtain a credential for the daemon or
-//! a connection to it: the endpoint file (it holds the access token) is unreadable and the local
-//! socket cannot be opened, while the workspace, even when it sits inside the daemon's data
-//! folder (the default), still works.
+//! a connection to it, nor write the daemon's configuration and data folders: the endpoint file
+//! (it holds the access token) is unreadable, the local socket cannot be opened, the folders
+//! cannot be written even when a session folder contains them, and the workspace, even when it
+//! sits inside the daemon's data folder (the default), still works.
 //!
 //! These run the real sandbox (`bwrap` on Linux, `sandbox-exec` on macOS). Where it cannot run
 //! (bubblewrap missing, or user namespaces refused) they skip, unless
@@ -10,18 +11,24 @@
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::os::unix::net::UnixListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use imperium_tools::{Sandbox, hide_from_os_sandbox};
+use imperium_tools::{GrantedPath, Sandbox, guard_from_commands, hide_from_os_sandbox};
 
 const TOKEN: &str = "TOKEN-THE-SANDBOX-MUST-NOT-SEE";
 
-/// Runs `command` in the OS tier with `root` as the workspace; the exit status and what it
-/// printed, or `None` when the sandbox could not be started.
-async fn in_sandbox(root: &Path, command: &str) -> Option<(bool, String)> {
+/// Whether a skipped check is a failure (CI sets `IMPERIUM_REQUIRE_OS_SANDBOX`).
+fn required() -> bool {
+    std::env::var("IMPERIUM_REQUIRE_OS_SANDBOX")
+        .is_ok_and(|value| !matches!(value.as_str(), "" | "0"))
+}
+
+/// Runs `command` in the OS tier with `roots` as the workspace folders and `grants`; the exit
+/// status and what it printed, or `None` when the sandbox could not be started.
+async fn run(roots: &[&Path], grants: &[GrantedPath], command: &str) -> Option<(bool, String)> {
     let mut process = Sandbox::Os { network: true }
-        .command(&[root], &[], command)
+        .command(roots, grants, command)
         .expect("the OS tier is available on this platform");
     let output = process.stdin(Stdio::null()).output().await.ok()?;
     let text = format!(
@@ -32,16 +39,18 @@ async fn in_sandbox(root: &Path, command: &str) -> Option<(bool, String)> {
     Some((output.status.success(), text))
 }
 
+async fn in_sandbox(root: &Path, command: &str) -> Option<(bool, String)> {
+    run(&[root], &[], command).await
+}
+
 /// Whether the sandbox works here, by a control command that must succeed; otherwise the test
 /// skips (or fails, under `IMPERIUM_REQUIRE_OS_SANDBOX`).
 async fn sandbox_works(root: &Path) -> bool {
     match in_sandbox(root, "cat inside.txt").await {
         Some((true, text)) if text.contains("visible") => true,
         other => {
-            let required = std::env::var("IMPERIUM_REQUIRE_OS_SANDBOX")
-                .is_ok_and(|value| !matches!(value.as_str(), "" | "0"));
             assert!(
-                !required,
+                !required(),
                 "the OS sandbox is required here but a control command failed: {other:?}"
             );
             eprintln!("skipping: the OS sandbox cannot run here ({other:?})");
@@ -50,48 +59,73 @@ async fn sandbox_works(root: &Path) -> bool {
     }
 }
 
-/// A fake data folder next to the sources (not under `/tmp`, which the sandbox replaces), laid
-/// out as the daemon's is: `daemon.json`, the socket's folder, and the default workspaces folder
-/// inside it.
+/// A fake daemon home next to the sources (not under `/tmp`, which the sandbox replaces), laid
+/// out as the daemon's is: `data/daemon.json`, the socket's folder, `data/remotes`, the default
+/// workspaces folder inside `data`, a `cfg` folder, and a `run` folder standing for the runtime
+/// folder with the systemd user manager's private socket in it.
 struct Fixture {
     _dir: tempfile::TempDir,
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
-    root: std::path::PathBuf,
-    endpoint: std::path::PathBuf,
-    socket: std::path::PathBuf,
-    workspace: std::path::PathBuf,
-    _listener: UnixListener,
+    root: PathBuf,
+    data: PathBuf,
+    cfg: PathBuf,
+    endpoint: PathBuf,
+    remote: PathBuf,
+    socket: PathBuf,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    systemd: PathBuf,
+    workspace: PathBuf,
+    _listeners: Vec<UnixListener>,
 }
 
-fn fixture() -> Fixture {
+/// With `guard`, `cfg` and `data` are registered as the daemon does for its own folders.
+fn fixture(guard: bool) -> Fixture {
     let dir = tempfile::Builder::new()
         .prefix(".t")
         .tempdir_in(env!("CARGO_MANIFEST_DIR"))
         .unwrap();
-    let data = dir.path().join("data");
+    let root = dir.path().to_path_buf();
+    let data = root.join("data");
+    let cfg = root.join("cfg");
     let workspace = data.join("workspaces").join("p");
     std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("config.toml"), "# config\n").unwrap();
     std::fs::write(workspace.join("inside.txt"), "visible").unwrap();
     let endpoint = data.join("daemon.json");
     std::fs::write(&endpoint, format!("{{\"token\":\"{TOKEN}\"}}")).unwrap();
+    let remotes = data.join("remotes");
+    std::fs::create_dir_all(&remotes).unwrap();
+    let remote = remotes.join("box.json");
+    std::fs::write(&remote, format!("{{\"token\":\"{TOKEN}\"}}")).unwrap();
     let ipc = data.join("ipc");
     std::fs::create_dir_all(&ipc).unwrap();
     let socket = ipc.join("d.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    hide_from_os_sandbox([endpoint.clone(), ipc]);
+    let daemon = UnixListener::bind(&socket).unwrap();
+    let run = root.join("run");
+    std::fs::create_dir_all(run.join("systemd")).unwrap();
+    let systemd = run.join("systemd").join("private");
+    let manager = UnixListener::bind(&systemd).unwrap();
+    hide_from_os_sandbox([endpoint.clone(), ipc, remotes, run]);
+    if guard {
+        guard_from_commands([cfg.clone(), data.clone()]);
+    }
     Fixture {
-        root: dir.path().to_path_buf(),
         _dir: dir,
+        root,
+        data,
+        cfg,
         endpoint,
+        remote,
         socket,
+        systemd,
         workspace,
-        _listener: listener,
+        _listeners: vec![daemon, manager],
     }
 }
 
 #[tokio::test]
-async fn a_command_cannot_read_the_endpoint_file_or_see_the_socket() {
-    let fixture = fixture();
+async fn a_command_cannot_read_the_endpoint_file_or_see_the_sockets() {
+    let fixture = fixture(false);
     if !sandbox_works(&fixture.workspace).await {
         return;
     }
@@ -101,37 +135,46 @@ async fn a_command_cannot_read_the_endpoint_file_or_see_the_socket() {
         .unwrap();
     assert!(ok && text.contains("made"), "{text}");
 
-    let (_, text) = in_sandbox(
-        &fixture.workspace,
-        &format!("cat '{}'", fixture.endpoint.display()),
-    )
-    .await
-    .unwrap();
-    assert!(!text.contains(TOKEN), "the token was readable: {text}");
+    for secret in [&fixture.endpoint, &fixture.remote] {
+        let (_, text) = in_sandbox(&fixture.workspace, &format!("cat '{}'", secret.display()))
+            .await
+            .unwrap();
+        assert!(
+            !text.contains(TOKEN),
+            "{} was readable: {text}",
+            secret.display()
+        );
+    }
 
     // Where the folder is replaced (Linux) the socket is gone; where it is only denied (macOS)
     // it cannot be connected to.
     #[cfg(target_os = "linux")]
     {
-        let (visible, text) = in_sandbox(
-            &fixture.workspace,
-            &format!("test -S '{}'", fixture.socket.display()),
-        )
-        .await
-        .unwrap();
-        assert!(!visible, "the socket was visible: {text}");
+        for socket in [&fixture.socket, &fixture.systemd] {
+            let (visible, text) = in_sandbox(
+                &fixture.workspace,
+                &format!("test -e '{}'", socket.display()),
+            )
+            .await
+            .unwrap();
+            assert!(!visible, "{} was visible: {text}", socket.display());
+        }
     }
     #[cfg(target_os = "macos")]
     {
         // `nc` must work at all (an open socket outside the hidden folder), or this proves nothing.
         let open = fixture.root.join("o.sock");
         let _open = UnixListener::bind(&open).unwrap();
-        let (control, _) = in_sandbox(
+        let (control, text) = in_sandbox(
             &fixture.workspace,
             &format!("nc -U '{}' </dev/null", open.display()),
         )
         .await
         .unwrap();
+        assert!(
+            control || !required(),
+            "the nc control failed where the sandbox is required: {text}"
+        );
         if control {
             let (connected, text) = in_sandbox(
                 &fixture.workspace,
@@ -146,12 +189,130 @@ async fn a_command_cannot_read_the_endpoint_file_or_see_the_socket() {
     }
 }
 
+/// The user's real runtime folder is hidden whole: the systemd user manager's private socket
+/// (`systemd-run --user` would start a process outside the sandbox) is not there, where the host
+/// has one. (Runners often have no user manager, so the fixture's `run` folder above is the
+/// check that always runs.)
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_real_runtime_folder_is_not_reachable() {
+    use std::os::unix::fs::MetadataExt;
+    let fixture = fixture(false);
+    if !sandbox_works(&fixture.workspace).await {
+        return;
+    }
+    let uid = std::fs::metadata("/proc/self").unwrap().uid();
+    let mut candidates = vec![PathBuf::from(format!("/run/user/{uid}"))];
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
+        candidates.push(PathBuf::from(runtime));
+    }
+    for runtime in candidates.into_iter().filter(|dir| dir.is_dir()) {
+        for inside in ["systemd/private", "bus", "keyring"] {
+            let path = runtime.join(inside);
+            let (visible, text) =
+                in_sandbox(&fixture.workspace, &format!("test -e '{}'", path.display()))
+                    .await
+                    .unwrap();
+            assert!(!visible, "{} was visible: {text}", path.display());
+        }
+    }
+}
+
+/// Where a writable grant contains the daemon's folders (here the whole fake home), a command
+/// still cannot rename or link a hidden file to a path it can read, nor rename the folder around
+/// it. (Bubblewrap cannot do so for a mount point; Seatbelt denies it by path.)
+#[tokio::test]
+async fn a_grant_around_the_data_folder_does_not_reopen_a_hidden_file() {
+    let fixture = fixture(false);
+    if !sandbox_works(&fixture.workspace).await {
+        return;
+    }
+    let grants = [GrantedPath {
+        path: fixture.root.clone(),
+        writable: true,
+    }];
+    let moved = fixture.data.join("moved.json");
+    let link = fixture.workspace.join("link.json");
+    let renamed = fixture.root.join("data2");
+    let commands = [
+        format!(
+            "mv '{}' '{}' 2>&1; cat '{}' 2>&1",
+            fixture.endpoint.display(),
+            moved.display(),
+            moved.display()
+        ),
+        format!(
+            "ln '{}' '{}' 2>&1; cat '{}' 2>&1",
+            fixture.endpoint.display(),
+            link.display(),
+            link.display()
+        ),
+        format!(
+            "mv '{}' '{}' 2>&1; cat '{}/daemon.json' 2>&1",
+            fixture.data.display(),
+            renamed.display(),
+            renamed.display()
+        ),
+    ];
+    for command in commands {
+        let (_, text) = run(&[&fixture.workspace], &grants, &command).await.unwrap();
+        assert!(
+            !text.contains(TOKEN),
+            "{command}: the token was revealed: {text}"
+        );
+    }
+    assert!(fixture.endpoint.exists(), "the endpoint file was moved");
+}
+
+/// A session folder that contains the configuration and data folders (a workspace of the home
+/// folder) cannot write them; its own files, and the default workspace inside the data folder,
+/// stay writable.
+#[tokio::test]
+async fn a_workspace_of_the_home_folder_cannot_write_config_or_data() {
+    let fixture = fixture(true);
+    if !sandbox_works(&fixture.workspace).await {
+        return;
+    }
+    let roots: [&Path; 2] = [&fixture.root, &fixture.workspace];
+    let config = fixture.cfg.join("config.toml");
+    let (ok, text) = run(
+        &roots,
+        &[],
+        &format!(
+            "echo '[hooks]' >> '{c}'; echo x > '{d}/planted.txt'; \
+             echo y > '{r}/home.txt' && echo z > '{w}/z.txt' && echo wrote",
+            c = config.display(),
+            d = fixture.data.display(),
+            r = fixture.root.display(),
+            w = fixture.workspace.display(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(ok && text.contains("wrote"), "{text}");
+    // Its own folders work.
+    assert!(fixture.root.join("home.txt").exists(), "{text}");
+    assert!(fixture.workspace.join("z.txt").exists(), "{text}");
+    // The configuration and data folders were not written.
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), "# config\n");
+    assert!(!fixture.data.join("planted.txt").exists(), "{text}");
+    // And the endpoint file is unreadable all the same.
+    let (_, text) = run(
+        &roots,
+        &[],
+        &format!("cat '{}'", fixture.endpoint.display()),
+    )
+    .await
+    .unwrap();
+    assert!(!text.contains(TOKEN), "{text}");
+}
+
 /// macOS only: Seatbelt can deny one loopback port. (Bubblewrap cannot while the network is
 /// shared; there the port stays reachable and the unreadable token is the protection.)
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_command_cannot_connect_to_the_daemons_port() {
-    let fixture = fixture();
+    let fixture = fixture(false);
     if !sandbox_works(&fixture.workspace).await {
         return;
     }
@@ -159,12 +320,16 @@ async fn a_command_cannot_connect_to_the_daemons_port() {
     let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     imperium_tools::hide_loopback_port(daemon.local_addr().unwrap().port());
     let connect = |port: u16| format!("bash -c 'exec 3<>/dev/tcp/127.0.0.1/{port}'");
-    let (control, _) = in_sandbox(
+    let (control, text) = in_sandbox(
         &fixture.workspace,
         &connect(other.local_addr().unwrap().port()),
     )
     .await
     .unwrap();
+    assert!(
+        control || !required(),
+        "the /dev/tcp control failed where the sandbox is required: {text}"
+    );
     if !control {
         eprintln!("skipping the port check: bash /dev/tcp does not work here");
         return;

@@ -27,13 +27,58 @@ use crate::exec::{SPAWNED_MARK, shell};
 #[derive(Debug)]
 struct Hidden {
     paths: Vec<PathBuf>,
+    /// Folders no command may write, whatever folder or grant contains them.
+    guarded: Vec<PathBuf>,
     loopback_ports: Vec<u16>,
 }
 
 static HIDDEN: Mutex<Hidden> = Mutex::new(Hidden {
     paths: Vec::new(),
+    guarded: Vec::new(),
     loopback_ports: Vec::new(),
 });
+
+/// Registers folders (the daemon's configuration and data folders) that commands in the OS and
+/// container tiers must not write, even when a session folder or a writable grant contains them
+/// (a workspace of `~`): the OS tier mounts them read-only, the container tier mounts an empty
+/// folder over them. A session folder inside one (the default workspace is inside `<data>`)
+/// stays writable.
+pub fn guard_from_commands(paths: impl IntoIterator<Item = PathBuf>) {
+    let mut hidden = HIDDEN.lock().unwrap_or_else(PoisonError::into_inner);
+    for path in paths {
+        if !hidden.guarded.contains(&path) {
+            hidden.guarded.push(path);
+        }
+    }
+}
+
+/// The guarded folders that exist now, each also under its resolved name (Unix).
+fn guarded_paths() -> Vec<PathBuf> {
+    let registered = HIDDEN
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .guarded
+        .clone();
+    let mut guarded: Vec<PathBuf> = Vec::new();
+    for path in registered {
+        if !path.is_dir() {
+            continue;
+        }
+        let mut names = vec![path.clone()];
+        #[cfg(unix)]
+        {
+            if let Ok(resolved) = std::fs::canonicalize(&path) {
+                names.push(resolved);
+            }
+        }
+        for name in names {
+            if !guarded.contains(&name) {
+                guarded.push(name);
+            }
+        }
+    }
+    guarded
+}
 
 /// Registers files and folders the OS sandbox hides from commands (the endpoint file holding the
 /// access token, the local socket's folder, the secret store files). Only paths that exist when
@@ -94,12 +139,33 @@ fn hidden_masks() -> Vec<Mask> {
         .unwrap_or_else(PoisonError::into_inner)
         .paths
         .clone();
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
-        let runtime = PathBuf::from(runtime);
-        paths.push(runtime.join("bus"));
-        paths.push(runtime.join("keyring"));
-    }
+    paths.extend(runtime_dirs());
     masks_for(&paths)
+}
+
+/// The user's runtime folder, hidden whole: it holds the session bus, the keyring, the systemd
+/// user manager's private socket (`systemd-run --user` would start a process outside the
+/// sandbox), the ssh and gpg agent sockets and a rootless container runtime's socket, and any one
+/// of them hands a command more than the sandbox gives it. The cost is that a display server's
+/// socket (X11 or Wayland) is hidden too, so graphical programs do not start in the OS tier.
+/// `XDG_RUNTIME_DIR`, and `/run/user/<uid>` when it is unset.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+fn runtime_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
+        dirs.push(PathBuf::from(runtime));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(me) = std::fs::metadata("/proc/self") {
+            let fallback = PathBuf::from(format!("/run/user/{}", me.uid()));
+            if !dirs.contains(&fallback) {
+                dirs.push(fallback);
+            }
+        }
+    }
+    dirs
 }
 
 #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
@@ -273,6 +339,49 @@ fn container_args(
     command: &str,
     read_only: bool,
 ) -> Vec<String> {
+    container_args_guarding(
+        roots,
+        grants,
+        image,
+        network,
+        command,
+        read_only,
+        &guarded_paths(),
+    )
+}
+
+/// Like [`container_args`]; a `guarded` folder that a mounted folder or grant contains is covered
+/// by an empty tmpfs at its path in the container (never mounted), and one that is itself mounted
+/// is mounted read-only. A mounted folder inside a guarded one (the default workspace is inside
+/// `<data>`) is unaffected: nothing around it is mounted.
+fn container_args_guarding(
+    roots: &[&Path],
+    grants: &[GrantedPath],
+    image: &str,
+    network: bool,
+    command: &str,
+    read_only: bool,
+    guarded: &[PathBuf],
+) -> Vec<String> {
+    let mut masks: Vec<String> = Vec::new();
+    let mut guard_mounts = |source: &Path, target: &str| -> bool {
+        let mut is_guarded = false;
+        for guard in guarded {
+            if source == guard.as_path() {
+                is_guarded = true;
+            } else if let Ok(relative) = guard.strip_prefix(source) {
+                let inside: Vec<String> = relative
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                let at = format!("{}/{}", target.trim_end_matches('/'), inside.join("/"));
+                if !masks.contains(&at) {
+                    masks.push(at);
+                }
+            }
+        }
+        is_guarded
+    };
     let mut args = vec!["run".into(), "--rm".into(), "-i".into()];
     if !network {
         args.extend(["--network".into(), "none".into()]);
@@ -283,7 +392,8 @@ fn container_args(
         } else {
             format!("/folders/{}", index + 1)
         };
-        let mode = if read_only { ":ro" } else { "" };
+        let guarded_root = guard_mounts(*root, &target);
+        let mode = if read_only || guarded_root { ":ro" } else { "" };
         args.extend(["-v".into(), format!("{}:{target}{mode}", root.display())]);
     }
     for (index, grant) in grants.iter().enumerate() {
@@ -299,12 +409,16 @@ fn container_args(
             && roots
                 .iter()
                 .any(|root| grant.path.starts_with(root) || root.starts_with(&grant.path));
-        let mode = if grant.writable && !reopens {
+        let guarded_grant = guard_mounts(&grant.path, &target);
+        let mode = if grant.writable && !reopens && !guarded_grant {
             ""
         } else {
             ":ro"
         };
         args.extend(["-v".into(), format!("{source}:{target}{mode}")]);
+    }
+    for at in masks {
+        args.extend(["--tmpfs".into(), at]);
     }
     args.extend([
         "-w".into(),
@@ -315,6 +429,21 @@ fn container_args(
         command.into(),
     ]);
     args
+}
+
+/// The guarded folders that a writable path is, contains or is inside of: the others are
+/// read-only already.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+fn relevant_guards(writable: &[&Path]) -> Vec<String> {
+    guarded_paths()
+        .into_iter()
+        .filter(|guard| {
+            writable
+                .iter()
+                .any(|path| path.starts_with(guard) || guard.starts_with(path))
+        })
+        .map(|guard| guard.display().to_string())
+        .collect()
 }
 
 #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
@@ -340,6 +469,7 @@ fn os_command(
         .args(bwrap_args(
             &displayed(writable),
             &displayed(protected),
+            &relevant_guards(writable),
             &hidden_masks(),
             &cwd.display().to_string(),
             network,
@@ -352,12 +482,14 @@ fn os_command(
 /// bubblewrap: the whole filesystem read-only, the `writable` paths and a private /tmp
 /// writable, its own process namespace, and optionally no network. Runs in `cwd`. The
 /// `protected` paths are bound read-only last, so they stay read-only inside a writable one.
-/// The `hidden` paths are masked after every other mount, so no folder or grant (even one around
-/// them) brings them back: a file is replaced by `/dev/null`, a folder by an empty tmpfs.
+/// The `guarded` folders are bound read-only after the writable paths, then the writable paths
+/// inside them again. The `hidden` paths are masked after every other mount, so no folder or
+/// grant (even one around them) brings them back: a file is replaced by `/dev/null`, a folder by an empty tmpfs.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn bwrap_args(
     writable: &[String],
     protected: &[String],
+    guarded: &[String],
     hidden: &[Mask],
     cwd: &str,
     network: bool,
@@ -369,6 +501,16 @@ fn bwrap_args(
         .collect();
     for path in writable {
         args.extend(["--bind".into(), path.clone(), path.clone()]);
+    }
+    // The guarded folders are read-only even where a writable path contains them; a writable
+    // path inside one (the default workspace is inside `<data>`) is bound writable again.
+    for guard in guarded {
+        args.extend(["--ro-bind".into(), guard.clone(), guard.clone()]);
+        for path in writable {
+            if Path::new(path).starts_with(guard) && path != guard {
+                args.extend(["--bind".into(), path.clone(), path.clone()]);
+            }
+        }
     }
     for path in protected {
         args.extend(["--ro-bind".into(), path.clone(), path.clone()]);
@@ -403,6 +545,7 @@ fn os_command(
             &seatbelt_profile(
                 &displayed(writable),
                 &displayed(protected),
+                &relevant_guards(writable),
                 &hidden_masks(),
                 &HIDDEN
                     .lock()
@@ -418,13 +561,15 @@ fn os_command(
 
 /// A Seatbelt profile allowing everything but writes outside the `writable` paths and
 /// temporary folders, and optionally network access. Writes under the `protected` paths are
-/// denied last, and the last matching rule wins. The `hidden` paths cannot be read (nor can a
+/// denied last, and the last matching rule wins. Writes under the `guarded` folders are denied
+/// too, except under a writable path inside one. The `hidden` paths cannot be read (nor can a
 /// local socket in a hidden folder be connected to), and connections to the daemon's loopback
 /// `ports` are denied: a command can neither read the access token nor reach the daemon.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn seatbelt_profile(
     writable: &[String],
     protected: &[String],
+    guarded: &[String],
     hidden: &[Mask],
     ports: &[u16],
     network: bool,
@@ -441,20 +586,54 @@ fn seatbelt_profile(
          (allow file-write* {folders}(subpath \"/private/tmp\") \
          (subpath \"/private/var/folders\") (literal \"/dev/null\") (literal \"/dev/tty\"))"
     );
+    // Guarded folders cannot be written even where a writable path contains them; a writable path
+    // inside one is allowed again.
+    for guard in guarded {
+        let quoted = guard.replace('\\', "\\\\").replace('"', "\\\"");
+        profile.push_str(&format!("(deny file-write* (subpath \"{quoted}\"))"));
+        for path in writable {
+            if Path::new(path).starts_with(guard) && path != guard {
+                let inner = path.replace('\\', "\\\\").replace('"', "\\\"");
+                profile.push_str(&format!("(allow file-write* (subpath \"{inner}\"))"));
+            }
+        }
+    }
     for path in protected {
         let quoted = path.replace('\\', "\\\\").replace('"', "\\\"");
         profile.push_str(&format!("(deny file-write* (subpath \"{quoted}\"))"));
     }
+    let mut ancestors: Vec<&Path> = Vec::new();
     for mask in hidden {
         let quoted = mask.path.replace('\\', "\\\\").replace('"', "\\\"");
+        let filter = if mask.dir {
+            format!("(subpath \"{quoted}\")")
+        } else {
+            format!("(literal \"{quoted}\")")
+        };
+        // Reading is denied by path, so writing, renaming (a rename away reopens the file under
+        // another name) and linking are denied by the same path.
+        profile.push_str(&format!(
+            "(deny file-read* {filter})(deny file-write* {filter})(deny file-link {filter})"
+        ));
         if mask.dir {
             profile.push_str(&format!(
-                "(deny file-read* (subpath \"{quoted}\"))\
-                 (deny network-outbound (remote unix-socket (subpath \"{quoted}\")))"
+                "(deny network-outbound (remote unix-socket (subpath \"{quoted}\")))"
             ));
-        } else {
-            profile.push_str(&format!("(deny file-read* (literal \"{quoted}\"))"));
         }
+        for ancestor in Path::new(&mask.path).ancestors().skip(1) {
+            if ancestor.parent().is_some() && !ancestors.contains(&ancestor) {
+                ancestors.push(ancestor);
+            }
+        }
+    }
+    // Nor can a folder around them be renamed away, which would carry them to another path.
+    for ancestor in ancestors {
+        let quoted = ancestor
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        profile.push_str(&format!("(deny file-write-unlink (literal \"{quoted}\"))"));
     }
     for port in ports {
         profile.push_str(&format!(
@@ -547,7 +726,7 @@ mod tests {
     fn a_read_only_mount_is_not_writable_in_the_os_sandbox() {
         let scratch = vec!["/data/scratch".to_string()];
         let protected = vec!["/home/me/project".to_string()];
-        let args = bwrap_args(&scratch, &protected, &[], "/home/me/project", false).join(" ");
+        let args = bwrap_args(&scratch, &protected, &[], &[], "/home/me/project", false).join(" ");
         assert!(args.starts_with("--ro-bind / /"), "{args}");
         assert!(!args.contains(" --bind /home/me/project"), "{args}");
         assert!(
@@ -559,7 +738,7 @@ mod tests {
             "{args}"
         );
         assert!(args.contains("--chdir /home/me/project"), "{args}");
-        let profile = seatbelt_profile(&scratch, &protected, &[], &[], false);
+        let profile = seatbelt_profile(&scratch, &protected, &[], &[], &[], false);
         assert!(profile.contains("(subpath \"/data/scratch\")"), "{profile}");
         assert!(
             profile.ends_with("(deny file-write* (subpath \"/home/me/project\"))(deny network*)"),
@@ -636,7 +815,7 @@ mod tests {
     #[test]
     fn os_sandboxes_write_only_inside_the_workspace() {
         let roots = ["/home/me/project".to_string(), "/home/me/docs".to_string()];
-        let args = bwrap_args(&roots, &[], &[], &roots[0], false).join(" ");
+        let args = bwrap_args(&roots, &[], &[], &[], &roots[0], false).join(" ");
         assert!(args.starts_with("--ro-bind / /"), "{args}");
         assert!(
             args.contains("--bind /home/me/project /home/me/project"),
@@ -647,13 +826,14 @@ mod tests {
             "{args}"
         );
         assert!(args.ends_with("--unshare-net"), "{args}");
-        let profile = seatbelt_profile(&roots, &[], &[], &[], true);
+        let profile = seatbelt_profile(&roots, &[], &[], &[], &[], true);
         assert!(profile.contains("(deny file-write*)"));
         assert!(profile.contains("(subpath \"/home/me/project\")"));
         assert!(profile.contains("(subpath \"/home/me/docs\")"));
         assert!(!profile.contains("deny network"));
         assert!(
-            seatbelt_profile(&["/p".into()], &[], &[], &[], false).ends_with("(deny network*)")
+            seatbelt_profile(&["/p".into()], &[], &[], &[], &[], false)
+                .ends_with("(deny network*)")
         );
     }
 
@@ -664,7 +844,7 @@ mod tests {
             Mask::file("/home/me/.local/share/imperium/daemon.json"),
             Mask::dir("/home/me/.local/share/imperium/ipc"),
         ];
-        let args = bwrap_args(&writable, &[], &hidden, "/home/me", true).join(" ");
+        let args = bwrap_args(&writable, &[], &[], &hidden, "/home/me", true).join(" ");
         // The endpoint file is replaced by /dev/null and the socket folder by an empty tmpfs.
         let file = "--ro-bind /dev/null /home/me/.local/share/imperium/daemon.json";
         let dir = "--tmpfs /home/me/.local/share/imperium/ipc";
@@ -679,7 +859,7 @@ mod tests {
             "{args}"
         );
         // Nothing is masked when nothing is registered, and the network stays as configured.
-        let plain = bwrap_args(&writable, &[], &[], "/home/me", false).join(" ");
+        let plain = bwrap_args(&writable, &[], &[], &[], "/home/me", false).join(" ");
         assert!(
             !plain.contains("/dev/null") && !plain.contains("--tmpfs /home"),
             "{plain}"
@@ -692,7 +872,7 @@ mod tests {
             Mask::file("/Users/me/Library/Application Support/Imperium/data/daemon.json"),
             Mask::dir("/Users/me/Library/Application Support/Imperium/data/ipc"),
         ];
-        let profile = seatbelt_profile(&["/p".into()], &[], &hidden, &[7878, 9000], true);
+        let profile = seatbelt_profile(&["/p".into()], &[], &[], &hidden, &[7878, 9000], true);
         assert!(
             profile.contains(
                 "(deny file-read* (literal \"/Users/me/Library/Application Support/Imperium/data/daemon.json\"))"
@@ -772,6 +952,159 @@ mod tests {
                 "DBUS_SESSION_BUS_ADDRESS",
                 "IMPERIUM_DAEMON__PORT"
             ]
+        );
+    }
+
+    #[test]
+    fn a_workspace_of_home_leaves_config_and_data_read_only_but_not_its_own_workspace() {
+        // The session's folder is the home folder, and the default sessions workspace (a
+        // writable path) is inside `<data>`.
+        let writable = vec![
+            "/home/me".to_string(),
+            "/home/me/.local/share/imperium/workspaces/p".to_string(),
+        ];
+        let guarded = vec![
+            "/home/me/.config/imperium".to_string(),
+            "/home/me/.local/share/imperium".to_string(),
+        ];
+        let hidden = [Mask::file("/home/me/.local/share/imperium/daemon.json")];
+        let args = bwrap_args(&writable, &[], &guarded, &hidden, "/home/me", true).join(" ");
+        let home = args.find("--bind /home/me /home/me").unwrap();
+        let config = args
+            .find("--ro-bind /home/me/.config/imperium /home/me/.config/imperium")
+            .unwrap();
+        let data = args
+            .find("--ro-bind /home/me/.local/share/imperium /home/me/.local/share/imperium")
+            .unwrap();
+        let inner = args
+            .rfind("--bind /home/me/.local/share/imperium/workspaces/p /home/me/.local/share/imperium/workspaces/p")
+            .unwrap();
+        let mask = args.find("--ro-bind /dev/null").unwrap();
+        // Read-only after the folder that contains them, the workspace inside re-bound writable
+        // after that, the credential masks last.
+        assert!(home < config && home < data, "{args}");
+        assert!(data < inner && inner < mask, "{args}");
+        // The re-bound workspace is the only writable bind after the guard.
+        assert_eq!(
+            args[data..].matches("--bind ").count(),
+            1,
+            "only the workspace is re-bound: {args}"
+        );
+    }
+
+    #[test]
+    fn seatbelt_denies_writes_under_guarded_folders_except_the_workspace_inside() {
+        let writable = vec![
+            "/Users/me".to_string(),
+            "/Users/me/Library/Application Support/Imperium/data/workspaces/p".to_string(),
+        ];
+        let guarded = vec!["/Users/me/Library/Application Support/Imperium/data".to_string()];
+        let profile = seatbelt_profile(&writable, &[], &guarded, &[], &[], true);
+        let deny = profile
+            .find("(deny file-write* (subpath \"/Users/me/Library/Application Support/Imperium/data\"))")
+            .expect(&profile);
+        let allow = profile
+            .find("(allow file-write* (subpath \"/Users/me/Library/Application Support/Imperium/data/workspaces/p\"))")
+            .expect(&profile);
+        assert!(deny < allow, "{profile}");
+    }
+
+    #[test]
+    fn seatbelt_also_denies_writing_linking_and_renaming_away_a_hidden_path() {
+        let hidden = [
+            Mask::file("/Users/me/data/daemon.json"),
+            Mask::dir("/Users/me/data/ipc"),
+        ];
+        let profile = seatbelt_profile(&["/Users/me".into()], &[], &[], &hidden, &[], true);
+        for filter in [
+            "(literal \"/Users/me/data/daemon.json\")",
+            "(subpath \"/Users/me/data/ipc\")",
+        ] {
+            for operation in ["file-read*", "file-write*", "file-link"] {
+                assert!(
+                    profile.contains(&format!("(deny {operation} {filter})")),
+                    "{operation} {filter}: {profile}"
+                );
+            }
+        }
+        // The folders around them cannot be renamed away, but the root cannot be named.
+        assert!(
+            profile.contains("(deny file-write-unlink (literal \"/Users/me/data\"))"),
+            "{profile}"
+        );
+        assert!(
+            profile.contains("(deny file-write-unlink (literal \"/Users/me\"))"),
+            "{profile}"
+        );
+        assert!(!profile.contains("(literal \"/\"))"), "{profile}");
+    }
+
+    #[test]
+    fn a_container_never_mounts_guarded_folders_inside_a_mounted_one() {
+        let guarded = [
+            PathBuf::from("/home/me/.config/imperium"),
+            PathBuf::from("/home/me/.local/share/imperium"),
+        ];
+        let args = container_args_guarding(
+            &[Path::new("/home/me")],
+            &[],
+            "img",
+            true,
+            "x",
+            false,
+            &guarded,
+        )
+        .join(" ");
+        assert!(args.contains("-v /home/me:/workspace -"), "{args}");
+        assert!(
+            args.contains("--tmpfs /workspace/.config/imperium"),
+            "{args}"
+        );
+        assert!(
+            args.contains("--tmpfs /workspace/.local/share/imperium"),
+            "{args}"
+        );
+        // A grant around them, and one that is a guarded folder itself.
+        let grants = [
+            GrantedPath {
+                path: "/home/me".into(),
+                writable: true,
+            },
+            GrantedPath {
+                path: "/home/me/.config/imperium".into(),
+                writable: true,
+            },
+        ];
+        let args = container_args_guarding(
+            &[Path::new("/p")],
+            &grants,
+            "img",
+            true,
+            "x",
+            false,
+            &guarded,
+        )
+        .join(" ");
+        assert!(args.contains("--tmpfs /home/me/.config/imperium"), "{args}");
+        assert!(
+            args.contains("-v /home/me/.config/imperium:/home/me/.config/imperium:ro"),
+            "{args}"
+        );
+        // The default workspace is inside `<data>`: nothing around it is mounted, so no mask.
+        let inside = container_args_guarding(
+            &[Path::new("/home/me/.local/share/imperium/workspaces/p")],
+            &[],
+            "img",
+            true,
+            "x",
+            false,
+            &guarded,
+        )
+        .join(" ");
+        assert!(!inside.contains("--tmpfs"), "{inside}");
+        assert!(
+            inside.contains("-v /home/me/.local/share/imperium/workspaces/p:/workspace -"),
+            "{inside}"
         );
     }
 

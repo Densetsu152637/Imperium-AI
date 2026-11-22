@@ -82,13 +82,15 @@ impl Paths {
 
     /// What a command an agent runs must not be able to read or open, because it would hand it
     /// the daemon: the endpoint file (it holds the access token), the local socket's folder, the
-    /// paired phones' file, and the encrypted secret store with its key. The OS isolation tier
+    /// paired phones' file, the remote daemons' endpoint files (their tokens), and the encrypted secret store with its key. The OS isolation tier
     /// hides them (`imperium_tools::hide_from_os_sandbox`).
     pub fn daemon_credential_paths(&self) -> Vec<PathBuf> {
         vec![
             self.daemon_endpoint_file(),
             self.daemon_socket_dir(),
             self.data_dir.join("devices.json"),
+            // Forwarded remote daemons: their tokens and loopback ports (`imperium remote`).
+            self.data_dir.join("remotes"),
             self.data_dir.join("secrets.key"),
             self.data_dir.join("secrets.enc"),
             self.data_dir.join("secrets.lock"),
@@ -123,6 +125,7 @@ mod tests {
             "/opt/imperium/data/daemon.json",
             "/opt/imperium/data/ipc",
             "/opt/imperium/data/devices.json",
+            "/opt/imperium/data/remotes",
             "/opt/imperium/data/secrets.key",
             "/opt/imperium/data/secrets.enc",
         ] {

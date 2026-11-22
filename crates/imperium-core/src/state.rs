@@ -202,6 +202,13 @@ fn hide_credentials_from_os_tier(paths: &Paths) {
         hidden.push(file.into());
     }
     imperium_tools::hide_from_os_sandbox(hidden);
+    // No command in the OS or container tier may write the configuration or data folders (a
+    // hook or MCP server added to `config.toml` would run unconfined), even when a session
+    // folder or grant contains them; the default workspace, inside `<data>`, stays writable.
+    imperium_tools::guard_from_commands([
+        paths.config_dir().to_path_buf(),
+        paths.data_dir().to_path_buf(),
+    ]);
 }
 
 /// State shared by every connection: configuration and the running sessions.
