@@ -5,7 +5,7 @@
 // or named) and a local-files-only lock. Each action is its own daemon call and applies at once;
 // the daemon announces the changed environment (`environments.changed`), which redraws the list.
 
-import { ChevronLeft, Pencil, Plus, Trash } from "lucide-react";
+import { Bot, ChevronLeft, Pencil, Plus, Trash } from "lucide-react";
 import { useEffect, useImperativeHandle, useState, type Ref } from "react";
 
 import type {
@@ -30,8 +30,13 @@ import {
   permissionsOfDraft,
   suggestionsLabel,
 } from "../sessions/agents";
+import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
+import { Field } from "../components/Field";
+import { IconButton } from "../components/IconButton";
+import { Notice } from "../components/Notice";
 import { Select } from "../components/Select";
-import { Row, RowNote } from "../components/SettingsRow";
+import { Row } from "../components/SettingsRow";
 import { Switch } from "../components/Switch";
 import type { DaemonClient } from "../daemon/client";
 import { AgentInitiative } from "./AgentInitiative";
@@ -93,15 +98,28 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
     let live = true;
     for (const agent_id of watched.split(",")) {
       client
-        .call<InitiativeState>("initiative.get", { environment_id: environmentId, agent_id })
-        .then((state) => live && setSuggestions((all) => ({ ...all, [agent_id]: openSuggestions(state).length })))
+        .call<InitiativeState>("initiative.get", {
+          environment_id: environmentId,
+          agent_id,
+        })
+        .then(
+          (state) =>
+            live &&
+            setSuggestions((all) => ({
+              ...all,
+              [agent_id]: openSuggestions(state).length,
+            })),
+        )
         .catch(() => {});
     }
     const stop = client.onNotification((notification: Notification) => {
       if (notification.method !== "initiative.changed") return;
       const state = notification.params as InitiativeState;
       if (live && state.environment_id === environmentId) {
-        setSuggestions((all) => ({ ...all, [state.agent_id]: openSuggestions(state).length }));
+        setSuggestions((all) => ({
+          ...all,
+          [state.agent_id]: openSuggestions(state).length,
+        }));
       }
     });
     return () => {
@@ -110,7 +128,7 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
     };
   }, [client, environmentId, watched]);
 
-  const run =async (work: (client: DaemonClient, environmentId: string) => Promise<unknown>) => {
+  const run = async (work: (client: DaemonClient, environmentId: string) => Promise<unknown>) => {
     if (!client || !environment) return false;
     setBusy(true);
     setError(null);
@@ -171,7 +189,10 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
 
   const remove = async (agent: EnvironmentAgent) => {
     const done = await run((c, environment_id) =>
-      c.call("environments.agent_delete", { environment_id, agent_id: agent.id }),
+      c.call("environments.agent_delete", {
+        environment_id,
+        agent_id: agent.id,
+      }),
     );
     if (done) setDeleting(null);
   };
@@ -206,37 +227,30 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
             <ChevronLeft aria-hidden="true" /> Back to agents
           </button>
         </Row>
-        {error && (
-          <RowNote>
-            <p className="error" role="alert">
-              {error}
-            </p>
-          </RowNote>
-        )}
-        <Row label="Name" description="At most 60 characters; unique in this environment.">
+        {error && <Notice tone="danger">{error}</Notice>}
+        <Field label="Name" hint="At most 60 characters; unique in this environment.">
           <input
             type="text"
-            aria-label="Agent name"
             value={draft.name}
             placeholder="Planner"
             autoFocus
             onChange={(event) => setDraft({ ...draft, name: event.target.value })}
           />
-        </Row>
-        <Row label="Role" description="What this agent is for, for example: keep the roadmap current and critique open designs.">
+        </Field>
+        <Field
+          label="Role"
+          hint="What this agent is for, for example: keep the roadmap current and critique open designs."
+        >
           <textarea
-            aria-label="Agent role"
             value={draft.role}
             rows={3}
             onChange={(event) => setDraft({ ...draft, role: event.target.value })}
           />
-        </Row>
-        <RowNote>
-          <p className="muted agent-access-hint">
-            Permissions only narrow what this environment already allows; its permission mode and safety checks still
-            apply. They also bind the sessions this agent starts.
-          </p>
-        </RowNote>
+        </Field>
+        <p className="muted environment-hint">
+          Permissions only narrow what this environment already allows; its permission mode and safety checks still
+          apply. They also bind the sessions this agent starts.
+        </p>
         <Row
           label="Local files only"
           description="No web, browser, search, MCP, plugin or command tools; files stay inside this environment’s folders and the agent’s scratch folder."
@@ -267,26 +281,22 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
           onAccess={(plugins) => setDraft({ ...draft, access: { ...draft.access, plugins } })}
           onNames={(pluginNames) => setDraft({ ...draft, access: { ...draft.access, pluginNames } })}
         />
-        <Row label={draft.id === null ? "Add this agent" : "Save this agent"}>
-          <span className="row-actions">
-            <button type="button" onClick={() => setDraft(null)} disabled={busy}>
-              Cancel
-            </button>
-            <button type="button" className="primary" disabled={busy || !draft.name.trim()} onClick={() => void save()}>
-              {draft.id === null ? "Add" : "Save agent"}
-            </button>
-          </span>
-        </Row>
+        <div className="environment-actions">
+          <button type="button" onClick={() => setDraft(null)} disabled={busy}>
+            Cancel
+          </button>
+          <button type="button" className="primary" disabled={busy || !draft.name.trim()} onClick={() => void save()}>
+            {draft.id === null ? "Add" : "Save agent"}
+          </button>
+        </div>
         {editing && (
-          <RowNote>
-            <AgentInitiative
-              environmentId={environment.id}
-              agent={editing}
-              client={client}
-              disabled={disabled}
-              onOpenSession={onOpenSession}
-            />
-          </RowNote>
+          <AgentInitiative
+            environmentId={environment.id}
+            agent={editing}
+            client={client}
+            disabled={disabled}
+            onOpenSession={onOpenSession}
+          />
         )}
       </>
     );
@@ -315,101 +325,91 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
           <Plus aria-hidden="true" /> Add agent
         </button>
       </Row>
-      <RowNote>
-        <ul className="environment-agents" aria-label="Agents">
+      {agents.length > 0 ? (
+        <ul className="environment-list" aria-label="Agents">
           {agents.map((agent) => (
-            <li key={agent.id}>
-              <div className="agent-row">
-                <span className="agent-name">{agent.name}</span>
-                <span className="muted agent-role" title={agent.role}>
-                  {agent.role || "No role set"}
+            <li key={agent.id} className="environment-list-row">
+              <span className="agent-name">{agent.name}</span>
+              <span className="muted agent-role" title={agent.role}>
+                {agent.role || "No role set"}
+              </span>
+              {describePermissions(agent.permissions) && (
+                <Badge title="This agent can only use what its permissions allow, on top of the environment's own.">
+                  {describePermissions(agent.permissions)}
+                </Badge>
+              )}
+              {(agent.initiative ?? "off") !== "off" && (
+                <Badge title="What the agent does on its own when idle">Initiative: {agent.initiative}</Badge>
+              )}
+              {suggestionsLabel(suggestions[agent.id] ?? 0) && (
+                <Badge tone="accent" title="Suggestions waiting for you: open Edit to start or dismiss them">
+                  {suggestionsLabel(suggestions[agent.id] ?? 0)}
+                </Badge>
+              )}
+              {!agent.session_id && (
+                <span
+                  className="muted"
+                  title="The agent is not running yet; it starts once the environment can run it."
+                >
+                  not running
                 </span>
-                {describePermissions(agent.permissions) && (
-                  <span
-                    className="agent-limits"
-                    title="This agent can only use what its permissions allow, on top of the environment's own."
+              )}
+              {deleting === agent.id ? (
+                <span className="environment-delete-confirm" role="group" aria-label={`Delete ${agent.name}`}>
+                  <span>Delete? Its history is archived.</span>
+                  <button
+                    type="button"
+                    className="danger small"
+                    disabled={busy}
+                    onClick={() => void remove(agent)}
+                    autoFocus
                   >
-                    {describePermissions(agent.permissions)}
-                  </span>
-                )}
-                {(agent.initiative ?? "off") !== "off" && (
-                  <span className="agent-limits" title="What the agent does on its own when idle">
-                    Initiative: {agent.initiative}
-                  </span>
-                )}
-                {suggestionsLabel(suggestions[agent.id] ?? 0) && (
-                  <span
-                    className="agent-limits agent-suggestions-badge"
-                    title="Suggestions waiting for you: open Edit to start or dismiss them"
-                  >
-                    {suggestionsLabel(suggestions[agent.id] ?? 0)}
-                  </span>
-                )}
-                {!agent.session_id && (
-                  <span className="muted" title="The agent is not running yet; it starts once the environment can run it.">
-                    not running
-                  </span>
-                )}
-                {deleting === agent.id ? (
-                  <span className="environment-delete-confirm" role="group" aria-label={`Delete ${agent.name}`}>
-                    <span>Delete? Its history is archived.</span>
-                    <button type="button" className="danger" disabled={busy} onClick={() => void remove(agent)} autoFocus>
-                      Delete
-                    </button>
-                    <button type="button" onClick={() => setDeleting(null)}>
-                      Keep
-                    </button>
-                  </span>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      className="ghost icon-only row-tool"
-                      aria-label={`Edit ${agent.name}`}
-                      title="Rename, or change the role, permissions or initiative"
-                      disabled={disabled || busy}
-                      onClick={() =>
-                        open({
-                          id: agent.id,
-                          name: agent.name,
-                          role: agent.role,
-                          access: draftOfPermissions(agent.permissions),
-                          initial: draftOfPermissions(agent.permissions),
-                        })
-                      }
-                    >
-                      <Pencil />
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost icon-only row-tool"
-                      aria-label={`Delete ${agent.name}`}
-                      title="Delete the agent (its session is archived)"
-                      disabled={disabled || busy}
-                      onClick={() => setDeleting(agent.id)}
-                    >
-                      <Trash />
-                    </button>
-                  </>
-                )}
-              </div>
+                    Delete
+                  </button>
+                  <button type="button" className="small" onClick={() => setDeleting(null)}>
+                    Keep
+                  </button>
+                </span>
+              ) : (
+                <>
+                  <IconButton
+                    icon={Pencil}
+                    size="sm"
+                    label={`Edit ${agent.name}`}
+                    tooltip="Rename, or change the role, permissions or initiative"
+                    disabled={disabled || busy}
+                    onClick={() =>
+                      open({
+                        id: agent.id,
+                        name: agent.name,
+                        role: agent.role,
+                        access: draftOfPermissions(agent.permissions),
+                        initial: draftOfPermissions(agent.permissions),
+                      })
+                    }
+                  />
+                  <IconButton
+                    icon={Trash}
+                    size="sm"
+                    label={`Delete ${agent.name}`}
+                    tooltip="Delete the agent (its session is archived)"
+                    disabled={disabled || busy}
+                    onClick={() => setDeleting(agent.id)}
+                  />
+                </>
+              )}
             </li>
           ))}
-          {agents.length === 0 && (
-            <li className="muted">No agents. Add one to get an always-available assistant for this environment.</li>
-          )}
         </ul>
-        {notice && (
-          <p className="muted" role="status">
-            {notice}
-          </p>
-        )}
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-      </RowNote>
+      ) : (
+        <EmptyState
+          icon={Bot}
+          title="No agents"
+          body="Add one to get an always-available assistant for this environment."
+        />
+      )}
+      {notice && <Notice tone="info">{notice}</Notice>}
+      {error && <Notice tone="danger">{error}</Notice>}
     </>
   );
 }
@@ -436,9 +436,8 @@ function AccessRow({
 }) {
   return (
     <>
-      <Row label={label}>
+      <Field label={label}>
         <Select
-          aria-label={label}
           value={access}
           disabled={disabled}
           options={[
@@ -448,17 +447,16 @@ function AccessRow({
           ]}
           onChange={(value) => onAccess(value as ToolAccess)}
         />
-      </Row>
+      </Field>
       {access === "named" && !disabled && (
-        <Row label={namesLabel} description="Separated by commas." sub>
+        <Field label={namesLabel} hint="Separated by commas.">
           <input
             type="text"
             value={names}
             placeholder={placeholder}
-            aria-label={namesLabel}
             onChange={(event) => onNames(event.target.value)}
           />
-        </Row>
+        </Field>
       )}
     </>
   );
