@@ -14,7 +14,9 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use imperium_tools::{GrantedPath, Sandbox, guard_from_commands, hide_from_os_sandbox};
+use imperium_tools::{
+    GrantedPath, Sandbox, guard_from_commands, hide_from_os_sandbox, leave_writable_in_guards,
+};
 
 const TOKEN: &str = "TOKEN-THE-SANDBOX-MUST-NOT-SEE";
 
@@ -88,7 +90,8 @@ fn fixture(guard: bool) -> Fixture {
     let cfg = root.join("cfg");
     let workspace = data.join("workspaces").join("p");
     std::fs::create_dir_all(&workspace).unwrap();
-    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(cfg.join("sub")).unwrap();
+    std::fs::create_dir_all(data.join("sessions")).unwrap();
     std::fs::write(cfg.join("config.toml"), "# config\n").unwrap();
     std::fs::write(workspace.join("inside.txt"), "visible").unwrap();
     let endpoint = data.join("daemon.json");
@@ -108,6 +111,7 @@ fn fixture(guard: bool) -> Fixture {
     hide_from_os_sandbox([endpoint.clone(), ipc, remotes, run]);
     if guard {
         guard_from_commands([cfg.clone(), data.clone()]);
+        leave_writable_in_guards([data.join("workspaces")]);
     }
     Fixture {
         _dir: dir,
@@ -275,12 +279,25 @@ async fn a_workspace_of_the_home_folder_cannot_write_config_or_data() {
     }
     let roots: [&Path; 2] = [&fixture.root, &fixture.workspace];
     let config = fixture.cfg.join("config.toml");
+    // Grants inside the guarded folders, outside the workspaces root, stay read-only too.
+    let grants = [
+        GrantedPath {
+            path: fixture.cfg.join("sub"),
+            writable: true,
+        },
+        GrantedPath {
+            path: fixture.data.join("sessions"),
+            writable: true,
+        },
+    ];
     let (ok, text) = run(
         &roots,
-        &[],
+        &grants,
         &format!(
-            "echo '[hooks]' >> '{c}'; echo x > '{d}/planted.txt'; \
+            "echo q > '{sub}/q.txt'; echo q > '{d}/sessions/q.txt'; \
+             echo '[hooks]' >> '{c}'; echo x > '{d}/planted.txt'; \
              echo y > '{r}/home.txt' && echo z > '{w}/z.txt' && echo wrote",
+            sub = fixture.cfg.join("sub").display(),
             c = config.display(),
             d = fixture.data.display(),
             r = fixture.root.display(),
@@ -296,6 +313,8 @@ async fn a_workspace_of_the_home_folder_cannot_write_config_or_data() {
     // The configuration and data folders were not written.
     assert_eq!(std::fs::read_to_string(&config).unwrap(), "# config\n");
     assert!(!fixture.data.join("planted.txt").exists(), "{text}");
+    assert!(!fixture.cfg.join("sub/q.txt").exists(), "{text}");
+    assert!(!fixture.data.join("sessions/q.txt").exists(), "{text}");
     // And the endpoint file is unreadable all the same.
     let (_, text) = run(
         &roots,

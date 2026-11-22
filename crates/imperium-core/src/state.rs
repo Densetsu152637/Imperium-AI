@@ -194,7 +194,7 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
 /// encrypted secret store with its key or passphrase file. A command that read the token, or
 /// opened the socket, could change the configuration or start an unconfined session, which
 /// would run code outside the sandbox.
-fn hide_credentials_from_os_tier(paths: &Paths) {
+fn hide_credentials_from_os_tier(paths: &Paths, settings: &Settings) {
     let mut hidden = paths.daemon_credential_paths();
     if let Some(file) =
         std::env::var_os(imperium_config::PASSPHRASE_FILE_ENV).filter(|file| !file.is_empty())
@@ -208,6 +208,14 @@ fn hide_credentials_from_os_tier(paths: &Paths) {
     imperium_tools::guard_from_commands([
         paths.config_dir().to_path_buf(),
         paths.data_dir().to_path_buf(),
+    ]);
+    // Only where agents work stays writable inside them: the workspaces root (the default
+    // sessions workspace and each session's scratch folder) and the auto-fix worktrees. Anything
+    // else in `<data>` (sessions, schedules, packs, approvals) and all of `<config>` stays
+    // read-only, even for a grant there.
+    imperium_tools::leave_writable_in_guards([
+        settings.workspaces.root(paths),
+        paths.data_dir().join("worktrees"),
     ]);
 }
 
@@ -345,7 +353,7 @@ impl DaemonState {
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
         protect_extension_dirs(&paths, &settings);
-        hide_credentials_from_os_tier(&paths);
+        hide_credentials_from_os_tier(&paths, &settings);
         let devices = Devices::load(paths.data_dir().join("devices.json"));
         let monitor = Arc::new(LoadMonitor::new(settings.load.clone()));
         let environments = Environments::load(paths.data_dir().join("environments.json"));

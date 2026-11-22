@@ -986,7 +986,7 @@ command the daemon.
 | Paired phones | `<data>/devices.json` (SHA-256 of each token) | hidden like the endpoint file |
 | Forwarded remote daemons (`imperium remote`) | `<data>/remotes/` (`<name>.json`: the remote's token and its forwarded loopback port) | hidden like the socket folder (tmpfs, or denied). The forwarded local ports are not denied on macOS: they are not known when the daemon starts, and the token is hidden |
 | Encrypted secret store and its key | `<data>/secrets.enc`, `secrets.key`, `secrets.lock`, and the file named by `IMPERIUM_SECRETS_PASSPHRASE_FILE` | hidden like the endpoint file (a keychain-backed store has no files) |
-| The user's runtime folder: the session bus and keyring (the Secret Service holds the keychain's secrets), the systemd user manager's private socket (`systemd-run --user` would start a process outside the sandbox), ssh and gpg agent sockets, a rootless container runtime's socket | `$XDG_RUNTIME_DIR`, or `/run/user/<uid>` when it is unset | Linux: the whole folder is replaced by an empty tmpfs. Hiding it whole, not socket by socket, is deliberate: any one socket left in it can hand a command more than the sandbox gives it, and a list of known ones goes stale. The cost is that X11 and Wayland sockets there are hidden too, so graphical programs do not start in the OS tier |
+| The user's runtime folder: the session bus and keyring (the Secret Service holds the keychain's secrets), the systemd user manager's private socket (`systemd-run --user` would start a process outside the sandbox), ssh and gpg agent sockets, a rootless container runtime's socket | `$XDG_RUNTIME_DIR`, or `/run/user/<uid>` when it is unset | Linux: the whole folder is replaced by an empty tmpfs. Hiding it whole, not socket by socket, is deliberate: any one socket left in it can hand a command more than the sandbox gives it, and a list of known ones goes stale. The cost is that a Wayland socket there is hidden too, so Wayland programs do not start in the OS tier. X11 is not hidden by this: see the abstract-socket limit below |
 | Daemon, phone and API TCP ports | loopback ports from `daemon.port`, `phone.bind`, `api` | macOS: `network-outbound` to `localhost:<port>` denied. Linux: **not filtered**, see below |
 | Environment of the command | `IMPERIUM_*` (home, passphrase file, port overrides) and `DBUS_SESSION_BUS_ADDRESS` | removed before the command starts; only `IMPERIUM_SPAWNED_BY_DAEMON` is set |
 
@@ -1012,17 +1012,33 @@ write `config.toml` (adding a hook or an MCP server that the unconfined daemon t
 plugin or an approval file, or read what the masks do not cover. The daemon therefore registers
 both folders as guarded (`imperium_tools::guard_from_commands`), whatever the session:
 
-- **OS tier, Linux:** after the writable binds, each guarded folder that a writable path is,
-  contains or is inside of is bound read-only, then every writable path *inside* it is bound
-  writable again, then the read-only mount's `protected` folders and the credential masks follow.
-  So the default sessions workspace, inside `<data>`, and a scratch grant there stay writable
-  while the rest of `<data>` and all of `<config>` do not.
+- **What stays writable inside them:** only the folders the daemon registers as open
+  (`imperium_tools::leave_writable_in_guards`): the workspaces root (`workspaces.root`, default
+  `<data>/workspaces`, which holds the default sessions workspace and every session's scratch
+  folder) and `<data>/worktrees` (auto-fix). A writable folder or grant anywhere else in a guarded
+  folder stays read-only: all of `<config>` (a grant at `<config>/sub` cannot write), and
+  `<data>` folders the daemon itself acts on, such as sessions, schedules, packs and approvals.
+- **OS tier, Linux:** after the writable binds, every guarded folder that a writable path is,
+  contains or is inside of is bound read-only; only then are the writable paths under an open
+  folder bound writable again (after all guard binds, so another name for the same folder cannot
+  cover them), then the read-only mount's `protected` folders and the credential masks follow.
+  Writable paths, guards and open folders are compared and emitted under every name they have
+  (a resolved link such as `/home` to `/var/home` as well as the configured one).
 - **OS tier, macOS:** `file-write*` is denied under each guarded folder and allowed again under a
-  writable path inside it, before the read-only and credential rules.
-- **Container tier:** a guarded folder is never mounted. When a mounted folder or grant contains
-  one, an empty tmpfs covers its path in the container (`--tmpfs /workspace/.config/imperium`),
-  and a mounted folder that *is* one is mounted `:ro`. A workspace inside `<data>` mounts only
-  itself, so nothing needs hiding.
+  writable path under an open folder, before the read-only and credential rules; names as above.
+- **Container tier:** a guarded folder is never mounted writable and what it holds is never
+  there:
+  - a mounted folder or grant that contains a guarded folder or a hidden path gets an empty tmpfs
+    over it at its path in the container (`--tmpfs /workspace/.config/imperium`), or for a hidden
+    file `/dev/null` mounted read-only over it;
+  - a mount that *is* a guarded folder (a grant of `<data>`), or is inside one outside the open
+    folders (`<data>/sessions`, `<config>/sub`), is mounted `:ro`, with the hidden files and
+    folders in it covered the same way;
+  - a mount that is, or is inside, a hidden path (a grant of `<data>/remotes` or `<data>/ipc`) is
+    replaced by an empty tmpfs: its content is never mounted;
+  - no mount point is used twice, which a container runtime refuses: a cover is skipped where
+    another mount or cover already has that path.
+  A workspace inside the workspaces root mounts only itself, so nothing around it is there.
 - The guard applies only to commands (and MCP servers and previews that run under a tier); tier 0
   runs with the user's own rights, as always. Reads of the guarded folders are not blocked in the
   OS tier beyond the credential list above: `config.toml` stays readable.
@@ -1035,12 +1051,15 @@ cannot open the unix socket in either case. Remaining limits of the OS tier:
 
 - It is not a confidentiality sandbox: the rest of the filesystem is readable, including the
   user's other secrets (`~/.ssh`, cloud credentials, browser profiles) and `config.toml`.
-- Other sockets stay reachable through the shared network: abstract unix sockets (such as the one
-  a session bus can also listen on) are shared while the network is, and sockets outside the
-  runtime folder (a socket under `/tmp` is the sandbox's own, but one under `/var/run` or the
-  home folder is not hidden). On macOS the runtime folder is not hidden and the login keychain
-  stays reachable: it asks the user per item before it releases a secret another application
-  stored.
+- **Abstract unix sockets stay reachable while the network is shared** (the default): X11's
+  `@/tmp/.X11-unix/X0` socket, and the abstract address a session bus can also listen on, are in
+  the network namespace, not the filesystem, so hiding the runtime folder does not close them. A
+  command can then talk to the X server (keystrokes, screenshots) or a bus. Set
+  `isolation.network = false` (`--unshare-net`) to close them; the daemon's TCP port goes with
+  them.
+- Sockets outside the runtime folder (under `/var/run` or the home folder) are not hidden. On
+  macOS the runtime folder is not hidden and the login keychain stays reachable: it asks the
+  user per item before it releases a secret another application stored.
 - A path reachable under another name (a second bind mount of the data folder) is not masked.
 - Windows has no OS tier, so commands fail there rather than running unsandboxed. The container
   tier mounts only the workspace, so none of these files are in it; with Docker Desktop its

@@ -22,7 +22,10 @@ pub(crate) const ROOT_SETTING: &str = "workspaces.root";
 impl DaemonState {
     /// The folder that holds the environments' working folders now.
     pub fn workspaces_root(&self) -> PathBuf {
-        self.settings().workspaces.root(&self.paths)
+        let root = self.settings().workspaces.root(&self.paths);
+        // A changed `workspaces.root` is a folder commands may write inside the guarded ones.
+        imperium_tools::leave_writable_in_guards([root.clone()]);
+        root
     }
 
     /// Makes the session's scratch folder; `None` (logged) when it cannot be made, and the
