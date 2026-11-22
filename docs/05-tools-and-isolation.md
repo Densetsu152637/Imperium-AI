@@ -1003,10 +1003,17 @@ Whether a writable grant around the data folder can reopen a hidden file differs
   ~/.local/sx`, then read `~/.local/sx/imperium/daemon.json` in the next command, which has no
   mask for the new path). Bubblewrap therefore binds every folder between a writable path and a
   guarded or hidden path onto itself (`--bind a a`, writable, outermost first, before the
-  guards): each is a mount point, and renaming one fails with `EBUSY`. As a second line, every
-  command in the OS or container tier is refused with a clear error when a guarded folder, a
-  hidden folder or the daemon's endpoint file that existed at registration is missing from where
-  the command can reach (inside or around one of its folders or grants).
+  guards): each is a mount point, and renaming one fails with `EBUSY`. As a second line, and
+  the only one in the container tier (a container has no such mount points), **every** command in
+  the OS or container tier is refused, in every session whatever its folders, with a clear error
+  while `<config>`, `<data>` or the daemon's endpoint file is missing. A command in one session
+  could otherwise move `~/.local/share` into a folder another session contains, where a later
+  command would find the daemon's files at a path with no mask. Tier 0 is unaffected, and the
+  hidden subfolders (`remotes/`, `ipc/`) are not part of this check: removing one in normal use
+  does not stop commands, and they are hidden whenever they exist. The daemon **creates
+  `<config>` and `<data>` at startup**, so the guards always apply: a folder that is missing
+  cannot be guarded, and nothing else creates `<config>`, so a command could otherwise create it
+  and write a `config.toml` of hooks or MCP servers that the daemon would then run.
 - **macOS:** Seatbelt works by path, so for every hidden path it also denies `file-write*` (which
   covers deleting or renaming it) and `file-link` (a hard link to a readable path), and it denies
   `file-write-unlink` on every folder around it, so the folder cannot be renamed away to carry

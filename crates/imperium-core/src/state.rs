@@ -202,9 +202,17 @@ fn hide_credentials_from_os_tier(paths: &Paths, settings: &Settings) {
         hidden.push(file.into());
     }
     imperium_tools::hide_from_os_sandbox(hidden);
-    // The endpoint file exists while the daemon runs: a command is refused when it has gone
-    // missing from where the command can reach (a folder around it was renamed away).
+    // The endpoint file exists while the daemon runs: while it is missing (a folder around it was
+    // renamed away), no command runs in the OS or container tier.
     imperium_tools::require_present([paths.daemon_endpoint_file()]);
+    // The folders are made now, not on first use: nothing else creates the configuration folder,
+    // and a folder that is missing cannot be guarded, so a command could create it and write a
+    // `config.toml` of hooks or MCP servers that the daemon would then run unconfined.
+    for folder in [paths.config_dir(), paths.data_dir()] {
+        if let Err(error) = std::fs::create_dir_all(folder) {
+            tracing::warn!(folder = %folder.display(), %error, "could not create the folder");
+        }
+    }
     // No command in the OS or container tier may write the configuration or data folders (a
     // hook or MCP server added to `config.toml` would run unconfined), even when a session
     // folder or grant contains them; the default workspace, inside `<data>`, stays writable.
@@ -1285,6 +1293,15 @@ mod tests {
     use super::*;
     use imperium_workflow::Pack;
     use imperium_workflow::update::PackStore;
+
+    #[test]
+    fn the_daemon_makes_its_config_and_data_folders_so_they_are_always_guarded() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = imperium_config::Paths::under(home.path());
+        assert!(!paths.config_dir().exists() && !paths.data_dir().exists());
+        let _state = state_with(home.path(), "");
+        assert!(paths.config_dir().is_dir() && paths.data_dir().is_dir());
+    }
 
     #[test]
     fn downloads_follow_the_settings() {

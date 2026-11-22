@@ -31,9 +31,8 @@ struct Hidden {
     guarded: Vec<PathBuf>,
     /// Folders inside a guarded one that stay writable (the workspaces root).
     open: Vec<PathBuf>,
-    /// Guarded folders, hidden folders and required files that existed when they were
-    /// registered: a command is refused when one of them has gone missing (see
-    /// [`missing_among`]).
+    /// The guarded folders and required files (the daemon's endpoint file): while any is
+    /// missing, every command in the OS and container tiers is refused (see [`missing_among`]).
     present: Vec<PathBuf>,
     loopback_ports: Vec<u16>,
 }
@@ -54,6 +53,9 @@ static HIDDEN: Mutex<Hidden> = Mutex::new(Hidden {
 pub fn guard_from_commands(paths: impl IntoIterator<Item = PathBuf>) {
     let mut hidden = HIDDEN.lock().unwrap_or_else(PoisonError::into_inner);
     for path in paths {
+        // A folder that does not exist cannot be guarded (a mount needs it), and a command could
+        // create it and write what the daemon then runs: it is made here.
+        let _ = std::fs::create_dir_all(&path);
         if path.is_dir() && !hidden.present.contains(&path) {
             hidden.present.push(path.clone());
         }
@@ -63,10 +65,9 @@ pub fn guard_from_commands(paths: impl IntoIterator<Item = PathBuf>) {
     }
 }
 
-/// Registers files that must exist while the daemon runs (its endpoint file). A command in the OS
-/// or container tier is refused when one that existed here is missing and lies inside, or
-/// around, one of the command's folders: a missing path cannot be masked, and a folder renamed
-/// away is how it would go missing.
+/// Registers files that must exist while the daemon runs (its endpoint file). While one that
+/// existed here is missing, every command in the OS and container tiers is refused: a missing
+/// path cannot be masked, and a folder renamed away is how it would go missing.
 pub fn require_present(paths: impl IntoIterator<Item = PathBuf>) {
     let mut hidden = HIDDEN.lock().unwrap_or_else(PoisonError::into_inner);
     for path in paths {
@@ -76,36 +77,27 @@ pub fn require_present(paths: impl IntoIterator<Item = PathBuf>) {
     }
 }
 
-/// The first of `present` that no longer exists although it lies inside, or around, one of the
-/// command's `sources` (its folders and grants). Paths elsewhere are not the command's concern.
-fn missing_among(present: &[PathBuf], sources: &[&Path]) -> Option<PathBuf> {
-    present
-        .iter()
-        .find(|path| {
-            !path.exists()
-                && sources
-                    .iter()
-                    .any(|source| path.starts_with(source) || source.starts_with(path))
-        })
-        .cloned()
+/// The first of `present` that no longer exists. Daemon-wide, not limited to a command's own
+/// folders: a command in one session can move a folder out of the way (`mv ~/.local/share
+/// ~/projects/x/`) that a later command, in another session with other folders, would then find
+/// unmasked at its new place.
+fn missing_among(present: &[PathBuf]) -> Option<PathBuf> {
+    present.iter().find(|path| !path.exists()).cloned()
 }
 
-/// Refuses a command in the OS or container tier when something the daemon guards or hides is
-/// missing from where the command can reach: it could not be masked, and a command that renamed a
-/// folder around it (`mv ~/.local/share ~/.local/sx`) would get the contents unmasked next time.
-fn require_intact(roots: &[&Path], grants: &[GrantedPath]) -> Result<(), ToolError> {
+/// Refuses a command in the OS or container tier while something the daemon guards, or its
+/// endpoint file, is missing: it could not be masked.
+fn require_intact() -> Result<(), ToolError> {
     let present = HIDDEN
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .present
         .clone();
-    let mut sources: Vec<&Path> = roots.to_vec();
-    sources.extend(grants.iter().map(|grant| grant.path.as_path()));
-    match missing_among(&present, &sources) {
+    match missing_among(&present) {
         Some(path) => Err(ToolError::Io(format!(
-            "{} is missing, so the sandbox cannot hide the daemon's files; a folder around it \
-             was probably renamed or removed. Put it back (or restart the daemon) before running \
-             commands in this isolation tier",
+            "{} is missing, so the sandbox cannot keep the daemon's files from commands; a folder \
+             around it was probably renamed or removed. Put it back (or restart the daemon) before \
+             running commands in this isolation tier",
             path.display()
         ))),
         None => Ok(()),
@@ -194,12 +186,22 @@ fn current_guards() -> Guards {
 pub fn hide_from_os_sandbox(paths: impl IntoIterator<Item = PathBuf>) {
     let mut hidden = HIDDEN.lock().unwrap_or_else(PoisonError::into_inner);
     for path in paths {
-        if path.is_dir() && !hidden.present.contains(&path) {
-            hidden.present.push(path.clone());
-        }
         if !hidden.paths.contains(&path) {
             hidden.paths.push(path);
         }
+    }
+}
+
+/// Forgets everything registered for `paths` (guarded, hidden, open, required). For tests that
+/// register folders in a process-wide list and then delete them; the daemon never needs it.
+#[doc(hidden)]
+pub fn forget_daemon_paths(paths: impl IntoIterator<Item = PathBuf>) {
+    let mut hidden = HIDDEN.lock().unwrap_or_else(PoisonError::into_inner);
+    for path in paths {
+        hidden.paths.retain(|known| *known != path);
+        hidden.guarded.retain(|known| *known != path);
+        hidden.open.retain(|known| *known != path);
+        hidden.present.retain(|known| *known != path);
     }
 }
 
@@ -378,7 +380,7 @@ impl Sandbox {
             return Err(ToolError::Io("the workspace has no folder".into()));
         };
         if !matches!(self, Sandbox::Policy) {
-            require_intact(roots, grants)?;
+            require_intact()?;
         }
         match self {
             Sandbox::Policy => {
@@ -1696,12 +1698,13 @@ mod tests {
                 .to_string();
             assert!(error.contains("is missing"), "{error}");
             assert!(error.contains("data"), "{error}");
-            // Another workspace, away from it, still runs; and so does tier 0.
-            assert!(
-                sandbox
-                    .named_command(&[elsewhere.path()], &[], "x", None, false)
-                    .is_ok()
-            );
+            // Daemon-wide: a workspace elsewhere is refused too (a command moved the folder to
+            // a place another session's folders contain).
+            let elsewhere = sandbox
+                .named_command(&[elsewhere.path()], &[], "x", None, false)
+                .unwrap_err()
+                .to_string();
+            assert!(elsewhere.contains("is missing"), "{elsewhere}");
         }
         assert!(
             Sandbox::Policy
@@ -1711,10 +1714,29 @@ mod tests {
         // The pure check, with paths that never existed here.
         let present = [PathBuf::from("/h/.config/imperium")];
         assert_eq!(
-            missing_among(&present, &[Path::new("/h")]),
+            missing_among(&present),
             Some(PathBuf::from("/h/.config/imperium"))
         );
-        assert_eq!(missing_among(&present, &[Path::new("/other")]), None);
+        assert_eq!(missing_among(&[dir.path().to_path_buf()]), None);
+        // Put back (or forgotten), commands run again.
+        forget_daemon_paths([data]);
+        for sandbox in tiers() {
+            assert!(
+                sandbox
+                    .named_command(&[dir.path()], &[], "x", None, false)
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn a_guard_for_a_folder_that_does_not_exist_makes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".config").join("imperium");
+        guard_from_commands([config.clone()]);
+        assert!(config.is_dir());
+        assert!(current_guards().folders.contains(&config));
+        forget_daemon_paths([config]);
     }
 
     #[test]

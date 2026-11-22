@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use imperium_tools::{
-    GrantedPath, Sandbox, guard_from_commands, hide_from_os_sandbox, leave_writable_in_guards,
+    GrantedPath, Sandbox, forget_daemon_paths, guard_from_commands, hide_from_os_sandbox,
+    leave_writable_in_guards,
 };
 
 /// The tests register paths in the process-wide hide list and then delete them; run one at a
@@ -88,6 +89,14 @@ struct Fixture {
     systemd: PathBuf,
     workspace: PathBuf,
     _listeners: Vec<UnixListener>,
+    registered: Vec<PathBuf>,
+}
+
+impl Drop for Fixture {
+    /// The folders are deleted with the fixture: they must not stay in the process-wide lists.
+    fn drop(&mut self) {
+        forget_daemon_paths(self.registered.drain(..));
+    }
 }
 
 /// With `guard`, `cfg` and `data` are registered as the daemon does for its own folders.
@@ -119,8 +128,10 @@ fn fixture(guard: bool) -> Fixture {
     std::fs::create_dir_all(run.join("systemd")).unwrap();
     let systemd = run.join("systemd").join("private");
     let manager = UnixListener::bind(&systemd).unwrap();
+    let mut registered = vec![endpoint.clone(), ipc.clone(), remotes.clone(), run.clone()];
     hide_from_os_sandbox([endpoint.clone(), ipc, remotes, run]);
     if guard {
+        registered.extend([cfg.clone(), data.clone(), data.join("workspaces")]);
         guard_from_commands([cfg.clone(), data.clone()]);
         leave_writable_in_guards([data.join("workspaces")]);
     }
@@ -135,6 +146,7 @@ fn fixture(guard: bool) -> Fixture {
         systemd,
         workspace,
         _listeners: vec![daemon, manager],
+        registered,
     }
 }
 
@@ -417,7 +429,10 @@ async fn a_renamed_ancestor_does_not_unmask_the_daemons_folders() {
     std::fs::write(&endpoint, format!("{{\"token\":\"{TOKEN}\"}}")).unwrap();
     hide_from_os_sandbox([endpoint.clone()]);
     guard_from_commands([cfg.clone(), data.clone()]);
+    // The folders are deleted with this test: they must not stay in the process-wide lists.
+    let registered = [endpoint.clone(), cfg.clone(), data.clone()];
     if !sandbox_works(&root).await {
+        forget_daemon_paths(registered);
         return;
     }
     let renamed = root.join("z");
@@ -464,4 +479,39 @@ async fn a_renamed_ancestor_does_not_unmask_the_daemons_folders() {
         endpoint.exists() || second.contains("is missing"),
         "{first}{second}"
     );
+    forget_daemon_paths(registered);
+}
+
+/// A guarded configuration folder that did not exist when it was registered (nothing but the
+/// daemon creates it) is made then, so a command in a home workspace cannot create it and write a
+/// `config.toml` of hooks there.
+#[tokio::test]
+async fn a_guard_for_a_missing_config_folder_still_blocks_creating_a_config() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::Builder::new()
+        .prefix(".t")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .unwrap();
+    let home = dir.path().to_path_buf();
+    std::fs::write(home.join("inside.txt"), "visible").unwrap();
+    let cfg = home.join(".config").join("imperium");
+    assert!(!cfg.exists());
+    guard_from_commands([cfg.clone()]);
+    if !sandbox_works(&home).await {
+        forget_daemon_paths([cfg]);
+        return;
+    }
+    let (_, text) = in_sandbox(
+        &home,
+        &format!(
+            "mkdir -p '{c}' 2>&1; echo '[hooks]' > '{c}/config.toml' 2>&1; echo '[hooks]' > '{h}/.config/imperium/other.toml' 2>&1",
+            c = cfg.display(),
+            h = home.display()
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(!cfg.join("config.toml").exists(), "{text}");
+    assert!(!cfg.join("other.toml").exists(), "{text}");
+    forget_daemon_paths([cfg]);
 }
