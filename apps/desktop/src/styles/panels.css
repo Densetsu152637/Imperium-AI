@@ -24,8 +24,27 @@
   text-overflow: ellipsis;
 }
 
+/* A hidden column's value moves to a muted second line under the model: `cell-sub-mid` while the
+   wider drops apply, `cell-sub-narrow` under 22 rem. */
+.cell-sub {
+  display: none;
+  margin-top: var(--sp-1);
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: normal;
+}
+
+.cell-sub .badge {
+  white-space: normal;
+}
+
 /* Under 22 rem the token columns give way, so the model keeps a readable name. */
 @container (max-width: 22rem) {
+  .cell-sub-narrow {
+    display: block;
+  }
+
   .telemetry .table th:nth-child(3),
   .telemetry .table td:nth-child(3),
   .telemetry .table th:nth-child(4),
@@ -181,6 +200,10 @@
 /* Narrower panels drop the less important table columns: State and Sessions (or Tokens and
    Latency) first, then Placement (or Sessions), and under 22 rem the sparklines too. */
 @container (max-width: 38rem) {
+  .cell-sub-mid {
+    display: block;
+  }
+
   .resources .resource-table th:nth-child(4),
   .resources .resource-table td:nth-child(4),
   .resources .resource-table th:nth-child(5),

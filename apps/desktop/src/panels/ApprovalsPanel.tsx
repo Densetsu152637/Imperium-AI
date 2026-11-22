@@ -15,7 +15,7 @@ export function ApprovalsPanel({
   onRespond: (id: number, approve: boolean) => void;
 }) {
   if (approvals.length === 0) {
-    return <EmptyState className="compact" title="Nothing to approve" body="Requests from schedules and auto-fix wait here for your yes or no." />;
+    return <EmptyState className="compact" title="Nothing to approve" body="Requests that need your yes or no appear here." />;
   }
   return (
     <ul className="approvals">

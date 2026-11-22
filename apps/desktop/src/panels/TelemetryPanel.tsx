@@ -1,7 +1,7 @@
 // Live telemetry: one row per model in use across all sessions and subagents, updated in place
 // as calls finish. The rows and their formatting live in telemetry.ts.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Children, isValidElement, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -12,10 +12,30 @@ import { useModelNames } from "../models/modelNames";
 import type { SessionState } from "../sessions/sessions";
 import { LINGER_MS, liveTelemetry, telemetryTable, withLingering, type Lingering, type TelemetryRow } from "../models/telemetry";
 
-/** The shared table, and a hover with the full text of a cell (the model column may be cut short). */
+/**
+ * The shared table. A body row's first cell (the model, which may be cut short) carries its full
+ * name on hover and, under 22 rem, the `in` and `out` figures its hidden columns would show.
+ */
 const TABLE: Components = {
   table: ({ children }) => <table className="table compact">{children}</table>,
-  td: ({ children }) => <td title={typeof children === "string" ? children : undefined}>{children}</td>,
+  tr: ({ children }) => {
+    const cells = Children.toArray(children);
+    const text = (cell: unknown) => (isValidElement<{ children?: unknown }>(cell) && typeof cell.props.children === "string" ? cell.props.children : null);
+    const [first, , tokensIn, tokensOut] = cells;
+    const name = text(first);
+    if (name === null || !isValidElement(first) || first.type !== "td") return <tr>{children}</tr>;
+    return (
+      <tr>
+        <td title={name}>
+          {name}
+          <span className="cell-sub cell-sub-narrow">
+            {text(tokensIn)} in · {text(tokensOut)} out
+          </span>
+        </td>
+        {cells.slice(1)}
+      </tr>
+    );
+  },
 };
 
 export function TelemetryPanel({ sessions, models }: { sessions: SessionState[]; models: ModelRow[] }) {

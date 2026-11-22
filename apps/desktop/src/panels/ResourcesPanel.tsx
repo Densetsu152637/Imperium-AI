@@ -146,6 +146,19 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
             <tbody>
               {snapshot.local_models.map((model) => {
                 const process = model.pid === null ? undefined : snapshot.processes.find((p) => p.pid === model.pid);
+                const placement = model.cpu_pinned ? "CPU lane" : model.placement === "partial" ? `partial · ${model.gpu_layers} layers` : model.placement;
+                const state =
+                  model.slots_in_use > 0 ? (
+                    <Badge tone="accent">
+                      {model.slots_in_use}/{model.slots} busy{model.queued > 0 ? ` · ${model.queued} queued` : ""}
+                    </Badge>
+                  ) : model.queued > 0 || model.claimed ? (
+                    <Badge tone="accent" title="An agent is mid-turn on it, so it stays loaded">
+                      {model.queued > 0 ? `${model.queued} queued` : "held by a turn"}
+                    </Badge>
+                  ) : (
+                    <Badge>idle{model.unload_in_ms === null ? "" : ` · unloads in ${countdown(model.unload_in_ms)}`}</Badge>
+                  );
                 return (
                   <tr
                     key={model.model}
@@ -158,13 +171,13 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
                   >
                     <td>
                       <ModelName name={`${model.runtime}:${model.model}`} />
+                      <span className="cell-sub cell-sub-narrow">{placement}</span>
+                      <span className="cell-sub cell-sub-mid">
+                        {state} · {model.sessions.length} {model.sessions.length === 1 ? "session" : "sessions"}
+                      </span>
                     </td>
                     <td>
-                      {model.cpu_pinned
-                        ? "CPU lane"
-                        : model.placement === "partial"
-                          ? `partial · ${model.gpu_layers} layers`
-                          : model.placement}
+                      {placement}
                       <span className="muted" title="Tokens one session may use · KV pool reserved by running calls / its size">
                         {" "}
                         · ctx {model.context} · pool {model.pool_reserved_tokens}/{model.pool_tokens}
@@ -175,19 +188,7 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
                       {model.vram_bytes > 0 && model.ram_bytes > 0 && " · "}
                       {model.ram_bytes > 0 && `${gib(model.ram_bytes)} RAM`}
                     </td>
-                    <td>
-                      {model.slots_in_use > 0 ? (
-                        <Badge tone="accent">
-                          {model.slots_in_use}/{model.slots} busy{model.queued > 0 ? ` · ${model.queued} queued` : ""}
-                        </Badge>
-                      ) : model.queued > 0 || model.claimed ? (
-                        <Badge tone="accent" title="An agent is mid-turn on it, so it stays loaded">
-                          {model.queued > 0 ? `${model.queued} queued` : "held by a turn"}
-                        </Badge>
-                      ) : (
-                        <Badge>idle{model.unload_in_ms === null ? "" : ` · unloads in ${countdown(model.unload_in_ms)}`}</Badge>
-                      )}
-                    </td>
+                    <td>{state}</td>
                     <td title={model.sessions.join("\n")}>{model.sessions.length}</td>
                     <td>
                       {model.can_unload && (
@@ -227,7 +228,16 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
             <tbody>
               {snapshot.endpoints.map((endpoint) => (
                 <tr key={endpoint.spec} title={endpoint.host ? `${endpoint.endpoint} · ${endpoint.host}` : endpoint.endpoint}>
-                  <td>{endpoint.spec}</td>
+                  <td>
+                    {endpoint.spec}
+                    <span className="cell-sub cell-sub-narrow">
+                      {endpoint.sessions.length} {endpoint.sessions.length === 1 ? "session" : "sessions"}
+                    </span>
+                    <span className="cell-sub cell-sub-mid">
+                      {(endpoint.prompt_tokens + endpoint.completion_tokens).toLocaleString()} tokens ·{" "}
+                      {endpoint.last_latency_ms === null ? "—" : `${(endpoint.last_latency_ms / 1000).toFixed(1)} s`}
+                    </span>
+                  </td>
                   <td title={endpoint.sessions.join("\n")}>{endpoint.sessions.length}</td>
                   <td>{endpoint.requests}</td>
                   <td>{(endpoint.prompt_tokens + endpoint.completion_tokens).toLocaleString()}</td>
