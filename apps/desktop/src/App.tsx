@@ -27,7 +27,7 @@ import type {
   SessionAgentKnowledgeParams,
   SessionAgentResumeParams,
   SessionSendParams,
-  SessionInitParams,
+  BuiltinCommand,
   SessionControlResult,
   SessionCreateParams,
   SessionBranchParams,
@@ -86,6 +86,7 @@ import { ReviewPanel } from "./panels/ReviewPanel";
 import { AgentView } from "./panels/AgentView";
 import { agentDelivery, finishedMeanwhile, followUpText } from "./sessions/agentView";
 import { queueParams, type QueueChange } from "./sessions/queue";
+import { builtinParams } from "./sessions/slash";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
 import { BrowserPanel } from "./panels/BrowserPanel";
@@ -784,15 +785,15 @@ export function App() {
     void sendWithBudget(client, params);
   };
 
-  /** `/init`: the daemon sends the built-in prompt that has the agent write the project's AGENTS.md. */
-  const initProject = (guidance: string) => {
+  /** A slash command (`/init`, `/code-review`, `/security-review`): the daemon sends its built-in prompt as a user turn. */
+  const runBuiltin = (command: BuiltinCommand, args: string) => {
     if (!client || !selected) return;
-    const params: SessionInitParams = { session_id: selected, ...(guidance ? { guidance } : {}) };
-    client.call("session.init", params).catch((error: unknown) => {
+    const params = builtinParams(selected, command, args);
+    client.call("session.builtin", params).catch((error: unknown) => {
       const stop = budgetStop(error);
       // A used-up budget that asks first: go ahead only when the user confirms.
       if (stop?.action === "ask" && window.confirm(stop.message)) {
-        client.call("session.init", { ...params, confirm_budget: true }).catch(report);
+        client.call("session.builtin", { ...params, confirm_budget: true }).catch(report);
       } else if (!stop || stop.action === "block") {
         report(error);
       }
@@ -1230,7 +1231,7 @@ export function App() {
         session={session}
         icons={icons}
         onSend={send}
-        onInit={initProject}
+        onCommand={runBuiltin}
         onChangeQueued={changeQueued}
         onRespond={respond}
         onAlwaysAllow={alwaysAllow}

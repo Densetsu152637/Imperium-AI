@@ -7,14 +7,14 @@ use std::path::PathBuf;
 use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
-    ContextFit, MODEL_RESIDENCY, ModelResidency, RewindMode, SessionAgentAsk,
+    BuiltinCommand, ContextFit, MODEL_RESIDENCY, ModelResidency, RewindMode, SessionAgentAsk,
     SessionAgentAskParams, SessionAgentAskResult, SessionAgentKnowledge,
     SessionAgentKnowledgeParams, SessionAgentResume, SessionAgentResumeParams, SessionAgents,
     SessionAgentsParams, SessionAnswer, SessionAnswerParams, SessionAttach, SessionAttachParams,
-    SessionBranch, SessionBranchParams, SessionCheckpoints, SessionCheckpointsParams,
-    SessionCheckpointsResult, SessionCompare, SessionCompareParams, SessionComparePick,
-    SessionComparePickParams, SessionControl, SessionControlParams, SessionCreate,
-    SessionCreateParams, SessionFile, SessionFiles, SessionFilesParams, SessionInit,
+    SessionBranch, SessionBranchParams, SessionBuiltin, SessionBuiltinParams, SessionCheckpoints,
+    SessionCheckpointsParams, SessionCheckpointsResult, SessionCompare, SessionCompareParams,
+    SessionComparePick, SessionComparePickParams, SessionControl, SessionControlParams,
+    SessionCreate, SessionCreateParams, SessionFile, SessionFiles, SessionFilesParams, SessionInit,
     SessionInitParams, SessionQueue, SessionQueueParams, SessionRespond, SessionRespondParams,
     SessionReview, SessionReviewParams, SessionReviewResult, SessionRewind, SessionRewindParams,
     SessionRewindResult, SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
@@ -120,8 +120,9 @@ pub fn run(
              conversation, /compare <model> <model> -- <message> runs a message on several \
              models and /pick <n> keeps one; /download, /dismiss, or /never answer a \
              model download suggestion; /init has the agent write or update the project's \
-             AGENTS.md; /files <text> searches the session's files, and an @path in a message \
-             attaches that file (an @folder is only named); an \
+             AGENTS.md; /code-review and /security-review [low|medium|high|max] [PR number, \
+             branch or path] review the pending changes, or that target, and report findings; \
+             /files <text> searches the session's files, and an @path in a message attaches that file (an @folder is only named); an \
              empty line (when idle) or /exit quits."
         );
         let mut lines = read_lines();
@@ -577,6 +578,28 @@ impl Chat {
                 match result {
                     Ok(_) => {
                         println!("Asking the agent to analyse the project and write AGENTS.md.");
+                        if !self.busy {
+                            self.busy = true;
+                            self.sent_while_idle = true;
+                        }
+                    }
+                    Err(error) => println!("{error}"),
+                }
+            }
+            Some(Command::Review(command, args)) => {
+                let result = client
+                    .call::<SessionBuiltin>(SessionBuiltinParams {
+                        session_id: session_id.to_string(),
+                        command,
+                        args: (!args.is_empty()).then_some(args),
+                        confirm_budget: None,
+                    })
+                    .await;
+                match result {
+                    Ok(_) => {
+                        println!(
+                            "Asking the agent for the review; it reports findings and edits nothing."
+                        );
                         if !self.busy {
                             self.busy = true;
                             self.sent_while_idle = true;
@@ -1067,6 +1090,8 @@ enum Command {
     Steer(String),
     /// `/init [guidance]`: the agent analyses the project and writes or updates `AGENTS.md`.
     Init(Option<String>),
+    /// `/code-review` or `/security-review` with their arguments (an effort level, a target).
+    Review(BuiltinCommand, String),
     /// `/files [text]`: the session's files and folders that match, as `@` mentions find them.
     Files(String),
     /// `/agents`: the session's agents and their kept state.
@@ -1263,6 +1288,17 @@ fn command(text: &str) -> Option<Command> {
         return Some(Command::Init(
             (!guidance.is_empty()).then(|| guidance.to_string()),
         ));
+    }
+    for (name, command) in [
+        ("/code-review", BuiltinCommand::CodeReview),
+        ("/security-review", BuiltinCommand::SecurityReview),
+    ] {
+        if text == name || text.starts_with(&format!("{name} ")) {
+            return Some(Command::Review(
+                command,
+                text[name.len()..].trim().to_string(),
+            ));
+        }
     }
     if text == "/files" || text.starts_with("/files ") {
         return Some(Command::Files(text["/files".len()..].trim().to_string()));
@@ -1877,6 +1913,30 @@ mod tests {
             Some(Command::Files("lib rs".into()))
         );
         assert_eq!(command("/initialise"), None);
+    }
+
+    #[test]
+    fn review_commands_take_their_arguments() {
+        assert_eq!(
+            command("/code-review"),
+            Some(Command::Review(BuiltinCommand::CodeReview, String::new()))
+        );
+        assert_eq!(
+            command("/code-review  high 123 "),
+            Some(Command::Review(
+                BuiltinCommand::CodeReview,
+                "high 123".into()
+            ))
+        );
+        assert_eq!(
+            command("/security-review feat/x"),
+            Some(Command::Review(
+                BuiltinCommand::SecurityReview,
+                "feat/x".into()
+            ))
+        );
+        assert_eq!(command("/security-reviews"), None);
+        assert_eq!(command("/code-reviewer"), None);
     }
 
     #[test]

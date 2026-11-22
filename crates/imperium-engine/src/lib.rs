@@ -25,6 +25,7 @@ mod model;
 mod queue;
 mod quiet;
 mod replay;
+mod review;
 mod sampling_summary;
 mod session;
 mod status;
@@ -47,6 +48,7 @@ pub use model::{
 pub use queue::QueueError;
 pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
 pub use replay::{ReplayAnswer, ReplayRequest, ReplayRole, SubagentReplay};
+pub use review::{ReviewArgs, ReviewEffort, ReviewKind, ReviewTarget, review_prompt};
 pub use session::{
     BridgeError, Session, SessionClosed, SessionConfig, SessionMemory, SessionOptions,
     new_session_id,

@@ -14,7 +14,7 @@ import {
   syncMentions,
   withoutMention,
 } from "../src/sessions/mentions.ts";
-import { SLASH_COMMANDS, parseSlash } from "../src/sessions/slash.ts";
+import { SLASH_COMMANDS, builtinOf, builtinParams, parseSlash } from "../src/sessions/slash.ts";
 
 test("an @ that starts a word opens a mention up to the caret", () => {
   assert.deepEqual(activeMention("@", 1), { start: 0, end: 1, query: "" });
@@ -124,7 +124,7 @@ test("a directory is a ready chip that is named in the message, never attached",
 test("/init is a command, with the user's guidance after it", () => {
   assert.deepEqual(
     SLASH_COMMANDS.map((command) => command.name),
-    ["init"],
+    ["init", "code-review", "security-review"],
   );
   assert.deepEqual(parseSlash("/init"), { command: "init", rest: "" });
   assert.deepEqual(parseSlash("  /init  focus on the build and tests "), { command: "init", rest: "focus on the build and tests" });
@@ -132,4 +132,26 @@ test("/init is a command, with the user's guidance after it", () => {
   assert.equal(parseSlash("please /init"), null);
   assert.equal(parseSlash("/unknown"), null);
   assert.equal(parseSlash("init"), null);
+});
+
+test("the review commands take an optional effort and target", () => {
+  assert.deepEqual(parseSlash("/code-review"), { command: "code-review", rest: "" });
+  assert.deepEqual(parseSlash("/code-review 123"), { command: "code-review", rest: "123" });
+  assert.deepEqual(parseSlash(" /code-review  high  feat/x "), { command: "code-review", rest: "high  feat/x" });
+  assert.deepEqual(parseSlash("/security-review"), { command: "security-review", rest: "" });
+  assert.deepEqual(parseSlash("/security-review max src/auth"), { command: "security-review", rest: "max src/auth" });
+  assert.equal(parseSlash("/code-reviewer"), null);
+  assert.equal(parseSlash("/security-reviews"), null);
+  assert.equal(parseSlash("/code_review"), null);
+  for (const command of SLASH_COMMANDS) assert.ok(command.description && command.argumentHint);
+});
+
+test("a command line becomes one session.builtin request", () => {
+  assert.deepEqual(builtinParams("s1", builtinOf("code-review"), "123"), {
+    session_id: "s1",
+    command: "code_review",
+    args: "123",
+  });
+  assert.deepEqual(builtinParams("s1", builtinOf("security-review"), ""), { session_id: "s1", command: "security_review" });
+  assert.deepEqual(builtinParams("s1", builtinOf("init"), ""), { session_id: "s1", command: "init" });
 });
