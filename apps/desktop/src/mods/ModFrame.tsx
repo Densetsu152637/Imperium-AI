@@ -8,6 +8,7 @@
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { prefersReducedMotion } from "../settings/settings";
 
 import type { PetPackage, SessionSnapshot } from "@imperium/mod-sdk";
 import type { ModInfo, PetListResult, PetStripResult, SessionEventParams } from "@imperium/protocol";
@@ -142,7 +143,7 @@ function frameDocument(mod: ModInfo, panelId: string): string {
   const sdk = `data:text/javascript;base64,${btoa(SDK)}`;
   const behaviour = `data:text/javascript;base64,${btoa(behaviourSource)}`;
   const config = JSON.stringify({ panelId, permissions: mod.permissions }).replace(/</g, "\\u003c");
-  return `<!doctype html><html><head><meta charset="utf-8"><style>${themeCss()}</style>
+  return `<!doctype html><html${prefersReducedMotion() ? ' class="reduce-motion"' : ""}><head><meta charset="utf-8"><style>${themeCss()}</style>
 <script type="importmap">${JSON.stringify({ imports: { "@imperium/mod-sdk": sdk, "@imperium/behaviour": behaviour } })}</script>
 <script>${escapeScript(BRIDGE.replace("__CONFIG__", config))}</script>
 <script type="module">${BEHAVIOUR_START}</script>

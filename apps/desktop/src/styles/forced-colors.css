@@ -49,6 +49,19 @@
     border-right-color: Highlight;
   }
 
+  /* The session footer's open picker and drawer buttons, the user's message bubble, and the panel editor's bar and empty drop column. */
+  .session-footer button.select.open,
+  .session-footer .footer-button[aria-expanded="true"],
+  .context-meter[aria-expanded="true"],
+  .layout-editor-bar,
+  .layout-column.drop-end > .layout-empty-column {
+    border-color: Highlight;
+  }
+
+  .conversation > .message.user {
+    border: 1px solid CanvasText;
+  }
+
   /* Menus, select lists and the palette keep their focus on the list, and the active item is the focus indicator. */
   .row-menu-item.active,
   .select-option.active,

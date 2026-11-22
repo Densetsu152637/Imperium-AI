@@ -92,8 +92,8 @@
 
   /* Motion */
   --dur-fast: 120ms; /* hover, press, colour */
-  --dur-base: 180ms; /* menus, popovers, folding a panel */
-  --dur-slow: 260ms; /* dialogs, sheets, the narrow sidebar */
+  --dur-base: 180ms; /* menus, popovers, sheets, folding a panel */
+  --dur-slow: 260ms; /* dialogs */
   --dur-pulse: 1400ms; /* the breathing dots: working, connecting, recording */
   --dur-spin: 1200ms; /* the wait line's spinner */
   --dur-spin-fast: 900ms; /* the small .spin spinner */

@@ -676,7 +676,7 @@ Appearance → UI scale zooms everything. Spacing, row and control heights also 
 | Sizes | `--control-h-sm` (24 px at every density), `--control-h` (30 px, floor 24), `--control-h-lg` (40 px), `--row-h` (a row, menu or navigation item is a control tall), `--icon-sm`, `--icon`, `--icon-lg`, `--panel-header-h`, `--dialog-gutter`, the column minimums `--col-min-*` and `--sheet-w` |
 | Radii | `--radius-xs` 4 (badges, keys), `--radius-sm` 6 (buttons, inputs), `--radius` 8 (cards, rows, menus), `--radius-lg` 12 (dialogs, the composer), `--radius-full`; radii follow the UI scale, not density |
 | Elevation | `--elev-1` to `--elev-3`, used only by floating things (menus, popovers, dialogs, sheets), `--scrim`, and `--surface-overlay` (floating surfaces are one step lighter in dark mode, where a shadow barely shows) |
-| Motion | `--dur-fast` 120 ms (hover, press, colour), `--dur-base` 180 ms (menus, popovers, folding a panel), `--dur-slow` 260 ms (dialogs, sheets), `--ease-standard`, `--ease-exit`; `--dur-pulse`, `--dur-spin` and `--dur-spin-fast` for the looping dots and spinners |
+| Motion | `--dur-fast` 120 ms (hover, press, colour), `--dur-base` 180 ms (menus, popovers, sheets, folding a panel), `--dur-slow` 260 ms (dialogs), `--ease-standard`, `--ease-exit`; `--dur-pulse`, `--dur-spin` and `--dur-spin-fast` for the looping dots and spinners |
 | Layers | `--z-raised`, `--z-sticky`, `--z-overlay`, `--z-popover`, `--z-tour`, and the workspace's own `--z-divider`, `--z-drop`, `--z-edge`, `--z-sheet` |
 | Colour | `--bg`, `--surface`, `--surface-raised`, `--surface-sunken`, `--surface-hover`, `--surface-active`; `--border` and `--border-strong` (decorative) and `--border-control` (3:1 or more, for the edges of inputs, selects, checkboxes and switches); `--text`, `--text-muted`, `--text-subtle`; `--accent`, `--accent-hover`, `--accent-soft`, `--accent-ink`, `--accent-text`, `--focus`; `--danger`, `--ok`, `--warn` with `-soft` washes; the context chart's `--ctx-*` set (data colours, exempt from the one-accent rule) |
 
@@ -717,13 +717,15 @@ takes `className` for layout only, never colour or size.
   (`info`, `ok`, `warn`, `danger`, with an icon; failures are `role="alert"`) replace bare
   paragraphs; **Kbd** draws a key chord.
 
-**Motion (implemented):** menus and popovers enter over `--dur-base` with a 4 px rise and a fade;
-tooltips and scrims fade over `--dur-fast`; dialogs and sheets enter over `--dur-slow`; folding a
-panel and the chevron that turns with it use `--dur-base`; hover and press colour changes use
+**Motion (implemented):** menus and popovers enter over `--dur-base` with a fade, and a 3 px rise
+when they open downward (one that opens above its trigger only fades); tooltips and scrims fade
+over `--dur-fast`; sheets slide in over `--dur-base` and dialogs rise in over `--dur-slow`; folding
+a panel and the chevron that turns with it use `--dur-base`; hover and press colour changes use
 `--dur-fast` with `--ease-standard`. Things appear with an animation and leave without one: an
 exit animation would need the component to stay mounted after it closes, which is a behaviour
 change. With reduced motion (the operating system's preference, or Settings → Appearance → Reduce
-motion, which sets `.reduce-motion` on the root) `base.css` turns off every animation and
+motion, which sets `.reduce-motion` on the root; a mod frame gets the same class on its root,
+so the nursery stops roaming for either) `base.css` turns off every animation and
 transition and smooth scrolling, so nothing moves and elements settle in their final state at
 once; a switch's knob and a chevron jump to their new position.
 
@@ -916,8 +918,8 @@ tested in `test/tourSteps.test.ts`.
 - **Focus:** one rule for every focusable element, a 2 px `--focus` outline offset 2 px (0 inside
   inputs, whose edge also takes `--focus`). The only `outline: none` rules are on containers that
   take focus from script (the app root, a dialog, a sheet, a menu list, whose active item is the
-  indicator) and on fields whose wrapper draws the ring (the composer, the palette and sidebar
-  search). Outlines, unlike shadows, survive forced colours.
+  indicator) and on things whose wrapper or child draws the ring (the composer, the palette and
+  sidebar search, the Browser panel's page image). Outlines, unlike shadows, survive forced colours.
 - **Names:** an icon-only button is an `IconButton` and cannot be built without a `label`; a
   field's label, hint and error are tied to it by `Field`; status is never colour alone (badges
   and notices carry words and icons, and a status dot is an image whose label is the status).
@@ -930,8 +932,8 @@ tested in `test/tourSteps.test.ts`.
   border or inset outline; shapes drawn only by a background (dots, a bar's fill, a switch's knob,
   the check in a checkbox, panel-editor handles) take system colours; data colours (context
   categories, the accent and project colour pickers) keep their own. Text, icons and borders need
-  nothing. The browser tooling the project uses cannot emulate forced colours, so these rules
-  were reviewed against the markup and not run in a contrast theme: after changing any of them,
+  nothing. The rules were reviewed against the markup but not run: no tool used in this work
+  emulates forced colours, so they have not been seen in a contrast theme: after changing any of them,
   check the switches, checkboxes, selected rows, meters, dots and the panel editor under a
   Windows contrast theme (Settings → Accessibility → Contrast themes).
 

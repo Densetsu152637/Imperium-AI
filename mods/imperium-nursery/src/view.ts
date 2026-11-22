@@ -608,8 +608,13 @@ export class Room {
   }
 }
 
-/** Whether the person asked for less motion. */
-export const reducedMotion = (): boolean => globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+/**
+ * Whether the person asked for less motion: the operating system's preference, or the app's Reduce
+ * motion setting, which the host marks on the frame's root as the `reduce-motion` class.
+ */
+export const reducedMotion = (): boolean =>
+  (globalThis.document?.documentElement?.classList.contains("reduce-motion") ?? false) ||
+  (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
 
 /** One shared loop paints every room: a single timer however many pets there are. */
 export class FrameLoop {
