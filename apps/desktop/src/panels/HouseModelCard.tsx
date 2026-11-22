@@ -8,6 +8,9 @@ import { useState } from "react";
 
 import type { DownloadJob, HfFilesResult } from "@imperium/protocol";
 
+import { Badge } from "../components/Badge";
+import { IconButton } from "../components/IconButton";
+import { Notice } from "../components/Notice";
 import type { DaemonClient } from "../daemon/client";
 import { approxSize, downloadable, type HouseModel } from "../models/houseModels";
 
@@ -53,41 +56,53 @@ export function HouseModelCard({
   };
 
   return (
-    <section className="house-models" aria-labelledby="house-models-title">
+    <section className="card house-models" aria-labelledby="house-models-title">
       <div className="house-models-head">
         <h3 id="house-models-title">Imperium's own models</h3>
-        <button className="ghost" onClick={onDismiss} aria-label="Dismiss the model suggestion" title="Don't suggest these again">
-          <X aria-hidden="true" />
-        </button>
+        <IconButton icon={X} label="Dismiss the model suggestion" tooltip="Don't suggest these again" onClick={onDismiss} />
       </div>
       <p className="muted">No model is set up yet. Emperor and Consul are the models Imperium is built around.</p>
-      <ul className="house-model-list">
-        {models.map((model) => (
-          <li key={model.id}>
-            <span className="house-model-text">
-              <strong>{model.name}</strong>
-              <span>{model.role}</span>
-              <small className="muted">
-                {approxSize(model.approxBytes)}
-                {downloadable(model) ? "" : " · not yet available — still in training"}
-              </small>
-            </span>
-            {downloadable(model) && (
-              <button
-                className="primary"
-                disabled={!client || busy !== null || started[model.id]}
-                onClick={() => download(model)}
-              >
-                {started[model.id] ? "Downloading" : `Download ${model.name}`}
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
+      <table className="table house-model-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th className="num">Size</th>
+            <th>
+              <span className="visually-hidden">Action</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {models.map((model) => (
+            <tr key={model.id}>
+              <td>
+                <span className="house-model-text">
+                  <strong>{model.name}</strong>
+                  <span className="muted">{model.role}</span>
+                </span>
+              </td>
+              <td className="num">{approxSize(model.approxBytes)}</td>
+              <td className="house-model-action">
+                {downloadable(model) ? (
+                  <button
+                    className="primary"
+                    disabled={!client || busy !== null || started[model.id]}
+                    onClick={() => download(model)}
+                  >
+                    {started[model.id] ? "Downloading" : `Download ${model.name}`}
+                  </button>
+                ) : (
+                  <Badge>Not yet available: still in training</Badge>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
       {error && (
-        <p className="error" role="alert">
+        <Notice tone="danger">
           {error}
-        </p>
+        </Notice>
       )}
     </section>
   );

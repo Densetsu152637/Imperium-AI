@@ -1,48 +1,69 @@
-/* style-budget: colour=0 font-size=3 font-weight=0 radius=1 shadow=0 duration=0 z-index=0 */
-/* The first-run suggestion of the house models. */
+/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
+/* The first-run suggestion of the house models, and the model download suggestion in a conversation. */
 
-/* First-run suggestion of the house models (Emperor and Consul). */
+/* Both are a .card: a title at --fs-lg with a dismiss tool, a model table, one primary action. */
+.house-models,
+.model-suggestion {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
 .house-models {
-  margin-bottom: calc(var(--space) * 1.5);
+  margin-bottom: var(--sp-4);
 }
 
 .house-models-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--sp-2);
 }
 
-.house-models h3 {
-  margin: 0 0 calc(var(--space) * 0.5);
-  font-size: 0.9rem;
-}
-
-.house-models p {
-  margin: 0 0 var(--space);
-  font-size: 0.8rem;
-}
-
-.house-model-list {
-  list-style: none;
+.house-models h3,
+.model-suggestion h3 {
   margin: 0;
-  padding: 0;
-  display: grid;
-  gap: var(--space);
+  font-size: var(--fs-lg);
+  overflow-wrap: anywhere;
 }
 
-.house-model-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space);
-  padding: var(--space);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+.house-models p,
+.model-suggestion p {
+  margin: 0;
+  font-size: var(--fs-sm);
 }
 
 .house-model-text {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  font-size: 0.8rem;
+  gap: var(--sp-1);
+}
+
+.house-model-text .muted {
+  font-size: var(--fs-sm);
+}
+
+.house-model-table td.house-model-action {
+  text-align: right;
+}
+
+.model-suggestion progress {
+  width: 100%;
+}
+
+.model-suggestion-table td {
+  overflow-wrap: anywhere;
+}
+
+.model-suggestion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* Sizes and quantisations stay on one line; the model name and the sentence-like cells wrap. */
+.house-model-table td.num,
+.model-suggestion-table td.num,
+.model-suggestion-table td:nth-child(2) {
+  white-space: nowrap;
 }

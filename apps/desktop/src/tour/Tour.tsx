@@ -219,7 +219,7 @@ export function Tour({
       )}
       <div
         ref={card}
-        className="tour-card"
+        className="card tour-card"
         role="dialog"
         aria-modal="true"
         aria-labelledby="tour-title"
@@ -227,9 +227,16 @@ export function Tour({
         tabIndex={-1}
         style={position ? { left: position.left, top: position.top } : { visibility: "hidden" }}
       >
-        <p className="tour-progress muted">
-          Step {index + 1} of {total}
-        </p>
+        <div className="tour-progress">
+          <span className="tour-dots" aria-hidden="true">
+            {Array.from({ length: total }, (_, dot) => (
+              <span key={dot} className={dot === index ? "tour-dot current" : dot < index ? "tour-dot done" : "tour-dot"} />
+            ))}
+          </span>
+          <span className="muted">
+            Step {index + 1} of {total}
+          </span>
+        </div>
         <h2 id="tour-title">{step.title}</h2>
         <p id="tour-body">{step.body}</p>
         <div className="tour-actions">

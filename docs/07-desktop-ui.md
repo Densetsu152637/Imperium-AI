@@ -294,10 +294,11 @@ visible, so the daemon samples nothing otherwise
 ([04](04-models-and-routing.md#active-models-and-resource-monitor)).
 
 **Model download suggestions (implemented):** a `model_suggestion` event shows as a card in the
-conversation, styled like a permission prompt: the repository, quantisation, size, how it fits
-this machine (on the GPU, split with system memory, or on the CPU), and why it is suggested,
-with **Download**, **Not now**, and **Don't ask again** (which turns off *Suggest model
-downloads* in Settings). Downloading shows a progress bar from `models.download_progress`;
+conversation, a `.card` with its title (*Download* and the repository) at `--fs-lg` and a one-row
+`.table` of the model, quantisation, size and how it fits this machine (on the GPU, split with
+system memory, or on the CPU), then why it is suggested, with the primary **Download**, a ghost
+**Don't ask again** (which turns off *Suggest model downloads* in Settings) and a ghost × icon
+button for **Not now**. Downloading shows a progress bar from `models.download_progress`;
 when it is done the card offers **Switch to it** (`session.control` `set_model`). Nothing is
 downloaded until Download is clicked. The answers go through `session.suggestion_respond`
 ([04](04-models-and-routing.md#model-download-suggestions)).
@@ -754,7 +755,9 @@ the registry and a handler that asks `triggers(event, settings.shortcuts, id)`.
 For a new user, a guided tour walks through the main areas: environments
 and Home, the sessions list, the composer, panels and layouts, the command palette, permissions
 and approvals, memory, and Settings. Each step is a small card beside a highlighted element
-(or centred, for a step about the app as a whole) with Back, Next, and Skip tour.
+(or centred, for a step about the app as a whole) with Back, Next, and Skip tour. The card is the shared
+`.card` floating at `--elev-2`, with a row of step dots (the current step in the accent) above its
+title at `--fs-lg`; the highlight is a `--radius` ring in `--focus` and the dimming uses `--scrim`.
 
 - **For new users, once.** How the tour ended (`finished` or `skipped`, and when) is the app
   setting `tour` in the local settings document, so it starts by itself only once. It starts in the
@@ -1562,14 +1565,14 @@ drawn. Session totals and recent outputs follow.
 ## House models on first run (implemented)
 
 While the user has no model at all (no configured hosted endpoint, no local model found in the
-model folders, no default), the new-session view shows a card above the model setup suggesting
+model folders, no default), the new-session view shows a `.card` above the model setup, titled at `--fs-lg`, suggesting
 Emperor (the root agent and planner, on a base of about 4B) and Consul (its critic and reviewer,
 which checks Emperor's plans and delegated work and can reject them, on a base of about 9B),
 Imperium's own fine-tuned open-weight models, each with a role blurb and an approximate size
-(placeholders until the models are published). The catalogue is `apps/desktop/src/models/houseModels.ts`; an entry with no download
-source (both, today) reads *not yet available — still in training* and has no button. An entry
+in a `.table` like the model lists (placeholders until the models are published). The catalogue is `apps/desktop/src/models/houseModels.ts`; an entry with no download
+source (both, today) shows a *Not yet available: still in training* badge in place of the button. An entry
 with a Hugging Face source gets a *Download* button that runs the same `models.hf_files` and
-`models.download` calls as the Local models panel's form. The × dismisses the card for good (the
+`models.download` calls as the Local models panel's form. The ghost × icon button dismisses the card for good (the
 `houseModelsDismissed` setting), and it never shows once any model is present. Not built, until
 the models are fully trained: a hardware-based pick of size and quantisation, progress and resume
 on the card, checksum verification, and making the model the default after the download
