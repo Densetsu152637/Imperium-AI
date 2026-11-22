@@ -33,7 +33,8 @@ const REMOTE_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_BYTES: usize = 8 * 1024 * 1024;
 /// How long a listing is reused, and how many are kept.
 const CACHE_TTL: Duration = Duration::from_secs(5);
-const CACHE_SLOTS: usize = 8;
+/// Tests run in parallel and share the cache, so they get room enough not to evict each other.
+const CACHE_SLOTS: usize = if cfg!(test) { 4096 } else { 8 };
 /// How long a failed listing is remembered, so waiters and the keystrokes that follow get its
 /// error at once instead of each trying again (a remote attempt can take [`REMOTE_TIMEOUT`]).
 const FAILURE_TTL: Duration = if cfg!(test) {
