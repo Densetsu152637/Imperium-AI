@@ -7,6 +7,7 @@ import { useEffect, useId, useState } from "react";
 
 import type { LocalModelRow, ModelRow, RuntimeInfo, SessionControlResult } from "@imperium/protocol";
 
+import { IconButton } from "../components/IconButton";
 import { Select, type SelectOption } from "../components/Select";
 import { modelOptions } from "../models/modelOptions";
 import { effortHint, effortToSend } from "../sessions/effort";
@@ -126,15 +127,7 @@ export function SessionModelSelect({
       {pending !== null && !switching && (
         <span className="model-status" role="status">
           After this turn
-          <button
-            type="button"
-            className="ghost icon-only model-status-cancel"
-            onClick={() => setPending(null)}
-            aria-label="Keep the current model"
-            title="Keep the current model"
-          >
-            <X aria-hidden="true" />
-          </button>
+          <IconButton size="sm" icon={X} className="model-status-cancel" onClick={() => setPending(null)} label="Keep the current model" />
         </span>
       )}
       {note && !switching && pending === null && (
@@ -158,7 +151,7 @@ export function SessionModelSelect({
           {onOpenLocalModels && (
             <button
               type="button"
-              className="ghost"
+              className="ghost small"
               onClick={() => {
                 setUnready(null);
                 onOpenLocalModels();
@@ -169,7 +162,7 @@ export function SessionModelSelect({
           )}
           <button
             type="button"
-            className="ghost"
+            className="ghost small"
             onClick={() => {
               const spec = unready;
               setUnready(null);
@@ -178,15 +171,7 @@ export function SessionModelSelect({
           >
             Use anyway
           </button>
-          <button
-            type="button"
-            className="ghost icon-only model-status-cancel"
-            onClick={() => setUnready(null)}
-            aria-label="Keep the current model"
-            title="Keep the current model"
-          >
-            <X aria-hidden="true" />
-          </button>
+          <IconButton size="sm" icon={X} className="model-status-cancel" onClick={() => setUnready(null)} label="Keep the current model" />
         </span>
       )}
     </span>

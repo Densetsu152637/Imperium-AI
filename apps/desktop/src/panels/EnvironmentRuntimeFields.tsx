@@ -7,25 +7,60 @@ import { useState } from "react";
 
 import type { EnvironmentRuntime, RuntimeTestResult } from "@imperium/protocol";
 
+import { Field } from "../components/Field";
+import { Notice } from "../components/Notice";
 import { Select } from "../components/Select";
-import { Row, RowNote } from "../components/SettingsRow";
+import { Row } from "../components/SettingsRow";
 import { Switch } from "../components/Switch";
 
 type Kind = EnvironmentRuntime["kind"];
 
 const KINDS: { value: Kind; label: string; description: string }[] = [
-  { value: "local", label: "This machine", description: "Under the configured isolation tier" },
-  { value: "docker", label: "Docker", description: "A container from an image, or a running container" },
-  { value: "wsl", label: "WSL", description: "A Windows Subsystem for Linux distribution" },
-  { value: "ssh", label: "SSH", description: "A host from your SSH config, or user@host:port" },
+  {
+    value: "local",
+    label: "This machine",
+    description: "Under the configured isolation tier",
+  },
+  {
+    value: "docker",
+    label: "Docker",
+    description: "A container from an image, or a running container",
+  },
+  {
+    value: "wsl",
+    label: "WSL",
+    description: "A Windows Subsystem for Linux distribution",
+  },
+  {
+    value: "ssh",
+    label: "SSH",
+    description: "A host from your SSH config, or user@host:port",
+  },
 ];
 
 /** The fields of a runtime being edited, kept as text whatever the kind. */
-export type RuntimeDraft = { kind: Kind; image: string; container: string; distro: string; host: string };
+export type RuntimeDraft = {
+  kind: Kind;
+  image: string;
+  container: string;
+  distro: string;
+  host: string;
+};
 
 export const draftOf = (runtime: EnvironmentRuntime | undefined): RuntimeDraft => {
-  const draft: RuntimeDraft = { kind: runtime?.kind ?? "local", image: "", container: "", distro: "", host: "" };
-  if (runtime?.kind === "docker") return { ...draft, image: runtime.image, container: runtime.container ?? "" };
+  const draft: RuntimeDraft = {
+    kind: runtime?.kind ?? "local",
+    image: "",
+    container: "",
+    distro: "",
+    host: "",
+  };
+  if (runtime?.kind === "docker")
+    return {
+      ...draft,
+      image: runtime.image,
+      container: runtime.container ?? "",
+    };
   if (runtime?.kind === "wsl") return { ...draft, distro: runtime.distro };
   if (runtime?.kind === "ssh") return { ...draft, host: runtime.host };
   return draft;
@@ -39,7 +74,11 @@ export function runtimeOf(draft: RuntimeDraft): EnvironmentRuntime | string {
     case "docker":
       if (!draft.image.trim()) return "Name the Docker image.";
       return draft.container.trim()
-        ? { kind: "docker", image: draft.image.trim(), container: draft.container.trim() }
+        ? {
+            kind: "docker",
+            image: draft.image.trim(),
+            container: draft.container.trim(),
+          }
         : { kind: "docker", image: draft.image.trim() };
     case "wsl":
       return draft.distro.trim() ? { kind: "wsl", distro: draft.distro.trim() } : "Name the WSL distribution.";
@@ -81,10 +120,9 @@ export function EnvironmentRuntimeFields({
   const [result, setResult] = useState<RuntimeTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const field = (key: keyof Omit<RuntimeDraft, "kind">, label: string, placeholder: string) => (
-    <Row label={label} sub>
+    <Field label={label}>
       <input
         type="text"
-        aria-label={label}
         value={draft[key]}
         placeholder={placeholder}
         disabled={disabled}
@@ -93,17 +131,18 @@ export function EnvironmentRuntimeFields({
           onChange({ ...draft, [key]: event.target.value });
         }}
       />
-    </Row>
+    </Field>
   );
 
   return (
     <>
-      <Row label="Runtime" description="Where this environment's tools run.">
-        {fixedLocal ? (
+      {fixedLocal ? (
+        <Row label="Runtime" description="Where this environment's tools run.">
           <span className="muted">This machine</span>
-        ) : (
+        </Row>
+      ) : (
+        <Field label="Runtime" hint="Where this environment's tools run.">
           <Select
-            aria-label="Runtime"
             value={draft.kind}
             disabled={disabled}
             options={KINDS}
@@ -112,8 +151,8 @@ export function EnvironmentRuntimeFields({
               onChange({ ...draft, kind: kind as Kind });
             }}
           />
-        )}
-      </Row>
+        </Field>
+      )}
       {draft.kind === "docker" && (
         <>
           {field("image", "Image", "ubuntu:24.04")}
@@ -123,40 +162,35 @@ export function EnvironmentRuntimeFields({
       {draft.kind === "wsl" && field("distro", "Distribution", "Ubuntu")}
       {draft.kind === "ssh" && field("host", "Host", "devbox or me@host:22")}
       {draft.kind !== "local" && (
-        <RowNote sub>
-          <p className="muted runtime-hint">
-            {isRemote(draft)
-              ? "Folders are paths inside the runtime, such as /home/me/project."
-              : "Each command runs in a fresh container with the folders mounted."}
-          </p>
-        </RowNote>
+        <p className="muted environment-hint">
+          {isRemote(draft)
+            ? "Folders are paths inside the runtime, such as /home/me/project."
+            : "Each command runs in a fresh container with the folders mounted."}
+        </p>
       )}
       <Row label="Test runtime" description="Check that the saved runtime can be reached.">
-        <span className="runtime-test">
-          {result && (
-            <span className={result.ok ? "runtime-result ok" : "runtime-result error"} role="status">
-              {result.message}
-            </span>
-          )}
-          <button
-            type="button"
-            disabled={disabled || testing || !!testBlocked}
-            title={testBlocked ?? "Check that the runtime can be reached"}
-            onClick={async () => {
-              setTesting(true);
-              try {
-                setResult(await onTest());
-              } catch (error) {
-                setResult({ ok: false, message: error instanceof Error ? error.message : String(error) });
-              } finally {
-                setTesting(false);
-              }
-            }}
-          >
-            {testing ? "Testing…" : "Test"}
-          </button>
-        </span>
+        <button
+          type="button"
+          disabled={disabled || testing || !!testBlocked}
+          title={testBlocked ?? "Check that the runtime can be reached"}
+          onClick={async () => {
+            setTesting(true);
+            try {
+              setResult(await onTest());
+            } catch (error) {
+              setResult({
+                ok: false,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            } finally {
+              setTesting(false);
+            }
+          }}
+        >
+          {testing ? "Testing…" : "Test"}
+        </button>
       </Row>
+      {result && <Notice tone={result.ok ? "ok" : "danger"}>{result.message}</Notice>}
       <Row
         label="Project worktrees"
         description="Sessions can also use the git worktrees of the folders' repositories (the ones git worktree list shows, including new ones), as they use the folders. Local folders only; a session started in its own worktree keeps to it."

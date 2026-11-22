@@ -22,6 +22,9 @@ import {
   topicProblem,
   usd,
 } from "../sessions/knowledge";
+import { Badge, type BadgeTone } from "../components/Badge";
+import { Field } from "../components/Field";
+import { Notice } from "../components/Notice";
 import type { SessionState, TaskState } from "../sessions/sessions";
 
 type Props = {
@@ -33,6 +36,16 @@ type Props = {
   onRetire?: (taskId: string) => Promise<unknown>;
   /** Asks it a question as the user (`session.agent_ask`); the answer arrives as events. */
   onAsk?: (taskId: string, question: string) => Promise<unknown>;
+};
+
+/** How a question's outcome is toned: answered is good, the failures are not, waiting is neutral. */
+const OUTCOME_TONE: Record<string, BadgeTone> = {
+  waiting: "neutral",
+  answered: "ok",
+  timeout: "warn",
+  cancelled: "neutral",
+  refused: "danger",
+  failed: "danger",
 };
 
 export function KnowledgeSection({ session, task, onKeep, onRetire, onAsk }: Props) {
@@ -57,25 +70,33 @@ export function KnowledgeSection({ session, task, onKeep, onRetire, onAsk }: Pro
     if (!canKeep(task.status, card) || !onKeep || archived) return null;
     const problem = topicProblem(topic);
     return (
-      <section className="knowledge" aria-label="Knowledge agent">
+      <section className="knowledge card" aria-label="Knowledge agent">
         {opening ? (
           <form
             className="knowledge-keep"
             onSubmit={(event) => {
               event.preventDefault();
-              if (problem === null) run(() => onKeep(task.taskId, topic.trim()), () => setOpening(false));
+              if (problem === null)
+                run(
+                  () => onKeep(task.taskId, topic.trim()),
+                  () => setOpening(false),
+                );
             }}
           >
-            <label>
-              What it knows about
+            <Field label="What it knows about" className="knowledge-keep-field">
               <input
                 value={topic}
                 onChange={(event) => setTopic(event.target.value)}
                 placeholder="The billing crate and its invoice rounding"
                 autoFocus
               />
-            </label>
-            <button type="submit" className="primary small" disabled={busy || problem !== null} title={problem ?? undefined}>
+            </Field>
+            <button
+              type="submit"
+              className="primary small"
+              disabled={busy || problem !== null}
+              title={problem ?? undefined}
+            >
               Keep
             </button>
             <button type="button" className="ghost small" onClick={() => setOpening(false)}>
@@ -92,7 +113,7 @@ export function KnowledgeSection({ session, task, onKeep, onRetire, onAsk }: Pro
             <BookOpen aria-hidden="true" /> Keep as knowledge
           </button>
         )}
-        {error && <p className="error">{error}</p>}
+        {error && <Notice tone="danger">{error}</Notice>}
       </section>
     );
   }
@@ -102,11 +123,11 @@ export function KnowledgeSection({ session, task, onKeep, onRetire, onAsk }: Pro
   const problem = questionProblem(question);
   const sources = card.sources;
   return (
-    <section className="knowledge" aria-label="Knowledge agent">
+    <section className="knowledge card" aria-label="Knowledge agent">
       <div className="knowledge-head">
-        <span className="badge knowledge" title={badgeTitle(card)}>
+        <Badge tone="accent" title={badgeTitle(card)}>
           {KNOWLEDGE_BADGE}
-        </span>
+        </Badge>
         <span className="knowledge-topic">{card.topic}</span>
         {onRetire && !archived && (
           <button
@@ -130,9 +151,7 @@ export function KnowledgeSection({ session, task, onKeep, onRetire, onAsk }: Pro
       </dl>
       {sources.length > 0 && (
         <details className="knowledge-sources">
-          <summary>
-            Sources ({sources.length + card.more_sources})
-          </summary>
+          <summary>Sources ({sources.length + card.more_sources})</summary>
           <ul>
             {sources.map((source) => (
               <li key={`${source.kind}:${source.target}`} className={source.stale ? "stale" : undefined}>
@@ -152,7 +171,7 @@ export function KnowledgeSection({ session, task, onKeep, onRetire, onAsk }: Pro
             <li key={asked.id}>
               <div className="knowledge-question-head">
                 <span>{askerName(asked.from, titles)}</span>
-                <span className={`badge ${asked.outcome ?? "waiting"}`}>{outcomeLabel(asked.outcome)}</span>
+                <Badge tone={OUTCOME_TONE[asked.outcome ?? "waiting"]}>{outcomeLabel(asked.outcome)}</Badge>
                 {asked.costUsd !== null && <span className="muted">{usd(asked.costUsd)}</span>}
               </div>
               <p className="knowledge-question-text">{asked.text}</p>
@@ -167,21 +186,31 @@ export function KnowledgeSection({ session, task, onKeep, onRetire, onAsk }: Pro
           className="knowledge-ask"
           onSubmit={(event) => {
             event.preventDefault();
-            if (problem === null) run(() => onAsk(task.taskId, question.trim()), () => setQuestion(""));
+            if (problem === null)
+              run(
+                () => onAsk(task.taskId, question.trim()),
+                () => setQuestion(""),
+              );
           }}
         >
           <input
+            className="field"
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
             placeholder={`Ask ${task.title} a question`}
             aria-label={`Ask ${task.title} a question`}
           />
-          <button type="submit" className="primary small" disabled={busy || problem !== null} title={problem ?? undefined}>
+          <button
+            type="submit"
+            className="primary small"
+            disabled={busy || problem !== null}
+            title={problem ?? undefined}
+          >
             <Send aria-hidden="true" /> Ask
           </button>
         </form>
       )}
-      {error && <p className="error">{error}</p>}
+      {error && <Notice tone="danger">{error}</Notice>}
     </section>
   );
 }

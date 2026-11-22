@@ -1,77 +1,71 @@
 // The rows and tables the model configuration forms share.
 
 import { Info } from "lucide-react";
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { Badge } from "../components/Badge";
 import { Switch } from "../components/Switch";
+import { Tooltip } from "../components/Tooltip";
 import { estimateValue, kvLabel, type MemoryEstimate } from "./modelMemory";
 import { affectsText, ASPECT_LABELS, ESTIMATE_ROWS, type SettingGroup, type SettingSpec } from "./modelSettingsTable";
 
 /**
- * The (i) icon beside a setting: a keyboard-focusable button whose popover says in plain words
- * what the setting affects. It opens on hover and on focus, stays while the button has focus, and
- * Esc closes it (without closing the dialog). The text is the button's description
- * (`aria-describedby`), so a screen reader reads it with the button.
+ * The (i) icon beside a setting: a keyboard-focusable button whose tooltip says in plain words what
+ * the setting affects. The shared Tooltip shows it on hover and, at once, on keyboard focus, and
+ * links it to the button while it shows (`aria-describedby`). Esc closes the tooltip only when the
+ * button has focus: this listener runs before the tooltip's own and prevents the key, which the
+ * dialog's Esc handler respects, so the dialog stays open. A hover-only tooltip does not take Esc.
+ * The Tooltip cannot be opened by touch, so a tap toggles the same help inline under the name
+ * (`aria-expanded`), which a second tap closes.
  */
 function InfoTip({ label, children }: { label: string; children: ReactNode }) {
-  const id = useId();
-  // Open while hovered or keyboard-focused, or when a click pinned it; Esc dismisses it until the
-  // pointer or focus comes back.
-  const [hover, setHover] = useState(false);
-  const [focus, setFocus] = useState(false);
-  const [pinned, setPinned] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
-  const open = !dismissed && (hover || focus || pinned);
+  const button = useRef<HTMLButtonElement>(null);
+  const touched = useRef(false);
+  const [inline, setInline] = useState(false);
+  const helpId = useId();
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      // `aria-describedby` is on the button only while its tooltip shows.
+      if (event.key === "Escape" && document.activeElement === button.current && button.current?.hasAttribute("aria-describedby")) {
+        event.preventDefault();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, []);
   return (
-    <span
-      className="info-tip"
-      onMouseEnter={() => {
-        setHover(true);
-        setDismissed(false);
-      }}
-      onMouseLeave={() => setHover(false)}
-    >
-      <button
-        type="button"
-        className="info-tip-button"
-        aria-label={`What ${label} affects`}
-        aria-describedby={id}
-        aria-expanded={open}
-        onClick={() => {
-          setDismissed(false);
-          setPinned((was) => !was);
-        }}
-        onFocus={(event) => {
-          // Keyboard focus opens it; a mouse click is handled by its click.
-          if (event.currentTarget.matches(":focus-visible")) {
-            setFocus(true);
-            setDismissed(false);
-          }
-        }}
-        onBlur={() => {
-          setFocus(false);
-          setPinned(false);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Escape" && open) {
-            // Closes the popover only: the dialog's own Esc handler sees the prevented event.
-            event.preventDefault();
-            setDismissed(true);
-          }
-        }}
-      >
-        <Info aria-hidden="true" />
-      </button>
-      <span role="tooltip" id={id} className="info-tip-pop" hidden={!open}>
-        {children}
-      </span>
-    </span>
+    <>
+      <Tooltip text={children}>
+        <button
+          ref={button}
+          type="button"
+          className="info-tip-button"
+          aria-label={`What ${label} affects`}
+          aria-expanded={inline}
+          aria-controls={inline ? helpId : undefined}
+          onPointerDown={(event) => {
+            touched.current = event.pointerType === "touch" || event.pointerType === "pen" || !window.matchMedia("(hover: hover)").matches;
+          }}
+          onClick={() => {
+            if (touched.current) setInline((open) => !open);
+            touched.current = false;
+          }}
+        >
+          <Info aria-hidden="true" />
+        </button>
+      </Tooltip>
+      {inline && (
+        <span id={helpId} className="info-tip-inline" role="note">
+          {children}
+        </span>
+      )}
+    </>
   );
 }
 
 /** One group of settings as a table, with its title and note as the caption. */
 export function GroupTable({ group, children }: { group: SettingGroup; children: ReactNode }) {
   return (
-    <table className="model-table">
+    <table className="table model-table">
       <caption>
         <span className="model-table-title">{group.title}</span>
         {group.note && <small className="muted">{group.note}</small>}
@@ -111,7 +105,7 @@ export function SettingRow({
         <span className="model-setting-name">
           {spec.label}
           <InfoTip label={spec.label}>
-            <span>{spec.help}</span>
+            <span className="info-tip-help">{spec.help}</span>
             <span className="info-tip-affects">{affectsText(spec.affects)}</span>
           </InfoTip>
         </span>
@@ -123,7 +117,7 @@ export function SettingRow({
       </td>
       <td className="model-setting-reset">
         {filled && !unavailable && (
-          <button type="button" className="ghost reset" onClick={onReset} title="Use the default" aria-label={`Reset ${spec.label}`}>
+          <button type="button" className="ghost small reset" onClick={onReset} title="Use the default" aria-label={`Reset ${spec.label}`}>
             reset
           </button>
         )}
@@ -148,7 +142,7 @@ export function MemoryTable({
   const caption = (
     <caption>
       <span className="model-table-title">
-        Estimated memory <span className="badge estimate">≈ estimate</span>
+        Estimated memory <Badge className="estimate">≈ estimate</Badge>
         {failed ? (
           <span className="muted model-estimate-updating"> out of date: fix the settings below</span>
         ) : (
@@ -164,7 +158,7 @@ export function MemoryTable({
   );
   if (estimate.kind === "remote") {
     return (
-      <table className="model-table model-memory">
+      <table className="table model-table model-memory">
         {caption}
         <tbody>
           <tr className="model-setting-row">
@@ -187,7 +181,7 @@ export function MemoryTable({
     );
   }
   return (
-    <table className={`model-table model-memory${updating || failed ? " updating" : ""}`}>
+    <table className={`table model-table model-memory${updating || failed ? " updating" : ""}`}>
       {caption}
       <tbody>
         {ESTIMATE_ROWS.map((row) => {

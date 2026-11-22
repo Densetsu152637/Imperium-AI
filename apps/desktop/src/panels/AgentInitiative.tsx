@@ -14,6 +14,8 @@ import type {
 } from "@imperium/protocol";
 
 import { INITIATIVE_OPTIONS, actLimits, initiativeHeadline, openSuggestions } from "../sessions/agents";
+import { Field } from "../components/Field";
+import { Notice } from "../components/Notice";
 import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
 
@@ -42,7 +44,10 @@ export function AgentInitiative({ environmentId, agent, client, disabled, onOpen
     }
     let live = true;
     client
-      .call<InitiativeState>("initiative.get", { environment_id: environmentId, agent_id: agent.id })
+      .call<InitiativeState>("initiative.get", {
+        environment_id: environmentId,
+        agent_id: agent.id,
+      })
       .then((result) => live && setState(result))
       .catch(() => {});
     const stop = client.onNotification((notification: Notification) => {
@@ -70,26 +75,35 @@ export function AgentInitiative({ environmentId, agent, client, disabled, onOpen
   };
 
   const setMode = (next: Initiative) =>
-    attempt((c) => c.call("environments.agent_update", { environment_id: environmentId, agent_id: agent.id, initiative: next }));
+    attempt((c) =>
+      c.call("environments.agent_update", {
+        environment_id: environmentId,
+        agent_id: agent.id,
+        initiative: next,
+      }),
+    );
 
   const ref = { environment_id: environmentId, agent_id: agent.id };
   const open = openSuggestions(state);
   const handled = (state?.suggestions ?? []).filter((suggestion) => suggestion.status !== "open").slice(0, 3);
 
   return (
-    <div className="agent-initiative">
-      <div className="agent-initiative-head">
-        <span className="environment-label" title="What the agent does on its own, when the machine and this environment are idle">
-          Initiative
-        </span>
+    <section className="agent-initiative" aria-label={`Initiative of ${agent.name}`}>
+      <h4 className="environment-subhead">Initiative</h4>
+      <Field label="Mode" hint="What the agent does on its own, when the machine and this environment are idle.">
         <Select
-          aria-label={`Initiative of ${agent.name}`}
           value={mode}
           disabled={disabled || busy || !client}
-          options={INITIATIVE_OPTIONS.map(({ value, label, description }) => ({ value, label, description }))}
+          options={INITIATIVE_OPTIONS.map(({ value, label, description }) => ({
+            value,
+            label,
+            description,
+          }))}
           onChange={(value) => void setMode(value as Initiative)}
         />
-        {mode !== "off" && (
+      </Field>
+      {mode !== "off" && (
+        <div className="environment-actions start">
           <button
             type="button"
             disabled={disabled || busy || !client || !!state?.reviewing}
@@ -98,8 +112,8 @@ export function AgentInitiative({ environmentId, agent, client, disabled, onOpen
           >
             Review now
           </button>
-        )}
-      </div>
+        </div>
+      )}
       {mode !== "off" && state && (
         <>
           <p className="muted agent-initiative-line">
@@ -109,7 +123,7 @@ export function AgentInitiative({ environmentId, agent, client, disabled, onOpen
           {open.length > 0 && (
             <ul className="agent-suggestions" aria-label={`Suggestions from ${agent.name}`}>
               {open.map((suggestion) => (
-                <li key={suggestion.id}>
+                <li key={suggestion.id} className="card">
                   <div className="agent-suggestion-text">
                     <strong>{suggestion.title}</strong>
                     <span className="muted">{suggestion.reason}</span>
@@ -118,10 +132,10 @@ export function AgentInitiative({ environmentId, agent, client, disabled, onOpen
                     </span>
                     <em title="What the new session is told">“{suggestion.prompt}”</em>
                   </div>
-                  <div className="agent-suggestion-actions">
+                  <div className="environment-actions start">
                     <button
                       type="button"
-                      className="primary"
+                      className="primary small"
                       disabled={disabled || busy}
                       onClick={() =>
                         void attempt(async (c) => {
@@ -137,8 +151,16 @@ export function AgentInitiative({ environmentId, agent, client, disabled, onOpen
                     </button>
                     <button
                       type="button"
+                      className="small"
                       disabled={disabled || busy}
-                      onClick={() => void attempt((c) => c.call("initiative.dismiss", { ...ref, suggestion_id: suggestion.id }))}
+                      onClick={() =>
+                        void attempt((c) =>
+                          c.call("initiative.dismiss", {
+                            ...ref,
+                            suggestion_id: suggestion.id,
+                          }),
+                        )
+                      }
                     >
                       Dismiss
                     </button>
@@ -158,7 +180,7 @@ export function AgentInitiative({ environmentId, agent, client, disabled, onOpen
           )}
           {state.digest && state.digest.items.length > 0 && (
             <div className="agent-digest">
-              <span className="environment-label">Work left</span>
+              <h4 className="environment-subhead">Work left</h4>
               <p className="muted">{state.digest.summary}</p>
               <ul>
                 {state.digest.items.map((item, index) => (
@@ -171,11 +193,7 @@ export function AgentInitiative({ environmentId, agent, client, disabled, onOpen
           )}
         </>
       )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-    </div>
+      {error && <Notice tone="danger">{error}</Notice>}
+    </section>
   );
 }
