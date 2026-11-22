@@ -33,7 +33,15 @@ const REMOTE_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_BYTES: usize = 8 * 1024 * 1024;
 /// How long a listing is reused, and how many are kept.
 const CACHE_TTL: Duration = Duration::from_secs(5);
-const CACHE_SLOTS: usize = 8;
+/// Tests run in parallel and share the cache, so they get room enough not to evict each other.
+const CACHE_SLOTS: usize = if cfg!(test) { 4096 } else { 8 };
+/// How long a failed listing is remembered, so waiters and the keystrokes that follow get its
+/// error at once instead of each trying again (a remote attempt can take [`REMOTE_TIMEOUT`]).
+const FAILURE_TTL: Duration = if cfg!(test) {
+    Duration::from_millis(1500)
+} else {
+    Duration::from_secs(3)
+};
 
 /// A file or directory the picker offers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,9 +115,13 @@ struct Listing {
     stopped: bool,
 }
 
+/// What a walk gave, and when: a listing, or the message of the error that stopped it.
+type Walked = (Instant, Result<Arc<Listing>, String>);
+
 /// One kept listing: filled by the first request that needs it, awaited by the others that
-/// arrive while it is walking, and valid for [`CACHE_TTL`] from when it was filled.
-type Slot = Arc<OnceCell<(Instant, Arc<Listing>)>>;
+/// arrive while it is walking, and valid for [`CACHE_TTL`] (a failure for [`FAILURE_TTL`])
+/// from when it was filled.
+type Slot = Arc<OnceCell<Walked>>;
 
 static CACHE: Mutex<Vec<(String, Slot)>> = Mutex::new(Vec::new());
 
@@ -146,7 +158,14 @@ fn cache_key(workspace: &Workspace) -> String {
 }
 
 fn expired(slot: &Slot) -> bool {
-    slot.get().is_some_and(|(at, _)| at.elapsed() >= CACHE_TTL)
+    slot.get().is_some_and(|(at, result)| {
+        at.elapsed()
+            >= if result.is_ok() {
+                CACHE_TTL
+            } else {
+                FAILURE_TTL
+            }
+    })
 }
 
 /// The slot for `key`: the kept one, or a new one. Every expired slot is dropped, and the
@@ -189,22 +208,28 @@ pub async fn find_files(
     let limit = limit.clamp(1, MAX_MATCHES);
     let key = cache_key(workspace);
     let slot = slot_for(&key);
-    let (_, listing) = slot
-        .get_or_try_init(|| async {
+    let (_, walked) = slot
+        .get_or_init(|| async {
             #[cfg(test)]
             WALKS.lock().unwrap().push(key.clone());
             let fresh = if workspace.runtime().is_some() {
-                remote_listing(workspace).await?
+                remote_listing(workspace).await
             } else {
                 let workspace = workspace.clone();
                 tokio::task::spawn_blocking(move || local_listing(&workspace))
                     .await
-                    .map_err(|error| ToolError::Io(error.to_string()))?
+                    .map_err(|error| ToolError::Io(error.to_string()))
             };
-            Ok::<_, ToolError>((Instant::now(), Arc::new(fresh)))
+            (
+                Instant::now(),
+                fresh.map(Arc::new).map_err(|error| error.to_string()),
+            )
         })
-        .await?;
-    Ok(rank(workspace, listing, query, limit))
+        .await;
+    match walked {
+        Ok(listing) => Ok(rank(workspace, listing, query, limit)),
+        Err(message) => Err(ToolError::Io(message.clone())),
+    }
 }
 
 /// The score of a path for `query`; with no query, shallower paths come first.
@@ -719,6 +744,61 @@ mod tests {
         }
         let walks = WALKS.lock().unwrap().iter().filter(|k| **k == key).count();
         assert_eq!(walks, 1);
+    }
+
+    /// Waits, then fails, counting its attempts.
+    #[derive(Debug)]
+    struct SlowFailure(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl crate::Runner for SlowFailure {
+        fn run<'a>(
+            &'a self,
+            _spec: &'a crate::ProcessSpec,
+            _stdin: Option<&'a [u8]>,
+            _timeout: Duration,
+        ) -> crate::runtime::RunFuture<'a> {
+            Box::pin(async move {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                Ok(crate::RunOutput {
+                    code: Some(255),
+                    stdout: Vec::new(),
+                    stderr: b"connection refused".to_vec(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_listing_is_remembered_briefly_so_waiters_do_not_retry() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let workspace = Workspace::remote(
+            crate::Remote::Ssh {
+                host: "failing-box".into(),
+            },
+            &["/work/project".to_string()],
+            Arc::new(SlowFailure(Arc::clone(&attempts))),
+        )
+        .unwrap();
+        forget_listing(&workspace);
+        let tasks: Vec<_> = (0..4)
+            .map(|_| {
+                let workspace = workspace.clone();
+                tokio::spawn(async move { find_files(&workspace, "a", 10).await })
+            })
+            .collect();
+        for task in tasks {
+            let error = task.await.unwrap().unwrap_err();
+            assert!(error.to_string().contains("connection refused"), "{error}");
+        }
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // A request within the window gets the same error without another attempt.
+        assert!(find_files(&workspace, "ab", 10).await.is_err());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // After the window it tries again.
+        tokio::time::sleep(FAILURE_TTL + Duration::from_millis(100)).await;
+        assert!(find_files(&workspace, "abc", 10).await.is_err());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
