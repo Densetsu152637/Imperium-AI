@@ -456,20 +456,20 @@ function ModelTable({
   };
   return (
     <>
-      <table className="table compact local-model-table">
-        <thead>
-          <tr>
-            <th>Model</th>
-            <th>Quant</th>
-            <th>Size</th>
-            <th>Context</th>
-            <th>On this machine</th>
-            <th>
+      <table className="table compact local-model-table" role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th role="columnheader">Model</th>
+            <th role="columnheader">Quant</th>
+            <th role="columnheader">Size</th>
+            <th role="columnheader">Context</th>
+            <th role="columnheader">On this machine</th>
+            <th role="columnheader">
               <span className="visually-hidden">Actions</span>
             </th>
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup">
           {[...arranged.favourites, ...arranged.normal].map((row) => modelRows(row, false))}
           {arranged.hidden.length > 0 && (
             <HiddenGroupRow count={arranged.hidden.length} open={showHidden} colSpan={6} onToggle={() => setShowHidden((open) => !open)} />
@@ -513,8 +513,8 @@ function ModelRows({
   const fit = `${placement(row)}${row.tokens_per_s != null ? ` · ${row.tokens_per_s.toFixed(1)} tok/s` : ""}`;
   return (
     <>
-      <tr className={[unusable ? "unusable" : null, hidden ? "model-hidden" : null].filter(Boolean).join(" ") || undefined} title={row.path}>
-        <td className="model-name">
+      <tr role="row" className={[unusable ? "unusable" : null, hidden ? "model-hidden" : null].filter(Boolean).join(" ") || undefined} title={row.path}>
+        <td role="cell" className="model-name">
           <span className="model-id" title={row.alias ? row.id : undefined}>
             {row.alias ?? row.id}
           </span>
@@ -530,14 +530,15 @@ function ModelRows({
               </Badge>
             )}
             <span className="muted spec-inline">
-              {row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?")} · {gib(row.size_bytes)} · {context(row.context_length)} context
+              {row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?")} · {gib(row.size_bytes)} · {context(row.context_length)} context{row.context > 0 && row.context !== row.context_length ? ` · ${context(row.context)}/agent` : ""}
             </span>
             <span className="muted fit-inline">{fit}</span>
           </span>
         </td>
-        <td>{row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?")}</td>
-        <td>{gib(row.size_bytes)}</td>
+        <td role="cell">{row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?")}</td>
+        <td role="cell">{gib(row.size_bytes)}</td>
         <td
+          role="cell"
           title={
             row.context > 0
               ? `Trained for ${context(row.context_length)} tokens; one agent may use up to ${context(row.context)}${row.context_auto ? " (auto: what fits in memory)" : ""}. The KV cache reserves ${context(row.pool_tokens)} now and grows on demand.`
@@ -547,12 +548,12 @@ function ModelRows({
           {context(row.context_length)}
           {row.context > 0 && row.context !== row.context_length && <span className="muted"> · {context(row.context)}/agent</span>}
         </td>
-        <td className="model-fit">
+        <td role="cell" className="model-fit">
           <Badge tone={row.loaded ? "ok" : "neutral"} title={row.problem ?? `needs ${gib(row.required_bytes)}`}>
             {fit}
           </Badge>
         </td>
-        <td className="model-actions">
+        <td role="cell" className="model-actions">
           <div className="model-actions-row">
           {isDefault ? (
             <span className="muted default-mark">
@@ -578,22 +579,22 @@ function ModelRows({
         </td>
       </tr>
       {row.problem && (
-        <tr className="model-note">
-          <td colSpan={6} className="muted">
+        <tr role="row" className="model-note">
+          <td role="cell" colSpan={6} className="muted">
             {row.problem}
           </td>
         </tr>
       )}
       {testing && (
-        <tr className="model-note">
+        <tr role="row" className="model-note">
           <td colSpan={6} className="muted" role="status">
             Loading {row.alias ?? row.id} and sending a short prompt…
           </td>
         </tr>
       )}
       {result && (
-        <tr className="model-note">
-          <td colSpan={6}>
+        <tr role="row" className="model-note">
+          <td role="cell" colSpan={6}>
             {"error" in result ? (
               <Notice tone="danger">Test failed — {result.error}</Notice>
             ) : result.ok ? (

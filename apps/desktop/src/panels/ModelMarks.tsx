@@ -45,8 +45,8 @@ export function ModelMarkButtons({
 /** The row that opens and closes the hidden models at the end of a table. */
 export function HiddenGroupRow({ count, open, colSpan, onToggle }: { count: number; open: boolean; colSpan: number; onToggle: () => void }) {
   return (
-    <tr className="model-hidden-group">
-      <td colSpan={colSpan}>
+    <tr role="row" className="model-hidden-group">
+      <td role="cell" colSpan={colSpan}>
         <button type="button" className="ghost small" aria-expanded={open} onClick={onToggle}>
           {open ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />} Hidden ({count})
         </button>

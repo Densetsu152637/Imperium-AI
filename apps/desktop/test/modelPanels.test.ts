@@ -74,4 +74,18 @@ test("the (i) button closes its tooltip on Esc without the dialog seeing the key
   // The listener is on the document in the capture phase, so it runs before the tooltip's own and the dialog's.
   assert.match(source, /addEventListener\("keydown",\s*onKey,\s*true\)/);
   assert.match(source, /event\.preventDefault\(\)/);
+  // Esc is only taken while the button itself has focus; a hover-only tooltip leaves it to the dialog.
+  assert.match(source, /document\.activeElement === button\.current/);
+  // A tap opens the help inline, since the Tooltip has no touch trigger.
+  assert.match(source, /info-tip-inline/);
+  assert.match(source, /pointerType === "touch"/);
+});
+
+test("the local model table keeps its table roles when narrow CSS makes it display: block", () => {
+  const source = src("panels/LocalModelsPanel.tsx");
+  for (const role of ["table", "rowgroup", "row", "columnheader", "cell"]) assert.ok(source.includes(`role="${role}"`), role);
+});
+
+test("a narrow Local models row still says the per-agent context", () => {
+  assert.match(src("panels/LocalModelsPanel.tsx"), /context\{row\.context > 0 && row\.context !== row\.context_length/);
 });

@@ -1603,8 +1603,9 @@ routing, cost, names, availability, reliability), the value and a *reset* that c
 value. The *(i)* is a keyboard-focusable button with a shared `Tooltip`: hovering it (after 400 ms)
 or focusing it from the keyboard opens a tooltip that says in plain words what the setting does and
 what changing it trades off (it is the button's `aria-describedby` while it shows, so a screen
-reader reads it too), and Esc closes the tooltip without closing the dialog. A touch tap does not
-open it. The settings tables are the shared `.table`; the tier, cache-type, flash-attention and
+reader reads it too), and Esc closes the tooltip without closing the dialog. A touch tap (or a click
+where hover is unavailable) toggles the same help inline under the setting's name instead, with
+`aria-expanded` on the button; Esc closes the tooltip only while the button has focus. The settings tables are the shared `.table`; the tier, cache-type, flash-attention and
 new-default pickers are `Select`s (no native select is left in the dialog); in-body warnings and
 the dry run's validation message are `Notice`s, and a failed save shows as a `Notice` between the
 header and the settings. A local model's groups:

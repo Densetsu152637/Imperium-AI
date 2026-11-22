@@ -1,7 +1,7 @@
 // The rows and tables the model configuration forms share.
 
 import { Info } from "lucide-react";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Badge } from "../components/Badge";
 import { Switch } from "../components/Switch";
 import { Tooltip } from "../components/Tooltip";
@@ -11,26 +11,54 @@ import { affectsText, ASPECT_LABELS, ESTIMATE_ROWS, type SettingGroup, type Sett
 /**
  * The (i) icon beside a setting: a keyboard-focusable button whose tooltip says in plain words what
  * the setting affects. The shared Tooltip shows it on hover and, at once, on keyboard focus, and
- * links it to the button while it shows (`aria-describedby`). Esc closes the tooltip only: this
- * listener runs before the tooltip's own and prevents the key, which the dialog's Esc handler
- * respects, so the dialog stays open.
+ * links it to the button while it shows (`aria-describedby`). Esc closes the tooltip only when the
+ * button has focus: this listener runs before the tooltip's own and prevents the key, which the
+ * dialog's Esc handler respects, so the dialog stays open. A hover-only tooltip does not take Esc.
+ * The Tooltip cannot be opened by touch, so a tap toggles the same help inline under the name
+ * (`aria-expanded`), which a second tap closes.
  */
 function InfoTip({ label, children }: { label: string; children: ReactNode }) {
   const button = useRef<HTMLButtonElement>(null);
+  const touched = useRef(false);
+  const [inline, setInline] = useState(false);
+  const helpId = useId();
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       // `aria-describedby` is on the button only while its tooltip shows.
-      if (event.key === "Escape" && button.current?.hasAttribute("aria-describedby")) event.preventDefault();
+      if (event.key === "Escape" && document.activeElement === button.current && button.current?.hasAttribute("aria-describedby")) {
+        event.preventDefault();
+      }
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
   }, []);
   return (
-    <Tooltip text={children}>
-      <button ref={button} type="button" className="info-tip-button" aria-label={`What ${label} affects`}>
-        <Info aria-hidden="true" />
-      </button>
-    </Tooltip>
+    <>
+      <Tooltip text={children}>
+        <button
+          ref={button}
+          type="button"
+          className="info-tip-button"
+          aria-label={`What ${label} affects`}
+          aria-expanded={inline}
+          aria-controls={inline ? helpId : undefined}
+          onPointerDown={(event) => {
+            touched.current = event.pointerType === "touch" || event.pointerType === "pen" || !window.matchMedia("(hover: hover)").matches;
+          }}
+          onClick={() => {
+            if (touched.current) setInline((open) => !open);
+            touched.current = false;
+          }}
+        >
+          <Info aria-hidden="true" />
+        </button>
+      </Tooltip>
+      {inline && (
+        <span id={helpId} className="info-tip-inline" role="note">
+          {children}
+        </span>
+      )}
+    </>
   );
 }
 
