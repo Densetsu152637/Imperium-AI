@@ -681,8 +681,10 @@ and `environments.agent_update` (protocol 0.28)
     else labels the approval dialog-only. The CLI cannot approve until
     [item 30](#next-in-order)'s stronger check exists, and Windows counts no new approval until
     [item 59](#next-in-order). Approvals guard against mistakes, protocol-only callers and agents
-    confined by the OS or container tier; code running unconfined as the user, including agents
-    at the default tier, is out of scope, and the plan says so. Any change of content, a link or a
+    confined by the container tier (and by the OS tier once its daemon-escape fix,
+    [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240), merges); code running
+    unconfined as the user, including agents at the default tier, is out of scope, and the plan
+    says so. Any change of content, a link or a
     renamed folder or manifest withholds the whole plugin until approved again. Plugin hooks block
     but never rewrite; their processes get an allowlisted environment and their MCP secrets go to
     the keychain. Builds on the Claude Code plugin loading of phase 5 and the agent installs of
