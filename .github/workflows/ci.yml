@@ -75,6 +75,9 @@ jobs:
         run: bash scripts/ci/install-linux-deps.sh
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - shell: bash
+        env:
+          # The OS isolation tier's tests must run here (bubblewrap, Seatbelt), not skip.
+          IMPERIUM_REQUIRE_OS_SANDBOX: ${{ runner.os == 'Windows' && '0' || '1' }}
         run: bash scripts/check-rust.sh
 
   web:

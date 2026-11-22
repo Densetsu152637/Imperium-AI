@@ -189,6 +189,47 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     }
 }
 
+/// Keeps what would hand a command the daemon out of the OS isolation tier: the endpoint file
+/// (it holds the access token), the local socket's folder, the paired phones' file and the
+/// encrypted secret store with its key or passphrase file. A command that read the token, or
+/// opened the socket, could change the configuration or start an unconfined session, which
+/// would run code outside the sandbox.
+fn hide_credentials_from_os_tier(paths: &Paths, settings: &Settings) {
+    let mut hidden = paths.daemon_credential_paths();
+    if let Some(file) =
+        std::env::var_os(imperium_config::PASSPHRASE_FILE_ENV).filter(|file| !file.is_empty())
+    {
+        hidden.push(file.into());
+    }
+    imperium_tools::hide_from_os_sandbox(hidden);
+    // The endpoint file exists while the daemon runs: while it is missing (a folder around it was
+    // renamed away), no command runs in the OS or container tier.
+    imperium_tools::require_present([paths.daemon_endpoint_file()]);
+    // The folders are made now, not on first use: nothing else creates the configuration folder,
+    // and a folder that is missing cannot be guarded, so a command could create it and write a
+    // `config.toml` of hooks or MCP servers that the daemon would then run unconfined.
+    for folder in [paths.config_dir(), paths.data_dir()] {
+        if let Err(error) = std::fs::create_dir_all(folder) {
+            tracing::warn!(folder = %folder.display(), %error, "could not create the folder");
+        }
+    }
+    // No command in the OS or container tier may write the configuration or data folders (a
+    // hook or MCP server added to `config.toml` would run unconfined), even when a session
+    // folder or grant contains them; the default workspace, inside `<data>`, stays writable.
+    imperium_tools::guard_from_commands([
+        paths.config_dir().to_path_buf(),
+        paths.data_dir().to_path_buf(),
+    ]);
+    // Only where agents work stays writable inside them: the workspaces root (the default
+    // sessions workspace and each session's scratch folder) and the auto-fix worktrees. Anything
+    // else in `<data>` (sessions, schedules, packs, approvals) and all of `<config>` stays
+    // read-only, even for a grant there.
+    imperium_tools::leave_writable_in_guards([
+        settings.workspaces.root(paths),
+        paths.data_dir().join("worktrees"),
+    ]);
+}
+
 /// State shared by every connection: configuration and the running sessions.
 #[derive(Debug)]
 pub struct DaemonState {
@@ -323,6 +364,7 @@ impl DaemonState {
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
         protect_extension_dirs(&paths, &settings);
+        hide_credentials_from_os_tier(&paths, &settings);
         let devices = Devices::load(paths.data_dir().join("devices.json"));
         let monitor = Arc::new(LoadMonitor::new(settings.load.clone()));
         let environments = Environments::load(paths.data_dir().join("environments.json"));
@@ -1251,6 +1293,15 @@ mod tests {
     use super::*;
     use imperium_workflow::Pack;
     use imperium_workflow::update::PackStore;
+
+    #[test]
+    fn the_daemon_makes_its_config_and_data_folders_so_they_are_always_guarded() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = imperium_config::Paths::under(home.path());
+        assert!(!paths.config_dir().exists() && !paths.data_dir().exists());
+        let _state = state_with(home.path(), "");
+        assert!(paths.config_dir().is_dir() && paths.data_dir().is_dir());
+    }
 
     #[test]
     fn downloads_follow_the_settings() {
