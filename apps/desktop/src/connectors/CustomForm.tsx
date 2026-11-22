@@ -7,7 +7,7 @@ import { Field } from "../components/Field";
 import { IconButton } from "../components/IconButton";
 import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
-import { message, NAME_PATTERN } from "./common";
+import { message, missingSecretIndex, nameProblem, urlProblem } from "./common";
 import { FormShell, FieldGroup, focusField } from "./FormParts";
 
 /** A secret environment variable being edited: an existing secret is kept unless a value is typed. */
@@ -74,12 +74,14 @@ export function CustomForm({
   const clear = (key: string) => setProblems((all) => (key in all ? Object.fromEntries(Object.entries(all).filter(([k]) => k !== key)) : all));
 
   const submit = async () => {
+    setError(null);
     const found: Record<string, string> = {};
-    if (!NAME_PATTERN.test(name)) found.name = "Use lowercase letters, digits, '_' or '-' for the name.";
-    else if (!editing && taken.has(name)) found.name = `A connector named ${name} already exists.`;
+    const named = nameProblem(name, taken, Boolean(editing));
+    if (named) found.name = named;
     if (transport === "stdio" && !command.trim()) found.command = "Enter the command that starts the server.";
-    if (transport === "http" && !url.trim()) found.url = "Enter the server's URL.";
-    const missingSecret = transport === "stdio" ? secretRows.findIndex((row) => row.key.trim() && !row.value && !row.existing) : -1;
+    const addressProblem = transport === "http" ? urlProblem(url, true) : null;
+    if (addressProblem) found.url = addressProblem;
+    const missingSecret = transport === "stdio" ? missingSecretIndex(secretRows) : -1;
     if (missingSecret >= 0) found.secrets = `Enter a value for ${secretRows[missingSecret].key.trim()}.`;
     const seconds = timeout.trim() ? Number(timeout) : null;
     if (seconds !== null && !(Number.isInteger(seconds) && seconds > 0)) found.timeout = "The timeout is a whole number of seconds.";
@@ -124,7 +126,6 @@ export function CustomForm({
       catalog: config?.catalog ?? null,
     };
     setBusy(true);
-    setError(null);
     try {
       const result = await client.call<McpSaveResult>("mcp.save", { name, config: next, secrets, create: !editing });
       onSaved(result.server);
@@ -205,7 +206,6 @@ export function CustomForm({
               <div key={index} className="secret-row">
                 <input
                   className="field"
-                  id={`${base}-secret-${index}`}
                   aria-label="Variable name"
                   placeholder="API_TOKEN"
                   value={row.key}
@@ -215,8 +215,11 @@ export function CustomForm({
                 />
                 <input
                   className="field"
+                  id={`${base}-secret-${index}`}
                   type="password"
                   autoComplete="new-password"
+                  aria-invalid={problems.secrets && index === missingSecretIndex(secretRows) ? true : undefined}
+                  aria-describedby={problems.secrets && index === missingSecretIndex(secretRows) ? `${base}-secrets-error` : undefined}
                   aria-label={`Value of ${row.key || "the variable"}`}
                   placeholder={row.existing ? "Saved · type to replace" : "value"}
                   value={row.value}
