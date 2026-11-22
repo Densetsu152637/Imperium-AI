@@ -55,6 +55,10 @@ test("removing a mention takes out its token and one space, and only the whole w
   assert.equal(withoutMention("@src/lib.rs fix", "@src/lib.rs"), "fix");
   assert.equal(withoutMention("fix @src/lib.rs", "@src/lib.rs"), "fix");
   assert.equal(withoutMention("fix @src/lib.rsx", "@src/lib.rs"), "fix @src/lib.rsx");
+  // Sentence punctuation after a token does not make it a different word.
+  assert.equal(withoutMention("is it @README.md?", "@README.md"), "is it?");
+  assert.equal(withoutMention("fix @src/lib.rs, then", "@src/lib.rs"), "fix, then");
+  assert.equal(withoutMention("see @src/lib.rs.bak", "@src/lib.rs"), "see @src/lib.rs.bak");
   assert.equal(withoutMention("nothing here", "@src/lib.rs"), "nothing here");
 });
 
@@ -91,6 +95,14 @@ test("a refused mention fails its chip and sends nothing", () => {
   chips = markFailed(chips, "k1", "../secret.txt is outside the session's folders");
   assert.equal(canSend("", chips), false);
   assert.deepEqual(readyAttachments(chips), []);
+});
+
+test("a mention followed by punctuation keeps its chip", () => {
+  const chips = markReady(addMention([], "k1", "@README.md", "README.md"), "k1", { attachment: staged, vision: false });
+  for (const text of ["what is @README.md?", "see @README.md, then", "ok @README.md.", "@README.md!!"]) {
+    assert.equal(syncMentions(chips, text).length, 1, text);
+  }
+  assert.equal(syncMentions(chips, "what is @README.mdx?").length, 0);
 });
 
 test("mentioning the same path twice adds one chip", () => {

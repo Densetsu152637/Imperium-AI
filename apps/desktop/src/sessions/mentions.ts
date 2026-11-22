@@ -44,14 +44,20 @@ export function insertMention(text: string, active: ActiveMention, relative: str
   return { text: `${before}${token}${tail}`, caret: before.length + token.length + 1 };
 }
 
+/** Whether a token ends at `end`: at the end or before a space, with sentence punctuation (`, . ; : ! ? )`) allowed between. */
+function endsWord(text: string, end: number): boolean {
+  let at = end;
+  while (at < text.length && ",.;:!?)".includes(text[at])) at += 1;
+  return at === text.length || /\s/.test(text[at]);
+}
+
 /** Where `token` stands in `text` as a whole word, or -1 (`@src/a` is not in `@src/ab`). */
 function find(text: string, token: string): number {
   let from = 0;
   for (;;) {
     const at = text.indexOf(token, from);
     if (at < 0) return -1;
-    const next = text[at + token.length];
-    if ((at === 0 || /\s/.test(text[at - 1])) && (next === undefined || /\s/.test(next))) return at;
+    if ((at === 0 || /\s/.test(text[at - 1])) && endsWord(text, at + token.length)) return at;
     from = at + 1;
   }
 }

@@ -1459,9 +1459,13 @@ The daemon makes the list (`session.files`, with `query` and `limit`), so the ap
 a disk and a remote, SSH or container session works the same: the search covers every folder
 of the session and the project worktrees beside them, skips `.git`, honours `.gitignore` and
 `.ignore` files, does not follow links out of the workspace, and leaves out any file or folder
-that a permission rule asks about or denies (the way `glob` does). In a remote runtime the list
-comes from `git ls-files` there, or `find` outside a repository, and each path is checked
-against the rules afterwards. The attachment of a mention is `session.attach` with
+that a permission rule asks about or denies (the way `glob` does). The walk is kept for
+five seconds per set of folders, so typing only ranks it again, and a local walk stops after four
+seconds or 200,000 entries (the result then says it is truncated). In a remote runtime the list
+covers the session's folders only (not project worktrees, path grants or `.ignore` files): it
+comes from `git ls-files` there (honouring `.gitignore`), or `find` outside a repository, read
+NUL-separated so names with non-ASCII characters or line breaks stay whole, and each path is
+checked against the rules afterwards. The attachment of a mention is `session.attach` with
 `mention: true`, which holds it to the same limits: a path outside the session's folders and
 path grants is refused instead of copied into the attachments folder, and so is a file that a
 rule asks about or denies (read it through the agent so the rule applies). A mentioned file in
@@ -1473,8 +1477,8 @@ send that text. The app calls `session.init`, and the daemon sends the built-in 
 `imperium_engine::init_prompt` as an ordinary user message: the agent reads the README,
 manifests, CI files and a sample of the code with its read tools, then writes `AGENTS.md` in
 the project folder (the file Imperium loads as project instructions, together with
-`CLAUDE.md`) with its edit tools, so permission rules and approvals apply as for any edit and
-the edit shows as a diff to approve. An existing `AGENTS.md` is never overwritten: the prompt
+`CLAUDE.md`) with its edit tools, so permission rules apply and the edit is approved as any
+edit is under the session's permission mode. An existing `AGENTS.md` is never overwritten: the prompt
 tells the agent to find what is missing or out of date and make targeted edits that keep its
 structure and wording, and to update a lone `CLAUDE.md` instead of creating a second file. The
 message waits in the queue while the agent is busy and waits on the session's budgets like any

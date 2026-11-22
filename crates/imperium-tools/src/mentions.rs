@@ -3,10 +3,16 @@
 //! them. It walks like `glob` does: `.git` is skipped, `.gitignore` and `.ignore` files are
 //! honoured, links leave the workspace for nowhere, and entries a permission rule asks about or
 //! denies are left out. In a remote runtime the listing comes from `git ls-files` there (or
-//! `find` outside a repository), and each path is checked against the rules afterwards.
+//! `find` outside a repository), covering the session's folders only (not worktrees, grants or
+//! `.ignore` files), and each path is checked against the rules afterwards.
+//!
+//! The picker searches on every keystroke, so the walk's result (the candidate paths, before
+//! rules and ranking) is kept for a few seconds per set of folders; each query only ranks it.
 
 use std::collections::HashSet;
-use std::time::Duration;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use imperium_api::RuleAction;
 
@@ -16,12 +22,17 @@ use crate::{ToolError, Workspace, remote_files};
 
 /// Most entries one search may visit, so a huge tree cannot stall the picker.
 const MAX_VISITED: usize = 200_000;
+/// The longest a local walk may take before it stops with what it has.
+const WALK_DEADLINE: Duration = Duration::from_secs(4);
 /// The most matches one search returns.
 pub const MAX_MATCHES: usize = 200;
 /// How long the listing may take in a remote runtime.
 const REMOTE_TIMEOUT: Duration = Duration::from_secs(30);
-/// Paths a remote listing returns at most.
-const REMOTE_PATHS: usize = 50_000;
+/// The most a remote listing returns, in bytes; a longer one is cut at the last whole path.
+const REMOTE_BYTES: usize = 8 * 1024 * 1024;
+/// How long a listing is reused, and how many are kept.
+const CACHE_TTL: Duration = Duration::from_secs(5);
+const CACHE_SLOTS: usize = 8;
 
 /// A file or directory the picker offers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +93,70 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i64> {
     Some(score - text.len() as i64 / 4)
 }
 
+/// One walked path, before rules and ranking.
+struct Entry {
+    /// The resolved path on this machine (empty for a remote runtime).
+    full: PathBuf,
+    shown: FileMatch,
+}
+
+/// Every path of a set of folders.
+struct Listing {
+    entries: Vec<Entry>,
+    stopped: bool,
+}
+
+type Slot = (String, Instant, Arc<Listing>);
+
+static CACHE: Mutex<Vec<Slot>> = Mutex::new(Vec::new());
+
+/// What identifies a listing: the folders it covers and whether the session is held to local
+/// files (which decides which folders resolve). Rules are not part of it: they are applied to
+/// each query's results.
+fn cache_key(workspace: &Workspace) -> String {
+    let mut key = String::new();
+    if workspace.runtime().is_some() {
+        key.push_str("remote:");
+        key.push_str(&workspace.folders_display().join("\u{0}"));
+    } else {
+        key.push_str("local:");
+        for root in workspace.command_roots() {
+            key.push_str(&root.to_string_lossy());
+            key.push('\u{0}');
+        }
+    }
+    key.push_str(if workspace.profile().local_files_only() {
+        "|locked"
+    } else {
+        "|open"
+    });
+    key
+}
+
+fn cached(key: &str) -> Option<Arc<Listing>> {
+    let cache = CACHE.lock().ok()?;
+    cache
+        .iter()
+        .find(|(held, at, _)| held == key && at.elapsed() < CACHE_TTL)
+        .map(|(_, _, listing)| Arc::clone(listing))
+}
+
+fn keep(key: String, listing: Arc<Listing>) {
+    let Ok(mut cache) = CACHE.lock() else { return };
+    cache.retain(|(held, at, _)| held != &key && at.elapsed() < CACHE_TTL);
+    if cache.len() >= CACHE_SLOTS {
+        cache.remove(0);
+    }
+    cache.push((key, Instant::now(), listing));
+}
+
+/// Forgets the kept listing of `workspace`.
+#[cfg(test)]
+fn forget_listing(workspace: &Workspace) {
+    let key = cache_key(workspace);
+    CACHE.lock().unwrap().retain(|(held, _, _)| held != &key);
+}
+
 /// Files and directories of the session's folders matching `query` (every one, shallowest
 /// first, when it is empty), best first, at most `limit` (and [`MAX_MATCHES`]).
 pub async fn find_files(
@@ -90,31 +165,24 @@ pub async fn find_files(
     limit: usize,
 ) -> Result<FileSearch, ToolError> {
     let limit = limit.clamp(1, MAX_MATCHES);
-    let mut found = if workspace.runtime().is_some() {
-        remote_candidates(workspace, query).await?
-    } else {
-        let workspace = workspace.clone();
-        let query = query.to_string();
-        tokio::task::spawn_blocking(move || local_candidates(&workspace, &query))
-            .await
-            .map_err(|error| ToolError::Io(error.to_string()))??
+    let key = cache_key(workspace);
+    let listing = match cached(&key) {
+        Some(listing) => listing,
+        None => {
+            let fresh = if workspace.runtime().is_some() {
+                remote_listing(workspace).await?
+            } else {
+                let workspace = workspace.clone();
+                tokio::task::spawn_blocking(move || local_listing(&workspace))
+                    .await
+                    .map_err(|error| ToolError::Io(error.to_string()))?
+            };
+            let fresh = Arc::new(fresh);
+            keep(key, Arc::clone(&fresh));
+            fresh
+        }
     };
-    found.entries.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then_with(|| a.1.relative.len().cmp(&b.1.relative.len()))
-            .then_with(|| a.1.relative.cmp(&b.1.relative))
-    });
-    let truncated = found.stopped || found.entries.len() > limit;
-    found.entries.truncate(limit);
-    Ok(FileSearch {
-        matches: found.entries.into_iter().map(|(_, entry)| entry).collect(),
-        truncated,
-    })
-}
-
-struct Candidates {
-    entries: Vec<(i64, FileMatch)>,
-    stopped: bool,
+    Ok(rank(workspace, &listing, query, limit))
 }
 
 /// The score of a path for `query`; with no query, shallower paths come first.
@@ -126,16 +194,61 @@ fn score(query: &str, relative: &str) -> Option<i64> {
     }
 }
 
-fn local_candidates(workspace: &Workspace, query: &str) -> Result<Candidates, ToolError> {
+/// The best `limit` entries for `query` that no permission rule asks about or denies.
+fn rank(workspace: &Workspace, listing: &Listing, query: &str, limit: usize) -> FileSearch {
+    let mut scored: Vec<(i64, &Entry)> = listing
+        .entries
+        .iter()
+        .filter_map(|entry| score(query, &entry.shown.relative).map(|points| (points, entry)))
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.shown.relative.len().cmp(&b.1.shown.relative.len()))
+            .then_with(|| a.1.shown.relative.cmp(&b.1.shown.relative))
+    });
+    let mut matches = Vec::new();
+    let mut more = false;
+    for (_, entry) in scored {
+        let withheld = if workspace.runtime().is_some() {
+            rule_withholds(workspace, &entry.shown.path, entry.shown.directory)
+        } else {
+            let tools: &[&str] = if entry.shown.directory {
+                &["list_dir", "read_file"]
+            } else {
+                &["read_file"]
+            };
+            withheld_by_rule(workspace, tools, &entry.full)
+        };
+        if withheld {
+            continue;
+        }
+        if matches.len() == limit {
+            more = true;
+            break;
+        }
+        matches.push(entry.shown.clone());
+    }
+    FileSearch {
+        matches,
+        truncated: more || listing.stopped,
+    }
+}
+
+fn local_listing(workspace: &Workspace) -> Listing {
+    let started = Instant::now();
     let mut entries = Vec::new();
     let mut visited = 0;
     let mut stopped = false;
     'folders: for folder in workspace.command_roots() {
-        let base = workspace.resolve(&folder.to_string_lossy())?;
+        // A folder that does not resolve (a worktree deleted since, or one outside what a
+        // local-files-only session may use) is left out; the others still list.
+        let Ok(base) = workspace.resolve(&folder.to_string_lossy()) else {
+            continue;
+        };
         let shown = crate::plain_path(&base).replace('\\', "/");
         for entry in walker(&base, true).build() {
             visited += 1;
-            if visited > MAX_VISITED {
+            if visited > MAX_VISITED || (visited % 512 == 0 && started.elapsed() > WALK_DEADLINE) {
                 stopped = true;
                 break 'folders;
             }
@@ -161,44 +274,53 @@ fn local_candidates(workspace: &Workspace, query: &str) -> Result<Candidates, To
                 .unwrap_or(entry.path())
                 .to_string_lossy()
                 .replace('\\', "/");
-            let Some(points) = score(query, &relative) else {
-                continue;
-            };
-            let tools: &[&str] = if directory {
-                &["list_dir", "read_file"]
-            } else {
-                &["read_file"]
-            };
-            if withheld_by_rule(workspace, tools, &full) {
-                continue;
-            }
-            entries.push((
-                points,
-                FileMatch {
+            entries.push(Entry {
+                shown: FileMatch {
                     path: crate::plain_path(&full).replace('\\', "/"),
                     folder: shown.clone(),
                     relative,
                     directory,
                 },
-            ));
+                full,
+            });
         }
     }
-    Ok(Candidates { entries, stopped })
+    Listing { entries, stopped }
+}
+
+/// The paths of a NUL-separated listing (`git ls-files -z`, `find -print0`), which keeps names
+/// with non-ASCII characters or line breaks whole. `cut` says the listing hit its size limit,
+/// so its last path may be incomplete and is dropped. A leading `./` is removed.
+fn split_listing(bytes: &[u8], cut: bool) -> Vec<String> {
+    let mut parts: Vec<&[u8]> = bytes.split(|&byte| byte == 0).collect();
+    // What follows the last NUL is empty in a whole listing, else an unfinished path.
+    let tail = parts.pop().unwrap_or_default();
+    if !cut && !tail.is_empty() {
+        parts.push(tail);
+    }
+    parts
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let text = String::from_utf8_lossy(part);
+            text.strip_prefix("./").unwrap_or(&text).to_string()
+        })
+        .collect()
 }
 
 /// The files of each folder in the runtime (the repository's tracked and unignored files, else
 /// everything outside `.git` and `node_modules`) and the directories they sit in.
-async fn remote_candidates(workspace: &Workspace, query: &str) -> Result<Candidates, ToolError> {
+async fn remote_listing(workspace: &Workspace) -> Result<Listing, ToolError> {
     let mut entries = Vec::new();
     let mut stopped = false;
     for folder in workspace.folders_display() {
         let script = format!(
             "cd -- {} || exit 1; if git rev-parse --is-inside-work-tree >/dev/null 2>&1; \
-             then git ls-files -co --exclude-standard; \
-             else find . \\( -name .git -o -name node_modules \\) -prune -o -type f -print | sed 's|^\\./||'; \
-             fi | head -n {}",
+             then git -c core.quotePath=false ls-files -z -co --exclude-standard; \
+             else find . \\( -name .git -o -name node_modules \\) -prune -o -type f -print0; \
+             fi | head -c {}",
             sh_quote(&folder),
-            REMOTE_PATHS + 1
+            REMOTE_BYTES
         );
         let output = remote_files::command(workspace, &script, REMOTE_TIMEOUT).await?;
         if !output.success() {
@@ -207,19 +329,12 @@ async fn remote_candidates(workspace: &Workspace, query: &str) -> Result<Candida
                 output.message().trim()
             )));
         }
-        let listing = String::from_utf8_lossy(&output.stdout).into_owned();
+        let cut = output.stdout.len() >= REMOTE_BYTES;
+        stopped |= cut;
         let mut seen_dirs = HashSet::new();
-        for (index, line) in listing.lines().enumerate() {
-            if index >= REMOTE_PATHS {
-                stopped = true;
-                break;
-            }
-            let file = line.trim_end_matches('\r');
-            if file.is_empty() {
-                continue;
-            }
-            let mut paths = vec![(file.to_string(), false)];
-            let mut parent = file;
+        for file in split_listing(&output.stdout, cut) {
+            let mut paths = vec![(file.clone(), false)];
+            let mut parent = file.as_str();
             while let Some((dir, _)) = parent.rsplit_once('/') {
                 if !seen_dirs.insert(dir.to_string()) {
                     break;
@@ -228,26 +343,19 @@ async fn remote_candidates(workspace: &Workspace, query: &str) -> Result<Candida
                 parent = dir;
             }
             for (relative, directory) in paths {
-                let Some(points) = score(query, &relative) else {
-                    continue;
-                };
-                let path = format!("{}/{relative}", folder.trim_end_matches('/'));
-                if rule_withholds(workspace, &path, directory) {
-                    continue;
-                }
-                entries.push((
-                    points,
-                    FileMatch {
-                        path,
+                entries.push(Entry {
+                    full: PathBuf::new(),
+                    shown: FileMatch {
+                        path: format!("{}/{relative}", folder.trim_end_matches('/')),
                         folder: folder.clone(),
                         relative,
                         directory,
                     },
-                ));
+                });
             }
         }
     }
-    Ok(Candidates { entries, stopped })
+    Ok(Listing { entries, stopped })
 }
 
 fn rule_withholds(workspace: &Workspace, path: &str, directory: bool) -> bool {
@@ -334,6 +442,24 @@ mod tests {
         assert!(fuzzy_score("", "anything").is_some());
     }
 
+    #[test]
+    fn a_nul_separated_listing_keeps_odd_names_whole() {
+        let listing = "src/lib.rs\0docs/café notes.md\0odd\nname.txt\0./found.rs\0".as_bytes();
+        assert_eq!(
+            split_listing(listing, false),
+            [
+                "src/lib.rs",
+                "docs/café notes.md",
+                "odd\nname.txt",
+                "found.rs"
+            ]
+        );
+        // No final NUL: the last path is whole unless the listing was cut.
+        assert_eq!(split_listing(b"a.rs\0b.rs", false), ["a.rs", "b.rs"]);
+        assert_eq!(split_listing(b"a.rs\0b.r", true), ["a.rs"]);
+        assert!(split_listing(b"", false).is_empty());
+    }
+
     #[tokio::test]
     async fn the_listing_honours_gitignore_and_ranks_the_best_match_first() {
         let dir = tree();
@@ -382,6 +508,11 @@ mod tests {
         assert!(mention_withheld(&denied, ".env"));
         assert!(!mention_withheld(&denied, "README.md"));
 
+        // The kept listing is shared, but each workspace's own rules apply to what it returns.
+        let open = Workspace::new(dir.path()).unwrap();
+        let found = find_files(&open, "env", 100).await.unwrap();
+        assert!(relatives(&found).contains(&".env".to_string()));
+
         let asked = Workspace::new(dir.path())
             .unwrap()
             .with_permissions(Permissions::new(
@@ -414,5 +545,113 @@ mod tests {
         assert!(names.contains(&"extra.txt".to_string()), "{names:?}");
         assert!(!names.contains(&"secret.txt".to_string()), "{names:?}");
         assert!(found.matches.iter().all(|m| !m.path.contains("secret")));
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_no_longer_resolves_does_not_stop_the_others() {
+        let first = tree();
+        let second = tempfile::tempdir().unwrap();
+        std::fs::write(second.path().join("extra.txt"), "x").unwrap();
+        let workspace = Workspace::new(first.path())
+            .unwrap()
+            .with_folders([second.path()])
+            .unwrap();
+        // The second folder is deleted after the workspace was made.
+        drop(second);
+        forget_listing(&workspace);
+        let found = find_files(&workspace, "", 100).await.unwrap();
+        let names = relatives(&found);
+        assert!(names.contains(&"README.md".to_string()), "{names:?}");
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .is_ok_and(|out| out.status.success())
+    }
+
+    #[tokio::test]
+    async fn a_worktree_a_local_files_only_session_cannot_open_is_skipped() {
+        let parent = tempfile::tempdir().unwrap();
+        let main = parent.path().join("main");
+        let other = parent.path().join("other");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::write(main.join("a.txt"), "a").unwrap();
+        if !(git(&main, &["init", "-q"])
+            && git(&main, &["add", "."])
+            && git(&main, &["commit", "-q", "-m", "x"])
+            && git(&main, &["worktree", "add", "-q", other.to_str().unwrap()]))
+        {
+            return; // no usable git here
+        }
+        let locked = Workspace::new(&main)
+            .unwrap()
+            .with_profile(imperium_policy::AgentProfile::new(
+                imperium_policy::ProfileRules {
+                    local_files_only: true,
+                    ..Default::default()
+                },
+            ))
+            .with_project_worktrees();
+        let found = find_files(&locked, "", 100).await.unwrap();
+        let names = relatives(&found);
+        assert!(names.contains(&"a.txt".to_string()), "{names:?}");
+        assert!(
+            found.matches.iter().all(|m| !m.path.contains("/other/")),
+            "{:?}",
+            found.matches
+        );
+    }
+
+    #[tokio::test]
+    async fn queries_reuse_the_kept_listing_instead_of_walking_again() {
+        let dir = tree();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        forget_listing(&workspace);
+        let first = find_files(&workspace, "readme", 10).await.unwrap();
+        assert_eq!(first.matches[0].relative, "README.md");
+        // A file made after the walk is not seen until the listing expires.
+        std::fs::write(dir.path().join("README-new.md"), "x").unwrap();
+        let again = find_files(&workspace, "readme", 10).await.unwrap();
+        assert_eq!(again.matches.len(), first.matches.len());
+        forget_listing(&workspace);
+        let fresh = find_files(&workspace, "readme", 10).await.unwrap();
+        assert_eq!(fresh.matches.len(), first.matches.len() + 1);
+    }
+
+    #[tokio::test]
+    async fn a_large_tree_is_walked_once_and_each_keystroke_only_ranks() {
+        let dir = tempfile::tempdir().unwrap();
+        for folder in 0..50 {
+            let sub = dir.path().join(format!("pkg{folder}/src"));
+            std::fs::create_dir_all(&sub).unwrap();
+            for file in 0..100 {
+                std::fs::write(sub.join(format!("file{file}.rs")), "x").unwrap();
+            }
+        }
+        let workspace = Workspace::new(dir.path()).unwrap();
+        forget_listing(&workspace);
+        let first = find_files(&workspace, "pkg7 file42", 10).await.unwrap();
+        assert!(!first.matches.is_empty());
+        let started = Instant::now();
+        for query in ["f", "fi", "fil", "file", "file4", "file42"] {
+            find_files(&workspace, query, 10).await.unwrap();
+        }
+        // Six keystrokes over 5,000 files rank in well under the time of one walk.
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }
