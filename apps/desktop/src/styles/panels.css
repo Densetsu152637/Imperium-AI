@@ -660,7 +660,10 @@
 
 .review-line {
   display: block;
+  /* Hanging indent: the sign takes the first character, so a wrapped line sits under the text. */
   padding: 0 var(--sp-2);
+  padding-inline-start: calc(var(--sp-2) + 1ch);
+  text-indent: -1ch;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
