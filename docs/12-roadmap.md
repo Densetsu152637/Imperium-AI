@@ -632,6 +632,19 @@ and `environments.agent_update` (protocol 0.28)
     0.42 (`agents` on `mcp.list` results); `imperium agents list`. No desktop UI yet
     ([06](06-extensibility.md#named-agents-implemented),
     [03](03-agent-engine.md#named-agents-implemented)).
+49. **File mentions and /init** (implemented). Two of Claude Code's composer features. Typing
+    `@` in the desktop composer opens a fuzzy picker over the session's files (`session.files`,
+    served by the daemon so remote, SSH and container sessions work, honouring `.gitignore` and
+    the permission rules); choosing one puts `@path` in the message and attaches the file through
+    the existing attachments pipeline (`session.attach` with `mention`: text inlined up to the
+    limit with a truncation marker, else a path; a directory is only named; a path outside the
+    session's folders, or one a rule asks about or denies, is refused). `imperium chat` attaches
+    `@path` words the same way and has `/files` to search. `/init` (desktop composer and
+    `imperium chat`) is `session.init`: the daemon sends a built-in prompt as an ordinary user
+    turn, and the agent explores and writes or updates `AGENTS.md` with its normal edit tools,
+    so approvals apply and an existing file is updated, not overwritten. Protocol 0.47
+    ([07](07-desktop-ui.md#file-mentions-and-init-implemented),
+    [03](03-agent-engine.md#queueing-and-steering)).
 <!-- markdownlint-disable-next-line MD029 -->
 50. **Auto permission mode** (implemented). A permission mode, `auto`, in which a small classifier
     model decides whether a call that would ask the user may run. It decides as `default` does
