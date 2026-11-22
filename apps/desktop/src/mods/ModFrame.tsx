@@ -7,7 +7,7 @@
 // policy would block a `srcdoc` frame's scripts; in a plain browser it uses `srcdoc`.
 
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { PetPackage, SessionSnapshot } from "@imperium/mod-sdk";
 import type { ModInfo, PetListResult, PetStripResult, SessionEventParams } from "@imperium/protocol";
@@ -256,8 +256,8 @@ export function ModFrame({ mod, panelId, bus, host }: { mod: ModInfo; panelId: s
   const latest = useRef(host);
   latest.current = host;
   // A frame can start before the app has connected; its daemon requests wait for the client.
-  const gate = useRef(new Gate<DaemonClient>());
-  useEffect(() => gate.current.set(host.client), [host.client]);
+  const [gate] = useState(() => new Gate<DaemonClient>());
+  useEffect(() => gate.set(host.client), [gate, host.client]);
   const page = useMemo(framePage, []);
 
   // Hands the frame page its document when it says it is ready (desktop app only).
@@ -294,7 +294,7 @@ export function ModFrame({ mod, panelId, bus, host }: { mod: ModInfo; panelId: s
       if (!needs) return reply({ error: `unknown method ${method}` });
       if (!mod.permissions.includes(needs)) return reply({ error: `${method} needs the ${needs} permission` });
       const { sessions, selected } = latest.current;
-      const daemon = () => gate.current.get(CONNECT_WAIT_MS, "not connected to imperiumd");
+      const daemon = () => gate.get(CONNECT_WAIT_MS, "not connected to imperiumd");
       const run = async (): Promise<unknown> => {
         switch (method) {
           case "sessions.list":
