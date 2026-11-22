@@ -90,7 +90,9 @@ function playToggle(ctx: ModContext, bar: HTMLElement, nursery: Nursery, on: boo
     nursery.playEnabled = box.checked;
     void ctx.storage.set("play", box.checked);
   });
-  bar.append(labelled("Play", box));
+  const wrap = labelled("Play", box);
+  wrap.classList.add("check");
+  bar.append(wrap);
 }
 
 /**

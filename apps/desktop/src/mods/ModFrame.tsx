@@ -111,13 +111,27 @@ globalThis.__imperiumDefine = (definition) => {
 /** CSS custom properties the frame inherits from the app's theme. */
 const THEME_TOKENS = ["--bg", "--panel", "--fg", "--muted", "--border", "--accent", "--ok", "--danger", "--space", "--radius"];
 
+/**
+ * The app's theme as `dark` or `light`, for the frame's `color-scheme`: native controls (selects,
+ * checkboxes, scrollbars) then match the app, not the operating system. Read from the root's
+ * resolved `color-scheme` (tokens.css sets it with the theme), else from `data-theme`. Fixed when
+ * the frame is built, like the tokens.
+ */
+function frameScheme(): "dark" | "light" {
+  const root = document.documentElement;
+  const declared = getComputedStyle(root).colorScheme;
+  const light = declared.includes("light");
+  if (light !== declared.includes("dark")) return light ? "light" : "dark";
+  return root.dataset.theme === "light" ? "light" : "dark";
+}
+
 function themeCss(): string {
   const style = getComputedStyle(document.documentElement);
   const tokens = THEME_TOKENS.map((token) => `${token}: ${style.getPropertyValue(token)};`).join(" ");
   // The app sets its typeface on the body, not the root.
   const text = getComputedStyle(document.body);
-  return `:root { ${tokens} color-scheme: light dark; }
-body { margin: 0; padding: 8px; background: transparent; color: var(--fg); font: ${text.fontSize} ${text.fontFamily}; }
+  return `:root { ${tokens} color-scheme: ${frameScheme()}; }
+body { margin: 0; padding: var(--space, 8px); background: transparent; color: var(--fg); font: ${text.fontSize} ${text.fontFamily}; }
 button, input, select, textarea { font: inherit; }`;
 }
 

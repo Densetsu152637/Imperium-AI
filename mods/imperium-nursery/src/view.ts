@@ -11,7 +11,7 @@ import type { Drag } from "./drag.ts";
 import { angleTo } from "./play.ts";
 import { busyOf, busySubs } from "./route.ts";
 import { fitSize, frameAt } from "./render.ts";
-import { PLAY_SPEED, SPEED, boundsOf, clampTo, edgeTarget, newRoamer, pauseDelay, playTarget, reducedLayout, roam, roomHeight, separate, spawnPoint, stepToward } from "./space.ts";
+import { PLAY_SPEED, SPEED, boundsOf, boxSize, clampTo, clearTarget, edgeTarget, fitMetrics, isTight, newRoamer, pauseDelay, playTarget, roam, roomHeightFor, separate, spawnPoint, spreadSpots, stepToward, stranded } from "./space.ts";
 import type { Body, Bounds, Metrics, Pos, Roamer } from "./space.ts";
 
 /** Width of a pet's box (the label's width) and the height of its label line, in px. */
@@ -19,23 +19,35 @@ const LABEL_W = 112;
 const LABEL_H = 18;
 /** How long a finished pet takes to fade out before it is removed, in ms. */
 const FADE_MS = 2500;
+/** How long a pet just let go of is left where it was dropped, in ms. */
+const DROP_HOLD_MS = 1500;
 
 export const CSS = `
-:root { color-scheme: light dark; }
+html, body { height: 100%; overflow: hidden; }
 body { margin: 0; padding: 0; }
-.nursery { display: flex; flex-direction: column; gap: var(--space, 8px); font-size: 13px; min-height: 100vh; box-sizing: border-box; padding: var(--space, 8px); }
+/* The frame's colour-scheme (set from the app's theme) is inherited; the panel scrolls here and nowhere else. */
+.nursery { display: flex; flex-direction: column; gap: var(--space, 8px); font-size: 13px; height: 100%; box-sizing: border-box; padding: var(--space, 8px); overflow-x: hidden; overflow-y: auto; }
+.nursery > :not(.room) { flex: none; min-width: 0; }
 .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.bar label { color: var(--muted); }
-.bar select, .bar input, .bar button { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius, 6px); padding: 3px 6px; max-width: 100%; }
+.bar label { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); }
+.bar select, .bar input, .bar button { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius, 6px); padding: 3px 6px; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.bar select { text-overflow: ellipsis; }
+.bar select option { color: var(--fg); background: var(--panel); }
 .bar button { cursor: pointer; }
 .bar button:hover:not(:disabled) { border-color: var(--accent); }
 .bar .more { flex-basis: 100%; color: var(--muted); font-size: 11px; }
 .bar .more[open] { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .bar .more summary { cursor: pointer; }
+@media (max-width: 219.98px) {
+  .bar, .bar .more[open] { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+  .bar label { flex-direction: column; align-items: stretch; gap: 2px; }
+  .bar label.check { flex-direction: row; align-items: center; }
+  .bar select, .bar input:not([type="checkbox"]), .bar button { width: 100%; }
+}
 .summary { color: var(--muted); }
 .empty { color: var(--muted); padding: 4px 0; text-align: center; }
 .empty:empty { display: none; }
-.room { position: relative; flex: 1 1 auto; min-height: 160px; overflow: hidden; border-radius: var(--radius, 6px); background: linear-gradient(to bottom, transparent 0%, color-mix(in srgb, var(--panel) 80%, transparent) 100%); border: 1px solid var(--border); }
+.room { position: relative; flex: 1 0 auto; min-height: 160px; overflow: hidden; border-radius: var(--radius, 6px); background: linear-gradient(to bottom, transparent 0%, color-mix(in srgb, var(--panel) 80%, transparent) 100%); border: 1px solid var(--border); }
 .pet { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; will-change: transform; }
 .hit { display: flex; flex-direction: column; align-items: center; padding: 0; margin: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; border-radius: 6px; touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; }
 .pet.dragging .hit { cursor: grabbing; }
@@ -96,6 +108,8 @@ type Cell = {
   drag: Drag | null;
   pointer: number;
   swallow: boolean;
+  /** When it was last let go of after a drag (ms since epoch; 0 when never). */
+  droppedAt: number;
 };
 
 type Moved = { anim: string | null; name: string; since: number; look: number | null };
@@ -114,6 +128,10 @@ export class Room {
   private last = 0;
   private width = 0;
   private height = 0;
+  /** A pet's metrics as drawn: smaller than full size when the crowd's whole boxes would not fit the room. */
+  private fitted: Metrics | null = null;
+  /** The room cannot hold the pets with room to move (see `isTight`): free pets stand where they are instead of wandering into each other. */
+  private tight = false;
   private observer: ResizeObserver | null = null;
 
   private nursery: Nursery;
@@ -133,8 +151,14 @@ export class Room {
     }
   }
 
-  private get metrics(): Metrics {
+  /** A pet's metrics at full size. */
+  private get base(): Metrics {
     return { half: LABEL_W / 2, above: this.opts.size, below: LABEL_H, pad: 4 };
+  }
+
+  /** A pet's metrics as drawn: smaller when the room is crowded (see `rescale`). */
+  private get metrics(): Metrics {
+    return this.fitted ?? this.base;
   }
 
   private bounds(): Bounds {
@@ -146,6 +170,9 @@ export class Room {
     this.width = width;
     this.height = height;
     this.fit();
+    // A taller minimum height is in effect now; size and place the pets for the room as it is.
+    this.height = this.el.clientHeight || height;
+    this.rescale();
     const b = this.bounds();
     for (const [key, cell] of this.cells) {
       if (this.nursery.entries.get(key)?.removeAt != null) continue;
@@ -157,8 +184,39 @@ export class Room {
 
   /** A room with many pets is tall enough for the least area each; the panel scrolls only past that. */
   private fit(): void {
-    const px = `${roomHeight(this.cells.size, this.width)}px`;
+    const px = `${roomHeightFor(this.cells.size, this.width, this.base)}px`;
     if (this.el.style.minHeight !== px) this.el.style.minHeight = px;
+  }
+
+  /** Sizes the pets so that the whole box (sprite plus label) of each fits in the room without overlapping, down to a minimum. */
+  private rescale(): void {
+    const count = [...this.cells.keys()].filter((key) => this.nursery.entries.get(key)?.removeAt == null).length;
+    const fitted = this.width > 0 && this.height > 0 ? fitMetrics({ width: this.width, height: this.height }, count, this.base) : null;
+    const next = fitted?.metrics ?? this.base;
+    this.tight = fitted !== null && isTight({ width: this.width, height: this.height }, count, next, fitted.scale);
+    const now = this.metrics;
+    if (next.half === now.half && next.above === now.above) return;
+    this.fitted = next;
+    const { half, above } = next;
+    for (const cell of this.cells.values()) {
+      cell.el.style.width = `${half * 2}px`;
+      const stage = cell.el.querySelector<HTMLElement>(".stage");
+      if (stage) stage.style.height = `${above}px`;
+      // Redraw the sprite and the box at the new size.
+      cell.sized = "";
+      cell.xform = "";
+    }
+    // Bigger boxes may now overlap pets that cannot move by themselves (asleep, at work): those
+    // that overlap an earlier pet are put back in the room on a free spot. Pets that walk, and
+    // one just let go of, stay where they are; the separation pass pushes them apart.
+    const at = Date.now();
+    const placed = [...this.cells].filter(([, cell]) => cell.placed);
+    const pets = placed.map(([key, cell]) => {
+      const entry = this.nursery.entries.get(key);
+      const stuck = entry ? entry.removeAt === null && (busyOf(entry.arbiter) !== null || this.nursery.view(entry, at).name === "sleeping") : false;
+      return { pos: { x: cell.r.x, y: cell.r.y }, moves: !stuck || !!cell.drag?.lifted || at - cell.droppedAt < DROP_HOLD_MS };
+    });
+    for (const i of stranded(pets, next)) placed[i]![1].placed = false;
   }
 
   /** Where pet `key` stands, or null when it has no place yet. */
@@ -192,7 +250,11 @@ export class Room {
       }
     }
     if (this.width === 0) this.resize(this.el.clientWidth, this.el.clientHeight);
-    else this.fit();
+    else {
+      this.fit();
+      this.height = this.el.clientHeight || this.height;
+      this.rescale();
+    }
   }
 
   /** Pointer events (mouse, touch, pen) pick the pet up; arrow keys move it. */
@@ -209,6 +271,7 @@ export class Room {
       if (cell.drag?.lifted) {
         // The click that ends a press that moved is not a pat; if none comes, forget it soon.
         cell.swallow = true;
+        cell.droppedAt = Date.now();
         setTimeout(() => (cell.swallow = false), 0);
       }
       cell.drag = null;
@@ -248,7 +311,8 @@ export class Room {
 
   private build(key: string, kind: Kind): Cell {
     const el = make("div", "pet");
-    el.style.width = `${LABEL_W}px`;
+    const { half, above } = this.metrics;
+    el.style.width = `${half * 2}px`;
     const hit = make("button", "hit") as HTMLButtonElement;
     hit.type = "button";
     hit.style.width = "100%";
@@ -259,7 +323,7 @@ export class Room {
     });
     this.dragging(key, hit);
     const stage = make("div", "stage");
-    stage.style.height = `${this.opts.size}px`;
+    stage.style.height = `${above}px`;
     const shadow = make("div", "shadow");
     const sprite = make("div", "sprite");
     stage.append(shadow, sprite);
@@ -302,6 +366,7 @@ export class Room {
       drag: null,
       pointer: -1,
       swallow: false,
+      droppedAt: 0,
     };
   }
 
@@ -345,7 +410,7 @@ export class Room {
       if (!reduced && cell.placed && !leaving) bodies.push({ key, x: cell.r.x, y: cell.r.y, movable: idle && !cell.playing && !cell.drag?.lifted, group: this.nursery.playing?.keys.includes(key) ? group : null });
     }
     if (bodies.length > 1) {
-      const out = separate(bodies, dt);
+      const out = separate(bodies, dt, undefined, boxSize(this.metrics));
       bodies.forEach((body, i) => {
         const cell = this.cells.get(body.key)!;
         const p = body.movable ? clampTo(b, out[i]!) : cell.r;
@@ -358,7 +423,7 @@ export class Room {
   /** Gives new pets a place (a subagent next to its root pet) and, with reduced motion, spreads all of them. */
   private place(live: { key: string; cell: Cell; entry: Entry }[], b: Bounds, reduced: boolean, now: number): void {
     if (reduced) {
-      const spots = reducedLayout(live.length, b);
+      const spots = spreadSpots(live.length, { width: this.width, height: this.height }, this.metrics);
       live.forEach(({ cell }, i) => {
         if (cell.drag?.lifted) return;
         const p = spots[i]!;
@@ -371,7 +436,7 @@ export class Room {
       if (cell.placed) continue;
       const others = live.filter((l) => l.cell.placed);
       const parent = this.nursery.mode === "session" && !entry.root ? others.find((l) => l.entry.root) : undefined;
-      const p = spawnPoint(b, others.map((l) => l.cell.r), Math.random, parent ? parent.cell.r : null);
+      const p = spawnPoint(b, others.map((l) => l.cell.r), Math.random, parent ? parent.cell.r : null, undefined, { room: { width: this.width, height: this.height }, m: this.metrics });
       cell.r = newRoamer(p, now, Math.random);
       cell.placed = true;
     }
@@ -395,7 +460,7 @@ export class Room {
     this.stand(cell, entry, now);
     if (!pet) {
       cell.sprite.className = "sprite missing";
-      this.size(cell, { width: this.opts.size, height: this.opts.size }, 1);
+      this.size(cell, { width: this.metrics.above, height: this.metrics.above }, 1);
       cell.note.textContent = entry.petId ? "pet not installed" : "no pet";
       return;
     }
@@ -417,7 +482,7 @@ export class Room {
     }
     const def = pet.catalog[anim] ?? pet.catalog.idle;
     if (!def) return;
-    const fit = fitSize(pet.cell, this.opts.size);
+    const fit = fitSize(pet.cell, this.metrics.above);
     this.size(cell, fit, def.frames);
     const frame = reduced ? 0 : anim === "look" ? lookIndex(look ?? 180) : frameAt(def.durations, now - startedAt, def.loop);
     const pos = `${-frame * fit.width}px 0`;
@@ -434,7 +499,8 @@ export class Room {
   /** Puts the pet's box at its spot, newer pets in front of older ones, and a finished pet fading out. */
   private stand(cell: Cell, entry: Entry, now: number): void {
     if (!cell.placed) return;
-    const xform = `translate(${(cell.r.x - LABEL_W / 2).toFixed(1)}px, ${(cell.r.y - this.opts.size).toFixed(1)}px)`;
+    const { half, above } = this.metrics;
+    const xform = `translate(${(cell.r.x - half).toFixed(1)}px, ${(cell.r.y - above).toFixed(1)}px)`;
     if (xform !== cell.xform) {
       cell.xform = xform;
       cell.el.style.transform = xform;
@@ -482,6 +548,16 @@ export class Room {
     return true;
   }
 
+  /** A spot for pet `key` to walk to that keeps its whole box clear of where the other pets stand and are heading; where it stands (no walk) when the room has none. */
+  private clearSpot(key: string, from: Pos, b: Bounds): Pos {
+    const others: Pos[] = [];
+    for (const [other, cell] of this.cells) {
+      if (other === key || !cell.placed || this.nursery.entries.get(other)?.removeAt != null) continue;
+      others.push({ x: cell.r.x, y: cell.r.y }, { x: cell.r.tx, y: cell.r.ty });
+    }
+    return clearTarget(b, from, others, this.metrics, { width: this.width, height: this.height }, Math.random) ?? from; // never reached while `tight`: move() makes tight pets stand
+  }
+
   private move(cell: Cell, entry: Entry, pet: LoadedPet, idle: boolean, now: number, dt: number, b: Bounds): Moved {
     const walkAnim = (dir: number): string => resolveAnimation(pet.catalog, dir > 0 ? "walk-right" : "walk-left");
     const hasWalk = walkAnim(1) !== "idle" || walkAnim(-1) !== "idle";
@@ -513,10 +589,13 @@ export class Room {
       } else if (info.pose.mode === "sleep" && resolveAnimation(pet.catalog, "sleeping") !== "idle") anim = resolveAnimation(pet.catalog, "sleeping");
     } else if (this.guided(cell, entry, now, dt, b, (x, y) => { dx = x; dy = y; })) {
       // A WebAssembly behaviour steers this pet; nothing else to do.
+    } else if (this.tight) {
+      // Not a box to spare in this room: stand still rather than walk into the others.
+      cell.r = { ...cell.r, tx: cell.r.x, ty: cell.r.y, nextAt: now + pauseDelay(Math.random) };
     } else {
       // Play just ended or was cut short: stand a while, then roam again.
       const r = wasPlaying ? { ...newRoamer(cell.r, now, Math.random), tx: cell.r.x, ty: cell.r.y } : cell.r;
-      const out = roam(r, b, now, dt, Math.random);
+      const out = roam(r, b, now, dt, Math.random, undefined, (from) => this.clearSpot(entry.key, from, b));
       cell.r = out.roamer;
       [dx, dy] = [out.dx, out.dy];
     }

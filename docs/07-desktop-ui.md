@@ -618,6 +618,21 @@ operating system and its changes), Light, or Dark. `settings/settings.ts` sets `
 element and `styles/tokens.css` keys the light tokens on `:root[data-theme="light"]`; the command
 palette's *Switch to light/dark theme* flips it. Mod panels pick up the tokens when they open.
 
+**Mod frames (implemented):** a mod panel's sandboxed frame is built with the tokens and the theme
+the app has at that moment (`mods/ModFrame.tsx`): `color-scheme` is `dark` or `light`, the app's
+resolved theme (never `light dark`), so a mod's native controls (selects, checkboxes, scrollbars)
+match the app instead of the operating system, and the frame body's padding is `--space`. A frame
+opened before a theme switch keeps its old scheme and tokens until it is reopened. The contract is
+unchanged: the same tokens (`THEME_TOKENS`) and bridge messages. The bundled Imperium Nursery
+fills its frame with one scroll owner (its own panel; the frame document and the room do not
+scroll), wraps its controls bar into one column under 220 px, styles its selects with the
+tokens, and draws pets smaller only when their whole boxes (sprite plus label) would not fit the
+room (labels keep at least 72 px while they can, and sprites never go below 30 %); the room is
+made taller for two to four pets so that they, and a spare box to walk into, fit at 70 % or more. When the room
+has space at that minimum size, new and wandering pets are placed where their boxes stay clear of
+the others; a very crowded room cannot guarantee it, and pets that walk past each other may
+overlap briefly.
+
 **Tokens and accents (implemented):** every length derives from `--px` (one CSS pixel at 100 % UI
 scale), spacing runs on 4 px steps (`--sp-1` to `--sp-8`), the control-height tokens provide a 24 px floor at any density (surfaces adopt them in their
 stages), and there are six type sizes, three weights, five radii, three elevations and
