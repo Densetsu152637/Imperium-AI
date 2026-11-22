@@ -409,3 +409,30 @@ test("one to four pets in a narrow room walk: a clear target is found in at leas
   const [spot] = spreadSpots(1, lone, FULL);
   expect(clearTarget(boundsOf(lone, FULL), spot!, [], FULL, lone, seeded(4))).not.toBeNull();
 });
+
+test("five to eight pets in a narrow room stay at half size or more and still walk", () => {
+  for (const width of [122, 222]) {
+    for (let count = 5; count <= 8; count++) {
+      const room = { width, height: roomHeightFor(count, width, FULL) };
+      const { scale, metrics } = fitMetrics(room, count, FULL);
+      expect(scale).toBeGreaterThanOrEqual(0.5);
+      expect(isTight(room, count, metrics, scale)).toBe(false);
+      const spots = spreadSpots(count, room, metrics);
+      expect(crowding(spots, metrics, room)).toEqual({ pairs: 0, outside: 0 });
+      const bounds = boundsOf(room, metrics);
+      for (let pet = 0; pet < count; pet++) {
+        const rand = seeded(width + count * 7 + pet);
+        const others = spots.filter((_, i) => i !== pet);
+        let found = 0;
+        for (let draw = 0; draw < 200; draw++) if (clearTarget(bounds, spots[pet]!, others, metrics, room, rand)) found++;
+        expect(found).toBeGreaterThanOrEqual(100);
+      }
+    }
+  }
+  // No cliff: a fifth pet does not make the others much smaller.
+  for (const width of [122, 222]) {
+    const four = fitMetrics({ width, height: roomHeightFor(4, width, FULL) }, 4, FULL).scale;
+    const five = fitMetrics({ width, height: roomHeightFor(5, width, FULL) }, 5, FULL).scale;
+    expect(four - five).toBeLessThanOrEqual(0.25);
+  }
+});

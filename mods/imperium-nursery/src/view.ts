@@ -59,7 +59,7 @@ body { margin: 0; padding: 0; }
 .sprite { image-rendering: pixelated; background-repeat: no-repeat; flex: none; position: relative; }
 .sprite.missing { border: 1px dashed var(--border); box-sizing: border-box; }
 .label { max-width: 100%; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; color: var(--muted); font-size: 11px; line-height: 14px; }
-.note { color: var(--muted); font-size: 10px; }
+.note { position: absolute; left: 0; right: 0; top: 100%; color: var(--muted); font-size: 10px; text-align: center; }
 .note:empty { display: none; }
 .badge { position: absolute; top: 0; right: 0; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--bg); font-size: 11px; line-height: 16px; text-align: center; }
 .badge[hidden] { display: none; }
