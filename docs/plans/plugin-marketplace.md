@@ -140,7 +140,8 @@ Made by the user on 2026-11-22 (U1 to U3) and 2026-11-23 (U4 to U7).
      (`fix/os-tier-daemon-escape`, open) closes this. Among other things it hides `daemon.json`,
      `ipc/`, `remotes/`, `devices.json` and the secret files; masks the runtime folder; strips
      `IMPERIUM_*` and `DBUS_SESSION_BUS_ADDRESS` from the environment; guards the config and data
-     folders read-only; and makes the sandbox fail closed when a registered path is missing.
+     folders read-only; and makes the sandbox fail closed when a registered path is missing (see
+     #240 for the full list).
      **Once it merges**, the OS tier protects approvals **within #240's limits**. Its known
      remaining limits include abstract unix sockets (an X11 display, for example, through which an
      agent could click a `dialog-only` approval), other files of the user such as `~/.ssh`, the
@@ -1033,7 +1034,11 @@ on**; earlier stages test through an injected verifier or records written direct
 - Acceptance checks: an agent install of `x@fixture` with a hook is recorded, withheld and
   unapproved; `python3 scripts/ci/check-links.py .` passes; **U1 check:** the built-in default
   still matches the official marketplace's live source (`.claude-plugin/marketplace.json` present,
-  `name` matching), recorded with its commit.
+  `name` matching), recorded with its commit; **threat-model check:** before this stage closes,
+  threat-model case 3, [remaining gaps](#remaining-gaps) and
+  [risks across stages](#risks-across-stages) are re-checked against #240 as merged and against
+  [05 Isolation tiers](../05-tools-and-isolation.md#isolation-tiers), and any drift is fixed in
+  this plan.
 - Risks: a real marketplace may use source types left out here; record them as follow-ups.
 - Status: pending
 - Outcome:
