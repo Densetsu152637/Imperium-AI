@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use imperium_api::RuleAction;
+use tokio::sync::OnceCell;
 
 use crate::runtime::sh_quote;
 use crate::search::{walker, withheld_by_rule};
@@ -106,17 +107,20 @@ struct Listing {
     stopped: bool,
 }
 
-type Slot = (String, Instant, Arc<Listing>);
+/// One kept listing: filled by the first request that needs it, awaited by the others that
+/// arrive while it is walking, and valid for [`CACHE_TTL`] from when it was filled.
+type Slot = Arc<OnceCell<(Instant, Arc<Listing>)>>;
 
-static CACHE: Mutex<Vec<Slot>> = Mutex::new(Vec::new());
+static CACHE: Mutex<Vec<(String, Slot)>> = Mutex::new(Vec::new());
 
-/// What identifies a listing: the folders it covers and whether the session is held to local
-/// files (which decides which folders resolve). Rules are not part of it: they are applied to
-/// each query's results.
+/// What identifies a listing: the runtime (a container, a distribution or a host, not just the
+/// folder paths they may share), the folders it covers, the path grants (which decide where a
+/// link may lead) and whether the session is held to local files (which decides which folders
+/// resolve). Permission rules are not part of it: they are applied to each query's results.
 fn cache_key(workspace: &Workspace) -> String {
     let mut key = String::new();
-    if workspace.runtime().is_some() {
-        key.push_str("remote:");
+    if let Some(runtime) = workspace.runtime() {
+        key.push_str(&format!("remote:{runtime:?}:"));
         key.push_str(&workspace.folders_display().join("\u{0}"));
     } else {
         key.push_str("local:");
@@ -125,6 +129,14 @@ fn cache_key(workspace: &Workspace) -> String {
             key.push('\u{0}');
         }
     }
+    let mut grants: Vec<String> = workspace
+        .grants()
+        .iter()
+        .map(|grant| format!("{}:{}", grant.display_path(), grant.writable))
+        .collect();
+    grants.sort();
+    key.push_str("|grants:");
+    key.push_str(&grants.join("\u{0}"));
     key.push_str(if workspace.profile().local_files_only() {
         "|locked"
     } else {
@@ -133,32 +145,42 @@ fn cache_key(workspace: &Workspace) -> String {
     key
 }
 
-fn cached(key: &str) -> Option<Arc<Listing>> {
-    let cache = CACHE.lock().ok()?;
-    cache
-        .iter()
-        .find(|(held, at, _)| held == key && at.elapsed() < CACHE_TTL)
-        .map(|(_, _, listing)| Arc::clone(listing))
+fn expired(slot: &Slot) -> bool {
+    slot.get().is_some_and(|(at, _)| at.elapsed() >= CACHE_TTL)
 }
 
-fn keep(key: String, listing: Arc<Listing>) {
-    let Ok(mut cache) = CACHE.lock() else { return };
-    cache.retain(|(held, at, _)| held != &key && at.elapsed() < CACHE_TTL);
+/// The slot for `key`: the kept one, or a new one. Every expired slot is dropped, and the
+/// oldest is when there are too many.
+fn slot_for(key: &str) -> Slot {
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.retain(|(_, slot)| !expired(slot));
+    if let Some((_, slot)) = cache.iter().find(|(held, _)| held == key) {
+        return Arc::clone(slot);
+    }
     if cache.len() >= CACHE_SLOTS {
         cache.remove(0);
     }
-    cache.push((key, Instant::now(), listing));
+    let slot: Slot = Arc::new(OnceCell::new());
+    cache.push((key.to_string(), Arc::clone(&slot)));
+    slot
 }
 
 /// Forgets the kept listing of `workspace`.
 #[cfg(test)]
 fn forget_listing(workspace: &Workspace) {
     let key = cache_key(workspace);
-    CACHE.lock().unwrap().retain(|(held, _, _)| held != &key);
+    CACHE.lock().unwrap().retain(|(held, _)| held != &key);
 }
 
+/// Walks started, by key, so tests can tell a reused listing from a new walk.
+#[cfg(test)]
+static WALKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Files and directories of the session's folders matching `query` (every one, shallowest
-/// first, when it is empty), best first, at most `limit` (and [`MAX_MATCHES`]).
+/// first, when it is empty), best first, at most `limit` (and [`MAX_MATCHES`]). Requests that
+/// arrive while a listing is being made wait for it instead of walking again.
 pub async fn find_files(
     workspace: &Workspace,
     query: &str,
@@ -166,9 +188,11 @@ pub async fn find_files(
 ) -> Result<FileSearch, ToolError> {
     let limit = limit.clamp(1, MAX_MATCHES);
     let key = cache_key(workspace);
-    let listing = match cached(&key) {
-        Some(listing) => listing,
-        None => {
+    let slot = slot_for(&key);
+    let (_, listing) = slot
+        .get_or_try_init(|| async {
+            #[cfg(test)]
+            WALKS.lock().unwrap().push(key.clone());
             let fresh = if workspace.runtime().is_some() {
                 remote_listing(workspace).await?
             } else {
@@ -177,12 +201,10 @@ pub async fn find_files(
                     .await
                     .map_err(|error| ToolError::Io(error.to_string()))?
             };
-            let fresh = Arc::new(fresh);
-            keep(key, Arc::clone(&fresh));
-            fresh
-        }
-    };
-    Ok(rank(workspace, &listing, query, limit))
+            Ok::<_, ToolError>((Instant::now(), Arc::new(fresh)))
+        })
+        .await?;
+    Ok(rank(workspace, listing, query, limit))
 }
 
 /// The score of a path for `query`; with no query, shallower paths come first.
@@ -627,6 +649,76 @@ mod tests {
         forget_listing(&workspace);
         let fresh = find_files(&workspace, "readme", 10).await.unwrap();
         assert_eq!(fresh.matches.len(), first.matches.len() + 1);
+    }
+
+    fn remote(target: crate::Remote) -> Workspace {
+        Workspace::remote(
+            target,
+            &["/work/project".to_string()],
+            Arc::new(crate::ProcessRunner),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn listings_are_kept_apart_by_runtime_and_by_grants() {
+        // The same folder in a container, on a host and in a distribution is three listings.
+        let docker = cache_key(&remote(crate::Remote::Docker {
+            container: "box".into(),
+        }));
+        let ssh = cache_key(&remote(crate::Remote::Ssh { host: "box".into() }));
+        let wsl = cache_key(&remote(crate::Remote::Wsl {
+            distro: "box".into(),
+        }));
+        assert!(docker != ssh && ssh != wsl && docker != wsl);
+        let other = cache_key(&remote(crate::Remote::Docker {
+            container: "other".into(),
+        }));
+        assert_ne!(docker, other);
+        assert_eq!(
+            docker,
+            cache_key(&remote(crate::Remote::Docker {
+                container: "box".into()
+            }))
+        );
+
+        // A grant changes where a link may lead, so it changes the listing.
+        let dir = tree();
+        let grant = tempfile::tempdir().unwrap();
+        let plain = Workspace::new(dir.path()).unwrap();
+        let read = plain.clone().with_grants(&[imperium_api::PathGrant {
+            path: grant.path().display().to_string(),
+            mode: imperium_api::PathMode::Read,
+        }]);
+        let write = plain.clone().with_grants(&[imperium_api::PathGrant {
+            path: grant.path().display().to_string(),
+            mode: imperium_api::PathMode::ReadWrite,
+        }]);
+        let keys = [cache_key(&plain), cache_key(&read), cache_key(&write)];
+        assert!(keys[0] != keys[1] && keys[1] != keys[2] && keys[0] != keys[2]);
+    }
+
+    #[tokio::test]
+    async fn requests_that_arrive_together_share_one_walk() {
+        let dir = tree();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        forget_listing(&workspace);
+        let key = cache_key(&workspace);
+        let tasks: Vec<_> = (0..8)
+            .map(|n| {
+                let workspace = workspace.clone();
+                tokio::spawn(async move {
+                    find_files(&workspace, &"readme"[..1 + n % 6], 10)
+                        .await
+                        .unwrap()
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let walks = WALKS.lock().unwrap().iter().filter(|k| **k == key).count();
+        assert_eq!(walks, 1);
     }
 
     #[tokio::test]
