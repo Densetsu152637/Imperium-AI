@@ -29,9 +29,11 @@ fn required() -> bool {
 /// Runs `command` in the OS tier with `roots` as the workspace folders and `grants`; the exit
 /// status and what it printed, or `None` when the sandbox could not be started.
 async fn run(roots: &[&Path], grants: &[GrantedPath], command: &str) -> Option<(bool, String)> {
-    let mut process = Sandbox::Os { network: true }
-        .command(roots, grants, command)
-        .expect("the OS tier is available on this platform");
+    // A command the daemon refuses to start (a guarded folder went missing) printed no secret.
+    let mut process = match (Sandbox::Os { network: true }).command(roots, grants, command) {
+        Ok(process) => process,
+        Err(error) => return Some((false, error.to_string())),
+    };
     // A command that hangs is a failure, not a stuck test run.
     process.stdin(Stdio::null()).kill_on_drop(true);
     let output = tokio::time::timeout(std::time::Duration::from_secs(60), process.output())
@@ -270,10 +272,8 @@ async fn a_grant_around_the_data_folder_does_not_reopen_a_hidden_file() {
             "{command}: the token was revealed: {text}"
         );
     }
-    // Seatbelt denies renaming the folder around a hidden path. Bubblewrap cannot: a folder with
-    // mount points inside can be renamed (the masks go with it, so the token is still hidden, as
-    // checked above). That is what the guarded folders prevent: see the next test.
-    #[cfg(target_os = "macos")]
+    // Seatbelt denies renaming the folder around a hidden path; bubblewrap makes every folder
+    // between the grant and a hidden path a mount point, which refuses a rename.
     assert!(fixture.endpoint.exists(), "the endpoint file was moved");
 }
 
@@ -383,4 +383,75 @@ async fn a_command_cannot_connect_to_the_daemons_port() {
     .await
     .unwrap();
     assert!(!connected, "the daemon's port accepted a command: {text}");
+}
+
+/// Linux: a grant of the home folder cannot rename a folder around the guarded and hidden paths
+/// (`mv ~/.local/share ~/.local/sx`) to get them unmasked on the next command: the folders in
+/// between are mount points. Either the rename fails, or the next command is refused.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_renamed_ancestor_does_not_unmask_the_daemons_folders() {
+    let dir = tempfile::Builder::new()
+        .prefix(".t")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .unwrap();
+    let root = dir.path().to_path_buf();
+    let base = root.join("a").join("b");
+    let data = base.join("data");
+    let cfg = base.join("cfg");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(root.join("inside.txt"), "visible").unwrap();
+    std::fs::write(cfg.join("config.toml"), "# config\n").unwrap();
+    let endpoint = data.join("daemon.json");
+    std::fs::write(&endpoint, format!("{{\"token\":\"{TOKEN}\"}}")).unwrap();
+    hide_from_os_sandbox([endpoint.clone()]);
+    guard_from_commands([cfg.clone(), data.clone()]);
+    if !sandbox_works(&root).await {
+        return;
+    }
+    let renamed = root.join("z");
+    let (_, first) = in_sandbox(
+        &root,
+        &format!(
+            "mv '{}' '{}' 2>&1; echo",
+            root.join("a").display(),
+            renamed.display()
+        ),
+    )
+    .await
+    .unwrap();
+    let (_, second) = in_sandbox(
+        &root,
+        &format!(
+            "cat '{d}/daemon.json' 2>&1; echo '[hooks]' >> '{c}/config.toml' 2>&1; \
+             cat '{rd}/daemon.json' 2>&1; echo '[hooks]' >> '{rc}/config.toml' 2>&1",
+            d = renamed.join("b/data").display(),
+            c = renamed.join("b/cfg").display(),
+            rd = data.display(),
+            rc = cfg.display(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !first.contains(TOKEN) && !second.contains(TOKEN),
+        "{first}{second}"
+    );
+    // Wherever the folder is now, the configuration was not written.
+    for config in [cfg.join("config.toml"), renamed.join("b/cfg/config.toml")] {
+        if let Ok(text) = std::fs::read_to_string(&config) {
+            assert_eq!(
+                text,
+                "# config\n",
+                "{} was written: {first}{second}",
+                config.display()
+            );
+        }
+    }
+    // The rename was refused (a mount point), or the next command was.
+    assert!(
+        endpoint.exists() || second.contains("is missing"),
+        "{first}{second}"
+    );
 }

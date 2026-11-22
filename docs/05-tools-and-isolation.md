@@ -998,9 +998,15 @@ name. The daemon registers them when it starts (`imperium_tools::hide_from_os_sa
 Whether a writable grant around the data folder can reopen a hidden file differs by OS:
 
 - **Linux:** a mount point cannot be renamed, replaced or linked out of, and the masks are
-  mounted last, so the file stays hidden whatever the grants are. The folder around a mount point
-  can be renamed (the masks go with it, so nothing is revealed), which is why `<data>` and
-  `<config>` are guarded below: a read-only mount point cannot be renamed.
+  mounted last, so the file stays hidden whatever the grants are. A mask is by path, so a rename
+  of a folder around it would carry the daemon's folders out of its reach (`mv ~/.local/share
+  ~/.local/sx`, then read `~/.local/sx/imperium/daemon.json` in the next command, which has no
+  mask for the new path). Bubblewrap therefore binds every folder between a writable path and a
+  guarded or hidden path onto itself (`--bind a a`, writable, outermost first, before the
+  guards): each is a mount point, and renaming one fails with `EBUSY`. As a second line, every
+  command in the OS or container tier is refused with a clear error when a guarded folder, a
+  hidden folder or the daemon's endpoint file that existed at registration is missing from where
+  the command can reach (inside or around one of its folders or grants).
 - **macOS:** Seatbelt works by path, so for every hidden path it also denies `file-write*` (which
   covers deleting or renaming it) and `file-link` (a hard link to a readable path), and it denies
   `file-write-unlink` on every folder around it, so the folder cannot be renamed away to carry

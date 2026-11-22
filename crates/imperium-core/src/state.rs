@@ -202,6 +202,9 @@ fn hide_credentials_from_os_tier(paths: &Paths, settings: &Settings) {
         hidden.push(file.into());
     }
     imperium_tools::hide_from_os_sandbox(hidden);
+    // The endpoint file exists while the daemon runs: a command is refused when it has gone
+    // missing from where the command can reach (a folder around it was renamed away).
+    imperium_tools::require_present([paths.daemon_endpoint_file()]);
     // No command in the OS or container tier may write the configuration or data folders (a
     // hook or MCP server added to `config.toml` would run unconfined), even when a session
     // folder or grant contains them; the default workspace, inside `<data>`, stays writable.

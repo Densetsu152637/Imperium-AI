@@ -31,6 +31,10 @@ struct Hidden {
     guarded: Vec<PathBuf>,
     /// Folders inside a guarded one that stay writable (the workspaces root).
     open: Vec<PathBuf>,
+    /// Guarded folders, hidden folders and required files that existed when they were
+    /// registered: a command is refused when one of them has gone missing (see
+    /// [`missing_among`]).
+    present: Vec<PathBuf>,
     loopback_ports: Vec<u16>,
 }
 
@@ -38,6 +42,7 @@ static HIDDEN: Mutex<Hidden> = Mutex::new(Hidden {
     paths: Vec::new(),
     guarded: Vec::new(),
     open: Vec::new(),
+    present: Vec::new(),
     loopback_ports: Vec::new(),
 });
 
@@ -49,9 +54,61 @@ static HIDDEN: Mutex<Hidden> = Mutex::new(Hidden {
 pub fn guard_from_commands(paths: impl IntoIterator<Item = PathBuf>) {
     let mut hidden = HIDDEN.lock().unwrap_or_else(PoisonError::into_inner);
     for path in paths {
+        if path.is_dir() && !hidden.present.contains(&path) {
+            hidden.present.push(path.clone());
+        }
         if !hidden.guarded.contains(&path) {
             hidden.guarded.push(path);
         }
+    }
+}
+
+/// Registers files that must exist while the daemon runs (its endpoint file). A command in the OS
+/// or container tier is refused when one that existed here is missing and lies inside, or
+/// around, one of the command's folders: a missing path cannot be masked, and a folder renamed
+/// away is how it would go missing.
+pub fn require_present(paths: impl IntoIterator<Item = PathBuf>) {
+    let mut hidden = HIDDEN.lock().unwrap_or_else(PoisonError::into_inner);
+    for path in paths {
+        if path.exists() && !hidden.present.contains(&path) {
+            hidden.present.push(path);
+        }
+    }
+}
+
+/// The first of `present` that no longer exists although it lies inside, or around, one of the
+/// command's `sources` (its folders and grants). Paths elsewhere are not the command's concern.
+fn missing_among(present: &[PathBuf], sources: &[&Path]) -> Option<PathBuf> {
+    present
+        .iter()
+        .find(|path| {
+            !path.exists()
+                && sources
+                    .iter()
+                    .any(|source| path.starts_with(source) || source.starts_with(path))
+        })
+        .cloned()
+}
+
+/// Refuses a command in the OS or container tier when something the daemon guards or hides is
+/// missing from where the command can reach: it could not be masked, and a command that renamed a
+/// folder around it (`mv ~/.local/share ~/.local/sx`) would get the contents unmasked next time.
+fn require_intact(roots: &[&Path], grants: &[GrantedPath]) -> Result<(), ToolError> {
+    let present = HIDDEN
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .present
+        .clone();
+    let mut sources: Vec<&Path> = roots.to_vec();
+    sources.extend(grants.iter().map(|grant| grant.path.as_path()));
+    match missing_among(&present, &sources) {
+        Some(path) => Err(ToolError::Io(format!(
+            "{} is missing, so the sandbox cannot hide the daemon's files; a folder around it \
+             was probably renamed or removed. Put it back (or restart the daemon) before running \
+             commands in this isolation tier",
+            path.display()
+        ))),
+        None => Ok(()),
     }
 }
 
@@ -137,6 +194,9 @@ fn current_guards() -> Guards {
 pub fn hide_from_os_sandbox(paths: impl IntoIterator<Item = PathBuf>) {
     let mut hidden = HIDDEN.lock().unwrap_or_else(PoisonError::into_inner);
     for path in paths {
+        if path.is_dir() && !hidden.present.contains(&path) {
+            hidden.present.push(path.clone());
+        }
         if !hidden.paths.contains(&path) {
             hidden.paths.push(path);
         }
@@ -317,6 +377,9 @@ impl Sandbox {
         let Some(root) = roots.first() else {
             return Err(ToolError::Io("the workspace has no folder".into()));
         };
+        if !matches!(self, Sandbox::Policy) {
+            require_intact(roots, grants)?;
+        }
         match self {
             Sandbox::Policy => {
                 if read_only {
@@ -633,6 +696,31 @@ fn bwrap_args(
         .collect();
     for path in writable {
         args.extend(["--bind".into(), path.clone(), path.clone()]);
+    }
+    // Every folder between a writable path and a guarded or hidden path is bound onto itself, so it
+    // is a mount point and cannot be renamed (`EBUSY`): without that, `mv ~/.local/share
+    // ~/.local/sx` would carry the daemon's folders out of the masks' reach, since a mask is by
+    // path. They stay writable. Outermost first, so each lies inside the one before.
+    let mut ancestors: Vec<PathBuf> = Vec::new();
+    let targets = guards
+        .folders
+        .iter()
+        .map(|guard| guard.display().to_string())
+        .chain(hidden.iter().map(|mask| mask.path.clone()));
+    for target in targets {
+        for ancestor in Path::new(&target).ancestors().skip(1) {
+            let inside = writable
+                .iter()
+                .any(|path| ancestor.starts_with(path) && ancestor != Path::new(path));
+            if inside && !ancestors.iter().any(|known| known == ancestor) {
+                ancestors.push(ancestor.to_path_buf());
+            }
+        }
+    }
+    ancestors.sort_by_key(|ancestor| ancestor.components().count());
+    for ancestor in ancestors {
+        let ancestor = ancestor.display().to_string();
+        args.extend(["--bind".into(), ancestor.clone(), ancestor]);
     }
     // The guarded folders are read-only even where a writable path contains them. Only after all
     // of them are bound (one may be another name for the same folder) are the writable paths that
@@ -1529,6 +1617,104 @@ mod tests {
             !stdout.contains("TOKEN-THE-CONTAINER-MUST-NOT-SEE"),
             "{stdout}"
         );
+    }
+
+    #[test]
+    fn folders_around_the_daemons_are_mount_points_so_they_cannot_be_renamed() {
+        let writable = vec!["/home/me".to_string()];
+        let hidden = [Mask::file("/home/me/.local/share/imperium/daemon.json")];
+        let args = bwrap_args(&writable, &[], &home_guards(), &hidden, "/home/me", true).join(" ");
+        let share = args
+            .find("--bind /home/me/.local/share /home/me/.local/share")
+            .expect(&args);
+        let local = args
+            .find("--bind /home/me/.local /home/me/.local")
+            .expect(&args);
+        let config = args
+            .find("--bind /home/me/.config /home/me/.config")
+            .expect(&args);
+        let first_guard = args.find("--ro-bind /home/me/.config/imperium").unwrap();
+        // Outermost first, after the writable bind and before the guards.
+        assert!(local < share, "{args}");
+        assert!(
+            args.find("--bind /home/me /home/me").unwrap() < local,
+            "{args}"
+        );
+        assert!(share < first_guard && config < first_guard, "{args}");
+        // The writable path itself is not bound twice, and a path outside it adds nothing.
+        assert_eq!(
+            args.matches("--bind /home/me /home/me").count(),
+            1,
+            "{args}"
+        );
+        let outside = bwrap_args(
+            &["/work".to_string()],
+            &[],
+            &home_guards(),
+            &hidden,
+            "/work",
+            true,
+        )
+        .join(" ");
+        assert!(!outside.contains("--bind /home/me/.local"), "{outside}");
+    }
+
+    /// The tiers whose commands can be built here (the OS tier is not available on Windows).
+    fn tiers() -> Vec<Sandbox> {
+        let mut tiers = vec![Sandbox::Container {
+            runtime: "docker".into(),
+            image: "img".into(),
+            network: true,
+        }];
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
+            tiers.push(Sandbox::Os { network: true });
+        }
+        tiers
+    }
+
+    #[test]
+    fn a_command_is_refused_when_a_guarded_path_around_it_has_gone_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("a").join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        guard_from_commands([data.clone()]);
+        // Present: fine, in both tiers. A folder elsewhere is none of its concern.
+        for sandbox in tiers() {
+            assert!(
+                sandbox
+                    .named_command(&[dir.path()], &[], "x", None, false)
+                    .is_ok()
+            );
+        }
+        // The folder around it is renamed away, as `mv root/a root/z` would.
+        std::fs::rename(dir.path().join("a"), dir.path().join("z")).unwrap();
+        for sandbox in tiers() {
+            let error = sandbox
+                .named_command(&[dir.path()], &[], "x", None, false)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("is missing"), "{error}");
+            assert!(error.contains("data"), "{error}");
+            // Another workspace, away from it, still runs; and so does tier 0.
+            assert!(
+                sandbox
+                    .named_command(&[elsewhere.path()], &[], "x", None, false)
+                    .is_ok()
+            );
+        }
+        assert!(
+            Sandbox::Policy
+                .named_command(&[dir.path()], &[], "x", None, false)
+                .is_ok()
+        );
+        // The pure check, with paths that never existed here.
+        let present = [PathBuf::from("/h/.config/imperium")];
+        assert_eq!(
+            missing_among(&present, &[Path::new("/h")]),
+            Some(PathBuf::from("/h/.config/imperium"))
+        );
+        assert_eq!(missing_among(&present, &[Path::new("/other")]), None);
     }
 
     #[test]
