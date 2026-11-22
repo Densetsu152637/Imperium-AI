@@ -113,7 +113,7 @@ const SECTION_CONTROLS: Record<EnvironmentSectionId, { file: string; controls: s
   },
   folders: {
     file: "environments/EnvironmentWindow.tsx",
-    controls: ["Add folder", 'label="Folder path"', "Add path", "Remove ${folder}", "<EnvironmentRuntimeFields"],
+    controls: ["Add folder", 'aria-label="Folder path"', "Add path", "Remove ${folder}", "<EnvironmentRuntimeFields"],
   },
   agents: {
     file: "panels/EnvironmentAgents.tsx",

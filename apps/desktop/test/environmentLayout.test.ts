@@ -47,5 +47,18 @@ test("agent and folder lists are rows at --row-h", () => {
   assert.ok(read("panels/EnvironmentAgents.tsx").includes('className="environment-list"'));
   assert.ok(read("environments/EnvironmentWindow.tsx").includes('className="environment-list"'));
   const css = read("styles/environments.css");
-  assert.ok(/\.environment-list > li,[\s\S]*?min-height: var\(--row-h\)/.test(css));
+  assert.ok(/\.environment-list > li {[\s\S]*?min-height: var\(--row-h\)/.test(css));
+});
+
+test("the runtime folder path input is named, and a Field never wraps a non-control", () => {
+  const source = read("environments/EnvironmentWindow.tsx");
+  const input = /<input[^>]*aria-label="Folder path"[^>]*>/.exec(source);
+  assert.ok(input, "the folder path input has an accessible name");
+  assert.ok(!/<Field[^>]*label="Folder path"/.test(source));
+  // Every Field wraps an input, textarea or Select directly, so its label points at a control.
+  for (const file of FILES) {
+    for (const match of read(file).matchAll(/<Field[^>]*>\s*<(\w+)/g)) {
+      assert.ok(["input", "textarea", "Select"].includes(match[1]), `${file}: a Field wraps <${match[1]}>`);
+    }
+  }
 });

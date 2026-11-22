@@ -90,6 +90,7 @@
 /* ---- Icon and colour pickers ---- */
 .environment-icon-picker {
   display: flex;
+  flex-direction: column;
   align-items: flex-start;
   gap: var(--sp-3);
   min-width: 0;
@@ -97,7 +98,7 @@
 
 .environment-icon-choices {
   display: flex;
-  flex: 1;
+  align-self: stretch;
   flex-direction: column;
   gap: var(--sp-2);
   min-width: 0;
@@ -192,8 +193,15 @@ button.colour-choice[aria-checked="true"] {
   font-size: var(--fs-md);
 }
 
-.environment-list > li,
+/* The permission editor's lists share the class `environment-folders` and keep their own, plain rows. */
 .environment-folders > li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.environment-list > li {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -203,13 +211,6 @@ button.colour-choice[aria-checked="true"] {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-raised);
-}
-
-.environment-folders > li.muted {
-  min-height: 0;
-  padding: var(--sp-2) 0;
-  border: none;
-  background: transparent;
 }
 
 .environment-list .folder-path,

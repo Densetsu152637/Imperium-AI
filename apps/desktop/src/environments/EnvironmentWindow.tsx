@@ -541,10 +541,12 @@ export function EnvironmentWindow({
             )}
           </Row>
           {isRemote(runtime) && (
-            <Field label="Folder path" hint="A path inside the runtime, such as /home/me/project.">
+            <Group label="Folder path" hint="A path inside the runtime, such as /home/me/project.">
               <span className="environment-inline">
                 <input
                   type="text"
+                  className="field"
+                  aria-label="Folder path"
                   placeholder="/home/me/project"
                   value={typedFolder}
                   onChange={(event) => setTypedFolder(event.target.value)}
@@ -561,7 +563,7 @@ export function EnvironmentWindow({
                   <FolderPlus aria-hidden="true" /> Add path
                 </button>
               </span>
-            </Field>
+            </Group>
           )}
           {folders.length > 0 ? (
             <ul className="environment-list" aria-label="Folders">
