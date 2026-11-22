@@ -4,10 +4,14 @@
 // shown again. The catalogue under Browse comes from the daemon (catalog/connectors.json, plus
 // the user's own connectors.json), not from this file.
 
-import { CircleAlert, Plug, Search, X } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { Plug, Search, X } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { CatalogServer, ConfigSetResult, McpCatalogResult, McpListResult, McpLoginResult, McpLogoutResult, McpRemoveResult, McpSaveResult, McpServerInfo, McpStatus, PluginInfo } from "@imperium/protocol";
+import { Dialog } from "../components/Dialog";
+import { IconButton } from "../components/IconButton";
+import { Notice } from "../components/Notice";
+import { Tabs, tabPanelProps } from "../components/Tabs";
+import { EmptyState } from "../components/EmptyState";
 import type { DaemonClient } from "../daemon/client";
 import { openExternal } from "../shared/openExternal";
 import { message } from "./common";
@@ -43,7 +47,13 @@ export function ConnectorsWindow({
   const [restartNeeded, setRestartNeeded] = useState(false);
   // The address of a sign-in under way, kept on screen so it can be reopened or copied.
   const [signInAddress, setSignInAddress] = useState<{ name: string; url: string } | null>(null);
-  const titleId = useId();
+  const idBase = useId();
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  // A new view (a form, the other tab) starts at its top, not where the last one was scrolled to.
+  useEffect(() => {
+    bodyRef.current?.parentElement?.scrollTo({ top: 0 });
+  }, [tab, view.kind]);
 
   const refresh = useCallback(async () => {
     if (!client) return;
@@ -68,16 +78,13 @@ export function ConnectorsWindow({
     return () => window.clearInterval(timer);
   }, [signingIn, refresh]);
 
-  // Escape steps back from a form, then closes the window.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (view.kind !== "list") setView({ kind: "list" });
-      else onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, view.kind]);
+  // Escape steps back from a form; from the list the dialog's own Escape closes the window.
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && view.kind !== "list") {
+      event.preventDefault();
+      setView({ kind: "list" });
+    }
+  };
 
   const replaceServer = (server: McpServerInfo) =>
     setInstalled((current) =>
@@ -185,7 +192,7 @@ export function ConnectorsWindow({
 
   let body: ReactNode;
   if (!client) {
-    body = <p className="connectors-empty muted">Connect to imperium-core to manage connectors.</p>;
+    body = <EmptyState icon={Plug} title="Not connected" body="Connect to imperium-core to manage connectors." />;
   } else if (view.kind === "add") {
     body = (
       <AddForm
@@ -245,61 +252,60 @@ export function ConnectorsWindow({
 
   const installedCount = installed ? installed.servers.length + installed.plugins.length : null;
 
-  return createPortal(
-    <div className="settings-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="connectors-window" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-        <header className="connectors-header">
-          <h2 id={titleId}>
-            <Plug aria-hidden="true" /> Connectors
-          </h2>
-          <div className="tabs" role="tablist" aria-label="Connector views">
-            {(["installed", "browse"] as const).map((id) => (
-              <button
-                key={id}
-                role="tab"
-                aria-selected={tab === id && view.kind === "list"}
-                className={tab === id ? "tab active" : "tab"}
-                onClick={() => {
-                  setTab(id);
-                  setView({ kind: "list" });
-                }}
-              >
-                {id === "installed" ? "Installed" : "Browse"}
-                {id === "installed" && installedCount !== null && <span className="tab-count">{installedCount}</span>}
-              </button>
-            ))}
-          </div>
-          <label className="search-field">
-            <Search aria-hidden="true" />
-            <input
-              type="search"
-              placeholder={tab === "browse" ? "Search the directory" : "Search installed"}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              aria-label="Search connectors"
-              autoFocus
-            />
-          </label>
-          <button className="ghost icon-only" onClick={onClose} aria-label="Close connectors" title="Close">
-            <X />
-          </button>
-        </header>
-        {restartNeeded && (
-          <div className="settings-notice">Restart imperium-core for plugin changes to apply to new sessions.</div>
-        )}
-        {error && (
-          <p className="error connectors-error" role="alert">
-            <CircleAlert aria-hidden="true" /> {error}
-            <button className="ghost icon-only" onClick={() => setError(null)} aria-label="Dismiss">
-              <X />
-            </button>
-          </p>
-        )}
-        <div className="connectors-body">{body}</div>
+  const toolbar = (
+    <div className="connectors-toolbar">
+      <Tabs
+        label="Connector views"
+        idBase={idBase}
+        value={tab}
+        onChange={(id) => {
+          setTab(id as Tab);
+          setView({ kind: "list" });
+        }}
+        items={[
+          { id: "installed", label: "Installed", badge: installedCount ?? undefined },
+          { id: "browse", label: "Browse" },
+        ]}
+      />
+      <label className="search-field">
+        <Search aria-hidden="true" />
+        <input
+          type="search"
+          placeholder={tab === "browse" ? "Search the directory" : "Search installed"}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          aria-label="Search connectors"
+          autoFocus
+        />
+      </label>
+    </div>
+  );
+
+  return (
+    <Dialog
+      label="Connectors"
+      title={
+        <span className="connectors-title">
+          <Plug aria-hidden="true" /> Connectors
+        </span>
+      }
+      onClose={onClose}
+      onKeyDown={onKeyDown}
+      notice={
+        <>
+          {restartNeeded && <Notice tone="info">Restart imperium-core for plugin changes to apply to new sessions.</Notice>}
+          {error && (
+            <Notice tone="danger" action={<IconButton icon={X} label="Dismiss" size="sm" onClick={() => setError(null)} />}>
+              {error}
+            </Notice>
+          )}
+          {toolbar}
+        </>
+      }
+    >
+      <div ref={bodyRef} className="connectors-body" {...tabPanelProps(idBase, tab)}>
+        {body}
       </div>
-    </div>,
-    document.body,
+    </Dialog>
   );
 }
-
-// ---- Browse ----
