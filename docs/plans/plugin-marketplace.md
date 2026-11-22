@@ -620,6 +620,9 @@ and `bash scripts/check-web.sh`. A stage that grows past the limit splits at the
 notes name. **No new approval counts until [stage 8c](#stage-8c-os-presence-check) turns counting
 on**; earlier stages test through an injected verifier or records written directly.
 
+Precondition: [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) is merged before
+stage 1 starts (threat-model case 3 relies on it).
+
 ## Stage 1: Marketplace and manifest parsers
 
 - Objective: pure parsing in `imperium-extensions`, no daemon or protocol change.
@@ -644,7 +647,7 @@ on**; earlier stages test through an injected verifier or records written direct
   plugin in that set never expands daemon `${VAR}` and its hooks get `may_rewrite = false`. Until
   stage 3a-i fills the set, the caller passes the folders `installed_by_agent` would have named,
   so this stage changes no behaviour.
-- Depends on: none.
+- Depends on: #240 merged.
 - Owned paths: `crates/imperium-extensions/src/marketplace.rs` (new), `plugins.rs`, `lib.rs`,
   `crates/imperium-core/src/state/extensions.rs` (only to fill `downloaded` as before),
   `crates/imperium-extensions/Cargo.toml` if a dev-dependency is needed.
@@ -895,7 +898,7 @@ on**; earlier stages test through an injected verifier or records written direct
   `SHGetKnownFolderPath(FOLDERID_ProgramFiles)`. The debug-only development
   verifier (`dev`). **Counting stays off** (the verifier refuses with "presence check not built")
   until stage 8c.
-- Depends on: stage 4.
+- Depends on: stage 4; #240 merged.
 - Owned paths: `crates/imperium-core/src/app_identity/` (new: `mod.rs`, `windows.rs`, `macos.rs`,
   `linux.rs`), the socket accept path that records peer identity (find with
   `grep -rn "GetNamedPipeClientProcessId\|SO_PEERCRED\|peer_cred" crates/imperium-core/src`),
