@@ -916,13 +916,86 @@ mod tests {
                 writable: true,
             },
         ];
-        let args = container_args(&[Path::new("/p")], &grants, "img", true, "x", true).join(" ");
-        assert!(args.contains("-v /p/build:/p/build:ro"), "{args}");
-        assert!(args.contains("-v /:/:ro"), "{args}");
-        assert!(args.contains("-v /elsewhere:/elsewhere -w"), "{args}");
-        let writable =
-            container_args(&[Path::new("/p")], &grants, "img", true, "x", false).join(" ");
+        // No daemon folders registered: what is mounted does not depend on the host running this.
+        let args = |read_only: bool| {
+            container_args_guarding(
+                &[Path::new("/p")],
+                &grants,
+                "img",
+                true,
+                "x",
+                read_only,
+                &Guards::default(),
+                &[],
+            )
+            .join(" ")
+        };
+        let args_ro = args(true);
+        assert!(args_ro.contains("-v /p/build:/p/build:ro"), "{args_ro}");
+        assert!(args_ro.contains("-v /:/:ro"), "{args_ro}");
+        assert!(args_ro.contains("-v /elsewhere:/elsewhere -w"), "{args_ro}");
+        let writable = args(false);
         assert!(writable.contains("-v /p/build:/p/build -v"), "{writable}");
+    }
+
+    #[test]
+    fn a_grant_of_the_whole_host_is_covered_where_the_daemons_files_are() {
+        let grants = [GrantedPath {
+            path: "/".into(),
+            writable: false,
+        }];
+        let run = |guards: &Guards, hidden: &[Mask]| {
+            container_args_guarding(
+                &[Path::new("/p")],
+                &grants,
+                "img",
+                true,
+                "x",
+                false,
+                guards,
+                hidden,
+            )
+            .join(" ")
+        };
+        // The credential files alone: a file by /dev/null, folders by tmpfs, at their host paths.
+        let hidden = daemon_hidden();
+        let args = run(&Guards::default(), &hidden);
+        assert!(args.contains("-v /:/:ro"), "{args}");
+        assert!(
+            args.contains("-v /dev/null:/home/me/.local/share/imperium/daemon.json:ro"),
+            "{args}"
+        );
+        assert!(
+            args.contains("--tmpfs /home/me/.local/share/imperium/ipc"),
+            "{args}"
+        );
+        assert!(
+            args.contains("--tmpfs /home/me/.local/share/imperium/remotes"),
+            "{args}"
+        );
+        // With the guarded folders, the data folder is covered whole, and the files in it with it.
+        let args = run(&home_guards(), &hidden);
+        assert!(
+            args.contains("--tmpfs /home/me/.local/share/imperium -"),
+            "{args}"
+        );
+        assert!(args.contains("--tmpfs /home/me/.config/imperium"), "{args}");
+        assert!(!args.contains("daemon.json"), "{args}");
+        // The runtime folder of the host is covered only where a mount contains it.
+        let runtime = [Mask::dir("/run/user/1000")];
+        assert!(run(&Guards::default(), &runtime).contains("--tmpfs /run/user/1000"));
+        let none = container_args_guarding(
+            &[Path::new("/p")],
+            &[],
+            "img",
+            true,
+            "x",
+            false,
+            &Guards::default(),
+            &runtime,
+        )
+        .join(" ");
+        assert!(!none.contains("/run/user"), "{none}");
     }
 
     #[test]
