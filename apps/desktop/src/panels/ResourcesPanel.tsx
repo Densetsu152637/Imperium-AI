@@ -6,7 +6,12 @@ import { Cpu, Globe, Gpu, MemoryStick, PowerOff, Server } from "lucide-react";
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import type { ResourceSnapshot } from "@imperium/protocol";
 import type { DaemonClient } from "../daemon/client";
+import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
+import { IconButton } from "../components/IconButton";
+import { LoadingState } from "../components/LoadingState";
 import { ModelName } from "../components/ModelName";
+import { Notice } from "../components/Notice";
 
 /** Samples kept for the sparklines: two minutes at one every two seconds. */
 const HISTORY = 60;
@@ -79,13 +84,13 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
       .finally(() => setUnloading(null));
   };
 
-  if (!client) return <p className="empty">Resources appear once imperium-core is connected.</p>;
-  if (!snapshot) return <p className="empty">{error ?? "Reading resources…"}</p>;
+  if (!client) return <EmptyState className="compact" title="Not connected" body="Resources appear once imperium-core is connected." />;
+  if (!snapshot) return error ? <Notice tone="danger">{error}</Notice> : <LoadingState label="Reading resources…" />;
   const { cpu, memory } = snapshot;
   const daemon = snapshot.processes.find((process) => process.role === "daemon");
   return (
     <div className="resources">
-      {error && <p className="warning">{error}</p>}
+      {error && <Notice tone="warn">{error}</Notice>}
       <section className="meters" aria-label="Machine usage">
         <Meter
           icon={Cpu}
@@ -125,9 +130,9 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
 
       <Section icon={Server} title="Local models">
         {snapshot.local_models.length === 0 ? (
-          <p className="empty">No local model is loaded.</p>
+          <EmptyState className="compact" title="No local model is loaded" />
         ) : (
-          <table>
+          <table className="table compact resource-table">
             <thead>
               <tr>
                 <th>Model</th>
@@ -172,31 +177,28 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
                     </td>
                     <td>
                       {model.slots_in_use > 0 ? (
-                        <span className="badge running">
+                        <Badge tone="accent">
                           {model.slots_in_use}/{model.slots} busy{model.queued > 0 ? ` · ${model.queued} queued` : ""}
-                        </span>
+                        </Badge>
                       ) : model.queued > 0 || model.claimed ? (
-                        <span className="badge running" title="An agent is mid-turn on it, so it stays loaded">
+                        <Badge tone="accent" title="An agent is mid-turn on it, so it stays loaded">
                           {model.queued > 0 ? `${model.queued} queued` : "held by a turn"}
-                        </span>
+                        </Badge>
                       ) : (
-                        <span className="badge">
-                          idle{model.unload_in_ms === null ? "" : ` · unloads in ${countdown(model.unload_in_ms)}`}
-                        </span>
+                        <Badge>idle{model.unload_in_ms === null ? "" : ` · unloads in ${countdown(model.unload_in_ms)}`}</Badge>
                       )}
                     </td>
                     <td title={model.sessions.join("\n")}>{model.sessions.length}</td>
                     <td>
                       {model.can_unload && (
-                        <button
-                          className="ghost icon-only"
+                        <IconButton
+                          icon={PowerOff}
+                          size="sm"
+                          label={`Unload ${model.model}`}
+                          tooltip={`Unload ${model.model} now`}
                           onClick={() => unload(model.model)}
                           disabled={unloading === model.model}
-                          title={`Unload ${model.model} now`}
-                          aria-label={`Unload ${model.model}`}
-                        >
-                          <PowerOff aria-hidden="true" />
-                        </button>
+                        />
                       )}
                     </td>
                   </tr>
@@ -209,9 +211,9 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
 
       <Section icon={Globe} title="Endpoints · last 15 min">
         {snapshot.endpoints.length === 0 ? (
-          <p className="empty">No session uses a hosted endpoint.</p>
+          <EmptyState className="compact" title="No hosted endpoint in use" body="Endpoints appear here while a session uses one." />
         ) : (
-          <table>
+          <table className="table compact resource-table">
             <thead>
               <tr>
                 <th>Model</th>

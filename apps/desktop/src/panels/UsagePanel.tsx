@@ -7,6 +7,9 @@ import { Gauge } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { BudgetStatus, BudgetsResult, UsageAmount, UsageReport } from "@imperium/protocol";
 
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
+import { Notice } from "../components/Notice";
 import { describeUsage, formatShare, formatUsd } from "../models/budgets";
 import type { DaemonClient } from "../daemon/client";
 import { formatTokens } from "../sessions/sessions";
@@ -61,8 +64,8 @@ export function UsagePanel({ client }: { client: DaemonClient | null }) {
     };
   }, [client, scope]);
 
-  if (!client) return <p className="empty">Usage appears once imperium-core is connected.</p>;
-  if (!report) return <p className="empty">{error ?? "Reading usage…"}</p>;
+  if (!client) return <EmptyState className="compact" title="Not connected" body="Usage appears once imperium-core is connected." />;
+  if (!report) return error ? <Notice tone="danger">{error}</Notice> : <LoadingState label="Reading usage…" />;
   const statuses = budgets?.status ?? [];
   const picked = statuses.find((status) => status.budget.id === scope) ?? null;
   const value = (amount: UsageAmount) => (measure === "cost" ? amount.cost_usd : amount.tokens);
@@ -71,13 +74,13 @@ export function UsagePanel({ client }: { client: DaemonClient | null }) {
 
   return (
     <div className="resources usage">
-      {error && <p className="warning">{error}</p>}
+      {error && <Notice tone="warn">{error}</Notice>}
       <section className="resource-section" aria-label="Budgets">
         <h3>
           <Gauge aria-hidden={true} /> Budgets
         </h3>
         {statuses.length === 0 ? (
-          <p className="empty">No budgets. Add them in Settings → Budgets.</p>
+          <EmptyState className="compact" title="No budgets" body="Add them in Settings → Budgets." />
         ) : (
           <ul className="budget-list">
             {statuses.map((status) => (
@@ -169,7 +172,7 @@ function UsageChart({
   format: (n: number) => string;
 }) {
   const highest = Math.max(...days.map(value), 0);
-  if (highest === 0) return <p className="empty">Nothing used in these days.</p>;
+  if (highest === 0) return <EmptyState className="compact" title="Nothing used in these days" />;
   const width = 100 / days.length;
   return (
     <svg className="usage-chart" viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label="Usage per day">
@@ -201,15 +204,15 @@ function TopList({
     <section className="resource-section" aria-label={title}>
       <h3>{title}</h3>
       {top.length === 0 ? (
-        <p className="empty">Nothing yet.</p>
+        <EmptyState className="compact" title="Nothing yet" />
       ) : (
-        <table>
+        <table className="table compact">
           <tbody>
             {top.map((amount) => (
               <tr key={amount.key}>
                 <td title={amount.key}>{amount.label}</td>
-                <td>{format(value(amount))}</td>
-                <td className="muted">{amount.calls} calls</td>
+                <td className="num">{format(value(amount))}</td>
+                <td className="num muted">{amount.calls} calls</td>
               </tr>
             ))}
           </tbody>
