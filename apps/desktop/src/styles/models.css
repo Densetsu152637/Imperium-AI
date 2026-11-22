@@ -45,6 +45,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
+  min-height: var(--control-h-sm);
   padding: 0;
   background: none;
   border: none;

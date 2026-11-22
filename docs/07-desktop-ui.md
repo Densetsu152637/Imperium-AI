@@ -919,7 +919,7 @@ tested in `test/tourSteps.test.ts`.
   search). Outlines, unlike shadows, survive forced colours.
 - **Names:** an icon-only button is an `IconButton` and cannot be built without a `label`; a
   field's label, hint and error are tied to it by `Field`; status is never colour alone (badges
-  and notices carry words and icons, status dots sit beside a label).
+  and notices carry words and icons, and a status dot is an image whose label is the status).
 - **Contrast:** text and secondary text 4.5:1 on every surface, the focus ring and control edges
   3:1, in both themes and for all twelve accents (`test/tokenContrast.test.ts`); controls are at
   least 24 px tall at every density.

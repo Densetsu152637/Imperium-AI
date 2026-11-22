@@ -109,6 +109,11 @@ input[type="range"] {
   accent-color: var(--accent);
 }
 
+/* A slider's track is 16 px; its row is the target, so it is as tall as the smallest control. */
+input[type="range"] {
+  min-height: var(--control-h-sm);
+}
+
 ::placeholder {
   color: var(--muted);
   opacity: 1;

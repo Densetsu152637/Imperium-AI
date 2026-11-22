@@ -844,6 +844,7 @@ button.icon-only.panel-tool .lucide {
   box-shadow: var(--elev-3);
 }
 
+/* The sheet takes focus from script when it has nothing focusable; its controls draw their own rings. */
 .split-cell.sheet-cell:focus {
   outline: none;
 }

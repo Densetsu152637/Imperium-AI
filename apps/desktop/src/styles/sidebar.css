@@ -243,6 +243,7 @@
   font-size: var(--fs-md);
 }
 
+/* The box draws the ring (.session-search-box:has(input:focus-visible) above). */
 .session-search-box input:focus-visible {
   outline: none;
 }

@@ -69,6 +69,7 @@
   box-shadow: none;
 }
 
+/* The wrapper draws the ring (below). */
 .command-palette-search input:focus,
 .command-palette-search input:focus-visible {
   outline: none;

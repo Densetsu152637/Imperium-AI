@@ -189,6 +189,7 @@
   animation: rise-in var(--dur-slow) var(--ease-standard);
 }
 
+/* The window takes focus from script when it has nothing focusable to give it to; a ring round the whole dialog would say nothing. */
 .settings-window:focus {
   outline: none;
 }
