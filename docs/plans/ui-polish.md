@@ -1,8 +1,8 @@
 # Plan: desktop interface polish
 
 Revision: 2026-11-16, revised after plan review round 1 and the user's answers; figures measured
-on `experimental` at `feddfc9e` (last updated). Roadmap [item 47](../12-roadmap.md). Status:
-planned; no stage started.
+on `experimental` at `feddfc9e`. Updated 2026-11-22: stages 1 to 6 recorded as done. Roadmap
+[item 47](../12-roadmap.md). Status: stages 1 to 6 done; stage 7 is next.
 
 The user asked for the desktop app to have "as much polish as the claude interface", with UI
 components that are "simple but well stylised". This plan turns that into a token system, a
@@ -629,8 +629,8 @@ records handoff notes and value changes from the stage's report. Stage pull requ
   surface overrides will look off until their stage (accepted: stages merge as ready, U5). Mods
   see new token values under the same names. The removal edits touch files later stages own, which
   is why this stage runs before them.
-- **Status:** pending.
-- **Outcome:** none yet.
+- **Status:** done.
+- **Outcome:** [PR #199](https://github.com/Densetsu152637/Imperium-AI/pull/199), squash commit `19e8ba46`. The token system with today's names kept as aliases, all twelve accents defined per theme (K8 fixed), the bundled Inter Variable face, and flat surfaces with the metal gradients and glow halos removed.
 - **Handoff notes:** keep `--fast`, `--slow`, `--ease`, `--space`, `--radius`, `--panel`, `--fg`,
   `--muted` as aliases. **Token values are frozen when this stage merges:** later stages never
   edit `tokens.css`. A stage from 3 to 13 that needs a new token defines it at `:root` in its own
@@ -664,12 +664,12 @@ records handoff notes and value changes from the stage's report. Stage pull requ
   nothing.
 - **Risks:** renaming touches callers' import lines in files later stages own; that is why this
   stage runs before them.
-- **Status:** pending.
-- **Outcome:** none yet.
+- **Status:** done.
+- **Outcome:** [PR #208](https://github.com/Densetsu152637/Imperium-AI/pull/208), squash commit `99e8aca5`. The shared components (`IconButton`, `Tooltip`, `Field`, `Tabs`, `Badge`, states, `Notice`, `Kbd`), `Menu` and `Dialog` replacing `RowMenu` and `SettingsModal`, and the Settings nav rows fixed to one height and one icon column (K1).
 - **Handoff notes:** components accept `className` for layout only. The Dialog's narrow sheet
   behaviour is here so stage 14 needs no dialog changes. Token values are frozen since stage 2:
   a token a component needs is defined at `:root` in `primitives.css` or `dialog.css`, and stage
-  15 promotes it into `tokens.css`; an existing value changes only with a note in this plan.
+  15 promotes it into `tokens.css`; an existing value changes only with a note in this plan. New file `apps/desktop/src/shared/keyNav.ts` is the shared roving-focus helper (menu and tab key rules). The `Menu` trigger is wrapped in a `display: contents` span, so a CSS child combinator on the trigger must account for it. The drawn checkbox's forced-colours behaviour is deferred to [stage 15](#stage-15-motion-and-accessibility-pass).
 
 ### Stage 4: session panel, composer and transcript
 
@@ -692,8 +692,8 @@ records handoff notes and value changes from the stage's report. Stage pull requ
   inside code blocks and tables.
 - **Risks:** the transcript is the most used view; screenshot long sessions with code, tables,
   images, errors and subagent logs.
-- **Status:** pending.
-- **Outcome:** none yet.
+- **Status:** done.
+- **Outcome:** [PR #211](https://github.com/Densetsu152637/Imperium-AI/pull/211), squash commit `bc9b7bc2`. The session panel on one reading column and gutter, a soft user bubble over unboxed assistant prose, quiet one-row tool calls, and a single-well composer with one focus ring; failures use `Notice`.
 - **Handoff notes:** the prose measure (`--prose-max`) and the user's prose and code scales must
   keep working.
 
@@ -723,10 +723,10 @@ records handoff notes and value changes from the stage's report. Stage pull requ
     three CSS files at zero.
 - **Risks:** `App.tsx` is 1,705 lines; change only markup and class names in it, plus the focus
   call.
-- **Status:** pending.
-- **Outcome:** none yet.
+- **Status:** done.
+- **Outcome:** [PR #213](https://github.com/Densetsu152637/Imperium-AI/pull/213), squash commit `940a8b8f`. The title bar, panel headers, sidebar rows, command palette (on `Dialog`) and shell controls moved onto the shared components and tokens, with `useLaunchFocus` as the web-side launch-focus fix (K5).
 - **Handoff notes:** do not add narrow-width behaviour here; stage 14 owns it, in these same
-  files.
+  files. Launch focus for Ctrl+, was fixed natively in #218 (Tauri `set_focus`) but is not verified in a real launch; the K5 web hook remains.
 
 ### Stage 6: Settings
 
@@ -744,9 +744,9 @@ records handoff notes and value changes from the stage's report. Stage pull requ
   are at least 12 px apart; `BenchmarkSection.tsx` has no `native-select` allowance; budgets for
   `settings.css` at zero; search in Settings still filters and dims as before.
 - **Risks:** none beyond the checklist.
-- **Status:** pending.
-- **Outcome:** none yet.
-- **Handoff notes:** the navigation column is in `dialog.css` (stage 3), not here.
+- **Status:** done.
+- **Outcome:** [PR #210](https://github.com/Densetsu152637/Imperium-AI/pull/210), squash commit `4728f96c`. Every Settings field lines up on one left edge (the dialog gutter), Keyboard is a `.table` with `Kbd` chips (K6), the benchmark select is a `Select`, and `settings.css` budgets are zero.
+- **Handoff notes:** the navigation column is in `dialog.css` (stage 3), not here. Deviation accepted: controls sit under their labels on one left edge, with no sub-row indent; inline peer controls stay side by side, left-aligned.
 
 ### Stage 7: Connectors
 
