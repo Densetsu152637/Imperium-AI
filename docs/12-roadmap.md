@@ -672,14 +672,17 @@ and `environments.agent_update` (protocol 0.28)
     enable, disable (for the user or one environment), update and uninstall them, from the
     desktop's Plugins window, `imperium plugin …` and new `plugins.*` methods. A trusted
     project may suggest marketplaces and plugins, shown to the user as offers only. Nothing runs
-    at add, refresh, browse or install. A daemon-installed plugin's hooks and MCP servers load
-    in new sessions only with an approval counted from the user's own process on the local socket
-    (the CLI at a terminal, or the desktop app's native dialog), bound to its content hash and
-    what it runs; any change of content, a link or a renamed manifest withholds the whole plugin
-    until approved again. Plugin hooks block but never rewrite; their processes get an
-    allowlisted environment and their MCP secrets go to the keychain. Builds on the Claude Code
-    plugin loading of phase 5 and the agent installs of [item 22](#next-in-order). The security
-    model, storage, protocol and eleven stages are in the
+    at add, refresh, browse or install. The hooks and MCP servers of a plugin folder in the
+    config folder, however it got there, load in new sessions only with an approval bound to its
+    content hash and what it runs, and only the installed, signed desktop app's native dialog can
+    give one: the daemon checks the calling process's path and code signature and a single-use
+    challenge, and the CLI cannot approve until [item 30](#next-in-order)'s stronger check exists.
+    Any change of content, a link or a renamed folder or manifest withholds the whole plugin until
+    approved again. Plugin hooks block but never rewrite; their processes get an allowlisted
+    environment and their MCP secrets go to the keychain. Builds on the Claude Code plugin loading
+    of phase 5 and the agent installs of [item 22](#next-in-order). The security model and its
+    remaining gaps, storage, protocol, thirteen stages and two open questions (an OS presence
+    prompt, and Windows until releases are signed) are in the
     [plugin marketplace plan](plans/plugin-marketplace.md).
 <!-- markdownlint-disable-next-line MD029 -->
 56. **Shared daemon lifetime** (implemented). One `imperium-core` per user, shared like a
