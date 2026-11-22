@@ -339,7 +339,7 @@ inside the frame the bare import resolves through an import map, so both bundled
 mods work. The context offers `telemetry.subscribe("call.completed", ...)` (permission
 `telemetry:read`), `sessions.subscribe(...)` (raw session events, `sessions:read`), and
 `panel(id).render(html | node)`; the app forwards only the events a mod's permissions allow.
-Theme tokens are copied into the frame.
+Theme tokens are copied into the frame. When the user has reduced motion on in the app, the host also sets a `reduce-motion` class on the frame's `html` element: informational and unstable (not part of the contract), and fixed when the frame is built, like the tokens.
 
 Beyond pushed events, a frame asks the app for data with request/response messages (`request`
 `{id, method, params}` answered by `response` `{id, result}` or `{id, error}`); the app answers
