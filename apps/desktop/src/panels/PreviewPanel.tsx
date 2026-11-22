@@ -6,6 +6,9 @@
 import { RotateCw } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
+import { EmptyState } from "../components/EmptyState";
+import { IconButton } from "../components/IconButton";
+import { Notice } from "../components/Notice";
 import { previewUrl } from "../sessions/preview";
 import type { SessionState } from "../sessions/sessions";
 
@@ -19,7 +22,9 @@ export function PreviewPanel({ session }: { session: SessionState | null }) {
   const [error, setError] = useState<string | null>(null);
   const [reloads, setReloads] = useState(0);
 
-  if (!session || !sessionId) return <p className="empty">Open a session to preview what it builds.</p>;
+  if (!session || !sessionId) {
+    return <EmptyState className="compact" title="No session open" body="Open a session to preview what it builds." />;
+  }
 
   const agent = session.preview;
   const own = typed[sessionId];
@@ -55,31 +60,20 @@ export function PreviewPanel({ session }: { session: SessionState | null }) {
         <button type="submit" className="ghost">
           Show
         </button>
-        <button
-          type="button"
-          className="ghost icon-only"
+        <IconButton
+          icon={RotateCw}
+          label="Reload the preview"
+          tooltip="Reload"
           disabled={!shown}
           onClick={() => setReloads((count) => count + 1)}
-          aria-label="Reload the preview"
-          title="Reload"
-        >
-          <RotateCw aria-hidden="true" />
-        </button>
+        />
       </form>
-      {checkedShown && !checkedShown.ok && (
-        <p className="error" role="alert">
-          {checkedShown.reason}
-        </p>
-      )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+      {checkedShown && !checkedShown.ok && <Notice tone="danger">{checkedShown.reason}</Notice>}
+      {error && <Notice tone="danger">{error}</Notice>}
       {agent?.command && (
-        <p className="muted preview-note">
+        <Notice tone="info">
           Started with <code>{agent.command}</code>; it stops when the session ends.
-        </p>
+        </Notice>
       )}
       {shown ? (
         <iframe
@@ -91,10 +85,16 @@ export function PreviewPanel({ session }: { session: SessionState | null }) {
           referrerPolicy="no-referrer"
         />
       ) : (
-        <p className="empty">
-          The preview appears here when an agent opens one with <code>preview_open</code>. You can also type a
-          localhost address above.
-        </p>
+        <EmptyState
+          className="compact"
+          title="No preview yet"
+          body={
+            <>
+              The preview appears here when an agent opens one with <code>preview_open</code>. You can also type a
+              localhost address above.
+            </>
+          }
+        />
       )}
     </div>
   );

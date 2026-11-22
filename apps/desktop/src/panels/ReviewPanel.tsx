@@ -1,4 +1,3 @@
-// style-budget: native-select=2
 // The review pane (roadmap item 6): the files the open session changed since one of its
 // checkpoints (the session's start by default), each as a unified diff whose hunks are accepted
 // (kept, and no longer shown) or rejected (reverted in the working tree). Under the files, a
@@ -7,7 +6,7 @@
 // the session to a checkpoint (files, conversation, or both).
 
 import { Check, GitCommitHorizontal, GitPullRequest, History, RefreshCw, Undo2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import type {
   ReviewFile,
   ReviewHunk,
@@ -19,7 +18,12 @@ import type {
   SessionRewindResult,
 } from "@imperium/protocol";
 
+import { EmptyState } from "../components/EmptyState";
+import { IconButton } from "../components/IconButton";
+import { LoadingState } from "../components/LoadingState";
 import { Menu } from "../components/Menu";
+import { Notice, type NoticeTone } from "../components/Notice";
+import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
 import { checkpointLabel, filesIn, lineCounts, lineKind, repoName } from "../review/review";
 import type { SessionState } from "../sessions/sessions";
@@ -46,7 +50,8 @@ export function ReviewPanel({
   const [since, setSince] = useState<number | null>(null);
   const [review, setReview] = useState<SessionReviewResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ tone: NoticeTone; text: string } | null>(null);
+  const sinceId = useId();
   const [working, setWorking] = useState(false);
   const [repo, setRepo] = useState<string | null>(null);
   const [commitMessage, setCommitMessage] = useState("");
@@ -145,7 +150,10 @@ export function ReviewPanel({
       }
       setPending(null);
       setEdited(false);
-      setNotice(`Committed ${result.files.length} file${result.files.length === 1 ? "" : "s"} as ${result.commit?.slice(0, 10) ?? "a new commit"}.`);
+      setNotice({
+        tone: "ok",
+        text: `Committed ${result.files.length} file${result.files.length === 1 ? "" : "s"} as ${result.commit?.slice(0, 10) ?? "a new commit"}.`,
+      });
       await load();
     });
 
@@ -169,10 +177,10 @@ export function ReviewPanel({
       setPending(null);
       if (result.opened) {
         setCommand(null);
-        setNotice(result.url ? `Opened ${result.url}` : `Opened a pull request from ${result.branch}.`);
+        setNotice({ tone: "ok", text: result.url ? `Opened ${result.url}` : `Opened a pull request from ${result.branch}.` });
       } else {
         setCommand(result.command);
-        setNotice("GitHub's gh is not installed: run these commands to open the pull request.");
+        setNotice({ tone: "warn", text: "GitHub's gh is not installed: run these commands to open the pull request." });
       }
     });
 
@@ -193,7 +201,7 @@ export function ReviewPanel({
         parts.push("The conversation continues in a new session.");
         onOpenSession?.(result.session_id);
       }
-      setNotice(parts.join(" "));
+      setNotice({ tone: "info", text: parts.join(" ") });
       await load();
     });
 
@@ -231,45 +239,55 @@ export function ReviewPanel({
     [checkpoints, firstTurn, sessionId, client],
   );
 
-  if (!session || !client) return <p className="empty">Open a session to review what it changed.</p>;
+  if (!session || !client) {
+    return <EmptyState className="compact" title="No session open" body="Open a session to review what it changed." />;
+  }
   if (review && !review.available) {
-    return <p className="empty">No review: {review.reason ?? "this session has no checkpoints"}.</p>;
+    return (
+      <EmptyState
+        className="compact"
+        title="No review"
+        body={review.reason ? `${review.reason.replace(/\.$/, "")}.` : "This session has no checkpoints."}
+      />
+    );
   }
 
   return (
     <div className="review">
       <div className="review-bar">
-        <label className="review-since">
-          <span>Since</span>
-          <select
-            value={review?.since ?? ""}
-            onChange={(event) => setSince(event.target.value ? Number(event.target.value) : null)}
+        <div className="review-since">
+          <label htmlFor={sinceId}>Since</label>
+          <Select
+            id={sinceId}
+            value={review?.since != null ? String(review.since) : ""}
+            options={checkpoints.map((checkpoint) => ({
+              value: String(checkpoint.number),
+              label: checkpointLabel(checkpoint, checkpoint.number === firstTurn),
+            }))}
+            onChange={(value) => setSince(value ? Number(value) : null)}
             disabled={checkpoints.length === 0}
+            placeholder="the session's start"
             aria-label="Review changes since this checkpoint"
-          >
-            {checkpoints.length === 0 && <option value="">the session's start</option>}
-            {checkpoints.map((checkpoint) => (
-              <option key={checkpoint.number} value={checkpoint.number}>
-                {checkpointLabel(checkpoint, checkpoint.number === firstTurn)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button className="ghost icon-only" onClick={() => void load()} aria-label="Refresh the review" title="Refresh">
-          <RefreshCw aria-hidden="true" />
-        </button>
-        {rewindItems.length > 0 && !busy && (
-          <Menu label="Rewind to a checkpoint" icon={History} items={rewindItems} />
-        )}
+          />
+        </div>
+        <span className="review-bar-tools">
+          <IconButton icon={RefreshCw} label="Refresh the review" tooltip="Refresh" onClick={() => void load()} />
+          {rewindItems.length > 0 && !busy && <Menu label="Rewind to a checkpoint" icon={History} items={rewindItems} />}
+        </span>
       </div>
-      {error && <p className="error" role="alert">{error}</p>}
-      {notice && <p className="review-notice" role="status">{notice}</p>}
+      {error && <Notice tone="danger">{error}</Notice>}
+      {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
+      {!review && !error && !busy && <LoadingState inline label="Loading changes…" />}
       {review && files.length === 0 && (
-        <p className="empty">
-          {checkpoints.length === 0
-            ? "Nothing changed yet: a checkpoint is recorded before each turn that changes files."
-            : "No changes left to review since this checkpoint."}
-        </p>
+        <EmptyState
+          className="compact"
+          title="No changes to review"
+          body={
+            checkpoints.length === 0
+              ? "A checkpoint is recorded before each turn that changes files."
+              : "No changes left to review since this checkpoint."
+          }
+        />
       )}
       <ul className="review-files" aria-label="Changed files">
         {files.map((file) => (
@@ -285,13 +303,12 @@ export function ReviewPanel({
       {repoFiles.length > 0 && (
         <div className="review-commit">
           {repos.length > 1 && (
-            <select value={chosenRepo ?? ""} onChange={(event) => setRepo(event.target.value)} aria-label="Repository to commit in">
-              {repos.map((root) => (
-                <option key={root} value={root}>
-                  {repoName(root)}
-                </option>
-              ))}
-            </select>
+            <Select
+              value={chosenRepo ?? ""}
+              options={repos.map((root) => ({ value: root, label: repoName(root) }))}
+              onChange={setRepo}
+              aria-label="Repository to commit in"
+            />
           )}
           <textarea
             value={commitMessage}
@@ -329,7 +346,11 @@ export function ReviewPanel({
           )}
         </div>
       )}
-      {command && <pre className="review-command" aria-label="Commands to open the pull request">{command}</pre>}
+      {command && (
+        <pre className="review-command" aria-label="Commands to open the pull request">
+          {command}
+        </pre>
+      )}
     </div>
   );
 }
@@ -365,7 +386,7 @@ function ReviewFileView({
           <HunkTools disabled={disabled} what="this file" onAct={(action) => onAct(`file:${file.id}`, action)} />
         </summary>
         {file.binary ? (
-          <p className="empty">Binary or large file: accept or reject it whole.</p>
+          <EmptyState className="compact" title="Binary or large file" body="Accept or reject it whole." />
         ) : (
           file.hunks.map((hunk) => (
             <HunkView key={hunk.id} hunk={hunk} disabled={disabled} onAct={(action) => onAct(hunk.id, action)} />
@@ -398,30 +419,31 @@ function HunkView({ hunk, disabled, onAct }: { hunk: ReviewHunk; disabled: boole
 function HunkTools({ disabled, what, onAct }: { disabled: boolean; what: string; onAct: (action: "accept" | "reject") => void }) {
   return (
     <span className="review-tools">
-      <button
-        className="ghost icon-only row-tool"
+      <IconButton
+        icon={Check}
+        size="sm"
+        className="row-tool"
         disabled={disabled}
         onClick={(event) => {
           event.preventDefault();
           onAct("accept");
         }}
-        aria-label={`Accept ${what}`}
-        title={`Accept ${what}: keep it and stop showing it`}
-      >
-        <Check aria-hidden="true" />
-      </button>
-      <button
-        className="ghost icon-only row-tool danger"
+        label={`Accept ${what}`}
+        tooltip={`Accept ${what}: keep it and stop showing it`}
+      />
+      <IconButton
+        icon={Undo2}
+        size="sm"
+        variant="danger"
+        className="row-tool"
         disabled={disabled}
         onClick={(event) => {
           event.preventDefault();
           onAct("reject");
         }}
-        aria-label={`Reject ${what}`}
-        title={`Reject ${what}: revert it in the working tree`}
-      >
-        <Undo2 aria-hidden="true" />
-      </button>
+        label={`Reject ${what}`}
+        tooltip={`Reject ${what}: revert it in the working tree`}
+      />
     </span>
   );
 }

@@ -224,9 +224,10 @@ A message sent while the agent is busy waits in the queue, which already shows i
 The Review panel (beside Agents; closable and detachable like the others) shows what the open
 session changed and puts it back or commits it (roadmap item 6):
 
-- **Since:** a picker of the session's checkpoints, the first (*session start*) by default, each
-  named by the message it came before; the list follows new checkpoints
-  (`session.checkpoint`) and is read again whenever a turn ends.
+- **Since:** the shared Select of the session's checkpoints, the first (*session start*) by
+  default, each named by the message it came before; the list follows new checkpoints
+  (`session.checkpoint`) and is read again whenever a turn ends. Under 22 rem the *Since* label
+  sits over the picker.
 - **Files:** one line per changed file (status letter, path, `+added −removed`), open to its
   unified diff, added and removed lines tinted. Each hunk header, and each file line, has
   *Accept* (keep it; it stops being shown) and *Reject* (revert it in the working tree) as row
@@ -235,7 +236,10 @@ session changed and puts it back or commits it (roadmap item 6):
   *Open pull request* (the message's first line is the title, the rest the body). Both ask
   first, inline, unless a permission rule allows them (`git_commit`, `open_pull_request`);
   without `gh` the pull request's commands are shown to copy. A repository picker appears when
-  the session has several.
+  the session has several (the same Select). Failures, successes and the missing-`gh` hint are
+  shared Notices; an empty review, a binary file and a session with nothing to review use the
+  shared compact empty state, and the first read shows the delayed loading state. Rows wrap
+  instead of scrolling sideways, diff lines included.
 - **Rewind:** the history menu beside the picker rewinds to a checkpoint: the files, the files
   and the conversation, or only the conversation; a conversation rewind opens the new session it
   makes. Everything is disabled while a turn runs.
@@ -276,12 +280,19 @@ the others and follow the open session.
   (no streaming; the page updates on interaction). Tab and Escape stay with the app so the
   keyboard is never trapped. The agent's `browser_*` tools are refused with a message saying the
   user is driving until *Give back to agent*; `browser_control` events keep every client's
-  panel in step. Open tabs show in a strip above the page, each with its own latest screenshot
-  (the `browser_view` event names its tab and lists them all); the agent's active tab is marked.
-  Anyone can look at another tab; while the user drives, a tab's title switches to it, its close
-  button closes it and the plus button opens a new one (`switch_tab`, `close_tab`, `new_tab` in
-  `session.browser_act`). Downloads are not shown here: the browser refuses them and the agent's
+  panel in step. Open tabs show in the shared Tabs above the page (arrow keys, Home and End move
+  between them), each with its own latest screenshot (the `browser_view` event names its tab and
+  lists them all); the agent's active tab carries a dot. Anyone can look at another tab; while
+  the user drives, choosing a tab switches to it, the close button beside the strip closes the
+  tab on screen and the plus button opens a new one (`switch_tab`, `close_tab`, `new_tab` in
+  `session.browser_act`). The strip wraps onto more rows and long titles end in an ellipsis, so
+  the panel never scrolls sideways. Downloads are not shown here: the browser refuses them and the agent's
   `browser_download` result tells the transcript what was saved.
+
+Both panels use the shared states: the "You are driving", preview-command and error messages
+are Notices, and an empty panel is the compact empty state. Their toolbars wrap, and under 22 rem
+the address field takes a row of its own. The preview frame keeps a white canvas in either theme
+(`Canvas` under `color-scheme: light`), so its page is not tinted by the app's theme.
 
 ### Resources panel (implemented)
 
