@@ -692,6 +692,16 @@ and `environments.agent_update` (protocol 0.28)
     session options validated in the daemon, `session.prompt_preview` serves `--print-prompt`,
     and only the `imperium` command may use them. `--agent <name>` runs an agent file as the
     root (`tools: []` means no tools), for single-turn critics.
+<!-- markdownlint-disable-next-line MD029 -->
+57. **Per-environment worktree folder** (planned). An environment can set its own git worktrees
+    root folder. Sessions in that environment create and discover their worktrees there instead
+    of in the global worktrees folder (`sessions.worktree_dir`, Settings → Sessions;
+    [worktrees](14-projects-and-automation.md#worktrees),
+    [configuration](10-configuration.md)). The global setting is unchanged and still applies to
+    every environment without an override; clearing the override falls back to it. In the desktop
+    app the field sits in the environment's settings, beside *Project worktrees* and *Start in a
+    worktree*
+    ([desktop interface](07-desktop-ui.md#environments-and-sessions-implemented)).
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
