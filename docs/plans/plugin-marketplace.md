@@ -462,8 +462,8 @@ withheld when the plugin has hooks or servers. An agent tool call cannot approve
 threat model). A container-tier agent, within its preconditions, cannot write the store, read the
 token or reach the daemon (case 3). An OS-tier agent cannot pass the identity check either, but
 until [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) merges it can read the token
-and have the unconfined daemon load ungated code for it, so it counts as unconfined here; after
-#240, the limits in case 3 apply. An unconfined agent can do what the user can (U5). The safety floor asks about an
+and have the unconfined daemon load ungated code for it, so it counts as unconfined here; once
+that PR merges, the limits in case 3 apply. An unconfined agent can do what the user can (U5). The safety floor asks about an
 agent's shell running `imperium plugin marketplace add`, `imperium plugin install|update|enable`
 and `imperium config set|unset` of `extensions.disabled_plugins` or `extensions.plugin_dirs`, and
 about file-tool writes into `<config>/plugins`, `<data>/marketplaces`, `plugin-installs.json` and
