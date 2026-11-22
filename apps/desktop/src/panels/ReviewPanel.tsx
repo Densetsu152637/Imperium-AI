@@ -401,7 +401,7 @@ function HunkView({ hunk, disabled, onAct }: { hunk: ReviewHunk; disabled: boole
   return (
     <div className="review-hunk">
       <div className="review-hunk-header">
-        <code>{hunk.header}</code>
+        <code title={hunk.header}>{hunk.header}</code>
         <HunkTools disabled={disabled} what="this change" onAct={onAct} />
       </div>
       <pre className="review-lines">
