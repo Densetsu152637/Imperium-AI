@@ -973,6 +973,52 @@ folder does not reopen it: the file tools, the OS sandbox and the container moun
 overlaps a folder is mounted `:ro`) all keep the folder read-only, while grants elsewhere, such as
 the session's scratch folder, keep their mode.
 
+**The daemon is outside the OS tier (implemented):** a command that could read the daemon's
+access token, or connect to the daemon, could call `config.set` (adding an MCP server, a hook or
+an `extensions.plugin_dirs` entry), start a tier-0 session and so make the unconfined daemon run
+code for it. The OS tier is therefore not just read-only: it hides everything that would hand a
+command the daemon.
+
+| What | Where | In the OS tier |
+| --- | --- | --- |
+| Endpoint file (access token, port, socket path) | `<data>/daemon.json` | Linux: `/dev/null` bound over it; macOS: `file-read*` denied |
+| Local socket (`daemon.socket`) | `<data>/ipc/` (`daemon.sock`) | Linux: empty tmpfs over the folder; macOS: `file-read*` and `network-outbound` to a unix socket under it denied |
+| Paired phones | `<data>/devices.json` (SHA-256 of each token) | hidden like the endpoint file |
+| Encrypted secret store and its key | `<data>/secrets.enc`, `secrets.key`, `secrets.lock`, and the file named by `IMPERIUM_SECRETS_PASSPHRASE_FILE` | hidden like the endpoint file (a keychain-backed store has no files) |
+| Desktop session bus and keyring sockets (the Secret Service holds the keychain's secrets) | `$XDG_RUNTIME_DIR/bus`, `$XDG_RUNTIME_DIR/keyring` | Linux: hidden (a file by `/dev/null`, the folder by tmpfs) |
+| Daemon, phone and API TCP ports | loopback ports from `daemon.port`, `phone.bind`, `api` | macOS: `network-outbound` to `localhost:<port>` denied. Linux: **not filtered**, see below |
+| Environment of the command | `IMPERIUM_*` (home, passphrase file, port overrides) and `DBUS_SESSION_BUS_ADDRESS` | removed before the command starts; only `IMPERIUM_SPAWNED_BY_DAEMON` is set |
+
+The masks are applied after every folder and grant mount, so a writable grant around the data
+folder (or a workspace inside it, the default) neither reopens them nor loses its own files; only
+paths that exist when a command starts are masked, and each is also masked under its resolved
+name. The daemon registers them when it starts (`imperium_tools::hide_from_os_sandbox`).
+
+With the network shared (`isolation.network` is `true`, the default), bubblewrap cannot filter
+one loopback port, so on Linux the daemon's TCP port stays **reachable but useless**: every
+request needs the access token, which the command cannot read, and a connection without it is
+refused with 401. `isolation.network = false` (`--unshare-net`) removes the port, and a command
+cannot open the unix socket in either case. Remaining limits of the OS tier:
+
+- It is not a confidentiality sandbox: the rest of the filesystem is readable, including the
+  user's other secrets (`~/.ssh`, cloud credentials, browser profiles) and `config.toml`.
+- Other sockets in the user session stay reachable through the filesystem or the shared network:
+  X11 and Wayland, an ssh or gpg agent, and (macOS) the login keychain, which asks the user per
+  item before it releases a secret another application stored. Abstract unix sockets are shared
+  while the network is.
+- A path reachable under another name (a second bind mount of the data folder) is not masked.
+- Windows has no OS tier, so commands fail there rather than running unsandboxed. The container
+  tier mounts only the workspace, so none of these files are in it; with Docker Desktop its
+  `host.docker.internal` reaches the host's loopback ports, again useless without the token.
+- Phone and API listeners that start after the daemon (a settings change) are not added to the
+  macOS port denial until the daemon restarts; both need credentials the command cannot read.
+
+Anything that treats the OS tier as the place to run untrusted code, such as the plugin
+marketplace's threat model ([06](06-extensibility.md)), depends on this section: a plugin's
+commands must not be able to turn into daemon calls. `crates/imperium-tools/tests/os_sandbox.rs`
+runs a real sandbox in CI to show that the endpoint file is unreadable and the socket cannot be
+opened.
+
 ### Environment runtimes (implemented)
 
 An [environment's runtime](14-projects-and-automation.md#runtimes-implemented) can move a
@@ -1018,7 +1064,7 @@ follow the permission mode and the safety floor, not the worktree)
 | Tier            | Boundary                                                                     | Protects against                                    | Does not protect against                           |
 | --------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |
 | 0 — Policy      | Daemon refuses built-in file tools outside allowed roots and grants, and writes under read-only grants | Model mistakes with built-in tools                  | Code run through `exec`, which has the user's full rights |
-| 1 — OS sandbox  | Linux: Landlock + seccomp (bubblewrap); macOS: Seatbelt profile; Windows: AppContainer / restricted token (best effort) | Executed code reaching files outside allowed roots, optional network block | Kernel or sandbox escapes; Windows coverage is partial |
+| 1 — OS sandbox  | Linux: Landlock + seccomp (bubblewrap); macOS: Seatbelt profile; Windows: AppContainer / restricted token (best effort) | Executed code reaching files outside allowed roots, optional network block, and the daemon's own credentials and socket | Kernel or sandbox escapes; the user's other readable files; the daemon's TCP port while the network is shared (it needs the hidden token); Windows has no OS tier |
 | 2 — Container   | Docker/Podman container with only the workspace mounted                      | Executed code affecting the host                    | Container escapes; mounted folders are writable    |
 | 3 — Remote      | Separate machine over SSH                                                    | Anything on the local machine                       | The remote machine itself                          |
 

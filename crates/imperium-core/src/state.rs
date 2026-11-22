@@ -189,6 +189,21 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     }
 }
 
+/// Keeps what would hand a command the daemon out of the OS isolation tier: the endpoint file
+/// (it holds the access token), the local socket's folder, the paired phones' file and the
+/// encrypted secret store with its key or passphrase file. A command that read the token, or
+/// opened the socket, could change the configuration or start an unconfined session, which
+/// would run code outside the sandbox.
+fn hide_credentials_from_os_tier(paths: &Paths) {
+    let mut hidden = paths.daemon_credential_paths();
+    if let Some(file) =
+        std::env::var_os(imperium_config::PASSPHRASE_FILE_ENV).filter(|file| !file.is_empty())
+    {
+        hidden.push(file.into());
+    }
+    imperium_tools::hide_from_os_sandbox(hidden);
+}
+
 /// State shared by every connection: configuration and the running sessions.
 #[derive(Debug)]
 pub struct DaemonState {
@@ -323,6 +338,7 @@ impl DaemonState {
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
         protect_extension_dirs(&paths, &settings);
+        hide_credentials_from_os_tier(&paths);
         let devices = Devices::load(paths.data_dir().join("devices.json"));
         let monitor = Arc::new(LoadMonitor::new(settings.load.clone()));
         let environments = Environments::load(paths.data_dir().join("environments.json"));

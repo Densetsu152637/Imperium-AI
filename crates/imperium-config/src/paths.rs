@@ -74,6 +74,26 @@ impl Paths {
     pub fn daemon_lock_file(&self) -> PathBuf {
         self.data_dir.join("daemon.lock")
     }
+
+    /// The local socket's folder (`imperium-ipc` binds `daemon.sock` inside it).
+    pub fn daemon_socket_dir(&self) -> PathBuf {
+        self.data_dir.join("ipc")
+    }
+
+    /// What a command an agent runs must not be able to read or open, because it would hand it
+    /// the daemon: the endpoint file (it holds the access token), the local socket's folder, the
+    /// paired phones' file, and the encrypted secret store with its key. The OS isolation tier
+    /// hides them (`imperium_tools::hide_from_os_sandbox`).
+    pub fn daemon_credential_paths(&self) -> Vec<PathBuf> {
+        vec![
+            self.daemon_endpoint_file(),
+            self.daemon_socket_dir(),
+            self.data_dir.join("devices.json"),
+            self.data_dir.join("secrets.key"),
+            self.data_dir.join("secrets.enc"),
+            self.data_dir.join("secrets.lock"),
+        ]
+    }
 }
 
 #[cfg(test)]
@@ -93,5 +113,23 @@ mod tests {
             Path::new("/opt/imperium/data/daemon.json")
         );
         assert_eq!(paths.cache_dir(), Path::new("/opt/imperium/cache"));
+    }
+
+    #[test]
+    fn the_credential_paths_name_the_token_the_socket_and_the_secret_store() {
+        let paths = Paths::under(Path::new("/opt/imperium"));
+        let credentials = paths.daemon_credential_paths();
+        for expected in [
+            "/opt/imperium/data/daemon.json",
+            "/opt/imperium/data/ipc",
+            "/opt/imperium/data/devices.json",
+            "/opt/imperium/data/secrets.key",
+            "/opt/imperium/data/secrets.enc",
+        ] {
+            assert!(
+                credentials.contains(&PathBuf::from(expected)),
+                "{expected} missing from {credentials:?}"
+            );
+        }
     }
 }
