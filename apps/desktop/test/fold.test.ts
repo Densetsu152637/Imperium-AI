@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { classifyColumns, COLUMN_MIN, foldColumns, isNarrow, NARROW_BELOW, type FoldColumn } from "../src/layout/fold.ts";
+import { classifyColumns, COLUMN_MIN, dragShares, foldColumns, isNarrow, knownWidth, NARROW_BELOW, type FoldColumn } from "../src/layout/fold.ts";
 
 const col = (id: string, span = false) => ({ id, span });
 const DEFAULT = classifyColumns([col("left"), col("main", true), col("right")]);
@@ -103,4 +103,36 @@ test("styles/shell.css repeats the minimums as the columns' min-width", () => {
   for (const [kind, min] of Object.entries(COLUMN_MIN)) {
     assert.match(css, new RegExp(`--col-min-${kind}:\\s*calc\\(${min} \\* var\\(--px\\)\\)`), `--col-min-${kind} is ${min}`);
   }
+});
+
+test("a divider drag keeps both columns at or above their minimum shares", () => {
+  // 1280 px, shares 0.3 / 0.4 over a 0.7 pair; minimums 220 px and 360 px of 1280 / 1.0 (1 share = 1280 px).
+  const min: [number, number] = [220 / 1280, 360 / 1280];
+  const [a, b] = dragShares([0.3, 0.4], -0.2, min);
+  assert.ok(Math.abs(a - 220 / 1280) < 1e-9, "dragged left past the minimum, the first stops there");
+  assert.ok(Math.abs(a + b - 0.7) < 1e-9, "the pair keeps its total");
+  const [c] = dragShares([0.3, 0.4], 0.5, min);
+  assert.ok(Math.abs(c - (0.7 - 360 / 1280)) < 1e-9, "dragged right, the second stops at its minimum");
+});
+
+test("a column held at its minimum starts a drag from there, so dragging back answers at once", () => {
+  const min: [number, number] = [220 / 1280, 0];
+  // Saved share 0.1 is shown as the minimum (0.171875): a small drag right moves from the shown width.
+  const [first] = dragShares([0.1, 0.6], 0.01, min);
+  assert.ok(Math.abs(first - (220 / 1280 + 0.01)) < 1e-9);
+  const [still] = dragShares([0.1, 0.6], -0.05, min);
+  assert.ok(Math.abs(still - 220 / 1280) < 1e-9, "pushing further left moves nothing");
+});
+
+test("the floor of a share applies without minimums, and impossible minimums fall back to a split", () => {
+  assert.deepEqual(dragShares([0.3, 0.3], -1, [0, 0]), [0.08, 0.52]);
+  const [a, b] = dragShares([0.2, 0.2], 0.1, [0.3, 0.3]);
+  assert.ok(Math.abs(a - 0.2) < 1e-9 && Math.abs(b - 0.2) < 1e-9);
+});
+
+test("a width of 0 is no reading: the last known width stays", () => {
+  assert.equal(knownWidth(0, 700), 700);
+  assert.equal(knownWidth(540, 700), 540);
+  assert.ok(Number.isNaN(knownWidth(0, Number.NaN)), "none yet: unknown, shown whole");
+  assert.equal(isNarrow(knownWidth(0, Number.NaN)), false);
 });

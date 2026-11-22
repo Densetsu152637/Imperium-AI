@@ -9,6 +9,7 @@
   --z-divider: 2;
   --z-drop: 3;
   --z-edge: 4;
+  --z-sheet: 11; /* above the scrim (--z-sticky) */
   /* Minimum column widths (layout/fold.ts repeats them; test/fold.test.ts checks they agree). */
   --col-min-sidebar: calc(220 * var(--px));
   --col-min-session: calc(360 * var(--px));
@@ -853,57 +854,61 @@ button.icon-only.panel-tool .lucide {
   }
 }
 
-/* Sheets (layout/Sheet.tsx): the sidebar from the left, a side panel from the right, over the workspace. */
-.sheet {
-  position: absolute;
-  inset: 0;
-  z-index: var(--z-sticky);
-  display: flex;
-}
-
-.sheet-right {
-  justify-content: flex-end;
-}
-
+/* Sheets (layout/Sheet.tsx): a folded column's own cell, moved to the window's edge over a scrim; the
+   sidebar from the left, a side panel from the right. The cell stays where Columns keeps it, so its
+   panels are mounted once. */
 .sheet-scrim {
   position: absolute;
   inset: 0;
+  z-index: var(--z-sticky);
   background: var(--scrim);
   animation: fade-in var(--dur-fast) var(--ease-standard);
 }
 
-.sheet-drawer {
-  position: relative;
+.split-cell.away.sheet-cell {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: var(--z-sheet);
   display: flex;
   flex-direction: column;
   width: min(var(--sheet-w), 100%);
-  height: 100%;
   background: var(--surface);
   box-shadow: var(--elev-3);
 }
 
-.sheet-drawer:focus {
+.split-cell.sheet-cell:focus {
   outline: none;
 }
 
-.sheet-left .sheet-drawer {
+.sheet-cell.sheet-left {
+  left: 0;
   border-right: 1px solid var(--border-strong);
   animation: sheet-in-left var(--dur-base) var(--ease-standard);
 }
 
-.sheet-right .sheet-drawer {
+.sheet-cell.sheet-right {
+  right: 0;
   border-left: 1px solid var(--border-strong);
   animation: sheet-in-right var(--dur-base) var(--ease-standard);
 }
 
-.sheet-full .sheet-drawer {
+.split-cell.away.sheet-cell.sheet-full {
   width: 100%;
   border-left: none;
 }
 
 /* The sidebar leaves a strip of scrim to tap beside it. */
-.app[data-narrow] .sheet-left .sheet-drawer {
+.app[data-narrow] .split-cell.away.sheet-cell.sheet-left {
   width: min(var(--sheet-w), calc(100% - 48 * var(--px)));
+}
+
+.sheet-cell > .layout-column {
+  min-height: 0;
+}
+
+.sheet-cell .rail {
+  border: none;
 }
 
 .sheet-bar {
@@ -919,24 +924,6 @@ button.icon-only.panel-tool .lucide {
 .sheet-heading {
   font-size: var(--fs-sm);
   color: var(--text-muted);
-}
-
-.sheet-content {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
-.sheet-rail,
-.sheet-content > .columns-root {
-  flex: 1;
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-}
-
-.sheet .rail {
-  border: none;
 }
 
 @keyframes sheet-in-left {

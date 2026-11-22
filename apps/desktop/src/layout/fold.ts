@@ -65,3 +65,21 @@ export function foldColumns(width: number, columns: FoldColumn[], minimums: Read
   }
   return { narrow: false, shown: ids.filter((id) => kept.has(id)), folded: ids.filter((id) => !kept.has(id)) };
 }
+
+/**
+ * The new shares of two neighbouring columns when a divider between them moves by `delta` (a share
+ * of the open columns' room): the pair keeps its total, and neither goes below its own floor (its
+ * minimum width as a share, never less than `floor`). A column the window already holds at its
+ * minimum starts from there, so a drag past it moves nothing and coming back answers at once.
+ */
+export function dragShares(start: [number, number], delta: number, minimums: [number, number], floor = 0.08): [number, number] {
+  const both = start[0] + start[1];
+  let low = Math.max(minimums[0], floor);
+  let high = both - Math.max(minimums[1], floor);
+  if (low > high) low = high = both * (low / (low + Math.max(minimums[1], floor)));
+  const first = Math.min(Math.max(Math.min(Math.max(start[0], low), high) + delta, low), high);
+  return [first, both - first];
+}
+
+/** The window's width given the one just read: 0 (minimised or hidden) is no reading, so the last known width stays. */
+export const knownWidth = (read: number, previous: number): number => (read > 0 ? read : previous);
