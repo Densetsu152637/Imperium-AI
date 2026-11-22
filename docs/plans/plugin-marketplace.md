@@ -1,7 +1,8 @@
 # Plan: plugin marketplace
 
-Revision: 2026-11-23, revision 5 (plan review round 4: the OS tier's daemon escape, pidfd start
-time, the Windows release checks); written against `experimental` at `88e8fd50` (last updated). Roadmap
+Revision: 2026-11-23, revision 6 (plan review rounds 4 and 5: the OS tier's daemon escape and the
+limits of PR 240, the container tier's folder precondition, pidfd start time, the Windows release
+checks); written against `experimental` at `88e8fd50` (last updated). Roadmap
 [item 51](../12-roadmap.md#next-in-order). Status: planned; no stage started.
 
 Imperium already loads Claude Code plugins from folders and lets agents install one from a git
@@ -123,7 +124,10 @@ Made by the user on 2026-11-22 (U1 to U3) and 2026-11-23 (U4 to U7).
 3. **Agents confined by the container tier, and by the OS tier once it hides the daemon.**
    - **Container tier:** protects approvals when its preconditions hold: the container has no
      host networking (`--network none` or a bridge network, never `--network host`) and the
-     daemon's socket is not mounted into it (it mounts only the workspace). Such an agent cannot
+     daemon's socket is not mounted into it (it mounts only the workspace), and **no session
+     folder or path grant contains `<config>` or `<data>`**. This plan relies on
+     [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) to enforce that last
+     precondition for container sessions; it does not restate the mechanism. Such an agent cannot
      write `plugin-installs.json`, the config or `<config>/plugins`, cannot read the daemon token,
      and cannot reach the daemon.
    - **OS tier: not yet.** Today bubblewrap binds the whole filesystem read-only (`--ro-bind / /`)
@@ -133,14 +137,17 @@ Made by the user on 2026-11-22 (U1 to U3) and 2026-11-23 (U4 to U7).
      then run unconfined), `extensions.disabled_plugins`, or anything else a token holder may do.
      It still cannot *approve* (the daemon refuses its process, [check 3](#who-may-approve)), but
      it does not need to. PR [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240)
-     (`fix/os-tier-daemon-escape`, open) hides `daemon.json`, the IPC socket folder, the secret
-     files, the D-Bus and keyring paths and `IMPERIUM_*` variables from OS-tier commands, and on
-     macOS also denies the daemon's ports. **Once it merges**, the OS tier protects approvals
-     within #240's stated limits: on Linux the daemon's loopback TCP port stays reachable but needs
-     the token the agent can no longer read, and other session sockets reachable through the shared
-     network (an X11 display, for example) remain, so such an agent could still click a
-     `dialog-only` approval ([remaining gaps](#remaining-gaps)). Until #240 merges, treat OS-tier
-     agents like unconfined code for this plan.
+     (`fix/os-tier-daemon-escape`, open) closes this. Among other things it hides `daemon.json`,
+     `ipc/`, `remotes/`, `devices.json` and the secret files; masks the runtime folder; strips
+     `IMPERIUM_*` and `DBUS_SESSION_BUS_ADDRESS` from the environment; guards the config and data
+     folders read-only; and makes the sandbox fail closed when a registered path is missing.
+     **Once it merges**, the OS tier protects approvals **within #240's limits**. Its known
+     remaining limits include abstract unix sockets (an X11 display, for example, through which an
+     agent could click a `dialog-only` approval), other files of the user such as `~/.ssh`, the
+     macOS runtime folder and keychain, and that Windows has no OS tier
+     ([remaining gaps](#remaining-gaps)). The full, current detail is in
+     [05 Isolation tiers](../05-tools-and-isolation.md#isolation-tiers). Until #240 merges, treat
+     OS-tier agents like unconfined code for this plan.
 
 **What is out of scope (U5):** code running **unconfined as the user**. That is every agent
 command at tier 0 (the default on every platform, and the only command tier on Windows, where the
@@ -153,7 +160,8 @@ input automation. Approvals are **not a boundary** against it, and no surface sa
 safety floor asks about an agent's commands and writes that touch these files, as a guard
 against mistakes, not a defence ([05](../05-tools-and-isolation.md#permissions)). A user who
 wants approvals to hold against their agents runs those agents under the container tier
-(without host networking), or under the OS tier once
+(without host networking, and with no session folder or grant containing `<config>` or `<data>`),
+or under the OS tier, within its limits, once
 [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) has merged (case 3).
 
 **Proportionality.** The checks below are kept because they matter for an in-scope case, or are
@@ -512,11 +520,13 @@ Stated plainly, so no surface claims more:
 - **The OS tier does not confine an agent from the daemon yet.** Until
   [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) merges, an OS-tier agent can read
   the daemon token (`--ro-bind / /`) and, with network on, reach the daemon and ask it to load
-  ungated code (`extensions.plugin_dirs`) or change plugin settings. After #240: the Linux loopback
-  TCP port stays reachable (token-protected), and session sockets reachable through the shared
-  network, such as an X11 display, remain, so an OS-tier agent could still click a `dialog-only`
-  approval's dialog. The container tier protects only without host networking and without the
-  daemon's socket mounted.
+  ungated code (`extensions.plugin_dirs`) or change plugin settings. After #240 the OS tier holds
+  only within #240's limits, which include abstract unix sockets (such as an X11 display, so an
+  OS-tier agent could still click a `dialog-only` approval's dialog), other user files such as
+  `~/.ssh`, the macOS runtime folder and keychain, and no OS tier on Windows; see
+  [05](../05-tools-and-isolation.md#isolation-tiers). The container tier protects only without host
+  networking, without the daemon's socket mounted, and with no session folder or grant containing
+  `<config>` or `<data>` (enforced by #240).
 - **`dialog-only` approvals** (Windows if Hello is infeasible or not set up, Linux without
   polkit) rest on a click that input automation can make, including from an OS-tier agent that
   reaches the display.
@@ -1038,7 +1048,8 @@ on**; earlier stages test through an injected verifier or records written direct
   not safe; stage 5's allowlist limits what the code is handed, not what it can do.
 - **The OS tier's daemon escape.** Until [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240)
   merges, OS-tier agents can read the daemon token and have the daemon load ungated code; after it,
-  X11 and other session sockets on the shared network remain.
+  the OS tier holds only within #240's limits (abstract unix sockets such as X11, other user files,
+  the macOS runtime folder and keychain).
 - **`dialog-only` approvals** where no presence check exists rest on a click.
 - **Platforms that cannot approve.** Windows until [item 59](../12-roadmap.md#next-in-order), and
   machines without the desktop app; plugins with code stay withheld there and the UI says why.
