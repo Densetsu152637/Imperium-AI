@@ -171,9 +171,14 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
                   >
                     <td>
                       <ModelName name={`${model.runtime}:${model.model}`} />
-                      <span className="cell-sub cell-sub-narrow">{placement}</span>
+                      <span className="cell-sub cell-sub-narrow" title="Tokens one session may use · KV pool reserved by running calls / its size">
+                        {placement} · ctx {model.context} · pool {model.pool_reserved_tokens}/{model.pool_tokens}
+                      </span>
                       <span className="cell-sub cell-sub-mid">
-                        {state} · {model.sessions.length} {model.sessions.length === 1 ? "session" : "sessions"}
+                        {state} ·{" "}
+                        <span title={model.sessions.join("\n")}>
+                          {model.sessions.length} {model.sessions.length === 1 ? "session" : "sessions"}
+                        </span>
                       </span>
                     </td>
                     <td>
@@ -230,7 +235,7 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
                 <tr key={endpoint.spec} title={endpoint.host ? `${endpoint.endpoint} · ${endpoint.host}` : endpoint.endpoint}>
                   <td>
                     {endpoint.spec}
-                    <span className="cell-sub cell-sub-narrow">
+                    <span className="cell-sub cell-sub-narrow" title={endpoint.sessions.join("\n")}>
                       {endpoint.sessions.length} {endpoint.sessions.length === 1 ? "session" : "sessions"}
                     </span>
                     <span className="cell-sub cell-sub-mid">
