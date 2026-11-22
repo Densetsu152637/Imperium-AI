@@ -49,15 +49,24 @@
     border-right-color: Highlight;
   }
 
-  /* The session footer's open picker and drawer buttons, the user's message bubble, and the panel editor's bar and empty drop column. */
+  /* The session footer's open picker and drawer buttons: a full border, which draws whether or not the
+     button has one at rest (the footer's buttons rest with a transparent edge). */
   .session-footer button.select.open,
   .session-footer .footer-button[aria-expanded="true"],
-  .context-meter[aria-expanded="true"],
-  .layout-editor-bar,
-  .layout-column.drop-end > .layout-empty-column {
-    border-color: Highlight;
+  .context-meter[aria-expanded="true"] {
+    border: 1px solid Highlight;
   }
 
+  /* The panel editor's bar (it has only a bottom edge) and the empty column a panel is being dragged over. */
+  .layout-editor-bar {
+    border-bottom: 2px solid Highlight;
+  }
+
+  .layout-column.drop-end > .layout-empty-column {
+    border: 2px solid Highlight;
+  }
+
+  /* The user's message bubble. */
   .conversation > .message.user {
     border: 1px solid CanvasText;
   }
