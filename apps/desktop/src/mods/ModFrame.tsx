@@ -16,6 +16,7 @@ import type { DaemonClient } from "../daemon/client";
 import { insideTauri } from "../daemon/connection";
 import { getDoc, setDoc } from "../shared/store";
 import behaviourSource from "./behaviour.js?raw";
+import { Gate } from "./clientGate";
 import { recordFault } from "./faults";
 
 type Listener = (params: SessionEventParams) => void;
@@ -183,6 +184,8 @@ const REQUEST_PERMISSION: Record<string, string> = {
   "storage.set": "storage",
 };
 
+/** How long a request waits for the app to connect to imperiumd before it fails. */
+const CONNECT_WAIT_MS = 30_000;
 const MAX_KEY_LENGTH = 128;
 const MAX_STORAGE_BYTES = 256 * 1024;
 /** Sessions are pushed to a frame at most this often. */
@@ -252,6 +255,9 @@ export function ModFrame({ mod, panelId, bus, host }: { mod: ModInfo; panelId: s
   const document = useMemo(() => frameDocument(mod, panelId), [mod, panelId]);
   const latest = useRef(host);
   latest.current = host;
+  // A frame can start before the app has connected; its daemon requests wait for the client.
+  const gate = useRef(new Gate<DaemonClient>());
+  useEffect(() => gate.current.set(host.client), [host.client]);
   const page = useMemo(framePage, []);
 
   // Hands the frame page its document when it says it is ready (desktop app only).
@@ -287,11 +293,8 @@ export function ModFrame({ mod, panelId, bus, host }: { mod: ModInfo; panelId: s
       const needs = Object.hasOwn(REQUEST_PERMISSION, method) ? REQUEST_PERMISSION[method] : undefined;
       if (!needs) return reply({ error: `unknown method ${method}` });
       if (!mod.permissions.includes(needs)) return reply({ error: `${method} needs the ${needs} permission` });
-      const { sessions, selected, client } = latest.current;
-      const daemon = () => {
-        if (!client) throw new Error("not connected to imperiumd");
-        return client;
-      };
+      const { sessions, selected } = latest.current;
+      const daemon = () => gate.current.get(CONNECT_WAIT_MS, "not connected to imperiumd");
       const run = async (): Promise<unknown> => {
         switch (method) {
           case "sessions.list":
@@ -299,9 +302,9 @@ export function ModFrame({ mod, panelId, bus, host }: { mod: ModInfo; panelId: s
           case "sessions.selected":
             return selected;
           case "pets.list":
-            return petList(daemon());
+            return petList(await daemon());
           case "pets.strip":
-            return petStrip(daemon(), params);
+            return petStrip(await daemon(), params);
           case "storage.get":
             return typeof params.key === "string" && Object.hasOwn(storedFor(mod.id), params.key)
               ? storedFor(mod.id)[params.key]

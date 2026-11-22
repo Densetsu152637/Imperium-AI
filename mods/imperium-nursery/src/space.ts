@@ -73,9 +73,10 @@ export function boxSlots(room: Size, m: Metrics): Pos[] {
 
 /** Pets from this many up need a spare box (a tenth more, at least one) to wander into; a lone pet wanders inside its own. */
 export const SLACK_FROM = 2;
-/** Rooms for up to this many pets are made tall enough for them at `GROWN_SCALE`, so they stay big. */
-export const GROWN_UP_TO = 4;
-export const GROWN_SCALE = 0.7;
+/** Rooms for up to this many pets are made tall enough for them (and a spare box) at `grownScale`, so they stay big. */
+export const GROWN_UP_TO = 8;
+/** The size those rooms keep pets at: 70 % for up to four pets, 50 % beyond, so a fifth pet does not halve the others. */
+export const grownScale = (count: number): number => (count <= 4 ? 0.7 : 0.5);
 
 /**
  * How big `count` pets can be drawn, as a fraction of `base` (1 down to `min`, in steps of 0.05):
@@ -139,13 +140,13 @@ export function roomHeight(count: number, width: number, area = AREA_PER_PET, mi
 
 /**
  * The height the room needs for `count` pets of `base` at `width`: `roomHeight`, and for two to
- * `GROWN_UP_TO` pets, tall enough for them and a spare box at `GROWN_SCALE`, so a few pets in a
+ * `GROWN_UP_TO` pets, tall enough for them and a spare box at `grownScale`, so a few pets in a
  * narrow room stay big and have room to walk instead of shrinking.
  */
 export function roomHeightFor(count: number, width: number, base: Metrics): number {
   const area = roomHeight(count, width);
   if (count < SLACK_FROM || count > GROWN_UP_TO || width <= 0) return area;
-  const m = scaleMetrics(base, GROWN_SCALE);
+  const m = scaleMetrics(base, grownScale(count));
   for (let height = area; height < area + 1000; height += 4) {
     if (boxSlots({ width, height }, m).length >= count + 1) return height;
   }
