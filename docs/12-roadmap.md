@@ -607,7 +607,7 @@ and `environments.agent_update` (protocol 0.28)
     protocol change and one named behaviour change (`imperium workflow resolve` loads packs
     as sessions do). The inventory, decisions, commit order, acceptance checks and review
     split are in the [cleanup plan](plans/cleanup.md).
-47. **Interface polish** (planned). Bring the desktop app to the polish of Claude's interface with
+47. **Interface polish** (implemented). Bring the desktop app to the polish of Claude's interface with
     its own look: simple, well-styled components, careful type and spacing, restrained colour and
     smooth states. A small token system (type, spacing, radii, elevation, motion, colours for
     light and dark, one focus ring), shared components (icon button, tooltip, field, tabs, menu,
@@ -617,8 +617,8 @@ and `environments.agent_update` (protocol 0.28)
     last visual review (ragged Settings navigation, the nursery panel's scrollbars and dark
     select, clipped inputs at 1024 px, no narrow layout, Ctrl+, needing a click, the tight
     shortcut column, overlapping pets) and the light theme's accent contrast. No feature,
-    protocol, Rust or mod-contract change. The audit, tokens, stages and open questions are in the
-    [interface polish plan](plans/ui-polish.md).
+    protocol, Rust or mod-contract change. The token system, the shared components, the narrow
+    layout and the accessibility rules are in [07 Desktop interface](07-desktop-ui.md#theming).
 
 48. **Custom agent files** (implemented). User-defined subagents in Claude Code's format: Markdown
     with YAML front matter (`name`, `description`, optional `tools` and `model`; the body is the

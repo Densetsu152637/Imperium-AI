@@ -1,7 +1,7 @@
 // The model panels and the model configuration dialog sit in narrow side columns and in a dialog, on the
 // shared components. These checks keep them there: no native <select>, no bare error or empty
 // paragraphs, no fixed minimum width that would clip a control in a 255 px column, and no literals left in
-// the two stylesheets (their style-budget comments are zero).
+// the two stylesheets (styleTokens.test.ts holds every stylesheet to zero literals).
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -29,19 +29,9 @@ test("the model files use the shared Select and shared states, not native select
     const source = src(file);
     if (/<select\b/.test(source)) problems.push(`${file}: a native select`);
     if (/className="(error|empty)"/.test(source)) problems.push(`${file}: a bare error or empty paragraph`);
-    if (/^\/\/ style-budget: native-select/m.test(source)) problems.push(`${file}: still declares a native-select allowance`);
     if (/className="[^"]*\bbadge\b/.test(source)) problems.push(`${file}: a hand-built badge instead of Badge`);
   }
   assert.deepEqual(problems, []);
-});
-
-test("the model stylesheets have a budget of zero in every category", () => {
-  for (const file of STYLES) {
-    const line = /^\/\* style-budget:([^*]*)\*\//.exec(src(file))?.[1] ?? "";
-    const counts = [...line.matchAll(/([\w-]+)=(\d+)/g)];
-    assert.ok(counts.length > 0, `${file}: no style-budget comment`);
-    assert.deepEqual(counts.filter((match) => Number(match[2]) !== 0).map((match) => match[0]), [], `${file} still allows literals`);
-  }
 });
 
 test("no model stylesheet rule gives a control a minimum width a side column cannot hold", () => {

@@ -1,11 +1,5 @@
-/* style-budget: colour=0 font-size=0 font-weight=0 radius=0 shadow=0 duration=0 z-index=0 */
 /* The command palette (Ctrl+K), drawn on the shared Dialog (dialog.css) as one column near the top. The
    rules below reach the Dialog's parts through :has(.command-palette), so no other dialog changes. */
-
-:root {
-  --palette-w: calc(640 * var(--px));
-  --palette-top: 12vh;
-}
 
 .settings-backdrop:has(.command-palette) {
   align-items: flex-start;
@@ -75,6 +69,7 @@
   box-shadow: none;
 }
 
+/* The wrapper draws the ring (below). */
 .command-palette-search input:focus,
 .command-palette-search input:focus-visible {
   outline: none;
@@ -83,6 +78,9 @@
 
 .command-palette-search:has(input:focus-visible) {
   box-shadow: inset 0 calc(-2 * var(--px)) 0 var(--focus);
+  /* The shadow is dropped in forced-colours mode; a transparent outline is not, and takes the system colour there. */
+  outline: 2px solid transparent;
+  outline-offset: calc(-2 * var(--px));
 }
 
 .command-palette-list {

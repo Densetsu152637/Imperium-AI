@@ -1,4 +1,4 @@
-// Contrast guards for styles/tokens.css (docs/plans/ui-polish.md, guard test 5): for both themes and
+// Contrast guards for styles/tokens.css (docs/07-desktop-ui.md, Theming): for both themes and
 // all twelve accents, text meets 4.5:1 on every surface and on the accent wash that draws selected
 // rows, accent ink meets 4.5:1 on the accent, and the focus ring and control edges meet 3:1.
 // Run with `pnpm test` (node's test runner).
