@@ -17,7 +17,10 @@
   ([session footer](#environments-and-sessions-implemented)).
 - Telemetry panel: a live table of the models in use right now across every session and
   subagent, one row per model, updated in place as calls finish (not a history). It is a
-  GitHub-flavoured Markdown table, so columns size to their content:
+  GitHub-flavoured Markdown table drawn with the shared compact table: the figures stay on one
+  line and align right, and the model column takes the rest of the width and ends in an
+  ellipsis (its full name is on hover; a keyboard user cannot reach that hover, a known limit).
+  Under 22 rem the `in` and `out` columns give way to a muted second line under the model:
 
   | Model | tok/s | in | out | cost |
   |---|---|---|---|---|
@@ -65,8 +68,9 @@ older journals show none). Hovering a line shows its task id, model, and cost. T
 [03](03-agent-engine.md#subagent-titles)); task ids such as `t1` are secondary everywhere: the
 transcript's delegation line (*→ Audit the auth flow · t1 · model*), permission requests from a
 subagent, the context breakdown's agent list, and "Continued <title> on …" notices all name the
-title. While the session is stopped, running subagents show as `paused`. A paused subagent's ⋯
-menu also has **Resume** and **Cancel** (`session.agent_cancel`); archived sessions offer neither.
+title. With no subagents the panel shows the shared empty state. While the session is stopped,
+running subagents show as `paused`. A paused subagent's ⋯ menu also has **Resume** and **Cancel**
+(`session.agent_cancel`); archived sessions offer neither.
 
 A subagent kept as a [knowledge agent](21-knowledge-agents.md) shows a **Knowledge** badge after its
 title (its topic and status on hover), and its ⋯ menu has **Retire knowledge agent**; a finished one
@@ -289,6 +293,12 @@ and the KV pool's reserved and total tokens, memory, busy slots and queued calls
 turn" while an agent is mid-turn on it) or the idle-unload countdown, the sessions on each, and
 an Unload button for idle ones, and a table of the hosted
 endpoints sessions use with requests, tokens, latency, and errors over the last 15 minutes.
+Both tables use the shared compact table, a long model name ends in an ellipsis, and the
+panel's own width decides the columns: State and Sessions (or Tokens and Latency) drop below
+38 rem, Placement (or Sessions) and the sparklines below 22 rem, so the panel never scrolls
+sideways. Each dropped value moves to a muted second line under the model, so none is lost.
+Before the first reading it shows the shared loading state, a failed read the shared notice,
+and a table with no rows the shared empty state.
 The panel subscribes to `system.resources_changed` only while it is open and its window is
 visible, so the daemon samples nothing otherwise
 ([04](04-models-and-routing.md#active-models-and-resource-monitor)).
@@ -1012,7 +1022,8 @@ dashboard: every budget's current window as a bar with its share, tokens and cos
 limits, when it resets, and its action; a bar chart of the last 30 days, by tokens or cost, for
 all usage or, after clicking a budget, that budget's scope; and the top five environments,
 endpoints, and models over the same days. It follows `budgets.changed`, which the daemon sends
-after each model call.
+after each model call. It uses the same loading, notice and empty states as the Resources
+panel; below 22 rem each budget's name sits over its bar, and the *Tokens* / *Cost* chips wrap.
 
 A **budget alert** (`budgets.alert`, once per threshold per window) becomes a *budget* notice
 through `notify`, so it follows *Notify about budgets and usage* and the other notification

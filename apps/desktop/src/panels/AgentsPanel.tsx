@@ -7,6 +7,8 @@ import { BookOpen, CircleX, PanelTop, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { RESUME_TEXT, formatElapsed, taskElapsed } from "../sessions/agentView";
+import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
 import { Menu, type MenuItem } from "../components/Menu";
 import { canKeep, rowNote } from "../sessions/knowledge";
 import { modelName, useModelNames } from "../models/modelNames";
@@ -54,7 +56,7 @@ export function AgentsPanel({
   const tasks = session ? Object.values(session.tasks) : [];
   const now = useNow(tasks.some((task) => task.status === "running"));
   if (tasks.length === 0) {
-    return <p className="empty">Subagents appear here when the agent delegates work.</p>;
+    return <EmptyState className="compact" title="No subagents" body="Subagents appear here when the agent delegates work." />;
   }
   const archived = session?.summary.archived ?? false;
   // While the session is stopped its running subagents are halted: shown as paused.
@@ -132,9 +134,9 @@ function AgentRow({
           <span className={`status-dot task-${status}`} role="img" aria-label={status} />
           <span className="name">{task.title}</span>
           {note && (
-            <span className="badge knowledge" title={note.title}>
+            <Badge tone="accent" className="knowledge" title={note.title}>
               {note.badge}
-            </span>
+            </Badge>
           )}
           {elapsed !== null && <span className="agent-elapsed">{formatElapsed(elapsed)}</span>}
         </button>
