@@ -998,8 +998,9 @@ name. The daemon registers them when it starts (`imperium_tools::hide_from_os_sa
 Whether a writable grant around the data folder can reopen a hidden file differs by OS:
 
 - **Linux:** a mount point cannot be renamed, replaced or linked out of, and the masks are
-  mounted last, so the file stays hidden whatever the grants are. Renaming the folder around a
-  mount point fails with `EBUSY`.
+  mounted last, so the file stays hidden whatever the grants are. The folder around a mount point
+  can be renamed (the masks go with it, so nothing is revealed), which is why `<data>` and
+  `<config>` are guarded below: a read-only mount point cannot be renamed.
 - **macOS:** Seatbelt works by path, so for every hidden path it also denies `file-write*` (which
   covers deleting or renaming it) and `file-link` (a hard link to a readable path), and it denies
   `file-write-unlink` on every folder around it, so the folder cannot be renamed away to carry

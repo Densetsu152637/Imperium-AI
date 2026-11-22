@@ -32,7 +32,12 @@ async fn run(roots: &[&Path], grants: &[GrantedPath], command: &str) -> Option<(
     let mut process = Sandbox::Os { network: true }
         .command(roots, grants, command)
         .expect("the OS tier is available on this platform");
-    let output = process.stdin(Stdio::null()).output().await.ok()?;
+    // A command that hangs is a failure, not a stuck test run.
+    process.stdin(Stdio::null()).kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(60), process.output())
+        .await
+        .ok()?
+        .ok()?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -171,7 +176,7 @@ async fn a_command_cannot_read_the_endpoint_file_or_see_the_sockets() {
         let _open = UnixListener::bind(&open).unwrap();
         let (control, text) = in_sandbox(
             &fixture.workspace,
-            &format!("nc -U '{}' </dev/null", open.display()),
+            &format!("nc -w 2 -U '{}' </dev/null", open.display()),
         )
         .await
         .unwrap();
@@ -182,7 +187,7 @@ async fn a_command_cannot_read_the_endpoint_file_or_see_the_sockets() {
         if control {
             let (connected, text) = in_sandbox(
                 &fixture.workspace,
-                &format!("nc -U '{}' </dev/null", fixture.socket.display()),
+                &format!("nc -w 2 -U '{}' </dev/null", fixture.socket.display()),
             )
             .await
             .unwrap();
@@ -265,6 +270,10 @@ async fn a_grant_around_the_data_folder_does_not_reopen_a_hidden_file() {
             "{command}: the token was revealed: {text}"
         );
     }
+    // Seatbelt denies renaming the folder around a hidden path. Bubblewrap cannot: a folder with
+    // mount points inside can be renamed (the masks go with it, so the token is still hidden, as
+    // checked above). That is what the guarded folders prevent: see the next test.
+    #[cfg(target_os = "macos")]
     assert!(fixture.endpoint.exists(), "the endpoint file was moved");
 }
 
@@ -315,6 +324,20 @@ async fn a_workspace_of_the_home_folder_cannot_write_config_or_data() {
     assert!(!fixture.data.join("planted.txt").exists(), "{text}");
     assert!(!fixture.cfg.join("sub/q.txt").exists(), "{text}");
     assert!(!fixture.data.join("sessions/q.txt").exists(), "{text}");
+    // The data folder cannot be renamed away either: it is read-only.
+    let renamed = fixture.root.join("data2");
+    let (_, text) = run(
+        &roots,
+        &[],
+        &format!(
+            "mv '{}' '{}' 2>&1; echo",
+            fixture.data.display(),
+            renamed.display()
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(fixture.endpoint.exists() && !renamed.exists(), "{text}");
     // And the endpoint file is unreadable all the same.
     let (_, text) = run(
         &roots,
