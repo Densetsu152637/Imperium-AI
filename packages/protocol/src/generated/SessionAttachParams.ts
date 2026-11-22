@@ -8,4 +8,10 @@ name: string, path?: string,
 /**
  * The file's bytes, base64 (standard alphabet, padded).
  */
-data?: string, };
+data?: string, 
+/**
+ * The file is an `@` mention: stage it only where the session may read it (inside its
+ * folders or path grants, in a remote runtime too) and no rule asks about or denies
+ * reading it. A file elsewhere is refused instead of copied into the attachments folder.
+ */
+mention?: boolean, };

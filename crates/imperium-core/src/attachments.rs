@@ -14,7 +14,8 @@ use imperium_engine::Session;
 use imperium_media::attachments::{self, AttachmentError, Source, Staging};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
-    SessionAttachParams, SessionAttachResult, VoiceTranscribeParams, VoiceTranscribeResult,
+    SessionAttachParams, SessionAttachResult, SessionFile, SessionFilesParams, SessionFilesResult,
+    VoiceTranscribeParams, VoiceTranscribeResult,
 };
 use imperium_protocol::session::Attachment;
 
@@ -60,14 +61,22 @@ fn invalid(error: AttachmentError) -> ErrorObject {
 }
 
 /// `session.attach`.
-pub(crate) fn attach(
+pub(crate) async fn attach(
     state: &DaemonState,
     session: &Session,
     params: SessionAttachParams,
 ) -> Result<SessionAttachResult, ErrorObject> {
-    let source = match (params.path, params.data) {
-        (Some(path), None) => Source::Path(PathBuf::from(path)),
-        (None, Some(data)) => Source::Base64(data),
+    let max = max_bytes(state);
+    let source = match (&params.path, &params.data) {
+        (Some(_), None) | (None, Some(_)) => {
+            if params.mention == Some(true) {
+                mention_source(session, &params, max).await?
+            } else if let Some(path) = &params.path {
+                Source::Path(PathBuf::from(path))
+            } else {
+                Source::Base64(params.data.clone().unwrap_or_default())
+            }
+        }
         _ => return Err(invalid(AttachmentError::NoSource)),
     };
     let store = store_dir(state.data_dir(), session.id());
@@ -75,15 +84,86 @@ pub(crate) fn attach(
     let staging = Staging {
         store: &store,
         readable: &readable,
-        max_bytes: max_bytes(state),
+        max_bytes: max,
     };
-    let attachment =
-        attachments::stage(&staging, &next_id(), &params.name, source).map_err(invalid)?;
+    // A mention read in a remote runtime is named after its file.
+    let name = match (&params.path, params.name.trim().is_empty()) {
+        (Some(path), true) if params.mention == Some(true) => path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+        _ => params.name.clone(),
+    };
+    let attachment = attachments::stage(&staging, &next_id(), &name, source).map_err(invalid)?;
     let image_data = attachments::image_data(&attachment);
     Ok(SessionAttachResult {
         vision: session_vision(state, session),
         attachment,
         image_data,
+    })
+}
+
+/// Where an `@` mention's file comes from. A mention is held to what the file tools allow: the
+/// path must be inside the session's folders or path grants and no permission rule may ask
+/// about or deny reading it. In a local workspace the file is then referenced where it is; one
+/// in a remote runtime is read there and copied into the attachments folder.
+async fn mention_source(
+    session: &Session,
+    params: &SessionAttachParams,
+    max_bytes: u64,
+) -> Result<Source, ErrorObject> {
+    let Some(path) = &params.path else {
+        return Err(ErrorObject::new(
+            codes::INVALID_PARAMS,
+            "a mention names a path",
+        ));
+    };
+    let workspace = session.workspace();
+    let resolved = workspace
+        .resolve(path)
+        .map_err(|error| ErrorObject::new(codes::INVALID_PARAMS, error.to_string()))?;
+    if imperium_tools::mention_withheld(workspace, path) {
+        return Err(ErrorObject::new(
+            codes::INVALID_PARAMS,
+            format!(
+                "{path}: a permission rule asks about or denies reading it; ask the agent to read it so the rule applies"
+            ),
+        ));
+    }
+    if workspace.runtime().is_none() {
+        return Ok(Source::Path(resolved));
+    }
+    let bytes = imperium_tools::read_remote_file(workspace, path, max_bytes)
+        .await
+        .map_err(|error| ErrorObject::new(codes::INVALID_PARAMS, error.to_string()))?;
+    Ok(Source::Base64(
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+    ))
+}
+
+/// `session.files`: the session's files and directories that fuzzily match the query, for the
+/// `@` picker. The search honours `.gitignore` and the permission rules.
+pub(crate) async fn files(
+    session: &Session,
+    params: SessionFilesParams,
+) -> Result<SessionFilesResult, ErrorObject> {
+    let limit = params.limit.map_or(50, |limit| limit as usize);
+    let found = imperium_tools::find_files(session.workspace(), &params.query, limit)
+        .await
+        .map_err(|error| ErrorObject::new(codes::INVALID_PARAMS, error.to_string()))?;
+    Ok(SessionFilesResult {
+        files: found
+            .matches
+            .into_iter()
+            .map(|entry| SessionFile {
+                path: entry.path,
+                folder: entry.folder,
+                relative: entry.relative,
+                directory: entry.directory,
+            })
+            .collect(),
+        truncated: found.truncated,
     })
 }
 

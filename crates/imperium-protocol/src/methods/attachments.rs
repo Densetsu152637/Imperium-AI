@@ -28,6 +28,12 @@ pub struct SessionAttachParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub data: Option<String>,
+    /// The file is an `@` mention: stage it only where the session may read it (inside its
+    /// folders or path grants, in a remote runtime too) and no rule asks about or denies
+    /// reading it. A file elsewhere is refused instead of copied into the attachments folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mention: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -42,6 +48,84 @@ pub struct SessionAttachResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub image_data: Option<String>,
+}
+
+/// `session.files`: the picker behind `@` mentions. Searches the session's folders and the
+/// project worktrees open beside them for files and directories whose path fuzzily matches
+/// `query` (everything, shallowest first, when it is empty), best first. The listing honours
+/// `.gitignore` and leaves out what a permission rule asks about or denies, so a client never
+/// names a path the file tools would refuse; in a remote runtime it is made there. Give a
+/// chosen file's `path` to `session.attach` with `mention: true`.
+#[derive(Debug)]
+pub struct SessionFiles;
+
+impl Method for SessionFiles {
+    const NAME: &'static str = "session.files";
+    type Params = SessionFilesParams;
+    type Result = SessionFilesResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionFilesParams {
+    pub session_id: String,
+    #[serde(default)]
+    pub query: String,
+    /// The most matches to return; 50 when absent, at most 200.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionFilesResult {
+    pub files: Vec<SessionFile>,
+    /// More entries matched than were returned, or the search stopped early on a huge tree.
+    pub truncated: bool,
+}
+
+/// A file or directory of a session's folders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionFile {
+    /// The absolute path, as `session.attach` takes it.
+    pub path: String,
+    /// The session folder it is in.
+    pub folder: String,
+    /// The path inside that folder, with `/` separators.
+    pub relative: String,
+    /// A directory: mentioned as a path, never attached.
+    pub directory: bool,
+}
+
+/// `session.init`: the daemon's `/init`. Sends the built-in prompt that asks the agent to
+/// analyse the project and write (or, when it exists, propose updates to) the project's
+/// instruction file, `AGENTS.md`, as an ordinary user message: the agent explores and writes
+/// with its normal tools, so permissions and approvals apply. `guidance` is the user's own
+/// words to add to the prompt. Like `session.send` the message queues while the agent is busy
+/// and waits on the session's budgets; the result is the same.
+#[derive(Debug)]
+pub struct SessionInit;
+
+impl Method for SessionInit {
+    const NAME: &'static str = "session.init";
+    type Params = SessionInitParams;
+    type Result = SessionSendResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionInitParams {
+    pub session_id: String,
+    /// What the user wants emphasised, such as `focus on the build and test commands`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub guidance: Option<String>,
+    /// Go ahead although a budget in the session's scope is used up and says to ask first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub confirm_budget: Option<bool>,
 }
 
 /// `voice.transcribe`: turns recorded speech into text through `[media.transcription]` (an

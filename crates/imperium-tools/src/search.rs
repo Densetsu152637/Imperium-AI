@@ -4,7 +4,7 @@
 //! `.gitignore` and `.ignore` files unless `include_ignored` is set, and leaves out files a deny
 //! rule covers. Results are sorted by path and paged with `offset`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
@@ -70,6 +70,40 @@ impl Walked {
     }
 }
 
+/// The directory walk every search shares: `.git` is skipped, ignore files are honoured when
+/// `respect` is set, links are not followed, and entries come sorted by name.
+pub(crate) fn walker(base: &Path, respect: bool) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(base);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .require_git(false)
+        .git_ignore(respect)
+        .git_global(respect)
+        .git_exclude(respect)
+        .ignore(respect)
+        .parents(respect)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .sort_by_file_name(|a, b| a.cmp(b));
+    builder
+}
+
+/// Whether a permission rule asks about or denies one of `tools` for the resolved path `full`.
+/// A search never asks per file, so it leaves such a file out.
+pub(crate) fn withheld_by_rule(workspace: &Workspace, tools: &[&str], full: &Path) -> bool {
+    let permissions = workspace.permissions();
+    if !permissions.has_ask_or_deny_rules() {
+        return false;
+    }
+    let target = workspace.rule_target_resolved(full);
+    tools.iter().any(|name| {
+        matches!(
+            permissions.evaluate(name, &target),
+            Some(RuleAction::Deny | RuleAction::Ask)
+        )
+    })
+}
+
 /// Files under the scope's folder, sorted by path, minus those a rule asks about or denies for
 /// `tool` or for `read_file` (a search never asks per file, so it leaves them out).
 fn walk(
@@ -87,21 +121,7 @@ fn walk(
     if !base.exists() {
         return Err(ToolError::Io(format!("{}: no such folder", scope.path)));
     }
-    let respect = !scope.include_ignored;
-    let mut builder = WalkBuilder::new(&base);
-    builder
-        .hidden(false)
-        .follow_links(false)
-        .require_git(false)
-        .git_ignore(respect)
-        .git_global(respect)
-        .git_exclude(respect)
-        .ignore(respect)
-        .parents(respect)
-        .filter_entry(|entry| entry.file_name() != ".git")
-        .sort_by_file_name(|a, b| a.cmp(b));
-    let permissions = workspace.permissions();
-    let check_rules = permissions.has_ask_or_deny_rules();
+    let builder = walker(&base, !scope.include_ignored);
     let mut found = Vec::new();
     let mut visited = 0;
     let mut stopped = false;
@@ -132,18 +152,9 @@ fn walk(
         if !keep(&relative) {
             continue;
         }
-        if check_rules {
-            let target = workspace.rule_target_resolved(&full);
-            let guarded = |name: &str| {
-                matches!(
-                    permissions.evaluate(name, &target),
-                    Some(RuleAction::Deny | RuleAction::Ask)
-                )
-            };
-            if guarded(tool) || guarded("read_file") {
-                withheld += 1;
-                continue;
-            }
+        if withheld_by_rule(workspace, &[tool, "read_file"], &full) {
+            withheld += 1;
+            continue;
         }
         found.push(Found { full });
     }

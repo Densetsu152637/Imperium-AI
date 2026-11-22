@@ -117,43 +117,32 @@ impl Connection {
                 })
             }
             SessionSend::NAME => {
-                call::<SessionSend>(c.params.take(), |params: SessionSendParams| {
-                    let session = self.session(&params.session_id)?;
-                    // A message that starts a turn waits on the session's budgets; steering
-                    // joins a running turn, which always finishes.
-                    let steering = params.mode == Some(imperium_protocol::session::SendMode::Steer)
-                        && session.status().0 == imperium_protocol::session::SessionStatus::Working;
-                    if !steering {
-                        crate::budgets::check(
-                            &self.state,
-                            &params.session_id,
-                            params.confirm_budget == Some(true),
-                        )?;
-                    }
-                    // A person writing to background work wants an answer now: it stops giving
-                    // way to the load.
-                    if session.is_background() {
-                        self.state.release_run_now(&session);
-                    }
-                    let attachments =
-                        crate::attachments::verify(&self.state, &session, &params.attachments)?;
-                    let id = session
-                        .send_with_attachments(
-                            params.text,
-                            attachments,
-                            params.mode.unwrap_or_default(),
-                            params.agent_id.as_deref(),
-                        )
-                        .map_err(queue_error)?;
-                    Ok(SessionSendResult { id })
-                })
+                call::<SessionSend>(c.params.take(), |params| self.send_message(params))
             }
             SessionAttach::NAME => {
-                call::<SessionAttach>(c.params.take(), |params: SessionAttachParams| {
-                    let session = self.session(&params.session_id)?;
-                    crate::attachments::attach(&self.state, &session, params)
+                call_later::<SessionAttach, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    let session = self.session(&params.session_id);
+                    async move { crate::attachments::attach(&state, &session?, params).await }
                 })
             }
+            SessionFiles::NAME => {
+                call_later::<SessionFiles, _>(c.params.take(), c.later, |params| {
+                    let session = self.session(&params.session_id);
+                    async move { crate::attachments::files(&session?, params).await }
+                })
+            }
+            SessionInit::NAME => call::<SessionInit>(c.params.take(), |params| {
+                let text = imperium_engine::init_prompt(params.guidance.as_deref());
+                self.send_message(SessionSendParams {
+                    session_id: params.session_id,
+                    text,
+                    mode: None,
+                    agent_id: None,
+                    confirm_budget: params.confirm_budget,
+                    attachments: Vec::new(),
+                })
+            }),
             VoiceTranscribe::NAME => {
                 call_later::<VoiceTranscribe, _>(c.params.take(), c.later, |params| {
                     crate::attachments::transcribe(Arc::clone(&self.state), params)
@@ -754,6 +743,37 @@ impl Connection {
         Ok(SessionQueueResult {
             messages: session.queue(agent).map_err(queue_error)?,
         })
+    }
+
+    /// `session.send`, also what `session.init` sends.
+    fn send_message(&self, params: SessionSendParams) -> Result<SessionSendResult, ErrorObject> {
+        let session = self.session(&params.session_id)?;
+        // A message that starts a turn waits on the session's budgets; steering
+        // joins a running turn, which always finishes.
+        let steering = params.mode == Some(imperium_protocol::session::SendMode::Steer)
+            && session.status().0 == imperium_protocol::session::SessionStatus::Working;
+        if !steering {
+            crate::budgets::check(
+                &self.state,
+                &params.session_id,
+                params.confirm_budget == Some(true),
+            )?;
+        }
+        // A person writing to background work wants an answer now: it stops giving
+        // way to the load.
+        if session.is_background() {
+            self.state.release_run_now(&session);
+        }
+        let attachments = crate::attachments::verify(&self.state, &session, &params.attachments)?;
+        let id = session
+            .send_with_attachments(
+                params.text,
+                attachments,
+                params.mode.unwrap_or_default(),
+                params.agent_id.as_deref(),
+            )
+            .map_err(queue_error)?;
+        Ok(SessionSendResult { id })
     }
 
     pub(super) fn session(&self, id: &str) -> Result<Arc<Session>, ErrorObject> {
