@@ -588,6 +588,32 @@ Three independent controls, each per window and per monitor:
 - Layout uses CSS container queries, so panes adapt to their own width, not the window's.
 - Per-monitor DPI changes are handled live when windows move between displays.
 
+### Narrow windows and column minimums (implemented)
+
+Every column has a minimum width, in layout pixels (window pixels over the UI scale, so a column
+keeps its size on screen at every scale): the sidebar (the columns left of the session's) 220, the
+session 360, and the side columns (right of it) 280. They are `--col-min-sidebar`, `--col-min-session`
+and `--col-min-side` in `styles/shell.css` and `COLUMN_MIN` in `layout/fold.ts`; a test fails when
+the two drift apart. A column never draws narrower than its minimum, whatever proportion was saved.
+
+- **Folding.** When the window cannot fit every column at its minimum, the rightmost side
+  columns fold away until the rest fit (a width equal to the total fits). The session's column never
+  folds. A folded column keeps its share of the saved proportions, so widening the window brings it back as it was; nothing
+  about folding is written to the layout document. The title bar's *More panels* menu lists the panels of
+  the folded columns; choosing one opens it in a sheet from the right (`layout/Sheet.tsx`), 340 px wide over a dimmed workspace.
+- **Below 600 px** the window shows one column at a time. The session fills the window; the
+  sidebar's panels (Environments, Sessions, Approvals) open from a button at the left of the title bar
+  as a sheet from the left that leaves a strip of scrim to tap, and the other panels open from *More
+  panels* as a sheet that fills the window. The title bar drops the connection text and the project-layout badge, and the
+  sidebar button carries a dot while approvals are waiting. A sheet closes on Esc, a click on the scrim or its close button (and
+  the sidebar sheet when a session is chosen; choosing an environment only filters the sessions beside it), and focus goes back to the button that opened it. It traps Tab like a dialog and
+  leaves Esc to a menu or dialog opened from inside it. Widening the window past 600 px closes a sheet whose columns are back.
+- **The panel editor is off below 600 px** (its button is disabled with a tooltip, and a window
+  narrowed while editing leaves the editor). In the editor, wider than that, no column folds and the
+  minimums are not applied, so every column can be a drop target.
+- The rule is the pure function `foldColumns` (`layout/fold.ts`, tested in `test/fold.test.ts`);
+  `App.tsx` measures the window (`layout/useWidth.ts`) and `layout/Columns.tsx` draws what it returns.
+
 ## Theming
 
 Design tokens (colour, type, spacing, radius, motion) are CSS custom properties. Themes are

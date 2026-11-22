@@ -15,6 +15,9 @@
 // A header shows the chevron, the title and the panel's primary action; the panel's secondary
 // actions, collapse all, detach and close sit in one ⋯ menu (panelMenu.ts) that stays quiet until
 // the header is hovered or focused.
+// Every column has a minimum width (fold.ts); the columns the window cannot fit are `away`: they keep
+// their share of the saved proportions but draw nothing, and App shows their panels in a sheet
+// (Sheet.tsx) instead.
 
 import { ChevronDown, ChevronsDownUp, ChevronsUpDown, ExternalLink, GripVertical, MoveRight, X } from "lucide-react";
 import { useState, useRef, type MouseEvent, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
@@ -22,6 +25,7 @@ import { useState, useRef, type MouseEvent, type ReactNode, type PointerEvent as
 import { IconButton } from "../components/IconButton";
 import { Menu, type MenuItem } from "../components/Menu";
 import type { DropTarget } from "./arrangement";
+import { classifyColumns } from "./fold";
 import { panelMenuEntries } from "./panelMenu";
 import { getLayout, updateLayout } from "./state";
 
@@ -65,6 +69,8 @@ function Split({
   initial,
   className,
   collapsed,
+  away,
+  kinds,
   children,
 }: {
   storageKey: string;
@@ -74,6 +80,10 @@ function Split({
   className?: string;
   /** Children folded to their header (stacks only): they keep their header's height. */
   collapsed?: boolean[];
+  /** Children the window has no room for: they draw nothing and give their share to the others, but keep it in the saved sizes. */
+  away?: boolean[];
+  /** What each child is (a column's kind, fold.ts), for its minimum width in styles/shell.css. */
+  kinds?: (string | undefined)[];
   children: ReactNode[];
 }) {
   const [sizes, setSizes] = useState(() =>
@@ -85,7 +95,8 @@ function Split({
     setSizes(loadSizes(storageKey, children.length));
   }
   const container = useRef<HTMLDivElement>(null);
-  const folded = (index: number) => collapsed?.[index] ?? false;
+  const gone = (index: number) => away?.[index] ?? false;
+  const folded = (index: number) => (collapsed?.[index] ?? false) || gone(index);
 
   /** The open cells a divider below cell `index` moves between: the nearest above and below. */
   const neighbours = (index: number): [number, number] | null => {
@@ -138,11 +149,12 @@ function Split({
         return (
           <div
             key={index}
-            className={`split-cell${folded(index) ? " collapsed" : ""}`}
+            className={`split-cell${gone(index) ? " away" : folded(index) ? " collapsed" : ""}`}
+            data-kind={kinds?.[index]}
             style={folded(index) ? undefined : { flexGrow: sizes[index] / openShare, flexBasis: 0 }}
           >
-            {child}
-            {pair && (
+            {gone(index) ? null : child}
+            {!gone(index) && pair && (
               <div
                 className={`divider divider-${axis}`}
                 role="separator"
@@ -205,7 +217,8 @@ function PanelMenu({ panel, fold, collapsed }: { panel: PanelSpec; fold?: Fold; 
   return <Menu label={`${panel.title} options`} items={items} className="panel-menu-button" />;
 }
 
-function Panel({ panel, fold, edit }: { panel: PanelSpec; fold?: Fold; edit?: Edit }) {
+/** One panel: its header and body. Columns draws them in columns; App draws a folded column's panel in a sheet. */
+export function Panel({ panel, fold, edit }: { panel: PanelSpec; fold?: Fold; edit?: Edit }) {
   const bodyId = `panel-body-${panel.id}`;
   const collapsed = fold?.collapsed ?? false;
   // A double-click on the header's empty space or title folds the panel, as in many docks.
@@ -310,6 +323,7 @@ export function Columns({
   initial,
   editing = false,
   windows = [],
+  away = [],
   onDrop,
   onDock,
   onRemoveColumn,
@@ -320,6 +334,8 @@ export function Columns({
   editing?: boolean;
   /** Panels in windows of their own, shown in the editor as chips to drag back into a column (or press to dock). */
   windows?: { id: string; title: string }[];
+  /** Ids of the columns the window has no room for (fold.ts); each keeps its saved share. None in the panel editor. */
+  away?: string[];
   /** A panel dropped in the editor. */
   onDrop?: (panel: string, target: DropTarget) => void;
   /** A panel's window chip pressed: dock it where it was. */
@@ -329,13 +345,26 @@ export function Columns({
 }) {
   const [collapsed, setCollapsed] = useState<string[]>(() => getLayout().collapsed ?? []);
   const [drag, setDrag] = useState<Drag | null>(null);
+  // A sheet draws a folded column's panels in a second Columns; what either changed is read back
+  // from the layout when the other next shows those columns, and every write starts from the layout.
+  const awayKey = away.join(",");
+  const [seenAway, setSeenAway] = useState(awayKey);
+  if (seenAway !== awayKey) {
+    setSeenAway(awayKey);
+    setCollapsed(getLayout().collapsed ?? []);
+  }
   const save = (next: string[]) => {
     setCollapsed(next);
     updateLayout({ collapsed: next });
   };
-  const toggle = (id: string) => save(collapsed.includes(id) ? collapsed.filter((other) => other !== id) : [...collapsed, id]);
-  const setAll = (ids: string[], fold: boolean) =>
-    save(fold ? [...new Set([...collapsed, ...ids])] : collapsed.filter((id) => !ids.includes(id)));
+  const toggle = (id: string) => {
+    const current = getLayout().collapsed ?? [];
+    save(current.includes(id) ? current.filter((other) => other !== id) : [...current, id]);
+  };
+  const setAll = (ids: string[], fold: boolean) => {
+    const current = getLayout().collapsed ?? [];
+    save(fold ? [...new Set([...current, ...ids])] : current.filter((id) => !ids.includes(id)));
+  };
 
   // Leaving the editor mid-drag drops nothing.
   if (!editing && drag) setDrag(null);
@@ -407,6 +436,8 @@ export function Columns({
   const weights = columns.map((column) => (column.panels.some((panel) => panel.span) ? 2.2 : 1));
   const total = weights.reduce((sum, weight) => sum + weight, 0) || 1;
   const startSizes = defaultSet && initial ? initial : weights.map((weight) => weight / total);
+  // Minimum widths hold everywhere except the editor, which shows every column to drag between.
+  const kinds = editing ? undefined : classifyColumns(columns.map((column) => ({ id: column.id, span: column.panels.some((panel) => panel.span) }))).map((column) => column.kind);
 
   return (
     <div className="columns-root">
@@ -428,7 +459,15 @@ export function Columns({
           ))}
         </div>
       )}
-      <Split key={sizesKey} storageKey={sizesKey} axis="row" initial={startSizes} className={editing ? "editing" : undefined}>
+      <Split
+        key={sizesKey}
+        storageKey={sizesKey}
+        axis="row"
+        initial={startSizes}
+        className={editing ? "editing" : undefined}
+        away={columns.map((column) => away.includes(column.id))}
+        kinds={kinds}
+      >
         {columns.map((column, index) => {
           const ids = column.panels.map((panel) => panel.id);
           const side = sessionIndex >= 0 && index < sessionIndex ? "left" : "right";
