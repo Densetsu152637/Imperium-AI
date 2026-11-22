@@ -811,6 +811,7 @@
 }
 
 .composer {
+  position: relative;
   display: flex;
   gap: var(--sp-1);
   align-items: flex-end;
@@ -1563,6 +1564,63 @@ button.task-open:hover {
 .attachment-chip .attachment-size {
   flex: none;
   font-size: var(--fs-xs);
+}
+
+/* ---- The @ mention picker: a list above the composer's well, best match first. ---- */
+.mention-picker {
+  position: absolute;
+  inset-inline: 0;
+  bottom: calc(100% + var(--sp-1));
+  z-index: var(--z-popover);
+  max-height: calc(260 * var(--px));
+  margin: 0;
+  padding: var(--sp-1);
+  overflow-y: auto;
+  list-style: none;
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--elev-2);
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+}
+
+.mention-option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--row-h);
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mention-option.active {
+  background: var(--accent-soft);
+}
+
+.mention-option svg {
+  flex: none;
+  width: var(--icon);
+  height: var(--icon);
+  color: var(--text-muted);
+}
+
+.mention-name {
+  flex: none;
+}
+
+.mention-folder {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--fs-sm);
+}
+
+.mention-more {
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-sm);
 }
 
 .queue-attachments svg {

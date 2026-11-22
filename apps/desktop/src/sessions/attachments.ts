@@ -18,11 +18,27 @@ export type Chip = {
   /** A small `data:` thumbnail for images. */
   preview?: string;
   error?: string;
+  /** For a chip made by an `@` mention: the token in the message (`@src/lib.rs`). */
+  mention?: string;
+  /** For a mentioned directory: its absolute path. A directory is named in the message, not attached. */
+  directory?: string;
 };
 
 /** Adds a chip for a file that is being uploaded. */
 export function addUploading(chips: Chip[], key: string, name: string, preview?: string): Chip[] {
   return [...chips, { key, name, state: "uploading", ...(preview ? { preview } : {}) }];
+}
+
+/**
+ * Adds a chip for an `@` mention. A file uploads (`session.attach`) like any other; a directory is
+ * ready at once, since only its path is sent. The same mention twice adds nothing.
+ */
+export function addMention(chips: Chip[], key: string, token: string, name: string, directory?: string): Chip[] {
+  if (chips.some((chip) => chip.mention === token)) return chips;
+  const chip: Chip = directory
+    ? { key, name, mention: token, state: "ready", directory }
+    : { key, name, mention: token, state: "uploading" };
+  return [...chips, chip];
 }
 
 /** Marks a chip ready with what the daemon staged. A chip removed meanwhile stays removed. */
@@ -58,10 +74,10 @@ export function readyAttachments(chips: Chip[]): Attachment[] {
   );
 }
 
-/** Whether the composer can send: text or a ready attachment, and nothing still uploading. */
+/** Whether the composer can send: text, a ready attachment or a mentioned directory, and nothing still uploading. */
 export function canSend(text: string, chips: Chip[]): boolean {
   if (chips.some((chip) => chip.state === "uploading")) return false;
-  return text.trim().length > 0 || readyAttachments(chips).length > 0;
+  return text.trim().length > 0 || readyAttachments(chips).length > 0 || chips.some((chip) => chip.directory && chip.state === "ready");
 }
 
 /** How the model receives an attachment, for its chip's tooltip. */

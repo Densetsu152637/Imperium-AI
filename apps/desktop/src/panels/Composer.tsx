@@ -5,15 +5,26 @@
 // Each is staged with `session.attach` and shows as a chip until the message is sent or the chip
 // removed. Holding the push-to-talk key (Settings → Chat) or the mic button records speech;
 // releasing it transcribes into the message box (`voice.transcribe`) without sending, and Esc
-// cancels.
+// cancels. Typing `@` opens a picker over the session's files (`session.files`): the chosen path goes
+// into the message and the file becomes a chip, staged like any attachment but refused by the daemon
+// when it is outside the session's folders. `/init` is not sent as text but asks the daemon to
+// write the project's instruction file (`onInit`).
 
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ArrowUp, ListPlus, Mic, Paperclip, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
-import type { Attachment, SendMode, SessionAttachResult, VoiceTranscribeResult } from "@imperium/protocol";
+import type {
+  Attachment,
+  SendMode,
+  SessionAttachResult,
+  SessionFile,
+  SessionFilesResult,
+  VoiceTranscribeResult,
+} from "@imperium/protocol";
 
 import {
+  addMention,
   addUploading,
   baseName,
   canSend,
@@ -27,10 +38,13 @@ import {
   type Chip,
 } from "../sessions/attachments";
 import { ComposerChips } from "../components/AttachmentChips";
+import { MentionPicker, mentionOptionId } from "../components/MentionPicker";
 import { IconButton } from "../components/IconButton";
 import type { DaemonClient } from "../daemon/client";
 import { insideTauri } from "../daemon/connection";
 import { useSettings } from "../settings/settings";
+import { activeMention, composeMessage, insertMention, mentionToken, syncMentions, withoutMention } from "../sessions/mentions";
+import { parseSlash } from "../sessions/slash";
 import {
   Recorder,
   formatElapsed,
@@ -53,6 +67,8 @@ type Props = {
   client: DaemonClient | null;
   placeholder: string;
   onSend: (text: string, mode: SendMode, attachments: Attachment[]) => void;
+  /** `/init`, with what followed it; without it (a subagent's view) `/init` is an ordinary message. */
+  onInit?: (guidance: string) => void;
   /** Text to put in the message box (a message branched from, to edit); `nonce` repeats it. */
   prefill?: { text: string; nonce: number } | null;
 };
@@ -62,13 +78,22 @@ const chipKey = () => `chip-${++nextKey}`;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-export function Composer({ sessionId, busy, hidden, client, placeholder, onSend, prefill = null }: Props) {
+/** Matches the picker asks for at a time. */
+const MENTION_LIMIT = 8;
+
+export function Composer({ sessionId, busy, hidden, client, placeholder, onSend, onInit, prefill = null }: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
   const [chips, setChips] = useState<Chip[]>([]);
   const [dragging, setDragging] = useState(false);
   const [ptt, setPtt] = useState<PttState>({ phase: "idle" });
   const [now, setNow] = useState(Date.now());
+  const [caret, setCaret] = useState(0);
+  const [found, setFound] = useState<{ files: SessionFile[]; truncated: boolean }>({ files: [], truncated: false });
+  const [picked, setPicked] = useState(0);
+  // The `@` Esc closed the picker for, so typing on does not reopen it.
+  const [dismissed, setDismissed] = useState<number | null>(null);
+  const pickerId = useId();
   const pttRef = useRef(ptt);
   const recorder = useRef(new Recorder());
   const starting = useRef<Promise<void> | null>(null);
@@ -80,7 +105,60 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
   useEffect(() => {
     setDraft("");
     setChips([]);
+    setFound({ files: [], truncated: false });
   }, [sessionId]);
+
+  // ---- @ mentions ----
+
+  const mention = activeMention(draft, caret);
+  const query = mention?.query ?? null;
+  useEffect(() => {
+    if (query === null || !client) {
+      setFound({ files: [], truncated: false });
+      setDismissed(null);
+      return;
+    }
+    let current = true;
+    const timer = window.setTimeout(() => {
+      client
+        .call<SessionFilesResult>("session.files", { session_id: sessionId, query, limit: MENTION_LIMIT })
+        .then((result) => {
+          if (!current) return;
+          setFound({ files: result.files, truncated: result.truncated });
+          setPicked(0);
+        })
+        .catch(() => current && setFound({ files: [], truncated: false }));
+    }, 80);
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
+  }, [client, sessionId, query]);
+  const pickerOpen = mention !== null && dismissed !== mention.start && found.files.length > 0;
+
+  const chooseMention = (file: SessionFile) => {
+    if (!mention) return;
+    const token = mentionToken(file.relative);
+    const next = insertMention(draft, mention, file.relative);
+    setDraft(next.text);
+    setCaret(next.caret);
+    requestAnimationFrame(() => {
+      field.current?.focus();
+      field.current?.setSelectionRange(next.caret, next.caret);
+    });
+    if (chips.some((chip) => chip.mention === token)) return;
+    const key = chipKey();
+    setChips((all) => addMention(all, key, token, file.relative, file.directory ? file.path : undefined));
+    if (!file.directory) void stage(key, { name: baseName(file.path), path: file.path, mention: true });
+  };
+
+  // Deleting a mention's token from the message drops its chip.
+  useEffect(() => {
+    setChips((all) => {
+      const kept = syncMentions(all, draft);
+      return kept.length === all.length ? all : kept;
+    });
+  }, [draft]);
 
   // A message branched from comes back for editing.
   useEffect(() => {
@@ -92,7 +170,7 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
   // ---- Attachments ----
 
   const stage = useCallback(
-    async (key: string, params: { name: string; path?: string; data?: string }, preview?: string) => {
+    async (key: string, params: { name: string; path?: string; data?: string; mention?: boolean }, preview?: string) => {
       if (!client) {
         setChips((all) => markFailed(all, key, "Not connected to the daemon"));
         return;
@@ -285,7 +363,12 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
   // shortcut that steers directly is Ctrl+Shift+Enter.
   const send = (mode: SendMode = "queue") => {
     if (!canSend(draft, chips)) return;
-    onSend(draft.trim(), mode, readyAttachments(chips));
+    const slash = chips.length === 0 ? parseSlash(draft) : null;
+    if (slash && onInit) {
+      onInit(slash.rest);
+    } else {
+      onSend(composeMessage(draft, chips), mode, readyAttachments(chips));
+    }
     setDraft("");
     setChips([]);
   };
@@ -328,7 +411,14 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
           )}
         </div>
       )}
-      <ComposerChips chips={chips} onRemove={(key) => setChips((all) => removeChip(all, key))} />
+      <ComposerChips
+        chips={chips}
+        onRemove={(key) => {
+          const gone = chips.find((chip) => chip.key === key);
+          if (gone?.mention) setDraft((current) => withoutMention(current, gone.mention ?? ""));
+          setChips((all) => removeChip(all, key));
+        }}
+      />
       <form
         className="composer"
         onSubmit={(event) => {
@@ -353,12 +443,30 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
             event.target.value = "";
           }}
         />
+        {pickerOpen && (
+          <MentionPicker
+            id={pickerId}
+            files={found.files}
+            index={picked}
+            truncated={found.truncated}
+            onChoose={chooseMention}
+            onHover={setPicked}
+          />
+        )}
         <textarea
           ref={field}
           value={draft}
           aria-label="Message"
           placeholder={placeholder}
-          onChange={(event) => setDraft(event.target.value)}
+          role={pickerOpen ? "combobox" : undefined}
+          aria-expanded={pickerOpen || undefined}
+          aria-controls={pickerOpen ? pickerId : undefined}
+          aria-activedescendant={pickerOpen ? mentionOptionId(pickerId, picked) : undefined}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setCaret(event.target.selectionStart);
+          }}
+          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
           onPaste={(event) => {
             const files = [...event.clipboardData.files];
             if (files.length === 0) return;
@@ -366,6 +474,25 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
             attachFiles(files);
           }}
           onKeyDown={(event) => {
+            if (pickerOpen && mention) {
+              const last = found.files.length - 1;
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                const step = event.key === "ArrowDown" ? 1 : -1;
+                setPicked((index) => (index + step < 0 ? last : index + step > last ? 0 : index + step));
+                return;
+              }
+              if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+                event.preventDefault();
+                chooseMention(found.files[Math.min(picked, last)]);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setDismissed(mention.start);
+                return;
+              }
+            }
             if (event.key !== "Enter") return;
             const modified = event.ctrlKey || event.metaKey;
             if (modified && event.shiftKey) {

@@ -27,6 +27,7 @@ import type {
   SessionAgentKnowledgeParams,
   SessionAgentResumeParams,
   SessionSendParams,
+  SessionInitParams,
   SessionControlResult,
   SessionCreateParams,
   SessionBranchParams,
@@ -783,6 +784,21 @@ export function App() {
     void sendWithBudget(client, params);
   };
 
+  /** `/init`: the daemon sends the built-in prompt that has the agent write the project's AGENTS.md. */
+  const initProject = (guidance: string) => {
+    if (!client || !selected) return;
+    const params: SessionInitParams = { session_id: selected, ...(guidance ? { guidance } : {}) };
+    client.call("session.init", params).catch((error: unknown) => {
+      const stop = budgetStop(error);
+      // A used-up budget that asks first: go ahead only when the user confirms.
+      if (stop?.action === "ask" && window.confirm(stop.message)) {
+        client.call("session.init", { ...params, confirm_budget: true }).catch(report);
+      } else if (!stop || stop.action === "block") {
+        report(error);
+      }
+    });
+  };
+
   /** Changes one session's state here, if it is listed. */
   const changeSession = (id: string, change: (session: SessionState) => SessionState) =>
     setSessions((all) => (all[id] ? { ...all, [id]: change(all[id]) } : all));
@@ -1214,6 +1230,7 @@ export function App() {
         session={session}
         icons={icons}
         onSend={send}
+        onInit={initProject}
         onChangeQueued={changeQueued}
         onRespond={respond}
         onAlwaysAllow={alwaysAllow}
