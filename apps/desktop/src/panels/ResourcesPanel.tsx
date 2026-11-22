@@ -6,7 +6,12 @@ import { Cpu, Globe, Gpu, MemoryStick, PowerOff, Server } from "lucide-react";
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import type { ResourceSnapshot } from "@imperium/protocol";
 import type { DaemonClient } from "../daemon/client";
+import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
+import { IconButton } from "../components/IconButton";
+import { LoadingState } from "../components/LoadingState";
 import { ModelName } from "../components/ModelName";
+import { Notice } from "../components/Notice";
 
 /** Samples kept for the sparklines: two minutes at one every two seconds. */
 const HISTORY = 60;
@@ -79,13 +84,13 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
       .finally(() => setUnloading(null));
   };
 
-  if (!client) return <p className="empty">Resources appear once imperium-core is connected.</p>;
-  if (!snapshot) return <p className="empty">{error ?? "Reading resources…"}</p>;
+  if (!client) return <EmptyState className="compact" title="Not connected" body="Resources appear once imperium-core is connected." />;
+  if (!snapshot) return error ? <Notice tone="danger">{error}</Notice> : <LoadingState label="Reading resources…" />;
   const { cpu, memory } = snapshot;
   const daemon = snapshot.processes.find((process) => process.role === "daemon");
   return (
     <div className="resources">
-      {error && <p className="warning">{error}</p>}
+      {error && <Notice tone="warn">{error}</Notice>}
       <section className="meters" aria-label="Machine usage">
         <Meter
           icon={Cpu}
@@ -125,9 +130,9 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
 
       <Section icon={Server} title="Local models">
         {snapshot.local_models.length === 0 ? (
-          <p className="empty">No local model is loaded.</p>
+          <EmptyState className="compact" title="No local model is loaded" />
         ) : (
-          <table>
+          <table className="table compact resource-table">
             <thead>
               <tr>
                 <th>Model</th>
@@ -141,6 +146,19 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
             <tbody>
               {snapshot.local_models.map((model) => {
                 const process = model.pid === null ? undefined : snapshot.processes.find((p) => p.pid === model.pid);
+                const placement = model.cpu_pinned ? "CPU lane" : model.placement === "partial" ? `partial · ${model.gpu_layers} layers` : model.placement;
+                const state =
+                  model.slots_in_use > 0 ? (
+                    <Badge tone="accent">
+                      {model.slots_in_use}/{model.slots} busy{model.queued > 0 ? ` · ${model.queued} queued` : ""}
+                    </Badge>
+                  ) : model.queued > 0 || model.claimed ? (
+                    <Badge tone="accent" title="An agent is mid-turn on it, so it stays loaded">
+                      {model.queued > 0 ? `${model.queued} queued` : "held by a turn"}
+                    </Badge>
+                  ) : (
+                    <Badge>idle{model.unload_in_ms === null ? "" : ` · unloads in ${countdown(model.unload_in_ms)}`}</Badge>
+                  );
                 return (
                   <tr
                     key={model.model}
@@ -153,13 +171,18 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
                   >
                     <td>
                       <ModelName name={`${model.runtime}:${model.model}`} />
+                      <span className="cell-sub cell-sub-narrow" title="Tokens one session may use · KV pool reserved by running calls / its size">
+                        {placement} · ctx {model.context} · pool {model.pool_reserved_tokens}/{model.pool_tokens}
+                      </span>
+                      <span className="cell-sub cell-sub-mid">
+                        {state} ·{" "}
+                        <span title={model.sessions.join("\n")}>
+                          {model.sessions.length} {model.sessions.length === 1 ? "session" : "sessions"}
+                        </span>
+                      </span>
                     </td>
                     <td>
-                      {model.cpu_pinned
-                        ? "CPU lane"
-                        : model.placement === "partial"
-                          ? `partial · ${model.gpu_layers} layers`
-                          : model.placement}
+                      {placement}
                       <span className="muted" title="Tokens one session may use · KV pool reserved by running calls / its size">
                         {" "}
                         · ctx {model.context} · pool {model.pool_reserved_tokens}/{model.pool_tokens}
@@ -170,33 +193,18 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
                       {model.vram_bytes > 0 && model.ram_bytes > 0 && " · "}
                       {model.ram_bytes > 0 && `${gib(model.ram_bytes)} RAM`}
                     </td>
-                    <td>
-                      {model.slots_in_use > 0 ? (
-                        <span className="badge running">
-                          {model.slots_in_use}/{model.slots} busy{model.queued > 0 ? ` · ${model.queued} queued` : ""}
-                        </span>
-                      ) : model.queued > 0 || model.claimed ? (
-                        <span className="badge running" title="An agent is mid-turn on it, so it stays loaded">
-                          {model.queued > 0 ? `${model.queued} queued` : "held by a turn"}
-                        </span>
-                      ) : (
-                        <span className="badge">
-                          idle{model.unload_in_ms === null ? "" : ` · unloads in ${countdown(model.unload_in_ms)}`}
-                        </span>
-                      )}
-                    </td>
+                    <td>{state}</td>
                     <td title={model.sessions.join("\n")}>{model.sessions.length}</td>
                     <td>
                       {model.can_unload && (
-                        <button
-                          className="ghost icon-only"
+                        <IconButton
+                          icon={PowerOff}
+                          size="sm"
+                          label={`Unload ${model.model}`}
+                          tooltip={`Unload ${model.model} now`}
                           onClick={() => unload(model.model)}
                           disabled={unloading === model.model}
-                          title={`Unload ${model.model} now`}
-                          aria-label={`Unload ${model.model}`}
-                        >
-                          <PowerOff aria-hidden="true" />
-                        </button>
+                        />
                       )}
                     </td>
                   </tr>
@@ -209,9 +217,9 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
 
       <Section icon={Globe} title="Endpoints · last 15 min">
         {snapshot.endpoints.length === 0 ? (
-          <p className="empty">No session uses a hosted endpoint.</p>
+          <EmptyState className="compact" title="No hosted endpoint in use" body="Endpoints appear here while a session uses one." />
         ) : (
-          <table>
+          <table className="table compact resource-table">
             <thead>
               <tr>
                 <th>Model</th>
@@ -225,7 +233,16 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
             <tbody>
               {snapshot.endpoints.map((endpoint) => (
                 <tr key={endpoint.spec} title={endpoint.host ? `${endpoint.endpoint} · ${endpoint.host}` : endpoint.endpoint}>
-                  <td>{endpoint.spec}</td>
+                  <td>
+                    {endpoint.spec}
+                    <span className="cell-sub cell-sub-narrow" title={endpoint.sessions.join("\n")}>
+                      {endpoint.sessions.length} {endpoint.sessions.length === 1 ? "session" : "sessions"}
+                    </span>
+                    <span className="cell-sub cell-sub-mid">
+                      {(endpoint.prompt_tokens + endpoint.completion_tokens).toLocaleString()} tokens ·{" "}
+                      {endpoint.last_latency_ms === null ? "—" : `${(endpoint.last_latency_ms / 1000).toFixed(1)} s`}
+                    </span>
+                  </td>
                   <td title={endpoint.sessions.join("\n")}>{endpoint.sessions.length}</td>
                   <td>{endpoint.requests}</td>
                   <td>{(endpoint.prompt_tokens + endpoint.completion_tokens).toLocaleString()}</td>
