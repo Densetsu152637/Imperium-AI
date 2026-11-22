@@ -1,8 +1,10 @@
 # Plan: desktop interface polish
 
 Revision: 2026-11-16, revised after plan review round 1 and the user's answers; figures measured
-on `experimental` at `feddfc9e`. Updated 2026-11-22: stages 1 to 6 recorded as done. Roadmap
-[item 47](../12-roadmap.md). Status: stages 1 to 6 done; stage 7 is next.
+on `experimental` at `feddfc9e`. Updated 2026-11-22: stages 1 to 6 recorded as done. Revised 2026-11-22:
+stages 7 to 12 recorded as done. Roadmap [item 47](../12-roadmap.md). Status: stages 1 to 12 done;
+stages 13 and 14 in review ([#229](https://github.com/Densetsu152637/Imperium-AI/pull/229),
+[#232](https://github.com/Densetsu152637/Imperium-AI/pull/232)); stage 15 is next.
 
 The user asked for the desktop app to have "as much polish as the claude interface", with UI
 components that are "simple but well stylised". This plan turns that into a token system, a
@@ -760,9 +762,9 @@ records handoff notes and value changes from the stage's report. Stage pull requ
   zero; the window's own `@media (max-width: 720px)` rule is replaced by the Dialog's narrow
   sheet.
 - **Risks:** none beyond the checklist.
-- **Status:** pending.
-- **Outcome:** none yet.
-- **Handoff notes:** none yet.
+- **Status:** done.
+- **Outcome:** [PR #223](https://github.com/Densetsu152637/Imperium-AI/pull/223), squash commit `76baf577`, with follow-up [PR #225](https://github.com/Densetsu152637/Imperium-AI/pull/225), squash commit `c48b681c`. The Connectors window on the shared Dialog, Tabs, Card, Badge, Notice and Field components, with each validation problem shown under its own field.
+- **Handoff notes:** the Dialog has no header toolbar slot, so Connectors puts its Tabs and search in the `notice` slot. The form Cancel and Save buttons stay in the form body. `.chip` and `.chips` still live in `connectors.css` and are used by `PermissionsEditor` and `UsagePanel`; move them to `primitives.css` in stage 15.
 
 ### Stage 8: model configuration and model panels
 
@@ -779,9 +781,9 @@ records handoff notes and value changes from the stage's report. Stage pull requ
   both themes; the three files have no `native-select` allowance; budgets for both CSS files at
   zero; drafts, apply and restart notices behave as before.
 - **Risks:** `LocalModelsPanel.tsx` is 792 lines; keep the change to markup and classes.
-- **Status:** pending.
-- **Outcome:** none yet.
-- **Handoff notes:** none yet.
+- **Status:** done.
+- **Outcome:** [PR #224](https://github.com/Densetsu152637/Imperium-AI/pull/224), squash commit `94597ab1`. One `.table` for the model tables, `Select` for the three native selects, `Tooltip` for `InfoTip`, first-run setup as cards, and no fixed minimum widths in `models.css` (K3).
+- **Handoff notes:** `InfoTip` opens inline on touch. `.session-footer button.icon-only` (1.7rem) may move to `--control-h-sm` in a stage-4 follow-up. The Telemetry Markdown-label edge case was declined: model names containing Markdown characters lose the sub-line. This is a known limit; the fix belongs in `models/telemetry.ts` `cell()` escaping.
 
 ### Stage 9: environments
 
@@ -795,9 +797,9 @@ records handoff notes and value changes from the stage's report. Stage pull requ
 - **Acceptance checks:** create, edit, unsaved-changes prompt and delete behave as before;
   budgets at zero.
 - **Risks:** none beyond the checklist.
-- **Status:** pending.
-- **Outcome:** none yet.
-- **Handoff notes:** none yet.
+- **Status:** done.
+- **Outcome:** [PR #226](https://github.com/Densetsu152637/Imperium-AI/pull/226), squash commit `c59a59dc`. The environment window and its sections on `Dialog`, `Field`, `Notice`, `Badge` and `IconButton`, labels above fields on one left edge, and `environments.css` budgets at zero.
+- **Handoff notes:** some `environments.css` rules (`.environment-folders`, `.folder-path`, `.runtime-row`, `.settings-row-control .row-actions`) stay there for `PermissionsEditor` and Settings. `.settings-notice` in `primitives.css` is unused; remove it in stage 15. `Row` and `RowNote` remain for switch and button rows.
 
 ### Stage 10: side panels
 
@@ -816,9 +818,9 @@ records handoff notes and value changes from the stage's report. Stage pull requ
   `native-select` allowance; budgets at zero.
 - **Risks:** many small panels; split into two pull requests (tables and data panels; browser,
   preview and review) if the diff passes about 800 lines.
-- **Status:** pending.
-- **Outcome:** none yet.
-- **Handoff notes:** none yet.
+- **Status:** done.
+- **Outcome:** [PR #227](https://github.com/Densetsu152637/Imperium-AI/pull/227), squash commit `b78bf353` (data panels), [PR #230](https://github.com/Densetsu152637/Imperium-AI/pull/230), squash commit `d2e49532` (Browser, Preview and Review panels), with follow-up [PR #231](https://github.com/Densetsu152637/Imperium-AI/pull/231), squash commit `3b5ca1c3`. Side panels use the shared table, states, `Tabs`, `Select` and `IconButton`, with wrapping toolbars and container queries in place of fixed minimums (K3).
+- **Handoff notes:** narrow side columns show dropped values as `.cell-sub` second lines. Browser tabs use one Close button beside the strip, with manual tab activation while the user drives. Review diff lines wrap with a hanging indent.
 
 ### Stage 11: tour
 
@@ -830,9 +832,9 @@ records handoff notes and value changes from the stage's report. Stage pull requ
 - **Acceptance checks:** the tour still skips missing targets, yields to approvals and
   remembers its outcome (`tourSteps.test.ts` passes, and a manual run); budgets at zero.
 - **Risks:** none beyond the checklist.
-- **Status:** pending.
-- **Outcome:** none yet.
-- **Handoff notes:** none yet.
+- **Status:** done.
+- **Outcome:** [PR #228](https://github.com/Densetsu152637/Imperium-AI/pull/228), squash commit `b9efe5fb`, shared with stage 12. The tour card is a `.card` at `--elev-2` with step dots, and the highlight and scrim use tokens, so `tour.css` is at zero.
+- **Handoff notes:** `.suggestion-body` and its `progress` rule in `session.css` are dead. The `session.css` comment that says `.permission` covers "a model suggestion" is stale. Both belong to a stage-4 follow-up. The tour uses `--z-tour` (2000).
 
 ### Stage 12: house-models card
 
@@ -844,9 +846,9 @@ records handoff notes and value changes from the stage's report. Stage pull requ
   ghost dismiss IconButton, and model rows that match the model lists.
 - **Acceptance checks:** dismiss and set-up actions unchanged; budgets at zero.
 - **Risks:** none.
-- **Status:** pending.
-- **Outcome:** none yet.
-- **Handoff notes:** small; may be paired with stage 11 in one pull request if both are ready.
+- **Status:** done.
+- **Outcome:** [PR #228](https://github.com/Densetsu152637/Imperium-AI/pull/228), squash commit `b9efe5fb`, shared with stage 11. The house-models card and the model suggestion card are `.card`s with a `.table`, one primary action and a ghost dismiss `IconButton`.
+- **Handoff notes:** the house card puts the size and badge under the model name. The dead suggestion rules are listed under stage 11.
 
 ### Stage 13: nursery and mod frames
 

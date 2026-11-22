@@ -702,6 +702,16 @@ and `environments.agent_update` (protocol 0.28)
     app the field sits in the environment's settings, beside *Project worktrees* and *Start in a
     worktree*
     ([desktop interface](07-desktop-ui.md#environments-and-sessions-implemented)).
+<!-- markdownlint-disable-next-line MD029 -->
+58. **Hot-swappable harnesses** (planned). A session runs under a selectable agent harness: the
+    default harness (today's agent loop and prompts) or a specialised Imperium harness, the
+    guided reasoning harness proposed in the private Imperium-Research repository
+    (`docs/human-reasoning-models/harness-proposal.md`). The harness is chosen per session,
+    environment or agent file, and switched at a turn boundary without restarting the session
+    or the daemon. Headless runs take `--harness <name>`, so evals can compare harnesses on the
+    same tasks, building on the headless eval variants of [item 53](#next-in-order). Order: this
+    is the first step of the reasoning-harness line, after the 0.3.0 version bump; the Imperium
+    harness is then built as the second harness behind this switch.
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
