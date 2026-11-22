@@ -123,13 +123,19 @@ impl Connection {
                 call_later::<SessionAttach, _>(c.params.take(), c.later, |params| {
                     let state = Arc::clone(&self.state);
                     let session = self.session(&params.session_id);
-                    async move { crate::attachments::attach(&state, &session?, params).await }
+                    async move {
+                        let session = session?;
+                        crate::attachments::attach(&state, &session, params).await
+                    }
                 })
             }
             SessionFiles::NAME => {
                 call_later::<SessionFiles, _>(c.params.take(), c.later, |params| {
                     let session = self.session(&params.session_id);
-                    async move { crate::attachments::files(&session?, params).await }
+                    async move {
+                        let session = session?;
+                        crate::attachments::files(&session, params).await
+                    }
                 })
             }
             SessionInit::NAME => call::<SessionInit>(c.params.take(), |params| {
