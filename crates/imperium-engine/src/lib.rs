@@ -36,6 +36,7 @@ pub use budget_gate::{BudgetGate, BudgetVerdict};
 pub use checkpoints::TurnCheckpoints;
 pub use compact::SwitchError;
 pub use imperium_models::{ChatClient, ChatClients, ChatRequest, Endpoint};
+pub use instructions::{INIT_FILE, init_prompt};
 pub use journal::{journalled_model, messages_path, read_events as journal_events};
 pub use knowledge::{KnowledgeAnswer, KnowledgeConfig, ModelAvailability};
 pub use launcher::{LaunchFuture, LaunchRequest, SessionLauncher};

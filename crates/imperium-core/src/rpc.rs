@@ -101,7 +101,7 @@ use imperium_protocol::methods::{
     SessionAgentResumeParams, SessionAgentResumeResult, SessionAgents, SessionAgentsParams,
     SessionAgentsResult,
 };
-use imperium_protocol::methods::{SessionAttach, SessionAttachParams, VoiceTranscribe};
+use imperium_protocol::methods::{SessionAttach, SessionFiles, SessionInit, VoiceTranscribe};
 use imperium_protocol::methods::{
     SessionBranch, SessionBranchParams, SessionBrowserAct, SessionBrowserControl, SessionCompare,
     SessionCompareParams, SessionComparePick, SessionComparePickParams, SessionSuggestionRespond,
@@ -570,6 +570,18 @@ mod tests {
         {
             Outcome::Result(result) => result.clone(),
             Outcome::Error(error) => panic!("expected a result, got {error:?}"),
+        }
+    }
+
+    /// The reply of a call that may answer later (an awaited deferred reply).
+    async fn settle(handled: Handled) -> Handled {
+        match handled.deferred {
+            Some(later) => Handled {
+                response: Some(later.await),
+                subscription: None,
+                deferred: None,
+            },
+            None => handled,
         }
     }
 
@@ -1238,20 +1250,26 @@ mod tests {
             .unwrap();
 
         // Inside the project: referenced where it is.
-        let inside = result_of(&connection.handle_text(&request(
-            3,
-            SessionAttach::NAME,
-            json!({"session_id": id, "path": project.path().join("notes.md")}),
-        )));
+        let inside = result_of(
+            &settle(connection.handle_text(&request(
+                3,
+                SessionAttach::NAME,
+                json!({"session_id": id, "path": project.path().join("notes.md")}),
+            )))
+            .await,
+        );
         assert_eq!(inside["attachment"]["kind"], "text");
         assert_eq!(inside["attachment"]["copied"], false);
         // Pasted bytes and outside files are copied into the session's attachments folder.
-        let pasted = result_of(&connection.handle_text(&request(
-            4,
-            SessionAttach::NAME,
-            json!({"session_id": id, "name": "shot.png",
-                   "data": base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nx")}),
-        )));
+        let pasted = result_of(
+            &settle(connection.handle_text(&request(
+                4,
+                SessionAttach::NAME,
+                json!({"session_id": id, "name": "shot.png",
+                       "data": base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nx")}),
+            )))
+            .await,
+        );
         assert_eq!(pasted["attachment"]["kind"], "image");
         assert_eq!(pasted["attachment"]["copied"], true);
         assert!(
@@ -1260,17 +1278,24 @@ mod tests {
                 .unwrap()
                 .starts_with("data:image/png;base64,")
         );
-        let copied = result_of(&connection.handle_text(&request(
-            5,
-            SessionAttach::NAME,
-            json!({"session_id": id, "path": outside.path().join("secret.txt")}),
-        )));
+        let copied = result_of(
+            &settle(connection.handle_text(&request(
+                5,
+                SessionAttach::NAME,
+                json!({"session_id": id, "path": outside.path().join("secret.txt")}),
+            )))
+            .await,
+        );
         assert_eq!(copied["attachment"]["copied"], true);
         let copy = std::path::Path::new(copied["attachment"]["path"].as_str().unwrap());
         assert!(copy.canonicalize().unwrap().starts_with(&store));
         // Neither or both sources, and oversized files, are refused.
-        let neither =
-            connection.handle_text(&request(6, SessionAttach::NAME, json!({"session_id": id})));
+        let neither = settle(connection.handle_text(&request(
+            6,
+            SessionAttach::NAME,
+            json!({"session_id": id}),
+        )))
+        .await;
         assert_eq!(error_code(&neither), Some(codes::INVALID_PARAMS));
 
         // A sent attachment pointing outside the session is refused; the staged ones are sent.
@@ -1296,6 +1321,199 @@ mod tests {
             connection.handle_text(&request(9, SessionDelete::NAME, json!({"session_id": id})));
         assert_eq!(error_code(&deleted), None, "{:?}", deleted.response);
         assert!(!store.exists());
+    }
+
+    /// Calls `method` and waits for its reply, which may come later.
+    async fn ask(connection: &mut Connection, id: i64, method: &str, params: Value) -> Handled {
+        settle(connection.handle_text(&request(id, method, params))).await
+    }
+
+    #[tokio::test]
+    async fn mentions_list_and_stage_only_what_the_session_may_read() {
+        let mut connection = handshaken();
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(project.path().join("ignored.txt"), "no").unwrap();
+        std::fs::write(project.path().join("notes.md"), "# Plan").unwrap();
+        std::fs::create_dir_all(project.path().join("docs")).unwrap();
+        std::fs::create_dir_all(project.path().join("src")).unwrap();
+        std::fs::write(project.path().join("src/lib.rs"), "fn main() {}").unwrap();
+        std::fs::write(project.path().join("big.txt"), "x".repeat(150 * 1024)).unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "key").unwrap();
+        let created = result_of(&connection.handle_text(&request(
+            2,
+            SessionCreate::NAME,
+            json!({"project_dir": project.path()}),
+        )));
+        let id = created["session_id"].as_str().unwrap().to_string();
+
+        // The picker lists files and directories, skips ignored files and ranks by match.
+        let listed = result_of(
+            &ask(
+                &mut connection,
+                3,
+                SessionFiles::NAME,
+                json!({"session_id": id, "query": ""}),
+            )
+            .await,
+        );
+        let names: Vec<&str> = listed["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["relative"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"notes.md") && names.contains(&"docs"),
+            "{names:?}"
+        );
+        assert!(!names.contains(&"ignored.txt"), "{names:?}");
+        let found = result_of(
+            &ask(
+                &mut connection,
+                4,
+                SessionFiles::NAME,
+                json!({"session_id": id, "query": "lib"}),
+            )
+            .await,
+        );
+        assert_eq!(found["files"][0]["relative"], "src/lib.rs");
+        assert_eq!(found["files"][0]["directory"], false);
+
+        // A mention outside the session's folders is refused, never copied.
+        let refused = ask(
+            &mut connection,
+            5,
+            SessionAttach::NAME,
+            json!({"session_id": id, "path": outside.path().join("secret.txt"), "mention": true}),
+        )
+        .await;
+        assert_eq!(error_code(&refused), Some(codes::INVALID_PARAMS));
+        let store = connection.state.data_dir().join("attachments").join(&id);
+        assert!(
+            !store.exists() || std::fs::read_dir(&store).unwrap().next().is_none(),
+            "nothing was copied"
+        );
+        // A directory is a path, not an attachment.
+        let directory = ask(
+            &mut connection,
+            6,
+            SessionAttach::NAME,
+            json!({"session_id": id, "path": project.path().join("docs"), "mention": true}),
+        )
+        .await;
+        assert_eq!(error_code(&directory), Some(codes::INVALID_PARAMS));
+
+        // A file inside is referenced where it is, and a long one is cut with a marker.
+        let notes = result_of(
+            &ask(
+                &mut connection,
+                7,
+                SessionAttach::NAME,
+                json!({"session_id": id, "path": project.path().join("notes.md"), "mention": true}),
+            )
+            .await,
+        );
+        assert_eq!(notes["attachment"]["copied"], false);
+        assert_eq!(notes["attachment"]["kind"], "text");
+        let big = result_of(
+            &ask(
+                &mut connection,
+                8,
+                SessionAttach::NAME,
+                json!({"session_id": id, "path": project.path().join("big.txt"), "mention": true}),
+            )
+            .await,
+        );
+        assert_eq!(big["attachment"]["copied"], false);
+        let attachment: imperium_protocol::session::Attachment =
+            serde_json::from_value(big["attachment"].clone()).unwrap();
+        let rendered = imperium_media::attachments::render(&[attachment]);
+        assert!(
+            rendered.text.contains("[… truncated: showing the first"),
+            "{}",
+            rendered.text
+        );
+        let sent = ask(
+            &mut connection,
+            9,
+            SessionSend::NAME,
+            json!({"session_id": id, "text": "look", "attachments": [notes["attachment"], big["attachment"]]}),
+        )
+        .await;
+        assert_eq!(error_code(&sent), None, "{:?}", sent.response);
+    }
+
+    #[tokio::test]
+    async fn a_mention_a_deny_rule_covers_is_not_listed_or_staged() {
+        let mut connection = handshaken();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join(".env"), "KEY=1").unwrap();
+        std::fs::write(project.path().join("a.txt"), "a").unwrap();
+        let added = ask(
+            &mut connection,
+            2,
+            "permissions.add_rule",
+            json!({"rule": {"tool": "*", "pattern": ".env", "action": "deny"}}),
+        )
+        .await;
+        assert_eq!(error_code(&added), None, "{:?}", added.response);
+        let created = result_of(&connection.handle_text(&request(
+            3,
+            SessionCreate::NAME,
+            json!({"project_dir": project.path()}),
+        )));
+        let id = created["session_id"].as_str().unwrap().to_string();
+        let listed = result_of(
+            &ask(
+                &mut connection,
+                4,
+                SessionFiles::NAME,
+                json!({"session_id": id, "query": "env"}),
+            )
+            .await,
+        );
+        assert!(
+            listed["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|file| file["relative"] != ".env")
+        );
+        let refused = ask(
+            &mut connection,
+            5,
+            SessionAttach::NAME,
+            json!({"session_id": id, "path": project.path().join(".env"), "mention": true}),
+        )
+        .await;
+        assert_eq!(error_code(&refused), Some(codes::INVALID_PARAMS));
+    }
+
+    #[tokio::test]
+    async fn init_sends_the_built_in_prompt_as_a_user_turn() {
+        let mut connection = handshaken();
+        let project = tempfile::tempdir().unwrap();
+        let created = result_of(&connection.handle_text(&request(
+            2,
+            SessionCreate::NAME,
+            json!({"project_dir": project.path()}),
+        )));
+        let id = created["session_id"].as_str().unwrap().to_string();
+        let sent = connection.handle_text(&request(
+            3,
+            SessionInit::NAME,
+            json!({"session_id": id, "guidance": "the build commands"}),
+        ));
+        assert_eq!(error_code(&sent), None, "{:?}", sent.response);
+        assert!(result_of(&sent)["id"].is_string());
+        let missing = connection.handle_text(&request(
+            4,
+            SessionInit::NAME,
+            json!({"session_id": "nope"}),
+        ));
+        assert_eq!(error_code(&missing), Some(codes::SESSION_NOT_FOUND));
     }
 
     #[tokio::test]

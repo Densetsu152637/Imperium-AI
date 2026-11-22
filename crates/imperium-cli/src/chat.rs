@@ -10,19 +10,21 @@ use imperium_protocol::methods::{
     ContextFit, MODEL_RESIDENCY, ModelResidency, RewindMode, SessionAgentAsk,
     SessionAgentAskParams, SessionAgentAskResult, SessionAgentKnowledge,
     SessionAgentKnowledgeParams, SessionAgentResume, SessionAgentResumeParams, SessionAgents,
-    SessionAgentsParams, SessionAnswer, SessionAnswerParams, SessionBranch, SessionBranchParams,
-    SessionCheckpoints, SessionCheckpointsParams, SessionCheckpointsResult, SessionCompare,
-    SessionCompareParams, SessionComparePick, SessionComparePickParams, SessionControl,
-    SessionControlParams, SessionCreate, SessionCreateParams, SessionQueue, SessionQueueParams,
-    SessionRespond, SessionRespondParams, SessionReview, SessionReviewParams, SessionReviewResult,
-    SessionRewind, SessionRewindParams, SessionRewindResult, SessionSend, SessionSendParams,
-    SessionSubscribe, SessionSubscribeParams, SessionSuggestionRespond, SuggestionRespondParams,
+    SessionAgentsParams, SessionAnswer, SessionAnswerParams, SessionAttach, SessionAttachParams,
+    SessionBranch, SessionBranchParams, SessionCheckpoints, SessionCheckpointsParams,
+    SessionCheckpointsResult, SessionCompare, SessionCompareParams, SessionComparePick,
+    SessionComparePickParams, SessionControl, SessionControlParams, SessionCreate,
+    SessionCreateParams, SessionFile, SessionFiles, SessionFilesParams, SessionInit,
+    SessionInitParams, SessionQueue, SessionQueueParams, SessionRespond, SessionRespondParams,
+    SessionReview, SessionReviewParams, SessionReviewResult, SessionRewind, SessionRewindParams,
+    SessionRewindResult, SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
+    SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
-    AgentEvent, AgentStatus, AgentSummary, ContextCategory, ExtensionKind, KnowledgeCard,
-    KnowledgeStatus, LocalWaitReason, PauseCause, PermissionDecision, Question, QuestionOutcome,
-    QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent, SessionEventParams,
-    StepStatus, TokenCountMethod,
+    AgentEvent, AgentStatus, AgentSummary, Attachment, ContextCategory, ExtensionKind,
+    KnowledgeCard, KnowledgeStatus, LocalWaitReason, PauseCause, PermissionDecision, Question,
+    QuestionOutcome, QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent,
+    SessionEventParams, StepStatus, TokenCountMethod,
 };
 use tokio::sync::mpsc;
 
@@ -117,7 +119,9 @@ pub fn run(
              the session changed (since checkpoint n); /branch continues in a copy of this \
              conversation, /compare <model> <model> -- <message> runs a message on several \
              models and /pick <n> keeps one; /download, /dismiss, or /never answer a \
-             model download suggestion; an \
+             model download suggestion; /init has the agent write or update the project's \
+             AGENTS.md; /files <text> searches the session's files, and an @path in a message \
+             attaches that file (an @folder is only named); an \
              empty line (when idle) or /exit quits."
         );
         let mut lines = read_lines();
@@ -562,12 +566,49 @@ impl Chat {
                     Err(error) => println!("{error}"),
                 }
             }
-            Some(Command::Steer(text)) => self.send(client, session_id, text, true).await?,
+            Some(Command::Init(guidance)) => {
+                let result = client
+                    .call::<SessionInit>(SessionInitParams {
+                        session_id: session_id.to_string(),
+                        guidance,
+                        confirm_budget: None,
+                    })
+                    .await;
+                match result {
+                    Ok(_) => {
+                        println!("Asking the agent to analyse the project and write AGENTS.md.");
+                        if !self.busy {
+                            self.busy = true;
+                            self.sent_while_idle = true;
+                        }
+                    }
+                    Err(error) => println!("{error}"),
+                }
+            }
+            Some(Command::Files(query)) => {
+                let result = client
+                    .call::<SessionFiles>(SessionFilesParams {
+                        session_id: session_id.to_string(),
+                        query,
+                        limit: Some(FILES_SHOWN),
+                    })
+                    .await;
+                match result {
+                    Ok(result) => print!("{}", describe_files(&result.files, result.truncated)),
+                    Err(error) => println!("{error}"),
+                }
+            }
+            Some(Command::Steer(text)) => {
+                let attachments = self.attach_mentions(client, session_id, &text).await;
+                self.send(client, session_id, text, true, attachments)
+                    .await?
+            }
             Some(Command::Suggestion(action)) => {
                 self.answer_suggestion(client, session_id, action).await?
             }
             None => {
-                self.send(client, session_id, text.to_string(), false)
+                let attachments = self.attach_mentions(client, session_id, text).await;
+                self.send(client, session_id, text.to_string(), false, attachments)
                     .await?
             }
         }
@@ -612,6 +653,42 @@ impl Chat {
         Ok(())
     }
 
+    /// Attaches the files a message mentions with `@path` (`session.attach` with `mention`, so
+    /// the daemon holds each to the session's folders and permission rules, in a remote
+    /// session too). A word that names no file stays plain text, a folder is only named in the
+    /// text, and a file the session may not read is reported and left unattached.
+    async fn attach_mentions(
+        &self,
+        client: &mut Client,
+        session_id: &str,
+        text: &str,
+    ) -> Vec<Attachment> {
+        let mut attached = Vec::new();
+        for path in mention_paths(text) {
+            let result = client
+                .call::<SessionAttach>(SessionAttachParams {
+                    session_id: session_id.to_string(),
+                    name: String::new(),
+                    path: Some(path.clone()),
+                    data: None,
+                    mention: Some(true),
+                })
+                .await;
+            match result {
+                Ok(result) => attached.push(result.attachment),
+                Err(error) => {
+                    let reason = error.to_string();
+                    if reason.contains("outside the workspace")
+                        || reason.contains("permission rule")
+                    {
+                        println!("{}", dim(&format!("@{path} not attached: {reason}")));
+                    }
+                }
+            }
+        }
+        attached
+    }
+
     /// Sends a message: it starts a turn when the agent is idle and otherwise queues (or,
     /// steering, joins the running turn); the daemon's `message_queued` says which.
     async fn send(
@@ -620,6 +697,7 @@ impl Chat {
         session_id: &str,
         text: String,
         steer: bool,
+        attachments: Vec<Attachment>,
     ) -> anyhow::Result<()> {
         client
             .call::<SessionSend>(SessionSendParams {
@@ -628,7 +706,7 @@ impl Chat {
                 mode: steer.then_some(SendMode::Steer),
                 agent_id: None,
                 confirm_budget: None,
-                attachments: Vec::new(),
+                attachments,
             })
             .await?;
         if !self.busy {
@@ -987,6 +1065,10 @@ enum Command {
     Queue,
     /// `/steer <text>`: a message for the running turn.
     Steer(String),
+    /// `/init [guidance]`: the agent analyses the project and writes or updates `AGENTS.md`.
+    Init(Option<String>),
+    /// `/files [text]`: the session's files and folders that match, as `@` mentions find them.
+    Files(String),
     /// `/agents`: the session's agents and their kept state.
     Agents,
     /// `/resume-agent <id> <text>`: a follow-up for a finished subagent.
@@ -1176,6 +1258,15 @@ fn command(text: &str) -> Option<Command> {
     if text == "/rewind" || text.starts_with("/rewind ") {
         return rewind_command(&text["/rewind".len()..]).map(Command::Rewind);
     }
+    if text == "/init" || text.starts_with("/init ") {
+        let guidance = text["/init".len()..].trim();
+        return Some(Command::Init(
+            (!guidance.is_empty()).then(|| guidance.to_string()),
+        ));
+    }
+    if text == "/files" || text.starts_with("/files ") {
+        return Some(Command::Files(text["/files".len()..].trim().to_string()));
+    }
     match text {
         "/context" => return Some(Command::Context),
         "/queue" => return Some(Command::Queue),
@@ -1217,6 +1308,74 @@ fn command(text: &str) -> Option<Command> {
             .then(|| Command::ResumeAgent(agent_id.to_string(), follow_up.to_string()));
     }
     control_command(text).map(Command::Control)
+}
+
+/// Most matches `/files` shows.
+const FILES_SHOWN: u32 = 20;
+/// Most files one message may attach (the protocol's limit).
+const MAX_MENTIONS: usize = 20;
+
+/// The paths a message mentions: each `@path` (or `@"a path with spaces"`) that starts a word,
+/// without the punctuation that ends a sentence, once each and at most [`MAX_MENTIONS`].
+fn mention_paths(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut found: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < chars.len() {
+        if chars[at] != '@' || (at > 0 && !chars[at - 1].is_whitespace()) {
+            at += 1;
+            continue;
+        }
+        let mut end = at + 1;
+        let path: String = if chars.get(end) == Some(&'"') {
+            let start = end + 1;
+            end = start;
+            while end < chars.len() && chars[end] != '"' {
+                end += 1;
+            }
+            if end >= chars.len() {
+                at += 1;
+                continue;
+            }
+            let quoted = chars[start..end].iter().collect();
+            end += 1;
+            quoted
+        } else {
+            while end < chars.len() && !chars[end].is_whitespace() {
+                end += 1;
+            }
+            chars[at + 1..end]
+                .iter()
+                .collect::<String>()
+                .trim_end_matches([',', '.', ';', ':', '!', '?', ')'])
+                .to_string()
+        };
+        if !path.is_empty() && !found.contains(&path) && found.len() < MAX_MENTIONS {
+            found.push(path);
+        }
+        at = end;
+    }
+    found
+}
+
+/// The matches of `/files`, one per line (a folder ends in `/`).
+fn describe_files(files: &[SessionFile], truncated: bool) -> String {
+    if files.is_empty() {
+        return "No files match.\n".into();
+    }
+    let mut out = String::new();
+    for file in files {
+        out.push_str(&file.relative);
+        if file.directory {
+            out.push('/');
+        }
+        out.push('\n');
+    }
+    if truncated {
+        out.push_str("More match: type more of the name to narrow the list.\n");
+    }
+    out.push_str("Mention one in a message as @path to attach it.\n");
+    out
 }
 
 /// The agents as `/agents` prints them.
@@ -1703,6 +1862,52 @@ mod tests {
             ],
             cached_tokens: 0,
         }
+    }
+
+    #[test]
+    fn init_and_files_are_commands() {
+        assert_eq!(command("/init"), Some(Command::Init(None)));
+        assert_eq!(
+            command("/init  focus on the tests "),
+            Some(Command::Init(Some("focus on the tests".into())))
+        );
+        assert_eq!(command("/files"), Some(Command::Files(String::new())));
+        assert_eq!(
+            command("/files lib rs"),
+            Some(Command::Files("lib rs".into()))
+        );
+        assert_eq!(command("/initialise"), None);
+    }
+
+    #[test]
+    fn messages_mention_files_with_at_paths() {
+        assert_eq!(
+            mention_paths("explain @src/lib.rs and @README.md, then @src/lib.rs again."),
+            ["src/lib.rs", "README.md"]
+        );
+        assert_eq!(
+            mention_paths(r#"read @"my notes.md" (and @docs/)"#),
+            ["my notes.md", "docs/"]
+        );
+        // An address, a lone @ and an unclosed quote are not mentions.
+        assert!(mention_paths("mail me@example.com or @ or @\"open").is_empty());
+        assert_eq!(mention_paths("@a.txt"), ["a.txt"]);
+        let many: String = (0..30).map(|n| format!("@f{n} ")).collect();
+        assert_eq!(mention_paths(&many).len(), MAX_MENTIONS);
+    }
+
+    #[test]
+    fn files_list_one_per_line_with_folders_marked() {
+        let file = |relative: &str, directory| SessionFile {
+            path: format!("/work/{relative}"),
+            folder: "/work".into(),
+            relative: relative.into(),
+            directory,
+        };
+        let text = describe_files(&[file("src", true), file("src/lib.rs", false)], true);
+        assert!(text.starts_with("src/\nsrc/lib.rs\n"), "{text}");
+        assert!(text.contains("More match"), "{text}");
+        assert_eq!(describe_files(&[], false), "No files match.\n");
     }
 
     #[test]

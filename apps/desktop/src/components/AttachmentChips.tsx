@@ -1,7 +1,7 @@
 // Attachment chips: in the composer (removable, with upload state) and in the transcript (what a
 // sent message carried). Images show their thumbnail; other files an icon.
 
-import { File, FileText, Image as ImageIcon, LoaderCircle, TriangleAlert, X } from "lucide-react";
+import { File, FileText, Folder, Image as ImageIcon, LoaderCircle, TriangleAlert, X } from "lucide-react";
 
 import type { Attachment } from "@imperium/protocol";
 
@@ -23,13 +23,22 @@ export function ComposerChips({ chips, onRemove }: { chips: Chip[]; onRemove: (k
         const title =
           chip.state === "failed"
             ? chip.error
-            : chip.attachment
+            : chip.directory
+              ? `${chip.directory}
+A folder: its path goes in the message, its files are not attached`
+              : chip.attachment
               ? `${chip.attachment.path}\n${deliveryLabel(chip.attachment, chip.vision ?? false)}`
               : "Uploading…";
         const noVision = chip.attachment?.kind === "image" && !chip.vision;
         return (
           <li key={chip.key} className={`attachment-chip ${chip.state}`} title={title}>
-            {chip.preview ? <img src={chip.preview} alt="" /> : <KindIcon kind={chip.attachment?.kind} />}
+            {chip.preview ? (
+              <img src={chip.preview} alt="" />
+            ) : chip.directory ? (
+              <Folder aria-hidden="true" />
+            ) : (
+              <KindIcon kind={chip.attachment?.kind} />
+            )}
             <span className="attachment-name">{chip.name}</span>
             {chip.state === "uploading" && <LoaderCircle className="spin" aria-label="Uploading" />}
             {chip.state === "failed" && <TriangleAlert aria-label={chip.error ?? "Failed"} />}

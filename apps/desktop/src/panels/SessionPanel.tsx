@@ -88,6 +88,8 @@ type Props = {
   icons: ProjectIcons;
   /** Sends a message: `queue` starts a turn, or waits while one runs; `steer` joins the running turn. */
   onSend: (text: string, mode: SendMode, attachments: Attachment[]) => void;
+  /** `/init`: has the daemon send the prompt that writes the project's instruction file (`session.init`). */
+  onInit?: (guidance: string) => void;
   /** Edits, removes, or steers a queued message (`session.queue`). */
   onChangeQueued: (id: string, change: QueueChange) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
@@ -151,6 +153,7 @@ export function SessionPanel({
   session,
   icons,
   onSend,
+  onInit,
   onChangeQueued,
   onRespond,
   onAlwaysAllow,
@@ -478,6 +481,10 @@ export function SessionPanel({
         client={client}
         placeholder={composerHint(settings.sendKey === "enter", session.busy)}
         onSend={send}
+        onInit={onInit && ((guidance) => {
+          follow.resume();
+          onInit(guidance);
+        })}
         prefill={prefill}
       />
 

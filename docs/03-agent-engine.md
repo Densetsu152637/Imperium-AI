@@ -718,7 +718,16 @@ wait, or join the running turn when the user asks.
 
 `imperium chat` reads input while a turn runs: a line typed then is queued, `/steer <text>`
 steers, and `/queue` lists the queue. The desktop composer stays enabled while the agent works
-([07](07-desktop-ui.md#environments-and-sessions-implemented)).
+([07](07-desktop-ui.md#environments-and-sessions-implemented)). `/init [guidance]` sends the
+built-in prompt that has the agent write or update the project's `AGENTS.md`, `/files [text]`
+lists the session's files and folders that match (the search behind the composer's `@` picker),
+and an `@path` in a message (or `@"a path with spaces"`) attaches that file through
+`session.attach` with `mention`, as in the desktop composer
+([07](07-desktop-ui.md#file-mentions-and-init-implemented)). The command's input is read a line
+at a time with no line editor, so there is no completion on `@`: `/files` is the way to search.
+A word after `@` that names no file stays plain text, an `@folder` is only named, and a file
+outside the session's folders or one a permission rule guards is reported and not attached
+(the message is still sent).
 
 ## Stopping a session
 
