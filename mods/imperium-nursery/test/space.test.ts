@@ -14,6 +14,7 @@ import {
   boxesOverlap,
   clampTo,
   clearTarget,
+  roomHeightFor,
   edgeTarget,
   fitMetrics,
   fitScale,
@@ -327,7 +328,8 @@ test("pets shrink only when their boxes do not fit, and labels stay readable", (
   // A 122 px wide room at its minimum height: one pet at full size, two a little smaller.
   const room122 = { width: 122, height: 220 };
   expect(fitScale(room122, 1, FULL)).toBe(1);
-  expect(fitScale(room122, 2, FULL)).toBeGreaterThanOrEqual(0.7);
+  // Two pets: the nursery makes the room tall enough for them and a spare box at 70 %.
+  expect(fitScale({ width: 122, height: roomHeightFor(2, 122, FULL) }, 2, FULL)).toBeGreaterThanOrEqual(0.7);
   expect(fitScale(room122, 0, FULL)).toBe(1);
   // A room as tall as the nursery makes it for ten pets 121 px wide: the sprite shrinks, the label stays.
   const tall = { width: 121, height: roomHeight(10, 121) };
@@ -374,4 +376,36 @@ test("a room is tight only when the pets cannot fit with room to move", () => {
   const m = scaleMetrics(FULL, MIN_SCALE, false);
   expect(isTight(narrow, boxSlots(narrow, m).length, m, MIN_SCALE)).toBe(true);
   expect(isTight(narrow, 1, m, MIN_SCALE)).toBe(false);
+});
+
+test("one to four pets in a narrow room walk: a clear target is found in at least half of the draws", () => {
+  for (const width of [122, 172, 222]) {
+    for (let count = 1; count <= 4; count++) {
+      const room = { width, height: roomHeightFor(count, width, FULL) };
+      const { scale, metrics } = fitMetrics(room, count, FULL);
+      expect(scale).toBeGreaterThanOrEqual(count === 1 ? 1 : 0.7);
+      expect(isTight(room, count, metrics, scale)).toBe(false);
+      const spots = spreadSpots(count, room, metrics);
+      expect(crowding(spots, metrics, room)).toEqual({ pairs: 0, outside: 0 });
+      const bounds = boundsOf(room, metrics);
+      for (let pet = 0; pet < count; pet++) {
+        const rand = seeded(width * 10 + count * 3 + pet);
+        const others = spots.filter((_, i) => i !== pet);
+        let found = 0;
+        for (let draw = 0; draw < 200; draw++) {
+          const t = clearTarget(bounds, spots[pet]!, others, metrics, room, rand);
+          if (t) {
+            found++;
+            expect(inside(bounds, t)).toBe(true);
+            for (const q of others) expect(boxesOverlap(t, q, metrics)).toBe(false);
+          }
+        }
+        expect(found).toBeGreaterThanOrEqual(100);
+      }
+    }
+  }
+  // A lone pet in the smallest room walks too.
+  const lone = { width: 122, height: 220 };
+  const [spot] = spreadSpots(1, lone, FULL);
+  expect(clearTarget(boundsOf(lone, FULL), spot!, [], FULL, lone, seeded(4))).not.toBeNull();
 });

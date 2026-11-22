@@ -71,17 +71,20 @@ export function boxSlots(room: Size, m: Metrics): Pos[] {
   return slots;
 }
 
-/** Up to this many pets need no spare boxes; above it a tenth more (at least one) leave room to wander in. */
-export const SLACK_FROM = 4;
+/** Pets from this many up need a spare box (a tenth more, at least one) to wander into; a lone pet wanders inside its own. */
+export const SLACK_FROM = 2;
+/** Rooms for up to this many pets are made tall enough for them at `GROWN_SCALE`, so they stay big. */
+export const GROWN_UP_TO = 4;
+export const GROWN_SCALE = 0.7;
 
 /**
  * How big `count` pets can be drawn, as a fraction of `base` (1 down to `min`, in steps of 0.05):
- * the largest at which all their whole boxes fit in the room without overlapping (one more per ten
- * pets once there are more than `SLACK_FROM`, for wandering). Labels keep at least `MIN_LABEL`
+ * the largest at which all their whole boxes fit in the room without overlapping (one more once there
+ * are `SLACK_FROM` pets, a tenth more beyond ten, for wandering). Labels keep at least `MIN_LABEL`
  * unless no size fits that way, and only then narrow with the sprite. `min` when even that is too tight.
  */
 export function fitMetrics(room: Size, count: number, base: Metrics, min = MIN_SCALE): { scale: number; metrics: Metrics } {
-  const need = count <= SLACK_FROM ? count : count + Math.ceil(count / 10);
+  const need = count < SLACK_FROM ? count : count + Math.ceil(count / 10);
   for (const floor of [true, false]) {
     for (let percent = 100; percent > min * 100; percent -= 5) {
       const metrics = scaleMetrics(base, percent / 100, floor);
@@ -134,6 +137,21 @@ export function roomHeight(count: number, width: number, area = AREA_PER_PET, mi
   return Math.max(min, Math.ceil((count * area) / width));
 }
 
+/**
+ * The height the room needs for `count` pets of `base` at `width`: `roomHeight`, and for two to
+ * `GROWN_UP_TO` pets, tall enough for them and a spare box at `GROWN_SCALE`, so a few pets in a
+ * narrow room stay big and have room to walk instead of shrinking.
+ */
+export function roomHeightFor(count: number, width: number, base: Metrics): number {
+  const area = roomHeight(count, width);
+  if (count < SLACK_FROM || count > GROWN_UP_TO || width <= 0) return area;
+  const m = scaleMetrics(base, GROWN_SCALE);
+  for (let height = area; height < area + 1000; height += 4) {
+    if (boxSlots({ width, height }, m).length >= count + 1) return height;
+  }
+  return area;
+}
+
 /** Time to stand still before the next walk: 2 to 8 seconds. */
 export const pauseDelay = (rand: () => number): number => 2000 + Math.floor(rand() * 6000);
 
@@ -154,18 +172,22 @@ export function pickTarget(b: Bounds, from: Pos, rand: () => number, minTravel =
 }
 
 /**
- * A roaming spot at least `minTravel` px from `from` whose whole box is clear of the boxes of
- * `others` (the other pets' feet and the spots they are walking to): a few random tries over the
- * room, then any free grid spot. Null when there is none, so the caller may take any spot.
+ * A roaming spot whose whole box is clear of the boxes of `others` (the other pets' feet and the
+ * spots they are walking to): at least `minTravel` px from `from` when there is one (a few random
+ * tries over the room, then a free grid spot), else at least `minStep` px, so a pet in a tight
+ * room still shuffles. Null when there is none, so the caller may stand still.
  */
-export function clearTarget(b: Bounds, from: Pos, others: Pos[], m: Metrics, room: Size, rand: () => number, minTravel = 60): Pos | null {
-  const clear = (p: Pos): boolean => distance(p, from) >= minTravel && others.every((q) => !boxesOverlap(p, q, m));
-  for (let i = 0; i < 8; i++) {
-    const p = { x: Math.round(b.minX + rand() * (b.maxX - b.minX)), y: Math.round(b.minY + rand() * (b.maxY - b.minY)) };
-    if (clear(p)) return p;
+export function clearTarget(b: Bounds, from: Pos, others: Pos[], m: Metrics, room: Size, rand: () => number, minTravel = 60, minStep = 8): Pos | null {
+  for (const travel of [minTravel, minStep]) {
+    const clear = (p: Pos): boolean => distance(p, from) >= travel && others.every((q) => !boxesOverlap(p, q, m));
+    for (let i = 0; i < 8; i++) {
+      const p = { x: Math.round(b.minX + rand() * (b.maxX - b.minX)), y: Math.round(b.minY + rand() * (b.maxY - b.minY)) };
+      if (clear(p)) return p;
+    }
+    const free = boxSlots(room, m).filter(clear);
+    if (free.length > 0) return free[Math.min(free.length - 1, Math.floor(rand() * free.length))]!;
   }
-  const free = boxSlots(room, m).filter(clear);
-  return free.length > 0 ? free[Math.min(free.length - 1, Math.floor(rand() * free.length))]! : null;
+  return null;
 }
 
 /** One movement step from `from` toward `to` at `speed` px/s over `dt` ms; never overshoots. */

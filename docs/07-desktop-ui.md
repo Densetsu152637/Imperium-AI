@@ -627,7 +627,8 @@ unchanged: the same tokens (`THEME_TOKENS`) and bridge messages. The bundled Imp
 fills its frame with one scroll owner (its own panel; the frame document and the room do not
 scroll), wraps its controls bar into one column under 220 px, styles its selects with the
 tokens, and draws pets smaller only when their whole boxes (sprite plus label) would not fit the
-room (labels keep at least 72 px while they can, and sprites never go below 30 %). When the room
+room (labels keep at least 72 px while they can, and sprites never go below 30 %); the room is
+made taller for two to four pets so that they, and a spare box to walk into, fit at 70 % or more. When the room
 has space at that minimum size, new and wandering pets are placed where their boxes stay clear of
 the others; a very crowded room cannot guarantee it, and pets that walk past each other may
 overlap briefly.

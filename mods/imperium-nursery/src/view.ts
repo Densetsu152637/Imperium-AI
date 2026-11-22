@@ -11,7 +11,7 @@ import type { Drag } from "./drag.ts";
 import { angleTo } from "./play.ts";
 import { busyOf, busySubs } from "./route.ts";
 import { fitSize, frameAt } from "./render.ts";
-import { PLAY_SPEED, SPEED, boundsOf, boxSize, clampTo, clearTarget, edgeTarget, fitMetrics, isTight, newRoamer, pauseDelay, pickTarget, playTarget, roam, roomHeight, separate, spawnPoint, spreadSpots, stepToward, stranded } from "./space.ts";
+import { PLAY_SPEED, SPEED, boundsOf, boxSize, clampTo, clearTarget, edgeTarget, fitMetrics, isTight, newRoamer, pauseDelay, playTarget, roam, roomHeightFor, separate, spawnPoint, spreadSpots, stepToward, stranded } from "./space.ts";
 import type { Body, Bounds, Metrics, Pos, Roamer } from "./space.ts";
 
 /** Width of a pet's box (the label's width) and the height of its label line, in px. */
@@ -184,7 +184,7 @@ export class Room {
 
   /** A room with many pets is tall enough for the least area each; the panel scrolls only past that. */
   private fit(): void {
-    const px = `${roomHeight(this.cells.size, this.width)}px`;
+    const px = `${roomHeightFor(this.cells.size, this.width, this.base)}px`;
     if (this.el.style.minHeight !== px) this.el.style.minHeight = px;
   }
 
@@ -555,7 +555,7 @@ export class Room {
       if (other === key || !cell.placed || this.nursery.entries.get(other)?.removeAt != null) continue;
       others.push({ x: cell.r.x, y: cell.r.y }, { x: cell.r.tx, y: cell.r.ty });
     }
-    return clearTarget(b, from, others, this.metrics, { width: this.width, height: this.height }, Math.random) ?? (this.tight ? pickTarget(b, from, Math.random) : from);
+    return clearTarget(b, from, others, this.metrics, { width: this.width, height: this.height }, Math.random) ?? from; // never reached while `tight`: move() makes tight pets stand
   }
 
   private move(cell: Cell, entry: Entry, pet: LoadedPet, idle: boolean, now: number, dt: number, b: Bounds): Moved {
