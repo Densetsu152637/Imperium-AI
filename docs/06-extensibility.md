@@ -284,9 +284,11 @@ offers nothing even after its file changes. Only the environment's own project f
 muted. **An offer adds, fetches, installs and enables nothing**; the text is the repository's, so
 it goes only to the protocol result and the CLI's output, never into a model prompt, a session
 notice or a tool result. `imperium plugin suggestions --env <env>` prints the offers (repository
-text with control characters and text-reordering characters shown as `\u{..}`) and, **only when
+text with control, text-reordering and zero-width characters shown as `\u{..}`) and, **only when
 standard output is a terminal**, the commands that would act on each offer, with the
-repository's words quoted for a shell; nothing is run.
+repository's words quoted for a shell and placed after `--` (`imperium plugin install -- <id>`,
+`imperium plugin marketplace add --revision=<rev> -- <source>`), so a word that starts with `-` is
+never read as an option; nothing is run.
 
 **Command line (no protocol change).** `imperium plugin` calls the methods above:
 `marketplace add|list|refresh|remove`, `browse [query] [--marketplace m]`, `inspect <name@mp>`,
