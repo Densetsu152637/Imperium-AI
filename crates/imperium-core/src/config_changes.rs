@@ -191,7 +191,7 @@ pub(crate) fn uninstall(
     name: &str,
 ) -> Result<ConfigChange, String> {
     let dir = extension_install::find_installed(state.paths().config_dir(), kind, name)?;
-    uninstall_folder(state, session_id, kind, name, &dir)
+    uninstall_folder(state, session_id, kind, name, &dir).map(|(change, _)| change)
 }
 
 /// Moves the extension folder `dir` aside and records it. For a plugin its record is removed too
@@ -202,7 +202,8 @@ pub(crate) fn uninstall_folder(
     kind: ExtensionKind,
     name: &str,
     dir: &Path,
-) -> Result<ConfigChange, String> {
+) -> Result<(ConfigChange, Vec<String>), String> {
+    let mut notes = Vec::new();
     let dir = dir.to_path_buf();
     let source = read_source(&dir);
     // The record and the hash are read before the folder moves (its key is its canonical path).
@@ -246,9 +247,12 @@ pub(crate) fn uninstall_folder(
             && let Err(error) = plugin_records::take_record(state.paths(), &key)
         {
             tracing::warn!(%error, "could not remove the record of an uninstalled plugin");
+            notes.push(format!(
+                "the plugin's record could not be removed ({error}); the folder was moved anyway"
+            ));
         }
     }
-    Ok(record(state, change))
+    Ok((record(state, change), notes))
 }
 
 /// Whether the `kind` called `name` was installed by an agent (its folder records a session).
@@ -390,6 +394,19 @@ fn undo_uninstall(state: &DaemonState, change: &ConfigChange) -> Result<String, 
             "{} exists again; remove it first to restore the old one",
             path.display()
         ));
+    }
+    // Folder names that differ only by letter case are one folder on Windows and macOS.
+    if let (Some(parent), Some(wanted)) = (path.parent(), path.file_name()) {
+        let wanted = wanted.to_string_lossy();
+        for entry in std::fs::read_dir(parent).into_iter().flatten().flatten() {
+            let existing = entry.file_name().to_string_lossy().into_owned();
+            if existing.eq_ignore_ascii_case(&wanted) {
+                return Err(format!(
+                    "{} exists and differs from {wanted} only by letter case; remove it first to restore the old one",
+                    entry.path().display()
+                ));
+            }
+        }
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)

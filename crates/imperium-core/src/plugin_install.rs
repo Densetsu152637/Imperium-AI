@@ -522,11 +522,10 @@ fn resolve(state: &DaemonState, text: &str) -> Result<PathBuf, String> {
             by_record.push(path);
         }
     }
-    let mut found = if by_folder.is_empty() {
-        by_record
-    } else {
-        by_folder
-    };
+    // A folder's name can differ from its plugin's name: a folder match and a record match on
+    // different folders is ambiguous, whichever way the name was meant.
+    let mut found = by_folder;
+    found.extend(by_record);
     found.sort();
     match found.len() {
         0 => Err(format!(
@@ -561,17 +560,20 @@ pub(crate) async fn uninstall(
                 .map(|name| name.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| params.name.trim().to_string());
-    let change =
+    let (change, mut notes) =
         crate::config_changes::uninstall_folder(state, None, ExtensionKind::Plugin, &name, &dir)?;
     Ok(PluginsUninstallResult {
         name,
         path: change.path.clone().unwrap_or_default(),
         kept_at: change.kept_at.clone().unwrap_or_default(),
         change_id: change.id,
-        notes: vec![format!(
-            "undo it with config.undo {}; the plugin's secrets were not touched",
-            change.id
-        )],
+        notes: {
+            notes.push(format!(
+                "undo it with config.undo {}; the plugin's secrets were not touched",
+                change.id
+            ));
+            notes
+        },
     })
 }
 
@@ -1200,6 +1202,83 @@ mod tests {
         assert_eq!(list(&state).plugins, before.plugins);
         let error = undo(&state, done.change_id).unwrap_err();
         assert!(error.contains("already undone"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_folder_name_and_a_recorded_name_on_different_folders_is_ambiguous() {
+        let (_home, _market, state) = setup().await;
+        let plugins_dir = state.paths().config_dir().join("plugins");
+        // Folder `foo` holds the plugin `legacy`; folder `foo-repo` holds the plugin `foo`.
+        write(
+            &plugins_dir.join("foo/.claude-plugin/plugin.json"),
+            r#"{"name": "legacy"}"#,
+        );
+        let repo = plugins_dir.join("foo-repo");
+        write(
+            &repo.join(".claude-plugin/plugin.json"),
+            r#"{"name": "foo"}"#,
+        );
+        let seen = plugin_records::measure(&repo).unwrap();
+        plugin_records::add_record(
+            state.paths(),
+            &repo,
+            Record {
+                name: "foo".into(),
+                origin: Origin::User,
+                id: None,
+                source: None,
+                commit: None,
+                hash: seen.hash,
+                runs: plugins::runs(&plugin_records::parse(&repo).unwrap()).digest(),
+                approval: None,
+            },
+        )
+        .unwrap();
+        let error = uninstall(&state, uninstall_params("foo"))
+            .await
+            .unwrap_err();
+        assert!(error.contains("more than one plugin folder"), "{error}");
+        assert!(plugins_dir.join("foo").is_dir() && repo.is_dir());
+        // The folder name alone still works.
+        uninstall(&state, uninstall_params("foo-repo"))
+            .await
+            .unwrap();
+        assert!(!repo.exists() && plugins_dir.join("foo").is_dir());
+    }
+
+    #[tokio::test]
+    async fn the_result_says_when_the_record_could_not_be_removed() {
+        let (_home, _market, state) = setup().await;
+        let folder = put(&state, "plain@mk").await;
+        std::fs::write(
+            state.paths().data_dir().join("plugin-installs.json"),
+            "not json",
+        )
+        .unwrap();
+        let done = uninstall(&state, uninstall_params("plain")).await.unwrap();
+        assert!(!folder.exists());
+        assert!(
+            done.notes
+                .iter()
+                .any(|note| note.contains("record could not be removed")),
+            "{:?}",
+            done.notes
+        );
+    }
+
+    #[tokio::test]
+    async fn undoing_an_uninstall_refuses_a_folder_that_differs_only_by_letter_case() {
+        let (_home, _market, state) = setup().await;
+        put(&state, "plain@mk").await;
+        let done = uninstall(&state, uninstall_params("plain")).await.unwrap();
+        let other = state.paths().config_dir().join("plugins/PLAIN");
+        write(&other.join("readme.md"), "x");
+        let error = undo(&state, done.change_id).unwrap_err();
+        assert!(
+            error.contains("letter case") || error.contains("exists again"),
+            "{error}"
+        );
+        assert!(Path::new(&done.kept_at).is_dir());
     }
 
     #[tokio::test]
