@@ -59,9 +59,12 @@ impl Origin {
         }
     }
 
-    /// Downloaded content never expands the daemon's `${VAR}` and its hooks never rewrite.
-    fn downloaded(self) -> bool {
-        matches!(self, Origin::Marketplace | Origin::Agent)
+    /// Downloaded content never expands the daemon's `${VAR}` and its hooks never rewrite. A
+    /// folder approved by the user without having been installed by Imperium (`user`) is
+    /// treated the same: it is often a copied-in download. Only `preexisting` plugins, the
+    /// user's own carried over by the migration, keep the daemon environment.
+    pub(crate) fn downloaded(self) -> bool {
+        matches!(self, Origin::Marketplace | Origin::Agent | Origin::User)
     }
 }
 
@@ -860,6 +863,28 @@ mod tests {
             .into_iter()
             .map(|(name, _)| name)
             .collect()
+    }
+
+    #[test]
+    fn only_a_preexisting_plugin_keeps_the_daemon_environment() {
+        let home = home();
+        let kinds = [
+            ("mk", Origin::Marketplace, true),
+            ("ag", Origin::Agent, true),
+            ("us", Origin::User, true),
+            ("pre", Origin::Preexisting, false),
+        ];
+        for (folder, origin, _) in kinds {
+            let root = plugin(&home, folder, folder, false);
+            record(&home, &root, origin, None);
+        }
+        let downloaded = gate(&home.paths, &DebugVerifier).downloaded;
+        for (folder, _, expected) in kinds {
+            let listed = downloaded
+                .iter()
+                .any(|path| path.file_name().is_some_and(|name| name == folder));
+            assert_eq!(listed, expected, "{folder}");
+        }
     }
 
     #[test]

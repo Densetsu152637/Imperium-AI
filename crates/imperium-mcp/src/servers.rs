@@ -16,7 +16,7 @@ use crate::extras::{self, ToolKind};
 use crate::sampling::MAX_REQUESTS_PER_CALL;
 
 /// How to reach a server.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Launch {
     /// A local process speaking MCP on stdin and stdout.
     Stdio {
@@ -30,6 +30,49 @@ pub enum Launch {
         url: String,
         headers: Vec<(String, String)>,
     },
+}
+
+/// Names, never values: what `Debug` shows of a launch's environment and headers, which may hold
+/// secrets.
+struct Hidden<'a>(Vec<&'a str>);
+
+impl std::fmt::Debug for Hidden<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map()
+            .entries(self.0.iter().map(|name| (name, &"<hidden>")))
+            .finish()
+    }
+}
+
+/// `Debug` shows the names of the environment and headers but not their values.
+impl std::fmt::Debug for Launch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Launch::Stdio {
+                command,
+                args,
+                env,
+                cwd,
+            } => f
+                .debug_struct("Stdio")
+                .field("command", command)
+                .field("args", args)
+                .field(
+                    "env",
+                    &Hidden(env.iter().map(|(key, _)| key.as_str()).collect()),
+                )
+                .field("cwd", cwd)
+                .finish(),
+            Launch::Http { url, headers } => f
+                .debug_struct("Http")
+                .field("url", url)
+                .field(
+                    "headers",
+                    &Hidden(headers.iter().map(|(key, _)| key.as_str()).collect()),
+                )
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

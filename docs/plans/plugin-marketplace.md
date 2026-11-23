@@ -1008,6 +1008,14 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   `PluginsSetSecretParams` has a `Debug` that hides the value; `delete_secrets` deletes the secrets
   of the variables the plugin's servers name (the keychain cannot be listed), and an undo of the
   uninstall does not bring them back.
+- Review fixes (a): a secret variable is `[A-Za-z_][A-Za-z0-9_]*` (in `secret_name`, in
+  `required_references`, and when a downloaded `${VAR}` resolves), so a `.` cannot name another
+  plugin's secret; secrets expand only into a stdio server's `env` and an HTTP server's `headers`
+  (a server naming a variable in its command, arguments or URL is dropped with a notice, and a
+  default there is used as written); `Debug` of `Launch` (so `ServerSpec` and `Plugin`) shows
+  names of `env` and headers but not values; origin `user` counts as downloaded, like
+  `marketplace` and `agent`, and is eligible for `set_secret`, so its `${VAR}` never reads the
+  daemon's environment, while `preexisting` plugins keep it (nothing that runs today stops).
 - Handoff notes: if over 800 lines, split (a) and (b). (b) must keep the secrets out of the
   hook and server environments of anything but the one server that names them.
 

@@ -97,6 +97,11 @@ impl PluginSecrets {
     fn get(&self, plugin: &str, variable: &str) -> Option<String> {
         (self.0)(plugin, variable)
     }
+
+    /// The lookup itself, for other crates' tests.
+    pub fn lookup_for_test(&self, plugin: &str, variable: &str) -> Option<String> {
+        self.get(plugin, variable)
+    }
 }
 
 impl std::fmt::Debug for PluginSecrets {
@@ -600,16 +605,59 @@ fn load(
     let mut required_secrets = BTreeSet::new();
     if !entries.is_empty() {
         let plugin_root = root.display().to_string();
+        // What is parsed. A saved secret goes only into a stdio server's `env` and an HTTP
+        // server's `headers`: a server that names one in its command, arguments or URL is
+        // dropped (with a note), and a default there is used as written, never a secret.
+        let mut parsed = entries.clone();
+        if let (true, Some(_)) = (downloaded, secrets) {
+            let mut refused = Vec::new();
+            for (server, definition) in &mut parsed {
+                let mut named = Vec::new();
+                for key in ["command", "url"] {
+                    if let Some(Value::String(text)) = definition.get_mut(key) {
+                        named.extend(required_references(text));
+                        *text = use_defaults(text);
+                    }
+                }
+                if let Some(Value::Array(args)) = definition.get_mut("args") {
+                    for arg in args {
+                        if let Value::String(text) = arg {
+                            named.extend(required_references(text));
+                            *text = use_defaults(text);
+                        }
+                    }
+                }
+                if !named.is_empty() {
+                    named.sort();
+                    named.dedup();
+                    refused.push((server.clone(), named));
+                }
+            }
+            for (server, named) in refused {
+                parsed.remove(&server);
+                notes.push(format!(
+                    "plugin {name}: server {server} was not started: {} in its command, arguments or URL; a saved secret goes only in a server's env or headers",
+                    named
+                        .iter()
+                        .map(|variable| format!("${{{variable}}}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
         let text = Value::Object(Map::from_iter([(
             "mcpServers".to_string(),
-            Value::Object(entries.clone()),
+            Value::Object(parsed.clone()),
         )]))
         .to_string();
         let specs = mcp_json::parse(&text, root, server_timeout, |variable| {
             if variable == "CLAUDE_PLUGIN_ROOT" {
                 Some(plugin_root.clone())
             } else if downloaded {
-                secrets.and_then(|secrets| secrets.get(&name, variable))
+                // Only a plain variable name is a secret's: `${b.x}` is nobody's.
+                secrets
+                    .filter(|_| is_variable(variable))
+                    .and_then(|secrets| secrets.get(&name, variable))
             } else {
                 std::env::var(variable).ok()
             }
@@ -618,8 +666,11 @@ fn load(
         // A downloaded server whose required variable has no secret does not start.
         let mut specs = specs;
         for (server, definition) in &entries {
-            let required = required_references(&definition.to_string());
+            let required = secret_variables(definition);
             required_secrets.extend(required.iter().cloned());
+            if !parsed.contains_key(server) {
+                continue;
+            }
             if let (true, Some(secrets)) = (downloaded, secrets) {
                 let missing: Vec<&str> = required
                     .iter()
@@ -833,7 +884,50 @@ fn declare(name: &str, definition: &Value, plugin_root: &str) -> ServerRun {
     }
 }
 
-/// The `${NAME}` names in `text` that have no `:-default`, except `CLAUDE_PLUGIN_ROOT`.
+/// Whether `name` is a plain variable name, `[A-Za-z_][A-Za-z0-9_]*`: the only kind a saved secret
+/// can have (so `${a.b}` can never name another plugin's secret).
+pub fn is_variable(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The variables a server needs a saved secret for: the required references in its `env` and
+/// `headers` values.
+fn secret_variables(definition: &Value) -> Vec<String> {
+    let mut found = BTreeSet::new();
+    for key in ["env", "headers"] {
+        if let Some(map) = definition.get(key).and_then(Value::as_object) {
+            for value in map.values().filter_map(Value::as_str) {
+                found.extend(required_references(value));
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// `text` with each `${NAME:-default}` (not `CLAUDE_PLUGIN_ROOT`) replaced by its default.
+fn use_defaults(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else { break };
+        out.push_str(&rest[..start]);
+        match after[..end].split_once(":-") {
+            Some((name, default)) if name != "CLAUDE_PLUGIN_ROOT" => out.push_str(default),
+            _ => out.push_str(&rest[start..start + 2 + end + 1]),
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The `${NAME}` names in `text` that have no `:-default` and are plain variable names, except
+/// `CLAUDE_PLUGIN_ROOT`.
 fn required_references(text: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut rest = text;
@@ -841,7 +935,7 @@ fn required_references(text: &str) -> Vec<String> {
         let after = &rest[start + 2..];
         let Some(end) = after.find('}') else { break };
         let inner = &after[..end];
-        if !inner.is_empty() && !inner.contains(":-") && inner != "CLAUDE_PLUGIN_ROOT" {
+        if is_variable(inner) && inner != "CLAUDE_PLUGIN_ROOT" {
             found.push(inner.to_string());
         }
         rest = &after[end + 1..];
@@ -1513,5 +1607,62 @@ mod tests {
         // Without a secret source the variable is empty, as before.
         let (bare, _) = ask(None);
         assert_eq!(bare[0].servers.len(), 2);
+    }
+
+    #[test]
+    fn secrets_fill_only_env_and_headers_and_only_plain_variable_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("a");
+        write(&root.join(".claude-plugin/plugin.json"), r#"{"name": "a"}"#);
+        write(
+            &root.join(".mcp.json"),
+            r#"{"mcpServers": {
+                "good": {"command": "serve", "args": ["--port", "${PORT:-80}"],
+                         "env": {"TOKEN": "${API_KEY}", "OTHER": "${b.x}"}},
+                "in-args": {"command": "serve", "args": ["--key=${API_KEY}"]},
+                "in-url": {"type": "http", "url": "https://x.test/${API_KEY}",
+                           "headers": {"Authorization": "Bearer ${API_KEY}"}},
+                "in-command": {"command": "${API_KEY}"}}}"#,
+        );
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = std::sync::Arc::clone(&asked);
+        let secrets = PluginSecrets::new(move |plugin, variable| {
+            seen.lock().unwrap().push(format!("{plugin}/{variable}"));
+            Some("the-value".to_string())
+        });
+        let (found, problems) = discover_with(
+            &[dir.path().to_path_buf()],
+            Duration::from_secs(5),
+            std::slice::from_ref(&root),
+            None,
+            Some(&secrets),
+        );
+        let plugin = &found[0];
+        // A secret in a command, arguments or URL drops that server, with a note that names the
+        // variable and never a value.
+        let names: Vec<&str> = plugin.servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["a_good"], "{problems:?}");
+        let note = problems.join(" ");
+        for server in ["in-args", "in-url", "in-command"] {
+            assert!(note.contains(server), "{note}");
+        }
+        assert!(
+            note.contains("${API_KEY}") && !note.contains("the-value"),
+            "{note}"
+        );
+        // A default in the arguments is used as written; `${b.x}` is not a variable and is
+        // never looked up, so it cannot name plugin `a.b`'s secret `x`.
+        let imperium_mcp::Launch::Stdio { args, env, .. } = &plugin.servers[0].launch else {
+            panic!("stdio");
+        };
+        assert_eq!(args, &["--port", "80"]);
+        assert!(env.contains(&("TOKEN".to_string(), "the-value".to_string())));
+        let asked = asked.lock().unwrap().clone();
+        assert!(asked.iter().all(|call| call == "a/API_KEY"), "{asked:?}");
+        // Variables are what the env and headers need, not the command line.
+        assert_eq!(plugin.required_secrets, ["API_KEY"]);
+        // `Debug` shows the names of a server's variables, not their values.
+        assert!(!format!("{plugin:?}").contains("the-value"));
+        assert!(format!("{plugin:?}").contains("TOKEN"));
     }
 }

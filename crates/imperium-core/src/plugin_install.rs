@@ -562,6 +562,13 @@ pub(crate) fn secret_name(
     plugin: &str,
     variable: &str,
 ) -> Result<imperium_config::SecretName, String> {
+    // Only a plain variable name: a `.` could name another plugin's secret (`${b.x}` of plugin `a`
+    // would be `plugin.a.b.x`, plugin `a.b`'s `x`).
+    if !plugins::is_variable(variable) {
+        return Err(format!(
+            "{variable} cannot be a secret: a variable name is letters, digits and '_', not starting with a digit"
+        ));
+    }
     format!(
         "plugin.{}.{}",
         plugin.to_ascii_lowercase(),
@@ -595,9 +602,10 @@ fn secret_target(
 ) -> Result<(Plugin, imperium_config::SecretName), String> {
     let dir = resolve(state, name)?;
     let record = plugin_records::record_for(state.paths(), &dir);
-    if !record.is_some_and(|record| matches!(record.origin, Origin::Marketplace | Origin::Agent)) {
+    if !record.is_some_and(|record| record.origin.downloaded()) {
         return Err(
-            "only a plugin installed from a marketplace or by an agent reads saved secrets".into(),
+            "only a plugin installed from a marketplace or by an agent, or one you approved yourself, reads saved secrets"
+                .into(),
         );
     }
     let plugin =
@@ -773,9 +781,7 @@ pub(crate) fn list(
             let switch = plugin_switch(&name, &scope.user, &scope.repository, &scope.environment);
             // Only a downloaded plugin reads saved secrets.
             let required = match (&record, &parsed) {
-                (Some(record), Some(plugin))
-                    if matches!(record.origin, Origin::Marketplace | Origin::Agent) =>
-                {
+                (Some(record), Some(plugin)) if record.origin.downloaded() => {
                     plugin.required_secrets.clone()
                 }
                 _ => Vec::new(),
@@ -2162,5 +2168,24 @@ mod tests {
         );
         let error = set_secret(&state, secret_params("manual", "KEY", "v")).unwrap_err();
         assert!(error.contains("marketplace or by an agent"), "{error}");
+    }
+
+    #[test]
+    fn a_variable_with_a_dot_cannot_read_another_plugins_secret() {
+        let store: std::sync::Arc<dyn imperium_config::SecretStore> =
+            std::sync::Arc::new(imperium_config::MemorySecrets::new());
+        // Plugin `a.b`'s secret `x` is `plugin.a.b.x`, which plugin `a`'s `${b.x}` would be.
+        store
+            .store(&secret_name("a.b", "x").unwrap(), "other-plugins-value")
+            .unwrap();
+        let lookup = plugin_secrets(store);
+        let read = |plugin: &str, variable: &str| lookup.lookup_for_test(plugin, variable);
+        assert_eq!(read("a.b", "x").as_deref(), Some("other-plugins-value"));
+        assert_eq!(read("a", "b.x"), None);
+        assert!(secret_name("a", "b.x").is_err());
+        for bad in ["", "1abc", "a-b", "a b", "a.b"] {
+            assert!(secret_name("a", bad).is_err(), "{bad}");
+        }
+        assert!(secret_name("a", "_ok1").is_ok());
     }
 }
