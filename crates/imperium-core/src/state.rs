@@ -54,6 +54,7 @@ mod create;
 mod environments;
 mod eval;
 mod extensions;
+pub(crate) use extensions::plugin_switch;
 mod lifetime;
 mod memory_migration;
 mod model_awareness;

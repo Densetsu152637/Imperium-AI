@@ -1,6 +1,66 @@
 use super::*;
 
+/// Whether a plugin is on, and what decided it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Switch {
+    pub(crate) on: bool,
+    /// `default`, `user`, `environment` or `repository`.
+    pub(crate) decided_by: &'static str,
+}
+
+/// The on/off state of the plugin `name` for a session, before the load-time gate (which can
+/// still withhold a plugin that is on). In order: a trusted repository's file that disables it
+/// (`repository`, which an environment's `enabled` cannot override), the environment's
+/// `disabled`, the user's `extensions.disabled_plugins` unless the environment's `enabled` lists
+/// it (`user`, `environment`), else on.
+pub(crate) fn plugin_switch(
+    name: &str,
+    user: &[String],
+    repository: &[String],
+    environment: &imperium_protocol::methods::EnvironmentPlugins,
+) -> Switch {
+    let has = |list: &[String]| list.iter().any(|entry| entry == name);
+    let (on, decided_by) = if has(repository) {
+        (false, "repository")
+    } else if has(&environment.disabled) {
+        (false, "environment")
+    } else if has(user) {
+        if has(&environment.enabled) {
+            (true, "environment")
+        } else {
+            (false, "user")
+        }
+    } else {
+        (true, "default")
+    };
+    Switch { on, decided_by }
+}
+
 impl DaemonState {
+    /// What the user's own list, a trusted repository's file and the environment's lists say
+    /// about plugins: `(user, repository, environment)`. `merged` is the session's
+    /// `extensions.disabled_plugins` (the user's list plus the repository's additions).
+    pub(crate) fn plugin_lists(
+        &self,
+        merged: &[String],
+        repository: &[String],
+        environment_id: Option<&str>,
+    ) -> (
+        Vec<String>,
+        Vec<String>,
+        imperium_protocol::methods::EnvironmentPlugins,
+    ) {
+        let user = self.settings().extensions.disabled_plugins.clone();
+        // Anything in the merged list that is not the user's came from a repository's file.
+        let mut repository = repository.to_vec();
+        repository.extend(merged.iter().filter(|name| !user.contains(name)).cloned());
+        let environment = environment_id
+            .and_then(|id| self.environments.get(id))
+            .map(|env| env.plugins)
+            .unwrap_or_default();
+        (user, repository, environment)
+    }
+
     /// Where UI mods are installed.
     pub fn mods_dir(&self) -> std::path::PathBuf {
         self.paths.config_dir().join("mods")
@@ -85,13 +145,33 @@ impl DaemonState {
         project_dir: &Path,
         settings: &Settings,
         profile: Option<&imperium_policy::AgentProfile>,
+        environment_id: Option<&str>,
+        repository_disabled: &[String],
     ) -> Extensions {
-        let settings = if profile.is_some_and(|profile| profile.local_files_only()) {
+        let local_only = profile.is_some_and(|profile| profile.local_files_only());
+        let settings = if local_only {
             // Not the environment's narrowed settings.
             std::borrow::Cow::Owned((*self.settings()).clone())
         } else {
             std::borrow::Cow::Borrowed(settings)
         };
+        // The effective on/off switch: the user's list, the environment's lists (the user's own
+        // file, so they apply to a locked-down profile too) and a trusted repository's file.
+        let repository_disabled: &[String] = if local_only { &[] } else { repository_disabled };
+        let (user, repository, environment) = self.plugin_lists(
+            &settings.extensions.disabled_plugins,
+            repository_disabled,
+            environment_id,
+        );
+        let mut candidates = settings.extensions.disabled_plugins.clone();
+        candidates.extend(environment.disabled.iter().cloned());
+        candidates.extend(repository.iter().cloned());
+        candidates.sort();
+        candidates.dedup();
+        let disabled_plugins: Vec<String> = candidates
+            .into_iter()
+            .filter(|name| !plugin_switch(name, &user, &repository, &environment).on)
+            .collect();
         // A project's agent files are read only when the user trusts the project, as for its
         // `.mcp.json` servers.
         let project_trusted = self.settings().mcp.trusts(project_dir);
@@ -112,7 +192,7 @@ impl DaemonState {
                 plugin_dirs: settings.extensions.plugin_dirs.clone(),
                 // The user's own folders, never what an environment's configuration merged in.
                 user_plugin_dirs: self.settings().extensions.plugin_dirs.clone(),
-                disabled_plugins: settings.extensions.disabled_plugins.clone(),
+                disabled_plugins,
                 hooks: self
                     .settings()
                     .hooks
@@ -159,6 +239,9 @@ impl DaemonState {
 #[cfg(test)]
 mod tests {
     use imperium_config::{Config, Layer, Paths};
+    use imperium_protocol::methods::{
+        EnvironmentCreateParams, EnvironmentPlugins, PluginsSetEnabledParams,
+    };
 
     use super::*;
 
@@ -186,7 +269,7 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         let load = || {
             let settings = state.settings();
-            state.extensions(project.path(), &settings, None)
+            state.extensions(project.path(), &settings, None, None, &[])
         };
 
         // Not recorded: the whole plugin is withheld, skills included, and the user is told.
@@ -232,5 +315,148 @@ mod tests {
         let changed = load();
         assert!(changed.hooks.is_empty());
         assert!(changed.skills.is_empty());
+    }
+
+    #[test]
+    fn the_switch_follows_the_repository_then_the_environment_then_the_user() {
+        let list = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        };
+        let environment = EnvironmentPlugins {
+            enabled: list(&["a", "b"]),
+            disabled: list(&["c"]),
+            ..Default::default()
+        };
+        let user = list(&["a", "c", "d"]);
+        let repository = list(&["b"]);
+        let decide = |name: &str| plugin_switch(name, &user, &repository, &environment);
+        // The repository wins over the environment's `enabled`.
+        assert_eq!(
+            (decide("b").on, decide("b").decided_by),
+            (false, "repository")
+        );
+        // The environment's `enabled` overrides the user's list.
+        assert_eq!(
+            (decide("a").on, decide("a").decided_by),
+            (true, "environment")
+        );
+        // The environment's `disabled` turns a plugin off for it.
+        assert_eq!(
+            (decide("c").on, decide("c").decided_by),
+            (false, "environment")
+        );
+        assert_eq!((decide("d").on, decide("d").decided_by), (false, "user"));
+        assert_eq!((decide("e").on, decide("e").decided_by), (true, "default"));
+    }
+
+    #[test]
+    fn plugins_turn_on_and_off_for_the_user_and_for_one_environment() {
+        let home = tempfile::tempdir().unwrap();
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        let plugins_dir = state.paths().config_dir().join("plugins");
+        let hook = r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "check"}]}]}}"#;
+        for name in ["lint", "guard"] {
+            write(
+                &plugins_dir.join(name).join(".claude-plugin/plugin.json"),
+                &format!(r#"{{"name": "{name}"}}"#),
+            );
+        }
+        write(
+            &plugins_dir.join("lint/skills/style/SKILL.md"),
+            "---\nname: style\ndescription: House style\n---\nbody\n",
+        );
+        write(&plugins_dir.join("guard/hooks/hooks.json"), hook);
+        // Both are recorded, with a carried-over approval.
+        state.migrate_plugins();
+        let project = tempfile::tempdir().unwrap();
+        let folder_a = tempfile::tempdir().unwrap();
+        let folder_b = tempfile::tempdir().unwrap();
+        let make = |name: &str, folder: &Path| {
+            state
+                .environments()
+                .create(EnvironmentCreateParams {
+                    name: name.into(),
+                    folders: vec![folder.display().to_string()],
+                    ..EnvironmentCreateParams::default()
+                })
+                .unwrap()
+                .id
+        };
+        let (a, b) = (make("A", folder_a.path()), make("B", folder_b.path()));
+        let load = |environment: Option<&str>, repository: &[String]| {
+            let settings = state.settings();
+            state.extensions(project.path(), &settings, None, environment, repository)
+        };
+        let set = |name: &str, enabled: bool, environment: Option<&str>| {
+            crate::plugin_install::set_enabled(
+                &state,
+                PluginsSetEnabledParams {
+                    name: name.into(),
+                    enabled,
+                    environment: environment.map(str::to_string),
+                },
+            )
+        };
+        let has_skill =
+            |extensions: &Extensions| extensions.skills.iter().any(|skill| skill.name == "style");
+        assert!(has_skill(&load(None, &[])));
+
+        // Off for the user: not loaded in a new session, in any environment.
+        let done = set("LINT", false, None).unwrap();
+        assert!(!done.enabled && done.decided_by == "user");
+        assert!(!has_skill(&load(None, &[])));
+        assert!(!has_skill(&load(Some(&a), &[])));
+
+        // On for environment A only.
+        let done = set("lint", true, Some("A")).unwrap();
+        assert!(done.enabled && done.decided_by == "environment");
+        assert!(has_skill(&load(Some(&a), &[])));
+        assert!(!has_skill(&load(Some(&b), &[])));
+        assert!(!has_skill(&load(None, &[])));
+        let listed = |environment: Option<&str>| {
+            let listed = crate::plugin_install::list(&state, environment).unwrap();
+            let lint = listed
+                .plugins
+                .into_iter()
+                .find(|p| p.name == "lint")
+                .unwrap();
+            (lint.enabled, lint.decided_by)
+        };
+        assert_eq!(listed(Some(&a)), (true, "environment".to_string()));
+        assert_eq!(listed(None), (false, "user".to_string()));
+
+        // A trusted repository's file that disables it wins over the environment.
+        assert!(!has_skill(&load(Some(&a), &["lint".to_string()])));
+
+        // Turned off for A it is off there; turned on for everyone it is on in B too.
+        set("lint", false, Some("A")).unwrap();
+        assert!(!has_skill(&load(Some(&a), &[])));
+        set("lint", true, None).unwrap();
+        assert!(has_skill(&load(Some(&b), &[])));
+        assert!(!has_skill(&load(Some(&a), &[])));
+        let done = set("lint", true, Some("A")).unwrap();
+        assert!(done.enabled);
+
+        // Off then on again needs no new approval: the hooks load again.
+        assert!(!load(None, &[]).hooks.is_empty());
+        set("guard", false, None).unwrap();
+        assert!(load(None, &[]).hooks.is_empty());
+        set("guard", true, None).unwrap();
+        assert!(!load(None, &[]).hooks.is_empty());
+
+        // A plugin the gate withholds cannot be turned on.
+        let stray = plugins_dir.join("stray");
+        write(
+            &stray.join(".claude-plugin/plugin.json"),
+            r#"{"name": "stray"}"#,
+        );
+        write(&stray.join("hooks/hooks.json"), hook);
+        let error = set("stray", true, None).unwrap_err();
+        assert!(error.contains("withheld"), "{error}");
+        assert!(set("stray", false, None).is_ok());
     }
 }

@@ -3,4 +3,4 @@
 /**
  * One plugin folder under `<config>/plugins`.
  */
-export type InstalledPlugin = { name: string, folder: string, id: string | null, origin: string | null, source: string | null, commit: string | null, approval: string | null, enabled: boolean, withheld: boolean, reason: string | null, hooks: number, servers: Array<string>, };
+export type InstalledPlugin = { name: string, folder: string, id: string | null, origin: string | null, source: string | null, commit: string | null, approval: string | null, enabled: boolean, decided_by: string, withheld: boolean, reason: string | null, hooks: number, servers: Array<string>, };

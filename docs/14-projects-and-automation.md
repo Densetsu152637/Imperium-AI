@@ -26,7 +26,7 @@ RPC:
 | `environments.remove_folder` | `{ id, folder }` | `EnvironmentInfo` |
 
 `EnvironmentInfo` is `{ id, name, icon, color, folders, pinned, runtime, agents, persistent_agent
-(deprecated), agent_session_id (deprecated), pet, project_worktrees, builtin }`, where `builtin` marks [Home](#home-implemented), and `project_worktrees` (on unless turned off)
+(deprecated), agent_session_id (deprecated), pet, project_worktrees, builtin, plugins }`, where `plugins` is `{ enabled, disabled, dismissed_suggestions, muted_suggestion_sources }`, lists of plugin names the environment turns on or off for its sessions (set by `plugins.set_enabled` with `environment`; see [06](06-extensibility.md#plugin-marketplaces)), `builtin` marks [Home](#home-implemented), and `project_worktrees` (on unless turned off)
 opens the folders' [git worktrees](#worktrees) to its sessions, and `pet` is the environment's default pet (an installed pet's id) for the
 [nursery](16-pets.md#imperium-nursery), or none to let the nursery decide; folders first-to-last with the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
 (the full list). `session.create` takes `environment_id`; `project_dir` still works and maps to

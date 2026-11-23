@@ -391,7 +391,12 @@ impl Method for PluginsList {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct PluginsListParams {}
+pub struct PluginsListParams {
+    // An environment (id or name): `enabled` and `decided_by` are for its sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub environment: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -416,8 +421,11 @@ pub struct InstalledPlugin {
     pub commit: Option<String>,
     // `counted`, `dialog-only`, `carried-over` or `dev`; none when nothing was approved.
     pub approval: Option<String>,
-    // False when listed in `extensions.disabled_plugins`.
+    // The plugin is turned on (the switch only: a withheld plugin is off whatever this says).
     pub enabled: bool,
+    // What decided `enabled`: `default`, `user` (`extensions.disabled_plugins`), `environment`
+    // (the environment's lists) or `repository` (a trusted repository's file).
+    pub decided_by: String,
     // The gate withholds the whole plugin from new sessions.
     pub withheld: bool,
     pub reason: Option<String>,
@@ -454,5 +462,78 @@ pub struct PluginsUninstallResult {
     // The `config.changes` entry that `config.undo` takes.
     #[ts(type = "number")]
     pub change_id: u64,
+    pub notes: Vec<String>,
+}
+
+// ---- Turning plugins on and off, and updating them ----
+
+/// `plugins.set_enabled`: turns a plugin on or off for the user (`extensions.disabled_plugins`) or,
+/// with `environment`, for one environment (its `plugins` lists). Enabling a plugin the load-time
+/// gate withholds is refused with the reason; turning a plugin off and on again never revokes
+/// its approval. A trusted repository's file that disables the plugin still wins.
+#[derive(Debug)]
+pub struct PluginsSetEnabled;
+
+impl Method for PluginsSetEnabled {
+    const NAME: &'static str = "plugins.set_enabled";
+    type Params = PluginsSetEnabledParams;
+    type Result = PluginsSetEnabledResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsSetEnabledParams {
+    pub name: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub environment: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsSetEnabledResult {
+    pub name: String,
+    // The plugin's switch afterwards, for the user or the environment asked about.
+    pub enabled: bool,
+    pub decided_by: String,
+    pub notes: Vec<String>,
+}
+
+/// `plugins.update`: fetches a marketplace plugin again from the source its record names (never
+/// from the folder) and replaces the installed folder when the content hash is `sha256` (what
+/// `plugins.inspect` showed) and differs from the installed one. The previous folder is kept in
+/// `<data>/config-trash`. It never approves: new content with hooks or servers is withheld until
+/// approved afresh. An equal hash answers `up_to_date`; another marketplace or source is refused.
+#[derive(Debug)]
+pub struct PluginsUpdate;
+
+impl Method for PluginsUpdate {
+    const NAME: &'static str = "plugins.update";
+    type Params = PluginsUpdateParams;
+    type Result = PluginsUpdateResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsUpdateParams {
+    // The plugin's name, or `name@marketplace` (which must be the marketplace it came from).
+    pub name: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsUpdateResult {
+    pub name: String,
+    pub path: String,
+    // The installed content already has the hash: nothing was changed.
+    pub up_to_date: bool,
+    // The folder was replaced.
+    pub replaced: bool,
+    // Where the previous folder is kept.
+    pub kept_at: Option<String>,
+    pub withheld: bool,
+    pub reason: Option<String>,
     pub notes: Vec<String>,
 }

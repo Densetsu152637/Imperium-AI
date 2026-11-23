@@ -540,16 +540,24 @@ impl DaemonState {
                 project_dir_path,
                 settings,
                 bound.as_ref().map(|(profile, _)| profile),
+                options.environment_id.as_deref(),
+                &env_config.repo_disabled_plugins,
             )
         };
         // An evaluation that runs an agent file as its root reads the file the way a delegation
         // would find it.
         let root_agent = match eval.as_ref().and_then(|eval| eval.agent.as_deref()) {
             Some(name) => Some(
-                self.extensions(project_dir_path, settings, None)
-                    .agent(name)
-                    .cloned()
-                    .ok_or_else(|| CreateError::Runtime(format!("no agent file named {name:?}")))?,
+                self.extensions(
+                    project_dir_path,
+                    settings,
+                    None,
+                    options.environment_id.as_deref(),
+                    &env_config.repo_disabled_plugins,
+                )
+                .agent(name)
+                .cloned()
+                .ok_or_else(|| CreateError::Runtime(format!("no agent file named {name:?}")))?,
             ),
             None => None,
         };

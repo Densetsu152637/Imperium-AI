@@ -203,6 +203,34 @@ with a message. `config.undo` of an uninstall restores the folder **and its reco
 the name is free and the kept copy still hashes as it did when it was removed. Plugin and
 marketplace names compare ignoring letter case; a plugin name may not start or end with a dot.
 
+**Turning on and off, updating (protocol 0.53; not a paired phone).** A plugin is on for a
+session when, in order: no trusted repository's `.imperium/config.toml` disables it (that wins
+over everything, and an environment cannot turn it back on); the session's environment does not
+list it in `plugins.disabled`; and it is not in the user's `extensions.disabled_plugins`, unless the
+environment lists it in `plugins.enabled`. The load-time gate comes first and applies whatever
+this says. `plugins.set_enabled {name, enabled, environment?}` edits `extensions.disabled_plugins`
+(the only user-level switch) or the environment's lists in `environments.json`; turning a
+withheld plugin on is refused with the gate's reason, and turning a plugin off and on again never
+changes its approval. `plugins.list {environment?}` reports each plugin's switch and `decided_by`
+(`default`, `user`, `environment` or `repository`).
+
+`plugins.update {name, sha256}` takes the source from the plugin's record (its `name@marketplace`
+and source), never from the folder, refuses another marketplace (`name@other`), a different
+manifest name or a different source, and fetches again with the install's checks (link refusal,
+the entry's `sha`, case-insensitive names, hash must equal the inspected `sha256`). An equal
+hash answers `up_to_date` and changes nothing. Otherwise the swap is: take the old record out of
+the store; move the old folder to `<data>/config-trash/`; create the folder exclusively and fill
+it; write the new record with **no approval**. At no instant does an old record or approval meet
+new content, and between the last two steps the new content has no record, so the gate withholds
+its code. A failure puts the old folder and record back. Any plugin with hooks or servers is
+withheld after an update until approved afresh, even when only a skill changed.
+
+**Approval write path.** `plugin_records::record_approval` records an approval of a kind for a
+folder, its hash and run-summary digest (all must equal what is there now); an unrecorded
+folder gets an `origin = user` record. It writes only if the `ApprovalVerifier` allows the kind:
+the release verifier writes nothing and a debug one only `dev` until stage 8c, so no approval
+counts yet. `plugins.approve` is stage 8a.
+
 ### Named agents (implemented)
 
 A named agent is a subagent a file defines, in Claude Code's format, so plugins and projects can

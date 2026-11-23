@@ -112,6 +112,9 @@ pub struct EnvironmentSettings {
     pub applied: Vec<String>,
     /// What was ignored or refused, and why, one line each.
     pub refused: Vec<String>,
+    /// Every plugin a trusted folder's file disables, including one the user's own list already
+    /// holds (the merged list cannot tell which file disabled it).
+    pub repo_disabled_plugins: Vec<String>,
 }
 
 impl EnvironmentSettings {
@@ -125,6 +128,7 @@ impl EnvironmentSettings {
             files: Vec::new(),
             applied: Vec::new(),
             refused: Vec::new(),
+            repo_disabled_plugins: Vec::new(),
         }
     }
 }
@@ -270,7 +274,11 @@ impl EnvironmentConfig {
                     "extensions.disabled_plugins: {name} was left on; a plugin may be a safety \
                      check, so only a folder in mcp.trusted_projects can disable plugins"
                 ));
-            } else if !out.settings.extensions.disabled_plugins.contains(name) {
+            } else {
+                out.repo_disabled_plugins.push(name.clone());
+                if out.settings.extensions.disabled_plugins.contains(name) {
+                    continue;
+                }
                 out.settings.extensions.disabled_plugins.push(name.clone());
                 out.applied
                     .push(format!("extensions.disabled_plugins: {name}"));

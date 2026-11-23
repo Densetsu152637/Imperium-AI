@@ -941,9 +941,32 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   `origin = user` record); with the production verifier nothing is written; off then on needs no
   new approval.
 - Risks: two places hold on/off; `plugins.list` says which decided.
-- Status: pending
-- Outcome:
-- Handoff notes: `extensions.disabled_plugins` stays the only user-level switch.
+- Status: in review
+- Outcome: `plugins.set_enabled`, `plugins.update`, `plugins.list`'s `environment` param and
+  `decided_by`, `EnvironmentInfo.plugins` (`EnvironmentPlugins`), the approval write path, protocol
+  0.53, docs 02, 06 and 14. The switch is `state::plugin_switch` (repository, then the
+  environment's `disabled`, then the user's list unless the environment's `enabled` lists it, else
+  on), applied by `DaemonState::extensions`, which now takes the environment id and the plugins a
+  trusted repository disables. To know the latter even when the user's list holds the same name,
+  `imperium-config`'s `EnvironmentSettings` gained `repo_disabled_plugins` (outside the stage's
+  owned paths; six lines). `plugin_records::record_approval` writes an approval only if
+  `ApprovalVerifier::may_write` allows the kind (new method; release: never, debug: `dev` only;
+  tests use `TestVerifier`); it requires the hash and run digest to equal the folder's now, creates
+  an `origin = user` record for an unrecorded folder, and takes the approved hash as the record's
+  (so a skills-only plugin the user edited can be recorded again). `plugins.update` and its swap
+  are in `plugin_install.rs`: old record out, old folder to `config-trash`, exclusive claim, fill,
+  new record with no approval; every failure restores the old folder and record. Choices: update is
+  not journalled (`config.undo` has no kind for it; the result carries `kept_at`); the hash is
+  compared with the installed folder's own hash as well as the record's, so a folder edited by hand
+  is replaced; a source that differs from the record's is refused (also when only the URL moved);
+  a plugin turned on for an environment that the user did not turn off is a no-op in effect;
+  `plugins.list` without `environment` shows the user's view; an environment's lists are matched by
+  exact plugin name.
+- Handoff notes: `extensions.disabled_plugins` stays the only user-level switch. Stage 8a's
+  `plugins.approve` calls `record_approval` (remove its `allow(dead_code)`); the challenge
+  must bind the hash and run digest it passes. Stage 5's secrets should hook the uninstall and
+  update paths. Stage 7 fills `dismissed_suggestions` and `muted_suggestion_sources`. An
+  environment's lists keep names of uninstalled plugins; they do nothing.
 
 ## Stage 5: Plugin secrets and child environments
 

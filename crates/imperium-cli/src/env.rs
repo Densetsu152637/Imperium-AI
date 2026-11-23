@@ -588,6 +588,7 @@ mod tests {
             pinned: false,
             permissions: Default::default(),
             project_worktrees: true,
+            plugins: Default::default(),
             builtin: false,
         }
     }
