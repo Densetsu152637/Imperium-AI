@@ -9,6 +9,7 @@ Commands:
   session     Manage sessions (also `sessions`)
   config      Inspect configuration
   mods        Install and update UI mods, asking you to approve the permissions they request
+  plugin      Plugin marketplaces and plugins: browse, install, update, and turn them on or off. Approving a plugin that runs code (hooks or servers) happens only in the desktop app
   secret      Manage secrets in the OS keychain (an encrypted file where there is none)
   models      Local models: the configured model folders, and downloads from Hugging Face
   memory      Your global memories. (An environment's notes are its Memory.md.)
@@ -478,6 +479,497 @@ Usage: imperium mods help update
 Print this message or the help of the given subcommand(s)
 
 Usage: imperium mods help help
+
+===== imperium plugin =====
+Plugin marketplaces and plugins: browse, install, update, and turn them on or off. Approving a plugin that runs code (hooks or servers) happens only in the desktop app
+
+Usage: imperium plugin [OPTIONS] <COMMAND>
+
+Commands:
+  marketplace  Marketplaces: catalogues of plugins (Anthropic's official one is built in)
+  browse       List the plugins the marketplaces offer, optionally narrowed by words matched against name, description, keywords, tags and category
+  inspect      Show what a plugin would run, where it comes from and its content hash, without installing it. Nothing in the plugin runs
+  install      Install a plugin from a marketplace. Prints what it would run and its content hash and asks before installing. Installing never approves: a plugin with hooks or servers is withheld until you approve it in the desktop app
+  update       Update an installed plugin from the marketplace it came from. Prints what the new version would run and asks before replacing it. An update is withheld again until it is approved in the desktop app
+  enable       Turn a plugin on. An unapproved plugin with hooks or servers cannot be turned on
+  disable      Turn a plugin off. Its approval is kept
+  uninstall    Remove a plugin. Its folder is kept in the daemon's config-trash, and `imperium config undo` restores it
+  list         List the installed plugins, whether each is on, and why a withheld one is withheld
+  secret       Secrets a plugin's servers need (`${VAR}` in their environment or headers)
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin marketplace =====
+Marketplaces: catalogues of plugins (Anthropic's official one is built in)
+
+Usage: imperium plugin marketplace [OPTIONS] <COMMAND>
+
+Commands:
+  add      Add a marketplace from a git URL, `owner/repo` (GitHub) or a folder. Nothing in it runs
+  list     List the marketplaces
+  refresh  Fetch marketplaces again and say which plugins were added, removed or changed
+  remove   Remove a marketplace. The built-in one is turned off instead
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin marketplace add =====
+Add a marketplace from a git URL, `owner/repo` (GitHub) or a folder. Nothing in it runs
+
+Usage: imperium plugin marketplace add [OPTIONS] <SOURCE>
+
+Arguments:
+  <SOURCE>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --revision <REVISION>
+          A branch, tag, or commit (git only)
+
+  -h, --help
+          Print help
+
+===== imperium plugin marketplace list =====
+List the marketplaces
+
+Usage: imperium plugin marketplace list [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin marketplace refresh =====
+Fetch marketplaces again and say which plugins were added, removed or changed
+
+Usage: imperium plugin marketplace refresh [OPTIONS] [NAME]
+
+Arguments:
+  [NAME]
+          Only this marketplace
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin marketplace remove =====
+Remove a marketplace. The built-in one is turned off instead
+
+Usage: imperium plugin marketplace remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin marketplace help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium plugin marketplace help [COMMAND]
+
+Commands:
+  add      Add a marketplace from a git URL, `owner/repo` (GitHub) or a folder. Nothing in it runs
+  list     List the marketplaces
+  refresh  Fetch marketplaces again and say which plugins were added, removed or changed
+  remove   Remove a marketplace. The built-in one is turned off instead
+  help     Print this message or the help of the given subcommand(s)
+
+===== imperium plugin marketplace help add =====
+Add a marketplace from a git URL, `owner/repo` (GitHub) or a folder. Nothing in it runs
+
+Usage: imperium plugin marketplace help add
+
+===== imperium plugin marketplace help list =====
+List the marketplaces
+
+Usage: imperium plugin marketplace help list
+
+===== imperium plugin marketplace help refresh =====
+Fetch marketplaces again and say which plugins were added, removed or changed
+
+Usage: imperium plugin marketplace help refresh
+
+===== imperium plugin marketplace help remove =====
+Remove a marketplace. The built-in one is turned off instead
+
+Usage: imperium plugin marketplace help remove
+
+===== imperium plugin marketplace help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium plugin marketplace help help
+
+===== imperium plugin browse =====
+List the plugins the marketplaces offer, optionally narrowed by words matched against name, description, keywords, tags and category
+
+Usage: imperium plugin browse [OPTIONS] [QUERY]
+
+Arguments:
+  [QUERY]
+          Words to look for
+
+Options:
+      --marketplace <MARKETPLACE>
+          Only this marketplace
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin inspect =====
+Show what a plugin would run, where it comes from and its content hash, without installing it. Nothing in the plugin runs
+
+Usage: imperium plugin inspect [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          `name@marketplace`
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin install =====
+Install a plugin from a marketplace. Prints what it would run and its content hash and asks before installing. Installing never approves: a plugin with hooks or servers is withheld until you approve it in the desktop app
+
+Usage: imperium plugin install [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          `name@marketplace`
+
+Options:
+      --env <ENVIRONMENT>
+          Plugins are not yet turned on per environment, so this is only noted
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --sha256 <SHA256>
+          Install only if the plugin's content has this SHA-256 (as shown by a previous run)
+
+  -y, --yes
+          Answer yes to the question without a terminal (for scripts). It does not approve the plugin to run
+
+  -h, --help
+          Print help
+
+===== imperium plugin update =====
+Update an installed plugin from the marketplace it came from. Prints what the new version would run and asks before replacing it. An update is withheld again until it is approved in the desktop app
+
+Usage: imperium plugin update [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          The plugin's name, or `name@marketplace`
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --sha256 <SHA256>
+          Update only if the new content has this SHA-256 (as shown by a previous run)
+
+  -y, --yes
+          Answer yes to the question without a terminal (for scripts)
+
+  -h, --help
+          Print help
+
+===== imperium plugin enable =====
+Turn a plugin on. An unapproved plugin with hooks or servers cannot be turned on
+
+Usage: imperium plugin enable [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          The plugin's name
+
+Options:
+      --env <ENVIRONMENT>
+          Only for this environment (its id or name)
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin disable =====
+Turn a plugin off. Its approval is kept
+
+Usage: imperium plugin disable [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          The plugin's name
+
+Options:
+      --env <ENVIRONMENT>
+          Only for this environment (its id or name)
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin uninstall =====
+Remove a plugin. Its folder is kept in the daemon's config-trash, and `imperium config undo` restores it
+
+Usage: imperium plugin uninstall [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          The plugin's name, or `name@marketplace`
+
+Options:
+      --delete-secrets
+          Also delete the plugin's saved secrets
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin list =====
+List the installed plugins, whether each is on, and why a withheld one is withheld
+
+Usage: imperium plugin list [OPTIONS]
+
+Options:
+      --env <ENVIRONMENT>
+          Show which plugins are on for this environment (its id or name)
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin secret =====
+Secrets a plugin's servers need (`${VAR}` in their environment or headers)
+
+Usage: imperium plugin secret [OPTIONS] <COMMAND>
+
+Commands:
+  set     Save a secret for a plugin. The value is read from standard input, or prompted for without echo; it is never taken as an argument and never printed. Saving a secret does not approve the plugin
+  delete  Delete a plugin's saved secret
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin secret set =====
+Save a secret for a plugin. The value is read from standard input, or prompted for without echo; it is never taken as an argument and never printed. Saving a secret does not approve the plugin
+
+Usage: imperium plugin secret set [OPTIONS] <NAME> <VARIABLE>
+
+Arguments:
+  <NAME>
+          The plugin's name
+
+  <VARIABLE>
+          The variable, as the plugin's server names it (`${VAR}`)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin secret delete =====
+Delete a plugin's saved secret
+
+Usage: imperium plugin secret delete [OPTIONS] <NAME> <VARIABLE>
+
+Arguments:
+  <NAME>
+          The plugin's name
+
+  <VARIABLE>
+          The variable
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium plugin secret help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium plugin secret help [COMMAND]
+
+Commands:
+  set     Save a secret for a plugin. The value is read from standard input, or prompted for without echo; it is never taken as an argument and never printed. Saving a secret does not approve the plugin
+  delete  Delete a plugin's saved secret
+  help    Print this message or the help of the given subcommand(s)
+
+===== imperium plugin secret help set =====
+Save a secret for a plugin. The value is read from standard input, or prompted for without echo; it is never taken as an argument and never printed. Saving a secret does not approve the plugin
+
+Usage: imperium plugin secret help set
+
+===== imperium plugin secret help delete =====
+Delete a plugin's saved secret
+
+Usage: imperium plugin secret help delete
+
+===== imperium plugin secret help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium plugin secret help help
+
+===== imperium plugin help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium plugin help [COMMAND]
+
+Commands:
+  marketplace  Marketplaces: catalogues of plugins (Anthropic's official one is built in)
+  browse       List the plugins the marketplaces offer, optionally narrowed by words matched against name, description, keywords, tags and category
+  inspect      Show what a plugin would run, where it comes from and its content hash, without installing it. Nothing in the plugin runs
+  install      Install a plugin from a marketplace. Prints what it would run and its content hash and asks before installing. Installing never approves: a plugin with hooks or servers is withheld until you approve it in the desktop app
+  update       Update an installed plugin from the marketplace it came from. Prints what the new version would run and asks before replacing it. An update is withheld again until it is approved in the desktop app
+  enable       Turn a plugin on. An unapproved plugin with hooks or servers cannot be turned on
+  disable      Turn a plugin off. Its approval is kept
+  uninstall    Remove a plugin. Its folder is kept in the daemon's config-trash, and `imperium config undo` restores it
+  list         List the installed plugins, whether each is on, and why a withheld one is withheld
+  secret       Secrets a plugin's servers need (`${VAR}` in their environment or headers)
+  help         Print this message or the help of the given subcommand(s)
+
+===== imperium plugin help marketplace =====
+Marketplaces: catalogues of plugins (Anthropic's official one is built in)
+
+Usage: imperium plugin help marketplace [COMMAND]
+
+Commands:
+  add      Add a marketplace from a git URL, `owner/repo` (GitHub) or a folder. Nothing in it runs
+  list     List the marketplaces
+  refresh  Fetch marketplaces again and say which plugins were added, removed or changed
+  remove   Remove a marketplace. The built-in one is turned off instead
+
+===== imperium plugin help marketplace add =====
+Add a marketplace from a git URL, `owner/repo` (GitHub) or a folder. Nothing in it runs
+
+Usage: imperium plugin help marketplace add
+
+===== imperium plugin help marketplace list =====
+List the marketplaces
+
+Usage: imperium plugin help marketplace list
+
+===== imperium plugin help marketplace refresh =====
+Fetch marketplaces again and say which plugins were added, removed or changed
+
+Usage: imperium plugin help marketplace refresh
+
+===== imperium plugin help marketplace remove =====
+Remove a marketplace. The built-in one is turned off instead
+
+Usage: imperium plugin help marketplace remove
+
+===== imperium plugin help browse =====
+List the plugins the marketplaces offer, optionally narrowed by words matched against name, description, keywords, tags and category
+
+Usage: imperium plugin help browse
+
+===== imperium plugin help inspect =====
+Show what a plugin would run, where it comes from and its content hash, without installing it. Nothing in the plugin runs
+
+Usage: imperium plugin help inspect
+
+===== imperium plugin help install =====
+Install a plugin from a marketplace. Prints what it would run and its content hash and asks before installing. Installing never approves: a plugin with hooks or servers is withheld until you approve it in the desktop app
+
+Usage: imperium plugin help install
+
+===== imperium plugin help update =====
+Update an installed plugin from the marketplace it came from. Prints what the new version would run and asks before replacing it. An update is withheld again until it is approved in the desktop app
+
+Usage: imperium plugin help update
+
+===== imperium plugin help enable =====
+Turn a plugin on. An unapproved plugin with hooks or servers cannot be turned on
+
+Usage: imperium plugin help enable
+
+===== imperium plugin help disable =====
+Turn a plugin off. Its approval is kept
+
+Usage: imperium plugin help disable
+
+===== imperium plugin help uninstall =====
+Remove a plugin. Its folder is kept in the daemon's config-trash, and `imperium config undo` restores it
+
+Usage: imperium plugin help uninstall
+
+===== imperium plugin help list =====
+List the installed plugins, whether each is on, and why a withheld one is withheld
+
+Usage: imperium plugin help list
+
+===== imperium plugin help secret =====
+Secrets a plugin's servers need (`${VAR}` in their environment or headers)
+
+Usage: imperium plugin help secret [COMMAND]
+
+Commands:
+  set     Save a secret for a plugin. The value is read from standard input, or prompted for without echo; it is never taken as an argument and never printed. Saving a secret does not approve the plugin
+  delete  Delete a plugin's saved secret
+
+===== imperium plugin help secret set =====
+Save a secret for a plugin. The value is read from standard input, or prompted for without echo; it is never taken as an argument and never printed. Saving a secret does not approve the plugin
+
+Usage: imperium plugin help secret set
+
+===== imperium plugin help secret delete =====
+Delete a plugin's saved secret
+
+Usage: imperium plugin help secret delete
+
+===== imperium plugin help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium plugin help help
 
 ===== imperium secret =====
 Manage secrets in the OS keychain (an encrypted file where there is none)
@@ -3157,6 +3649,7 @@ Commands:
   session     Manage sessions (also `sessions`)
   config      Inspect configuration
   mods        Install and update UI mods, asking you to approve the permissions they request
+  plugin      Plugin marketplaces and plugins: browse, install, update, and turn them on or off. Approving a plugin that runs code (hooks or servers) happens only in the desktop app
   secret      Manage secrets in the OS keychain (an encrypted file where there is none)
   models      Local models: the configured model folders, and downloads from Hugging Face
   memory      Your global memories. (An environment's notes are its Memory.md.)
@@ -3281,6 +3774,113 @@ Usage: imperium help mods install
 Update an installed mod from the source it was installed from. Shows how its requested permissions differ from what you approved, and asks again if it wants more
 
 Usage: imperium help mods update
+
+===== imperium help plugin =====
+Plugin marketplaces and plugins: browse, install, update, and turn them on or off. Approving a plugin that runs code (hooks or servers) happens only in the desktop app
+
+Usage: imperium help plugin [COMMAND]
+
+Commands:
+  marketplace  Marketplaces: catalogues of plugins (Anthropic's official one is built in)
+  browse       List the plugins the marketplaces offer, optionally narrowed by words matched against name, description, keywords, tags and category
+  inspect      Show what a plugin would run, where it comes from and its content hash, without installing it. Nothing in the plugin runs
+  install      Install a plugin from a marketplace. Prints what it would run and its content hash and asks before installing. Installing never approves: a plugin with hooks or servers is withheld until you approve it in the desktop app
+  update       Update an installed plugin from the marketplace it came from. Prints what the new version would run and asks before replacing it. An update is withheld again until it is approved in the desktop app
+  enable       Turn a plugin on. An unapproved plugin with hooks or servers cannot be turned on
+  disable      Turn a plugin off. Its approval is kept
+  uninstall    Remove a plugin. Its folder is kept in the daemon's config-trash, and `imperium config undo` restores it
+  list         List the installed plugins, whether each is on, and why a withheld one is withheld
+  secret       Secrets a plugin's servers need (`${VAR}` in their environment or headers)
+
+===== imperium help plugin marketplace =====
+Marketplaces: catalogues of plugins (Anthropic's official one is built in)
+
+Usage: imperium help plugin marketplace [COMMAND]
+
+Commands:
+  add      Add a marketplace from a git URL, `owner/repo` (GitHub) or a folder. Nothing in it runs
+  list     List the marketplaces
+  refresh  Fetch marketplaces again and say which plugins were added, removed or changed
+  remove   Remove a marketplace. The built-in one is turned off instead
+
+===== imperium help plugin marketplace add =====
+Add a marketplace from a git URL, `owner/repo` (GitHub) or a folder. Nothing in it runs
+
+Usage: imperium help plugin marketplace add
+
+===== imperium help plugin marketplace list =====
+List the marketplaces
+
+Usage: imperium help plugin marketplace list
+
+===== imperium help plugin marketplace refresh =====
+Fetch marketplaces again and say which plugins were added, removed or changed
+
+Usage: imperium help plugin marketplace refresh
+
+===== imperium help plugin marketplace remove =====
+Remove a marketplace. The built-in one is turned off instead
+
+Usage: imperium help plugin marketplace remove
+
+===== imperium help plugin browse =====
+List the plugins the marketplaces offer, optionally narrowed by words matched against name, description, keywords, tags and category
+
+Usage: imperium help plugin browse
+
+===== imperium help plugin inspect =====
+Show what a plugin would run, where it comes from and its content hash, without installing it. Nothing in the plugin runs
+
+Usage: imperium help plugin inspect
+
+===== imperium help plugin install =====
+Install a plugin from a marketplace. Prints what it would run and its content hash and asks before installing. Installing never approves: a plugin with hooks or servers is withheld until you approve it in the desktop app
+
+Usage: imperium help plugin install
+
+===== imperium help plugin update =====
+Update an installed plugin from the marketplace it came from. Prints what the new version would run and asks before replacing it. An update is withheld again until it is approved in the desktop app
+
+Usage: imperium help plugin update
+
+===== imperium help plugin enable =====
+Turn a plugin on. An unapproved plugin with hooks or servers cannot be turned on
+
+Usage: imperium help plugin enable
+
+===== imperium help plugin disable =====
+Turn a plugin off. Its approval is kept
+
+Usage: imperium help plugin disable
+
+===== imperium help plugin uninstall =====
+Remove a plugin. Its folder is kept in the daemon's config-trash, and `imperium config undo` restores it
+
+Usage: imperium help plugin uninstall
+
+===== imperium help plugin list =====
+List the installed plugins, whether each is on, and why a withheld one is withheld
+
+Usage: imperium help plugin list
+
+===== imperium help plugin secret =====
+Secrets a plugin's servers need (`${VAR}` in their environment or headers)
+
+Usage: imperium help plugin secret [COMMAND]
+
+Commands:
+  set     Save a secret for a plugin. The value is read from standard input, or prompted for without echo; it is never taken as an argument and never printed. Saving a secret does not approve the plugin
+  delete  Delete a plugin's saved secret
+
+===== imperium help plugin secret set =====
+Save a secret for a plugin. The value is read from standard input, or prompted for without echo; it is never taken as an argument and never printed. Saving a secret does not approve the plugin
+
+Usage: imperium help plugin secret set
+
+===== imperium help plugin secret delete =====
+Delete a plugin's saved secret
+
+Usage: imperium help plugin secret delete
 
 ===== imperium help secret =====
 Manage secrets in the OS keychain (an encrypted file where there is none)
