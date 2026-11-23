@@ -239,23 +239,36 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
     let (agents, mut agent_problems) = imperium_extensions::agents::discover(&agent_folders);
     problems.append(&mut agent_problems);
 
+    let gate =
+        crate::plugin_records::gate(state.paths(), crate::plugin_records::production_verifier());
     let plugins = plugins
         .iter()
-        .map(|plugin| PluginInfo {
-            name: plugin.name.clone(),
-            root: plugin.root.display().to_string(),
-            enabled: !settings.extensions.disabled_plugins.contains(&plugin.name),
-            skills: count(&plugin.skills_dir(), |path| path.join("SKILL.md").is_file()),
-            commands: count(&plugin.commands_dir(), |path| {
-                path.extension().is_some_and(|extension| extension == "md")
-            }),
-            hooks: u32::try_from(plugin.hooks.len()).unwrap_or(u32::MAX),
-            servers: plugin
-                .servers
+        .map(|plugin| {
+            let record = crate::plugin_records::record_for(state.paths(), &plugin.root);
+            let withheld = gate
+                .withheld
                 .iter()
-                .map(|server| server.name.clone())
-                .collect(),
-            installed_from: crate::extension_install::read_source(&plugin.root),
+                .find(|withheld| withheld.folder == plugin.root);
+            PluginInfo {
+                id: record.as_ref().and_then(|record| record.id.clone()),
+                origin: record.as_ref().map(|record| record.origin.as_str().into()),
+                withheld: withheld.is_some(),
+                withheld_reason: withheld.map(|withheld| withheld.reason.clone()),
+                name: plugin.name.clone(),
+                root: plugin.root.display().to_string(),
+                enabled: !settings.extensions.disabled_plugins.contains(&plugin.name),
+                skills: count(&plugin.skills_dir(), |path| path.join("SKILL.md").is_file()),
+                commands: count(&plugin.commands_dir(), |path| {
+                    path.extension().is_some_and(|extension| extension == "md")
+                }),
+                hooks: u32::try_from(plugin.hooks.len()).unwrap_or(u32::MAX),
+                servers: plugin
+                    .servers
+                    .iter()
+                    .map(|server| server.name.clone())
+                    .collect(),
+                installed_from: crate::extension_install::read_source(&plugin.root),
+            }
         })
         .collect();
     McpListResult {

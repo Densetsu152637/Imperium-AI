@@ -354,6 +354,19 @@ async fn cards_installs_and_removals_are_recorded_with_their_source_and_undone()
     assert_eq!(hooked["installed_from"]["kind"], "path");
     // A plugin with hooks is installed turned off, so its hooks do not run unasked.
     assert_eq!(hooked["enabled"], false);
+    // It is recorded with no approval, so the gate withholds it whatever the user turns on.
+    assert_eq!(hooked["origin"], "agent");
+    assert_eq!(hooked["withheld"], true);
+    let installed = rpc(&mut connection, "plugins.list", json!({})).unwrap();
+    let row = installed["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["name"] == "hooked")
+        .expect("plugins.list shows the installed plugin");
+    assert_eq!(row["origin"], "agent");
+    assert_eq!(row["approval"], Value::Null);
+    assert_eq!(row["withheld"], true);
     assert!(
         state
             .settings()
@@ -392,6 +405,15 @@ async fn cards_installs_and_removals_are_recorded_with_their_source_and_undone()
     assert!(config_dir.join("skills/manual/SKILL.md").is_file());
     assert!(!skill_dir.exists());
     assert!(!config_dir.join("plugins/hooked").exists());
+    // Undoing the install took the record with the folder.
+    let installed = rpc(&mut connection, "plugins.list", json!({})).unwrap();
+    assert!(
+        installed["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|plugin| plugin["name"] != "hooked")
+    );
     assert!(!config_dir.join("mods/agent-clock").exists());
     assert!(
         !state
@@ -524,7 +546,8 @@ async fn an_installed_plugin_with_a_server_stays_off_until_the_user_turns_it_on(
     assert_eq!(starts.load(Ordering::SeqCst), 0, "the server was started");
 
     // Turning it on in Connectors (a setting the daemon reads at start) is not an approval: the
-    // load-time gate still withholds a plugin with a server that nobody recorded or approved.
+    // load-time gate still withholds a plugin with a server that nobody approved. The install
+    // recorded it (origin `agent`, no approval).
     let saved = rpc(
         &mut connection,
         "config.set",
@@ -543,13 +566,16 @@ async fn an_installed_plugin_with_a_server_stays_off_until_the_user_turns_it_on(
         "the gate let the server start"
     );
 
-    // The first start with a plugin already installed and turned on records it with a
-    // carried-over approval, so a new session can activate it.
+    // The migration has run (the install ran it) and does not carry over an approval for what an
+    // agent installed since: nothing approves it until the desktop app does.
     state.migrate_plugins();
     let (_, turn) = run_prompt(&state, project.path(), deny, "activate words").await;
     let (tool, ok, output) = &turn.tools[0];
     assert_eq!(tool, "activate_plugin");
-    assert!(*ok, "{output}");
-    assert!(output.contains("words_dict"), "{output}");
-    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert!(!*ok, "{output}");
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        0,
+        "the gate let the server start"
+    );
 }

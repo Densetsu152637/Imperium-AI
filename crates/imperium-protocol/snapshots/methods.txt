@@ -70,10 +70,12 @@ method phone.revoke
 method plugins.browse
 method plugins.inspect
 method plugins.install
+method plugins.list
 method plugins.marketplace_add
 method plugins.marketplace_list
 method plugins.marketplace_refresh
 method plugins.marketplace_remove
+method plugins.uninstall
 method projects.list
 method projects.message
 method runtime.install

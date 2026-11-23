@@ -155,6 +155,8 @@ pub(crate) struct Installed {
     pub source: InstallSource,
     /// A plugin with hooks or MCP servers, added to `extensions.disabled_plugins`.
     pub disabled: bool,
+    /// For a plugin: the content hash of its installed folder, which its record holds.
+    pub sha256: Option<String>,
     /// What the agent and the user are told about it.
     pub notes: Vec<String>,
 }
@@ -174,6 +176,13 @@ pub(crate) async fn install(
         .transpose()?;
     if request.revision.is_some() && matches!(request.source, Source::Path(_)) {
         return Err("revision applies to a git source only".into());
+    }
+    if request.kind == ExtensionKind::Plugin {
+        // The install is recorded (origin `agent`), and a record can be written only after the
+        // first-start migration: run it now if the daemon start could not, and refuse here
+        // rather than leave an installed folder with no record.
+        state.migrate_plugins();
+        crate::plugin_records::writable(state.paths())?;
     }
     let staging_root = config_dir.join(".staging");
     let staging = staging_root.join(format!("install-{}-{}", std::process::id(), unix_ms()));
@@ -227,6 +236,7 @@ async fn install_in(
             .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
     }
     let mut disabled = false;
+    let mut newly_disabled = false;
     if request.kind == ExtensionKind::Plugin && (hooks > 0 || servers > 0) {
         let has = match (hooks, servers) {
             (0, servers) => format!("{servers} MCP server(s), which would run its code"),
@@ -255,12 +265,26 @@ async fn install_in(
             return Err(error);
         }
         disabled = true;
+        newly_disabled = !was_listed;
         notes.push(format!(
             "It has {has}, so it is installed turned off and activate_plugin cannot start it; \
              only the user can turn it on, in Connectors."
         ));
     } else {
         move_tree(&out, &dest)?;
+    }
+    let mut sha256 = None;
+    if request.kind == ExtensionKind::Plugin {
+        match record_plugin(state, &dest, &source) {
+            Ok(hash) => sha256 = Some(hash),
+            Err(error) => {
+                remove_tree(&dest);
+                if newly_disabled && let Err(undo) = set_plugin_disabled(state, &name, false) {
+                    tracing::warn!(%undo, "could not take a plugin that failed to install off extensions.disabled_plugins");
+                }
+                return Err(error);
+            }
+        }
     }
     match request.kind {
         ExtensionKind::Skill => notes.push(format!(
@@ -279,8 +303,42 @@ async fn install_in(
         path: dest,
         source,
         disabled,
+        sha256,
         notes,
     })
+}
+
+/// Records an agent-installed plugin (`origin = agent`, no approval: an agent cannot approve) with
+/// the hash and run summary the load-time gate will compute. Returns the hash.
+fn record_plugin(
+    state: &DaemonState,
+    dest: &Path,
+    source: &InstallSource,
+) -> Result<String, String> {
+    use crate::plugin_records::{self, Origin, Record};
+    let seen = plugin_records::measure(dest)?;
+    if let Some(link) = seen.link {
+        return Err(format!(
+            "the plugin holds a link at {link}, which is not installed"
+        ));
+    }
+    let plugin = plugin_records::parse(dest)
+        .ok_or("the installed folder holds no plugin that can be read")?;
+    plugin_records::add_record(
+        state.paths(),
+        dest,
+        Record {
+            name: plugin.name.clone(),
+            origin: Origin::Agent,
+            id: None,
+            source: Some(source.location.clone()),
+            commit: source.revision.clone(),
+            hash: seen.hash.clone(),
+            runs: imperium_extensions::plugins::runs(&plugin).digest(),
+            approval: None,
+        },
+    )?;
+    Ok(seen.hash)
 }
 
 /// What [`fetch`] left in the staging folder.
@@ -726,10 +784,25 @@ pub(crate) fn find_installed(
 ) -> Result<PathBuf, String> {
     let name = name.trim();
     let dir = kind.dir(config_dir);
+    // Plugin names compare ignoring letter case, as they do on Windows and macOS folders.
+    let same = |a: &str, b: &str| {
+        if kind == ExtensionKind::Plugin {
+            a.eq_ignore_ascii_case(b)
+        } else {
+            a == b
+        }
+    };
     if check_name(name).is_ok() {
         let direct = dir.join(name);
         if marker(kind, &direct) {
             return Ok(direct);
+        }
+        if kind == ExtensionKind::Plugin {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                if same(&entry.file_name().to_string_lossy(), name) && marker(kind, &entry.path()) {
+                    return Ok(entry.path());
+                }
+            }
         }
     }
     for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
@@ -757,7 +830,7 @@ pub(crate) fn find_installed(
             .map(|plugin| plugin.name),
             ExtensionKind::Mod => crate::mods::load(&path, false).ok().map(|info| info.id),
         };
-        if found.as_deref() == Some(name) {
+        if found.as_deref().is_some_and(|found| same(found, name)) {
             return Ok(path);
         }
     }

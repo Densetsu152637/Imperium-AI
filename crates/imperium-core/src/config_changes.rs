@@ -13,6 +13,7 @@ use crate::extension_install::{
     self, ExtensionKind, InstallRequest, move_tree, read_source, remove_tree,
 };
 use crate::model_config::{self, CardKind};
+use crate::plugin_records;
 use crate::state::DaemonState;
 
 /// Most changes kept; older ones are dropped (and can no longer be undone).
@@ -69,6 +70,8 @@ fn blank(kind: &str, session_id: Option<&str>, summary: String) -> ConfigChange 
         source: None,
         disabled: false,
         kept_at: None,
+        sha256: None,
+        record: None,
         undone_at_unix_ms: None,
     }
 }
@@ -154,6 +157,7 @@ pub(crate) async fn install(
     change.path = Some(installed.path.display().to_string());
     change.source = Some(installed.source.clone());
     change.disabled = installed.disabled;
+    change.sha256 = installed.sha256.clone();
     Ok((record(state, change), installed.notes))
 }
 
@@ -164,8 +168,10 @@ pub(crate) fn plugin_installed(
     id: &str,
     path: &Path,
     source: &imperium_protocol::methods::InstallSource,
+    sha256: &str,
 ) -> ConfigChange {
     let mut change = blank("install", None, format!("Installed the plugin {id}"));
+    change.sha256 = Some(sha256.to_string());
     change.extension_kind = Some("plugin".into());
     change.name = id.rsplit_once('@').map(|(name, _)| name.to_string());
     change.path = Some(path.display().to_string());
@@ -185,7 +191,34 @@ pub(crate) fn uninstall(
     name: &str,
 ) -> Result<ConfigChange, String> {
     let dir = extension_install::find_installed(state.paths().config_dir(), kind, name)?;
+    uninstall_folder(state, session_id, kind, name, &dir).map(|(change, _)| change)
+}
+
+/// Moves the extension folder `dir` aside and records it. For a plugin its record is removed too
+/// (kept in the journal entry with the folder's hash, so `config.undo` restores both).
+pub(crate) fn uninstall_folder(
+    state: &DaemonState,
+    session_id: Option<&str>,
+    kind: ExtensionKind,
+    name: &str,
+    dir: &Path,
+) -> Result<(ConfigChange, Vec<String>), String> {
+    let mut notes = Vec::new();
+    let dir = dir.to_path_buf();
     let source = read_source(&dir);
+    // The record and the hash are read before the folder moves (its key is its canonical path).
+    let mut plugin = None;
+    if kind == ExtensionKind::Plugin {
+        let key = plugin_records::key_of(&dir);
+        let record = plugin_records::record_for(state.paths(), &dir);
+        let hash = dir
+            .canonicalize()
+            .ok()
+            .and_then(|canon| plugin_records::look(&canon).ok())
+            .map(|seen| seen.hash)
+            .filter(|hash| !hash.is_empty());
+        plugin = Some((key, record, hash));
+    }
     let folder = dir
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -205,7 +238,21 @@ pub(crate) fn uninstall(
     change.path = Some(dir.display().to_string());
     change.source = source;
     change.kept_at = Some(kept.display().to_string());
-    Ok(record(state, change))
+    if let Some((key, found, hash)) = plugin {
+        change.sha256 = hash;
+        if let Some(found) = found {
+            change.record = serde_json::to_string(&found).ok();
+        }
+        if let Some(key) = key
+            && let Err(error) = plugin_records::take_record(state.paths(), &key)
+        {
+            tracing::warn!(%error, "could not remove the record of an uninstalled plugin");
+            notes.push(format!(
+                "the plugin's record could not be removed ({error}); the folder was moved anyway"
+            ));
+        }
+    }
+    Ok((record(state, change), notes))
 }
 
 /// Whether the `kind` called `name` was installed by an agent (its folder records a session).
@@ -235,7 +282,7 @@ pub(crate) fn undo(state: &DaemonState, id: u64) -> Result<ConfigUndoResult, Str
     let message = match change.kind.as_str() {
         "model_card" => undo_card(state, &change)?,
         "install" => undo_install(state, &change)?,
-        "uninstall" => undo_uninstall(&change)?,
+        "uninstall" => undo_uninstall(state, &change)?,
         other => return Err(format!("change {id} is a {other}, which cannot be undone")),
     };
     let _journal = state
@@ -296,9 +343,29 @@ fn undo_install(state: &DaemonState, change: &ConfigChange) -> Result<String, St
     {
         return Err(format!("{} is outside the config folder", path.display()));
     }
+    // A plugin goes only if its content is still what was installed, and its record goes with it.
+    let key = (kind == ExtensionKind::Plugin)
+        .then(|| plugin_records::key_of(&path))
+        .flatten();
+    if kind == ExtensionKind::Plugin
+        && let (Some(expected), Some(canon)) = (&change.sha256, path.canonicalize().ok())
+    {
+        let seen = plugin_records::look(&canon)?;
+        if seen.link.is_some() || seen.hash != *expected {
+            return Err(format!(
+                "{} was changed or replaced since it was installed, so it and its record were left alone: uninstall it instead",
+                path.display()
+            ));
+        }
+    }
     remove_tree(&path);
     if path.exists() {
         return Err(format!("could not remove {}", path.display()));
+    }
+    if let Some(key) = key
+        && let Err(error) = plugin_records::take_record(state.paths(), &key)
+    {
+        tracing::warn!(%error, "could not remove the record of an uninstalled plugin");
     }
     if change.disabled
         && let Err(error) = extension_install::set_plugin_disabled(state, name, false)
@@ -308,7 +375,7 @@ fn undo_install(state: &DaemonState, change: &ConfigChange) -> Result<String, St
     Ok(format!("Removed the {} {name}.", kind.as_str()))
 }
 
-fn undo_uninstall(change: &ConfigChange) -> Result<String, String> {
+fn undo_uninstall(state: &DaemonState, change: &ConfigChange) -> Result<String, String> {
     let path = PathBuf::from(change.path.as_deref().ok_or("the change names no folder")?);
     let kept = PathBuf::from(
         change
@@ -328,11 +395,51 @@ fn undo_uninstall(change: &ConfigChange) -> Result<String, String> {
             path.display()
         ));
     }
+    // Folder names that differ only by letter case are one folder on Windows and macOS.
+    if let (Some(parent), Some(wanted)) = (path.parent(), path.file_name()) {
+        let wanted = wanted.to_string_lossy();
+        for entry in std::fs::read_dir(parent).into_iter().flatten().flatten() {
+            let existing = entry.file_name().to_string_lossy().into_owned();
+            if existing.eq_ignore_ascii_case(&wanted) {
+                return Err(format!(
+                    "{} exists and differs from {wanted} only by letter case; remove it first to restore the old one",
+                    entry.path().display()
+                ));
+            }
+        }
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
     }
+    // A plugin comes back only as it was removed: the kept copy must still hash as journalled.
+    let is_plugin = change.extension_kind.as_deref() == Some("plugin");
+    if is_plugin && let (Some(expected), Ok(canon)) = (&change.sha256, kept.canonicalize()) {
+        let seen = plugin_records::look(&canon)?;
+        if seen.link.is_some() || seen.hash != *expected {
+            return Err(format!(
+                "the kept copy in {} changed since it was removed, so it was not restored",
+                kept.display()
+            ));
+        }
+    }
     move_tree(&kept, &path)?;
+    if is_plugin && let Some(text) = &change.record {
+        let restored = serde_json::from_str::<plugin_records::Record>(text)
+            .map_err(|error| format!("the journalled plugin record is unreadable: {error}"))
+            .and_then(|found| {
+                let key = plugin_records::key_of(&path)
+                    .ok_or_else(|| format!("{}: not found", path.display()))?;
+                plugin_records::add_record_at(state.paths(), key, found)
+            });
+        if let Err(error) = restored {
+            // The folder goes back where it was kept, so no folder is left without its record.
+            if let Err(back) = move_tree(&path, &kept) {
+                tracing::warn!(%back, "could not put a plugin folder back in the trash");
+            }
+            return Err(format!("could not restore the plugin record: {error}"));
+        }
+    }
     Ok(format!(
         "Restored the {} {}.",
         change.extension_kind.as_deref().unwrap_or("extension"),

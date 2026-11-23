@@ -188,6 +188,19 @@ impl Connection {
                     }
                 })
             }
+            PluginsList::NAME => call::<PluginsList>(c.params.take(), |_: PluginsListParams| {
+                Ok(crate::plugin_install::list(&self.state))
+            }),
+            PluginsUninstall::NAME => {
+                call_later::<PluginsUninstall, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::plugin_install::uninstall(&state, params)
+                            .await
+                            .map_err(refused)
+                    }
+                })
+            }
             ConfigChanges::NAME => {
                 call::<ConfigChanges>(c.params.take(), |_: ConfigChangesParams| {
                     Ok(ConfigChangesResult {

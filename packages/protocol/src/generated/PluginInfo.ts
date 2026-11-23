@@ -16,4 +16,21 @@ servers: Array<string>,
 /**
  * Where it was installed from, when an agent installed it (`install_extension`).
  */
-installed_from: InstallSource | null, };
+installed_from: InstallSource | null, 
+/**
+ * `name@marketplace` for a plugin installed from a marketplace.
+ */
+id: string | null, 
+/**
+ * Where it came from, from its record: `marketplace`, `agent`, `user` or `preexisting`;
+ * none when Imperium has no record of the folder.
+ */
+origin: string | null, 
+/**
+ * The load-time gate withholds the whole plugin from new sessions.
+ */
+withheld: boolean, 
+/**
+ * Why it is withheld.
+ */
+withheld_reason: string | null, };

@@ -885,9 +885,39 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   ones too) and shows `dev` approvals as `dev`; an agent install of a hook plugin is recorded and
   withheld; `mcp.list` carries `withheld`.
 - Risks: undo must not restore a record over a folder replaced since.
-- Status: pending
-- Outcome:
-- Handoff notes: none yet.
+- Status: in review
+- Outcome: `plugins.uninstall {name}` and `plugins.list` (`plugin_install.rs`, `rpc/config.rs`,
+  protocol 0.52, generated types, snapshot, docs 02 and 06). Uninstall resolves a folder name, a
+  recorded name or a recorded `name@marketplace`, all ignoring letter case, and runs
+  `config_changes::uninstall_folder`, which `uninstall_extension` shares: the folder goes to
+  `<data>/config-trash`, the record is removed, and the journal entry keeps the folder's content
+  hash (`ConfigChange.sha256`) and the record as JSON (`ConfigChange.record`). `config.undo` of a
+  plugin install removes the folder and the record, and refuses (leaving both) when
+  `plugin_records::look` gives another hash than the journalled one; undo of an uninstall refuses
+  when the name is taken or the kept copy no longer hashes as journalled, and restores the record
+  with the folder (moving the folder back if the record cannot be written). Installs journalled
+  before this stage carry no hash and skip the check. `plugins.list` returns every plugin folder
+  with `id`, `origin`, source, commit, approval kind (`dev` shown as `dev`), `enabled`, the gate's
+  `withheld` and `reason`, and hook and server counts; unrecorded folders are listed; folders with
+  no plugin manifest are `problems`. `mcp.list`'s `PluginInfo` gained `id`, `origin`, `withheld`
+  and `withheld_reason`. `install_extension` of a plugin runs the first-start migration if the
+  daemon start did not, refuses the install if the record file is not writable, and records
+  `origin = agent`, no approval, with the gate's hash and run digest; a record failure removes the
+  folder and turns the plugin back on in `disabled_plugins` if this install had turned it off.
+  Choices: case-insensitive lookup also applies to `find_installed` for plugins; the dot rule was
+  already in `check_name` and the entry parser; the `agent_config` test that expected a plugin
+  with a server to load after the migration now expects it to stay withheld (the install made the
+  marker, and an agent's plugin has no approval); `plugins.uninstall` takes no `secrets` option
+  until stage 5; the uninstall hash is `None` for a folder holding a link, which then restores
+  without the hash check (the gate withholds it either way).
+- Handoff notes: stage 4's update must change the record's hash and the journalled hash only
+  through `add_record`; an update after an install makes `config.undo` of that install refuse
+  (the folder no longer hashes as installed), which is the intended outcome. Stage 4's approve
+  writes `Record.approval`; undo of an uninstall restores whatever approval the record held, and
+  the gate still checks it against the restored hash and run digest. `plugin_records::take_record`
+  and `add_record_at` are the keyed store edits (key = `key_of`, the canonical path, which needs
+  the folder to exist, so read it before moving). Stage 6's CLI can call `plugins.list` and
+  `plugins.uninstall` as they are.
 
 ## Stage 4: Enable, disable, update and approve
 

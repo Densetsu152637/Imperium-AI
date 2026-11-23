@@ -181,6 +181,28 @@ approves: a plugin with hooks or servers is installed **withheld**, and the resu
 and `reason` (the gate's) say so and point at the desktop app, since nothing counts an approval
 yet; a plugin with neither loads. A stray `approve` or `environment` is ignored and noted.
 
+**Listing and uninstalling (protocol 0.52; not a paired phone).** `plugins.list` returns every
+plugin folder under `<config>/plugins`, recorded or not: name, folder, `id`, `origin`
+(`marketplace`, `agent`, `user`, `preexisting`; none without a record), the recorded source and
+commit, the approval kind (`counted`, `dialog-only`, `carried-over` or `dev`; a `dev` approval is
+shown as `dev` whether or not this build honours it), whether it is enabled, whether the gate
+withholds it and why (an unrecorded folder with code says "not installed by Imperium: approve to
+load"), and its hook and server counts; folders that hold no plugin are listed as problems.
+`mcp.list` carries the same `id`, `origin` and `withheld` (with `withheld_reason`) on each plugin.
+`plugins.uninstall {name}` takes a folder name, a recorded name or `name@marketplace` (letter case
+does not matter), moves the folder to `<data>/config-trash/` and removes its record, and journals
+a `config.changes` entry holding the folder's content hash and the record. Its secrets are not
+touched (stage 5). An agent's `install_extension` of a plugin is recorded too (`origin = agent`,
+no approval, so one with hooks or servers stays withheld whatever the user turns on); the daemon
+runs the first-start migration first if it has not, and refuses the install if the record file
+cannot be written.
+
+`config.undo` of a plugin install removes the folder **and its record**, but only if the folder
+still hashes as installed (`plugin_records::look`): one edited or replaced since is left alone,
+with a message. `config.undo` of an uninstall restores the folder **and its record**, but only if
+the name is free and the kept copy still hashes as it did when it was removed. Plugin and
+marketplace names compare ignoring letter case; a plugin name may not start or end with a dot.
+
 ### Named agents (implemented)
 
 A named agent is a subagent a file defines, in Claude Code's format, so plugins and projects can
