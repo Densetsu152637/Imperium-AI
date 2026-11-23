@@ -188,9 +188,27 @@ impl Connection {
                     }
                 })
             }
-            PluginsList::NAME => call::<PluginsList>(c.params.take(), |_: PluginsListParams| {
-                Ok(crate::plugin_install::list(&self.state))
-            }),
+            PluginsList::NAME => {
+                call::<PluginsList>(c.params.take(), |params: PluginsListParams| {
+                    crate::plugin_install::list(&self.state, params.environment.as_deref())
+                        .map_err(refused)
+                })
+            }
+            PluginsSetEnabled::NAME => {
+                call::<PluginsSetEnabled>(c.params.take(), |params: PluginsSetEnabledParams| {
+                    crate::plugin_install::set_enabled(&self.state, params).map_err(refused)
+                })
+            }
+            PluginsUpdate::NAME => {
+                call_later::<PluginsUpdate, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::plugin_install::update(&state, params)
+                            .await
+                            .map_err(refused)
+                    }
+                })
+            }
             PluginsUninstall::NAME => {
                 call_later::<PluginsUninstall, _>(c.params.take(), c.later, |params| {
                     let state = Arc::clone(&self.state);

@@ -124,6 +124,9 @@ pub(crate) struct Store {
 /// Decides which stored approvals the gate honours.
 pub(crate) trait ApprovalVerifier: Send + Sync {
     fn honours(&self, kind: ApprovalKind) -> bool;
+    /// Whether [`record_approval`] may write an approval of `kind`. The production verifier
+    /// writes nothing until stage 8c, so no caller can make an approval count before then.
+    fn may_write(&self, kind: ApprovalKind) -> bool;
 }
 
 /// A release build: counted, dialog-only and carried-over approvals; never `dev`. Nothing writes
@@ -134,6 +137,10 @@ impl ApprovalVerifier for ReleaseVerifier {
     fn honours(&self, kind: ApprovalKind) -> bool {
         kind != ApprovalKind::Dev
     }
+
+    fn may_write(&self, _: ApprovalKind) -> bool {
+        false
+    }
 }
 
 /// A debug build: also honours `dev` approvals.
@@ -141,6 +148,26 @@ pub(crate) struct DebugVerifier;
 
 impl ApprovalVerifier for DebugVerifier {
     fn honours(&self, _: ApprovalKind) -> bool {
+        true
+    }
+
+    /// Only the development approval, which release daemons ignore.
+    fn may_write(&self, kind: ApprovalKind) -> bool {
+        kind == ApprovalKind::Dev
+    }
+}
+
+/// A verifier for tests: honours and writes every kind.
+#[cfg(test)]
+pub(crate) struct TestVerifier;
+
+#[cfg(test)]
+impl ApprovalVerifier for TestVerifier {
+    fn honours(&self, _: ApprovalKind) -> bool {
+        true
+    }
+
+    fn may_write(&self, _: ApprovalKind) -> bool {
         true
     }
 }
@@ -374,6 +401,62 @@ pub(crate) fn add_record_at(paths: &Paths, key: String, record: Record) -> Resul
     };
     store.plugins.insert(key, record);
     write_json(&store_path(paths), &store)
+}
+
+/// Records an approval of `kind` for the plugin folder `folder`, if `verifier` lets that kind be
+/// written. The folder's content hash and run-summary digest must equal `hash` and `runs` (what
+/// the approval was asked for), so other content than was shown is never approved. A folder with
+/// no record gets one with `origin = user`; a recorded one takes the approved hash and digest as
+/// its own (this is also how a skills-only plugin the user edited is recorded again). Nothing here
+/// decides who may approve: the caller (stage 8a) does, and nothing calls this yet but tests.
+#[allow(dead_code)] // Stage 8a's `plugins.approve` calls it.
+pub(crate) fn record_approval(
+    paths: &Paths,
+    verifier: &dyn ApprovalVerifier,
+    folder: &Path,
+    kind: ApprovalKind,
+    hash: &str,
+    runs: &str,
+) -> Result<(), String> {
+    if !verifier.may_write(kind) {
+        return Err("this build does not count approvals yet: nothing was recorded".into());
+    }
+    let canon = folder
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", folder.display()))?;
+    let seen = look(&canon)?;
+    if let Some(link) = &seen.link {
+        return Err(format!(
+            "the plugin holds a link at {link}: it is not approved"
+        ));
+    }
+    let plugin = parse(&canon).ok_or("the folder holds no plugin that can be read")?;
+    let now = plugins::runs(&plugin).digest();
+    if seen.hash != hash || now != runs {
+        return Err(
+            "the plugin changed since the approval was asked for: nothing was recorded".into(),
+        );
+    }
+    let key = canon.to_string_lossy().into_owned();
+    let mut record = record_for(paths, &canon).unwrap_or_else(|| Record {
+        name: plugin.name.clone(),
+        origin: Origin::User,
+        id: None,
+        source: None,
+        commit: None,
+        hash: hash.to_string(),
+        runs: runs.to_string(),
+        approval: None,
+    });
+    record.hash = hash.to_string();
+    record.runs = runs.to_string();
+    record.approval = Some(Approval {
+        hash: hash.to_string(),
+        runs: runs.to_string(),
+        at_unix_ms: unix_ms(),
+        kind,
+    });
+    add_record_at(paths, key, record)
 }
 
 /// Removes the record stored under `key` and returns it. A missing store holds none; an
@@ -777,6 +860,57 @@ mod tests {
             .into_iter()
             .map(|(name, _)| name)
             .collect()
+    }
+
+    #[test]
+    fn an_approval_is_written_only_when_the_verifier_allows_it() {
+        let home = home();
+        migrate(&home.paths, &[]).unwrap();
+        let folder = plugin(&home, "p", "p", true);
+        let canon = folder.canonicalize().unwrap();
+        let hash = look(&canon).unwrap().hash;
+        let runs = plugins::runs(&parse(&folder).unwrap()).digest();
+        let ask = |verifier: &dyn ApprovalVerifier, hash: &str, runs: &str| {
+            record_approval(
+                &home.paths,
+                verifier,
+                &folder,
+                ApprovalKind::Counted,
+                hash,
+                runs,
+            )
+        };
+
+        // The production verifier writes nothing (no approval counts before stage 8c).
+        assert!(!production_verifier().may_write(ApprovalKind::Counted));
+        let error = ask(production_verifier(), &hash, &runs).unwrap_err();
+        assert!(error.contains("does not count"), "{error}");
+        assert!(record_for(&home.paths, &folder).is_none());
+        assert_eq!(reasons(&home, &ReleaseVerifier).len(), 1);
+
+        // Content other than what was asked about is not approved.
+        let error = ask(&TestVerifier, "0000", &runs).unwrap_err();
+        assert!(error.contains("changed since"), "{error}");
+        let error = ask(&TestVerifier, &hash, "0000").unwrap_err();
+        assert!(error.contains("changed since"), "{error}");
+        assert!(record_for(&home.paths, &folder).is_none());
+
+        // An unrecorded folder gets an `origin = user` record with the approval, and loads.
+        ask(&TestVerifier, &hash, &runs).unwrap();
+        let record = record_for(&home.paths, &folder).unwrap();
+        assert_eq!(record.origin, Origin::User);
+        assert_eq!(
+            record.approval.map(|approval| approval.kind),
+            Some(ApprovalKind::Counted)
+        );
+        assert!(reasons(&home, &ReleaseVerifier).is_empty());
+
+        // Any later change withholds it again.
+        write(
+            &folder.join("skills/s/SKILL.md"),
+            "---\nname: s\ndescription: x\n---\nedited\n",
+        );
+        assert_eq!(reasons(&home, &ReleaseVerifier).len(), 1);
     }
 
     #[test]

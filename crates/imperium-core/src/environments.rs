@@ -54,6 +54,7 @@ fn home() -> EnvironmentInfo {
         // There are no repositories to open.
         project_worktrees: false,
         builtin: true,
+        plugins: Default::default(),
     }
 }
 
@@ -288,6 +289,7 @@ impl Environments {
             permissions,
             project_worktrees: params.project_worktrees.unwrap_or(true),
             builtin: false,
+            plugins: Default::default(),
         };
         if params.persistent_agent == Some(true) {
             add_default_agent(&mut env)?;
@@ -357,6 +359,27 @@ impl Environments {
             }
             if let Some(on) = params.project_worktrees {
                 env.project_worktrees = on;
+            }
+            Ok(())
+        })
+    }
+
+    /// Turns the plugin `name` on or off for the environment `id` (it leaves the other list).
+    pub fn set_plugin(
+        &self,
+        id: &str,
+        name: &str,
+        enabled: bool,
+    ) -> Result<EnvironmentInfo, EnvironmentError> {
+        self.change_one(id, |env| {
+            let (add, remove) = if enabled {
+                (&mut env.plugins.enabled, &mut env.plugins.disabled)
+            } else {
+                (&mut env.plugins.disabled, &mut env.plugins.enabled)
+            };
+            remove.retain(|entry| entry != name);
+            if !add.iter().any(|entry| entry == name) {
+                add.push(name.to_string());
             }
             Ok(())
         })

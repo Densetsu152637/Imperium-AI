@@ -242,6 +242,27 @@ pub struct EnvironmentInfo {
     /// folders unless the user adds some; its sessions work in their scratch folders.
     #[serde(default)]
     pub builtin: bool,
+    /// Which plugins this environment turns on or off, and its plugin suggestions' state.
+    #[serde(default)]
+    pub plugins: EnvironmentPlugins,
+}
+
+/// An environment's plugin lists, by plugin name. `enabled` turns on a plugin the user turned
+/// off for everyone (never one a trusted repository's file disables); `disabled` turns one off
+/// here. A plugin the load-time gate withholds stays withheld.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentPlugins {
+    #[serde(default)]
+    pub enabled: Vec<String>,
+    #[serde(default)]
+    pub disabled: Vec<String>,
+    /// Suggested plugins the user dismissed (stage 7).
+    #[serde(default)]
+    pub dismissed_suggestions: Vec<String>,
+    /// Folders whose suggestions are muted (stage 7).
+    #[serde(default)]
+    pub muted_suggestion_sources: Vec<String>,
 }
 
 /// Where an environment's tools run. `local` is this machine (under the configured isolation

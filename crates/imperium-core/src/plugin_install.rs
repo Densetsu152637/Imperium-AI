@@ -23,13 +23,14 @@ use imperium_extensions::plugins::{self, Plugin, inside};
 use imperium_protocol::methods::{
     InstallSource, InstalledPlugin, PluginHookRun, PluginInstalled, PluginPreview, PluginServerRun,
     PluginsInspectParams, PluginsInstallParams, PluginsInstallResult, PluginsListResult,
-    PluginsUninstallParams, PluginsUninstallResult,
+    PluginsSetEnabledParams, PluginsSetEnabledResult, PluginsUninstallParams,
+    PluginsUninstallResult, PluginsUpdateParams, PluginsUpdateResult,
 };
 
 use crate::extension_install::{self, ExtensionKind, Staging, check_name, move_tree, remove_tree};
 use crate::marketplaces::{self, Located};
 use crate::plugin_records::{self, Origin, Record};
-use crate::state::DaemonState;
+use crate::state::{DaemonState, plugin_switch};
 
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -372,6 +373,43 @@ fn claim(dest: &Path) -> Result<(), String> {
     })
 }
 
+/// What `.imperium-source.json` records for a staged plugin.
+fn install_source(staged: &Staged) -> InstallSource {
+    InstallSource {
+        kind: if staged.source_kind == "path" {
+            "path"
+        } else {
+            "git"
+        }
+        .into(),
+        location: if staged.source_kind == "path" {
+            staged.located.source.clone()
+        } else {
+            staged.source.clone()
+        },
+        revision: staged.commit.clone(),
+        requested: staged.requested.clone(),
+        subdir: (staged.source_kind == "path" && !staged.source.is_empty())
+            .then(|| staged.source.clone()),
+        installed_at_unix_ms: unix_ms(),
+        session_id: None,
+    }
+}
+
+/// The gate's reason for withholding the installed folder `dest`, with where to approve it.
+fn withheld_reason(state: &DaemonState, dest: &Path) -> Option<String> {
+    let gate = plugin_records::gate(state.paths(), plugin_records::production_verifier());
+    gate.withheld
+        .iter()
+        .find(|withheld| withheld.folder == dest)
+        .map(|withheld| {
+            format!(
+                "{}. It loads after you approve it in the Imperium desktop app",
+                withheld.reason
+            )
+        })
+}
+
 /// `plugins.install`.
 pub(crate) async fn install(
     state: &DaemonState,
@@ -419,25 +457,7 @@ pub(crate) async fn install(
         remove_tree(&dest);
         return Err(error);
     }
-    let source = InstallSource {
-        kind: if staged.source_kind == "path" {
-            "path"
-        } else {
-            "git"
-        }
-        .into(),
-        location: if staged.source_kind == "path" {
-            staged.located.source.clone()
-        } else {
-            staged.source.clone()
-        },
-        revision: staged.commit.clone(),
-        requested: staged.requested.clone(),
-        subdir: (staged.source_kind == "path" && !staged.source.is_empty())
-            .then(|| staged.source.clone()),
-        installed_at_unix_ms: unix_ms(),
-        session_id: None,
-    };
+    let source = install_source(&staged);
     let id = format!("{name}@{}", staged.located.marketplace);
     let recorded = extension_install::write_source(&dest, &source).and_then(|()| {
         plugin_records::add_record(
@@ -470,17 +490,7 @@ pub(crate) async fn install(
     if params.environment.is_some() {
         notes.push("environment was ignored: plugins are not turned on per environment yet".into());
     }
-    let gate = plugin_records::gate(state.paths(), plugin_records::production_verifier());
-    let reason = gate
-        .withheld
-        .iter()
-        .find(|withheld| withheld.folder == dest)
-        .map(|withheld| {
-            format!(
-                "{}. It loads after you approve it in the Imperium desktop app",
-                withheld.reason
-            )
-        });
+    let reason = withheld_reason(state, &dest);
     Ok(PluginsInstallResult {
         name,
         path: dest.display().to_string(),
@@ -544,6 +554,18 @@ fn resolve(state: &DaemonState, text: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// The plugin's name: its record's, else its manifest's, else its folder's.
+fn plugin_name(state: &DaemonState, dir: &Path, asked: &str) -> String {
+    plugin_records::record_for(state.paths(), dir)
+        .map(|record| record.name)
+        .or_else(|| plugin_records::parse(dir).map(|plugin| plugin.name))
+        .or_else(|| {
+            dir.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| asked.trim().to_string())
+}
+
 /// `plugins.uninstall`: moves the folder to `<data>/config-trash`, removes its record, and
 /// journals both so `config.undo` puts them back.
 pub(crate) async fn uninstall(
@@ -552,14 +574,7 @@ pub(crate) async fn uninstall(
 ) -> Result<PluginsUninstallResult, String> {
     let _serial = INSTALLS.lock().await;
     let dir = resolve(state, &params.name)?;
-    let name = plugin_records::record_for(state.paths(), &dir)
-        .map(|record| record.name)
-        .or_else(|| plugin_records::parse(&dir).map(|plugin| plugin.name))
-        .or_else(|| {
-            dir.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .unwrap_or_else(|| params.name.trim().to_string());
+    let name = plugin_name(state, &dir, &params.name);
     let (change, mut notes) =
         crate::config_changes::uninstall_folder(state, None, ExtensionKind::Plugin, &name, &dir)?;
     Ok(PluginsUninstallResult {
@@ -578,7 +593,11 @@ pub(crate) async fn uninstall(
 }
 
 /// `plugins.list`: every plugin folder under `<config>/plugins`, with the gate's verdict.
-pub(crate) fn list(state: &DaemonState) -> PluginsListResult {
+pub(crate) fn list(
+    state: &DaemonState,
+    environment: Option<&str>,
+) -> Result<PluginsListResult, String> {
+    let scope = scope(state, environment)?;
     let gate = plugin_records::gate(state.paths(), plugin_records::production_verifier());
     let mut folders: Vec<(PathBuf, Option<String>)> = gate
         .allowed
@@ -591,7 +610,6 @@ pub(crate) fn list(state: &DaemonState) -> PluginsListResult {
         )
         .collect();
     folders.sort();
-    let disabled = state.settings().extensions.disabled_plugins.clone();
     let mut problems = Vec::new();
     let plugins = folders
         .into_iter()
@@ -608,8 +626,10 @@ pub(crate) fn list(state: &DaemonState) -> PluginsListResult {
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default()
                 });
+            let switch = plugin_switch(&name, &scope.user, &scope.repository, &scope.environment);
             InstalledPlugin {
-                enabled: !disabled.contains(&name),
+                enabled: switch.on,
+                decided_by: switch.decided_by.into(),
                 id: record.as_ref().and_then(|record| record.id.clone()),
                 origin: record.as_ref().map(|record| record.origin.as_str().into()),
                 source: record.as_ref().and_then(|record| record.source.clone()),
@@ -646,7 +666,230 @@ pub(crate) fn list(state: &DaemonState) -> PluginsListResult {
         }
     }
     problems.sort();
-    PluginsListResult { plugins, problems }
+    Ok(PluginsListResult { plugins, problems })
+}
+
+/// The lists that decide a plugin's switch for the user, or for one environment.
+struct Scope {
+    user: Vec<String>,
+    repository: Vec<String>,
+    environment: imperium_protocol::methods::EnvironmentPlugins,
+}
+
+fn environment_id(
+    state: &DaemonState,
+    environment: Option<&str>,
+) -> Result<Option<String>, String> {
+    match environment {
+        Some(text) => Ok(Some(
+            state
+                .environments()
+                .find(text)
+                .map_err(|error| error.to_string())?
+                .id,
+        )),
+        None => Ok(None),
+    }
+}
+
+fn scope(state: &DaemonState, environment: Option<&str>) -> Result<Scope, String> {
+    let environment_id = environment_id(state, environment)?;
+    let narrowed = state.environment_settings(environment_id.as_deref());
+    let (user, repository, environment) = state.plugin_lists(
+        &narrowed.settings.extensions.disabled_plugins,
+        &narrowed.repo_disabled_plugins,
+        environment_id.as_deref(),
+    );
+    Ok(Scope {
+        user,
+        repository,
+        environment,
+    })
+}
+
+/// `plugins.set_enabled`.
+pub(crate) fn set_enabled(
+    state: &DaemonState,
+    params: PluginsSetEnabledParams,
+) -> Result<PluginsSetEnabledResult, String> {
+    let dir = resolve(state, &params.name)?;
+    let name = plugin_name(state, &dir, &params.name);
+    if params.enabled {
+        let gate = plugin_records::gate(state.paths(), plugin_records::production_verifier());
+        if let Some(withheld) = gate.withheld.iter().find(|withheld| withheld.folder == dir) {
+            return Err(format!(
+                "{name} is withheld, so it cannot be turned on: {}",
+                withheld.reason
+            ));
+        }
+    }
+    let target = environment_id(state, params.environment.as_deref())?;
+    match &target {
+        Some(id) => {
+            state
+                .environments()
+                .set_plugin(id, &name, params.enabled)
+                .map_err(|error| error.to_string())?;
+        }
+        None => extension_install::set_plugin_disabled(state, &name, !params.enabled)?,
+    }
+    let scope = scope(state, target.as_deref())?;
+    let switch = plugin_switch(&name, &scope.user, &scope.repository, &scope.environment);
+    let mut notes = Vec::new();
+    if params.enabled && !switch.on {
+        notes.push(format!(
+            "it is still off: {} decides that",
+            switch.decided_by
+        ));
+    }
+    Ok(PluginsSetEnabledResult {
+        name,
+        enabled: switch.on,
+        decided_by: switch.decided_by.into(),
+        notes,
+    })
+}
+
+/// `plugins.update`: replaces an installed marketplace plugin with what its source holds now.
+///
+/// The swap leaves no moment in which an old approval meets new content: the old record leaves
+/// the store first, the old folder moves to `config-trash`, the new folder is created exclusively
+/// and filled, and only then is the new record (no approval) written. Between the first two steps
+/// the folder has no record, so the gate withholds its code; after them the path is empty; between
+/// the third and the last the new content has no record, so its code is withheld too. Every
+/// failure puts the old folder and record back.
+pub(crate) async fn update(
+    state: &DaemonState,
+    params: PluginsUpdateParams,
+) -> Result<PluginsUpdateResult, String> {
+    let _serial = INSTALLS.lock().await;
+    let text = params.name.trim();
+    let (plain, wanted) = match text.rsplit_once('@') {
+        Some((name, market)) if !name.is_empty() && !market.is_empty() => (name, Some(market)),
+        _ => (text, None),
+    };
+    let dir = resolve(state, plain)?;
+    let record = plugin_records::record_for(state.paths(), &dir)
+        .ok_or("there is no record of where this plugin came from: install it again")?;
+    let id = match (&record.origin, &record.id) {
+        (Origin::Marketplace, Some(id)) => id.clone(),
+        _ => {
+            return Err(format!(
+                "{} was not installed from a marketplace, so it cannot be updated",
+                record.name
+            ));
+        }
+    };
+    let (_, market) = split_id(&id)?;
+    if let Some(wanted) = wanted
+        && !wanted.eq_ignore_ascii_case(market)
+    {
+        return Err(format!(
+            "{} came from the marketplace {market}, not {wanted}: an update never moves a plugin between marketplaces",
+            record.name
+        ));
+    }
+    let staging = Staging::new(state.paths().data_dir())?;
+    // The source is the record's (`id` names the marketplace entry), never the folder's.
+    let staged = stage(state, &id, None, staging.path()).await?;
+    if !staged.hash.eq_ignore_ascii_case(params.sha256.trim()) {
+        return Err(format!(
+            "the plugin is not what was inspected (its hash is {}, not {}): inspect it again",
+            staged.hash, params.sha256
+        ));
+    }
+    if staged.plugin.name != record.name {
+        return Err(format!(
+            "the plugin is now named {} (installed as {}): uninstall and install it again",
+            staged.plugin.name, record.name
+        ));
+    }
+    if record.source.as_deref() != Some(staged.source.as_str()) {
+        return Err(format!(
+            "the marketplace now lists {} as {}'s source (installed from {}): it is not updated; uninstall and install it again",
+            staged.source,
+            record.name,
+            record.source.as_deref().unwrap_or("an unknown source")
+        ));
+    }
+    let canon = dir
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", dir.display()))?;
+    let current = plugin_records::look(&canon)?.hash;
+    let path = dir.display().to_string();
+    if current == staged.hash && record.hash == staged.hash {
+        let reason = withheld_reason(state, &dir);
+        return Ok(PluginsUpdateResult {
+            name: record.name,
+            path,
+            up_to_date: true,
+            replaced: false,
+            kept_at: None,
+            withheld: reason.is_some(),
+            reason,
+            notes: vec!["the installed content is the one inspected: nothing changed".into()],
+        });
+    }
+    let key = canon.to_string_lossy().into_owned();
+    extension_install::write_source(&staged.out, &install_source(&staged))?;
+    let fresh = Record {
+        name: record.name.clone(),
+        origin: Origin::Marketplace,
+        id: Some(id),
+        source: Some(staged.source.clone()),
+        commit: staged.commit.clone(),
+        hash: staged.hash.clone(),
+        runs: plugins::runs(&staged.plugin).digest(),
+        approval: None,
+    };
+    let trash = extension_install::trash_dir(state);
+    std::fs::create_dir_all(&trash)
+        .map_err(|error| format!("could not create {}: {error}", trash.display()))?;
+    let kept = trash.join(format!("{}-plugin-{}", unix_ms(), record.name));
+    // 1. The old record leaves the store (an unreadable store stops the update here).
+    let old = plugin_records::take_record(state.paths(), &key)?;
+    let put_back = |folder_moved: bool| {
+        if folder_moved {
+            remove_tree(&dir);
+            if let Err(error) = move_tree(&kept, &dir) {
+                tracing::warn!(%error, "could not put the old plugin folder back");
+            }
+        }
+        if let Some(old) = &old
+            && let Err(error) =
+                plugin_records::add_record_at(state.paths(), key.clone(), old.clone())
+        {
+            tracing::warn!(%error, "could not put the old plugin record back");
+        }
+    };
+    // 2. The old folder moves aside.
+    if let Err(error) = move_tree(&dir, &kept) {
+        put_back(false);
+        return Err(error);
+    }
+    // 3. The new folder is created exclusively and filled.
+    if let Err(error) = claim(&dir).and_then(|()| move_tree(&staged.out, &dir)) {
+        put_back(true);
+        return Err(error);
+    }
+    // 4. The new record, with no approval.
+    if let Err(error) = plugin_records::add_record_at(state.paths(), key.clone(), fresh) {
+        put_back(true);
+        return Err(error);
+    }
+    let reason = withheld_reason(state, &dir);
+    let mut notes = staged.notes.clone();
+    notes.push(format!("the previous folder is kept in {}", kept.display()));
+    Ok(PluginsUpdateResult {
+        name: record.name,
+        path,
+        up_to_date: false,
+        replaced: true,
+        kept_at: Some(kept.display().to_string()),
+        withheld: reason.is_some(),
+        reason,
+        notes,
+    })
 }
 
 #[cfg(test)]
@@ -1172,7 +1415,7 @@ mod tests {
         let (_home, _market, state) = setup().await;
         let folder = put(&state, "hooked@mk").await;
         let record = plugin_records::record_for(state.paths(), &folder).unwrap();
-        let before = list(&state);
+        let before = list(&state, None).unwrap();
         let shown = before.plugins.iter().find(|p| p.name == "hooked").unwrap();
         assert_eq!(shown.origin.as_deref(), Some("marketplace"));
         assert_eq!(shown.id.as_deref(), Some("hooked@mk"));
@@ -1190,7 +1433,7 @@ mod tests {
             "{}",
             stored(&state)
         );
-        assert!(list(&state).plugins.is_empty());
+        assert!(list(&state, None).unwrap().plugins.is_empty());
 
         // Undo puts back the folder and the same record, and the gate withholds it as before.
         undo(&state, done.change_id).unwrap();
@@ -1199,7 +1442,7 @@ mod tests {
             plugin_records::record_for(state.paths(), &folder),
             Some(record)
         );
-        assert_eq!(list(&state).plugins, before.plugins);
+        assert_eq!(list(&state, None).unwrap().plugins, before.plugins);
         let error = undo(&state, done.change_id).unwrap_err();
         assert!(error.contains("already undone"), "{error}");
     }
@@ -1398,7 +1641,7 @@ mod tests {
         )
         .unwrap();
         write(&plugins_dir.join("empty/readme.md"), "x");
-        let listed = list(&state);
+        let listed = list(&state, None).unwrap();
         let find = |name: &str| listed.plugins.iter().find(|p| p.name == name).unwrap();
         let stray = find("stray");
         assert!(stray.withheld && stray.origin.is_none() && stray.approval.is_none());
@@ -1468,7 +1711,7 @@ mod tests {
         assert_eq!(record.origin, Origin::Agent);
         assert!(record.approval.is_none());
         assert_eq!(change.sha256.as_deref(), Some(record.hash.as_str()));
-        let listed = list(&state);
+        let listed = list(&state, None).unwrap();
         let row = listed.plugins.iter().find(|p| p.name == "agentic").unwrap();
         assert!(row.withheld);
         assert_eq!(row.origin.as_deref(), Some("agent"));
@@ -1479,6 +1722,145 @@ mod tests {
             !stored(&state).contains("\"name\": \"agentic\""),
             "{}",
             stored(&state)
+        );
+    }
+
+    /// What `plugins.update` is asked for after inspecting `id` now.
+    async fn update_for(
+        state: &DaemonState,
+        id: &str,
+        name: &str,
+    ) -> Result<PluginsUpdateResult, String> {
+        let preview = inspect(state, inspect_params(id)).await.unwrap();
+        update(
+            state,
+            PluginsUpdateParams {
+                name: name.into(),
+                sha256: preview.sha256,
+            },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn an_update_with_the_same_content_is_up_to_date() {
+        let (_home, _market, state) = setup().await;
+        let folder = put(&state, "plain@mk").await;
+        let done = update_for(&state, "plain@mk", "plain").await.unwrap();
+        assert!(done.up_to_date && !done.replaced && done.kept_at.is_none());
+        assert!(folder.is_dir());
+    }
+
+    #[tokio::test]
+    async fn an_update_refuses_another_marketplace_and_content_that_was_not_inspected() {
+        let (_home, _market, state) = setup().await;
+        put(&state, "plain@mk").await;
+        let preview = inspect(&state, inspect_params("plain@mk")).await.unwrap();
+        let error = update(
+            &state,
+            PluginsUpdateParams {
+                name: "plain@other".into(),
+                sha256: preview.sha256.clone(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("never moves a plugin"), "{error}");
+        let error = update(
+            &state,
+            PluginsUpdateParams {
+                name: "plain".into(),
+                sha256: "00".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("not what was inspected"), "{error}");
+        // A plugin nobody installed from a marketplace is not updated.
+        let manual = state.paths().config_dir().join("plugins/manual");
+        write(
+            &manual.join(".claude-plugin/plugin.json"),
+            r#"{"name": "manual"}"#,
+        );
+        let error = update(
+            &state,
+            PluginsUpdateParams {
+                name: "manual".into(),
+                sha256: preview.sha256,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("no record") || error.contains("not installed from a marketplace"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_update_of_an_approved_plugin_is_withheld_until_it_is_approved_again() {
+        let (_home, market, state) = setup().await;
+        let folder = put(&state, "hooked@mk").await;
+        let seen = plugin_records::measure(&folder).unwrap();
+        let runs = plugins::runs(&plugin_records::parse(&folder).unwrap()).digest();
+        plugin_records::record_approval(
+            state.paths(),
+            &plugin_records::TestVerifier,
+            &folder,
+            plugin_records::ApprovalKind::Counted,
+            &seen.hash,
+            &runs,
+        )
+        .unwrap();
+        assert!(withheld_reason(&state, &folder).is_none());
+
+        // The marketplace's copy changes in a skill only: the new content is withheld anyway,
+        // the old approval does not carry over, and the old folder is kept.
+        write(
+            &market.path().join("hooked/skills/review/SKILL.md"),
+            "---\nname: review\ndescription: Review\n---\nedited\n",
+        );
+        let done = update_for(&state, "hooked@mk", "Hooked").await.unwrap();
+        assert!(
+            done.replaced && !done.up_to_date && done.withheld,
+            "{done:?}"
+        );
+        let kept = PathBuf::from(done.kept_at.unwrap());
+        assert!(kept.join("skills/review/SKILL.md").is_file());
+        assert!(
+            std::fs::read_to_string(kept.join("skills/review/SKILL.md"))
+                .unwrap()
+                .contains("body")
+        );
+        let record = plugin_records::record_for(state.paths(), &folder).unwrap();
+        assert!(record.approval.is_none());
+        assert_eq!(record.origin, Origin::Marketplace);
+        assert_eq!(record.id.as_deref(), Some("hooked@mk"));
+        assert!(
+            std::fs::read_to_string(folder.join("skills/review/SKILL.md"))
+                .unwrap()
+                .contains("edited")
+        );
+        let listed = list(&state, None).unwrap();
+        let row = listed.plugins.iter().find(|p| p.name == "hooked").unwrap();
+        assert!(row.withheld && row.approval.is_none());
+        assert_nothing_ran(&[state.paths().config_dir(), state.paths().data_dir()]);
+    }
+
+    #[tokio::test]
+    async fn an_update_of_a_plugin_without_code_loads() {
+        let (_home, market, state) = setup().await;
+        let folder = put(&state, "plain@mk").await;
+        write(
+            &market.path().join("plain/skills/pdf/SKILL.md"),
+            "---\nname: pdf\ndescription: PDFs\n---\nnewer\n",
+        );
+        let done = update_for(&state, "plain@mk", "plain@MK").await.unwrap();
+        assert!(done.replaced && !done.withheld);
+        assert!(
+            std::fs::read_to_string(folder.join("skills/pdf/SKILL.md"))
+                .unwrap()
+                .contains("newer")
         );
     }
 }

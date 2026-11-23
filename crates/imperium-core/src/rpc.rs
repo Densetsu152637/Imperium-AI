@@ -43,7 +43,8 @@ use imperium_protocol::methods::{
 use imperium_protocol::methods::{
     PluginsBrowse, PluginsInspect, PluginsInstall, PluginsList, PluginsListParams,
     PluginsMarketplaceAdd, PluginsMarketplaceList, PluginsMarketplaceListParams,
-    PluginsMarketplaceRefresh, PluginsMarketplaceRemove, PluginsUninstall,
+    PluginsMarketplaceRefresh, PluginsMarketplaceRemove, PluginsSetEnabled,
+    PluginsSetEnabledParams, PluginsUninstall, PluginsUpdate,
 };
 use imperium_protocol::methods::{
     SessionEvalCreate, SessionEvalCreateParams, SessionEvalResult, SessionEvalResultParams,
