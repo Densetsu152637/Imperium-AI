@@ -341,7 +341,7 @@ fn is_plugin(dir: &Path) -> bool {
 
 /// A path declared in a manifest, resolved inside `root`: relative, no `..`, and no existing
 /// component of it a symbolic link or junction. The path need not exist.
-fn inside(root: &Path, declared: &str) -> Result<PathBuf, String> {
+pub fn inside(root: &Path, declared: &str) -> Result<PathBuf, String> {
     if declared.starts_with(['/', '\\']) || declared.as_bytes().get(1) == Some(&b':') {
         return Err(format!("{declared}: a path must be relative to the plugin"));
     }

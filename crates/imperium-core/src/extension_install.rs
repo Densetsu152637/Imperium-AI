@@ -512,7 +512,11 @@ fn display_path(path: &Path) -> String {
 
 /// Clones `url` into `dest` and returns the commit checked out. A shallow clone of the default
 /// branch, or of `revision` when it names a branch or tag; a full clone for a commit.
-async fn git_fetch(url: &str, revision: Option<&str>, dest: &Path) -> Result<String, String> {
+pub(crate) async fn git_fetch(
+    url: &str,
+    revision: Option<&str>,
+    dest: &Path,
+) -> Result<String, String> {
     if let Some(revision) = revision
         && (revision.starts_with('-') || revision.trim().is_empty())
     {
@@ -544,6 +548,8 @@ async fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
             "protocol.ext.allow=never",
             "-c",
             "core.symlinks=false",
+            "-c",
+            "submodule.recurse=false",
         ])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")

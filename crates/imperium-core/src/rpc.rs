@@ -41,6 +41,10 @@ use imperium_protocol::methods::{
     EventsSubscribe, EventsSubscribeParams, EventsUnsubscribe, EventsUnsubscribeParams,
 };
 use imperium_protocol::methods::{
+    PluginsBrowse, PluginsMarketplaceAdd, PluginsMarketplaceList, PluginsMarketplaceListParams,
+    PluginsMarketplaceRefresh, PluginsMarketplaceRemove,
+};
+use imperium_protocol::methods::{
     SessionEvalCreate, SessionEvalCreateParams, SessionEvalResult, SessionEvalResultParams,
     SessionPromptPreview,
 };

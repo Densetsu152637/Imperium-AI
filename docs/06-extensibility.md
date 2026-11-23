@@ -85,6 +85,41 @@ never takes another source, in the user config or an environment variable; the s
 another name is an ordinary marketplace. A marketplace name is 1-64 letters, digits, `.`, `_` or `-`, not starting or ending with a dot; names are unique ignoring letter case, and the official name is reserved in any case, so a name read from a config file or an environment variable can neither escape a folder nor share the official one's. An environment's `.imperium/config.toml` cannot set
 `[plugins]`: a repository does not choose what its user browses.
 
+**Methods (protocol 0.49; CLI and desktop callers, not a paired phone).** Adding, refreshing and
+browsing fetch and parse; none of them runs a hook, a server, a build step, an install script or
+a git hook, and a plugin's own files are not fetched at all.
+
+- `plugins.marketplace_add {source, revision?}` takes a git URL, a folder on the daemon's machine
+  (absolute, or `~`; read in place, no copy), or `owner/repo` (two name segments, no scheme:
+  GitHub over HTTPS; a folder of that name that exists relative to the daemon's working folder
+  wins). The result's `kind` (`github`, `git` or `folder`) says which was chosen. The clone is
+  made in a staging folder under the data folder (`<data>/.staging`, removed afterwards),
+  `.claude-plugin/marketplace.json` is parsed, and the marketplace
+  named by that file is written to `[plugins.marketplaces.<name>]` (comments kept) and, for git,
+  moved to `<data>/marketplaces/<key>/`, where the key is the name in lower case (so names that
+  differ only by case never share a folder). A name already added, in any letter case, is refused, and the official name
+  (in any letter case, or with a trailing dot) is refused with any other source (turned off, adding the official source again turns it back
+  on). A clone can take minutes: the call is answered when it ends.
+- `plugins.marketplace_list` reads no network: the official marketplace is listed before it was
+  ever cloned (no commit, no count). `built_in` is true for the official name and its pinned
+  source only; the pinned source under another name is an ordinary marketplace. A folder is
+  read where it lies, so its count and problems are current.
+- `plugins.marketplace_refresh {name?}` fetches again (every enabled marketplace without a
+  name) and reports the commit before and after and the plugins **added, removed and changed**
+  (an entry changed when its canonical JSON did). One that cannot be fetched keeps its last
+  copy and carries an `error`; the clone is replaced only by one that reads as a marketplace.
+- `plugins.marketplace_remove {name}` deletes the config entry, the clone and the record. The
+  official marketplace is turned off (`enabled = false`), not freed.
+- `plugins.browse {marketplace?, query?}` lists plugins from the cached clone (making it first
+  when there is none: the first browse of the official marketplace), narrowed by words matched
+  against name, description, keywords, tags and category. A plugin whose source is a folder in
+  the marketplace's repository carries its `components` (skills, commands, agents, hook count,
+  server names, read from file names and two JSON files, through no link); one from GitHub, a
+  URL or an unsupported source carries `null`.
+
+The daemon keeps what it read in `<data>/marketplaces.json` (commit, time, a hash per entry,
+problems), a cache that a refresh rebuilds. One network operation runs at a time.
+
 ### Named agents (implemented)
 
 A named agent is a subagent a file defines, in Claude Code's format, so plugins and projects can

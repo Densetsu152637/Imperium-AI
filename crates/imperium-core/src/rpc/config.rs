@@ -122,6 +122,52 @@ impl Connection {
                     }
                 },
             ),
+            PluginsMarketplaceAdd::NAME => {
+                call_later::<PluginsMarketplaceAdd, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::marketplaces::add(&state, params)
+                            .await
+                            .map_err(refused)
+                    }
+                })
+            }
+            PluginsMarketplaceList::NAME => call::<PluginsMarketplaceList>(
+                c.params.take(),
+                |_: PluginsMarketplaceListParams| {
+                    crate::marketplaces::list(&self.state).map_err(refused)
+                },
+            ),
+            PluginsMarketplaceRefresh::NAME => {
+                call_later::<PluginsMarketplaceRefresh, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::marketplaces::refresh(&state, params)
+                            .await
+                            .map_err(refused)
+                    }
+                })
+            }
+            PluginsMarketplaceRemove::NAME => {
+                call_later::<PluginsMarketplaceRemove, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::marketplaces::remove(&state, params)
+                            .await
+                            .map_err(refused)
+                    }
+                })
+            }
+            PluginsBrowse::NAME => {
+                call_later::<PluginsBrowse, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::marketplaces::browse(&state, params)
+                            .await
+                            .map_err(refused)
+                    }
+                })
+            }
             ConfigChanges::NAME => {
                 call::<ConfigChanges>(c.params.take(), |_: ConfigChangesParams| {
                     Ok(ConfigChangesResult {

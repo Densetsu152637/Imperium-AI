@@ -27,6 +27,7 @@ mod lifetime;
 mod llama_runtime;
 mod load;
 mod local;
+mod marketplaces;
 mod mcp;
 mod mod_install;
 mod model_config;
