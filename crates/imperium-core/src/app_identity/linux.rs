@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn the_start_time_is_read_after_the_command_name() {
-        let stat = b"42 (a) b (c) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 777 19";
+        let stat = b"42 (a) b (c) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 777 19";
         assert_eq!(start_ticks(stat), Some(777));
     }
 
