@@ -14,6 +14,7 @@ mod memory;
 mod mods;
 mod pack;
 mod phone;
+mod plugins;
 mod project;
 mod pull;
 mod remote;
@@ -105,6 +106,12 @@ enum Command {
     Mods {
         #[command(subcommand)]
         command: ModsCommand,
+    },
+    /// Plugin marketplaces and plugins: browse, install, update, and turn them on or off.
+    /// Approving a plugin that runs code (hooks or servers) happens only in the desktop app.
+    Plugin {
+        #[command(subcommand)]
+        command: plugins::PluginCommand,
     },
     /// Manage secrets in the OS keychain (an encrypted file where there is none).
     Secret {
@@ -970,6 +977,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             } => mods::install(source, path, revision, sha256, yes),
             ModsCommand::Update { id, sha256, yes } => mods::update(id, sha256, yes),
         },
+        Command::Plugin { command } => plugins::run(command),
         Command::Secret {
             command: SecretCommand::Set { name },
         } => set_secret(&name),

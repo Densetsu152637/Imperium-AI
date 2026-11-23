@@ -224,7 +224,7 @@ pub fn update(id: String, sha256: Option<String>, yes: bool) -> anyhow::Result<(
 /// A relative folder, made absolute against this directory (the daemon resolves it on its own
 /// machine, which may be elsewhere). Anything else (a URL, or a folder on a remote daemon's
 /// machine) is passed on as given.
-fn absolute_folder(source: String) -> String {
+pub(crate) fn absolute_folder(source: String) -> String {
     let local = crate::REMOTE.get().is_none_or(Option::is_none);
     if local
         && Path::new(&source).is_dir()
