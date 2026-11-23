@@ -217,6 +217,27 @@ impl Settings {
     /// that exist in the table.
     pub fn validate(&self) -> Result<(), String> {
         self.budgets.validate()?;
+        let mut lowered = std::collections::BTreeSet::new();
+        for name in self.plugins.marketplaces.keys() {
+            if !crate::valid_marketplace_name(name) {
+                return Err(format!(
+                    "plugins.marketplaces.{name}: a marketplace name is 1-64 letters, digits, \
+                     '.', '_' or '-', not starting or ending with a dot"
+                ));
+            }
+            if name != OFFICIAL_MARKETPLACE && name.eq_ignore_ascii_case(OFFICIAL_MARKETPLACE) {
+                return Err(format!(
+                    "plugins.marketplaces.{name}: the name is reserved for the official \
+                     marketplace, in any letter case"
+                ));
+            }
+            if !lowered.insert(name.to_ascii_lowercase()) {
+                return Err(format!(
+                    "plugins.marketplaces.{name}: another marketplace has this name apart from \
+                     letter case"
+                ));
+            }
+        }
         if let Some(official) = self.plugins.marketplaces.get(OFFICIAL_MARKETPLACE)
             && !same_marketplace_source(&official.source, OFFICIAL_MARKETPLACE_SOURCE)
         {

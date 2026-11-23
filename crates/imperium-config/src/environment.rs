@@ -409,7 +409,8 @@ impl EnvironmentConfig {
                      your own config and installed plugins"
                 }
                 "plugins" => {
-                    "plugin marketplaces come only from your own config: a repository would                      choose what you browse and install from"
+                    "plugin marketplaces come only from your own config: a repository would \
+                     choose what you browse and install from"
                 }
                 "schedules" | "projects" => {
                     "schedules and project agents are attached to an environment from your own \
