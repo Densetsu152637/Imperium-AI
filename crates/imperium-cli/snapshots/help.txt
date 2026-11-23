@@ -495,6 +495,7 @@ Commands:
   disable      Turn a plugin off. Its approval is kept
   uninstall    Remove a plugin. Its folder is kept in the daemon's config-trash, and `imperium config undo` restores it
   list         List the installed plugins, whether each is on, and why a withheld one is withheld
+  suggestions  Show what a trusted project's own `.imperium/config.toml` offers: marketplaces and plugins it suggests. An offer adds, fetches, installs and enables nothing. The commands that would act on an offer are printed only when the output is a terminal
   secret       Secrets a plugin's servers need (`${VAR}` in their environment or headers)
   help         Print this message or the help of the given subcommand(s)
 
@@ -778,6 +779,21 @@ Options:
   -h, --help
           Print help
 
+===== imperium plugin suggestions =====
+Show what a trusted project's own `.imperium/config.toml` offers: marketplaces and plugins it suggests. An offer adds, fetches, installs and enables nothing. The commands that would act on an offer are printed only when the output is a terminal
+
+Usage: imperium plugin suggestions [OPTIONS] --env <ENVIRONMENT>
+
+Options:
+      --env <ENVIRONMENT>
+          The environment (its id or name)
+
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
 ===== imperium plugin secret =====
 Secrets a plugin's servers need (`${VAR}` in their environment or headers)
 
@@ -873,6 +889,7 @@ Commands:
   disable      Turn a plugin off. Its approval is kept
   uninstall    Remove a plugin. Its folder is kept in the daemon's config-trash, and `imperium config undo` restores it
   list         List the installed plugins, whether each is on, and why a withheld one is withheld
+  suggestions  Show what a trusted project's own `.imperium/config.toml` offers: marketplaces and plugins it suggests. An offer adds, fetches, installs and enables nothing. The commands that would act on an offer are printed only when the output is a terminal
   secret       Secrets a plugin's servers need (`${VAR}` in their environment or headers)
   help         Print this message or the help of the given subcommand(s)
 
@@ -946,6 +963,11 @@ Usage: imperium plugin help uninstall
 List the installed plugins, whether each is on, and why a withheld one is withheld
 
 Usage: imperium plugin help list
+
+===== imperium plugin help suggestions =====
+Show what a trusted project's own `.imperium/config.toml` offers: marketplaces and plugins it suggests. An offer adds, fetches, installs and enables nothing. The commands that would act on an offer are printed only when the output is a terminal
+
+Usage: imperium plugin help suggestions
 
 ===== imperium plugin help secret =====
 Secrets a plugin's servers need (`${VAR}` in their environment or headers)
@@ -3790,6 +3812,7 @@ Commands:
   disable      Turn a plugin off. Its approval is kept
   uninstall    Remove a plugin. Its folder is kept in the daemon's config-trash, and `imperium config undo` restores it
   list         List the installed plugins, whether each is on, and why a withheld one is withheld
+  suggestions  Show what a trusted project's own `.imperium/config.toml` offers: marketplaces and plugins it suggests. An offer adds, fetches, installs and enables nothing. The commands that would act on an offer are printed only when the output is a terminal
   secret       Secrets a plugin's servers need (`${VAR}` in their environment or headers)
 
 ===== imperium help plugin marketplace =====
@@ -3862,6 +3885,11 @@ Usage: imperium help plugin uninstall
 List the installed plugins, whether each is on, and why a withheld one is withheld
 
 Usage: imperium help plugin list
+
+===== imperium help plugin suggestions =====
+Show what a trusted project's own `.imperium/config.toml` offers: marketplaces and plugins it suggests. An offer adds, fetches, installs and enables nothing. The commands that would act on an offer are printed only when the output is a terminal
+
+Usage: imperium help plugin suggestions
 
 ===== imperium help plugin secret =====
 Secrets a plugin's servers need (`${VAR}` in their environment or headers)
