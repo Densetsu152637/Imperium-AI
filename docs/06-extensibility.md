@@ -285,8 +285,9 @@ itself (`crates/imperium-core/src/app_identity/`), never from what the caller se
   connect and the accept is not detected;
 - on Windows, the client of the pipe is opened at accept (`GetNamedPipeClientProcessId`, then
   `OpenProcess`) and its handle is held for the connection; at the challenge and again at approve
-  the process must not have exited and must have been created no later than the accept, so a
-  reused process id never stands in for it;
+  the process must not have exited and must have been created no later than the accept, so
+  after the accept a reused process id never stands in for it; a pid reused between the client
+  opening the pipe and the accept is not detected;
 - its executable is the `imperium-desktop` beside the running `imperium-core` (on Windows read
   through the held handle), and on Linux its mount and pid namespaces are the daemon's (an
   OS-tier sandbox has its own);
