@@ -147,17 +147,33 @@ pub fn check_name(name: &str) -> Result<String, String> {
     }
 }
 
-/// Reads and parses `<folder>/.claude-plugin/marketplace.json`.
+/// Reads and parses `<folder>/.claude-plugin/marketplace.json`. Neither the `.claude-plugin`
+/// folder nor the file may be a link, the file must be a regular file, and at most 4 MiB of it
+/// is read.
 pub fn read(folder: &Path) -> Result<Marketplace, String> {
+    use std::io::Read;
+
+    let fail = |error: &dyn std::fmt::Display| format!("{MARKETPLACE_FILE}: {error}");
+    let dir = folder.join(".claude-plugin");
     let path = folder.join(MARKETPLACE_FILE);
-    let size = std::fs::metadata(&path)
-        .map_err(|error| format!("{MARKETPLACE_FILE}: {error}"))?
-        .len();
-    if size > MAX_FILE_BYTES {
+    let dir_meta = std::fs::symlink_metadata(&dir).map_err(|error| fail(&error))?;
+    if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
+        return Err(".claude-plugin is not a plain folder".to_string());
+    }
+    let meta = std::fs::symlink_metadata(&path).map_err(|error| fail(&error))?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err(format!("{MARKETPLACE_FILE} is not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(&path)
+        .map_err(|error| fail(&error))?
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| fail(&error))?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err(format!("{MARKETPLACE_FILE} is larger than 4 MiB"));
     }
-    let text =
-        std::fs::read_to_string(&path).map_err(|error| format!("{MARKETPLACE_FILE}: {error}"))?;
+    let text = String::from_utf8(bytes).map_err(|error| fail(&error))?;
     parse(&text)
 }
 
@@ -600,5 +616,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read(dir.path()).unwrap().name, "m");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_marketplace_file_or_folder_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(outside.join(".claude-plugin")).unwrap();
+        let body = r#"{"name": "m", "plugins": []}"#;
+        std::fs::write(outside.join(".claude-plugin/marketplace.json"), body).unwrap();
+
+        let linked_file = dir.path().join("a");
+        std::fs::create_dir_all(linked_file.join(".claude-plugin")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.join(".claude-plugin/marketplace.json"),
+            linked_file.join(MARKETPLACE_FILE),
+        )
+        .unwrap();
+        assert!(read(&linked_file).unwrap_err().contains("regular file"));
+
+        let linked_dir = dir.path().join("b");
+        std::fs::create_dir_all(&linked_dir).unwrap();
+        std::os::unix::fs::symlink(
+            outside.join(".claude-plugin"),
+            linked_dir.join(".claude-plugin"),
+        )
+        .unwrap();
+        assert!(read(&linked_dir).is_err());
     }
 }
