@@ -671,7 +671,7 @@ and `environments.agent_update` (protocol 0.28)
     `security_review`; `session.init` stays as the same call for `init`). The agent reviews with
     its existing tools under the session's permissions, adds no tool and does not edit; one agent
     does the review. `[low|medium|high|max] [target]`: no target is the uncommitted changes plus
-    the branch against its base, a number or pull request URL uses `gh pr diff`, anything else is
+    the branch against its base, a number uses `gh pr diff` and a pull request URL (any repository) is given to `gh` whole, anything else is
     a branch or a path. Findings come with `path:line`, severity, confidence and a suggested fix,
     and the security review adds exploitability reasoning. Protocol 0.48
     ([07](07-desktop-ui.md#file-mentions-and-init-implemented),

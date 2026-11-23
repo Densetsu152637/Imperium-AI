@@ -1543,7 +1543,7 @@ a remote runtime is read there (up to the attachment limit) and copied into the 
 folder.
 
 **`/init`.** Sending `/init` (optionally followed by what to emphasise) in a session does not
-send that text. The app calls `session.init`, and the daemon sends the built-in prompt of
+send that text. The app calls `session.builtin` with `command: "init"` (`session.init` stays for older clients), and the daemon sends the built-in prompt of
 `imperium_engine::init_prompt` as an ordinary user message: the agent reads the README,
 manifests, CI files and a sample of the code with its read tools, then writes `AGENTS.md` in
 the project folder (the file Imperium loads as project instructions, together with
@@ -1570,8 +1570,9 @@ arguments are an optional effort word, then an optional target:
   uncertain findings included with their confidence). It steers the review's depth only; the
   session's own reasoning effort is separate.
 - **Target**: none reviews the uncommitted changes (`git diff HEAD`, untracked files) and the
-  branch's commits against its base; a number, `#123` or a pull request URL reviews that pull
-  request with `gh pr diff` (when `gh` is missing the agent says so and may offer a
+  branch's commits against its base; a number or `#123` reviews that pull request of the session's repository with `gh pr diff`, and a
+  pull request URL is given to `gh pr view` and `gh pr diff` whole, so a pull request of another
+  repository is the one reviewed (when `gh` is missing the agent says so and may offer a
   `git fetch origin pull/N/head`, which is approved like any command); anything else is a branch
   (reviewed against its base) or a path (its current content and changes), whichever it turns
   out to be.

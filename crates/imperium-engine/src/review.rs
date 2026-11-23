@@ -27,8 +27,10 @@ pub enum ReviewEffort {
 pub enum ReviewTarget {
     /// No target: the uncommitted changes and the branch's commits against its base branch.
     Pending,
-    /// A pull request, by number.
+    /// A pull request of this repository, by number.
     PullRequest(u64),
+    /// A pull request by its URL, which may be of another repository: `gh` gets the URL itself.
+    PullRequestUrl(String),
     /// A branch or a path; the agent works out which.
     Named(String),
 }
@@ -71,15 +73,17 @@ fn parse_target(text: &str) -> ReviewTarget {
     if let Ok(number) = text.trim_start_matches('#').parse::<u64>() {
         return ReviewTarget::PullRequest(number);
     }
-    // `https://github.com/owner/repo/pull/123`, possibly with a trailing path or fragment.
-    if text.starts_with("http://") || text.starts_with("https://") {
-        let number = text
+    // `https://github.com/owner/repo/pull/123`, possibly with a trailing path or fragment. The
+    // URL is kept whole: it may name another repository than the session's.
+    let one_word = !text.contains(|c: char| c.is_whitespace() || c == '`');
+    if one_word && (text.starts_with("http://") || text.starts_with("https://")) {
+        let is_pull_request = text
             .split(['/', '?', '#'])
             .skip_while(|part| *part != "pull")
             .nth(1)
-            .and_then(|part| part.parse::<u64>().ok());
-        if let Some(number) = number {
-            return ReviewTarget::PullRequest(number);
+            .is_some_and(|part| part.parse::<u64>().is_ok());
+        if is_pull_request {
+            return ReviewTarget::PullRequestUrl(text.to_string());
         }
     }
     ReviewTarget::Named(text.to_string())
@@ -114,6 +118,10 @@ pub fn review_prompt(kind: ReviewKind, args: &str) -> String {
              branch that its base branch lacks: find the base (the upstream, `origin/HEAD`, or \
              `main`/`master`), then `git diff <base>...HEAD`. If there are no changes at all, \
              say so and stop.\n",
+        ),
+        ReviewTarget::PullRequestUrl(url) => format!(
+            "- The pull request at `{url}`, which may be in another repository than this one. Use \n             `gh pr view {url}` and `gh pr diff {url}` with the URL exactly as given, when `gh` is \n             installed and signed in. If it is not, say so and stop. Do not check anything out; read \n             this repository's files only where they are the same project.
+"
         ),
         ReviewTarget::PullRequest(number) => format!(
             "- Pull request #{number}. Use `gh pr view {number}` and `gh pr diff {number}` when \
@@ -210,12 +218,30 @@ mod tests {
         );
         assert_eq!(
             parse("https://github.com/o/r/pull/99/files#x").target,
-            ReviewTarget::PullRequest(99)
+            ReviewTarget::PullRequestUrl("https://github.com/o/r/pull/99/files#x".into())
+        );
+        assert_eq!(
+            parse("high https://github.com/o/r/pull/9").target,
+            ReviewTarget::PullRequestUrl("https://github.com/o/r/pull/9".into())
+        );
+        // Not one word: a target the agent reads, not a URL handed to `gh`.
+        assert_eq!(
+            parse("https://github.com/o/r/pull/9 `x`").target,
+            ReviewTarget::Named("https://github.com/o/r/pull/9 `x`".into())
         );
         assert_eq!(
             parse("https://example.com/page").target,
             ReviewTarget::Named("https://example.com/page".into())
         );
+    }
+
+    #[test]
+    fn a_pull_request_url_goes_to_gh_whole_so_another_repository_is_reviewed() {
+        let url = "https://github.com/other/repo/pull/7";
+        let prompt = review_prompt(ReviewKind::Code, url);
+        assert!(prompt.contains(&format!("`gh pr view {url}`")));
+        assert!(prompt.contains(&format!("`gh pr diff {url}`")));
+        assert!(!prompt.contains("gh pr diff 7"));
     }
 
     #[test]
