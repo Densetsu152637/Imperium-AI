@@ -553,14 +553,16 @@ async fn update(
     if let Some(pin) = &sha256 {
         check_pin(&preview, pin)?;
     }
-    if preview.installed.as_ref().is_some_and(|i| i.same_content) {
-        writeln!(out, "{id} is up to date.")?;
-        return Ok(());
-    }
-    write!(out, "{}", render(&preview))?;
-    if !approve(prompter, &format!("Update {id}?"), yes)? {
-        writeln!(out, "Not updated.")?;
-        return Ok(());
+    // The daemon alone decides "up to date" (it also checks the record's hash). When the
+    // folder already holds the inspected content there is nothing new to trust, so it is asked
+    // without a question; otherwise the trust prompt comes first.
+    let unchanged = preview.installed.as_ref().is_some_and(|i| i.same_content);
+    if !unchanged {
+        write!(out, "{}", render(&preview))?;
+        if !approve(prompter, &format!("Update {id}?"), yes)? {
+            writeln!(out, "Not updated.")?;
+            return Ok(());
+        }
     }
     let done = client
         .call::<PluginsUpdate>(PluginsUpdateParams {
@@ -1130,6 +1132,34 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_update_of_unchanged_content_is_answered_by_the_daemon_without_a_question() {
+        let mut setup = setup().await;
+        add_market(&mut setup).await;
+        let (result, _) = go(
+            &mut setup,
+            &mut Scripted::script(),
+            install_command("plain@mk", true),
+        )
+        .await;
+        result.unwrap();
+        // Not even `--yes` is needed: nothing would change, so nothing is asked.
+        let mut script = Scripted::script();
+        let (result, out) = go(
+            &mut setup,
+            &mut script,
+            PluginCommand::Update {
+                name: "plain".into(),
+                sha256: None,
+                yes: false,
+            },
+        )
+        .await;
+        result.unwrap();
+        assert!(out.contains("plain@mk is up to date."), "{out}");
+        assert!(script.asked.is_empty());
     }
 
     #[tokio::test]
