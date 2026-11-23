@@ -1199,9 +1199,12 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   does (folder name, plugin name or `name@marketplace`); approve re-runs checks 1 to 4 before
   the challenge; failures of `plugins.approve` are a result (`approved: false`, `reason`), a
   name that resolves to nothing is an error; the start-time check applies to the `pidfd_open`
-  path only (a socket's own pidfd is the connecting process), comparing whole clock ticks since
-  boot, so a reuse inside one tick (10 ms) between connect and accept is not caught on kernels
-  before 6.5; the peer's start is checked against the accept, not the connect, as planned.
+  path only (a socket's own pidfd is the connecting process), and it refuses only a process
+  started after the accept, so before 6.5 a pid reused between the peer's connect and the
+  accept is not detected (the planned check is against the accept, not the connect); the
+  fallback runs only when the kernel lacks `SO_PEERPIDFD` (`ENOPROTOOPT`, or `EINVAL` before
+  6.5), and any other `SO_PEERPIDFD` error refuses the peer, since on 6.5 and later it means the
+  peer has exited and its id may be another process's (review finding).
   Tests: TCP refused first (unit and through `Connection`); the test binary refused as the
   desktop app; a socket peer held by `SO_PEERPIDFD` on kernels from 6.5; an exited peer refused
   through its pidfd while `/proc/<pid>` still exists (reuse itself is not forced: `pid_max` is

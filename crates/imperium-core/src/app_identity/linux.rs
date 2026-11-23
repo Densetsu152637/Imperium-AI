@@ -1,11 +1,12 @@
-//! Linux: the peer is held by a pidfd from accept onwards, so a reused process id never stands in
-//! for it.
+//! Linux: the peer is held by a pidfd from accept onwards, so after the accept a reused process
+//! id never stands in for it.
 //!
 //! At accept the daemon asks the socket for the peer's pidfd (`SO_PEERPIDFD`, kernel 6.5 and
-//! later), else opens one on the `SO_PEERCRED` id at once (`pidfd_open`, 5.3 and later). The
-//! second can still catch a process that took the id between connect and accept, so every check
-//! also refuses a process whose start time (`/proc/<pid>/stat` field 22) is later than the
-//! accept. Every read goes through `/proc/<pid>` opened as a folder and then confirmed with the
+//! later). Only on a kernel without that option does it open one on the `SO_PEERCRED` id
+//! (`pidfd_open`, 5.3 and later); any other failure refuses the peer, since on 6.5 and later it
+//! means the peer is gone. The fallback refuses a process whose start time (`/proc/<pid>/stat`
+//! field 22) is later than the accept, but **before 6.5, a pid reused between the peer's connect
+//! and the accept is not detected**: that process started before the accept and passes. Every read goes through `/proc/<pid>` opened as a folder and then confirmed with the
 //! pidfd: while the pidfd's process is alive no other process can hold its id, so the folder
 //! opened before that confirmation is its own, and reads through it fail once it is gone.
 //!
@@ -49,16 +50,37 @@ fn from_socket(socket: &impl AsFd, accepted_ticks: u64) -> Option<Peer> {
     let credentials = rustix::net::sockopt::socket_peercred(socket).ok()?;
     // A peer whose id cannot be mapped into the daemon's pid namespace reports 0.
     let pid = Pid::from_raw(credentials.pid.as_raw_pid())?;
-    match nix::sys::socket::getsockopt(socket, nix::sys::socket::sockopt::PeerPidfd) {
+    let answer = nix::sys::socket::getsockopt(socket, nix::sys::socket::sockopt::PeerPidfd);
+    match answer {
         Ok(pidfd) => Some(Peer {
             pid,
             pidfd,
             accepted_ticks,
             via: Via::PeerPidfd,
         }),
-        // Kernels before 6.5.
-        Err(_) => Peer::open(pid, accepted_ticks),
+        Err(error) if lacks_peer_pidfd(error, kernel_at_least(6, 5)) => {
+            Peer::open(pid, accepted_ticks)
+        }
+        // On 6.5 and later, EINVAL or ESRCH means the peer has exited (and its id may already be
+        // another process's): refuse rather than open a pidfd on the id.
+        Err(_) => None,
     }
+}
+
+/// Whether `error` from `SO_PEERPIDFD` means the kernel lacks the option, on a kernel that is
+/// (`modern`) or is not 6.5 or later.
+fn lacks_peer_pidfd(error: nix::errno::Errno, modern: bool) -> bool {
+    use nix::errno::Errno;
+    error == Errno::ENOPROTOOPT || (error == Errno::EINVAL && !modern)
+}
+
+/// Whether the running kernel is `major.minor` or later.
+fn kernel_at_least(major: u32, minor: u32) -> bool {
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    let mut parts = release
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    (parts.next().unwrap_or(0), parts.next().unwrap_or(0)) >= (major, minor)
 }
 
 impl Peer {
@@ -213,22 +235,6 @@ mod tests {
     use super::*;
     use crate::app_identity::Identify;
 
-    fn kernel_at_least(major: u32, minor: u32) -> bool {
-        let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
-        let mut parts = release.split(|c: char| !c.is_ascii_digit());
-        let found = (
-            parts
-                .next()
-                .and_then(|p| p.parse::<u32>().ok())
-                .unwrap_or(0),
-            parts
-                .next()
-                .and_then(|p| p.parse::<u32>().ok())
-                .unwrap_or(0),
-        );
-        found >= (major, minor)
-    }
-
     /// `sleep` with an empty environment plus `env`, and its canonical path.
     fn sleeper(env: &[(&str, &str)]) -> (Child, std::path::PathBuf) {
         let path = Path::new("/bin/sleep").canonicalize().unwrap();
@@ -329,6 +335,51 @@ mod tests {
     }
 
     #[test]
+    fn only_a_kernel_without_the_option_falls_back_to_pidfd_open() {
+        use nix::errno::Errno;
+        assert!(lacks_peer_pidfd(Errno::ENOPROTOOPT, true));
+        assert!(lacks_peer_pidfd(Errno::EINVAL, false));
+        for error in [Errno::EINVAL, Errno::ESRCH, Errno::ENODATA] {
+            assert!(!lacks_peer_pidfd(error, true), "{error}");
+        }
+        assert!(!lacks_peer_pidfd(Errno::ESRCH, false));
+    }
+
+    #[test]
+    fn a_peer_that_exited_before_the_accept_is_not_reopened_by_its_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let script = format!(
+            "import socket, time
+s = socket.socket(socket.AF_UNIX)
+s.connect({:?})
+time.sleep(30)",
+            path.to_str().unwrap()
+        );
+        let mut child = Command::new("python3")
+            .args(["-c", &script])
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let (server, _) = listener.accept().unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        match from_socket(&server, boot_ticks()) {
+            None => {}
+            Some(peer) => {
+                // Never a pidfd opened on the id on a kernel with SO_PEERPIDFD; a pidfd the
+                // socket gives for the exited process (later kernels) is refused when read.
+                assert!(
+                    !(kernel_at_least(6, 5) && peer.via == Via::PidfdOpen),
+                    "a pidfd was opened on a dead peer's id"
+                );
+                assert!(peer.proc_dir().is_err() || peer.via == Via::PidfdOpen);
+            }
+        }
+    }
+
+    #[test]
     fn the_start_time_is_read_after_the_command_name() {
         let stat = b"42 (a) b (c) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 777 19";
         assert_eq!(start_ticks(stat), Some(777));
@@ -425,6 +476,11 @@ mod tests {
     fn a_peer_in_another_mount_or_pid_namespace_is_refused() {
         for (flag, kind) in [("--mount", "mnt"), ("--pid", "pid")] {
             let Some((mut child, pid)) = sleeper_in(&[flag]) else {
+                // CI must prove this ran; elsewhere a machine without unshare skips it.
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "unshare could not make a {kind} namespace on this CI runner"
+                );
                 eprintln!("skipped: unshare could not make a {kind} namespace here");
                 return;
             };
