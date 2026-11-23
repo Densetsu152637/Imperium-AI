@@ -787,10 +787,19 @@ answers:
   a descendant of the daemon, not marked as one), so an agent's shell running the CLI does not
   give it; an agent that detaches a process and clears its environment can
   ([06](06-extensibility.md#who-may-grant-trust-and-approval-implemented)).
+- `imperium plugin marketplace add`, `imperium plugin install|update|enable`, and
+  `imperium config set|unset` of `extensions.disabled_plugins` or `extensions.plugin_dirs`: they
+  bring plugin code in, turn it on, or point the daemon at a folder of it
+  ([06](06-extensibility.md#plugin-marketplaces)). Browsing, inspecting, listing, disabling and
+  uninstalling, and `plugin secret set|delete`, do not ask. There is no command that approves a
+  plugin; that is the desktop app's dialog alone.
 - Writing into the installed mods (`<config>/mods`) and the daemon's approvals file
-  (`mod-approvals.json`), which a mod approval vouches for.
+  (`mod-approvals.json`), which a mod approval vouches for; and into the installed plugins
+  (`<config>/plugins`), the marketplace clones (`<data>/marketplaces`) and the plugin records
+  (`plugin-installs.json`, `plugin-migration.json`, `marketplaces.json`).
 - Writing files that hold secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
-  `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`, `mod-approvals.json`) or anything with a `.git` folder
+  `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`, `mod-approvals.json`,
+  `plugin-installs.json`, `plugin-migration.json`, `marketplaces.json`) or anything with a `.git` folder
   in its absolute path, such as a linked worktree's main repository's hooks.
 
 The floor is a **best-effort guard against an agent's mistakes, not a security boundary**: it

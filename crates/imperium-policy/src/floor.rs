@@ -458,7 +458,11 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
 /// own accept), so a person decides those as well; `check`, `diff` and `reject` change nothing
 /// that is in force. `imperium runtime vllm setup|remove …` downloads and installs software
 /// (a package environment or a Docker image) or deletes it, so a person decides that too;
-/// `status` changes nothing.
+/// `status` changes nothing. `imperium plugin marketplace add`, `plugin install|update|enable`
+/// and `config set|unset` of `extensions.disabled_plugins` or `extensions.plugin_dirs` bring
+/// plugin code in, or turn it on, or point the daemon at a folder of it, so a person decides
+/// those too (a plugin with code still needs the desktop app's approval, which no command line
+/// gives); browsing, inspecting, listing, disabling and uninstalling change nothing that runs.
 fn changes_agents(args: &[String]) -> bool {
     // Global options such as `--remote <name>` may sit between the words, so the subcommand is
     // looked for anywhere after the group word (a false alarm only asks a person).
@@ -473,6 +477,9 @@ fn changes_agents(args: &[String]) -> bool {
     };
     if after("pack", &["add-source", "accept", "remove-source"])
         || after("mods", &["install", "update"])
+        || after("plugin", &["install", "update", "enable"])
+        || plugin_marketplace_add(args)
+        || changes_plugin_setting(args)
     {
         return true;
     }
@@ -502,6 +509,35 @@ fn changes_agents(args: &[String]) -> bool {
             .iter()
             .skip(1)
             .any(|word| matches!(word.as_str(), "add" | "set" | "rm"))
+}
+
+/// `plugin [--remote x] marketplace add …`: the group word, then `marketplace`, then `add`.
+fn plugin_marketplace_add(args: &[String]) -> bool {
+    args.iter()
+        .position(|word| word == "plugin")
+        .is_some_and(|at| {
+            let rest = &args[at + 1..];
+            rest.iter()
+                .position(|word| word == "marketplace")
+                .is_some_and(|m| rest[m + 1..].iter().any(|word| word == "add"))
+        })
+}
+
+/// `config [--remote x] set|unset extensions.disabled_plugins|extensions.plugin_dirs …`: the
+/// group word, a verb, and one of the two keys anywhere after it (a false alarm only asks).
+fn changes_plugin_setting(args: &[String]) -> bool {
+    args.iter()
+        .position(|word| word == "config")
+        .is_some_and(|at| {
+            let rest = &args[at + 1..];
+            rest.iter()
+                .any(|word| matches!(word.as_str(), "set" | "unset"))
+                && rest.iter().any(|word| {
+                    let word = word.to_ascii_lowercase();
+                    word.starts_with("extensions.disabled_plugins")
+                        || word.starts_with("extensions.plugin_dirs")
+                })
+        })
 }
 
 /// `git` with its global options (`-C dir`, `-c k=v`, `--git-dir=…`) skipped.
@@ -639,6 +675,19 @@ mod tests {
             "imperium.exe runtime vllm remove --yes",
             "imperium --remote box runtime vllm setup",
             "imperium runtime --remote x vllm remove",
+            "imperium plugin marketplace add x",
+            "imperium plugin marketplace add owner/repo --revision main",
+            "imperium plugin --remote box marketplace --remote box add x",
+            "imperium.exe plugin install x@y --yes",
+            "imperium plugin update x --yes",
+            "imperium plugin enable x",
+            "imperium plugin enable x --env work",
+            "imperium config set extensions.disabled_plugins []",
+            "imperium config set extensions.plugin_dirs '[\"/tmp/x\"]'",
+            "imperium config unset extensions.plugin_dirs",
+            "imperium config unset extensions.disabled_plugins",
+            "imperium --remote box config set extensions.plugin_dirs []",
+            "/usr/bin/imperium config set Extensions.Plugin_Dirs []",
         ] {
             assert!(dangerous_command(line), "{line}");
         }
@@ -657,6 +706,20 @@ mod tests {
             "imperium runtime status",
             "imperium runtime install",
             "imperium vllm setup",
+            "imperium plugin",
+            "imperium plugin marketplace list",
+            "imperium plugin marketplace refresh",
+            "imperium plugin marketplace remove x",
+            "imperium plugin browse review",
+            "imperium plugin inspect x@y",
+            "imperium plugin list",
+            "imperium plugin disable x",
+            "imperium plugin uninstall x",
+            "imperium plugin secret delete x KEY",
+            "imperium config set model.default x",
+            "imperium config unset model.default",
+            "imperium config explain extensions.plugin_dirs",
+            "imperium config set permissions.mode ask",
         ] {
             assert!(!dangerous_command(line), "{line}");
         }
