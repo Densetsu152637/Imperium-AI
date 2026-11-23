@@ -5,6 +5,10 @@
 //! only this one) allows `unsafe`; each block says why it is sound.
 #![allow(unsafe_code)]
 
+mod process;
+
+pub use process::{ClientProcess, client_process};
+
 use std::ffi::c_void;
 use std::io;
 use std::path::Path;

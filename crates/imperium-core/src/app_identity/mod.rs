@@ -16,9 +16,12 @@
 //!    hash and run summary when it answers;
 //! 6. the OS presence check passed (stage 8c): until then [`ApprovalVerifier::approval_kind`]
 //!    refuses in a release build, so nothing is recorded as counted;
-//! 7. on Windows, a signed per-machine release build (not built yet: Windows refuses).
+//! 7. on Windows, a release build compiled by the signing job, running from under the
+//!    per-machine Program Files folder (`windows::may_count`); a debug build's `dev` approval is
+//!    exempt.
 //!
-//! Linux is implemented; Windows and macOS refuse every approval until their checks are built.
+//! Linux and Windows are implemented (Windows reads no peer environment: the app checks its own,
+//! stage 8b); macOS refuses every approval until its checks are built.
 //! None of this is a boundary against unconfined code running as the user (U5 of the plan).
 
 use std::path::{Path, PathBuf};
@@ -34,9 +37,13 @@ use crate::plugin_records::{self, ApprovalKind, ApprovalVerifier};
 mod linux;
 #[cfg(target_os = "linux")]
 use linux as platform;
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as platform;
+#[cfg(not(any(target_os = "linux", windows)))]
 mod unsupported;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 use unsupported as platform;
 
 pub(crate) use platform::Peer;
@@ -72,7 +79,7 @@ pub(crate) fn installed_app() -> Result<PathBuf, String> {
 /// The first variable in `names` whose presence refuses a peer (check 4): any `WEBVIEW2_*` or
 /// `DYLD_*`, and `LD_PRELOAD`, `LD_LIBRARY_PATH` and `LD_AUDIT`. Names compare ignoring case,
 /// as Windows does.
-// Until stage 8a-ii, only the Linux check reads a peer's environment.
+// Windows reads no peer environment (the app checks its own, stage 8b); macOS is not built yet.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn refused_variable<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<String> {
     names.into_iter().find_map(|name| {
@@ -250,6 +257,7 @@ fn approved(
         return Err("the plugin changed since the challenge: nothing was recorded".into());
     }
     let kind = verifier.approval_kind()?;
+    platform::may_count(kind)?;
     plugin_records::record_approval(paths, verifier, &canon, kind, &hash, &runs)?;
     Ok(kind)
 }
@@ -470,6 +478,14 @@ mod tests {
             &asked,
             &issued.challenge,
         );
+        if cfg!(windows) {
+            // Check 7: this unsigned test build counts nothing on Windows, whatever the verifier.
+            assert!(!result.approved);
+            let reason = result.reason.unwrap();
+            assert!(reason.contains("not a signed release build"), "{reason}");
+            assert!(plugin_records::record_for(&home.paths, &home.folder).is_none());
+            return;
+        }
         assert!(result.approved, "{:?}", result.reason);
         assert_eq!(result.kind.as_deref(), Some("counted"));
         let result = approve(

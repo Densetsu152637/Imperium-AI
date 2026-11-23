@@ -227,6 +227,11 @@ fn check_environment(dir: &OwnedFd) -> Result<(), String> {
     }
 }
 
+/// Check 7 applies on Windows only.
+pub(super) fn may_count(_: crate::plugin_records::ApprovalKind) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::process::{Child, Command, Stdio};

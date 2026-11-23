@@ -1178,7 +1178,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   builds; with counting off nothing is recorded.
 - Risks: platform APIs new to the codebase, each needing its CI runner. Split if over 800 lines
   (8a-i shared and Linux, 8a-ii Windows and macOS).
-- Status: 8a-i done, 8a-ii pending
+- Status: 8a-i done; 8a-ii Windows done, macOS pending
 - Outcome: **8a-i (shared and Linux), protocol 0.56.** `crates/imperium-core/src/app_identity/`:
   `mod.rs` holds check 1 (`local_only`, run before the plugin is looked up or any process is
   read), the `Identify` trait with the production `InstalledApp` (checks 1 to 4 against
@@ -1216,6 +1216,27 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   expiry, another connection, another hash, digest or folder; a folder changed between
   challenge and approve; nothing recorded with counting off; the dev verifier only in debug
   builds.
+- Outcome (8a-ii, Windows): `imperium-ipc` gained `ClientProcess` in its `unsafe`-allowed
+  Windows module (`windows/process.rs`): `OpenProcess` on `GetNamedPipeClientProcessId` at
+  accept, an `OwnedHandle` closed on drop, `creation_time`, `image_path`
+  (`QueryFullProcessImageNameW`) and `has_exited` (`WaitForSingleObject`), each `unsafe` block
+  with a SAFETY comment; `imperium-core` still forbids `unsafe`. `app_identity/windows.rs` holds
+  the handle and the accept time in `Peer` and checks, at the challenge and at approve: not
+  exited, created no later than the accept, image path (canonical) equal to the app beside
+  `imperium-core`, not exited again. After the accept a reused process id never stands in for
+  it; a pid reused between the client opening the pipe and the accept is not detected (review
+  finding). `has_exited` treats only `WAIT_TIMEOUT` as alive. Check 7 is `may_count`, called after the verifier gives a
+  kind: a `dev` approval is exempt, anything else needs `option_env!("IMPERIUM_SIGNED_BUILD")`, a
+  release build, and `current_exe` under `dirs_sys::known_folder(FOLDERID_ProgramFiles)`.
+  Decisions: the peer's environment is not read on Windows (user decision; the app checks its
+  own in stage 8b); **no workflow sets `IMPERIUM_SIGNED_BUILD`**, because no step Authenticode-signs
+  Windows builds yet, and setting it in the shared "Build desktop bundles" step would mark
+  unsigned per-machine MSI builds as signed; roadmap item 59's signing step sets it. Tests: the
+  handle across exit; a process created after the accept; the image path and the test binary
+  refused; `release_gate` cases; `may_count` refusing everything but `dev` in a test build; a child
+  test run with `IMPERIUM_SIGNED_BUILD` set, a file of that name beside the binary and
+  `ProgramFiles`/`ProgramW6432` pointed at its folder, which still counts nothing; the shared
+  counting test refuses on Windows by check 7.
 - Handoff notes: no change to `peer::may_grant` or to mod approvals (kept). **For 8a-ii:**
   replace `unsupported.rs` with `windows.rs` and `macos.rs` behind the same `Peer`,
   `at_accept` and `identify` (`identify(peer, app)` gets the canonical app path); Windows takes
@@ -1251,7 +1272,11 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
 - Risks: until stage 8c, approvals are recorded only by debug daemons.
 - Status: pending
 - Outcome:
-- Handoff notes: none yet.
+- Handoff notes: from 8a-ii, the daemon does not read the peer's environment on Windows. At
+  start the app checks its own environment for `WEBVIEW2_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH`,
+  `LD_AUDIT` and `DYLD_*` (`app_identity::refused_variable`'s list) and, if any is set, refuses
+  the approval flow (`plugin_approve` answers with the variable's name and sends nothing). Item
+  59's Windows signing step must set `IMPERIUM_SIGNED_BUILD` in that step only.
 
 ## Stage 8c: OS presence check
 
