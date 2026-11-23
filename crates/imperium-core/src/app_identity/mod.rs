@@ -72,6 +72,8 @@ pub(crate) fn installed_app() -> Result<PathBuf, String> {
 /// The first variable in `names` whose presence refuses a peer (check 4): any `WEBVIEW2_*` or
 /// `DYLD_*`, and `LD_PRELOAD`, `LD_LIBRARY_PATH` and `LD_AUDIT`. Names compare ignoring case,
 /// as Windows does.
+// Until stage 8a-ii, only the Linux check reads a peer's environment.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn refused_variable<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<String> {
     names.into_iter().find_map(|name| {
         let upper = name.to_ascii_uppercase();
