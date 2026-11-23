@@ -1223,7 +1223,9 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   with a SAFETY comment; `imperium-core` still forbids `unsafe`. `app_identity/windows.rs` holds
   the handle and the accept time in `Peer` and checks, at the challenge and at approve: not
   exited, created no later than the accept, image path (canonical) equal to the app beside
-  `imperium-core`, not exited again. Check 7 is `may_count`, called after the verifier gives a
+  `imperium-core`, not exited again. After the accept a reused process id never stands in for
+  it; a pid reused between the client opening the pipe and the accept is not detected (review
+  finding). `has_exited` treats only `WAIT_TIMEOUT` as alive. Check 7 is `may_count`, called after the verifier gives a
   kind: a `dev` approval is exempt, anything else needs `option_env!("IMPERIUM_SIGNED_BUILD")`, a
   release build, and `current_exe` under `dirs_sys::known_folder(FOLDERID_ProgramFiles)`.
   Decisions: the peer's environment is not read on Windows (user decision; the app checks its

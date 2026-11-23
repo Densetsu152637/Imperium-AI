@@ -1,8 +1,10 @@
 //! Windows: the client of the pipe is opened at accept (`GetNamedPipeClientProcessId`, then
 //! `OpenProcess`) and its handle is held for the connection, in `imperium_ipc::ClientProcess`,
 //! which keeps the Win32 calls (and their `unsafe`) out of this crate. A handle refers to its own
-//! process until it is closed, never to one that reuses the id, so every later check goes through
-//! it: the process must not have exited, must have been created no later than the accept, and
+//! process until it is closed, never to one that reuses the id, so after the accept a reused
+//! process id never stands in for it; a pid reused between the client opening the pipe and the
+//! accept is not detected (that process was created before the accept). Every later check goes
+//! through the handle: the process must not have exited, must have been created no later than the accept, and
 //! must run the app installed beside `imperium-core`.
 //!
 //! The peer's environment is **not** read here (that would mean reading another process's

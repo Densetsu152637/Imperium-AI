@@ -1,5 +1,6 @@
-//! The process on the other end of an accepted pipe, held by a handle from accept onwards, so a
-//! reused process id never stands in for it. Win32 calls through `windows-sys`; each `unsafe`
+//! The process on the other end of an accepted pipe, held by a handle from accept onwards, so
+//! after the accept a reused process id never stands in for it; a pid reused between the client
+//! opening the pipe and the accept is not detected. Win32 calls through `windows-sys`; each `unsafe`
 //! block says why it is sound (the parent module allows `unsafe`).
 
 use std::ffi::OsString;
@@ -8,7 +9,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_SYNCHRONIZE, QueryFullProcessImageNameW, WaitForSingleObject,
@@ -108,10 +109,11 @@ impl ClientProcess {
     }
 
     /// Whether the process has exited. The handle keeps referring to this process, never to one
-    /// that reuses its id.
+    /// that reuses its id. Only a wait that times out means it is alive: a failed wait counts as
+    /// exited, so the caller refuses.
     pub fn has_exited(&self) -> bool {
         // SAFETY: the handle is open and was opened with SYNCHRONIZE; a zero timeout only polls.
-        unsafe { WaitForSingleObject(self.raw(), 0) == WAIT_OBJECT_0 }
+        unsafe { WaitForSingleObject(self.raw(), 0) != WAIT_TIMEOUT }
     }
 }
 
