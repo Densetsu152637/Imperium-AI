@@ -843,7 +843,9 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   leaves out only a top-level `.git` and `.imperium-source.json`; a plugin inside the
   marketplace's repository is copied while holding the marketplace operation lock (a refresh
   cannot replace the clone under the copy), an external one is cloned outside it; a pinned `sha`
-  that the clone's commit does not start with is refused; a relative source with a `revision` is
+  that the clone's commit does not start with is refused, also when a `revision` is given; plugin
+  names (the entry's, in `imperium-extensions` and `extension_install::check_name`) may not end
+  with a dot, which Windows drops; a relative source with a `revision` is
   refused; the preview shows hook and server commands with the install folder substituted for the
   staging folder. External sources (`github`, `url`) are tested at `fetch_git` only: a
   `Source::Url` must be `https`, so no test can point an entry at a local repository.
