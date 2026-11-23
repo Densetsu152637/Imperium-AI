@@ -1202,9 +1202,10 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   path only (a socket's own pidfd is the connecting process), and it refuses only a process
   started after the accept, so before 6.5 a pid reused between the peer's connect and the
   accept is not detected (the planned check is against the accept, not the connect); the
-  fallback runs only when the kernel lacks `SO_PEERPIDFD` (`ENOPROTOOPT`, or `EINVAL` before
-  6.5), and any other `SO_PEERPIDFD` error refuses the peer, since on 6.5 and later it means the
-  peer has exited and its id may be another process's (review finding).
+  fallback runs only when the kernel answers that it lacks `SO_PEERPIDFD` (`ENOPROTOOPT`,
+  whatever the version says, since distributions backport it), and any other `SO_PEERPIDFD`
+  error refuses the peer, since it means the peer has exited and its id may be another
+  process's (review findings).
   Tests: TCP refused first (unit and through `Connection`); the test binary refused as the
   desktop app; a socket peer held by `SO_PEERPIDFD` on kernels from 6.5; an exited peer refused
   through its pidfd while `/proc/<pid>` still exists (reuse itself is not forced: `pid_max` is

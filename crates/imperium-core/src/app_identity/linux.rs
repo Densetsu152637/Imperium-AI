@@ -2,12 +2,14 @@
 //! id never stands in for it.
 //!
 //! At accept the daemon asks the socket for the peer's pidfd (`SO_PEERPIDFD`, kernel 6.5 and
-//! later). Only on a kernel without that option does it open one on the `SO_PEERCRED` id
-//! (`pidfd_open`, 5.3 and later); any other failure refuses the peer, since on 6.5 and later it
-//! means the peer is gone. The fallback refuses a process whose start time (`/proc/<pid>/stat`
-//! field 22) is later than the accept, but **before 6.5, a pid reused between the peer's connect
-//! and the accept is not detected**: that process started before the accept and passes. Every read goes through `/proc/<pid>` opened as a folder and then confirmed with the
-//! pidfd: while the pidfd's process is alive no other process can hold its id, so the folder
+//! later, or a distribution kernel that backported it). Only when the kernel answers that it
+//! lacks the option (`ENOPROTOOPT`) does it open one on the `SO_PEERCRED` id (`pidfd_open`, 5.3
+//! and later); any other failure refuses the peer, since it means the peer is gone. The fallback
+//! refuses a process whose start time (`/proc/<pid>/stat` field 22) is later than the accept,
+//! but **on a kernel without the option (before 6.5), a pid reused between the peer's connect
+//! and the accept is not detected**: that process started before the accept and passes.
+//!
+//! Every read goes through `/proc/<pid>` opened as a folder and then confirmed with the pidfd: while the pidfd's process is alive no other process can hold its id, so the folder
 //! opened before that confirmation is its own, and reads through it fail once it is gone.
 //!
 //! Safe wrappers only: `rustix` for the pidfd, `SO_PEERCRED`, `poll` and `/proc`, and `nix`
@@ -58,23 +60,21 @@ fn from_socket(socket: &impl AsFd, accepted_ticks: u64) -> Option<Peer> {
             accepted_ticks,
             via: Via::PeerPidfd,
         }),
-        Err(error) if lacks_peer_pidfd(error, kernel_at_least(6, 5)) => {
-            Peer::open(pid, accepted_ticks)
-        }
-        // On 6.5 and later, EINVAL or ESRCH means the peer has exited (and its id may already be
-        // another process's): refuse rather than open a pidfd on the id.
+        Err(error) if lacks_peer_pidfd(error) => Peer::open(pid, accepted_ticks),
+        // The kernel has the option, so EINVAL, ESRCH and the rest mean the peer has exited
+        // (and its id may already be another process's): refuse rather than open a pidfd on it.
         Err(_) => None,
     }
 }
 
-/// Whether `error` from `SO_PEERPIDFD` means the kernel lacks the option, on a kernel that is
-/// (`modern`) or is not 6.5 or later.
-fn lacks_peer_pidfd(error: nix::errno::Errno, modern: bool) -> bool {
-    use nix::errno::Errno;
-    error == Errno::ENOPROTOOPT || (error == Errno::EINVAL && !modern)
+/// Whether `error` from `SO_PEERPIDFD` means the kernel lacks the option: only `ENOPROTOOPT`,
+/// whatever the kernel's version says (a distribution may have backported the option).
+fn lacks_peer_pidfd(error: nix::errno::Errno) -> bool {
+    error == nix::errno::Errno::ENOPROTOOPT
 }
 
 /// Whether the running kernel is `major.minor` or later.
+#[cfg(test)]
 fn kernel_at_least(major: u32, minor: u32) -> bool {
     let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
     let mut parts = release
@@ -337,12 +337,10 @@ mod tests {
     #[test]
     fn only_a_kernel_without_the_option_falls_back_to_pidfd_open() {
         use nix::errno::Errno;
-        assert!(lacks_peer_pidfd(Errno::ENOPROTOOPT, true));
-        assert!(lacks_peer_pidfd(Errno::EINVAL, false));
-        for error in [Errno::EINVAL, Errno::ESRCH, Errno::ENODATA] {
-            assert!(!lacks_peer_pidfd(error, true), "{error}");
+        assert!(lacks_peer_pidfd(Errno::ENOPROTOOPT));
+        for error in [Errno::EINVAL, Errno::ESRCH, Errno::ENODATA, Errno::EPERM] {
+            assert!(!lacks_peer_pidfd(error), "{error}");
         }
-        assert!(!lacks_peer_pidfd(Errno::ESRCH, false));
     }
 
     #[test]
@@ -357,14 +355,29 @@ s.connect({:?})
 time.sleep(30)",
             path.to_str().unwrap()
         );
-        let mut child = Command::new("python3")
+        let spawned = Command::new("python3")
             .args(["-c", &script])
             .stdin(Stdio::null())
-            .spawn()
-            .unwrap();
+            .spawn();
+        let Ok(mut child) = spawned else {
+            // CI must prove this ran; elsewhere a machine without python3 skips it.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "python3 is missing on this CI runner"
+            );
+            eprintln!("skipped: python3 is not available here");
+            return;
+        };
         let (server, _) = listener.accept().unwrap();
         child.kill().unwrap();
         child.wait().unwrap();
+        if kernel_at_least(6, 5) {
+            // Evidence that the kernel has the option: on a reaped peer it answers with a pidfd or
+            // an error other than "no such option", so `from_socket` refuses instead of falling
+            // back to the reaped peer's id.
+            let raw = nix::sys::socket::getsockopt(&server, nix::sys::socket::sockopt::PeerPidfd);
+            assert_ne!(raw.err(), Some(nix::errno::Errno::ENOPROTOOPT));
+        }
         match from_socket(&server, boot_ticks()) {
             None => {}
             Some(peer) => {

@@ -277,11 +277,12 @@ itself (`crates/imperium-core/src/app_identity/`), never from what the caller se
 
 - the connection came in on the local socket; loopback TCP (a mod frame, a remote host) and a
   paired phone are refused before any process is looked at;
-- on Linux, the peer is held from accept by a pidfd (`SO_PEERPIDFD`, or on kernels before 6.5
-  `pidfd_open` on the `SO_PEERCRED` id, refusing a process that started after the accept), and
-  every read goes through `/proc/<pid>` confirmed alive through that pidfd, so after the accept a
-  reused process id never stands in for it; before 6.5, a pid reused between the peer's connect
-  and the accept is not detected;
+- on Linux, the peer is held from accept by a pidfd (`SO_PEERPIDFD`; only on a kernel that lacks
+  that option, `pidfd_open` on the `SO_PEERCRED` id, refusing a process that started after the
+  accept, while any other `SO_PEERPIDFD` error refuses the peer), and every read goes through
+  `/proc/<pid>` confirmed alive through that pidfd, so after the accept a reused process id never
+  stands in for it; on a kernel without the option (before 6.5), a pid reused between the peer's
+  connect and the accept is not detected;
 - its executable is the `imperium-desktop` beside the running `imperium-core`, and its mount and
   pid namespaces are the daemon's (an OS-tier sandbox has its own);
 - its environment sets no `WEBVIEW2_*`, `DYLD_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH` or `LD_AUDIT`.
