@@ -266,6 +266,32 @@ folder gets an `origin = user` record. It writes only if the `ApprovalVerifier` 
 the release verifier writes nothing and a debug one only `dev` until stage 8c, so no approval
 counts yet. `plugins.approve` is stage 8a.
 
+**Command line (no protocol change).** `imperium plugin` calls the methods above:
+`marketplace add|list|refresh|remove`, `browse [query] [--marketplace m]`, `inspect <name@mp>`,
+`install <name@mp> [--env e] [--sha256 h] [--yes]`, `update <name> [--sha256 h] [--yes]`,
+`enable|disable <name> [--env e]`, `uninstall <name> [--delete-secrets]`, `list [--env e]` and
+`secret set|delete <name> <VAR>`. **There is no approving command**: a command line can be driven
+by an agent, so nothing it does counts as the user's approval; a plugin with hooks or servers
+is approved only by the desktop app's native dialog. `install` and `update` call
+`plugins.inspect` and print the trust prompt (the marketplace and plugin source with commits, the
+plugin's own unverified claims, every hook and server with the install folder expanded, the
+launcher warning, the skills, commands and agents, and `sha256`), then ask `Install <id>? [y/N]`
+(`Update <id>? [y/N]` for an update). Without a terminal the question cannot be asked and
+`--yes` is required; `--yes` answers that question only and never approves the plugin. Both
+install exactly the hash that was printed (`--sha256` additionally pins the hash from an earlier
+run), and afterwards say that a plugin with code is **withheld until approved in the desktop
+app**. When the installed folder already holds the inspected content, `update` asks nothing and
+calls `plugins.update`, so the daemon alone decides "up to date". `update` takes the plugin's `name@marketplace` from `plugins.list`, so a plugin that was
+not installed from a marketplace has nothing to update from. `secret set` reads the value from a
+prompt without echo at a terminal, or from standard input when it is not one (at most 64 KiB,
+without the final line break); it is never an argument, so it does not reach the shell history
+or the process list, and the CLI never prints it. The safety floor asks about an agent's shell
+running `plugin marketplace add`, `plugin install|update|enable` and `config set|unset` of
+`extensions.disabled_plugins` or `extensions.plugin_dirs`, and about file-tool writes into
+`<config>/plugins`, `<data>/marketplaces`, `plugin-installs.json`, `plugin-migration.json` and
+`marketplaces.json` ([05](05-tools-and-isolation.md)); it is a guard against mistakes, not a
+control.
+
 ### Named agents (implemented)
 
 A named agent is a subagent a file defines, in Claude Code's format, so plugins and projects can

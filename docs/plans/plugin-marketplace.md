@@ -1053,9 +1053,35 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   `imperium config set extensions.plugin_dirs '["/tmp/x"]'` all ask; file-tool writes to the store,
   the marker and `<config>/plugins/x/` ask; reads do not.
 - Risks: the floor is a guard against mistakes, not a control (U5).
-- Status: pending
-- Outcome:
-- Handoff notes: none yet.
+- Status: done
+- Outcome: 6a: `imperium plugin marketplace add`, `plugin install|update|enable` and `config
+  set|unset` of `extensions.disabled_plugins` or `extensions.plugin_dirs` ask
+  (`imperium-policy/src/floor.rs`, with tests for every line the plan lists and for the read-only
+  commands that must not ask); `plugin-installs.json`, `plugin-migration.json` and
+  `marketplaces.json` are in `FLOOR_PATHS`; the daemon's `protect_extension_dirs` also protects
+  `<data>/marketplaces` (`<config>/plugins` already was); docs 05. 6b: `imperium plugin ...`
+  (`crates/imperium-cli/src/plugins.rs`, the help snapshot, docs 06) with no approving command.
+  The trust prompt is rendered from `plugins.inspect`; `install` and `update` ask `Install
+  <id>? [y/N]` / `Update <id>? [y/N]`, or need `--yes` without a terminal, and print that a
+  plugin with code is withheld until approved in the desktop app. `secret set` reads the value
+  from a no-echo prompt or from standard input and never takes or prints it. Tests run the CLI's
+  dispatch against a daemon on loopback: a scripted install of the hook plugin lands withheld,
+  `enable` is refused, `list` shows it; no terminal and no `--yes` installs nothing; a secret is
+  saved and never printed; the command tree holds nothing named approve.
+  Choices: `update` finds the plugin's `name@marketplace` in `plugins.list` and inspects that id
+  (there is no inspect for an update), so the prompt shows the new version's content; when the
+  folder already holds the inspected content nothing is asked and `plugins.update` is called, so
+  the daemon alone decides "up to date" (it also checks the record's hash); `install` refuses a name that is
+  already installed before asking; the floor's `config` rule looks for the verb `set` or `unset`
+  and either key (case-insensitive prefix, so `key=value` also asks) anywhere after the
+  `config` word, and its `plugin` rule for the verbs anywhere after `plugin`, so a global
+  `--remote x` between the words is covered and a false alarm only asks; `plugin disable`,
+  `uninstall` and `secret set|delete` do not ask (they cannot bring code in or start it);
+  `--env` is passed to `plugins.install` (noted by the daemon) and used by `enable|disable|list`.
+- Handoff notes: stage 8b/10 own approving; nothing in the CLI may gain an approving command
+  (the unit test over the command tree fails if one named `approve` appears). Stage 7's
+  `imperium plugin suggestions` (listed in the plan's CLI section) is not here: it lands with the
+  suggestions it shows. Stage 9/10's desktop windows call the same methods.
 
 ## Stage 7: Repository suggestions
 
