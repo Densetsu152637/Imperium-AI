@@ -1249,10 +1249,10 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   the executable; `dyld` strips `DYLD_*` from restricted processes, so a hardened release app
   shows none and library validation holds instead (stage 8b's entitlement check keeps it on).
   Tests: this process's token and path, the test binary refused; a `python3` child at its path
-  and refused at another; `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` in its environment; a child
-  under `sandbox-exec`; an exited child refused by its token. Not tested: a `DYLD_*` variable in a
-  real peer's environment (a restricted `python3` would have it stripped; the name list is
-  unit-tested), and a bundled app's path (CI runs no `.app`).
+  and refused at another; `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` and
+  `DYLD_FALLBACK_LIBRARY_PATH` in its environment (the runner's `python3` is not restricted, so
+  `dyld` leaves `DYLD_*` in place); a child under `sandbox-exec`; an exited child refused by its
+  token. Not tested: a bundled app's path (CI runs no `.app`).
 - Handoff notes: no change to `peer::may_grant` or to mod approvals (kept). **For 8a-ii:**
   replace `unsupported.rs` with `windows.rs` and `macos.rs` behind the same `Peer`,
   `at_accept` and `identify` (`identify(peer, app)` gets the canonical app path); Windows takes

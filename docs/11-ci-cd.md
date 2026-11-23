@@ -38,7 +38,7 @@ a child test run with that variable set, a file of that name beside the binary a
 `ProgramFiles` pointed at its folder counts nothing either. No workflow sets the constant yet:
 it belongs to the Windows Authenticode signing step of roadmap item 59, which does not exist.
 On macOS they connect a `python3` child over a Unix socket and check its audit token: the code
-path, a `WEBVIEW2_*` variable in its environment, an exited peer, and a peer started under
+path, `WEBVIEW2_*` and `DYLD_*` variables in its environment, an exited peer, and a peer started under
 `sandbox-exec`; a missing `python3` or `sandbox-exec` fails on CI and skips elsewhere.
 
 ## Release channels

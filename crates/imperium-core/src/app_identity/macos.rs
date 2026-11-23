@@ -177,6 +177,9 @@ mod tests {
         command.extend(["python3", "-c", &script]);
         let spawned = Command::new(command[0])
             .args(&command[1..])
+            // Only what is asked for: the test runner's own environment holds `DYLD_*` paths.
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .envs(env.iter().copied())
             .stdin(Stdio::null())
             .spawn();
@@ -238,20 +241,20 @@ mod tests {
     }
 
     #[test]
-    fn a_webview2_override_in_the_peers_environment_is_refused() {
-        let Some((child, server)) =
-            connected(&[], &[("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "x")])
-        else {
-            return;
-        };
-        let peer = from_socket(&server).unwrap();
-        let exe = python().unwrap();
-        let error = check_by_pid(peer.pid(), &exe).unwrap_err();
-        assert!(
-            error.contains("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"),
-            "{error}"
-        );
-        end(child);
+    fn loader_and_webview_overrides_in_the_peers_environment_are_refused() {
+        // `python3` here is not a restricted process, so `dyld` leaves `DYLD_*` in place.
+        for name in [
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "DYLD_FALLBACK_LIBRARY_PATH",
+        ] {
+            let Some((child, server)) = connected(&[], &[(name, "/nonexistent")]) else {
+                return;
+            };
+            let peer = from_socket(&server).unwrap();
+            let error = check_by_pid(peer.pid(), &python().unwrap()).unwrap_err();
+            assert!(error.contains(name), "{error}");
+            end(child);
+        }
     }
 
     #[test]
