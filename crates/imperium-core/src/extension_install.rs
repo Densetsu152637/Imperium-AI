@@ -491,6 +491,8 @@ pub(crate) fn check_name(name: &str) -> Result<String, String> {
     let ok = !name.is_empty()
         && name.len() <= 64
         && !name.starts_with('.')
+        // Windows drops a trailing dot: `foo.` would be the folder `foo`.
+        && !name.ends_with('.')
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
@@ -498,7 +500,7 @@ pub(crate) fn check_name(name: &str) -> Result<String, String> {
         Ok(name.to_string())
     } else {
         Err(format!(
-            "the name {name:?} cannot be installed: use 1-64 letters, digits, '.', '_' or '-'"
+            "the name {name:?} cannot be installed: use 1-64 letters, digits, '.', '_' or '-', not starting or ending with a dot"
         ))
     }
 }
@@ -810,7 +812,7 @@ mod tests {
     #[test]
     fn names_and_subfolders_are_checked() {
         assert!(check_name("pdf-tools_1.0").is_ok());
-        for bad in ["", ".hidden", "a/b", "a\\b", "..", "x y"] {
+        for bad in ["", ".hidden", "a/b", "a\\b", "..", "x y", "foo.", "foo.."] {
             assert!(check_name(bad).is_err(), "{bad}");
         }
         assert_eq!(check_subdir("skills/pdf/").unwrap(), "skills/pdf");

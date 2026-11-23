@@ -158,7 +158,8 @@ async fn stage(
             let url = entry_source
                 .clone_url()
                 .ok_or("the plugin has no git source")?;
-            let pinned = revision.is_none().then(|| entry_source.sha()).flatten();
+            // A pinned commit holds whatever `revision` is asked for.
+            let pinned = entry_source.sha();
             let requested = revision
                 .or(entry_source.sha())
                 .or(entry_source.git_ref())
@@ -837,5 +838,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(pinned, commit);
+        // A pin of the same commit, abbreviated, passes; once the default branch has moved on, a
+        // fetch of it is refused against the old pin.
+        let abbreviated = tempfile::tempdir().unwrap();
+        fetch_git(
+            &url,
+            Some(&commit),
+            Some(&commit[..10]),
+            abbreviated.path(),
+            &abbreviated.path().join("out"),
+        )
+        .await
+        .unwrap();
+        write(&repo.path().join("second.txt"), "2");
+        git(repo.path(), &["add", "-A"]);
+        git(repo.path(), &["commit", "-q", "-m", "second"]);
+        let newest = tempfile::tempdir().unwrap();
+        let error = fetch_git(
+            &url,
+            None,
+            Some(&commit),
+            newest.path(),
+            &newest.path().join("out"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("pins"), "{error}");
     }
 }

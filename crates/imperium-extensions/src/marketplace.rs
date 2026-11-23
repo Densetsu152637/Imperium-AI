@@ -135,6 +135,8 @@ pub fn check_name(name: &str) -> Result<String, String> {
     let ok = !name.is_empty()
         && name.len() <= 64
         && !name.starts_with('.')
+        // Windows drops a trailing dot: `foo.` would name the folder `foo`.
+        && !name.ends_with('.')
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
@@ -142,7 +144,7 @@ pub fn check_name(name: &str) -> Result<String, String> {
         Ok(name.to_string())
     } else {
         Err(format!(
-            "the name {name:?} is not valid: use 1-64 letters, digits, '.', '_' or '-'"
+            "the name {name:?} is not valid: use 1-64 letters, digits, '.', '_' or '-', not starting or ending with a dot"
         ))
     }
 }
@@ -550,6 +552,21 @@ mod tests {
         assert!(parse(r#"{"plugins": []}"#).is_err());
         assert!(parse(r#"{"name": "m"}"#).is_err());
         assert!(parse("[]").is_err());
+    }
+
+    #[test]
+    fn a_name_ending_in_a_dot_is_refused() {
+        assert!(check_name("foo.").is_err() && check_name("foo ").is_ok_and(|name| name == "foo"));
+        let market = parse(
+            r#"{"name": "m", "plugins": [
+                {"name": "foo.", "source": "./a"},
+                {"name": "foo", "source": "./b"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(market.plugins.len(), 1);
+        assert_eq!(market.plugins[0].name, "foo");
+        assert_eq!(market.problems.len(), 1);
+        assert!(parse(r#"{"name": "m.", "plugins": []}"#).is_err());
     }
 
     #[test]

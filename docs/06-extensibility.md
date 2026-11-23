@@ -66,7 +66,7 @@ permissions, UI mod entry points, and router hints.
   `pluginRoot`, `./x` is from the root; `..`, absolute paths and drive letters are refused), a
   `github` source (`repo`, `ref`, `sha`, cloned from `https://github.com/<repo>.git`) or a `url`
   source (`https://` only, no credentials); any other type is listed as unsupported. Names must
-  fit a folder name; a bad or duplicate entry is left out and reported without hiding the
+  fit a folder name (not ending with a dot, which Windows drops); a bad or duplicate entry is left out and reported without hiding the
   rest. An entry can be written as canonical JSON (sorted keys, no whitespace) for
   `marketplace-entry.json`. Adding, refreshing and installing from marketplaces follow in the
   [plugin marketplace plan](plans/plugin-marketplace.md).
