@@ -373,6 +373,11 @@ const FLOOR_PATHS: &[&str] = &[
     ".netrc",
     // The daemon's record of which mod permissions the user approved.
     "mod-approvals.json",
+    // The daemon's records of installed plugins and their approvals, the marker that says the
+    // first-start migration ran, and its cache of what each marketplace lists.
+    "plugin-installs.json",
+    "plugin-migration.json",
+    "marketplaces.json",
     // The encrypted secret file used where there is no OS keychain, and its scratch files
     // (`secrets.key` is already covered by `*.key`).
     "secrets.enc",
@@ -1371,6 +1376,35 @@ mod tests {
             CallKind::Read,
             &path("/floor-test-config/mods/demo/index.js")
         ));
+    }
+
+    #[test]
+    fn the_floor_guards_plugin_records_and_the_folders_plugins_load_from() {
+        protect_dir(std::path::Path::new("/floor-plugin-config/plugins"));
+        protect_dir(std::path::Path::new("/floor-plugin-data/marketplaces"));
+        let path = |absolute: &str| Target::Path {
+            absolute: absolute.to_string(),
+            relative: None,
+        };
+        for guarded in [
+            "/floor-plugin-config/plugins/x/hooks/hooks.json",
+            "/floor-plugin-config/plugins/x",
+            "/floor-plugin-data/marketplaces/mk/.claude-plugin/marketplace.json",
+            "/floor-plugin-data/plugin-installs.json",
+            "/floor-plugin-data/plugin-migration.json",
+            "/floor-plugin-data/marketplaces.json",
+        ] {
+            assert!(safety_floor(CallKind::Edit, &path(guarded)), "{guarded}");
+            // Reading is never covered.
+            assert!(!safety_floor(CallKind::Read, &path(guarded)), "{guarded}");
+        }
+        for open in [
+            "/floor-plugin-config/pluginsy/x.json",
+            "/floor-plugin-data/marketplaces.json.md",
+            "/floor-plugin-data/plugin-installs.json.bak",
+        ] {
+            assert!(!safety_floor(CallKind::Edit, &path(open)), "{open}");
+        }
     }
 
     #[test]
