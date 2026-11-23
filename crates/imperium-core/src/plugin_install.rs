@@ -29,8 +29,6 @@ const MAX_BYTES: u64 = 256 * 1024 * 1024;
 /// A plugin copied into staging, parsed and hashed.
 struct Staged {
     located: Located,
-    /// The folder, `<staging>/out`.
-    out: PathBuf,
     plugin: Plugin,
     hash: String,
     commit: Option<String>,
@@ -197,7 +195,6 @@ async fn stage(
     }
     Ok(Staged {
         located,
-        out,
         plugin,
         hash: seen.hash,
         commit,
