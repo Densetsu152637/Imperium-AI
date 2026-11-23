@@ -200,8 +200,8 @@ async fn http_servers_list_tools_across_pages_and_call_them() {
 }
 
 /// A stdio "server" that only writes its environment to a file and exits: it never answers the
-/// handshake, which the test does not need.
-#[cfg(unix)]
+/// handshake, which the test does not need. (`sh -c env` on unix; `cmd /C set` on Windows, with a
+/// path without spaces so the argument is not quoted.)
 async fn environment_of(env: Vec<(String, String)>) -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -211,8 +211,12 @@ async fn environment_of(env: Vec<(String, String)>) -> String {
     let spec = ServerSpec {
         name: "dump".into(),
         launch: Launch::Stdio {
-            command: "sh".into(),
-            args: vec!["-c".into(), format!("env > '{}'", out.display())],
+            command: if cfg!(windows) { "cmd" } else { "sh" }.into(),
+            args: if cfg!(windows) {
+                vec!["/C".into(), format!("set>{}", out.display())]
+            } else {
+                vec!["-c".into(), format!("env > '{}'", out.display())]
+            },
             env,
             cwd: None,
         },
@@ -226,7 +230,6 @@ async fn environment_of(env: Vec<(String, String)>) -> String {
     text
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_clean_env_server_sees_the_allowlist_and_its_own_variables_only() {
     // Cargo sets this for the test process, so the daemon's environment holds it.
@@ -241,7 +244,8 @@ async fn a_clean_env_server_sees_the_allowlist_and_its_own_variables_only() {
     ])
     .await;
     assert!(clean.contains("OWN_VAR=mine"), "{clean}");
-    assert!(clean.contains("PATH="), "{clean}");
+    // Windows spells it `Path`.
+    assert!(clean.to_ascii_uppercase().contains("PATH="), "{clean}");
     assert!(clean.contains("IMPERIUM_MCP_CHILD=1"), "{clean}");
     assert!(clean.contains("IMPERIUM_SPAWNED_BY_DAEMON=1"), "{clean}");
     assert!(!clean.contains(leaked), "{clean}");

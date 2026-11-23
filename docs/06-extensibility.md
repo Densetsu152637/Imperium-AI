@@ -226,8 +226,16 @@ its code. A failure puts the old folder and record back. Any plugin with hooks o
 withheld after an update until approved afresh, even when only a skill changed.
 
 **Secrets (protocol 0.54; not a paired phone).** For a plugin installed from a marketplace or by an
-agent, a server's `${VAR}` that has no `:-default` (other than `CLAUDE_PLUGIN_ROOT`) is a
-**required secret**. `plugins.set_secret {name, variable, value}` saves it in the secret store as
+agent, or one the user approved without Imperium having installed it (origin `user`, often a
+copied-in download), a `${VAR}` in a stdio server's `env` or an HTTP server's `headers` that has
+no `:-default` (other than `CLAUDE_PLUGIN_ROOT`) is a **required secret**; such a plugin's `${VAR}`
+resolves only from its saved secret or its default, never from the daemon's environment. Only a
+`preexisting` plugin (the user's own, carried over by the migration) still reads the daemon's
+environment, so nothing that runs today stops. A variable name is `[A-Za-z_][A-Za-z0-9_]*`: any
+other `${...}` (so `${b.x}` of plugin `a` cannot reach plugin `a.b`'s secret `x`) is nobody's
+secret. A secret is expanded only into `env` and `headers`: a server that names a variable in its
+command, arguments or URL is not started, with a notice (a default there is used as written).
+ `plugins.set_secret {name, variable, value}` saves it in the secret store as
 `plugin.<plugin>.<variable>` in lower case; `plugins.delete_secret {name, variable}` removes it;
 `plugins.uninstall {name, delete_secrets}` can remove all of a plugin's. The variable must be one
 a server names; a name that is not a valid secret name (more than 64 characters in all) is
