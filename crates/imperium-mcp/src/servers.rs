@@ -356,6 +356,39 @@ impl McpServers {
 /// like. (The CLI keeps a copy of the name.)
 pub const CHILD_MARK: &str = "IMPERIUM_MCP_CHILD";
 
+/// A reserved entry of a stdio server's `env`: when present the server starts with a cleared
+/// environment plus [`plugin_child_env`] and the rest of its `env`, not the daemon's. The daemon
+/// sets it for the servers of plugins under `<config>/plugins`; it is never passed on.
+pub const CLEAN_ENV: &str = "IMPERIUM_PLUGIN_CLEAN_ENV";
+
+/// The mark every process the daemon spawns carries (`imperium_tools::SPAWNED_MARK`).
+const SPAWNED_MARK: &str = "IMPERIUM_SPAWNED_BY_DAEMON";
+
+/// The only variables of the daemon's own environment a plugin's hook or stdio server inherits:
+/// `PATH`, `HOME` or `USERPROFILE`, `SYSTEMROOT`, `TEMP`, `TMP`, `LANG`, `LC_*`, `TERM`, and on
+/// Windows `APPDATA`, `LOCALAPPDATA`, `PATHEXT` and `COMSPEC`; and the spawned-by-daemon mark.
+/// Nothing else: not `IMPERIUM_*`, the daemon's token, or any secret in its environment.
+pub fn plugin_child_env() -> Vec<(String, String)> {
+    let allowed = |name: &str| {
+        let upper = name.to_ascii_uppercase();
+        matches!(
+            upper.as_str(),
+            "PATH" | "HOME" | "USERPROFILE" | "SYSTEMROOT" | "TEMP" | "TMP" | "LANG" | "TERM"
+        ) || upper.starts_with("LC_")
+            || (cfg!(windows)
+                && matches!(
+                    upper.as_str(),
+                    "APPDATA" | "LOCALAPPDATA" | "PATHEXT" | "COMSPEC"
+                ))
+    };
+    let mut env: Vec<(String, String)> = std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .filter(|(key, _)| allowed(key))
+        .collect();
+    env.push((SPAWNED_MARK.to_string(), "1".to_string()));
+    env
+}
+
 /// Whether a stdio launch runs `imperium mcp-serve` (the harness or the tools bridge): the
 /// `imperium` binary, in any spelling of its path or `.exe`, and the `mcp-serve` word, in the
 /// arguments or inside a single shell-style argument such as `imperium mcp-serve --tools`.
@@ -399,9 +432,16 @@ async fn start(spec: ServerSpec, auth: Option<Arc<dyn TokenSource>>) -> Result<S
                 ));
             }
             let mut process = Command::new(command);
+            if env.iter().any(|(key, _)| key == CLEAN_ENV) {
+                process.env_clear().envs(plugin_child_env());
+            }
             process
                 .args(args)
-                .envs(env.iter().map(|(key, value)| (key, value)))
+                .envs(
+                    env.iter()
+                        .filter(|(key, _)| key != CLEAN_ENV)
+                        .map(|(key, value)| (key, value)),
+                )
                 // Set after the configured variables, so they cannot clear it: a started
                 // `imperium mcp-serve` sees it and refuses to serve its own daemon.
                 .env(CHILD_MARK, "1")

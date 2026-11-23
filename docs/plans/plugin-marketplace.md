@@ -991,7 +991,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   from the daemon's environment and do see `PATH` and the mark; a user hook still sees it.
 - Risks: the allowlist may break plugins needing other variables (the server definition can set
   them); `FOO` and `foo` collide as secret names, refuse the second.
-- Status: in review, in two pull requests: (a) secrets (protocol 0.54) and (b) the child
+- Status: done, in two pull requests: (a) secrets (protocol 0.54) and (b) the child
   environment allowlist, stacked on it (no protocol change)
 - Outcome (a): `plugins.set_secret`, `plugins.delete_secret`, `delete_secrets` on
   `plugins.uninstall`, and `required_secrets` / `missing_secrets` on `plugins.list`
@@ -1016,8 +1016,18 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   names of `env` and headers but not values; origin `user` counts as downloaded, like
   `marketplace` and `agent`, and is eligible for `set_secret`, so its `${VAR}` never reads the
   daemon's environment, while `preexisting` plugins keep it (nothing that runs today stops).
-- Handoff notes: if over 800 lines, split (a) and (b). (b) must keep the secrets out of the
-  hook and server environments of anything but the one server that names them.
+- Outcome (b): hooks and stdio servers of plugins under `<config>/plugins` run with a cleared
+  environment plus `imperium_mcp::servers::plugin_child_env` (the allowlist and the spawn mark),
+  `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR`, `IMPERIUM_PROJECT_DIR` and the definition's own
+  variables. `load_with_secrets` marks them: `Hook.plugin_env_root` for a hook, and a reserved
+  `IMPERIUM_PLUGIN_CLEAN_ENV` entry in a stdio `ServerSpec`'s `env` (so no `Launch` or `ServerSpec`
+  signature changed) that `servers::start` turns into `env_clear` and never passes on. Choices: the
+  test is the plugin's canonical folder lying under `<config>/plugins`, so `plugin_dirs`
+  plugins keep the daemon's environment; the definition's variables come last and win; HTTP hooks
+  and servers have no child process.
+- Handoff notes: stage 6's CLI can call `plugins.set_secret` with the value from standard input.
+  A plugin that needs a variable from the daemon's environment now has to declare it itself; a
+  user who wants it can set it in the server definition's `env` of their own plugin_dirs copy.
 
 ## Stage 6: CLI and the safety floor
 

@@ -216,6 +216,43 @@ pub fn load_with_secrets(
             }
         }
     }
+    // Plugins under `<config>/plugins` run their hooks and stdio servers with an allowlisted
+    // environment, not the daemon's. User-configured hooks and servers, and plugins from
+    // `plugin_dirs`, keep the daemon's.
+    if let Ok(confined) = sources.config_dir.join("plugins").canonicalize() {
+        for plugin in &mut plugins {
+            let inside = plugin
+                .root
+                .canonicalize()
+                .is_ok_and(|root| root.starts_with(&confined));
+            if !inside {
+                continue;
+            }
+            for hook in &mut plugin.hooks {
+                hook.plugin_env_root = Some(plugin.root.clone());
+            }
+            let project = sources.project_dir.display().to_string();
+            for spec in &mut plugin.servers {
+                if let imperium_mcp::Launch::Stdio { env, .. } = &mut spec.launch {
+                    // The definition's own variables come last, so they win.
+                    let mut base = vec![
+                        (
+                            imperium_mcp::servers::CLEAN_ENV.to_string(),
+                            "1".to_string(),
+                        ),
+                        (
+                            "CLAUDE_PLUGIN_ROOT".to_string(),
+                            plugin.root.display().to_string(),
+                        ),
+                        ("CLAUDE_PROJECT_DIR".to_string(), project.clone()),
+                        ("IMPERIUM_PROJECT_DIR".to_string(), project.clone()),
+                    ];
+                    base.append(env);
+                    *env = base;
+                }
+            }
+        }
+    }
     let eager = |name: &str| !sources.lazy || sources.eager.iter().any(|eager| eager == name);
 
     let project = &sources.project_dir;
@@ -651,5 +688,84 @@ body
         assert!(everything.index().is_none());
         let eager = skills::eager_instructions(&everything.skills).unwrap();
         assert!(eager.contains("SECRET STYLE RULES"), "{eager}");
+    }
+
+    #[tokio::test]
+    async fn plugin_hooks_get_an_allowlisted_environment_and_other_hooks_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let dump = |name: &str| {
+            let out = dir.path().join(name);
+            if cfg!(windows) {
+                format!("set > \"{}\"", out.display())
+            } else {
+                format!("env > '{}'", out.display())
+            }
+        };
+        let hooks_json = |name: &str| {
+            serde_json::json!({"hooks": {"PreToolUse": [{"hooks": [
+                {"type": "command", "command": dump(name)}]}]}})
+            .to_string()
+        };
+        for (folder, out) in [
+            ("config/plugins/inside", "plugin.env"),
+            ("extra/outside", "dir.env"),
+        ] {
+            let root = dir.path().join(folder);
+            write(
+                &root.join(".claude-plugin/plugin.json"),
+                &format!(r#"{{"name": "{}"}}"#, folder.rsplit('/').next().unwrap()),
+            );
+            write(&root.join("hooks/hooks.json"), &hooks_json(out));
+        }
+        let mut set = sources(&config, &project, false, &[]);
+        set.plugin_dirs = vec![dir.path().join("extra")];
+        set.hooks = vec![ConfiguredHook {
+            event: "tool.before".into(),
+            matcher: String::new(),
+            command: dump("user.env"),
+            url: None,
+            headers: Default::default(),
+            timeout_s: None,
+        }];
+        let loaded = load(&set);
+        assert!(loaded.notices.is_empty(), "{:?}", loaded.notices);
+        loaded
+            .hooks
+            .run(
+                hooks::HookEvent::ToolBefore,
+                Some("Bash"),
+                &serde_json::json!({"tool_input": {}}),
+                &project,
+            )
+            .await;
+        let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
+        // Cargo sets this for the test process, so the daemon's environment holds it.
+        let leaked = "CARGO_MANIFEST_DIR";
+        assert!(std::env::var_os(leaked).is_some());
+        let plugin = read("plugin.env");
+        assert!(!plugin.contains(leaked), "{plugin}");
+        assert!(plugin.to_ascii_uppercase().contains("PATH="), "{plugin}");
+        for expected in [
+            "IMPERIUM_SPAWNED_BY_DAEMON=1",
+            "CLAUDE_PLUGIN_ROOT=",
+            "CLAUDE_PROJECT_DIR=",
+            "IMPERIUM_PROJECT_DIR=",
+        ] {
+            assert!(
+                plugin.contains(expected),
+                "{expected} missing from {plugin}"
+            );
+        }
+        // A user hook, and a hook of a plugin from `plugin_dirs`, keep the daemon's environment.
+        assert!(read("user.env").contains(leaked));
+        assert!(read("dir.env").contains(leaked));
+        assert_eq!(
+            imperium_tools::SPAWNED_MARK,
+            "IMPERIUM_SPAWNED_BY_DAEMON",
+            "imperium-mcp keeps a copy of the name"
+        );
     }
 }
