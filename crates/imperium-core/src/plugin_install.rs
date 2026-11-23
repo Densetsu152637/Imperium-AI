@@ -38,6 +38,8 @@ static INSTALLS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// A plugin copied into staging, parsed and hashed.
 struct Staged {
     located: Located,
+    /// The folder, `<staging>/out`.
+    out: PathBuf,
     plugin: Plugin,
     hash: String,
     commit: Option<String>,
@@ -206,6 +208,7 @@ async fn stage(
     }
     Ok(Staged {
         located,
+        out,
         plugin,
         hash: seen.hash,
         commit,
