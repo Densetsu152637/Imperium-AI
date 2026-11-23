@@ -504,7 +504,7 @@ pub(crate) async fn install(
 /// The folder under `<config>/plugins` that `text` names: a folder name, a recorded name, or a
 /// recorded `name@marketplace`, all compared ignoring letter case. A folder name wins over a
 /// recorded one; more than one folder of the same kind of match is an error.
-fn resolve(state: &DaemonState, text: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve(state: &DaemonState, text: &str) -> Result<PathBuf, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("name the plugin to uninstall".into());

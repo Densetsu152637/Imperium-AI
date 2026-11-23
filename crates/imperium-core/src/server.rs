@@ -81,15 +81,16 @@ where
 }
 
 /// The process on the other end of a local-socket connection, when the operating system says,
-/// and when (Unix seconds) the connection was accepted, so a reused id can be told from it.
-#[derive(Debug, Clone, Copy)]
-struct PeerPid(Option<(u32, u64)>);
+/// and when (Unix seconds) the connection was accepted, so a reused id can be told from it; and
+/// its identity for plugin approvals, taken at the same moment (`app_identity`).
+#[derive(Debug, Clone)]
+struct PeerPid(Option<(u32, u64)>, Option<Arc<crate::app_identity::Peer>>);
 
 impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, IpcListener>>
     for PeerPid
 {
     fn connect_info(stream: axum::serve::IncomingStream<'_, IpcListener>) -> Self {
-        *stream.remote_addr()
+        stream.remote_addr().clone()
     }
 }
 
@@ -105,8 +106,11 @@ impl axum::serve::Listener for IpcListener {
             match self.0.accept().await {
                 Ok(stream) => {
                     let accepted_at = imperium_api::time::unix_secs();
-                    let peer =
-                        PeerPid(imperium_ipc::peer_pid(&stream).map(|pid| (pid, accepted_at)));
+                    let identity = crate::app_identity::at_accept(&stream);
+                    let peer = PeerPid(
+                        imperium_ipc::peer_pid(&stream).map(|pid| (pid, accepted_at)),
+                        identity,
+                    );
                     return (stream, peer);
                 }
                 Err(error) => {
@@ -120,7 +124,7 @@ impl axum::serve::Listener for IpcListener {
     }
 
     fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        Ok(PeerPid(None))
+        Ok(PeerPid(None, None))
     }
 }
 
@@ -130,7 +134,7 @@ async fn upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> HttpResponse {
-    authorise(state, headers, ws, None)
+    authorise(state, headers, ws, PeerPid(None, None))
 }
 
 /// The upgrade on the local socket, with the calling process's id.
@@ -140,14 +144,14 @@ async fn upgrade_local(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> HttpResponse {
-    authorise(state, headers, ws, peer.0)
+    authorise(state, headers, ws, peer)
 }
 
 fn authorise(
     state: Arc<ServerState>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
-    peer: Option<(u32, u64)>,
+    peer: PeerPid,
 ) -> HttpResponse {
     let by_header = headers
         .get(header::AUTHORIZATION)
@@ -170,7 +174,9 @@ fn authorise(
         let announcements = daemon.announcements();
         run_connection(
             socket,
-            Connection::new(daemon).with_peer(peer),
+            Connection::new(daemon)
+                .with_peer(peer.0)
+                .with_identity(peer.1),
             announcements,
         )
     })

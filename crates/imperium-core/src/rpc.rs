@@ -41,6 +41,7 @@ use imperium_protocol::methods::{
     EventsSubscribe, EventsSubscribeParams, EventsUnsubscribe, EventsUnsubscribeParams,
 };
 use imperium_protocol::methods::{
+    PluginsApprovalChallenge, PluginsApprovalChallengeParams, PluginsApprove, PluginsApproveParams,
     PluginsBrowse, PluginsDeleteSecret, PluginsDeleteSecretParams, PluginsDismissSuggestion,
     PluginsDismissSuggestionParams, PluginsInspect, PluginsInstall, PluginsList, PluginsListParams,
     PluginsMarketplaceAdd, PluginsMarketplaceList, PluginsMarketplaceListParams,
@@ -224,6 +225,10 @@ pub struct Connection {
     /// The process id of the other end and when (Unix seconds) the connection was accepted, for
     /// a connection on the local socket.
     peer: Option<(u32, u64)>,
+    /// The identity of the other end of a local-socket connection, for plugin approvals.
+    identity: Option<Arc<crate::app_identity::Peer>>,
+    /// The plugin-approval challenges issued to this connection and not yet answered.
+    challenges: crate::app_identity::Challenges,
     /// Set while this connection watches resources (`system.resources_subscribe`).
     resources: Option<crate::resources::Watch>,
     /// The topics chosen with `events.subscribe`; narrows what `receives` lets through.
@@ -246,6 +251,8 @@ impl Connection {
             client_name: None,
             eval_sessions: Arc::default(),
             peer: None,
+            identity: None,
+            challenges: crate::app_identity::Challenges::default(),
             resources: None,
             events: crate::events::EventFilter::default(),
             lease: None,
@@ -260,6 +267,17 @@ impl Connection {
         self
     }
 
+    /// This connection, with the identity of its other end taken at accept (a local-socket
+    /// connection).
+    #[must_use]
+    pub(crate) fn with_identity(
+        mut self,
+        identity: Option<Arc<crate::app_identity::Peer>>,
+    ) -> Self {
+        self.identity = identity;
+        self
+    }
+
     /// A connection limited to `allowed` methods (a paired phone's scopes).
     pub fn restricted(state: Arc<DaemonState>, allowed: Vec<&'static str>) -> Self {
         Connection {
@@ -269,6 +287,8 @@ impl Connection {
             client_name: None,
             eval_sessions: Arc::default(),
             peer: None,
+            identity: None,
+            challenges: crate::app_identity::Challenges::default(),
             resources: None,
             events: crate::events::EventFilter::default(),
             lease: None,
@@ -1888,5 +1908,29 @@ mod tests {
         assert!(preview.is_err(), "no preview for a client that has gone");
         assert!(state.sessions().is_empty());
         assert_eq!(made_environments(&state), 0);
+    }
+
+    /// A plugin approval over loopback TCP (no local-socket peer) is refused before the plugin
+    /// is looked up or any process is examined, and records nothing.
+    #[test]
+    fn a_plugin_approval_over_tcp_is_refused_first() {
+        let mut connection = handshaken();
+        let challenge = connection.handle_text(&request(
+            2,
+            PluginsApprovalChallenge::NAME,
+            json!({"name": "missing", "sha256": "0", "runs_digest": "0"}),
+        ));
+        let approve = connection.handle_text(&request(
+            3,
+            PluginsApprove::NAME,
+            json!({"name": "missing", "sha256": "0", "runs_digest": "0", "challenge": "0"}),
+        ));
+        for handled in [challenge, approve] {
+            let Some(Outcome::Error(error)) = handled.response.map(|response| response.outcome)
+            else {
+                panic!("an approval over TCP must be refused");
+            };
+            assert!(error.message.contains("local socket"), "{}", error.message);
+        }
     }
 }

@@ -240,6 +240,50 @@ impl Connection {
                     }
                 })
             }
+            // Synchronous: a challenge belongs to this connection, and the hash is cached.
+            PluginsApprovalChallenge::NAME => call::<PluginsApprovalChallenge>(
+                c.params.take(),
+                |params: PluginsApprovalChallengeParams| {
+                    crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
+                    let folder = crate::plugin_install::resolve(&self.state, &params.name)
+                        .map_err(refused)?;
+                    let asked = crate::app_identity::Asked {
+                        folder: &folder,
+                        hash: &params.sha256,
+                        runs: &params.runs_digest,
+                        now_ms: imperium_api::time::unix_ms(),
+                    };
+                    crate::app_identity::challenge(
+                        &crate::app_identity::InstalledApp,
+                        self.identity.as_deref(),
+                        &mut self.challenges,
+                        &asked,
+                    )
+                    .map_err(refused)
+                },
+            ),
+            PluginsApprove::NAME => {
+                call::<PluginsApprove>(c.params.take(), |params: PluginsApproveParams| {
+                    crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
+                    let folder = crate::plugin_install::resolve(&self.state, &params.name)
+                        .map_err(refused)?;
+                    let asked = crate::app_identity::Asked {
+                        folder: &folder,
+                        hash: &params.sha256,
+                        runs: &params.runs_digest,
+                        now_ms: imperium_api::time::unix_ms(),
+                    };
+                    Ok(crate::app_identity::approve(
+                        self.state.paths(),
+                        &crate::app_identity::InstalledApp,
+                        crate::plugin_records::production_verifier(),
+                        self.identity.as_deref(),
+                        &mut self.challenges,
+                        &asked,
+                        &params.challenge,
+                    ))
+                })
+            }
             ConfigChanges::NAME => {
                 call::<ConfigChanges>(c.params.take(), |_: ConfigChangesParams| {
                     Ok(ConfigChangesResult {

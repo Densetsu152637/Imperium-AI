@@ -135,10 +135,16 @@ pub(crate) trait ApprovalVerifier: Send + Sync {
     /// Whether [`record_approval`] may write an approval of `kind`. The production verifier
     /// writes nothing until stage 8c, so no caller can make an approval count before then.
     fn may_write(&self, kind: ApprovalKind) -> bool;
+    /// The kind a new approval that passed the identity checks and its challenge is recorded
+    /// as, or why none is. Check 6 (the OS presence check) decides this from stage 8c; until
+    /// then the release verifier refuses, so nothing is recorded as a counted approval.
+    fn approval_kind(&self) -> Result<ApprovalKind, String>;
 }
 
 /// A release build: counted, dialog-only and carried-over approvals; never `dev`. Nothing writes
 /// a counted or dialog-only approval until stage 8c.
+// A debug build uses it only in tests.
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) struct ReleaseVerifier;
 
 impl ApprovalVerifier for ReleaseVerifier {
@@ -149,11 +155,18 @@ impl ApprovalVerifier for ReleaseVerifier {
     fn may_write(&self, _: ApprovalKind) -> bool {
         false
     }
+
+    fn approval_kind(&self) -> Result<ApprovalKind, String> {
+        Err("presence check not built: no approval counts yet, so nothing was recorded".into())
+    }
 }
 
-/// A debug build: also honours `dev` approvals.
+/// A debug build (the development verifier, which exists only in debug builds): also honours
+/// `dev` approvals, and records an approval that passed the identity checks as `dev`.
+#[cfg(debug_assertions)]
 pub(crate) struct DebugVerifier;
 
+#[cfg(debug_assertions)]
 impl ApprovalVerifier for DebugVerifier {
     fn honours(&self, _: ApprovalKind) -> bool {
         true
@@ -162,6 +175,10 @@ impl ApprovalVerifier for DebugVerifier {
     /// Only the development approval, which release daemons ignore.
     fn may_write(&self, kind: ApprovalKind) -> bool {
         kind == ApprovalKind::Dev
+    }
+
+    fn approval_kind(&self) -> Result<ApprovalKind, String> {
+        Ok(ApprovalKind::Dev)
     }
 }
 
@@ -178,12 +195,19 @@ impl ApprovalVerifier for TestVerifier {
     fn may_write(&self, _: ApprovalKind) -> bool {
         true
     }
+
+    fn approval_kind(&self) -> Result<ApprovalKind, String> {
+        Ok(ApprovalKind::Counted)
+    }
 }
 
 pub(crate) fn production_verifier() -> &'static dyn ApprovalVerifier {
-    if cfg!(debug_assertions) {
+    #[cfg(debug_assertions)]
+    {
         &DebugVerifier
-    } else {
+    }
+    #[cfg(not(debug_assertions))]
+    {
         &ReleaseVerifier
     }
 }
@@ -416,8 +440,7 @@ pub(crate) fn add_record_at(paths: &Paths, key: String, record: Record) -> Resul
 /// the approval was asked for), so other content than was shown is never approved. A folder with
 /// no record gets one with `origin = user`; a recorded one takes the approved hash and digest as
 /// its own (this is also how a skills-only plugin the user edited is recorded again). Nothing here
-/// decides who may approve: the caller (stage 8a) does, and nothing calls this yet but tests.
-#[allow(dead_code)] // Stage 8a's `plugins.approve` calls it.
+/// decides who may approve: `app_identity::approve` does before it calls this.
 pub(crate) fn record_approval(
     paths: &Paths,
     verifier: &dyn ApprovalVerifier,
@@ -429,18 +452,8 @@ pub(crate) fn record_approval(
     if !verifier.may_write(kind) {
         return Err("this build does not count approvals yet: nothing was recorded".into());
     }
-    let canon = folder
-        .canonicalize()
-        .map_err(|error| format!("{}: {error}", folder.display()))?;
-    let seen = look(&canon)?;
-    if let Some(link) = &seen.link {
-        return Err(format!(
-            "the plugin holds a link at {link}: it is not approved"
-        ));
-    }
-    let plugin = parse(&canon).ok_or("the folder holds no plugin that can be read")?;
-    let now = plugins::runs(&plugin).digest();
-    if seen.hash != hash || now != runs {
+    let (canon, now_hash, now_runs, plugin) = content(folder)?;
+    if now_hash != hash || now_runs != runs {
         return Err(
             "the plugin changed since the approval was asked for: nothing was recorded".into(),
         );
@@ -465,6 +478,23 @@ pub(crate) fn record_approval(
         kind,
     });
     add_record_at(paths, key, record)
+}
+
+/// The plugin folder `folder`, canonical, with its content hash and run-summary digest as they
+/// are now, and the plugin it holds. A folder that is or holds a link has no hash to approve.
+pub(crate) fn content(folder: &Path) -> Result<(PathBuf, String, String, plugins::Plugin), String> {
+    let canon = folder
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", folder.display()))?;
+    let seen = look(&canon)?;
+    if let Some(link) = &seen.link {
+        return Err(format!(
+            "the plugin holds a link at {link}: it is not approved"
+        ));
+    }
+    let plugin = parse(&canon).ok_or("the folder holds no plugin that can be read")?;
+    let runs = plugins::runs(&plugin).digest();
+    Ok((canon, seen.hash, runs, plugin))
 }
 
 /// Removes the record stored under `key` and returns it. A missing store holds none; an
@@ -864,7 +894,7 @@ mod tests {
     }
 
     fn withheld(home: &Home) -> Vec<String> {
-        reasons(home, &DebugVerifier)
+        reasons(home, &TestVerifier)
             .into_iter()
             .map(|(name, _)| name)
             .collect()
@@ -878,7 +908,7 @@ mod tests {
         assert!(
             withheld(&home).is_empty(),
             "{:?}",
-            reasons(&home, &DebugVerifier)
+            reasons(&home, &TestVerifier)
         );
         // One Imperium placed must sit in a folder of the plugin's name.
         let placed = plugin(&home, "wrong-folder", "right-name", true);
@@ -904,7 +934,7 @@ mod tests {
             let root = plugin(&home, folder, folder, false);
             record(&home, &root, origin, None);
         }
-        let downloaded = gate(&home.paths, &DebugVerifier).downloaded;
+        let downloaded = gate(&home.paths, &TestVerifier).downloaded;
         for (folder, _, expected) in kinds {
             let listed = downloaded
                 .iter()
@@ -999,12 +1029,12 @@ mod tests {
         let moved = plugin(&home, "before", "before", true);
         record(&home, &moved, Origin::User, Some(ApprovalKind::Counted));
         assert!(withheld(&home).contains(&"copied".to_string()));
-        let reasons = reasons(&home, &DebugVerifier);
+        let reasons = reasons(&home, &TestVerifier);
         assert!(reasons.iter().any(|(name, reason)| name == "copied"
             && reason == "not installed by Imperium: approve to load"));
         assert!(!reasons.iter().any(|(name, _)| name == "skills"));
         std::fs::rename(&moved, plugins_dir(&home.paths).join("after")).unwrap();
-        let reasons = self::reasons(&home, &DebugVerifier);
+        let reasons = self::reasons(&home, &TestVerifier);
         assert!(reasons.iter().any(|(name, _)| name == "after"));
     }
 
@@ -1016,12 +1046,12 @@ mod tests {
         record(&home, &root, Origin::Agent, Some(ApprovalKind::Counted));
         for text in ["{}", "not json", r#"{"session_id": null}"#] {
             write(&root.join(plugins::SOURCE_FILE), text);
-            let gate = gate(&home.paths, &DebugVerifier);
+            let gate = gate(&home.paths, &TestVerifier);
             assert!(gate.withheld.is_empty(), "{text}: {:?}", gate.withheld);
             assert_eq!(gate.downloaded.len(), 1, "{text}");
         }
         std::fs::remove_file(root.join(plugins::SOURCE_FILE)).unwrap();
-        assert_eq!(gate(&home.paths, &DebugVerifier).downloaded.len(), 1);
+        assert_eq!(gate(&home.paths, &TestVerifier).downloaded.len(), 1);
     }
 
     #[test]
@@ -1034,7 +1064,7 @@ mod tests {
             &root.join(".claude-plugin/plugin.json"),
             r#"{"name": "other"}"#,
         );
-        let reasons = reasons(&home, &DebugVerifier);
+        let reasons = reasons(&home, &TestVerifier);
         assert!(reasons[0].1.contains("differ"), "{reasons:?}");
 
         // A downloaded plugin's folder renamed and its record moved with it (a rewritten store):
@@ -1065,7 +1095,7 @@ mod tests {
         record(&home, &root, Origin::User, Some(ApprovalKind::Counted));
         let outside = tempfile::tempdir().unwrap();
         assert!(make_link(outside.path(), &root.join("skills/out")));
-        let reasons = reasons(&home, &DebugVerifier);
+        let reasons = reasons(&home, &TestVerifier);
         assert!(reasons[0].1.contains("symbolic link"), "{reasons:?}");
         // A skills-only folder with a link is withheld too.
         let skills = plugin(&home, "skillful", "skillful", false);
@@ -1110,7 +1140,7 @@ mod tests {
         let entry = store.plugins.get_mut(&canon_key(&root)).unwrap();
         entry.hash = look(&canon).unwrap().hash;
         write_json(&store_path(&home.paths), &store).unwrap();
-        let reasons = reasons(&home, &DebugVerifier);
+        let reasons = reasons(&home, &TestVerifier);
         assert!(reasons[0].1.contains("what it runs changed"), "{reasons:?}");
     }
 
@@ -1202,7 +1232,7 @@ mod tests {
         let home = home();
         let good = plugin(&home, "good", "good", false);
         plugin(&home, "bad", "bad", true);
-        let gate = gate(&home.paths, &DebugVerifier);
+        let gate = gate(&home.paths, &TestVerifier);
         assert_eq!(gate.allowed, [good]);
         assert_eq!(gate.withheld.len(), 1);
     }
