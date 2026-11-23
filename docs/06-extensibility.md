@@ -287,11 +287,20 @@ itself (`crates/imperium-core/src/app_identity/`), never from what the caller se
   `OpenProcess`) and its handle is held for the connection; at the challenge and again at approve
   the process must not have exited and must have been created no later than the accept, so a
   reused process id never stands in for it;
+- on macOS, the peer is the audit token the socket reports at accept (`LOCAL_PEERTOKEN`), which
+  names one process including its pid version: its code object is looked up by the token
+  (`SecCodeCopyGuestWithAttributes`, which fails once that process has gone), the executable and
+  environment are read by pid and the token looked up again afterwards, so what was read was that
+  process's own; `sandbox_check_by_audit_token` must say it is not sandboxed and its signature
+  must not carry the App Sandbox entitlement;
 - its executable is the `imperium-desktop` beside the running `imperium-core` (on Windows read
-  through the held handle), and on Linux its mount and pid namespaces are the daemon's (an
+  through the held handle; on macOS the code object's path, the executable or its bundle, and
+  the executable read by pid), and on Linux its mount and pid namespaces are the daemon's (an
   OS-tier sandbox has its own);
-- on Linux, its environment sets no `WEBVIEW2_*`, `DYLD_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH` or
-  `LD_AUDIT`. On Windows the daemon does not read the peer's environment (that would mean
+- on Linux and macOS, its environment sets no `WEBVIEW2_*`, `DYLD_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH` or
+  `LD_AUDIT`. `dyld` strips `DYLD_*` variables from a restricted (hardened or setuid) process at
+  start, so for such a process macOS shows none and the hardened runtime's library validation is
+  what holds instead. On Windows the daemon does not read the peer's environment (that would mean
   reading another process's memory): it checks the path, the creation time and the rule below,
   and the desktop app itself checks its own environment for `WEBVIEW2_*` and similar overrides
   at start and refuses the approval flow if any is set (stage 8b);
@@ -306,8 +315,7 @@ These guard against mistakes and confined callers, not against unconfined code r
 user. The identity belongs to the process that connected, not to each message sent on the
 connection. **No approval counts yet**: a release daemon refuses every approval with "presence check
 not built" until the OS presence check lands, and a debug daemon records `dev` approvals (which
-release daemons ignore) for the debug app built beside it. macOS refuses every approval until
-its identification is built. The desktop app does not call these methods yet.
+release daemons ignore) for the debug app built beside it. The desktop app does not call these methods yet.
 
 **Repository suggestions (protocol 0.55; not a paired phone).** A project folder in
 `mcp.trusted_projects` may list, in its `.imperium/config.toml` (or `config.local.toml`),

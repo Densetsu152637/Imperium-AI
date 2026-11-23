@@ -9,11 +9,15 @@
 
 #![warn(unreachable_pub)]
 
+#[cfg(target_os = "macos")]
+mod macos_sandbox;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(target_os = "macos")]
+pub use macos_sandbox::is_sandboxed;
 #[cfg(unix)]
 pub use unix::{Listener, Stream, connect, peer_pid};
 #[cfg(windows)]
