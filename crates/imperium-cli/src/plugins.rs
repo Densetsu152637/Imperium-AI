@@ -18,8 +18,9 @@ use imperium_protocol::methods::{
     PluginsListResult, PluginsMarketplaceAdd, PluginsMarketplaceAddParams, PluginsMarketplaceList,
     PluginsMarketplaceListParams, PluginsMarketplaceRefresh, PluginsMarketplaceRefreshParams,
     PluginsMarketplaceRemove, PluginsMarketplaceRemoveParams, PluginsSetEnabled,
-    PluginsSetEnabledParams, PluginsSetSecret, PluginsSetSecretParams, PluginsUninstall,
-    PluginsUninstallParams, PluginsUpdate, PluginsUpdateParams,
+    PluginsSetEnabledParams, PluginsSetSecret, PluginsSetSecretParams, PluginsSuggestions,
+    PluginsSuggestionsParams, PluginsSuggestionsResult, PluginsUninstall, PluginsUninstallParams,
+    PluginsUpdate, PluginsUpdateParams,
 };
 
 use crate::{block_on, connect};
@@ -110,6 +111,14 @@ pub(crate) enum PluginCommand {
         #[arg(long = "env")]
         environment: Option<String>,
     },
+    /// Show what a trusted project's own `.imperium/config.toml` offers: marketplaces and
+    /// plugins it suggests. An offer adds, fetches, installs and enables nothing. The commands
+    /// that would act on an offer are printed only when the output is a terminal.
+    Suggestions {
+        /// The environment (its id or name).
+        #[arg(long = "env")]
+        environment: String,
+    },
     /// Secrets a plugin's servers need (`${VAR}` in their environment or headers).
     Secret {
         #[command(subcommand)]
@@ -161,6 +170,8 @@ pub(crate) enum PluginSecretCommand {
 pub(crate) trait Prompter {
     /// Whether a person can answer here.
     fn interactive(&self) -> bool;
+    /// Whether standard output is a terminal (a person reading it, not a pipe or a file).
+    fn output_is_terminal(&self) -> bool;
     /// Asks `question [y/N]`; true for a yes.
     fn confirm(&mut self, question: &str) -> anyhow::Result<bool>;
     /// Reads a secret value without echoing it: from a prompt at a terminal, else from
@@ -173,6 +184,10 @@ struct Terminal;
 impl Prompter for Terminal {
     fn interactive(&self) -> bool {
         std::io::stdin().is_terminal()
+    }
+
+    fn output_is_terminal(&self) -> bool {
+        std::io::stdout().is_terminal()
     }
 
     fn confirm(&mut self, question: &str) -> anyhow::Result<bool> {
@@ -255,6 +270,17 @@ async fn dispatch(
                 .call::<PluginsList>(PluginsListParams { environment })
                 .await?;
             write!(out, "{}", render_list(&listing))?;
+            Ok(())
+        }
+        PluginCommand::Suggestions { environment } => {
+            let offers = client
+                .call::<PluginsSuggestions>(PluginsSuggestionsParams { environment })
+                .await?;
+            write!(
+                out,
+                "{}",
+                render_suggestions(&offers, prompter.output_is_terminal())
+            )?;
             Ok(())
         }
         PluginCommand::Secret { command } => match command {
@@ -689,6 +715,117 @@ async fn set_secret(
     Ok(())
 }
 
+/// Text from a repository, made safe to print: control characters (escape sequences that could
+/// rewrite a terminal, carriage returns, line breaks) and characters that reorder text are shown
+/// as `\u{..}` instead of being sent to the terminal.
+fn printable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let hidden = c.is_control()
+            || matches!(
+                c,
+                '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            );
+        if hidden {
+            out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A word for a shell, in single quotes unless it is plain, after [`printable`].
+fn shell_word(text: &str) -> String {
+    let text = printable(text);
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | '@' | ':'));
+    if plain {
+        text
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+/// The offers of a project's file, as text. Everything the repository wrote is printed through
+/// [`printable`]; the commands that would act on an offer are added only for a terminal, where
+/// a person reads them (they are never run here).
+fn render_suggestions(offers: &PluginsSuggestionsResult, commands: bool) -> String {
+    let mut text = String::new();
+    let Some(folder) = &offers.source_folder else {
+        text.push_str("This environment has no project folder, so nothing is offered.\n");
+        return text;
+    };
+    let folder = printable(folder);
+    if !offers.trusted {
+        text.push_str(&format!(
+            "{folder} is not in mcp.trusted_projects, so its suggestions are not offered. Add it to mcp.trusted_projects in your own config to see them.\n"
+        ));
+        return text;
+    }
+    if offers.muted {
+        text.push_str(&format!("Suggestions from {folder} are muted.\n"));
+        return text;
+    }
+    if offers.marketplaces.is_empty() && offers.plugins.is_empty() {
+        text.push_str(&format!("{folder} offers nothing.\n"));
+        return text;
+    }
+    text.push_str(&format!(
+        "Offered by {folder} (the repository's own words; nothing is added or installed by an offer):\n"
+    ));
+    for offer in &offers.marketplaces {
+        let revision = offer
+            .revision
+            .as_deref()
+            .map(|revision| format!(" at {}", printable(revision)))
+            .unwrap_or_default();
+        let state = if offer.added { " [already added]" } else { "" };
+        text.push_str(&format!(
+            "  marketplace {}{revision}{state} (from {})\n",
+            printable(&offer.source),
+            printable(&offer.file)
+        ));
+        if commands && !offer.added {
+            let flag = offer
+                .revision
+                .as_deref()
+                .map(|revision| format!(" --revision {}", shell_word(revision)))
+                .unwrap_or_default();
+            text.push_str(&format!(
+                "    imperium plugin marketplace add {}{flag}\n",
+                shell_word(&offer.source)
+            ));
+        }
+    }
+    for offer in &offers.plugins {
+        let mut state = String::new();
+        if offer.installed {
+            state.push_str(" [already installed]");
+        }
+        if !offer.marketplace_added {
+            state.push_str(" [its marketplace is not added]");
+        }
+        text.push_str(&format!(
+            "  plugin {}{state} (from {})\n",
+            printable(&offer.id),
+            printable(&offer.file)
+        ));
+        if commands && !offer.installed && offer.marketplace_added {
+            text.push_str(&format!(
+                "    imperium plugin install {}\n",
+                shell_word(&offer.id)
+            ));
+        }
+    }
+    if !commands {
+        text.push_str("Run this in a terminal to see the commands that would act on an offer.\n");
+    }
+    text
+}
+
 fn short(commit: &str) -> String {
     commit.chars().take(12).collect()
 }
@@ -934,6 +1071,7 @@ mod tests {
     /// secret value.
     struct Scripted {
         terminal: bool,
+        output: bool,
         answer: bool,
         asked: Vec<String>,
     }
@@ -942,6 +1080,7 @@ mod tests {
         fn script() -> Self {
             Self {
                 terminal: false,
+                output: false,
                 answer: false,
                 asked: Vec::new(),
             }
@@ -950,6 +1089,7 @@ mod tests {
         fn terminal(answer: bool) -> Self {
             Self {
                 terminal: true,
+                output: true,
                 answer,
                 asked: Vec::new(),
             }
@@ -959,6 +1099,10 @@ mod tests {
     impl Prompter for Scripted {
         fn interactive(&self) -> bool {
             self.terminal
+        }
+
+        fn output_is_terminal(&self) -> bool {
+            self.output
         }
 
         fn confirm(&mut self, question: &str) -> anyhow::Result<bool> {
@@ -1340,6 +1484,76 @@ mod tests {
             Some(hash)
         )))));
         assert!(!nothing_to_trust(&preview_with(None)));
+    }
+
+    fn offers() -> PluginsSuggestionsResult {
+        use imperium_protocol::methods::{SuggestedMarketplace, SuggestedPlugin};
+        PluginsSuggestionsResult {
+            source_folder: Some("/work/app".into()),
+            trusted: true,
+            muted: false,
+            marketplaces: vec![SuggestedMarketplace {
+                key: "marketplace:acme/plugins".into(),
+                source: "acme/plugins; rm -rf ~ \u{1b}[2J\r".into(),
+                revision: Some("v1".into()),
+                file: "/work/app/.imperium/config.toml".into(),
+                added: false,
+            }],
+            plugins: vec![SuggestedPlugin {
+                key: "plugin:lint@acme".into(),
+                id: "lint@acme".into(),
+                file: "/work/app/.imperium/config.toml".into(),
+                marketplace_added: true,
+                installed: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn the_commands_are_printed_only_for_a_terminal_and_repository_text_is_escaped() {
+        let piped = render_suggestions(&offers(), false);
+        assert!(!piped.contains("imperium plugin"), "{piped}");
+        assert!(piped.contains("lint@acme"), "{piped}");
+        let shown = render_suggestions(&offers(), true);
+        assert!(
+            shown.contains("imperium plugin install lint@acme"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("imperium plugin marketplace add '"),
+            "{shown}"
+        );
+        for text in [&piped, &shown] {
+            assert!(!text.contains('\u{1b}') && !text.contains('\r'), "{text:?}");
+            assert!(text.contains("\\u{1b}"), "{text}");
+        }
+        // The hostile text is one quoted word, not several commands.
+        assert!(
+            shown.contains("'acme/plugins; rm -rf ~ \\u{1b}[2J\\u{d}'"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn nothing_is_offered_from_an_untrusted_or_muted_project() {
+        let mut result = offers();
+        result.trusted = false;
+        let text = render_suggestions(&result, true);
+        assert!(
+            text.contains("mcp.trusted_projects") && !text.contains("acme"),
+            "{text}"
+        );
+        result.trusted = true;
+        result.muted = true;
+        let text = render_suggestions(&result, true);
+        assert!(text.contains("muted") && !text.contains("acme"), "{text}");
+    }
+
+    #[test]
+    fn bidirectional_overrides_are_escaped_too() {
+        assert_eq!(printable("a\u{202e}b"), "a\\u{202e}b");
+        assert_eq!(printable("tab\there"), "tab\\u{9}here");
+        assert_eq!(printable("plain text é"), "plain text é");
     }
 
     #[test]

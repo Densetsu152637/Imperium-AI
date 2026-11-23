@@ -266,6 +266,28 @@ folder gets an `origin = user` record. It writes only if the `ApprovalVerifier` 
 the release verifier writes nothing and a debug one only `dev` until stage 8c, so no approval
 counts yet. `plugins.approve` is stage 8a.
 
+**Repository suggestions (protocol 0.55; not a paired phone).** A project folder in
+`mcp.trusted_projects` may list, in its `.imperium/config.toml` (or `config.local.toml`),
+`[plugins] suggest_marketplaces = [{ source, revision? }]` and `suggest_plugins =
+["name@marketplace", ...]`: at most 20 of each, and one bad entry (not plain short text, no control
+characters, or an id that is not `name@marketplace`) drops only itself, with a note that holds none
+of its text. The environment layer accepts no other `[plugins]` key. From a folder that is not
+trusted the offers are refused, with a fixed line in `environments.config` (`refused`) and
+nothing offered. `plugins.suggestions {environment}` returns the offers of the environment's
+first folder with the file each came from, whether a marketplace of that source (or, for a
+plugin, of that name) is already added and whether the plugin is installed. It reads the file on
+every call. `plugins.dismiss_suggestion {environment, key}` dismisses one offer (the `key` the
+listing gave) and `{environment, source_folder}` mutes the whole project ("no suggestions from
+this project"); both are kept in the environment record (`dismissed_suggestions`,
+`muted_suggestion_sources`), a muted project is matched by its **canonical folder path**, and so it
+offers nothing even after its file changes. Only the environment's own project folder can be
+muted. **An offer adds, fetches, installs and enables nothing**; the text is the repository's, so
+it goes only to the protocol result and the CLI's output, never into a model prompt, a session
+notice or a tool result. `imperium plugin suggestions --env <env>` prints the offers (repository
+text with control characters and text-reordering characters shown as `\u{..}`) and, **only when
+standard output is a terminal**, the commands that would act on each offer, with the
+repository's words quoted for a shell; nothing is run.
+
 **Command line (no protocol change).** `imperium plugin` calls the methods above:
 `marketplace add|list|refresh|remove`, `browse [query] [--marketplace m]`, `inspect <name@mp>`,
 `install <name@mp> [--env e] [--sha256 h] [--yes]`, `update <name> [--sha256 h] [--yes]`,

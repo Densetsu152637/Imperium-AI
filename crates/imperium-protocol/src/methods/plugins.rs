@@ -606,3 +606,99 @@ pub struct PluginsSecretResult {
     // For a delete: whether there was one.
     pub changed: bool,
 }
+
+// ---- Repository suggestions ----
+
+/// `plugins.suggestions`: the marketplaces and plugins a trusted project's own
+/// `.imperium/config.toml` offers (`[plugins] suggest_marketplaces`, `suggest_plugins`). The text
+/// of an offer is **repository data**: show it to the user as text, never run it, and never give
+/// it to a model. An offer adds, fetches, installs and enables nothing.
+#[derive(Debug)]
+pub struct PluginsSuggestions;
+
+impl Method for PluginsSuggestions {
+    const NAME: &'static str = "plugins.suggestions";
+    type Params = PluginsSuggestionsParams;
+    type Result = PluginsSuggestionsResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsSuggestionsParams {
+    // An environment (id or name).
+    pub environment: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsSuggestionsResult {
+    // The environment's project folder the offers come from, canonical; none when it has none.
+    pub source_folder: Option<String>,
+    // The folder is in `mcp.trusted_projects`. Offers of an untrusted folder are refused (see
+    // `environments.config`) and none are listed.
+    pub trusted: bool,
+    // The user muted this folder ("no suggestions from this project"): nothing is offered.
+    pub muted: bool,
+    pub marketplaces: Vec<SuggestedMarketplace>,
+    pub plugins: Vec<SuggestedPlugin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SuggestedMarketplace {
+    // What `plugins.dismiss_suggestion` takes.
+    pub key: String,
+    // A git URL, `owner/repo` or a folder, as the repository wrote it (untrusted text).
+    pub source: String,
+    pub revision: Option<String>,
+    // The file the offer is from.
+    pub file: String,
+    // A marketplace with this source is already added.
+    pub added: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SuggestedPlugin {
+    // What `plugins.dismiss_suggestion` takes.
+    pub key: String,
+    // `name@marketplace`, as the repository wrote it (untrusted text).
+    pub id: String,
+    pub file: String,
+    // The marketplace the id names is already added.
+    pub marketplace_added: bool,
+    // A plugin with this id is already installed.
+    pub installed: bool,
+}
+
+/// `plugins.dismiss_suggestion`: dismisses one offer (`key`), or, with `source_folder` (the
+/// canonical folder `plugins.suggestions` gave), mutes every suggestion from that project. Give
+/// exactly one of the two. Neither adds, fetches, installs or enables anything.
+#[derive(Debug)]
+pub struct PluginsDismissSuggestion;
+
+impl Method for PluginsDismissSuggestion {
+    const NAME: &'static str = "plugins.dismiss_suggestion";
+    type Params = PluginsDismissSuggestionParams;
+    type Result = PluginsDismissSuggestionResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsDismissSuggestionParams {
+    pub environment: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source_folder: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsDismissSuggestionResult {
+    // The offer was dismissed, or the project muted.
+    pub dismissed: bool,
+    pub muted: bool,
+}

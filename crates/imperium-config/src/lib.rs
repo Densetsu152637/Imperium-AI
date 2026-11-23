@@ -31,7 +31,10 @@ pub use budgets::{
     WeekStart, save_budgets,
 };
 pub use endpoints::{save_endpoint, valid_endpoint_id};
-pub use environment::{ENVIRONMENT_CONFIG_FILES, EnvironmentConfig, EnvironmentSettings};
+pub use environment::{
+    ENVIRONMENT_CONFIG_FILES, EnvironmentConfig, EnvironmentSettings, RepoSuggestions,
+    SuggestedMarketplace, SuggestedPlugin,
+};
 pub use layers::{
     Config, ConfigError, Explained, Layer, Source, load, load_layers, replace_app_layer,
 };

@@ -40,6 +40,7 @@ mod pets;
 mod phone;
 mod plugin_install;
 mod plugin_records;
+mod plugin_suggestions;
 mod project_agent;
 pub mod residency;
 mod resources;

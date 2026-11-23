@@ -13,6 +13,7 @@
 //! | `[isolation]` | a stricter `tier`; `network = false` | a looser tier or network, the container image |
 //! | `[extensions]` | disable plugins; `plugin_dirs` once the folder is trusted | `eager`, `lazy` |
 //! | `[mcp.servers.<name>]` | add servers once the folder is trusted | without trust; `allow`, `secret_env`, `bearer_token`; `trusted_projects` |
+//! | `[plugins]` | `suggest_marketplaces` and `suggest_plugins`: offers shown to the user once the folder is trusted (they add, fetch, install and enable nothing) | without trust; every other key |
 //! | `[routing]` | `prefer = "local"`; rules that use only local models | cloud and tier rules |
 //! | `[budgets]` | `limits` for this environment (always scoped to it) | other scopes and tables |
 //!
@@ -72,6 +73,62 @@ fn read_repository_file(folder: &Path, file: &Path) -> Result<Option<String>, St
     Ok(Some(text))
 }
 
+/// At most this many offers of each kind are read.
+const MAX_SUGGESTIONS: usize = 20;
+/// The longest source or revision read from an offer.
+const MAX_SUGGESTION_CHARS: usize = 512;
+
+/// A marketplace a trusted project's file offers. The text is the repository's: it is shown to
+/// the user and never run, fetched or given to a model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuggestedMarketplace {
+    pub source: String,
+    pub revision: Option<String>,
+    /// The file the offer is from.
+    pub file: PathBuf,
+}
+
+/// A plugin (`name@marketplace`) a trusted project's file offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuggestedPlugin {
+    pub id: String,
+    /// The file the offer is from.
+    pub file: PathBuf,
+}
+
+/// The offers of a trusted folder's `[plugins]` section. Nothing here is applied: it only feeds
+/// `plugins.suggestions`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoSuggestions {
+    pub marketplaces: Vec<SuggestedMarketplace>,
+    pub plugins: Vec<SuggestedPlugin>,
+}
+
+/// Short plain text from an offer: trimmed, not empty, no control characters.
+fn suggestion_text(value: &Value) -> Option<String> {
+    let text = value.as_str()?.trim();
+    (!text.is_empty()
+        && text.chars().count() <= MAX_SUGGESTION_CHARS
+        && !text.chars().any(char::is_control))
+    .then(|| text.to_string())
+}
+
+/// `name@marketplace`, with the plain characters names are made of.
+fn suggested_plugin_id(text: &str) -> Option<String> {
+    let text = text.trim();
+    let (name, marketplace) = text.split_once('@')?;
+    let plain = |part: &str| {
+        !part.is_empty()
+            && part.chars().count() <= 128
+            && !part.starts_with('.')
+            && !part.ends_with('.')
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    (plain(name) && plain(marketplace)).then(|| text.to_string())
+}
+
 /// What an environment's configuration files say, before they are checked against the user's
 /// own settings ([`EnvironmentConfig::apply`]).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -87,6 +144,8 @@ pub struct EnvironmentConfig {
     isolation_network: Option<bool>,
     disabled_plugins: Vec<String>,
     plugin_dirs: Vec<PathBuf>,
+    suggested_marketplaces: Vec<SuggestedMarketplace>,
+    suggested_plugins: Vec<SuggestedPlugin>,
     mcp_servers: BTreeMap<String, McpServerSettings>,
     routing_prefer: Option<String>,
     routing_rules: Vec<RoutingRule>,
@@ -115,6 +174,9 @@ pub struct EnvironmentSettings {
     /// Every plugin a trusted folder's file disables, including one the user's own list already
     /// holds (the merged list cannot tell which file disabled it).
     pub repo_disabled_plugins: Vec<String>,
+    /// The marketplaces and plugins a trusted folder's file offers to the user. Empty for an
+    /// untrusted folder. Offers only: nothing is added, fetched, installed or enabled.
+    pub suggestions: RepoSuggestions,
 }
 
 impl EnvironmentSettings {
@@ -129,6 +191,7 @@ impl EnvironmentSettings {
             applied: Vec::new(),
             refused: Vec::new(),
             repo_disabled_plugins: Vec::new(),
+            suggestions: RepoSuggestions::default(),
         }
     }
 }
@@ -153,7 +216,8 @@ impl EnvironmentConfig {
                 Ok(None) => {}
                 // Only the parser's message is shown, never a line of the file: it is not ours.
                 Ok(Some(text)) => match text.parse::<Table>() {
-                    Ok(table) => {
+                    Ok(mut table) => {
+                        config.take_suggestions(&file, &mut table);
                         config.files.push(file);
                         merge_tables(&mut merged, table);
                     }
@@ -189,6 +253,7 @@ impl EnvironmentConfig {
         self.apply_policy(base, &mut out);
         self.apply_isolation(base, &mut out);
         self.apply_extensions(trusted, &mut out);
+        self.apply_suggestions(trusted, &mut out);
         self.apply_mcp(base, trusted, &mut out);
         self.apply_routing(base, &mut out);
         self.apply_budgets(&mut out);
@@ -298,6 +363,31 @@ impl EnvironmentConfig {
                     .push(format!("extensions.plugin_dirs: {}", dir.display()));
             }
         }
+    }
+
+    fn apply_suggestions(&self, trusted: bool, out: &mut EnvironmentSettings) {
+        if self.suggested_marketplaces.is_empty() && self.suggested_plugins.is_empty() {
+            return;
+        }
+        // No repository text goes into these lines: they can reach a session's notices.
+        if !trusted {
+            out.refused.push(format!(
+                "plugins.suggest_marketplaces and plugins.suggest_plugins were not offered; only \
+                 a folder in mcp.trusted_projects can suggest plugins, so add {} to it in your \
+                 own config to see them",
+                self.folder.display()
+            ));
+            return;
+        }
+        out.suggestions = RepoSuggestions {
+            marketplaces: self.suggested_marketplaces.clone(),
+            plugins: self.suggested_plugins.clone(),
+        };
+        out.applied.push(format!(
+            "plugins: {} marketplaces and {} plugins offered (offers add and install nothing)",
+            self.suggested_marketplaces.len(),
+            self.suggested_plugins.len()
+        ));
     }
 
     fn apply_mcp(&self, base: &Settings, trusted: bool, out: &mut EnvironmentSettings) {
@@ -427,6 +517,97 @@ impl EnvironmentConfig {
                 _ => "is not an environment setting",
             };
             self.refuse(format!("{key}: {why}"));
+        }
+    }
+
+    /// Takes `suggest_marketplaces` and `suggest_plugins` out of the file's `[plugins]` section,
+    /// so the file they came from is known. One bad entry drops only itself, with a note that
+    /// holds none of the entry's text.
+    fn take_suggestions(&mut self, file: &Path, table: &mut Table) {
+        let Some(Value::Table(plugins)) = table.get_mut("plugins") else {
+            return;
+        };
+        let marketplaces = plugins.remove("suggest_marketplaces");
+        let names = plugins.remove("suggest_plugins");
+        let empty = plugins.is_empty();
+        if empty {
+            table.remove("plugins");
+        }
+        if let Some(value) = marketplaces {
+            self.read_suggested_marketplaces(file, value);
+        }
+        if let Some(value) = names {
+            self.read_suggested_plugins(file, value);
+        }
+    }
+
+    fn read_suggested_marketplaces(&mut self, file: &Path, value: Value) {
+        let Value::Array(entries) = value else {
+            self.refuse("plugins.suggest_marketplaces: expected a list");
+            return;
+        };
+        for (index, entry) in entries.iter().enumerate() {
+            if self.suggested_marketplaces.len() >= MAX_SUGGESTIONS {
+                self.refuse(format!(
+                    "plugins.suggest_marketplaces: only the first {MAX_SUGGESTIONS} are read"
+                ));
+                break;
+            }
+            let parsed = entry.as_table().and_then(|table| {
+                let source = suggestion_text(table.get("source")?)?;
+                let revision = match table.get("revision") {
+                    None => None,
+                    Some(revision) => Some(suggestion_text(revision)?),
+                };
+                Some((source, revision))
+            });
+            let Some((source, revision)) = parsed else {
+                self.refuse(format!(
+                    "plugins.suggest_marketplaces: entry {} was dropped (it needs a `source`, \
+                     and a `revision` if any, as short plain text)",
+                    index + 1
+                ));
+                continue;
+            };
+            let seen = self
+                .suggested_marketplaces
+                .iter()
+                .any(|known| known.source == source && known.revision == revision);
+            if !seen {
+                self.suggested_marketplaces.push(SuggestedMarketplace {
+                    source,
+                    revision,
+                    file: file.to_path_buf(),
+                });
+            }
+        }
+    }
+
+    fn read_suggested_plugins(&mut self, file: &Path, value: Value) {
+        let Value::Array(entries) = value else {
+            self.refuse("plugins.suggest_plugins: expected a list");
+            return;
+        };
+        for (index, entry) in entries.iter().enumerate() {
+            if self.suggested_plugins.len() >= MAX_SUGGESTIONS {
+                self.refuse(format!(
+                    "plugins.suggest_plugins: only the first {MAX_SUGGESTIONS} are read"
+                ));
+                break;
+            }
+            let Some(id) = entry.as_str().and_then(suggested_plugin_id) else {
+                self.refuse(format!(
+                    "plugins.suggest_plugins: entry {} was dropped (it must read name@marketplace)",
+                    index + 1
+                ));
+                continue;
+            };
+            if !self.suggested_plugins.iter().any(|known| known.id == id) {
+                self.suggested_plugins.push(SuggestedPlugin {
+                    id,
+                    file: file.to_path_buf(),
+                });
+            }
         }
     }
 
@@ -1046,6 +1227,102 @@ command = "ok"
         std::os::unix::fs::symlink("/dev/zero", device.path().join(".imperium/config.toml"))
             .unwrap();
         assert!(applied(&device, "").files.is_empty());
+    }
+
+    fn suggestion_settings(config: &str, trusted: bool) -> (EnvironmentSettings, PathBuf) {
+        let dir = project(&[("config.toml", config)]);
+        let user = if trusted {
+            format!(
+                "[mcp]
+trusted_projects = [\"{}\"]",
+                quoted(&dir)
+            )
+        } else {
+            String::new()
+        };
+        let out = applied(&dir, &user);
+        // Keep the folder: the offers name files inside it.
+        (out, dir.keep())
+    }
+
+    #[test]
+    fn suggestions_are_offered_from_a_trusted_folder_only_and_change_nothing() {
+        let file = "[plugins]\nsuggest_marketplaces = [{ source = \"acme/plugins\", revision = \"v1\" }]\nsuggest_plugins = [\"lint@acme\"]";
+        let (trusted, dir) = suggestion_settings(file, true);
+        assert_eq!(trusted.suggestions.marketplaces.len(), 1);
+        assert_eq!(trusted.suggestions.marketplaces[0].source, "acme/plugins");
+        assert_eq!(
+            trusted.suggestions.marketplaces[0].revision.as_deref(),
+            Some("v1")
+        );
+        assert_eq!(trusted.suggestions.plugins[0].id, "lint@acme");
+        assert_eq!(
+            trusted.suggestions.plugins[0].file,
+            dir.join(".imperium/config.toml")
+        );
+        // Offers change no setting.
+        assert_eq!(trusted.settings.plugins, base("").plugins);
+        assert!(trusted.settings.extensions.disabled_plugins.is_empty());
+        assert!(trusted.refused.is_empty(), "{:?}", trusted.refused);
+
+        let (untrusted, _) = suggestion_settings(file, false);
+        assert!(untrusted.suggestions.marketplaces.is_empty());
+        assert!(untrusted.suggestions.plugins.is_empty());
+        let note = untrusted.refused.join("; ");
+        assert!(note.contains("mcp.trusted_projects"), "{note}");
+        // Nothing the repository wrote is in the note.
+        assert!(!note.contains("acme"), "{note}");
+    }
+
+    #[test]
+    fn one_bad_suggestion_drops_only_itself_and_at_most_twenty_are_read() {
+        let mut file = String::from(
+            "[plugins]\nsuggest_plugins = [\"ok@mk\", \"nope\", 5, \"bad name@mk\", \"two@mk\"]\nsuggest_marketplaces = [{ source = \"a\" }, { revision = \"x\" }, { source = \"has\\nnewline\" }, \"text\", { source = \"b\" }]\n",
+        );
+        let (settings, _) = suggestion_settings(&file, true);
+        let ids: Vec<_> = settings
+            .suggestions
+            .plugins
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(ids, ["ok@mk", "two@mk"]);
+        let sources: Vec<_> = settings
+            .suggestions
+            .marketplaces
+            .iter()
+            .map(|m| m.source.as_str())
+            .collect();
+        assert_eq!(sources, ["a", "b"]);
+        let notes = settings.refused.join("; ");
+        assert!(notes.contains("entry 2 was dropped"), "{notes}");
+        assert!(!notes.contains("bad name"), "{notes}");
+
+        file = String::from("[plugins]\nsuggest_plugins = [");
+        for n in 0..25 {
+            file.push_str(&format!("\"p{n}@mk\","));
+        }
+        file.push_str("]\n");
+        let (many, _) = suggestion_settings(&file, true);
+        assert_eq!(many.suggestions.plugins.len(), 20);
+        assert!(many.refused.join(";").contains("only the first 20"));
+    }
+
+    #[test]
+    fn other_plugins_keys_are_still_refused() {
+        let (settings, _) = suggestion_settings(
+            "[plugins]\nsuggest_plugins = [\"a@b\"]\n[plugins.marketplaces.x]\nsource = \"y\"",
+            true,
+        );
+        assert_eq!(settings.suggestions.plugins.len(), 1);
+        assert!(
+            settings
+                .refused
+                .iter()
+                .any(|line| line.starts_with("plugins:")),
+            "{:?}",
+            settings.refused
+        );
     }
 
     #[test]

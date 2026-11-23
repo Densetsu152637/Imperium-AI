@@ -1106,9 +1106,35 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   absent.
 - Risks: suggestion text is repository data; it goes only to the user's surfaces, never into a
   prompt.
-- Status: pending
-- Outcome:
-- Handoff notes: none yet.
+- Status: in review
+- Outcome: protocol 0.55: `plugins.suggestions` and `plugins.dismiss_suggestion`
+  (`crates/imperium-core/src/plugin_suggestions.rs`, `environments.rs`, `rpc/config.rs`,
+  `imperium-config/src/environment.rs`, generated types, snapshot, docs 02, 06 and 14).
+  `EnvironmentConfig` takes `suggest_marketplaces` and `suggest_plugins` out of each file's
+  `[plugins]` section while reading it (so each offer knows its file), validates each entry on its
+  own (short plain text; `name@marketplace` of plain characters; at most 20 of each kind in all),
+  and `apply` keeps them in `EnvironmentSettings.suggestions` for a trusted folder only; an
+  untrusted folder gets one fixed line in `refused` with none of the repository's text (that
+  list can become a session notice). Any other `[plugins]` key is still refused. The listing
+  is read on every call and filtered by the environment record's `dismissed_suggestions` (keys
+  `marketplace:<source>[@<revision>]` and `plugin:<id lowercased>`) and `muted_suggestion_sources`
+  (canonical folder paths). Tests: a trusted folder's offers are listed and the config and data
+  folders, the settings, the plugin list and the environment's lists are unchanged; an untrusted
+  folder's offers are refused and shown in `environment_config`; a dismissed offer stays dismissed;
+  a muted project offers nothing even after its file changes to a new offer; the CLI prints the
+  commands only when told its output is a terminal, quotes the repository's words as one shell
+  word and escapes control characters. Choices: `source_folder` must be the environment's own
+  first folder (so the muted list cannot be grown with arbitrary paths) and at most 500
+  dismissals and 500 muted folders are kept per environment; "already added" for a marketplace
+  offer compares sources (case, `.git` and `https://github.com/` ignored) and for a plugin offer
+  the marketplace's name; there is no un-mute yet (the lists are in `environments.json`; stage 9
+  can add one); the CLI has no dismiss command (the desktop's stage 9 owns it); an environment on
+  a remote runtime, or without a folder, has no offers.
+- Handoff notes: stage 9's window calls `plugins.suggestions` and `plugins.dismiss_suggestion`
+  with the keys and `source_folder` the listing gives; it must show offer text as plain text and
+  never pass it to a model. Stage 10's install from an offer goes through `plugins.inspect` and the
+  trust prompt like any install; an offer never skips it. Stage 11's agents must not read
+  `plugins.suggestions`.
 
 ## Stage 8a: Daemon identification of the desktop app
 
