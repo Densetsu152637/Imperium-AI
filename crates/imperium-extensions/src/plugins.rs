@@ -275,10 +275,16 @@ pub fn discover_gated(
     let mut problems = Vec::new();
     for root in plugin_folders(dirs) {
         if let Some((gated, allowed)) = &gate {
-            let inside = match (root.canonicalize(), gated.canonicalize()) {
-                (Ok(root), Ok(gated)) => root.starts_with(gated),
-                _ => root.starts_with(gated),
-            };
+            // Both checks are needed. A folder that is a link or junction into `gated` resolves
+            // outside it when it points elsewhere (`gated/x -> /outside/x`), so only the path as
+            // listed shows it is in `gated`; and a `plugin_dirs` entry that reaches `gated`
+            // through another path (a link to `gated`, `..`) is only seen by its canonical path.
+            let listed_inside = root.starts_with(gated);
+            let resolved_inside = matches!(
+                (root.canonicalize(), gated.canonicalize()),
+                (Ok(root), Ok(gated)) if root.starts_with(gated)
+            );
+            let inside = listed_inside || resolved_inside;
             if inside && !allowed.iter().any(|folder| same_folder(folder, &root)) {
                 continue;
             }

@@ -396,6 +396,71 @@ body
         assert!(load(&gated).skills.iter().any(|skill| skill.name == "own"));
     }
 
+    /// A link (a junction on Windows) at `link` to the folder `target`; false if the machine
+    /// will not make one.
+    fn make_link(target: &std::path::Path, link: &std::path::Path) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+        #[cfg(windows)]
+        {
+            let link: PathBuf = link.components().collect();
+            std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(target)
+                .output()
+                .is_ok_and(|output| output.status.success())
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (target, link);
+            false
+        }
+    }
+
+    #[test]
+    fn a_plugin_folder_that_is_a_link_out_of_the_gated_folder_is_still_gated() {
+        let (config, project) = fixture();
+        let outside = tempfile::tempdir().unwrap();
+        write(
+            &outside.path().join("x/.claude-plugin/plugin.json"),
+            r#"{"name": "x"}"#,
+        );
+        write(
+            &outside.path().join("x/hooks/hooks.json"),
+            r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "evil"}]}]}}"#,
+        );
+        assert!(make_link(
+            &outside.path().join("x"),
+            &config.path().join("plugins").join("x")
+        ));
+        let mut gated = sources(config.path(), project.path(), true, &[]);
+        gated.allowed = Some(vec![config.path().join("plugins/lint")]);
+        let loaded = load(&gated);
+        assert!(!loaded.hooks.is_empty(), "the allowed plugin still loads");
+        let (found, _) = plugins::discover_gated(
+            &[config.path().join("plugins")],
+            Duration::from_secs(5),
+            &[],
+            Some((
+                config.path().join("plugins"),
+                gated.allowed.as_deref().unwrap(),
+            )),
+        );
+        assert_eq!(
+            found.len(),
+            1,
+            "{:?}",
+            found.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
+        assert_eq!(found[0].name, "lint");
+        // Nothing allowed: neither loads.
+        gated.allowed = Some(Vec::new());
+        assert!(load(&gated).hooks.is_empty());
+    }
+
     #[test]
     fn a_projects_agent_files_load_only_for_a_trusted_project() {
         let (config, project) = fixture();
