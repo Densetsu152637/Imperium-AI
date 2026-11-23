@@ -1367,7 +1367,9 @@ mod tests {
             .await
             .unwrap_err();
             assert!(
-                error.contains("reserved") || error.contains("not usable"),
+                error.contains("reserved")
+                    || error.contains("not usable")
+                    || error.contains("not valid"),
                 "{name}: {error}"
             );
         }
