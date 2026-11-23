@@ -76,6 +76,31 @@ pub struct Plugin {
     pub from_entry: bool,
     /// What each server would run, as written (see [`runs`]).
     declared: Vec<ServerRun>,
+    /// The `${VAR}` names (other than `CLAUDE_PLUGIN_ROOT`) a server needs and gives no default,
+    /// sorted: the plugin's required secrets when it is downloaded.
+    pub required_secrets: Vec<String>,
+}
+
+/// Where a downloaded plugin's `${VAR}` values come from: `(plugin name, variable)` to the
+/// value, or `None` when none is set. The daemon backs it with its secret store. A downloaded
+/// server that needs a variable with no value is dropped, with a note naming the variable.
+#[derive(Clone)]
+pub struct PluginSecrets(std::sync::Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>);
+
+impl PluginSecrets {
+    pub fn new(lookup: impl Fn(&str, &str) -> Option<String> + Send + Sync + 'static) -> Self {
+        PluginSecrets(std::sync::Arc::new(lookup))
+    }
+
+    fn get(&self, plugin: &str, variable: &str) -> Option<String> {
+        (self.0)(plugin, variable)
+    }
+}
+
+impl std::fmt::Debug for PluginSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PluginSecrets")
+    }
 }
 
 impl Plugin {
@@ -261,15 +286,27 @@ pub fn discover(
     discover_gated(dirs, server_timeout, downloaded, None)
 }
 
-/// [`discover`] with the load-time gate: for `Some((gated, allowed))`, a plugin folder inside
-/// `gated` (or `gated` itself) is read only if it is in `allowed` (matched as named or by
-/// canonical path); any other is skipped without being read. Folders outside `gated` are
-/// unaffected.
+/// [`discover_with`] with no secrets.
 pub fn discover_gated(
     dirs: &[PathBuf],
     server_timeout: Duration,
     downloaded: &[PathBuf],
     gate: Option<(PathBuf, &[PathBuf])>,
+) -> (Vec<Plugin>, Vec<String>) {
+    discover_with(dirs, server_timeout, downloaded, gate, None)
+}
+
+/// [`discover`] with the load-time gate: for `Some((gated, allowed))`, a plugin folder inside
+/// `gated` (or `gated` itself) is read only if it is in `allowed` (matched as named or by
+/// canonical path); any other is skipped without being read. Folders outside `gated` are
+/// unaffected. With `secrets`, a downloaded plugin's `${VAR}` reads its secret (and a server whose
+/// required variable has none is left out, with a note); without, such a variable is empty.
+pub fn discover_with(
+    dirs: &[PathBuf],
+    server_timeout: Duration,
+    downloaded: &[PathBuf],
+    gate: Option<(PathBuf, &[PathBuf])>,
+    secrets: Option<&PluginSecrets>,
 ) -> (Vec<Plugin>, Vec<String>) {
     let mut plugins = Vec::new();
     let mut problems = Vec::new();
@@ -292,7 +329,7 @@ pub fn discover_gated(
         // An agent-installed folder is downloaded whatever the caller passed.
         let is_downloaded =
             downloaded.iter().any(|folder| same_folder(folder, &root)) || agent_installed(&root);
-        match load(&root, server_timeout, is_downloaded) {
+        match load(&root, server_timeout, is_downloaded, secrets) {
             Ok((plugin, mut notes)) => {
                 problems.append(&mut notes);
                 if plugins.iter().any(|p: &Plugin| p.name == plugin.name) {
@@ -483,6 +520,7 @@ fn load(
     root: &Path,
     server_timeout: Duration,
     downloaded: bool,
+    secrets: Option<&PluginSecrets>,
 ) -> Result<(Plugin, Vec<String>), String> {
     let mut notes = Vec::new();
     let manifest = read_fields(root, MANIFEST_FILE, &mut notes)?;
@@ -557,6 +595,7 @@ fn load(
     }
     let mut servers = Vec::new();
     let mut declared_servers = Vec::new();
+    let mut required_secrets = BTreeSet::new();
     if !entries.is_empty() {
         let plugin_root = root.display().to_string();
         let text = Value::Object(Map::from_iter([(
@@ -568,12 +607,33 @@ fn load(
             if variable == "CLAUDE_PLUGIN_ROOT" {
                 Some(plugin_root.clone())
             } else if downloaded {
-                None
+                secrets.and_then(|secrets| secrets.get(&name, variable))
             } else {
                 std::env::var(variable).ok()
             }
         })
         .map_err(|error| format!(".mcp.json: {error}"))?;
+        // A downloaded server whose required variable has no secret does not start.
+        let mut specs = specs;
+        for (server, definition) in &entries {
+            let required = required_references(&definition.to_string());
+            required_secrets.extend(required.iter().cloned());
+            if let (true, Some(secrets)) = (downloaded, secrets) {
+                let missing: Vec<&str> = required
+                    .iter()
+                    .filter(|variable| secrets.get(&name, variable).is_none())
+                    .map(String::as_str)
+                    .collect();
+                if !missing.is_empty() {
+                    specs.retain(|spec| spec.name != *server);
+                    notes.push(format!(
+                        "plugin {name}: server {server} was not started: set the secret{} {}",
+                        if missing.len() == 1 { "" } else { "s" },
+                        missing.join(", ")
+                    ));
+                }
+            }
+        }
         // Plugin servers are namespaced so they cannot collide with the user's own.
         servers = specs
             .into_iter()
@@ -603,6 +663,7 @@ fn load(
             downloaded,
             from_entry,
             declared: declared_servers,
+            required_secrets: required_secrets.into_iter().collect(),
             name,
             root: root.to_path_buf(),
             hooks,
@@ -768,6 +829,22 @@ fn declare(name: &str, definition: &Value, plugin_root: &str) -> ServerRun {
         variables: variables.into_iter().collect(),
         launcher,
     }
+}
+
+/// The `${NAME}` names in `text` that have no `:-default`, except `CLAUDE_PLUGIN_ROOT`.
+fn required_references(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else { break };
+        let inner = &after[..end];
+        if !inner.is_empty() && !inner.contains(":-") && inner != "CLAUDE_PLUGIN_ROOT" {
+            found.push(inner.to_string());
+        }
+        rest = &after[end + 1..];
+    }
+    found
 }
 
 /// The `${NAME}` and `${NAME:-default}` names in `text`, except `CLAUDE_PLUGIN_ROOT`.
@@ -1368,5 +1445,71 @@ mod tests {
         let (plugin, _) = load_one(dir.path(), &[]);
         assert!(plugin.downloaded);
         assert_eq!(http_url(&plugin), "https://example.test//x");
+    }
+
+    #[test]
+    fn a_downloaded_servers_variables_read_secrets_and_a_missing_one_is_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("keyed");
+        write(
+            &root.join(".claude-plugin/plugin.json"),
+            r#"{"name": "keyed"}"#,
+        );
+        write(
+            &root.join(".mcp.json"),
+            r#"{"mcpServers": {
+                "api": {"command": "serve", "env": {"TOKEN": "${API_KEY}", "MODE": "${MODE:-fast}"}},
+                "plain": {"command": "other"}}}"#,
+        );
+        let ask = |secrets: Option<&PluginSecrets>| {
+            discover_with(
+                &[dir.path().to_path_buf()],
+                Duration::from_secs(5),
+                std::slice::from_ref(&root),
+                None,
+                secrets,
+            )
+        };
+        let given = PluginSecrets::new(|plugin, variable| {
+            (plugin == "keyed" && variable == "API_KEY").then(|| "the-value".to_string())
+        });
+        let none = PluginSecrets::new(|_, _| None);
+
+        let (with, problems) = ask(Some(&given));
+        assert!(problems.is_empty(), "{problems:?}");
+        let plugin = &with[0];
+        assert_eq!(plugin.required_secrets, ["API_KEY"]);
+        let api = plugin
+            .servers
+            .iter()
+            .find(|s| s.name == "keyed_api")
+            .unwrap();
+        let imperium_mcp::Launch::Stdio { env, .. } = &api.launch else {
+            panic!("stdio");
+        };
+        assert!(env.contains(&("TOKEN".to_string(), "the-value".to_string())));
+        assert!(env.contains(&("MODE".to_string(), "fast".to_string())));
+
+        // No secret: the server is left out with a note that names the variable, not a value;
+        // the other server and the plugin stay.
+        let (without, problems) = ask(Some(&none));
+        let plugin = &without[0];
+        assert!(plugin.servers.iter().all(|s| s.name != "keyed_api"));
+        assert!(plugin.servers.iter().any(|s| s.name == "keyed_plain"));
+        let note = problems.join(" ");
+        assert!(
+            note.contains("keyed_api") || note.contains("server api"),
+            "{note}"
+        );
+        assert!(
+            note.contains("API_KEY") && !note.contains("the-value"),
+            "{note}"
+        );
+
+        // What the plugin would run does not depend on the secret.
+        assert_eq!(runs(&with[0]).digest(), runs(&without[0]).digest());
+        // Without a secret source the variable is empty, as before.
+        let (bare, _) = ask(None);
+        assert_eq!(bare[0].servers.len(), 2);
     }
 }

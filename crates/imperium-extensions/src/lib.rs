@@ -175,9 +175,20 @@ pub fn load_trusting(
     hooks_allowed: &dyn Fn(&str) -> bool,
     project_trusted: bool,
 ) -> Extensions {
+    load_with_secrets(sources, hooks_allowed, project_trusted, None)
+}
+
+/// [`load_trusting`] where a downloaded plugin's `${VAR}` reads `secrets` (see
+/// [`plugins::PluginSecrets`]).
+pub fn load_with_secrets(
+    sources: &Sources,
+    hooks_allowed: &dyn Fn(&str) -> bool,
+    project_trusted: bool,
+    secrets: Option<&plugins::PluginSecrets>,
+) -> Extensions {
     let mut plugin_dirs = vec![sources.config_dir.join("plugins")];
     plugin_dirs.extend(sources.plugin_dirs.iter().cloned());
-    let (mut plugins, mut notices) = plugins::discover_gated(
+    let (mut plugins, mut notices) = plugins::discover_with(
         &plugin_dirs,
         sources.server_timeout,
         &sources.downloaded,
@@ -185,6 +196,7 @@ pub fn load_trusting(
             .allowed
             .as_deref()
             .map(|allowed| (sources.config_dir.join("plugins"), allowed)),
+        secrets,
     );
     plugins.retain(|plugin| !sources.disabled_plugins.contains(&plugin.name));
     // A repository can add plugin folders to an environment's configuration, and a plugin there

@@ -185,7 +185,8 @@ impl DaemonState {
         let gate =
             crate::plugin_records::gate(&self.paths, crate::plugin_records::production_verifier());
         downloaded.extend(gate.downloaded);
-        let mut extensions = imperium_extensions::load_trusting(
+        let plugin_secrets = crate::plugin_install::plugin_secrets(Arc::clone(&self.secrets));
+        let mut extensions = imperium_extensions::load_with_secrets(
             &Sources {
                 config_dir: self.paths.config_dir().to_path_buf(),
                 project_dir: project_dir.to_path_buf(),
@@ -214,6 +215,7 @@ impl DaemonState {
             },
             &|plugin| profile.is_none_or(|profile| profile.allows_plugin(plugin)),
             project_trusted,
+            Some(&plugin_secrets),
         );
         for withheld in &gate.withheld {
             let name = withheld.folder.file_name().map_or_else(

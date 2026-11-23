@@ -225,6 +225,22 @@ new content, and between the last two steps the new content has no record, so th
 its code. A failure puts the old folder and record back. Any plugin with hooks or servers is
 withheld after an update until approved afresh, even when only a skill changed.
 
+**Secrets (protocol 0.54; not a paired phone).** For a plugin installed from a marketplace or by an
+agent, a server's `${VAR}` that has no `:-default` (other than `CLAUDE_PLUGIN_ROOT`) is a
+**required secret**. `plugins.set_secret {name, variable, value}` saves it in the secret store as
+`plugin.<plugin>.<variable>` in lower case; `plugins.delete_secret {name, variable}` removes it;
+`plugins.uninstall {name, delete_secrets}` can remove all of a plugin's. The variable must be one
+a server names; a name that is not a valid secret name (more than 64 characters in all) is
+refused; names compare ignoring letter case, so of `FOO` and `foo` only the first in sorted
+order can be set and the other is refused. The value is never returned, logged, journalled or
+written to the config or the plugin folder, and setting it is not an approval. When a session
+starts, the value fills that variable in the server's command, arguments, environment, headers or
+URL; a server with a required variable that has no secret is **not started** and the session gets
+a notice naming the variable, while the plugin's skills, commands and hooks stay. What the plugin
+would run (`runs`) and so its approval do not depend on any secret. `plugins.list` shows each
+plugin's `required_secrets` and `missing_secrets`. A plugin written by hand keeps reading the
+daemon's environment for `${VAR}`.
+
 **Approval write path.** `plugin_records::record_approval` records an approval of a kind for a
 folder, its hash and run-summary digest (all must equal what is there now); an unrecorded
 folder gets an `origin = user` record. It writes only if the `ApprovalVerifier` allows the kind:
