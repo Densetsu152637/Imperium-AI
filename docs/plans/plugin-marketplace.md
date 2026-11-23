@@ -1354,7 +1354,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   capability (a test fails otherwise); a new window label that must call commands goes in the
   capability's `windows`, and `plugin_approve` stays limited to `main` and `panel-*`. Stage 8c
   adds no app code: the presence prompt is the daemon's, so the approve call may take long
-  (the app waits up to five minutes). 
+  (the app waits up to five minutes).
 
 ## Stage 8c: OS presence check
 
