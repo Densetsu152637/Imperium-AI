@@ -991,7 +991,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   from the daemon's environment and do see `PATH` and the mark; a user hook still sees it.
 - Risks: the allowlist may break plugins needing other variables (the server definition can set
   them); `FOO` and `foo` collide as secret names, refuse the second.
-- Status: in review, in two pull requests: (a) secrets (protocol 0.54) and (b) the child
+- Status: done, in two pull requests: (a) secrets (protocol 0.54) and (b) the child
   environment allowlist, stacked on it (no protocol change)
 - Outcome (a): `plugins.set_secret`, `plugins.delete_secret`, `delete_secrets` on
   `plugins.uninstall`, and `required_secrets` / `missing_secrets` on `plugins.list`
