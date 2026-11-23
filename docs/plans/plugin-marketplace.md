@@ -830,27 +830,44 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   `strict: false` plugin installs, loads, and stays unmodified after a marketplace refresh; a
   skills-only plugin installs and loads; a stray `approve` field is ignored and noted.
 - Risks: none beyond stage 3a-i's.
-- Status: in progress, in two pull requests: 3a-ii-1 (inspect, protocol 0.50) in review; 3a-ii-2
-  (install, protocol 0.51) next, stacked on it. The split is the size limit's: both together came
-  to about 1,270 changed lines.
-- Outcome (part 1): `plugins.inspect` (`crates/imperium-core/src/plugin_install.rs`, `rpc/config.rs`,
-  generated types, snapshot, docs 02 and 06). It stages the plugin under `<data>/.staging`
-  (`Staging::new(<data>)`), writes the entry file, parses with `plugins::discover`, and hashes with
-  `plugin_records::measure` (the gate's walk, uncached), so an installed folder hashes as
-  inspected. Choices: hashing reuses the gate's walk, not `mod_install::tree_sha256` (which skips
+- Status: done in two pull requests: 3a-ii-1 (`plugins.inspect`, protocol 0.50) and 3a-ii-2
+  (`plugins.install`, protocol 0.51, stacked on it). The split is the size limit's: both together
+  came to about 1,270 changed lines.
+- Outcome: `plugins.inspect` and `plugins.install` (`crates/imperium-core/src/plugin_install.rs`,
+  `rpc/config.rs`, generated types, snapshot, docs 02 and 06). Both stage the plugin under
+  `<data>/.staging` (`Staging::new(<data>)`), write the entry file, parse with
+  `plugins::discover`, and hash with `plugin_records::measure` (the gate's walk, uncached), so an
+  installed folder hashes as inspected. Install refuses a different hash, a taken name (also by
+  letter case: any existing folder whose name is equal ignoring ASCII case), a manifest name
+  unlike the entry's, and a link in the source; it moves the folder, writes `.imperium-source.json`
+  (so `config.undo` can remove it) and the record through `plugin_records::add_record`, and
+  journals an `install` change of kind `plugin`. The result's `withheld` and `reason` come from the
+  gate itself. Choices: hashing reuses the gate's walk, not `mod_install::tree_sha256` (which skips
   `.git` and `.imperium-source.json` at any depth and is left as it is); the copy refuses links
   outright instead of dropping them (`extension_install::fetch`'s copy drops them silently) and
-  leaves out only a top-level `.git` and `.imperium-source.json`; a plugin inside the
-  marketplace's repository is copied while holding the marketplace operation lock (a refresh
-  cannot replace the clone under the copy), an external one is cloned outside it; a pinned `sha`
-  that the clone's commit does not start with is refused, also when a `revision` is given; plugin
-  names (the entry's, in `imperium-extensions` and `extension_install::check_name`) may not end
-  with a dot, which Windows drops; a relative source with a `revision` is
-  refused; the preview shows hook and server commands with the install folder substituted for the
-  staging folder. External sources (`github`, `url`) are tested at `fetch_git` only: a
-  `Source::Url` must be `https`, so no test can point an entry at a local repository.
-- Handoff notes: part 2 adds `plugins.install` (protocol 0.51), `plugin_records::add_record`, the
-  journal entry and the install tests; it reuses `stage`.
+  leaves out only a top-level `.git` and `.imperium-source.json`; `plugins.install` also takes the
+  `revision` the inspection was given (the plan lists `{id, sha256, environment?}`), because a
+  hash from an inspection at another revision could never match; `environment` is accepted and
+  ignored with a note until plugins are turned on per environment (stage 4); a stray `approve` is
+  an explicit, unexported field that is ignored and noted; `add_record` refuses to run before the
+  first-start migration (it would take its place) and never overwrites an unreadable store; a
+  plugin inside the marketplace's repository is copied while holding the marketplace operation
+  lock (a refresh cannot replace the clone under the copy), an external one is cloned outside it;
+  a pinned `sha` that the clone's commit does not start with is refused, also when a `revision`
+  is given; plugin names (the entry's, and `extension_install::check_name`) may not end with a dot,
+  which Windows drops; the install folder is created exclusively (`create_dir`) and the content
+  moved into it, so nothing is ever merged into or written over an existing folder (the install
+  fails if the folder exists; on Windows `move_tree`'s copy fallback still always runs, but only
+  into the empty folder this install just claimed); a relative source with a
+  `revision` is refused; the preview shows hook and server commands with the install folder
+  substituted for the staging folder.
+- Handoff notes: stage 3b's `plugins.list` reads the same records; `config.undo` of a marketplace
+  install removes the folder but leaves its record (a stale record for a path that no longer
+  exists is harmless, and a new install replaces it), so 3b's uninstall should delete the record.
+  Stage 4's update can reuse `stage` (fetch, entry file, parse, hash) and the `Staged` value; an
+  update reads its source from the record, not from the folder. External sources (`github`,
+  `url`) are tested at `fetch_git` only: a `Source::Url` must be `https`, so no test can point an
+  entry at a local repository.
 
 ## Stage 3b: Uninstall, list and undo
 

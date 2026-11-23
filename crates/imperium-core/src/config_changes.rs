@@ -157,6 +157,22 @@ pub(crate) async fn install(
     Ok((record(state, change), installed.notes))
 }
 
+/// A marketplace plugin installed by `plugins.install`: records the install. The folder carries
+/// the same source, so `config.undo` removes it.
+pub(crate) fn plugin_installed(
+    state: &DaemonState,
+    id: &str,
+    path: &Path,
+    source: &imperium_protocol::methods::InstallSource,
+) -> ConfigChange {
+    let mut change = blank("install", None, format!("Installed the plugin {id}"));
+    change.extension_kind = Some("plugin".into());
+    change.name = id.rsplit_once('@').map(|(name, _)| name.to_string());
+    change.path = Some(path.display().to_string());
+    change.source = Some(source.clone());
+    record(state, change)
+}
+
 fn short(revision: &str) -> &str {
     revision.get(..12).unwrap_or(revision)
 }
