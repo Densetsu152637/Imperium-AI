@@ -48,6 +48,12 @@ pub struct Sources {
     pub lazy: bool,
     /// Skills and plugins, by name, that load up front anyway.
     pub eager: Vec<String>,
+    /// Plugin folders whose content was downloaded rather than written by the user: such a
+    /// plugin never expands the daemon's `${VAR}` and its hooks never rewrite. Folders are
+    /// matched as the plugin directories name them (or by canonical path). Until marketplace
+    /// installs fill it, the daemon passes the folders an agent installed
+    /// ([`plugins::agent_installed`]).
+    pub downloaded: Vec<PathBuf>,
 }
 
 /// Everything extensions contribute to a session.
@@ -163,7 +169,8 @@ pub fn load_trusting(
 ) -> Extensions {
     let mut plugin_dirs = vec![sources.config_dir.join("plugins")];
     plugin_dirs.extend(sources.plugin_dirs.iter().cloned());
-    let (mut plugins, mut notices) = plugins::discover(&plugin_dirs, sources.server_timeout);
+    let (mut plugins, mut notices) =
+        plugins::discover(&plugin_dirs, sources.server_timeout, &sources.downloaded);
     plugins.retain(|plugin| !sources.disabled_plugins.contains(&plugin.name));
     // A repository can add plugin folders to an environment's configuration, and a plugin there
     // runs commands once trusted; it still must not rewrite what the user or the model asked.
@@ -219,12 +226,15 @@ pub fn load_trusting(
     let mut lazy_plugins = Vec::new();
     for plugin in plugins {
         agent_folders.push(AgentFolder::new(plugin.agents_dir(), plugin.origin()));
+        for dir in &plugin.extra_agents {
+            agent_folders.push(AgentFolder::new(dir.clone(), plugin.origin()));
+        }
         skill_dirs.push((plugin.skills_dir(), plugin.origin()));
-        command_dirs.push((
-            plugin.commands_dir(),
-            plugin.origin(),
-            Some(plugin.name.clone()),
-        ));
+        for dir in
+            std::iter::once(plugin.commands_dir()).chain(plugin.extra_commands.iter().cloned())
+        {
+            command_dirs.push((dir, plugin.origin(), Some(plugin.name.clone())));
+        }
         // Hooks are active from the start: see the module documentation.
         if hooks_allowed(&plugin.name) {
             hooks.extend(plugin.hooks);
@@ -302,6 +312,7 @@ mod tests {
             server_timeout: Duration::from_secs(5),
             lazy,
             eager: eager.iter().map(|name| name.to_string()).collect(),
+            downloaded: Vec::new(),
         }
     }
 

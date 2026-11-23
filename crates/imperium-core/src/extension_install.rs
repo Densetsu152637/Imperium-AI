@@ -436,6 +436,7 @@ fn inspect(
             let (plugins, problems) = imperium_extensions::plugins::discover(
                 &[dir.to_path_buf()],
                 Duration::from_secs(60),
+                &[],
             );
             let plugin = plugins
                 .into_iter()
@@ -740,6 +741,7 @@ pub(crate) fn find_installed(
             ExtensionKind::Plugin => imperium_extensions::plugins::discover(
                 std::slice::from_ref(&path),
                 Duration::from_secs(60),
+                &[],
             )
             .0
             .into_iter()

@@ -217,8 +217,11 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
     let config_dir = state.paths().config_dir();
     let mut plugin_dirs = vec![config_dir.join("plugins")];
     plugin_dirs.extend(settings.extensions.plugin_dirs.iter().cloned());
-    let (plugins, mut plugin_problems) =
-        imperium_extensions::plugins::discover(&plugin_dirs, Duration::from_secs(60));
+    let (plugins, mut plugin_problems) = imperium_extensions::plugins::discover(
+        &plugin_dirs,
+        Duration::from_secs(60),
+        &imperium_extensions::plugins::agent_installed_folders(&plugin_dirs),
+    );
     problems.append(&mut plugin_problems);
 
     let mut skill_dirs = vec![(config_dir.join("skills"), "user".to_string())];
@@ -962,6 +965,7 @@ mod tests {
         let (plugins, problems) = imperium_extensions::plugins::discover(
             &[dir.path().to_path_buf()],
             Duration::from_secs(5),
+            &[],
         );
         assert!(problems.is_empty(), "{problems:?}");
         let folders = agent_folders(&plugins, &["off".to_string()], Path::new("config"));

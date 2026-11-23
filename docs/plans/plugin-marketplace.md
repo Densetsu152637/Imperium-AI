@@ -656,8 +656,12 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   never reads the daemon environment and gets `may_rewrite = false`; existing tests unchanged.
 - Risks: unknown fields must stay ignored; component paths "add to the default folder" (record
   the choice in the module doc).
-- Status: pending
-- Outcome:
+- Status: in progress. Split in two pull requests because the whole stage came to about 1,700
+  changed lines: this one holds (b), (c) and (d); the next adds (a), `marketplace.rs`.
+- Outcome: (b), (c) and (d) done. `plugins.rs` reads the full manifest, honours declared
+  component paths inside the plugin only (a link is refused), loads an entry-only folder,
+  summarises and digests `runs`, and takes the `downloaded` set through `Sources`; the daemon
+  fills it with the folders an agent installed, so behaviour is unchanged.
 - Handoff notes: keep parsing free of I/O beyond reading the given folder.
 
 ## Stage 2: Marketplaces in the daemon
