@@ -82,7 +82,7 @@ in: its source is pinned to `anthropics/claude-plugins-official` (the address Cl
 documentation gives, <https://code.claude.com/docs/en/discover-plugins>, a GitHub repository
 with `.claude-plugin/marketplace.json`). It can be turned off with `enabled = false` but its name
 never takes another source, in the user config or an environment variable; the same source under
-another name is an ordinary marketplace. An environment's `.imperium/config.toml` cannot set
+another name is an ordinary marketplace. A marketplace name is 1-64 letters, digits, `.`, `_` or `-`, not starting or ending with a dot; names are unique ignoring letter case, and the official name is reserved in any case, so a name read from a config file or an environment variable can neither escape a folder nor share the official one's. An environment's `.imperium/config.toml` cannot set
 `[plugins]`: a repository does not choose what its user browses.
 
 **Methods (protocol 0.49; CLI and desktop callers, not a paired phone).** Adding, refreshing and

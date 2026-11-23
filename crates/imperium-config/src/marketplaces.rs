@@ -13,11 +13,13 @@ use crate::registry::edit_user_file;
 use crate::{MarketplaceSettings, OFFICIAL_MARKETPLACE, Paths, SetError};
 
 /// Whether `name` may name a marketplace: 1-64 letters, digits, `.`, `_` or `-`, not starting
-/// with a dot (the same rule as installing an extension by name).
+/// with a dot and not ending with one (Windows drops a trailing dot, so `x.` would be `x`). Names
+/// are also unique ignoring case ([`crate::Settings::validate`]), since some file systems are.
 pub fn valid_marketplace_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && !name.starts_with('.')
+        && !name.ends_with('.')
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
@@ -30,7 +32,7 @@ fn check_name(name: &str) -> Result<(), SetError> {
         Err(SetError::InvalidValue {
             key: format!("plugins.marketplaces.{name}"),
             message: "a marketplace name is 1-64 letters, digits, '.', '_' or '-', not starting \
-                      with a dot"
+                      or ending with a dot"
                 .into(),
         })
     }
@@ -213,6 +215,28 @@ mod tests {
         let other =
             "[plugins.marketplaces.mine]\nsource = \"anthropics/claude-plugins-official\"\n";
         assert!(settings_of(&[(other, Source::User("u".into()))]).is_ok());
+    }
+
+    #[test]
+    fn marketplace_names_are_checked_in_every_layer() {
+        for bad in [
+            "../../..",
+            "a/b",
+            "x.",
+            "Claude-Plugins-Official",
+            "claude-plugins-official ",
+            "",
+        ] {
+            let text = format!("[plugins.marketplaces.\"{bad}\"]\nsource = \"a/b\"\n");
+            let error = settings_of(&[(&text, Source::User("u".into()))]).unwrap_err();
+            assert!(error.contains("plugins.marketplaces"), "{bad:?}: {error}");
+        }
+        // Two names that differ only by case would share a folder on some file systems.
+        let both = "[plugins.marketplaces.acme]\nsource = \"a/b\"\n[plugins.marketplaces.ACME]\nsource = \"c/d\"\n";
+        let error = settings_of(&[(both, Source::User("u".into()))]).unwrap_err();
+        assert!(error.contains("letter case"), "{error}");
+        assert!(!valid_marketplace_name("x."));
+        assert!(valid_marketplace_name("my.market_1-b"));
     }
 
     #[test]
