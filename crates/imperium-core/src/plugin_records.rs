@@ -194,7 +194,7 @@ pub(crate) struct Seen {
 /// Hashes by canonical folder path: the walk's stamps that made the hash, and the hash.
 static HASHES: Mutex<BTreeMap<PathBuf, (Vec<Stamp>, String)>> = Mutex::new(BTreeMap::new());
 
-fn is_link(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn is_link(meta: &std::fs::Metadata) -> bool {
     meta.file_type().is_symlink() || reparse_point(meta)
 }
 
@@ -278,6 +278,32 @@ fn hash_files(root: &Path, stamps: &[Stamp]) -> Result<String, String> {
         }
     }
     Ok(hex(&digest.finalize()))
+}
+
+/// The content hash of the folder `root` (and whether it holds a link), not cached: for a folder
+/// that is not installed yet (an inspected plugin in a staging folder).
+pub(crate) fn measure(root: &Path) -> Result<Seen, String> {
+    let mut stamps = Vec::new();
+    if let Some(link) = walk(root, "", &mut stamps)? {
+        return Ok(Seen {
+            hash: String::new(),
+            link: Some(link),
+        });
+    }
+    stamps.sort();
+    Ok(Seen {
+        hash: hash_files(root, &stamps)?,
+        link: None,
+    })
+}
+
+/// The record of the plugin folder `folder`, if there is a readable one.
+pub(crate) fn record_for(paths: &Paths, folder: &Path) -> Option<Record> {
+    let Stored::Found(store) = read_store(paths) else {
+        return None;
+    };
+    let canon = folder.canonicalize().ok()?;
+    store.plugins.get(&*canon.to_string_lossy()).cloned()
 }
 
 /// The content hash of the plugin folder `canon` (and whether it holds a link), from the cache
@@ -540,6 +566,31 @@ fn record_present(paths: &Paths, disabled: &[String]) -> (Store, Vec<String>) {
     (store, skipped)
 }
 
+/// A link `link` to `target`, or false when the machine will not make one.
+#[cfg(test)]
+pub(crate) fn make_link(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        // `mklink` reads a `/` in the path as a switch: use the native separators.
+        let link: PathBuf = link.components().collect();
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(target)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, link);
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
@@ -732,30 +783,6 @@ mod tests {
         store.plugins.insert(canon_key(&renamed), moved);
         write_json(&store_path(&home.paths), &store).unwrap();
         assert!(withheld(&home).contains(&"renamed".to_string()));
-    }
-
-    /// A link `link` to `target`, or false when the machine will not make one.
-    fn make_link(target: &Path, link: &Path) -> bool {
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(target, link).is_ok()
-        }
-        #[cfg(windows)]
-        {
-            // `mklink` reads a `/` in the path as a switch: use the native separators.
-            let link: PathBuf = link.components().collect();
-            std::process::Command::new("cmd")
-                .args(["/C", "mklink", "/J"])
-                .arg(&link)
-                .arg(target)
-                .output()
-                .is_ok_and(|output| output.status.success())
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = (target, link);
-            false
-        }
     }
 
     #[test]

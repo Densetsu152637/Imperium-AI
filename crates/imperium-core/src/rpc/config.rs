@@ -168,6 +168,16 @@ impl Connection {
                     }
                 })
             }
+            PluginsInspect::NAME => {
+                call_later::<PluginsInspect, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::plugin_install::inspect(&state, params)
+                            .await
+                            .map_err(refused)
+                    }
+                })
+            }
             ConfigChanges::NAME => {
                 call::<ConfigChanges>(c.params.take(), |_: ConfigChangesParams| {
                     Ok(ConfigChangesResult {

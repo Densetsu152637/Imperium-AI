@@ -38,6 +38,7 @@ mod peer;
 mod permissions;
 mod pets;
 mod phone;
+mod plugin_install;
 mod plugin_records;
 mod project_agent;
 pub mod residency;

@@ -152,6 +152,24 @@ a git hook, and a plugin's own files are not fetched at all.
 The daemon keeps what it read in `<data>/marketplaces.json` (commit, time, a hash per entry,
 problems), a cache that a refresh rebuilds. One network operation runs at a time.
 
+**Inspecting (protocol 0.50; not a paired phone).** `plugins.inspect {id, revision?}` (`id` is
+`name@marketplace`, the marketplace matched ignoring letter case) copies the plugin into a staging
+folder under `<data>/.staging` (out of the marketplace's own clone, or cloned from its own
+repository at the entry's `sha`, else its `ref`, else the default branch's head; `revision`
+overrides that for a plugin in its own repository and is refused for one inside the
+marketplace's), writes `.claude-plugin/marketplace-entry.json` (the entry as canonical JSON),
+parses and hashes it, and returns the trust prompt's contents: provenance (the marketplace's
+source and commit, the plugin's source and exact commit, and the plugin's own unverified author,
+homepage and licence), every hook and MCP server with `${CLAUDE_PLUGIN_ROOT}` expanded to where it
+would be installed, the launcher flag, the skills, commands and agents by name (commands with `!`
+lines or `allowed-tools` flagged), `sha256`, the digest of what it runs, and a comparison with
+what is installed under that name. It refuses a manifest name unlike the entry's and any link or
+junction in the source (a link in a git repository is written as a plain file by the clone,
+`core.symlinks=false`, so it never reaches the disk as a link). The content hash is the
+load-time gate's (the files' paths, lengths and bytes without a top-level `.git` and
+`.imperium-source.json`). Nothing runs: no hook, server, build step, install script or git hook.
+`plugins.install` follows.
+
 ### Named agents (implemented)
 
 A named agent is a subagent a file defines, in Claude Code's format, so plugins and projects can

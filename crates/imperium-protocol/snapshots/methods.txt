@@ -68,6 +68,7 @@ method phone.devices
 method phone.pair
 method phone.revoke
 method plugins.browse
+method plugins.inspect
 method plugins.marketplace_add
 method plugins.marketplace_list
 method plugins.marketplace_refresh
