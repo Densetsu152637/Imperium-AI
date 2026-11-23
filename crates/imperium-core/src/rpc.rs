@@ -41,7 +41,7 @@ use imperium_protocol::methods::{
     EventsSubscribe, EventsSubscribeParams, EventsUnsubscribe, EventsUnsubscribeParams,
 };
 use imperium_protocol::methods::{
-    PluginsBrowse, PluginsInspect, PluginsMarketplaceAdd, PluginsMarketplaceList,
+    PluginsBrowse, PluginsInspect, PluginsInstall, PluginsMarketplaceAdd, PluginsMarketplaceList,
     PluginsMarketplaceListParams, PluginsMarketplaceRefresh, PluginsMarketplaceRemove,
 };
 use imperium_protocol::methods::{

@@ -329,3 +329,48 @@ pub struct PluginInstalled {
     // The installed content is the content inspected.
     pub same_content: bool,
 }
+
+/// `plugins.install`: fetches the plugin again, refuses it if its content hash is not `sha256`
+/// (what `plugins.inspect` showed), a folder of that name exists (compared ignoring letter
+/// case), its manifest name differs from the marketplace entry's, or the source holds a link, then
+/// installs it under `<config>/plugins/<name>` and records it. It never approves: a plugin with
+/// hooks or MCP servers is installed withheld until the desktop app approves it.
+#[derive(Debug)]
+pub struct PluginsInstall;
+
+impl Method for PluginsInstall {
+    const NAME: &'static str = "plugins.install";
+    type Params = PluginsInstallParams;
+    type Result = PluginsInstallResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsInstallParams {
+    // `name@marketplace`.
+    pub id: String,
+    pub sha256: String,
+    // The same `revision` the inspection was given, if it was given one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub revision: Option<String>,
+    // Not used until plugins can be turned on per environment; noted in the result when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub environment: Option<String>,
+    // Never read: an install cannot approve. Noted in the result when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub approve: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsInstallResult {
+    pub name: String,
+    pub path: String,
+    // The plugin is installed but does not load (it has hooks or servers and no approval).
+    pub withheld: bool,
+    pub reason: Option<String>,
+    pub notes: Vec<String>,
+}

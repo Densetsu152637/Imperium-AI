@@ -306,6 +306,38 @@ pub(crate) fn record_for(paths: &Paths, folder: &Path) -> Option<Record> {
     store.plugins.get(&*canon.to_string_lossy()).cloned()
 }
 
+/// Serialises read-modify-write of the record file.
+static STORE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Adds (or replaces) the record of the plugin folder `folder`. Refused before the first-start
+/// migration has run (it would take the migration's place and leave the folders already there
+/// unrecorded), and when the store cannot be read (it is never overwritten).
+pub(crate) fn add_record(paths: &Paths, folder: &Path, record: Record) -> Result<(), String> {
+    let _guard = STORE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if std::fs::metadata(marker_path(paths)).is_err() {
+        return Err("the installed plugins have not been recorded yet: restart the daemon".into());
+    }
+    let mut store = match read_store(paths) {
+        Stored::Found(store) => store,
+        Stored::Missing => Store::default(),
+        Stored::Unreadable(error) => {
+            return Err(format!(
+                "the plugin record file is unreadable ({error}); fix or delete {} first",
+                store_path(paths).display()
+            ));
+        }
+    };
+    let canon = folder
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", folder.display()))?;
+    store
+        .plugins
+        .insert(canon.to_string_lossy().into_owned(), record);
+    write_json(&store_path(paths), &store)
+}
+
 /// The content hash of the plugin folder `canon` (and whether it holds a link), from the cache
 /// when the walk's list of paths, sizes and times is the cached one.
 pub(crate) fn look(canon: &Path) -> Result<Seen, String> {

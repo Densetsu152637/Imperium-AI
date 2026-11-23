@@ -1,30 +1,39 @@
-//! `plugins.inspect`: fetching one plugin of a marketplace and showing what it would run.
+//! `plugins.inspect` and `plugins.install`: fetching one plugin of a marketplace, showing what it
+//! would run, and installing it, withheld when it has code.
 //!
 //! Inspecting copies the plugin (out of the marketplace's own clone, or from its own git
 //! repository) into a staging folder under `<data>/.staging`, writes
-//! `.claude-plugin/marketplace-entry.json` there, parses it and hashes it. It runs no hook, server,
-//! build step, install script or git hook: files are read and copied, nothing else.
+//! `.claude-plugin/marketplace-entry.json` there, parses it and hashes it. Installing **fetches
+//! again**, and installs only content with the hash the inspection showed. Neither runs a hook, a
+//! server, a build step, an install script or a git hook: files are read and copied, nothing else.
 //!
 //! The content hash is the load-time gate's (`plugin_records::measure`): the files' paths, lengths
 //! and bytes, without a top-level `.git` and `.imperium-source.json`, so the folder hashes the same
 //! once installed. The copy refuses a link anywhere in the source (git writes a link as a plain
-//! file under `core.symlinks=false`, so a git checkout has none on disk).
+//! file under `core.symlinks=false`, so a git checkout has none on disk). An install writes the
+//! record (`origin = marketplace`, no approval: nothing counts approvals yet), so a plugin with
+//! hooks or servers does not load until the desktop app approves it.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use imperium_api::time::unix_ms;
 use imperium_extensions::marketplace::Source as PluginSource;
 use imperium_extensions::plugins::{self, Plugin, inside};
 use imperium_protocol::methods::{
-    PluginHookRun, PluginInstalled, PluginPreview, PluginServerRun, PluginsInspectParams,
+    InstallSource, PluginHookRun, PluginInstalled, PluginPreview, PluginServerRun,
+    PluginsInspectParams, PluginsInstallParams, PluginsInstallResult,
 };
 
-use crate::extension_install::{self, Staging};
+use crate::extension_install::{self, Staging, check_name, move_tree, remove_tree};
 use crate::marketplaces::{self, Located};
-use crate::plugin_records;
+use crate::plugin_records::{self, Origin, Record};
 use crate::state::DaemonState;
 
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// One install at a time: the name check and the move must not interleave.
+static INSTALLS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// A plugin copied into staging, parsed and hashed.
 struct Staged {
@@ -38,6 +47,8 @@ struct Staged {
     source_kind: &'static str,
     /// The folder inside the marketplace, or the git URL.
     source: String,
+    /// The branch, tag or commit asked for (git only).
+    requested: Option<String>,
     notes: Vec<String>,
 }
 
@@ -120,7 +131,7 @@ async fn stage(
     let located = marketplaces::locate(state, market_name, plugin_name).await?;
     let out = staging.join("out");
     let entry_source = located.entry.source.clone();
-    let (source_kind, source, commit) = match &entry_source {
+    let (source_kind, source, commit, requested) = match &entry_source {
         PluginSource::Path(rel) => {
             if revision.is_some() {
                 return Err(
@@ -140,7 +151,7 @@ async fn stage(
             let mut budget = MAX_BYTES;
             copy_checked(&dir, &out, &mut budget, true)?;
             drop(guard);
-            ("path", rel.clone(), located.commit.clone())
+            ("path", rel.clone(), located.commit.clone(), None)
         }
         PluginSource::Github { .. } | PluginSource::Url { .. } => {
             drop(guard);
@@ -158,7 +169,7 @@ async fn stage(
             } else {
                 "url"
             };
-            (kind, url, Some(commit))
+            (kind, url, Some(commit), requested)
         }
         PluginSource::Unsupported(kind) => {
             return Err(format!("a {kind} plugin source is not supported"));
@@ -203,6 +214,7 @@ async fn stage(
         commit,
         source_kind,
         source,
+        requested,
         notes: problems,
     })
 }
@@ -342,13 +354,129 @@ pub(crate) async fn inspect(
     Ok(preview(state, &staged, &dest))
 }
 
+/// `plugins.install`.
+pub(crate) async fn install(
+    state: &DaemonState,
+    params: PluginsInstallParams,
+) -> Result<PluginsInstallResult, String> {
+    let _serial = INSTALLS.lock().await;
+    let staging = Staging::new(state.paths().data_dir())?;
+    let staged = stage(
+        state,
+        &params.id,
+        params.revision.as_deref(),
+        staging.path(),
+    )
+    .await?;
+    if !staged.hash.eq_ignore_ascii_case(params.sha256.trim()) {
+        return Err(format!(
+            "the plugin is not what was inspected (its hash is {}, not {}): inspect it again",
+            staged.hash, params.sha256
+        ));
+    }
+    let name = check_name(&staged.plugin.name)?;
+    let plugins_dir = state.paths().config_dir().join("plugins");
+    std::fs::create_dir_all(&plugins_dir)
+        .map_err(|error| format!("{}: {error}", plugins_dir.display()))?;
+    // Folder names that differ only by letter case are one folder on Windows and macOS.
+    for entry in std::fs::read_dir(&plugins_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let existing = entry.file_name().to_string_lossy().into_owned();
+        if existing.eq_ignore_ascii_case(&name) {
+            return Err(if existing == name {
+                format!("a plugin folder named {name} is already installed")
+            } else {
+                format!(
+                    "a plugin folder named {existing} is already installed and {name} would collide with it by letter case"
+                )
+            });
+        }
+    }
+    let dest = plugins_dir.join(&name);
+    move_tree(&staged.out, &dest)?;
+    let source = InstallSource {
+        kind: if staged.source_kind == "path" {
+            "path"
+        } else {
+            "git"
+        }
+        .into(),
+        location: if staged.source_kind == "path" {
+            staged.located.source.clone()
+        } else {
+            staged.source.clone()
+        },
+        revision: staged.commit.clone(),
+        requested: staged.requested.clone(),
+        subdir: (staged.source_kind == "path" && !staged.source.is_empty())
+            .then(|| staged.source.clone()),
+        installed_at_unix_ms: unix_ms(),
+        session_id: None,
+    };
+    let id = format!("{name}@{}", staged.located.marketplace);
+    let recorded = extension_install::write_source(&dest, &source).and_then(|()| {
+        plugin_records::add_record(
+            state.paths(),
+            &dest,
+            Record {
+                name: name.clone(),
+                origin: Origin::Marketplace,
+                id: Some(id.clone()),
+                source: Some(staged.source.clone()),
+                commit: staged.commit.clone(),
+                hash: staged.hash.clone(),
+                runs: plugins::runs(&staged.plugin).digest(),
+                approval: None,
+            },
+        )
+    });
+    if let Err(error) = recorded {
+        remove_tree(&dest);
+        return Err(error);
+    }
+    crate::config_changes::plugin_installed(state, &id, &dest, &source);
+    let mut notes = staged.notes.clone();
+    if params.approve.is_some() {
+        notes.push(
+            "approve was ignored: an install never approves; approval is only given in the desktop app"
+                .into(),
+        );
+    }
+    if params.environment.is_some() {
+        notes.push("environment was ignored: plugins are not turned on per environment yet".into());
+    }
+    let gate = plugin_records::gate(state.paths(), plugin_records::production_verifier());
+    let reason = gate
+        .withheld
+        .iter()
+        .find(|withheld| withheld.folder == dest)
+        .map(|withheld| {
+            format!(
+                "{}. It loads after you approve it in the Imperium desktop app",
+                withheld.reason
+            )
+        });
+    Ok(PluginsInstallResult {
+        name,
+        path: dest.display().to_string(),
+        withheld: reason.is_some(),
+        reason,
+        notes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::process::Command;
     use std::sync::Arc;
 
     use imperium_config::{Config, Layer, Paths};
-    use imperium_protocol::methods::PluginsMarketplaceAddParams;
+    use imperium_protocol::methods::{
+        PluginsMarketplaceAddParams, PluginsMarketplaceRefreshParams,
+    };
     use serde_json::json;
 
     use super::*;
@@ -440,6 +568,16 @@ mod tests {
         }
     }
 
+    fn install_params(id: &str, sha256: &str) -> PluginsInstallParams {
+        PluginsInstallParams {
+            id: id.into(),
+            sha256: sha256.into(),
+            revision: None,
+            environment: None,
+            approve: None,
+        }
+    }
+
     fn dest(state: &DaemonState, name: &str) -> PathBuf {
         state.paths().config_dir().join("plugins").join(name)
     }
@@ -470,14 +608,16 @@ mod tests {
         }
     }
 
+    fn gate(state: &DaemonState) -> plugin_records::Gate {
+        plugin_records::gate(state.paths(), plugin_records::production_verifier())
+    }
+
     #[tokio::test]
-    async fn a_plugin_with_code_is_inspected_and_nothing_runs_or_is_installed() {
+    async fn a_plugin_with_code_is_inspected_then_installed_recorded_and_withheld() {
         let (home, market, state) = setup().await;
         let preview = inspect(&state, inspect_params("hooked@mk")).await.unwrap();
         assert_eq!(preview.id, "hooked@mk");
-        assert_eq!(preview.marketplace, "mk");
         assert_eq!(preview.source_kind, "path");
-        assert_eq!(preview.version.as_deref(), Some("1.0.0"));
         assert_eq!(preview.hooks.len(), 1);
         // Shown with the folder it would be installed in, not the staging folder.
         let command = &preview.hooks[0].command;
@@ -486,43 +626,144 @@ mod tests {
             "{command}"
         );
         assert_eq!(preview.servers.len(), 1);
-        assert_eq!(preview.servers[0].command.as_deref(), Some("touch"));
         assert_eq!(preview.skills, ["review"]);
-        assert!(preview.installed.is_none());
-        assert_eq!(preview.sha256.len(), 64);
-        // The same content hashes the same, wherever it was staged.
-        let again = inspect(&state, inspect_params("hooked@mk")).await.unwrap();
-        assert_eq!(again.sha256, preview.sha256);
-        assert_eq!(again.runs_digest, preview.runs_digest);
+        assert!(preview.installed.is_none() && !preview.sha256.is_empty());
         assert!(!state.paths().data_dir().join(".staging").exists());
         assert!(!dest(&state, "hooked").exists());
+
+        let done = install(&state, install_params("hooked@mk", &preview.sha256))
+            .await
+            .unwrap();
+        assert!(done.withheld);
+        assert!(done.reason.as_deref().unwrap().contains("desktop app"));
+        let folder = dest(&state, "hooked");
+        assert!(folder.join(plugins::ENTRY_FILE).is_file());
+        // Recorded as a marketplace install without an approval, with the gate's own hash.
+        let record = plugin_records::record_for(state.paths(), &folder).unwrap();
+        assert_eq!(record.origin, Origin::Marketplace);
+        assert_eq!(record.id.as_deref(), Some("hooked@mk"));
+        assert!(record.approval.is_none());
+        assert_eq!(record.hash, preview.sha256);
+        let seen = plugin_records::look(&folder.canonicalize().unwrap()).unwrap();
+        assert_eq!(seen.hash, preview.sha256);
+        assert_eq!(gate(&state).withheld.len(), 1);
+        let changes = crate::config_changes::list(&state);
+        assert_eq!(changes[0].kind, "install");
+        assert_eq!(changes[0].extension_kind.as_deref(), Some("plugin"));
+        // Inspecting again compares with what is installed.
+        let again = inspect(&state, inspect_params("hooked@mk")).await.unwrap();
+        assert!(
+            again
+                .installed
+                .is_some_and(|installed| installed.same_content)
+        );
         assert_nothing_ran(&[home.path(), market.path()]);
     }
 
     #[tokio::test]
-    async fn a_non_strict_plugin_is_read_from_its_entry() {
-        let (_home, _market, state) = setup().await;
-        let preview = inspect(&state, inspect_params("loose@mk")).await.unwrap();
-        assert_eq!(preview.name, "loose");
-        assert_eq!(preview.description, "Loose");
-        assert_eq!(preview.skills, ["note"]);
-        assert!(preview.hooks.is_empty() && preview.servers.is_empty() && !preview.launcher);
+    async fn a_source_that_changed_since_the_inspection_is_refused() {
+        let (_home, market, state) = setup().await;
+        let preview = inspect(&state, inspect_params("hooked@mk")).await.unwrap();
+        write(&market.path().join("hooked/extra.txt"), "new");
+        let error = install(&state, install_params("hooked@mk", &preview.sha256))
+            .await
+            .unwrap_err();
+        assert!(error.contains("inspect it again"), "{error}");
+        assert!(!dest(&state, "hooked").exists());
     }
 
     #[tokio::test]
-    async fn an_installed_folder_of_the_same_name_is_compared() {
+    async fn a_taken_name_is_refused_also_when_it_differs_only_by_letter_case() {
         let (_home, _market, state) = setup().await;
-        let before = inspect(&state, inspect_params("plain@mk")).await.unwrap();
-        // The staged content, laid where it would be installed.
-        let folder = dest(&state, "plain");
-        write(
-            &folder.join(".claude-plugin/plugin.json"),
-            r#"{"name": "plain"}"#,
+        let preview = inspect(&state, inspect_params("plain@mk")).await.unwrap();
+        install(&state, install_params("plain@mk", &preview.sha256))
+            .await
+            .unwrap();
+        let error = install(&state, install_params("plain@mk", &preview.sha256))
+            .await
+            .unwrap_err();
+        assert!(error.contains("already installed"), "{error}");
+        std::fs::create_dir_all(dest(&state, "Hooked")).unwrap();
+        let hooked = inspect(&state, inspect_params("hooked@mk")).await.unwrap();
+        let error = install(&state, install_params("hooked@mk", &hooked.sha256))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("collide") || error.contains("already installed"),
+            "{error}"
         );
-        let after = inspect(&state, inspect_params("plain@mk")).await.unwrap();
-        let installed = after.installed.unwrap();
-        assert!(!installed.same_content && installed.recorded_sha256.is_none());
-        assert_eq!(before.sha256, after.sha256);
+    }
+
+    #[tokio::test]
+    async fn a_non_strict_plugin_installs_and_stays_unchanged_after_a_refresh() {
+        let (_home, market, state) = setup().await;
+        let preview = inspect(&state, inspect_params("loose@mk")).await.unwrap();
+        let done = install(&state, install_params("loose@mk", &preview.sha256))
+            .await
+            .unwrap();
+        assert!(!done.withheld);
+        let folder = dest(&state, "loose");
+        assert!(gate(&state).allowed.contains(&folder));
+        let (found, _) =
+            plugins::discover(std::slice::from_ref(&folder), Duration::from_secs(5), &[]);
+        assert_eq!(found[0].name, "loose");
+        let entry = std::fs::read_to_string(folder.join(plugins::ENTRY_FILE)).unwrap();
+        // The marketplace changes and is refreshed; the installed copy does not.
+        let listing =
+            std::fs::read_to_string(market.path().join(".claude-plugin/marketplace.json"))
+                .unwrap()
+                .replace("Loose", "Changed");
+        write(
+            &market.path().join(".claude-plugin/marketplace.json"),
+            &listing,
+        );
+        marketplaces::refresh(&state, PluginsMarketplaceRefreshParams::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(folder.join(plugins::ENTRY_FILE)).unwrap(),
+            entry
+        );
+        assert_eq!(
+            plugin_records::measure(&folder).unwrap().hash,
+            preview.sha256
+        );
+        assert!(gate(&state).allowed.contains(&folder));
+    }
+
+    #[tokio::test]
+    async fn a_skills_only_plugin_installs_and_loads() {
+        let (_home, _market, state) = setup().await;
+        let preview = inspect(&state, inspect_params("plain@mk")).await.unwrap();
+        assert!(!preview.launcher && preview.hooks.is_empty() && preview.servers.is_empty());
+        let done = install(&state, install_params("plain@mk", &preview.sha256))
+            .await
+            .unwrap();
+        assert!(!done.withheld && done.reason.is_none());
+        let folder = dest(&state, "plain");
+        assert!(gate(&state).allowed.contains(&folder));
+        let (found, _) =
+            plugins::discover(std::slice::from_ref(&folder), Duration::from_secs(5), &[]);
+        let (skills, _) =
+            imperium_extensions::skills::discover(&[(found[0].skills_dir(), found[0].origin())]);
+        assert_eq!(skills[0].name, "pdf");
+    }
+
+    #[tokio::test]
+    async fn a_stray_approve_is_ignored_and_noted() {
+        let (_home, _market, state) = setup().await;
+        let preview = inspect(&state, inspect_params("hooked@mk")).await.unwrap();
+        let mut params = install_params("hooked@mk", &preview.sha256);
+        params.approve = Some(json!(true));
+        let done = install(&state, params).await.unwrap();
+        assert!(done.withheld);
+        assert!(
+            done.notes
+                .iter()
+                .any(|note| note.contains("approve was ignored"))
+        );
+        let record = plugin_records::record_for(state.paths(), &dest(&state, "hooked")).unwrap();
+        assert!(record.approval.is_none());
     }
 
     #[tokio::test]
