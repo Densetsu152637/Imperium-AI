@@ -218,3 +218,114 @@ pub struct PluginComponents {
     pub hooks: u32,
     pub mcp_servers: Vec<String>,
 }
+
+// ---- Inspecting and installing plugins ----
+
+/// `plugins.inspect`: fetches one plugin of a marketplace into a staging folder and says exactly
+/// what it would run, with the content hash to pass to `plugins.install`. Nothing in it runs: no
+/// hook, server, build step, install script or git hook. `revision` is a branch, tag or commit
+/// for a plugin that lives in its own git repository (a plugin inside the marketplace's
+/// repository has none).
+#[derive(Debug)]
+pub struct PluginsInspect;
+
+impl Method for PluginsInspect {
+    const NAME: &'static str = "plugins.inspect";
+    type Params = PluginsInspectParams;
+    type Result = PluginPreview;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsInspectParams {
+    // `name@marketplace`.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub revision: Option<String>,
+}
+
+/// What `plugins.inspect` found: what the trust prompt shows before a plugin is installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginPreview {
+    // `name@marketplace`.
+    pub id: String,
+    pub name: String,
+    pub marketplace: String,
+    // The marketplace's source as configured, and the commit its clone is at.
+    pub marketplace_source: String,
+    pub marketplace_commit: Option<String>,
+    // `path` (inside the marketplace's repository), `github` or `url`.
+    pub source_kind: String,
+    // The folder inside the marketplace, or the git URL.
+    pub source: String,
+    // The exact commit the plugin was fetched at (a path plugin has the marketplace's).
+    pub commit: Option<String>,
+    // The plugin's own claims about itself, unverified.
+    pub description: String,
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub homepage: Option<String>,
+    pub license: Option<String>,
+    // Every hook, with `${CLAUDE_PLUGIN_ROOT}` expanded to where the plugin would be installed.
+    pub hooks: Vec<PluginHookRun>,
+    pub servers: Vec<PluginServerRun>,
+    // A hook or server starts a launcher that fetches more code (`npx`, `uvx`, `@latest`). A
+    // missing flag is no guarantee: any script can download and run code on its own.
+    pub launcher: bool,
+    pub skills: Vec<String>,
+    pub commands: Vec<String>,
+    pub agents: Vec<String>,
+    // Commands with `!` shell lines or `allowed-tools`, which Imperium does not run itself.
+    pub commands_with_shell: Vec<String>,
+    // SHA-256 over the plugin folder's files: pass it to `plugins.install`.
+    pub sha256: String,
+    // The digest of what the plugin would run, which an approval is bound to.
+    pub runs_digest: String,
+    // What is installed under the plugin's name now, if anything.
+    pub installed: Option<PluginInstalled>,
+    // Problems found reading it.
+    pub notes: Vec<String>,
+}
+
+/// One hook a plugin would run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginHookRun {
+    pub event: String,
+    pub matcher: String,
+    // The full command line; empty for an HTTP hook.
+    pub command: String,
+    pub url: Option<String>,
+    pub launcher: bool,
+}
+
+/// One MCP server a plugin would start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginServerRun {
+    // `<plugin>_<server>`.
+    pub name: String,
+    // `stdio` or `http`.
+    pub transport: String,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env_names: Vec<String>,
+    pub url: Option<String>,
+    pub header_names: Vec<String>,
+    // `${VAR}` references other than `CLAUDE_PLUGIN_ROOT`.
+    pub variables: Vec<String>,
+    pub launcher: bool,
+}
+
+/// What is already installed under a plugin's name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginInstalled {
+    pub path: String,
+    // The recorded content hash, when Imperium has a record of it.
+    pub recorded_sha256: Option<String>,
+    // The installed content is the content inspected.
+    pub same_content: bool,
+}

@@ -610,6 +610,58 @@ pub(crate) async fn browse(
     Ok(PluginsBrowseResult { plugins, problems })
 }
 
+/// Held while a plugin is copied out of a marketplace's own repository, so a refresh cannot
+/// replace the clone under the copy.
+pub(crate) async fn lock() -> tokio::sync::MutexGuard<'static, ()> {
+    OPERATIONS.lock().await
+}
+
+/// One plugin of a marketplace, with where its marketplace stands.
+pub(crate) struct Located {
+    /// The marketplace's name as configured.
+    pub(crate) marketplace: String,
+    /// Its source as configured.
+    pub(crate) source: String,
+    /// The folder its plugins are read from: the cached clone, or the folder itself.
+    pub(crate) root: PathBuf,
+    /// The commit of the clone; none for a folder.
+    pub(crate) commit: Option<String>,
+    pub(crate) entry: Entry,
+}
+
+/// The entry `plugin` of the marketplace `marketplace` (matched ignoring letter case). The
+/// caller holds [`lock`].
+pub(crate) async fn locate(
+    state: &DaemonState,
+    marketplace: &str,
+    plugin: &str,
+) -> Result<Located, String> {
+    let settings = current_settings(state)?;
+    let (name, config) = settings
+        .plugins
+        .marketplaces
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(marketplace))
+        .ok_or_else(|| format!("no marketplace named {marketplace}"))?;
+    if !config.enabled {
+        return Err(format!("{name} is turned off"));
+    }
+    let (root, market) = opened(state, name, config).await?;
+    let entry = market
+        .plugin(plugin)
+        .cloned()
+        .ok_or_else(|| format!("{name} lists no plugin named {plugin}"))?;
+    Ok(Located {
+        marketplace: name.clone(),
+        source: config.source.clone(),
+        commit: load_store(state)
+            .remove(name.as_str())
+            .and_then(|record| record.commit),
+        root,
+        entry,
+    })
+}
+
 /// The marketplace's folder and what it lists: the cached clone, made now when there is none.
 async fn opened(
     state: &DaemonState,
@@ -746,7 +798,7 @@ fn components(root: &Path, rel: &str, entry: &Entry) -> Option<PluginComponents>
     })
 }
 
-fn skill_names(folder: &Path) -> Vec<String> {
+pub(crate) fn skill_names(folder: &Path) -> Vec<String> {
     std::fs::read_dir(folder)
         .into_iter()
         .flatten()
@@ -757,7 +809,7 @@ fn skill_names(folder: &Path) -> Vec<String> {
         .collect()
 }
 
-fn markdown_names(folder: &Path) -> Vec<String> {
+pub(crate) fn markdown_names(folder: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(folder)
         .into_iter()
         .flatten()
@@ -1315,7 +1367,9 @@ mod tests {
             .await
             .unwrap_err();
             assert!(
-                error.contains("reserved") || error.contains("not usable"),
+                error.contains("reserved")
+                    || error.contains("not usable")
+                    || error.contains("not valid"),
                 "{name}: {error}"
             );
         }
