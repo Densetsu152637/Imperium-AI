@@ -9,6 +9,7 @@
 mod browser;
 mod daemon;
 mod mod_frames;
+mod plugin_approval;
 mod store;
 mod update;
 
@@ -45,6 +46,8 @@ fn main() {
                 .build(),
         )
         .manage(daemon::DaemonControl::default())
+        // The app's own environment, read at start (see `plugin_approval`).
+        .manage(plugin_approval::Guard::capture())
         .register_uri_scheme_protocol(mod_frames::SCHEME, |_context, request| {
             mod_frames::serve(request)
         })
@@ -108,6 +111,7 @@ fn main() {
             update::update_restart,
             update::update_install_now,
             update::update_switch_install,
+            plugin_approval::plugin_approve,
         ])
         .build(tauri::generate_context!())
         .expect("the Imperium window could not start")

@@ -43,6 +43,9 @@
       "../../../pets/": "pets/",
       "mods/": "mods/"
     },
+    "macOS": {
+      "entitlements": "entitlements.plist"
+    },
     "windows": {
       "nsis": {
         "installerHooks": "windows/hooks.nsh"

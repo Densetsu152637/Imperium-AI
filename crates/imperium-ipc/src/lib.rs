@@ -9,6 +9,7 @@
 
 #![warn(unreachable_pub)]
 
+mod loader_env;
 #[cfg(target_os = "macos")]
 mod macos_sandbox;
 #[cfg(unix)]
@@ -16,6 +17,7 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
+pub use loader_env::refused_variable;
 #[cfg(target_os = "macos")]
 pub use macos_sandbox::is_sandboxed;
 #[cfg(unix)]

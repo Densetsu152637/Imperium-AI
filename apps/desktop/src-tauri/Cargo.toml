@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 imperium-client = { version = "0.2.0", path = "../../../crates/imperium-client" }
 imperium-config = { version = "0.2.0", path = "../../../crates/imperium-config" }
+imperium-ipc = { version = "0.2.0", path = "../../../crates/imperium-ipc" }
 imperium-protocol = { version = "0.2.0", path = "../../../crates/imperium-protocol" }
 reqwest = "0.13.5"
 semver = "1"

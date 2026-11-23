@@ -76,6 +76,25 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Plugin approvals rest on the hardened runtime: the release app must not be allowed DYLD_*
+      # variables, unsigned libraries or a WebKit inspector (docs/06-extensibility.md, "Who may
+      # approve a plugin"). The fixture is deliberately bad: the check must fail on it, and name
+      # all three.
+      - name: Check macOS release entitlements
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python3 scripts/ci/check-entitlements.py --config apps/desktop/src-tauri/tauri.conf.json
+          if out="$(python3 scripts/ci/check-entitlements.py scripts/ci/fixtures/bad-entitlements.plist 2>&1)"; then
+            echo "::error::the entitlements check accepted the deliberately bad fixture"
+            exit 1
+          fi
+          for key in allow-dyld-environment-variables disable-library-validation get-task-allow; do
+            if ! grep -q "$key" <<<"$out"; then
+              echo "::error::the entitlements check did not name $key for the bad fixture"
+              exit 1
+            fi
+          done
       - name: Build desktop bundles
         shell: bash
         env:

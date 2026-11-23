@@ -393,6 +393,61 @@ choice its owner made. Settings → Daemon says whether the running daemon was s
 Imperium, left from an earlier run, or started outside the app. **Stop** and **Restart** still
 act at once whatever holds the daemon.
 
+### Plugin approval (implemented)
+
+The app's Rust side, not its window, approves a plugin
+([who may approve](06-extensibility.md#plugin-marketplaces)). The Tauri command
+`plugin_approve { name, action: install | update | approve, environment? }`
+(`apps/desktop/src-tauri/src/plugin_approval.rs`) is only a trigger the interface may call; the
+challenge, the dialog and `plugins.approve` never pass through the web view, and the interface
+has no code that names `plugins.approve` or `plugins.approval_challenge` (a test scans `src/`).
+
+- **Who may call it.** Only the main window and the detached `panel-*` windows. The app lists
+  every command it registers in `build.rs` (`AppManifest::commands`), so each needs a permission
+  in a capability; `capabilities/default.json` gives all of them, `plugin_approve` included, to
+  `["main", "panel-*"]` and to nothing remote. A mod frame, which has an opaque origin and no
+  window of its own, matches no capability. The command also refuses any other window label. A test
+  keeps `build.rs`, `generate_handler!` and the capability equal, so a command added to one but not
+  the others fails in CI.
+- **The flow.** The app connects to the daemon on its **local socket only** (`daemon.socket`;
+  with it off, or an endpoint that offers no socket, the approval is refused, never sent over
+  loopback TCP), asks `plugins.inspect` for the plugin's preview, and shows a native dialog
+  (`tauri-plugin-dialog`, a warning, buttons *Approve* and *Cancel*) built only from that
+  preview: the plugin id, its source and commit, the content hash, every hook and server command
+  line with flagged launchers, and the daemon's notes. The plugin's own description is not shown.
+  Control and direction-changing characters in a command are written out (`\n`, `\u{202e}`), and a
+  plugin whose summary would not fit in about 6,000 characters is refused rather than shown cut
+  short. On *Approve* the app installs or updates the plugin when `action` says so (the daemon
+  refuses a hash other than the previewed one), then asks for a challenge for the previewed hash
+  and run-summary digest and answers it, on the one connection. The challenge is requested after
+  the click so a slow reader does not run out its two minutes; the daemon refuses it unless the
+  folder has the previewed content. Cancelling installs and records nothing.
+- **What each action accepts.** *install*: `name@marketplace`, not installed yet. *update*: the
+  plugin is installed and the marketplace's content differs. *approve*: the installed copy equals
+  what the marketplace offers now (otherwise update first). A plugin with no hook or server has
+  nothing to approve. A plugin that did not come from a marketplace has no preview the daemon
+  can give, so it cannot be approved from the app yet.
+- **Environment.** At start the app reads its own environment. If it sets any `WEBVIEW2_*`,
+  `DYLD_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH` or `LD_AUDIT` (the daemon's own list,
+  `imperium_ipc::refused_variable`, the same function the daemon uses on a peer), `plugin_approve`
+  answers `approved: false` with the variable's name and sends nothing. The daemon reads no peer
+  environment on Windows, so this is the check there.
+- **The answer** is `{ approved, kind, reason, cancelled, installed }`: `installed` says this call
+  put the plugin's folder in place even when the approval then failed. Until the OS presence
+  check (stage 8c) a release daemon refuses ("presence check not built") and a debug daemon
+  records `dev`.
+- **macOS entitlements.** `apps/desktop/src-tauri/entitlements.plist` (named by
+  `bundle.macOS.entitlements`) asks for none. The Build workflow runs
+  `scripts/ci/check-entitlements.py` on it and fails the macOS job if it carries
+  `com.apple.security.cs.allow-dyld-environment-variables`,
+  `com.apple.security.cs.disable-library-validation`, `com.apple.security.get-task-allow` (what
+  attaching WebKit's inspector needs) or `com.apple.security.cs.debugger`. It also runs the check
+  on a deliberately bad fixture (`scripts/ci/fixtures/bad-entitlements.plist`) and fails if the
+  check accepts it or does not name the first three.
+- **Not done: `SetDefaultDllDirectories`.** Calling it at start on Windows needs `unsafe`, which
+  the workspace forbids, and no crate in the lock offers a safe wrapper, so the app does not call it
+  yet (stage 8b's handoff notes in the plan).
+
 ## Panels
 
 The whole interface is made of **panels**. There is no fixed main screen: the window is a
