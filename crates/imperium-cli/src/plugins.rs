@@ -724,7 +724,12 @@ fn printable(text: &str) -> String {
         let hidden = c.is_control()
             || matches!(
                 c,
-                '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                '\u{061C}'
+                    | '\u{200B}'..='\u{200F}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2060}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{FEFF}'
             );
         if hidden {
             out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
@@ -792,10 +797,10 @@ fn render_suggestions(offers: &PluginsSuggestionsResult, commands: bool) -> Stri
             let flag = offer
                 .revision
                 .as_deref()
-                .map(|revision| format!(" --revision {}", shell_word(revision)))
+                .map(|revision| format!(" --revision={}", shell_word(revision)))
                 .unwrap_or_default();
             text.push_str(&format!(
-                "    imperium plugin marketplace add {}{flag}\n",
+                "    imperium plugin marketplace add{flag} -- {}\n",
                 shell_word(&offer.source)
             ));
         }
@@ -815,7 +820,7 @@ fn render_suggestions(offers: &PluginsSuggestionsResult, commands: bool) -> Stri
         ));
         if commands && !offer.installed && offer.marketplace_added {
             text.push_str(&format!(
-                "    imperium plugin install {}\n",
+                "    imperium plugin install -- {}\n",
                 shell_word(&offer.id)
             ));
         }
@@ -1516,11 +1521,11 @@ mod tests {
         assert!(piped.contains("lint@acme"), "{piped}");
         let shown = render_suggestions(&offers(), true);
         assert!(
-            shown.contains("imperium plugin install lint@acme"),
+            shown.contains("imperium plugin install -- lint@acme"),
             "{shown}"
         );
         assert!(
-            shown.contains("imperium plugin marketplace add '"),
+            shown.contains("imperium plugin marketplace add --revision=v1 -- '"),
             "{shown}"
         );
         for text in [&piped, &shown] {
@@ -1554,6 +1559,80 @@ mod tests {
         assert_eq!(printable("a\u{202e}b"), "a\\u{202e}b");
         assert_eq!(printable("tab\there"), "tab\\u{9}here");
         assert_eq!(printable("plain text é"), "plain text é");
+    }
+
+    #[test]
+    fn zero_width_characters_are_escaped() {
+        for (c, shown) in [
+            ('\u{200b}', "\\u{200b}"),
+            ('\u{200c}', "\\u{200c}"),
+            ('\u{200d}', "\\u{200d}"),
+            ('\u{2060}', "\\u{2060}"),
+            ('\u{feff}', "\\u{feff}"),
+        ] {
+            assert_eq!(printable(&format!("a{c}b")), format!("a{shown}b"));
+        }
+    }
+
+    #[test]
+    fn an_offer_that_starts_with_a_dash_stays_one_word_after_the_double_dash() {
+        use clap::Parser;
+
+        use crate::Command;
+
+        let mut result = offers();
+        result.marketplaces[0].source = "--remote=x\u{200b}".into();
+        result.marketplaces[0].revision = Some("-v".into());
+        result.plugins[0].id = "-lint@acme".into();
+        let shown = render_suggestions(&result, true);
+        assert!(
+            shown.contains(
+                "imperium plugin marketplace add --revision=-v -- '--remote=x\\u{200b}'\n"
+            ),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("imperium plugin install -- -lint@acme\n"),
+            "{shown}"
+        );
+        assert!(!shown.contains('\u{200b}'), "{shown:?}");
+
+        // The command line parser reads each printed command as one word after `--`, never as
+        // an option.
+        let parsed = crate::Cli::try_parse_from([
+            "imperium",
+            "plugin",
+            "marketplace",
+            "add",
+            "--revision=-v",
+            "--",
+            "--remote=x",
+        ])
+        .unwrap();
+        assert!(parsed.remote.is_none());
+        let Command::Plugin {
+            command:
+                PluginCommand::Marketplace {
+                    command: MarketplaceCommand::Add { source, revision },
+                },
+        } = parsed.command
+        else {
+            panic!("not a marketplace add");
+        };
+        assert_eq!(
+            (source.as_str(), revision.as_deref()),
+            ("--remote=x", Some("-v"))
+        );
+        let parsed =
+            crate::Cli::try_parse_from(["imperium", "plugin", "install", "--", "-lint@acme"])
+                .unwrap();
+        let Command::Plugin {
+            command: PluginCommand::Install { id, .. },
+        } = parsed.command
+        else {
+            panic!("not an install");
+        };
+        assert_eq!(id, "-lint@acme");
     }
 
     #[test]

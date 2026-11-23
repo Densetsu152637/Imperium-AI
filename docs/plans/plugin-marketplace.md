@@ -1106,7 +1106,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   absent.
 - Risks: suggestion text is repository data; it goes only to the user's surfaces, never into a
   prompt.
-- Status: in review
+- Status: done
 - Outcome: protocol 0.55: `plugins.suggestions` and `plugins.dismiss_suggestion`
   (`crates/imperium-core/src/plugin_suggestions.rs`, `environments.rs`, `rpc/config.rs`,
   `imperium-config/src/environment.rs`, generated types, snapshot, docs 02, 06 and 14).
@@ -1122,8 +1122,10 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   folders, the settings, the plugin list and the environment's lists are unchanged; an untrusted
   folder's offers are refused and shown in `environment_config`; a dismissed offer stays dismissed;
   a muted project offers nothing even after its file changes to a new offer; the CLI prints the
-  commands only when told its output is a terminal, quotes the repository's words as one shell
-  word and escapes control characters. Choices: `source_folder` must be the environment's own
+  commands only when told its output is a terminal, after `--` (`imperium plugin marketplace add
+  --revision=<rev> -- <source>`, `imperium plugin install -- <id>`, so a word that starts with `-`
+  is never an option; the parser is tested), quotes the repository's words as one shell word and
+  escapes control, text-reordering and zero-width characters. Choices: `source_folder` must be the environment's own
   first folder (so the muted list cannot be grown with arbitrary paths) and at most 500
   dismissals and 500 muted folders are kept per environment; "already added" for a marketplace
   offer compares sources (case, `.git` and `https://github.com/` ignored) and for a plugin offer
