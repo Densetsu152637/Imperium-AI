@@ -280,7 +280,8 @@ launcher warning, the skills, commands and agents, and `sha256`), then ask `Inst
 `--yes` is required; `--yes` answers that question only and never approves the plugin. Both
 install exactly the hash that was printed (`--sha256` additionally pins the hash from an earlier
 run), and afterwards say that a plugin with code is **withheld until approved in the desktop
-app**. `update` takes the plugin's `name@marketplace` from `plugins.list`, so a plugin that was
+app**. When the installed folder already holds the inspected content, `update` asks nothing and
+calls `plugins.update`, so the daemon alone decides "up to date". `update` takes the plugin's `name@marketplace` from `plugins.list`, so a plugin that was
 not installed from a marketplace has nothing to update from. `secret set` reads the value from a
 prompt without echo at a terminal, or from standard input when it is not one (at most 64 KiB,
 without the final line break); it is never an argument, so it does not reach the shell history

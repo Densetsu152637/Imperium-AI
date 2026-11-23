@@ -1053,9 +1053,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   `imperium config set extensions.plugin_dirs '["/tmp/x"]'` all ask; file-tool writes to the store,
   the marker and `<config>/plugins/x/` ask; reads do not.
 - Risks: the floor is a guard against mistakes, not a control (U5).
-- Status: in review, in two pull requests: 6a the floor and 6b the CLI, stacked on it (together
-  they pass the size limit; the CLI alone is the larger part because its help snapshot and tests
-  count)
+- Status: done
 - Outcome: 6a: `imperium plugin marketplace add`, `plugin install|update|enable` and `config
   set|unset` of `extensions.disabled_plugins` or `extensions.plugin_dirs` ask
   (`imperium-policy/src/floor.rs`, with tests for every line the plan lists and for the read-only
@@ -1071,8 +1069,9 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   `enable` is refused, `list` shows it; no terminal and no `--yes` installs nothing; a secret is
   saved and never printed; the command tree holds nothing named approve.
   Choices: `update` finds the plugin's `name@marketplace` in `plugins.list` and inspects that id
-  (there is no inspect for an update), so the prompt shows the new version's content and an
-  unchanged content prints "up to date" without asking; `install` refuses a name that is
+  (there is no inspect for an update), so the prompt shows the new version's content; when the
+  folder already holds the inspected content nothing is asked and `plugins.update` is called, so
+  the daemon alone decides "up to date" (it also checks the record's hash); `install` refuses a name that is
   already installed before asking; the floor's `config` rule looks for the verb `set` or `unset`
   and either key (case-insensitive prefix, so `key=value` also asks) anywhere after the
   `config` word, and its `plugin` rule for the verbs anywhere after `plugin`, so a global
