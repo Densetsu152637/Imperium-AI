@@ -66,6 +66,11 @@ impl Origin {
     pub(crate) fn downloaded(self) -> bool {
         matches!(self, Origin::Marketplace | Origin::Agent | Origin::User)
     }
+
+    /// Imperium made the folder, named for the plugin (the gate's folder-name rule applies).
+    fn placed_by_imperium(self) -> bool {
+        matches!(self, Origin::Marketplace | Origin::Agent)
+    }
 }
 
 /// How an approval came about.
@@ -612,7 +617,7 @@ fn judge(
     // A preexisting or user plugin (a clone, say) may sit in a folder of another name; one
     // that Imperium downloaded sits in `<name>`. A moved folder is a new canonical path with no
     // record either way, and a changed manifest name changes the hash.
-    let named_for_it = !record.origin.downloaded() || folder_name == record.name;
+    let named_for_it = !record.origin.placed_by_imperium() || folder_name == record.name;
     if !named_for_it || record.name != plugin.name {
         return Some(format!(
             "the folder name ({folder_name}), the recorded name ({}) and the manifest name ({}) differ",
@@ -863,6 +868,27 @@ mod tests {
             .into_iter()
             .map(|(name, _)| name)
             .collect()
+    }
+
+    #[test]
+    fn a_user_record_may_sit_in_a_folder_named_unlike_its_manifest() {
+        let home = home();
+        let folder = plugin(&home, "some-clone", "real-name", true);
+        record(&home, &folder, Origin::User, Some(ApprovalKind::Counted));
+        assert!(
+            withheld(&home).is_empty(),
+            "{:?}",
+            reasons(&home, &DebugVerifier)
+        );
+        // One Imperium placed must sit in a folder of the plugin's name.
+        let placed = plugin(&home, "wrong-folder", "right-name", true);
+        record(
+            &home,
+            &placed,
+            Origin::Marketplace,
+            Some(ApprovalKind::Counted),
+        );
+        assert_eq!(withheld(&home), ["wrong-folder"]);
     }
 
     #[test]
