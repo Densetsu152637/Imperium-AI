@@ -299,7 +299,7 @@ itself (`crates/imperium-core/src/app_identity/`), never from what the caller se
   the executable read by pid), and on Linux its mount and pid namespaces are the daemon's (an
   OS-tier sandbox has its own);
 - on Linux and macOS, its environment sets no `WEBVIEW2_*`, `DYLD_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH` or
-  `LD_AUDIT`. `dyld` strips `DYLD_*` variables from a restricted (hardened or setuid) process at
+  `LD_AUDIT`; outside Windows the names are matched exactly, as the loaders read them. `dyld` strips `DYLD_*` variables from a restricted (hardened or setuid) process at
   start, so for such a process macOS shows none and the hardened runtime's library validation is
   what holds instead. On Windows the daemon does not read the peer's environment (that would mean
   reading another process's memory): it checks the path, the creation time and the rule below,

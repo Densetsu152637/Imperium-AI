@@ -1183,7 +1183,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   `mod.rs` holds check 1 (`local_only`, run before the plugin is looked up or any process is
   read), the `Identify` trait with the production `InstalledApp` (checks 1 to 4 against
   `imperium-desktop` beside the running executable), `refused_variable` (check 4's names, compared
-  ignoring case), `Challenges` (check 5) and the `challenge` and `approve` flows; `linux.rs` the
+  ignoring case (on Windows only since 8a-ii)), `Challenges` (check 5) and the `challenge` and `approve` flows; `linux.rs` the
   pidfd identity; `unsupported.rs` the Windows and macOS stub, which refuses with "not built for
   this platform yet". `server.rs` takes the identity at accept beside the existing pid and accept
   time (`PeerPid`), and `Connection` holds it with its own `Challenges`. `ApprovalVerifier` gained
