@@ -158,8 +158,9 @@ impl Components {
     }
 }
 
-/// What a `plugin.json` or a marketplace entry says about a plugin. Unknown fields are ignored
-/// and a field of the wrong type is reported and left out.
+/// What a `plugin.json` or a marketplace entry says about a plugin. Unknown fields are ignored.
+/// A component field (`commands`, `agents`, `hooks`, `mcpServers`) of the wrong type is reported
+/// and left out; a metadata field of the wrong type is left out without a report.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Fields {
     pub name: Option<String>,
@@ -258,7 +259,9 @@ pub fn discover(
     let mut plugins = Vec::new();
     let mut problems = Vec::new();
     for root in plugin_folders(dirs) {
-        let is_downloaded = downloaded.iter().any(|folder| same_folder(folder, &root));
+        // An agent-installed folder is downloaded whatever the caller passed.
+        let is_downloaded =
+            downloaded.iter().any(|folder| same_folder(folder, &root)) || agent_installed(&root);
         match load(&root, server_timeout, is_downloaded) {
             Ok((plugin, mut notes)) => {
                 problems.append(&mut notes);
@@ -346,7 +349,10 @@ fn inside(root: &Path, declared: &str) -> Result<PathBuf, String> {
         match part {
             "" | "." => continue,
             ".." => return Err(format!("{declared}: leaves the plugin folder")),
-            part if part.contains('\0') => return Err(format!("{declared}: not a valid path")),
+            // A colon in any part would make `push` restart from a drive on Windows.
+            part if part.contains([':', '\0']) => {
+                return Err(format!("{declared}: not a valid path"));
+            }
             part => path.push(part),
         }
         if checking {
@@ -359,6 +365,9 @@ fn inside(root: &Path, declared: &str) -> Result<PathBuf, String> {
                 Err(error) => return Err(format!("{declared}: {error}")),
             }
         }
+    }
+    if !path.starts_with(root) {
+        return Err(format!("{declared}: leaves the plugin folder"));
     }
     Ok(path)
 }
@@ -579,6 +588,11 @@ fn load(
 pub struct RunSummary {
     pub hooks: Vec<HookRun>,
     pub servers: Vec<ServerRun>,
+    /// The plugin folder the commands and URLs above are expanded with. Shown strings keep it;
+    /// the canonical JSON and the digest put `${CLAUDE_PLUGIN_ROOT}` back, so the same plugin
+    /// in another folder has the same digest.
+    #[serde(skip)]
+    root: String,
 }
 
 impl RunSummary {
@@ -589,14 +603,28 @@ impl RunSummary {
             || self.servers.iter().any(|server| server.launcher)
     }
 
-    /// The summary as canonical JSON (sorted keys, no insignificant whitespace).
+    /// The summary as canonical JSON (sorted keys, no insignificant whitespace), with the plugin
+    /// folder written as `${CLAUDE_PLUGIN_ROOT}` so it does not depend on where the plugin is.
     pub fn canonical_json(&self) -> String {
-        canonical_json(&serde_json::to_value(self).unwrap_or(Value::Null))
+        let mut value = serde_json::to_value(self).unwrap_or(Value::Null);
+        if !self.root.is_empty() {
+            unroot(&mut value, &self.root);
+        }
+        canonical_json(&value)
     }
 
     /// The SHA-256 of [`RunSummary::canonical_json`], as lowercase hex.
     pub fn digest(&self) -> String {
         hex(&Sha256::digest(self.canonical_json().as_bytes()))
+    }
+}
+
+fn unroot(value: &mut Value, root: &str) {
+    match value {
+        Value::String(text) => *text = text.replace(root, "${CLAUDE_PLUGIN_ROOT}"),
+        Value::Array(items) => items.iter_mut().for_each(|item| unroot(item, root)),
+        Value::Object(map) => map.values_mut().for_each(|item| unroot(item, root)),
+        _ => {}
     }
 }
 
@@ -651,6 +679,7 @@ pub fn runs(plugin: &Plugin) -> RunSummary {
             })
             .collect(),
         servers: plugin.declared.clone(),
+        root: plugin.root.display().to_string(),
     }
 }
 
@@ -1048,14 +1077,14 @@ mod tests {
         let root = dir.path().join("p");
         write(
             &root.join(".claude-plugin/plugin.json"),
-            r#"{"name": "p", "commands": ["../outside", "/etc"], "agents": ["./a/../../x"],
-                "hooks": "../hooks.json", "mcpServers": ["C:\\servers.json"]}"#,
+            r#"{"name": "p", "commands": ["../outside", "/etc", "x/C:"], "agents": ["./a/../../x"],
+                "hooks": ["../hooks.json", "a/C:hooks.json"], "mcpServers": ["C:\\servers.json"]}"#,
         );
         write(&dir.path().join("hooks.json"), r#"{"hooks": {}}"#);
         let (plugin, problems) = load_one(&root, &[]);
         assert!(plugin.hooks.is_empty() && plugin.servers.is_empty());
         assert!(plugin.extra_commands.is_empty() && plugin.extra_agents.is_empty());
-        assert_eq!(problems.len(), 5, "{problems:?}");
+        assert_eq!(problems.len(), 7, "{problems:?}");
     }
 
     #[cfg(unix)]
@@ -1249,5 +1278,55 @@ mod tests {
         ] {
             assert!(!flagged(no), "{no}");
         }
+    }
+
+    #[test]
+    fn the_digest_does_not_depend_on_the_plugin_folder() {
+        let build = |dir: &Path| {
+            write(
+                &dir.join("p/.claude-plugin/plugin.json"),
+                r#"{"name": "p"}"#,
+            );
+            write(
+                &dir.join("p/hooks/hooks.json"),
+                r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/check.sh"}]}]}}"#,
+            );
+            write(
+                &dir.join("p/.mcp.json"),
+                r#"{"mcpServers": {"s": {"command": "${CLAUDE_PLUGIN_ROOT}/serve", "args": ["${CLAUDE_PLUGIN_ROOT}/x"]}}}"#,
+            );
+        };
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        build(first.path());
+        build(second.path());
+        let a = runs(&load_one(first.path(), &[]).0);
+        let b = runs(&load_one(second.path(), &[]).0);
+        // Shown strings carry the folder; the digest does not.
+        assert_ne!(a.hooks[0].command, b.hooks[0].command);
+        assert!(
+            a.canonical_json()
+                .contains("${CLAUDE_PLUGIN_ROOT}/check.sh")
+        );
+        assert_eq!(a.canonical_json(), b.canonical_json());
+        assert_eq!(a.digest(), b.digest());
+    }
+
+    #[test]
+    fn an_agent_installed_folder_is_downloaded_even_if_the_caller_forgets() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vars");
+        write(
+            &root.join(".claude-plugin/plugin.json"),
+            r#"{"name": "vars"}"#,
+        );
+        write(
+            &root.join(".mcp.json"),
+            r#"{"mcpServers": {"api": {"type": "http", "url": "https://example.test/${PATH}/x"}}}"#,
+        );
+        write(&root.join(SOURCE_FILE), r#"{"session_id": "s1"}"#);
+        let (plugin, _) = load_one(dir.path(), &[]);
+        assert!(plugin.downloaded);
+        assert_eq!(http_url(&plugin), "https://example.test//x");
     }
 }
