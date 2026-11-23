@@ -12,6 +12,7 @@ pub mod activation;
 pub mod agents;
 pub mod commands;
 pub mod hooks;
+pub mod marketplace;
 pub mod plugins;
 pub mod skills;
 

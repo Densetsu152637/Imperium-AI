@@ -656,13 +656,26 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   never reads the daemon environment and gets `may_rewrite = false`; existing tests unchanged.
 - Risks: unknown fields must stay ignored; component paths "add to the default folder" (record
   the choice in the module doc).
-- Status: in progress. Split in two pull requests because the whole stage came to about 1,700
-  changed lines: this one holds (b), (c) and (d); the next adds (a), `marketplace.rs`.
-- Outcome: (b), (c) and (d) done. `plugins.rs` reads the full manifest, honours declared
-  component paths inside the plugin only (a link is refused), loads an entry-only folder,
-  summarises and digests `runs`, and takes the `downloaded` set through `Sources`; the daemon
-  fills it with the folders an agent installed, so behaviour is unchanged.
-- Handoff notes: keep parsing free of I/O beyond reading the given folder.
+- Status: done (two pull requests: (b), (c), (d) first, then (a); the whole stage came to about
+  1,700 changed lines).
+- Outcome: `marketplace.rs` parses `marketplace.json` (sources, `pluginRoot`, unknown fields
+  ignored, `check_name`, bad entries reported without hiding the rest) and writes an entry as
+  canonical JSON. `plugins.rs` reads the full manifest, honours declared component paths inside
+  the plugin only (a link is refused), loads an entry-only folder, summarises and digests
+  `runs`, and takes the `downloaded` set through `Sources`; the daemon fills it with the folders
+  an agent installed, so behaviour is unchanged. Choices: a bare relative source is under
+  `pluginRoot` and `./x` is from the repository root; only `https://` Git URLs without
+  credentials; declared `commands` and `agents` paths must be folders; declared components add
+  to the defaults and the first definition of a name wins; `runs` describes the declared text
+  (`${VAR}` kept) so it never carries a daemon environment value; the entry's metadata fills what
+  `plugin.json` leaves out.
+- Handoff notes: keep parsing free of I/O beyond reading the given folder. Stage 2 clones with
+  the safe `git` call and then uses `marketplace::read`, `Entry::canonical_json` and
+  `Source::clone_url`; stage 3a-i fills `Sources.downloaded` with marketplace installs (and
+  `plugins::agent_installed_folders` stays for agent installs); stage 3a-ii hashes the folder
+  including `marketplace-entry.json` and binds approvals to `runs(..).digest()`. Declared
+  `commands` and `agents` folders reach the session through `Plugin::extra_commands` and
+  `extra_agents`.
 
 ## Stage 2: Marketplaces in the daemon
 
