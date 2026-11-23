@@ -692,6 +692,18 @@ and `environments.agent_update` (protocol 0.28)
     protocol and fifteen stages are in the
     [plugin marketplace plan](plans/plugin-marketplace.md).
 <!-- markdownlint-disable-next-line MD029 -->
+52. **Review commands** (implemented). Claude Code's `/code-review` and `/security-review`
+    (desktop composer and `imperium chat`). Each is a built-in prompt sent as an ordinary user
+    turn, like `/init`, through the new `session.builtin` (`init`, `code_review`,
+    `security_review`; `session.init` stays as the same call for `init`). The agent reviews with
+    its existing tools under the session's permissions, adds no tool and does not edit; one agent
+    does the review. `[low|medium|high|max] [target]`: no target is the uncommitted changes plus
+    the branch against its base, a number uses `gh pr diff` and a pull request URL (any repository) is given to `gh` whole, anything else is
+    a branch or a path. Findings come with `path:line`, severity, confidence and a suggested fix,
+    and the security review adds exploitability reasoning. Protocol 0.48
+    ([07](07-desktop-ui.md#file-mentions-and-init-implemented),
+    [03](03-agent-engine.md#queueing-and-steering)).
+<!-- markdownlint-disable-next-line MD029 -->
 56. **Shared daemon lifetime** (implemented). One `imperium-core` per user, shared like a
     reference-counted pointer. The desktop app, every `imperium` command and the MCP bridge
     (`imperium mcp-serve`) find the daemon through `daemon.json` and start

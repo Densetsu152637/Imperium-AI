@@ -723,6 +723,10 @@ built-in prompt that has the agent write or update the project's `AGENTS.md`, `/
 lists the session's files and folders that match (the search behind the composer's `@` picker),
 and an `@path` in a message (or `@"a path with spaces"`) attaches that file through
 `session.attach` with `mention`, as in the desktop composer
+([07](07-desktop-ui.md#file-mentions-and-init-implemented)). `/code-review` and
+`/security-review` take `[low|medium|high|max] [PR number | branch | path]` and send the built-in
+review prompts through `session.builtin`: the agent reports findings (`path:line`, severity,
+confidence, suggested fix) and edits nothing
 ([07](07-desktop-ui.md#file-mentions-and-init-implemented)). The command's input is read a line
 at a time with no line editor, so there is no completion on `@`: `/files` is the way to search.
 A word after `@` that names no file stays plain text, an `@folder` is only named, and a file

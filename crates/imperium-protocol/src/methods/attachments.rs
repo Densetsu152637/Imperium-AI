@@ -128,6 +128,48 @@ pub struct SessionInitParams {
     pub confirm_budget: Option<bool>,
 }
 
+/// `session.builtin`: runs one of the built-in slash commands. Like `session.init`, which is
+/// the same as `command: "init"`, the daemon sends the command's built-in prompt as an ordinary
+/// user message and the agent works with its normal tools, so permissions and approvals apply
+/// and nothing is edited unless the user approves it. `args` is what followed the command
+/// (guidance for `init`; for the review commands an optional effort level, then an optional
+/// target: a pull request number, a branch or a path, and the pending changes when absent).
+/// Like `session.send` the message queues while the agent is busy and waits on the session's
+/// budgets; the result is the same.
+#[derive(Debug)]
+pub struct SessionBuiltin;
+
+impl Method for SessionBuiltin {
+    const NAME: &'static str = "session.builtin";
+    type Params = SessionBuiltinParams;
+    type Result = SessionSendResult;
+}
+
+/// A built-in slash command that `session.builtin` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BuiltinCommand {
+    Init,
+    CodeReview,
+    SecurityReview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionBuiltinParams {
+    pub session_id: String,
+    pub command: BuiltinCommand,
+    /// The text after the command name; empty when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub args: Option<String>,
+    /// Go ahead although a budget in the session's scope is used up and says to ask first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub confirm_budget: Option<bool>,
+}
+
 /// `voice.transcribe`: turns recorded speech into text through `[media.transcription]` (an
 /// OpenAI-compatible `/audio/transcriptions` endpoint). The text is returned, not sent.
 #[derive(Debug)]

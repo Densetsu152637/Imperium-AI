@@ -85,6 +85,7 @@ method session.attach
 method session.branch
 method session.browser_act
 method session.browser_control
+method session.builtin
 method session.checkpoints
 method session.compare
 method session.compare_pick
