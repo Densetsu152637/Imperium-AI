@@ -444,9 +444,10 @@ has no code that names `plugins.approve` or `plugins.approval_challenge` (a test
   attaching WebKit's inspector needs) or `com.apple.security.cs.debugger`. It also runs the check
   on a deliberately bad fixture (`scripts/ci/fixtures/bad-entitlements.plist`) and fails if the
   check accepts it or does not name the first three.
-- **Not done: `SetDefaultDllDirectories`.** Calling it at start on Windows needs `unsafe`, which
-  the workspace forbids, and no crate in the lock offers a safe wrapper, so the app does not call it
-  yet (stage 8b's handoff notes in the plan).
+- **DLL search (Windows).** First thing in `main` the app calls `imperium_ipc::harden_dll_search()`, which
+  runs `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` (the one `unsafe` call, in
+  `imperium-ipc`'s Windows module that already allows it), so a DLL planted in the current directory or on
+  `PATH` is not loaded by name. A failure is printed and the app carries on.
 
 ## Panels
 

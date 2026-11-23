@@ -1292,7 +1292,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   with a debug daemon and debug app: the dialog appears, the approval is recorded as `dev`; the
   webview has no way to call `plugins.approve` with a challenge.
 - Risks: until stage 8c, approvals are recorded only by debug daemons.
-- Status: done, except `SetDefaultDllDirectories` (see the Outcome); protocol unchanged (0.56)
+- Status: done; protocol unchanged (0.56)
 - Outcome: `apps/desktop/src-tauri/src/plugin_approval.rs` holds the command
   `plugin_approve(name, action, environment?)`. It is allowed only from `main` and `panel-*`
   (`own_window`, plus the access control list: `build.rs` lists every app command through
@@ -1321,19 +1321,16 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   cancelled, installed}`; *approve* and *update* resolve a plain name through `plugins.list` to the
   plugin's `name@marketplace`, and a plugin with no marketplace id (pre-existing, user) is
   refused because `plugins.inspect` cannot preview it; *approve* requires the installed copy to
-  equal the marketplace's current content. **`SetDefaultDllDirectories` is not called:** it is an
-  `unsafe fn` in `windows` 0.61 and 0.62 and in `windows-sys`, the only crates of the lock that
-  expose it, and the workspace forbids `unsafe`; stopped here as instructed. Options for the
-  user: allow one `unsafe` call in a small module (the `imperium-ipc` pattern), or link with
-  `/DEPENDENTLOADFLAG:0x800` in `build.rs`, which sets the image's default DLL load flags without
-  code but is not the same call and could affect how WebView2's loader finds its DLLs.
+  equal the marketplace's current content. **`SetDefaultDllDirectories`** (user decision): no safe wrapper exists in the lock, so the one
+  `unsafe` call lives in `imperium-ipc`'s allowed Windows module (`windows/dll.rs`, with a SAFETY comment) as
+  `harden_dll_search() -> io::Result<()>` using `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`; the app calls it first in
+  `main` on Windows and, on error, prints and continues. The linker flag was rejected. Windows-only test: it returns Ok.
   Tests (Rust, in CI): the request parameters carry the previewed hash and digest and an install
   never carries `approve`; a TCP-only endpoint is refused; the windows allowed; what each action
   accepts; the dialog's content, its escaping and its refusal when too long; a refused environment
   variable refuses with its name; the capability and `build.rs` checks above; the interface names
   neither approval method; `refused_variable` moved with its test. In CI: the entitlements check on
-  the real file and on the bad fixture (macOS bundle job). Not verified: the by-hand check below,
-  `SetDefaultDllDirectories`, and that Tauri's access control list rejects a mod frame's call (the
+  the real file and on the bad fixture (macOS bundle job). Not verified: the by-hand check below, that the call succeeds in the shipped app (the test covers the call), and that Tauri's access control list rejects a mod frame's call (the
   frame's origin handling is Tauri's, tested here only through the capability file).
   By hand, with a debug daemon and the debug app from the same cargo target folder: in a
   scratch config folder add a marketplace holding a plugin with a hook, run
@@ -1357,8 +1354,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   capability (a test fails otherwise); a new window label that must call commands goes in the
   capability's `windows`, and `plugin_approve` stays limited to `main` and `panel-*`. Stage 8c
   adds no app code: the presence prompt is the daemon's, so the approve call may take long
-  (the app waits up to five minutes). Still open for the user: `SetDefaultDllDirectories` (see the
-  Outcome).
+  (the app waits up to five minutes). 
 
 ## Stage 8c: OS presence check
 

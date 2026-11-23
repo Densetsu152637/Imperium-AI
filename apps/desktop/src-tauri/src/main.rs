@@ -34,6 +34,12 @@ fn paint_background(window: &tauri::WebviewWindow) {
 }
 
 fn main() {
+    // First, before anything loads a DLL by name: search only the app directory and System32.
+    // A failure is logged, not fatal: the app still runs, only without the narrower search.
+    #[cfg(windows)]
+    if let Err(error) = imperium_ipc::harden_dll_search() {
+        eprintln!("could not narrow the DLL search path: {error}");
+    }
     let background = update::background();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

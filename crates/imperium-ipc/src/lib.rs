@@ -23,7 +23,9 @@ pub use macos_sandbox::is_sandboxed;
 #[cfg(unix)]
 pub use unix::{Listener, Stream, connect, peer_pid};
 #[cfg(windows)]
-pub use windows::{ClientProcess, Listener, Stream, client_process, connect, peer_pid};
+pub use windows::{
+    ClientProcess, Listener, Stream, client_process, connect, harden_dll_search, peer_pid,
+};
 
 #[cfg(all(test, any(unix, windows)))]
 mod tests {

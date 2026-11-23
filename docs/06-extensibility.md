@@ -321,8 +321,7 @@ release daemons ignore) for the debug app built beside it. The desktop app calls
 its own local-socket connection, after a native dialog built from the daemon's preview
 ([plugin approval](07-desktop-ui.md#plugin-approval-implemented)); its web view never does. The macOS release app asks for no
 entitlements, and CI fails the build if its entitlements file carries `allow-dyld-environment-variables`,
-`disable-library-validation` or WebKit inspection (`get-task-allow`). The app does not yet call `SetDefaultDllDirectories`
-on Windows (it needs `unsafe`, which the workspace forbids).
+`disable-library-validation` or WebKit inspection (`get-task-allow`). On Windows the app calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` first thing at start (`imperium_ipc::harden_dll_search`).
 
 **Repository suggestions (protocol 0.55; not a paired phone).** A project folder in
 `mcp.trusted_projects` may list, in its `.imperium/config.toml` (or `config.local.toml`),
