@@ -99,6 +99,7 @@ impl PluginSecrets {
     }
 
     /// The lookup itself, for other crates' tests.
+    #[doc(hidden)]
     pub fn lookup_for_test(&self, plugin: &str, variable: &str) -> Option<String> {
         self.get(plugin, variable)
     }
