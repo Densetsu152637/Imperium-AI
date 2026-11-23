@@ -20,9 +20,8 @@
 //!    per-machine Program Files folder (`windows::may_count`); a debug build's `dev` approval is
 //!    exempt.
 //!
-//! Linux and Windows are implemented (Windows reads no peer environment: the app checks its own,
-//! stage 8b); macOS refuses every approval until its checks are built.
-//! None of this is a boundary against unconfined code running as the user (U5 of the plan).
+//! Linux, Windows and macOS are implemented (Windows reads no peer environment: the app checks
+//! its own, stage 8b); another platform refuses every approval.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -41,9 +40,13 @@ use linux as platform;
 mod windows;
 #[cfg(windows)]
 use windows as platform;
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos as platform;
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod unsupported;
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 use unsupported as platform;
 
 pub(crate) use platform::Peer;
@@ -77,13 +80,19 @@ pub(crate) fn installed_app() -> Result<PathBuf, String> {
 }
 
 /// The first variable in `names` whose presence refuses a peer (check 4): any `WEBVIEW2_*` or
-/// `DYLD_*`, and `LD_PRELOAD`, `LD_LIBRARY_PATH` and `LD_AUDIT`. Names compare ignoring case,
-/// as Windows does.
-// Windows reads no peer environment (the app checks its own, stage 8b); macOS is not built yet.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// `DYLD_*`, and `LD_PRELOAD`, `LD_LIBRARY_PATH` and `LD_AUDIT`. Names compare ignoring case
+/// only on Windows, as Windows does; elsewhere the loader honours only these exact names, and
+/// macOS lists lowercase strings of its own (`dyld_file=`, from the kernel's `apple[]` vector)
+/// next to the environment.
+// Windows reads no peer environment: the app checks its own (stage 8b).
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn refused_variable<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<String> {
     names.into_iter().find_map(|name| {
-        let upper = name.to_ascii_uppercase();
+        let upper = if cfg!(windows) {
+            name.to_ascii_uppercase()
+        } else {
+            name.to_string()
+        };
         let refused = upper.starts_with("WEBVIEW2_")
             || upper.starts_with("DYLD_")
             || matches!(
@@ -338,9 +347,15 @@ mod tests {
             "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
             "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
             "DYLD_INSERT_LIBRARIES",
-            "webview2_user_data_folder",
         ] {
             assert_eq!(refused_variable(["PATH", name]).as_deref(), Some(name));
+        }
+        // Case matters except on Windows, where names compare ignoring it.
+        let lower = refused_variable(["webview2_user_data_folder", "dyld_file"]);
+        if cfg!(windows) {
+            assert_eq!(lower.as_deref(), Some("webview2_user_data_folder"));
+        } else {
+            assert_eq!(lower, None);
         }
     }
 

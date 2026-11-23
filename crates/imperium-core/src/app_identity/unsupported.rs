@@ -1,4 +1,4 @@
-//! macOS: not built yet (stage 8a-ii of the plugin marketplace plan). Every approval
+//! A platform other than Linux, Windows and macOS: not built. Every approval
 //! is refused, so these platforms record nothing.
 
 use std::path::Path;

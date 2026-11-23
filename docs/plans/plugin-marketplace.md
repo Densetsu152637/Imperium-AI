@@ -1178,12 +1178,12 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   builds; with counting off nothing is recorded.
 - Risks: platform APIs new to the codebase, each needing its CI runner. Split if over 800 lines
   (8a-i shared and Linux, 8a-ii Windows and macOS).
-- Status: 8a-i done; 8a-ii Windows done, macOS pending
+- Status: done
 - Outcome: **8a-i (shared and Linux), protocol 0.56.** `crates/imperium-core/src/app_identity/`:
   `mod.rs` holds check 1 (`local_only`, run before the plugin is looked up or any process is
   read), the `Identify` trait with the production `InstalledApp` (checks 1 to 4 against
   `imperium-desktop` beside the running executable), `refused_variable` (check 4's names, compared
-  ignoring case), `Challenges` (check 5) and the `challenge` and `approve` flows; `linux.rs` the
+  ignoring case (on Windows only since 8a-ii)), `Challenges` (check 5) and the `challenge` and `approve` flows; `linux.rs` the
   pidfd identity; `unsupported.rs` the Windows and macOS stub, which refuses with "not built for
   this platform yet". `server.rs` takes the identity at accept beside the existing pid and accept
   time (`PeerPid`), and `Connection` holds it with its own `Challenges`. `ApprovalVerifier` gained
@@ -1237,6 +1237,28 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   test run with `IMPERIUM_SIGNED_BUILD` set, a file of that name beside the binary and
   `ProgramFiles`/`ProgramW6432` pointed at its folder, which still counts nothing; the shared
   counting test refuses on Windows by check 7.
+- Outcome (8a-ii, macOS): `app_identity/macos.rs` takes the audit token at accept (`nix`'s
+  `LocalPeerToken`) and derives the rest from it: the code object by token (`security-framework`'s
+  `SecCode::copy_guest_with_attribues`), whose path (the executable, or the bundle whose
+  `Contents/MacOS/imperium-desktop` is the app) must be the app beside `imperium-core`;
+  `imperium_ipc::is_sandboxed` (`sandbox_check_by_audit_token` in `imperium-ipc`'s
+  `macos_sandbox.rs`, the one Unix-side module allowing `unsafe`) must answer "not sandboxed"; a
+  `SecRequirement` of `entitlement["com.apple.security.app-sandbox"] exists` must not hold; and
+  the executable and environment read by pid (`sysinfo`) are bracketed by the token, which is
+  looked up again afterwards. Choices: the binding is declared variadic, as in `<sandbox.h>`,
+  and called with no variadic argument (`SANDBOX_FILTER_NONE`), because declaring a variadic C
+  function with a fixed arity is not ABI-safe on Apple arm64; the environment is checked before
+  the executable; `dyld` strips `DYLD_*` from restricted processes, so a hardened release app
+  shows none and library validation holds instead (stage 8b's entitlement check keeps it on).
+  An environment that comes back empty (unreadable) is refused (review finding). `refused_variable`
+  now ignores case only on Windows: `sysinfo` lists the kernel's lowercase `apple[]` strings
+  (`dyld_file=` and the like) with a platform binary's environment, which matched `DYLD_*` when
+  compared ignoring case. Tests: this process's token and path, the test binary refused;
+  `/usr/bin/nc` connected to our socket passes the whole `identify` (sandbox answer "not
+  sandboxed") and is refused at another path; a `python3` child with
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` or `DYLD_FALLBACK_LIBRARY_PATH` in its environment (the runner's `python3` is not restricted, so
+  `dyld` leaves `DYLD_*` in place); a child under `sandbox-exec`; an exited child refused by its
+  token. Not tested: a bundled app's path (CI runs no `.app`).
 - Handoff notes: no change to `peer::may_grant` or to mod approvals (kept). **For 8a-ii:**
   replace `unsupported.rs` with `windows.rs` and `macos.rs` behind the same `Peer`,
   `at_accept` and `identify` (`identify(peer, app)` gets the canonical app path); Windows takes
