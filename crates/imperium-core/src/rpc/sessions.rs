@@ -766,15 +766,7 @@ impl Connection {
         args: &str,
         confirm_budget: Option<bool>,
     ) -> Result<SessionSendResult, ErrorObject> {
-        let text = match command {
-            BuiltinCommand::Init => imperium_engine::init_prompt(Some(args)),
-            BuiltinCommand::CodeReview => {
-                imperium_engine::review_prompt(imperium_engine::ReviewKind::Code, args)
-            }
-            BuiltinCommand::SecurityReview => {
-                imperium_engine::review_prompt(imperium_engine::ReviewKind::Security, args)
-            }
-        };
+        let text = builtin_text(command, args);
         self.send_message(SessionSendParams {
             session_id,
             text,
@@ -820,5 +812,18 @@ impl Connection {
         self.state
             .session(id)
             .ok_or_else(|| ErrorObject::new(codes::SESSION_NOT_FOUND, format!("no session {id:?}")))
+    }
+}
+
+/// The built-in prompt a command sends as the user's message.
+pub(super) fn builtin_text(command: BuiltinCommand, args: &str) -> String {
+    match command {
+        BuiltinCommand::Init => imperium_engine::init_prompt(Some(args)),
+        BuiltinCommand::CodeReview => {
+            imperium_engine::review_prompt(imperium_engine::ReviewKind::Code, args)
+        }
+        BuiltinCommand::SecurityReview => {
+            imperium_engine::review_prompt(imperium_engine::ReviewKind::Security, args)
+        }
     }
 }
