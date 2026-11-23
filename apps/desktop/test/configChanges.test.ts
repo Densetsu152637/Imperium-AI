@@ -33,6 +33,8 @@ const base: ConfigChange = {
   source,
   disabled: false,
   kept_at: null,
+  sha256: null,
+  record: null,
   undone_at_unix_ms: null,
 };
 

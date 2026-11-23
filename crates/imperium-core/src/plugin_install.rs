@@ -21,11 +21,12 @@ use imperium_api::time::unix_ms;
 use imperium_extensions::marketplace::Source as PluginSource;
 use imperium_extensions::plugins::{self, Plugin, inside};
 use imperium_protocol::methods::{
-    InstallSource, PluginHookRun, PluginInstalled, PluginPreview, PluginServerRun,
-    PluginsInspectParams, PluginsInstallParams, PluginsInstallResult,
+    InstallSource, InstalledPlugin, PluginHookRun, PluginInstalled, PluginPreview, PluginServerRun,
+    PluginsInspectParams, PluginsInstallParams, PluginsInstallResult, PluginsListResult,
+    PluginsUninstallParams, PluginsUninstallResult,
 };
 
-use crate::extension_install::{self, Staging, check_name, move_tree, remove_tree};
+use crate::extension_install::{self, ExtensionKind, Staging, check_name, move_tree, remove_tree};
 use crate::marketplaces::{self, Located};
 use crate::plugin_records::{self, Origin, Record};
 use crate::state::DaemonState;
@@ -458,7 +459,7 @@ pub(crate) async fn install(
         remove_tree(&dest);
         return Err(error);
     }
-    crate::config_changes::plugin_installed(state, &id, &dest, &source);
+    crate::config_changes::plugin_installed(state, &id, &dest, &source, &staged.hash);
     let mut notes = staged.notes.clone();
     if params.approve.is_some() {
         notes.push(
@@ -487,6 +488,163 @@ pub(crate) async fn install(
         reason,
         notes,
     })
+}
+
+/// The folder under `<config>/plugins` that `text` names: a folder name, a recorded name, or a
+/// recorded `name@marketplace`, all compared ignoring letter case. A folder name wins over a
+/// recorded one; more than one folder of the same kind of match is an error.
+fn resolve(state: &DaemonState, text: &str) -> Result<PathBuf, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("name the plugin to uninstall".into());
+    }
+    let dir = state.paths().config_dir().join("plugins");
+    let mut by_folder = Vec::new();
+    let mut by_record = Vec::new();
+    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(text)
+        {
+            by_folder.push(path);
+        } else if let Some(record) = plugin_records::record_for(state.paths(), &path)
+            && (record.name.eq_ignore_ascii_case(text)
+                || record
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| id.eq_ignore_ascii_case(text)))
+        {
+            by_record.push(path);
+        }
+    }
+    let mut found = if by_folder.is_empty() {
+        by_record
+    } else {
+        by_folder
+    };
+    found.sort();
+    match found.len() {
+        0 => Err(format!(
+            "no plugin named {text} is installed in {}",
+            dir.display()
+        )),
+        1 => Ok(found.remove(0)),
+        _ => Err(format!(
+            "{text} names more than one plugin folder ({}): use the folder name",
+            found
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// `plugins.uninstall`: moves the folder to `<data>/config-trash`, removes its record, and
+/// journals both so `config.undo` puts them back.
+pub(crate) async fn uninstall(
+    state: &DaemonState,
+    params: PluginsUninstallParams,
+) -> Result<PluginsUninstallResult, String> {
+    let _serial = INSTALLS.lock().await;
+    let dir = resolve(state, &params.name)?;
+    let name = plugin_records::record_for(state.paths(), &dir)
+        .map(|record| record.name)
+        .or_else(|| plugin_records::parse(&dir).map(|plugin| plugin.name))
+        .or_else(|| {
+            dir.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| params.name.trim().to_string());
+    let change =
+        crate::config_changes::uninstall_folder(state, None, ExtensionKind::Plugin, &name, &dir)?;
+    Ok(PluginsUninstallResult {
+        name,
+        path: change.path.clone().unwrap_or_default(),
+        kept_at: change.kept_at.clone().unwrap_or_default(),
+        change_id: change.id,
+        notes: vec![format!(
+            "undo it with config.undo {}; the plugin's secrets were not touched",
+            change.id
+        )],
+    })
+}
+
+/// `plugins.list`: every plugin folder under `<config>/plugins`, with the gate's verdict.
+pub(crate) fn list(state: &DaemonState) -> PluginsListResult {
+    let gate = plugin_records::gate(state.paths(), plugin_records::production_verifier());
+    let mut folders: Vec<(PathBuf, Option<String>)> = gate
+        .allowed
+        .iter()
+        .map(|folder| (folder.clone(), None))
+        .chain(
+            gate.withheld
+                .iter()
+                .map(|withheld| (withheld.folder.clone(), Some(withheld.reason.clone()))),
+        )
+        .collect();
+    folders.sort();
+    let disabled = state.settings().extensions.disabled_plugins.clone();
+    let mut problems = Vec::new();
+    let plugins = folders
+        .into_iter()
+        .map(|(folder, reason)| {
+            let record = plugin_records::record_for(state.paths(), &folder);
+            let parsed = plugin_records::parse(&folder);
+            let name = record
+                .as_ref()
+                .map(|record| record.name.clone())
+                .or_else(|| parsed.as_ref().map(|plugin| plugin.name.clone()))
+                .unwrap_or_else(|| {
+                    folder
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                });
+            InstalledPlugin {
+                enabled: !disabled.contains(&name),
+                id: record.as_ref().and_then(|record| record.id.clone()),
+                origin: record.as_ref().map(|record| record.origin.as_str().into()),
+                source: record.as_ref().and_then(|record| record.source.clone()),
+                commit: record.as_ref().and_then(|record| record.commit.clone()),
+                approval: record
+                    .as_ref()
+                    .and_then(|record| record.approval.as_ref())
+                    .map(|approval| approval.kind.as_str().into()),
+                withheld: reason.is_some(),
+                reason,
+                hooks: parsed.as_ref().map_or(0, |plugin| {
+                    u32::try_from(plugin.hooks.len()).unwrap_or(u32::MAX)
+                }),
+                servers: parsed
+                    .iter()
+                    .flat_map(|plugin| plugin.servers.iter().map(|server| server.name.clone()))
+                    .collect(),
+                folder: folder.display().to_string(),
+                name,
+            }
+        })
+        .collect();
+    let dir = state.paths().config_dir().join("plugins");
+    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir()
+            && !gate.allowed.contains(&path)
+            && !gate.withheld.iter().any(|withheld| withheld.folder == path)
+        {
+            problems.push(format!(
+                "{} holds no plugin (no .claude-plugin/plugin.json or marketplace-entry.json)",
+                path.display()
+            ));
+        }
+    }
+    problems.sort();
+    PluginsListResult { plugins, problems }
 }
 
 #[cfg(test)]
@@ -979,5 +1137,269 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.contains("pins"), "{error}");
+    }
+
+    /// Inspects and installs `id`, returning the install folder.
+    async fn put(state: &DaemonState, id: &str) -> PathBuf {
+        let preview = inspect(state, inspect_params(id)).await.unwrap();
+        let done = install(state, install_params(id, &preview.sha256))
+            .await
+            .unwrap();
+        PathBuf::from(done.path)
+    }
+
+    fn stored(state: &DaemonState) -> String {
+        std::fs::read_to_string(state.paths().data_dir().join("plugin-installs.json"))
+            .unwrap_or_default()
+    }
+
+    fn undo(state: &DaemonState, id: u64) -> Result<String, String> {
+        crate::config_changes::undo(state, id).map(|done| done.message)
+    }
+
+    fn newest_change(state: &DaemonState) -> u64 {
+        crate::config_changes::list(state)[0].id
+    }
+
+    fn uninstall_params(name: &str) -> PluginsUninstallParams {
+        PluginsUninstallParams { name: name.into() }
+    }
+
+    #[tokio::test]
+    async fn uninstall_moves_the_folder_and_record_and_undo_restores_both() {
+        let (_home, _market, state) = setup().await;
+        let folder = put(&state, "hooked@mk").await;
+        let record = plugin_records::record_for(state.paths(), &folder).unwrap();
+        let before = list(&state);
+        let shown = before.plugins.iter().find(|p| p.name == "hooked").unwrap();
+        assert_eq!(shown.origin.as_deref(), Some("marketplace"));
+        assert_eq!(shown.id.as_deref(), Some("hooked@mk"));
+        assert!(shown.withheld && shown.reason.is_some() && shown.approval.is_none());
+
+        // Names and ids compare ignoring letter case.
+        let done = uninstall(&state, uninstall_params("HOOKED@MK"))
+            .await
+            .unwrap();
+        assert_eq!(done.name, "hooked");
+        assert!(!folder.exists());
+        assert!(Path::new(&done.kept_at).is_dir());
+        assert!(
+            !stored(&state).contains("\"name\": \"hooked\""),
+            "{}",
+            stored(&state)
+        );
+        assert!(list(&state).plugins.is_empty());
+
+        // Undo puts back the folder and the same record, and the gate withholds it as before.
+        undo(&state, done.change_id).unwrap();
+        assert!(folder.join(".claude-plugin/plugin.json").is_file());
+        assert_eq!(
+            plugin_records::record_for(state.paths(), &folder),
+            Some(record)
+        );
+        assert_eq!(list(&state).plugins, before.plugins);
+        let error = undo(&state, done.change_id).unwrap_err();
+        assert!(error.contains("already undone"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_uninstall_needs_a_plugin_that_exists() {
+        let (_home, _market, state) = setup().await;
+        let error = uninstall(&state, uninstall_params("ghost"))
+            .await
+            .unwrap_err();
+        assert!(error.contains("no plugin named ghost"), "{error}");
+        let error = uninstall(&state, uninstall_params(" ")).await.unwrap_err();
+        assert!(error.contains("name the plugin"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn undoing_an_install_removes_the_record_too() {
+        let (_home, _market, state) = setup().await;
+        let folder = put(&state, "plain@mk").await;
+        assert!(stored(&state).contains("\"name\": \"plain\""));
+        let message = undo(&state, newest_change(&state)).unwrap();
+        assert!(message.contains("Removed"), "{message}");
+        assert!(!folder.exists());
+        assert!(
+            !stored(&state).contains("\"name\": \"plain\""),
+            "{}",
+            stored(&state)
+        );
+    }
+
+    #[tokio::test]
+    async fn undo_leaves_a_folder_alone_that_changed_since_the_install() {
+        let (_home, _market, state) = setup().await;
+        let folder = put(&state, "plain@mk").await;
+        let install_change = newest_change(&state);
+        write(
+            &folder.join("skills/pdf/SKILL.md"),
+            "---\nname: pdf\ndescription: PDFs\n---\nedited\n",
+        );
+        let error = undo(&state, install_change).unwrap_err();
+        assert!(error.contains("changed or replaced"), "{error}");
+        assert!(folder.is_dir());
+        assert!(stored(&state).contains("\"name\": \"plain\""));
+        let listed = crate::config_changes::list(&state);
+        assert!(listed[0].undone_at_unix_ms.is_none());
+    }
+
+    #[tokio::test]
+    async fn undoing_an_uninstall_does_not_restore_over_a_replaced_folder_or_a_changed_copy() {
+        let (_home, _market, state) = setup().await;
+        let folder = put(&state, "plain@mk").await;
+        let done = uninstall(&state, uninstall_params("plain")).await.unwrap();
+
+        // The name was installed again since: the old one is not restored over it.
+        let again = put(&state, "plain@mk").await;
+        assert_eq!(again, folder);
+        let error = undo(&state, done.change_id).unwrap_err();
+        assert!(error.contains("exists again"), "{error}");
+        assert!(stored(&state).contains("\"name\": \"plain\""));
+        let second = uninstall(&state, uninstall_params("plain")).await.unwrap();
+
+        // The kept copy was edited: it is not restored, and no record comes back for it.
+        write(
+            &Path::new(&done.kept_at).join("skills/pdf/SKILL.md"),
+            "---\nname: pdf\ndescription: PDFs\n---\nedited\n",
+        );
+        let error = undo(&state, done.change_id).unwrap_err();
+        assert!(error.contains("changed since it was removed"), "{error}");
+        assert!(!folder.exists());
+        assert!(
+            !stored(&state).contains("\"name\": \"plain\""),
+            "{}",
+            stored(&state)
+        );
+        // An untouched copy restores.
+        undo(&state, second.change_id).unwrap();
+        assert!(folder.is_dir());
+        assert!(stored(&state).contains("\"name\": \"plain\""));
+    }
+
+    #[tokio::test]
+    async fn the_list_shows_unrecorded_dev_and_withheld_plugins() {
+        let (_home, _market, state) = setup().await;
+        let hook =
+            r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "check"}]}]}}"#;
+        let plugins_dir = state.paths().config_dir().join("plugins");
+        let stray = plugins_dir.join("stray");
+        write(
+            &stray.join(".claude-plugin/plugin.json"),
+            r#"{"name": "stray"}"#,
+        );
+        write(&stray.join("hooks/hooks.json"), hook);
+        let devp = plugins_dir.join("devp");
+        write(
+            &devp.join(".claude-plugin/plugin.json"),
+            r#"{"name": "devp"}"#,
+        );
+        write(&devp.join("hooks/hooks.json"), hook);
+        let seen = plugin_records::measure(&devp).unwrap();
+        let runs = plugins::runs(&plugin_records::parse(&devp).unwrap()).digest();
+        plugin_records::add_record(
+            state.paths(),
+            &devp,
+            Record {
+                name: "devp".into(),
+                origin: Origin::User,
+                id: None,
+                source: None,
+                commit: None,
+                hash: seen.hash.clone(),
+                runs: runs.clone(),
+                approval: Some(plugin_records::Approval {
+                    hash: seen.hash,
+                    runs,
+                    at_unix_ms: 1,
+                    kind: plugin_records::ApprovalKind::Dev,
+                }),
+            },
+        )
+        .unwrap();
+        write(&plugins_dir.join("empty/readme.md"), "x");
+        let listed = list(&state);
+        let find = |name: &str| listed.plugins.iter().find(|p| p.name == name).unwrap();
+        let stray = find("stray");
+        assert!(stray.withheld && stray.origin.is_none() && stray.approval.is_none());
+        assert!(
+            stray
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("not installed by Imperium")),
+            "{:?}",
+            stray.reason
+        );
+        assert_eq!(find("devp").approval.as_deref(), Some("dev"));
+        assert_eq!(find("devp").origin.as_deref(), Some("user"));
+        assert!(
+            listed
+                .problems
+                .iter()
+                .any(|problem| problem.contains("empty"))
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_list_carries_the_gate_verdict_id_and_origin() {
+        let (_home, _market, state) = setup().await;
+        put(&state, "hooked@mk").await;
+        put(&state, "plain@mk").await;
+        let listed = crate::connectors::list(&state);
+        let find = |name: &str| listed.plugins.iter().find(|p| p.name == name).unwrap();
+        let hooked = find("hooked");
+        assert!(hooked.withheld && hooked.withheld_reason.is_some());
+        assert_eq!(hooked.id.as_deref(), Some("hooked@mk"));
+        assert_eq!(hooked.origin.as_deref(), Some("marketplace"));
+        assert!(!find("plain").withheld);
+    }
+
+    #[tokio::test]
+    async fn an_agent_install_of_a_plugin_is_recorded_without_an_approval() {
+        let home = tempfile::tempdir().unwrap();
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        // The daemon has not run the migration: the install runs it first.
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        let source = tempfile::tempdir().unwrap();
+        write(
+            &source.path().join(".claude-plugin/plugin.json"),
+            r#"{"name": "agentic"}"#,
+        );
+        write(
+            &source.path().join("hooks/hooks.json"),
+            r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "check"}]}]}}"#,
+        );
+        let request = extension_install::InstallRequest {
+            kind: ExtensionKind::Plugin,
+            source: extension_install::Source::parse(
+                &source.path().display().to_string(),
+                Path::new("."),
+            )
+            .unwrap(),
+            revision: None,
+            subdir: None,
+            session_id: Some("s1".into()),
+        };
+        let (change, _) = crate::config_changes::install(&state, request)
+            .await
+            .unwrap();
+        let folder = state.paths().config_dir().join("plugins/agentic");
+        let record = plugin_records::record_for(state.paths(), &folder).unwrap();
+        assert_eq!(record.origin, Origin::Agent);
+        assert!(record.approval.is_none());
+        assert_eq!(change.sha256.as_deref(), Some(record.hash.as_str()));
+        let listed = list(&state);
+        let row = listed.plugins.iter().find(|p| p.name == "agentic").unwrap();
+        assert!(row.withheld);
+        assert_eq!(row.origin.as_deref(), Some("agent"));
+        // Undo removes the folder and the record.
+        undo(&state, change.id).unwrap();
+        assert!(!folder.exists());
+        assert!(
+            !stored(&state).contains("\"name\": \"agentic\""),
+            "{}",
+            stored(&state)
+        );
     }
 }

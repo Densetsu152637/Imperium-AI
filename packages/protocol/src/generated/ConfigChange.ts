@@ -61,6 +61,16 @@ disabled: boolean,
  */
 kept_at: string | null, 
 /**
+ * For `install` and `uninstall` of a plugin: the content hash of its folder when it was
+ * installed or removed, so undo puts back (or removes) only that content.
+ */
+sha256: string | null, 
+/**
+ * For `uninstall` of a plugin Imperium had a record of: that record as JSON, so undo can
+ * restore it with the folder.
+ */
+record: string | null, 
+/**
  * When it was undone, in Unix milliseconds.
  */
 undone_at_unix_ms: number | null, };

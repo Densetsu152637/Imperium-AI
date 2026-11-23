@@ -374,3 +374,85 @@ pub struct PluginsInstallResult {
     pub reason: Option<String>,
     pub notes: Vec<String>,
 }
+
+// ---- Listing and uninstalling plugins ----
+
+/// `plugins.list`: every folder under `<config>/plugins` that holds a plugin, recorded or not,
+/// with where it came from, its approval kind and whether the load-time gate withholds it (and
+/// why). A `dev` approval is listed as `dev`, whether or not this build honours it.
+#[derive(Debug)]
+pub struct PluginsList;
+
+impl Method for PluginsList {
+    const NAME: &'static str = "plugins.list";
+    type Params = PluginsListParams;
+    type Result = PluginsListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsListResult {
+    pub plugins: Vec<InstalledPlugin>,
+    // Folders that are not plugins, and records that could not be read.
+    pub problems: Vec<String>,
+}
+
+/// One plugin folder under `<config>/plugins`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct InstalledPlugin {
+    pub name: String,
+    pub folder: String,
+    // `name@marketplace` for a marketplace install.
+    pub id: Option<String>,
+    // `marketplace`, `agent`, `user` or `preexisting`; none when there is no record.
+    pub origin: Option<String>,
+    // The marketplace's source (a folder or git URL) and the commit installed, from the record.
+    pub source: Option<String>,
+    pub commit: Option<String>,
+    // `counted`, `dialog-only`, `carried-over` or `dev`; none when nothing was approved.
+    pub approval: Option<String>,
+    // False when listed in `extensions.disabled_plugins`.
+    pub enabled: bool,
+    // The gate withholds the whole plugin from new sessions.
+    pub withheld: bool,
+    pub reason: Option<String>,
+    pub hooks: u32,
+    pub servers: Vec<String>,
+}
+
+/// `plugins.uninstall`: moves a plugin's folder to `<data>/config-trash` and removes its record,
+/// journalled so `config.undo` puts both back. `name` is the plugin's folder name or recorded name
+/// or `name@marketplace` (letter case does not matter). Its secrets are not touched.
+#[derive(Debug)]
+pub struct PluginsUninstall;
+
+impl Method for PluginsUninstall {
+    const NAME: &'static str = "plugins.uninstall";
+    type Params = PluginsUninstallParams;
+    type Result = PluginsUninstallResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsUninstallParams {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsUninstallResult {
+    pub name: String,
+    // The folder it was removed from.
+    pub path: String,
+    // Where the folder is kept.
+    pub kept_at: String,
+    // The `config.changes` entry that `config.undo` takes.
+    #[ts(type = "number")]
+    pub change_id: u64,
+    pub notes: Vec<String>,
+}

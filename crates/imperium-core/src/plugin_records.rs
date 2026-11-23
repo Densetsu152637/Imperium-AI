@@ -50,6 +50,15 @@ pub(crate) enum Origin {
 }
 
 impl Origin {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Origin::Marketplace => "marketplace",
+            Origin::Agent => "agent",
+            Origin::User => "user",
+            Origin::Preexisting => "preexisting",
+        }
+    }
+
     /// Downloaded content never expands the daemon's `${VAR}` and its hooks never rewrite.
     fn downloaded(self) -> bool {
         matches!(self, Origin::Marketplace | Origin::Agent)
@@ -65,6 +74,17 @@ pub(crate) enum ApprovalKind {
     CarriedOver,
     /// For development builds only.
     Dev,
+}
+
+impl ApprovalKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ApprovalKind::Counted => "counted",
+            ApprovalKind::DialogOnly => "dialog-only",
+            ApprovalKind::CarriedOver => "carried-over",
+            ApprovalKind::Dev => "dev",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,33 +329,69 @@ pub(crate) fn record_for(paths: &Paths, folder: &Path) -> Option<Record> {
 /// Serialises read-modify-write of the record file.
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 
-/// Adds (or replaces) the record of the plugin folder `folder`. Refused before the first-start
-/// migration has run (it would take the migration's place and leave the folders already there
-/// unrecorded), and when the store cannot be read (it is never overwritten).
-pub(crate) fn add_record(paths: &Paths, folder: &Path, record: Record) -> Result<(), String> {
-    let _guard = STORE_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+/// The key a folder's record is stored under: its canonical path. None when the folder cannot be
+/// resolved (it does not exist).
+pub(crate) fn key_of(folder: &Path) -> Option<String> {
+    Some(folder.canonicalize().ok()?.to_string_lossy().into_owned())
+}
+
+/// Whether records can be written: the first-start migration has run (a record written before it
+/// would take its place and leave the folders already there unrecorded) and the store is
+/// readable (it is never overwritten).
+pub(crate) fn writable(paths: &Paths) -> Result<(), String> {
     if std::fs::metadata(marker_path(paths)).is_err() {
         return Err("the installed plugins have not been recorded yet: restart the daemon".into());
     }
+    match read_store(paths) {
+        Stored::Unreadable(error) => Err(unreadable(paths, &error)),
+        _ => Ok(()),
+    }
+}
+
+fn unreadable(paths: &Paths, error: &str) -> String {
+    format!(
+        "the plugin record file is unreadable ({error}); fix or delete {} first",
+        store_path(paths).display()
+    )
+}
+
+/// Adds (or replaces) the record of the plugin folder `folder`. Refused before the first-start
+/// migration has run, and when the store cannot be read (it is never overwritten).
+pub(crate) fn add_record(paths: &Paths, folder: &Path, record: Record) -> Result<(), String> {
+    let key = key_of(folder).ok_or_else(|| format!("{}: not found", folder.display()))?;
+    add_record_at(paths, key, record)
+}
+
+/// [`add_record`] under a key worked out earlier (`key_of`).
+pub(crate) fn add_record_at(paths: &Paths, key: String, record: Record) -> Result<(), String> {
+    let _guard = STORE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    writable(paths)?;
     let mut store = match read_store(paths) {
         Stored::Found(store) => store,
-        Stored::Missing => Store::default(),
-        Stored::Unreadable(error) => {
-            return Err(format!(
-                "the plugin record file is unreadable ({error}); fix or delete {} first",
-                store_path(paths).display()
-            ));
-        }
+        _ => Store::default(),
     };
-    let canon = folder
-        .canonicalize()
-        .map_err(|error| format!("{}: {error}", folder.display()))?;
-    store
-        .plugins
-        .insert(canon.to_string_lossy().into_owned(), record);
+    store.plugins.insert(key, record);
     write_json(&store_path(paths), &store)
+}
+
+/// Removes the record stored under `key` and returns it. A missing store holds none; an
+/// unreadable one is left as it is.
+pub(crate) fn take_record(paths: &Paths, key: &str) -> Result<Option<Record>, String> {
+    let _guard = STORE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut store = match read_store(paths) {
+        Stored::Found(store) => store,
+        Stored::Missing => return Ok(None),
+        Stored::Unreadable(error) => return Err(unreadable(paths, &error)),
+    };
+    let taken = store.plugins.remove(key);
+    if taken.is_some() {
+        write_json(&store_path(paths), &store)?;
+    }
+    Ok(taken)
 }
 
 /// The content hash of the plugin folder `canon` (and whether it holds a link), from the cache
@@ -371,7 +427,7 @@ pub(crate) fn look(canon: &Path) -> Result<Seen, String> {
 }
 
 /// The plugin a folder holds, as `discover` loads it (nothing is started).
-fn parse(folder: &Path) -> Option<plugins::Plugin> {
+pub(crate) fn parse(folder: &Path) -> Option<plugins::Plugin> {
     plugins::discover(&[folder.to_path_buf()], Duration::from_secs(60), &[])
         .0
         .into_iter()

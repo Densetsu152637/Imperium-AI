@@ -114,6 +114,19 @@ pub struct PluginInfo {
     /// Where it was installed from, when an agent installed it (`install_extension`).
     #[serde(default)]
     pub installed_from: Option<InstallSource>,
+    /// `name@marketplace` for a plugin installed from a marketplace.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Where it came from, from its record: `marketplace`, `agent`, `user` or `preexisting`;
+    /// none when Imperium has no record of the folder.
+    #[serde(default)]
+    pub origin: Option<String>,
+    /// The load-time gate withholds the whole plugin from new sessions.
+    #[serde(default)]
+    pub withheld: bool,
+    /// Why it is withheld.
+    #[serde(default)]
+    pub withheld_reason: Option<String>,
 }
 
 /// A skill in the user's skills folder or a plugin.

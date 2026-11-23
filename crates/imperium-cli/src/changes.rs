@@ -116,6 +116,8 @@ mod tests {
             }),
             disabled: false,
             kept_at: None,
+            sha256: None,
+            record: None,
             undone_at_unix_ms: Some(1),
         };
         let text = describe(&change);

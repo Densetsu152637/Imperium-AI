@@ -78,6 +78,14 @@ pub struct ConfigChange {
     /// For `uninstall`: where the folder was moved, so undo can put it back.
     #[serde(default)]
     pub kept_at: Option<String>,
+    /// For `install` and `uninstall` of a plugin: the content hash of its folder when it was
+    /// installed or removed, so undo puts back (or removes) only that content.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    /// For `uninstall` of a plugin Imperium had a record of: that record as JSON, so undo can
+    /// restore it with the folder.
+    #[serde(default)]
+    pub record: Option<String>,
     /// When it was undone, in Unix milliseconds.
     #[serde(default)]
     #[ts(type = "number | null")]
