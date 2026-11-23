@@ -556,8 +556,7 @@ async fn update(
     // The daemon alone decides "up to date" (it also checks the record's hash). When the
     // folder already holds the inspected content there is nothing new to trust, so it is asked
     // without a question; otherwise the trust prompt comes first.
-    let unchanged = preview.installed.as_ref().is_some_and(|i| i.same_content);
-    if !unchanged {
+    if !nothing_to_trust(&preview) {
         write!(out, "{}", render(&preview))?;
         if !approve(prompter, &format!("Update {id}?"), yes)? {
             writeln!(out, "Not updated.")?;
@@ -592,6 +591,16 @@ async fn update(
         )?;
     }
     Ok(())
+}
+
+/// The folder holds the inspected content and the record's hash is that content's too, so an
+/// update changes nothing and there is nothing new to trust. A record that disagrees with the
+/// folder is for the daemon to settle, after the user has seen the prompt.
+fn nothing_to_trust(preview: &PluginPreview) -> bool {
+    preview.installed.as_ref().is_some_and(|installed| {
+        installed.same_content
+            && installed.recorded_sha256.as_deref() == Some(preview.sha256.as_str())
+    })
 }
 
 fn find_plugin<'a>(listing: &'a PluginsListResult, name: &str) -> Option<&'a InstalledPlugin> {
@@ -1274,6 +1283,63 @@ mod tests {
         result.unwrap();
         assert!(!out.contains("missing secrets"), "{out}");
         assert!(!out.contains(VALUE), "{out}");
+    }
+
+    fn preview_with(installed: Option<PluginInstalled>) -> PluginPreview {
+        PluginPreview {
+            id: "plain@mk".into(),
+            name: "plain".into(),
+            marketplace: "mk".into(),
+            marketplace_source: "/mk".into(),
+            marketplace_commit: None,
+            source_kind: "path".into(),
+            source: "plain".into(),
+            commit: None,
+            description: String::new(),
+            version: None,
+            author: None,
+            homepage: None,
+            license: None,
+            hooks: Vec::new(),
+            servers: Vec::new(),
+            launcher: false,
+            skills: Vec::new(),
+            commands: Vec::new(),
+            agents: Vec::new(),
+            commands_with_shell: Vec::new(),
+            sha256: "aa".repeat(32),
+            runs_digest: String::new(),
+            installed,
+            notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_update_is_unchanged_only_when_folder_and_record_both_match() {
+        let installed = |same_content, recorded: Option<String>| PluginInstalled {
+            path: "/p".into(),
+            recorded_sha256: recorded,
+            same_content,
+        };
+        let hash = "aa".repeat(32);
+        assert!(nothing_to_trust(&preview_with(Some(installed(
+            true,
+            Some(hash.clone())
+        )))));
+        // The folder matches but the record holds another hash, or none: ask as usual.
+        assert!(!nothing_to_trust(&preview_with(Some(installed(
+            true,
+            Some("bb".repeat(32))
+        )))));
+        assert!(!nothing_to_trust(&preview_with(Some(installed(
+            true, None
+        )))));
+        // The content differs, or nothing is installed.
+        assert!(!nothing_to_trust(&preview_with(Some(installed(
+            false,
+            Some(hash)
+        )))));
+        assert!(!nothing_to_trust(&preview_with(None)));
     }
 
     #[test]
