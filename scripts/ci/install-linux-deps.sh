@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# System libraries Imperium needs to build on Ubuntu (Tauri and the Secret Service keychain).
+# System libraries Imperium needs to build on Ubuntu (Tauri and the Secret Service keychain),
+# and bubblewrap, which the OS isolation tier's tests run commands in.
 set -euo pipefail
 
 # A slow or stuck package mirror must fail fast and retry rather than hang the job until
@@ -13,7 +14,7 @@ apt_options=(
 )
 packages=(
   build-essential file patchelf pkg-config libssl-dev libdbus-1-dev
-  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev bubblewrap
 )
 
 # GitHub's runners fetch Ubuntu packages through a mirror list (mirror+file:/etc/apt/apt-mirrors.txt)

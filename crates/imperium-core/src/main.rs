@@ -58,6 +58,8 @@ async fn run() -> anyhow::Result<()> {
     .await
     .with_context(|| format!("could not listen on port {}", settings.daemon.port))?;
     let address = listener.local_addr()?;
+    // A command in the OS sandbox must not reach the daemon (see `imperium_tools::hide_loopback_port`).
+    imperium_tools::hide_loopback_port(address.port());
     let token = AccessToken::generate().context("could not generate an access token")?;
     // Opt-in (`daemon.socket`): the same protocol on a socket only this user can open. It is
     // bound after the single-instance lock, so a leftover socket from a crash is safe to replace.
@@ -118,10 +120,14 @@ async fn run() -> anyhow::Result<()> {
         .await
         .context("could not start the phone listener")?
     {
+        imperium_tools::hide_loopback_port(address.port());
         tracing::info!(%address, "phones can connect");
     }
     match daemon.start_openai().await {
-        Ok(Some(address)) => tracing::info!(%address, "the OpenAI-compatible API is on"),
+        Ok(Some(address)) => {
+            imperium_tools::hide_loopback_port(address.port());
+            tracing::info!(%address, "the OpenAI-compatible API is on");
+        }
         Ok(None) => {}
         // The API is optional: the daemon runs without it, and `api.get` says why.
         Err(error) => tracing::error!(%error, "the OpenAI-compatible API did not start"),
