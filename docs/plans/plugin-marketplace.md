@@ -1250,8 +1250,9 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   function with a fixed arity is not ABI-safe on Apple arm64; the environment is checked before
   the executable; `dyld` strips `DYLD_*` from restricted processes, so a hardened release app
   shows none and library validation holds instead (stage 8b's entitlement check keeps it on).
-  Tests: this process's token and path, the test binary refused; a `python3` child at its path
-  and refused at another; `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` and
+  An environment that comes back empty (unreadable) is refused (review finding). Tests: this
+  process's token and path, the test binary refused; `/usr/bin/nc` connected to our socket
+  passes the whole `identify` (sandbox answer "not sandboxed") and is refused at another path; `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` and
   `DYLD_FALLBACK_LIBRARY_PATH` in its environment (the runner's `python3` is not restricted, so
   `dyld` leaves `DYLD_*` in place); a child under `sandbox-exec`; an exited child refused by its
   token. Not tested: a bundled app's path (CI runs no `.app`).

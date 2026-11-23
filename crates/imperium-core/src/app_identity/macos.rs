@@ -126,6 +126,10 @@ fn check_by_pid(pid: u32, app: &Path) -> Result<(), String> {
             entry.split('=').next().map(str::to_string)
         })
         .collect();
+    // An empty answer is what an unreadable environment looks like: refuse it.
+    if names.is_empty() {
+        return Err("cannot read the calling process's environment".into());
+    }
     if let Some(name) = super::refused_variable(names.iter().map(String::as_str)) {
         return Err(format!("the caller's environment sets {name}"));
     }
@@ -217,27 +221,53 @@ mod tests {
         assert!(InstalledApp.identify(Some(&peer)).is_err());
     }
 
+    /// A child that is killed and reaped when dropped, so no test leaves one behind.
+    struct Reaped(Child);
+
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
     #[test]
     fn a_clean_peer_at_its_path_passes_and_another_path_is_refused() {
-        let Some((child, server)) = connected(&[], &[]) else {
-            return;
+        // `/usr/bin/nc`, a platform binary that every macOS has, connected to a socket of ours
+        // with a 30-second idle limit and a stdin held open, so it neither leaves early nor hangs.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s");
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let nc = Reaped(
+            Command::new("/usr/bin/nc")
+                .args(["-w", "30", "-U"])
+                .arg(&path)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let server = loop {
+            match listener.accept() {
+                Ok((server, _)) => break server,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline, "nc did not connect");
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(error) => panic!("{error}"),
+            }
         };
         let peer = from_socket(&server).unwrap();
-        let python = python().unwrap();
-        // Python may run from a framework bundle; accept whichever path its code reports.
-        let reported = peer
-            .code()
-            .unwrap()
-            .path(Flags::NONE)
-            .unwrap()
-            .to_path()
-            .unwrap();
-        if reported.canonicalize().unwrap() == python {
-            identify(&peer, &python).unwrap();
-        }
+        assert_eq!(peer.pid(), nc.0.id());
+        assert_eq!(imperium_ipc::is_sandboxed(peer.token), Some(false));
+        identify(&peer, Path::new("/usr/bin/nc")).unwrap();
         let error = identify(&peer, &std::env::current_exe().unwrap()).unwrap_err();
         assert!(error.contains("not the desktop app"), "{error}");
-        end(child);
+        drop(nc);
     }
 
     #[test]
