@@ -38,7 +38,7 @@ permissions, UI mod entry points, and router hints.
   servers (named `<plugin>_<server>`), with `${CLAUDE_PLUGIN_ROOT}` expanded. A plugin's
   servers start when an agent activates it (below). Other `${VAR}` and `${VAR:-default}` in
   `.mcp.json` read the daemon's environment, except in a **downloaded** plugin (the loader is
-  given the set of downloaded folders; today the daemon puts in it each plugin an agent
+  given the set of downloaded folders, and always adds the agent-installed ones itself; today the daemon puts in it each plugin an agent
   installed, whose folder has `.imperium-source.json`,
   [below](#agents-manage-the-app-config-implemented)): there only `${CLAUDE_PLUGIN_ROOT}`
   expands, so downloaded content cannot put the daemon's secrets into a server's command,
@@ -49,7 +49,7 @@ permissions, UI mod entry points, and router hints.
   `license` and `keywords` (unknown fields are ignored), and name more components: `commands`
   and `agents` as a folder or a list of folders, `hooks` and `mcpServers` as a file, a list of
   files, or an inline object. They **add to** the default folders and files. Each path must stay
-  inside the plugin: an absolute path, `..`, or a path through a symbolic link or junction is
+  inside the plugin: an absolute path, a colon in any part, `..`, or a path through a symbolic link or junction is
   refused and reported. A folder with only `.claude-plugin/marketplace-entry.json` (the entry a
   marketplace install records) is a plugin whose manifest is that entry; with both files
   `plugin.json` wins for name and metadata and the entry's components add to its own.

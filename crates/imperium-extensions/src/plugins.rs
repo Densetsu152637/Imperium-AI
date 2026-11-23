@@ -24,7 +24,9 @@
 //! daemon's secrets into a server's command, arguments, headers, or URL, so there only
 //! `CLAUDE_PLUGIN_ROOT` expands and any other variable is empty (or its `:-default`). Hooks of a
 //! downloaded plugin may block but never rewrite (`may_rewrite = false`). The daemon fills the
-//! set with the folders [`agent_installed`] names until marketplace installs join it.
+//! set with the folders [`agent_installed`] names until marketplace installs join it, and
+//! `discover` itself always adds those agent-installed folders, so a caller that passes an empty
+//! set cannot widen what such a plugin reads.
 //!
 //! [`runs`] describes what a plugin would run (each hook and each server) as a [`RunSummary`]
 //! that can be shown, compared and digested. It describes the declared text: `${VAR}`
@@ -584,7 +586,7 @@ fn load(
 
 /// What a plugin would run, for showing before it is installed, comparing with an approved
 /// version, and digesting.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RunSummary {
     pub hooks: Vec<HookRun>,
     pub servers: Vec<ServerRun>,
@@ -594,6 +596,15 @@ pub struct RunSummary {
     #[serde(skip)]
     root: String,
 }
+
+/// Equal when the canonical JSON is: the plugin folder does not count, as for the digest.
+impl PartialEq for RunSummary {
+    fn eq(&self, other: &Self) -> bool {
+        self.canonical_json() == other.canonical_json()
+    }
+}
+
+impl Eq for RunSummary {}
 
 impl RunSummary {
     /// Whether any hook or server starts a launcher that fetches code (`npx`, `uvx`, `@latest`).
@@ -1304,6 +1315,7 @@ mod tests {
         let b = runs(&load_one(second.path(), &[]).0);
         // Shown strings carry the folder; the digest does not.
         assert_ne!(a.hooks[0].command, b.hooks[0].command);
+        assert_eq!(a, b);
         assert!(
             a.canonical_json()
                 .contains("${CLAUDE_PLUGIN_ROOT}/check.sh")
