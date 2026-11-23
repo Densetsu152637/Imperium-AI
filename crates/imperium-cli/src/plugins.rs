@@ -1100,7 +1100,7 @@ mod tests {
         result.unwrap();
         // The trust prompt is printed with what would run, and the answer needed no terminal.
         assert!(
-            out.contains("It would run:") && out.contains("hook PostToolUse"),
+            out.contains("It would run:") && out.contains("hook tool.after"),
             "{out}"
         );
         assert!(out.contains("Content sha256:"), "{out}");
