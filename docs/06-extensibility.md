@@ -59,6 +59,17 @@ permissions, UI mod entry points, and router hints.
   `uvx`, `bunx`, `pipx run`, `docker run` without a digest, `@latest`), and digests the summary
   so an approval can be bound to it. It reads the declared text only, never the daemon's
   environment.
+- **Plugin marketplaces (parsing):** `imperium_extensions::marketplace` reads a
+  `.claude-plugin/marketplace.json` (`name`, `owner`, `metadata.pluginRoot`, and `plugins[]`
+  with the manifest-like fields, `category`, `tags`, `strict` and component fields; unknown
+  fields are ignored). An entry's source is a path inside the repository (a bare name is under
+  `pluginRoot`, `./x` is from the root; `..`, absolute paths and drive letters are refused), a
+  `github` source (`repo`, `ref`, `sha`, cloned from `https://github.com/<repo>.git`) or a `url`
+  source (`https://` only, no credentials); any other type is listed as unsupported. Names must
+  fit a folder name; a bad or duplicate entry is left out and reported without hiding the
+  rest. An entry can be written as canonical JSON (sorted keys, no whitespace) for
+  `marketplace-entry.json`. Adding, refreshing and installing from marketplaces follow in the
+  [plugin marketplace plan](plans/plugin-marketplace.md).
 - **Hooks:** see below. Problems (a skill without a description, an unsupported hook event)
   are shown as session notices.
 
