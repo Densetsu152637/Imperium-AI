@@ -64,8 +64,20 @@ fn clones_dir(state: &DaemonState) -> PathBuf {
     state.paths().data_dir().join("marketplaces")
 }
 
+/// The folder name a marketplace's clone is kept under: its name in lower case, so two names
+/// that differ only by letter case (one folder on Windows and macOS) can never share a clone,
+/// and a digest for a name that is not a safe folder name at all (it cannot get here from the
+/// settings, which refuse such names; this keeps the path inside the clones folder regardless).
+fn clone_key(name: &str) -> String {
+    if imperium_config::valid_marketplace_name(name) {
+        name.to_ascii_lowercase()
+    } else {
+        format!("invalid-{}", &hex(&Sha256::digest(name.as_bytes()))[..16])
+    }
+}
+
 fn clone_dir(state: &DaemonState, name: &str) -> PathBuf {
-    clones_dir(state).join(name)
+    clones_dir(state).join(clone_key(name))
 }
 
 /// The records: empty when there is no file, or when it cannot be read (it is only a cache of
@@ -283,7 +295,7 @@ async fn add_with_base(
         .revision
         .map(|revision| revision.trim().to_string())
         .filter(|revision| !revision.is_empty());
-    let staging = Staging::new(state.paths().config_dir())?;
+    let staging = Staging::new(state.paths().data_dir())?;
     let (root, commit, configured) = match &resolved.place {
         Place::Git(url) => {
             let dest = staging.path().join("clone");
@@ -301,6 +313,17 @@ async fn add_with_base(
         format!("{source} is not a plugin marketplace (it needs .claude-plugin/marketplace.json): {error}")
     })?;
     let name = market.name.clone();
+    if !imperium_config::valid_marketplace_name(&name) {
+        return Err(format!(
+            "the marketplace name {name:?} is not usable: use 1-64 letters, digits, '.', '_' or \
+             '-', not starting or ending with a dot"
+        ));
+    }
+    if name != OFFICIAL_MARKETPLACE && name.eq_ignore_ascii_case(OFFICIAL_MARKETPLACE) {
+        return Err(format!(
+            "the name {name} is reserved for the official marketplace, in any letter case"
+        ));
+    }
     if name == OFFICIAL_MARKETPLACE {
         if !same_marketplace_source(&configured, OFFICIAL_MARKETPLACE_SOURCE) {
             return Err(format!(
@@ -316,7 +339,12 @@ async fn add_with_base(
         {
             return Err(format!("{name} is already added (it is built in)"));
         }
-    } else if settings.plugins.marketplaces.contains_key(&name) {
+    } else if settings
+        .plugins
+        .marketplaces
+        .keys()
+        .any(|existing| existing.eq_ignore_ascii_case(&name))
+    {
         return Err(format!(
             "a marketplace named {name} is already added; remove it first to add another"
         ));
@@ -366,7 +394,7 @@ fn install_clone(state: &DaemonState, name: &str, from: &Path) -> Result<(), Str
     if !dir.exists() {
         return move_tree(from, &dir);
     }
-    let old = parent.join(format!(".old-{name}-{}", std::process::id()));
+    let old = parent.join(format!(".old-{}-{}", clone_key(name), std::process::id()));
     remove_tree(&old);
     std::fs::rename(&dir, &old).map_err(|error| format!("{}: {error}", dir.display()))?;
     if let Err(error) = move_tree(from, &dir) {
@@ -445,7 +473,7 @@ async fn read_again(
     let (market, commit) = match resolve(&config.source, None)?.place {
         Place::Folder(folder) => (marketplace::read(&folder)?, None),
         Place::Git(url) => {
-            let staging = Staging::new(state.paths().config_dir())?;
+            let staging = Staging::new(state.paths().data_dir())?;
             let dest = staging.path().join("clone");
             let commit =
                 extension_install::git_fetch(&url, config.revision.as_deref(), &dest).await?;
@@ -493,10 +521,12 @@ async fn read_again(
 }
 
 /// `plugins.marketplace_remove`.
-pub(crate) fn remove(
+pub(crate) async fn remove(
     state: &DaemonState,
     params: PluginsMarketplaceRemoveParams,
 ) -> Result<PluginsMarketplaceRemoveResult, String> {
+    // Not while a clone or refresh of it is under way.
+    let _operation = OPERATIONS.lock().await;
     let name = params.name;
     let settings = current_settings(state)?;
     if !settings.plugins.marketplaces.contains_key(&name) {
@@ -1024,6 +1054,7 @@ mod tests {
                 name: "local-market".into(),
             },
         )
+        .await
         .unwrap();
         assert!(!removed.disabled);
         assert_eq!(list(&state).unwrap().marketplaces.len(), 1);
@@ -1034,6 +1065,7 @@ mod tests {
                     name: "local-market".into()
                 }
             )
+            .await
             .is_err()
         );
     }
@@ -1117,6 +1149,7 @@ mod tests {
                 name: "git-market".into(),
             },
         )
+        .await
         .unwrap();
         assert!(!clone_dir(&state, "git-market").exists());
         assert!(!load_store(&state).contains_key("git-market"));
@@ -1188,6 +1221,7 @@ mod tests {
                 name: OFFICIAL_MARKETPLACE.into(),
             },
         )
+        .await
         .unwrap();
         assert!(removed.disabled);
         let text = std::fs::read_to_string(state.paths().user_config_file()).unwrap();
@@ -1256,5 +1290,130 @@ mod tests {
         assert_eq!(count_hooks(&bare), 1);
         let servers: Value = serde_json::from_str(r#"{"mcpServers": {"b": {}, "a": {}}}"#).unwrap();
         assert_eq!(server_names(&servers), ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn a_name_that_differs_only_by_case_or_a_dot_cannot_take_another_ones_folder() {
+        let home = tempfile::tempdir().unwrap();
+        let state = state(home.path());
+        // The official marketplace's clone, as a first browse would have made it.
+        let official = clone_dir(&state, OFFICIAL_MARKETPLACE);
+        std::fs::create_dir_all(&official).unwrap();
+        std::fs::write(official.join("marker"), "official").unwrap();
+        for name in [
+            "Claude-Plugins-Official",
+            "CLAUDE-PLUGINS-OFFICIAL",
+            "claude-plugins-official.",
+        ] {
+            let impostor = tempfile::tempdir().unwrap();
+            write_market(impostor.path(), name, &[("x", r#""./p1""#, "x")]);
+            let error = add_with_base(
+                &state,
+                add_params(&impostor.path().display().to_string()),
+                Some(Path::new("")),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.contains("reserved") || error.contains("not usable"),
+                "{name}: {error}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(official.join("marker")).unwrap(),
+            "official"
+        );
+        assert!(!state.paths().user_config_file().exists());
+
+        // acme and ACME are one name.
+        let lower = tempfile::tempdir().unwrap();
+        write_market(lower.path(), "acme", &[("x", r#""./p1""#, "x")]);
+        add_with_base(
+            &state,
+            add_params(&lower.path().display().to_string()),
+            Some(Path::new("")),
+        )
+        .await
+        .unwrap();
+        let upper = tempfile::tempdir().unwrap();
+        write_market(upper.path(), "ACME", &[("y", r#""./p1""#, "y")]);
+        let error = add_with_base(
+            &state,
+            add_params(&upper.path().display().to_string()),
+            Some(Path::new("")),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("already added"), "{error}");
+        // A trailing dot is not a usable name.
+        let dotted = tempfile::tempdir().unwrap();
+        write_market(dotted.path(), "acme2.", &[("y", r#""./p1""#, "y")]);
+        assert!(
+            add_with_base(
+                &state,
+                add_params(&dotted.path().display().to_string()),
+                Some(Path::new("")),
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_clone_folder_never_leaves_the_clones_folder_and_ignores_case() {
+        let home = tempfile::tempdir().unwrap();
+        let state = state(home.path());
+        for name in ["../../..", "a/b", "..", "x.", "", "C:\\x"] {
+            let dir = clone_dir(&state, name);
+            assert_eq!(dir.parent(), Some(clones_dir(&state).as_path()), "{name:?}");
+            assert!(
+                dir.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("invalid-"),
+                "{name:?}"
+            );
+        }
+        assert_eq!(clone_dir(&state, "Acme"), clone_dir(&state, "acme"));
+    }
+
+    #[tokio::test]
+    async fn the_first_browse_of_a_git_marketplace_clones_it_and_leaves_no_staging() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        write_market(repo.path(), "lazy", &[("fmt", r#""./p1""#, "Formats")]);
+        commit_repo(repo.path());
+        let state = state(home.path());
+        add_with_base(
+            &state,
+            add_params(&file_url(repo.path())),
+            Some(Path::new("")),
+        )
+        .await
+        .unwrap();
+        // As for the built-in marketplace before its first browse: no clone yet.
+        remove_tree(&clone_dir(&state, "lazy"));
+        assert!(!clone_dir(&state, "lazy").exists());
+        let browsed = browse(
+            &state,
+            PluginsBrowseParams {
+                marketplace: Some("lazy".into()),
+                query: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(browsed.plugins.len(), 1);
+        assert_eq!(browsed.plugins[0].components.as_ref().unwrap().hooks, 1);
+        assert!(
+            clone_dir(&state, "lazy")
+                .join(".claude-plugin/marketplace.json")
+                .is_file()
+        );
+        assert_nothing_ran(&clones_dir(&state));
+        assert_nothing_ran(repo.path());
+        assert_nothing_ran(home.path());
+        assert!(!state.paths().data_dir().join(".staging").exists());
+        assert!(!state.paths().config_dir().join(".staging").exists());
     }
 }

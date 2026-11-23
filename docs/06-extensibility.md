@@ -93,10 +93,12 @@ a git hook, and a plugin's own files are not fetched at all.
   (absolute, or `~`; read in place, no copy), or `owner/repo` (two name segments, no scheme:
   GitHub over HTTPS; a folder of that name that exists relative to the daemon's working folder
   wins). The result's `kind` (`github`, `git` or `folder`) says which was chosen. The clone is
-  made in a staging folder, `.claude-plugin/marketplace.json` is parsed, and the marketplace
+  made in a staging folder under the data folder (`<data>/.staging`, removed afterwards),
+  `.claude-plugin/marketplace.json` is parsed, and the marketplace
   named by that file is written to `[plugins.marketplaces.<name>]` (comments kept) and, for git,
-  moved to `<data>/marketplaces/<name>/`. A name already added is refused, and the official name
-  is refused with any other source (turned off, adding the official source again turns it back
+  moved to `<data>/marketplaces/<key>/`, where the key is the name in lower case (so names that
+  differ only by case never share a folder). A name already added, in any letter case, is refused, and the official name
+  (in any letter case, or with a trailing dot) is refused with any other source (turned off, adding the official source again turns it back
   on). A clone can take minutes: the call is answered when it ends.
 - `plugins.marketplace_list` reads no network: the official marketplace is listed before it was
   ever cloned (no commit, no count). `built_in` is true for the official name and its pinned

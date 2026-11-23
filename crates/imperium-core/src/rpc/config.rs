@@ -149,8 +149,13 @@ impl Connection {
                 })
             }
             PluginsMarketplaceRemove::NAME => {
-                call::<PluginsMarketplaceRemove>(c.params.take(), |params| {
-                    crate::marketplaces::remove(&self.state, params).map_err(refused)
+                call_later::<PluginsMarketplaceRemove, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::marketplaces::remove(&state, params)
+                            .await
+                            .map_err(refused)
+                    }
                 })
             }
             PluginsBrowse::NAME => {

@@ -548,6 +548,8 @@ async fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
             "protocol.ext.allow=never",
             "-c",
             "core.symlinks=false",
+            "-c",
+            "submodule.recurse=false",
         ])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
