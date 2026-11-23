@@ -138,16 +138,22 @@ impl Connection {
                     }
                 })
             }
+            // `session.init` is what `session.builtin` does for `init`, kept for older clients.
             SessionInit::NAME => call::<SessionInit>(c.params.take(), |params| {
-                let text = imperium_engine::init_prompt(params.guidance.as_deref());
-                self.send_message(SessionSendParams {
-                    session_id: params.session_id,
-                    text,
-                    mode: None,
-                    agent_id: None,
-                    confirm_budget: params.confirm_budget,
-                    attachments: Vec::new(),
-                })
+                self.send_builtin(
+                    params.session_id,
+                    BuiltinCommand::Init,
+                    params.guidance.as_deref().unwrap_or_default(),
+                    params.confirm_budget,
+                )
+            }),
+            SessionBuiltin::NAME => call::<SessionBuiltin>(c.params.take(), |params| {
+                self.send_builtin(
+                    params.session_id,
+                    params.command,
+                    params.args.as_deref().unwrap_or_default(),
+                    params.confirm_budget,
+                )
             }),
             VoiceTranscribe::NAME => {
                 call_later::<VoiceTranscribe, _>(c.params.take(), c.later, |params| {
@@ -751,6 +757,26 @@ impl Connection {
         })
     }
 
+    /// `session.builtin` (and `session.init`): sends the command's built-in prompt as an
+    /// ordinary user message.
+    fn send_builtin(
+        &self,
+        session_id: String,
+        command: BuiltinCommand,
+        args: &str,
+        confirm_budget: Option<bool>,
+    ) -> Result<SessionSendResult, ErrorObject> {
+        let text = builtin_text(command, args);
+        self.send_message(SessionSendParams {
+            session_id,
+            text,
+            mode: None,
+            agent_id: None,
+            confirm_budget,
+            attachments: Vec::new(),
+        })
+    }
+
     /// `session.send`, also what `session.init` sends.
     fn send_message(&self, params: SessionSendParams) -> Result<SessionSendResult, ErrorObject> {
         let session = self.session(&params.session_id)?;
@@ -786,5 +812,18 @@ impl Connection {
         self.state
             .session(id)
             .ok_or_else(|| ErrorObject::new(codes::SESSION_NOT_FOUND, format!("no session {id:?}")))
+    }
+}
+
+/// The built-in prompt a command sends as the user's message.
+pub(super) fn builtin_text(command: BuiltinCommand, args: &str) -> String {
+    match command {
+        BuiltinCommand::Init => imperium_engine::init_prompt(Some(args)),
+        BuiltinCommand::CodeReview => {
+            imperium_engine::review_prompt(imperium_engine::ReviewKind::Code, args)
+        }
+        BuiltinCommand::SecurityReview => {
+            imperium_engine::review_prompt(imperium_engine::ReviewKind::Security, args)
+        }
     }
 }

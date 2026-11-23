@@ -7,14 +7,15 @@
 // releasing it transcribes into the message box (`voice.transcribe`) without sending, and Esc
 // cancels. Typing `@` opens a picker over the session's files (`session.files`): the chosen path goes
 // into the message and the file becomes a chip, staged like any attachment but refused by the daemon
-// when it is outside the session's folders. `/init` is not sent as text but asks the daemon to
-// write the project's instruction file (`onInit`).
+// when it is outside the session's folders. A slash command (`/init`, `/code-review`,
+// `/security-review`) is not sent as text but asks the daemon to run it (`onCommand`).
 
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ArrowUp, ListPlus, Mic, Paperclip, X } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type {
+  BuiltinCommand,
   Attachment,
   SendMode,
   SessionAttachResult,
@@ -44,7 +45,7 @@ import type { DaemonClient } from "../daemon/client";
 import { insideTauri } from "../daemon/connection";
 import { useSettings } from "../settings/settings";
 import { activeMention, composeMessage, insertMention, mentionToken, syncMentions, withoutMention } from "../sessions/mentions";
-import { parseSlash } from "../sessions/slash";
+import { builtinOf, parseSlash } from "../sessions/slash";
 import {
   Recorder,
   formatElapsed,
@@ -67,8 +68,8 @@ type Props = {
   client: DaemonClient | null;
   placeholder: string;
   onSend: (text: string, mode: SendMode, attachments: Attachment[]) => void;
-  /** `/init`, with what followed it; without it (a subagent's view) `/init` is an ordinary message. */
-  onInit?: (guidance: string) => void;
+  /** A slash command, with what followed it; without it (a subagent's view) it is an ordinary message. */
+  onCommand?: (command: BuiltinCommand, args: string) => void;
   /** Text to put in the message box (a message branched from, to edit); `nonce` repeats it. */
   prefill?: { text: string; nonce: number } | null;
 };
@@ -81,7 +82,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 /** Matches the picker asks for at a time. */
 const MENTION_LIMIT = 8;
 
-export function Composer({ sessionId, busy, hidden, client, placeholder, onSend, onInit, prefill = null }: Props) {
+export function Composer({ sessionId, busy, hidden, client, placeholder, onSend, onCommand, prefill = null }: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
   const [chips, setChips] = useState<Chip[]>([]);
@@ -364,8 +365,8 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend,
   const send = (mode: SendMode = "queue") => {
     if (!canSend(draft, chips)) return;
     const slash = chips.length === 0 ? parseSlash(draft) : null;
-    if (slash && onInit) {
-      onInit(slash.rest);
+    if (slash && onCommand) {
+      onCommand(builtinOf(slash.command), slash.rest);
     } else {
       onSend(composeMessage(draft, chips), mode, readyAttachments(chips));
     }

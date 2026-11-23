@@ -60,6 +60,9 @@ use crate::environments::EnvironmentError;
 use crate::state::{CreateError, DaemonState, SessionOptions};
 use imperium_engine::ModelError;
 use imperium_protocol::methods::{
+    BuiltinCommand, SessionAttach, SessionBuiltin, SessionFiles, SessionInit, VoiceTranscribe,
+};
+use imperium_protocol::methods::{
     ConfigChanges, ConfigChangesParams, ConfigChangesResult, ConfigDescribe, ConfigDescribeParams,
     ConfigSet, ConfigSetParams, ConfigUndo, ConfigUndoParams, PersonalitiesList,
     PersonalitiesListParams,
@@ -101,7 +104,6 @@ use imperium_protocol::methods::{
     SessionAgentResumeParams, SessionAgentResumeResult, SessionAgents, SessionAgentsParams,
     SessionAgentsResult,
 };
-use imperium_protocol::methods::{SessionAttach, SessionFiles, SessionInit, VoiceTranscribe};
 use imperium_protocol::methods::{
     SessionBranch, SessionBranchParams, SessionBrowserAct, SessionBrowserControl, SessionCompare,
     SessionCompareParams, SessionComparePick, SessionComparePickParams, SessionSuggestionRespond,
@@ -1512,6 +1514,53 @@ mod tests {
             4,
             SessionInit::NAME,
             json!({"session_id": "nope"}),
+        ));
+        assert_eq!(error_code(&missing), Some(codes::SESSION_NOT_FOUND));
+    }
+
+    #[tokio::test]
+    async fn builtin_review_commands_send_a_user_turn() {
+        let mut connection = handshaken();
+        let project = tempfile::tempdir().unwrap();
+        let created = result_of(&connection.handle_text(&request(
+            2,
+            SessionCreate::NAME,
+            json!({"project_dir": project.path()}),
+        )));
+        let id = created["session_id"].as_str().unwrap().to_string();
+        for (n, command, args) in [
+            (3, "init", "the tests"),
+            (4, "code_review", "high 123"),
+            (5, "security_review", ""),
+        ] {
+            let sent = connection.handle_text(&request(
+                n,
+                SessionBuiltin::NAME,
+                json!({"session_id": id, "command": command, "args": args}),
+            ));
+            assert_eq!(error_code(&sent), None, "{command}: {:?}", sent.response);
+            assert!(result_of(&sent)["id"].is_string());
+        }
+        // The text each command sends as the user's message (this session has no model, so no
+        // turn starts to read it back from).
+        let init = super::sessions::builtin_text(BuiltinCommand::Init, "the tests");
+        assert!(init.contains("AGENTS.md"), "{init}");
+        assert!(init.ends_with("the tests"), "{init}");
+        let review = super::sessions::builtin_text(BuiltinCommand::CodeReview, "high 123");
+        assert!(review.contains("Effort: high"), "{review}");
+        assert!(review.contains("`gh pr diff 123`"), "{review}");
+        let security = super::sessions::builtin_text(BuiltinCommand::SecurityReview, "");
+        assert!(security.contains("exploitability"), "{security}");
+        let unknown = connection.handle_text(&request(
+            6,
+            SessionBuiltin::NAME,
+            json!({"session_id": id, "command": "nope"}),
+        ));
+        assert_eq!(error_code(&unknown), Some(codes::INVALID_PARAMS));
+        let missing = connection.handle_text(&request(
+            7,
+            SessionBuiltin::NAME,
+            json!({"session_id": "nope", "command": "code_review"}),
         ));
         assert_eq!(error_code(&missing), Some(codes::SESSION_NOT_FOUND));
     }

@@ -1543,7 +1543,7 @@ a remote runtime is read there (up to the attachment limit) and copied into the 
 folder.
 
 **`/init`.** Sending `/init` (optionally followed by what to emphasise) in a session does not
-send that text. The app calls `session.init`, and the daemon sends the built-in prompt of
+send that text. The app calls `session.builtin` with `command: "init"` (`session.init` stays for older clients), and the daemon sends the built-in prompt of
 `imperium_engine::init_prompt` as an ordinary user message: the agent reads the README,
 manifests, CI files and a sample of the code with its read tools, then writes `AGENTS.md` in
 the project folder (the file Imperium loads as project instructions, together with
@@ -1554,6 +1554,35 @@ structure and wording, and to update a lone `CLAUDE.md` instead of creating a se
 message waits in the queue while the agent is busy and waits on the session's budgets like any
 message. `/init` is a command of the session composer only: in a subagent's view it is sent as
 text.
+
+**`/code-review` and `/security-review`.** Two more built-in commands of the session composer,
+sent the same way: the app calls `session.builtin` (`command` `code_review` or
+`security_review`, `args` the text after the name; `session.init` is the same call for `init`
+and stays for older clients), and the daemon sends the built-in prompt of
+`imperium_engine::review_prompt` as an ordinary user message. The agent reviews with its normal
+tools (`git`, `gh` when installed, the file tools) under the session's permissions; no tool was
+added, and the prompt tells it to report and not to edit, so an edit still goes through the
+approval path. One agent does the whole review (no `spawn_agent` fan-out in this version). The
+arguments are an optional effort word, then an optional target:
+
+- **Effort**: `low` (a few findings it is highly confident of), `medium` (the default), `high`
+  (thorough, with moderately confident findings marked) or `max` (`xhigh` is the same: exhaustive,
+  uncertain findings included with their confidence). It steers the review's depth only; the
+  session's own reasoning effort is separate.
+- **Target**: none reviews the uncommitted changes (`git diff HEAD`, untracked files) and the
+  branch's commits against its base; a number or `#123` reviews that pull request of the session's repository with `gh pr diff`, and a
+  pull request URL is given to `gh pr view` and `gh pr diff` whole, so a pull request of another
+  repository is the one reviewed (when `gh` is missing the agent says so and may offer a
+  `git fetch origin pull/N/head`, which is approved like any command); anything else is a branch
+  (reviewed against its base) or a path (its current content and changes), whichever it turns
+  out to be.
+
+Every finding is reported with `path:line`, a severity, a confidence and a suggested fix.
+`/security-review` covers injection, authentication and authorisation, secrets, path traversal,
+SSRF, XSS and CSRF, unsafe deserialisation, cryptography, trust-boundary races, unsafe code and
+dependencies, and each finding carries exploitability reasoning. Examples: `/code-review`,
+`/code-review 123`, `/code-review high feat/x`, `/security-review max src/auth`. The registry
+(`sessions/slash.ts`) holds each command's description and argument hint.
 
 #### Images for a model that cannot see them (implemented)
 
