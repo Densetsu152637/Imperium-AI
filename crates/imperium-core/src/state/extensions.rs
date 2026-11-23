@@ -76,6 +76,11 @@ impl DaemonState {
         // A project's agent files are read only when the user trusts the project, as for its
         // `.mcp.json` servers.
         let project_trusted = self.settings().mcp.trusts(project_dir);
+        // Folders an agent installed hold downloaded content: no daemon `${VAR}`, no rewriting
+        // hooks. (Marketplace installs join this set in a later stage.)
+        let mut plugin_dirs = vec![self.paths.config_dir().join("plugins")];
+        plugin_dirs.extend(settings.extensions.plugin_dirs.iter().cloned());
+        let downloaded = imperium_extensions::plugins::agent_installed_folders(&plugin_dirs);
         let mut extensions = imperium_extensions::load_trusting(
             &Sources {
                 config_dir: self.paths.config_dir().to_path_buf(),
@@ -100,6 +105,7 @@ impl DaemonState {
                 server_timeout: Duration::from_secs(60),
                 lazy: self.settings().extensions.lazy,
                 eager: self.settings().extensions.eager.clone(),
+                downloaded,
             },
             &|plugin| profile.is_none_or(|profile| profile.allows_plugin(plugin)),
             project_trusted,

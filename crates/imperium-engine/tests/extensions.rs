@@ -88,6 +88,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         server_timeout: Duration::from_secs(5),
         lazy: true,
         eager: Vec::new(),
+        downloaded: Vec::new(),
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
 
@@ -251,6 +252,7 @@ async fn lifecycle_events_reach_http_hooks_with_their_payloads() {
         server_timeout: Duration::from_secs(5),
         lazy: true,
         eager: Vec::new(),
+        downloaded: Vec::new(),
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
     let session = Session::spawn(SessionConfig {
@@ -418,6 +420,7 @@ async fn hooked_turn(event: &str, answer: Value) -> Rewrite {
         server_timeout: Duration::from_secs(5),
         lazy: true,
         eager: Vec::new(),
+        downloaded: Vec::new(),
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
     let session = Session::spawn(SessionConfig {
