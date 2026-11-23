@@ -1,0 +1,1074 @@
+# Plan: plugin marketplace
+
+Revision: 2026-11-23, revision 6 (plan review rounds 4 and 5: the OS tier's daemon escape and the
+limits of PR 240, the container tier's folder precondition, pidfd start time, the Windows release
+checks); written against `experimental` at `88e8fd50` (last updated). Roadmap
+[item 51](../12-roadmap.md#next-in-order). Status: planned; no stage started.
+
+Imperium already loads Claude Code plugins from folders and lets agents install one from a git
+URL or a folder ([06](../06-extensibility.md#agents-manage-the-app-config-implemented)). What it
+lacks is Claude Code's **marketplace**: a catalogue repository the user adds once, browses, and
+installs, enables, disables, updates and uninstalls plugins from by name. This plan adds that,
+with the trust model a download that can run code needs, on the CLI, the protocol and the
+desktop app. It implements nothing; each stage below is one pull request.
+
+## Goals
+
+Each goal is boolean and has a check. "Fixture marketplace" means a git repository the tests
+build in a temporary folder: `.claude-plugin/marketplace.json` listing one plugin by relative
+path (commands, an agent, a skill, a `tool.before` hook and a stdio MCP server), one plugin by
+a `url` source pointing at a second temporary repository, and one `strict: false` entry with no
+`plugin.json`. Tests never use the network. "Counted approval" is defined in
+[who may approve](#who-may-approve); what approvals protect against is in the
+[threat model](#threat-model).
+
+1. **Marketplaces.** A marketplace can be added from a git URL, a local folder, or a GitHub
+   `owner/repo`; listed; refreshed to its source's newest commit; and removed. Anthropic's
+   official Claude Code marketplace is pre-added. Check: the daemon tests of
+   [stage 2](#stage-2-marketplaces-in-the-daemon) and, by hand,
+   `imperium plugin marketplace add <fixture>` / `list` / `refresh` / `remove`.
+2. **Browse.** Every plugin of every added marketplace is listed with its name, description,
+   version, author, category and keywords, and the components it contains (commands, agents,
+   skills, hook events, MCP servers), or a statement that the components are known only after
+   inspecting an external source. Check: `plugins.browse` test over the fixture;
+   `imperium plugin browse`.
+3. **Lifecycle, per user and per environment.** A plugin is installed as `name@marketplace`,
+   enabled or disabled for the user or for one environment, updated, and uninstalled (to
+   `<data>/config-trash/`, undoable). Check: the tests of stages
+   [3a-ii](#stage-3a-ii-inspect-and-install), [3b](#stage-3b-uninstall-list-and-undo) and
+   [4](#stage-4-enable-disable-update-and-approve).
+4. **Three surfaces.** Browsing, installing and managing plugins work from the protocol
+   (`plugins.*`), the CLI (`imperium plugin …`) and a desktop Plugins window; **approving** code
+   works only in the installed desktop app (U4). Check: the protocol method snapshot lists the
+   methods in [protocol additions](#protocol-additions); `imperium plugin --help` has no approving
+   command; the desktop checks of stages
+   [9](#stage-9-desktop-plugins-window-marketplaces-browse-and-suggestions) and
+   [10](#stage-10-desktop-install-trust-and-update).
+5. **Nothing runs at add, refresh, browse, inspect or install.** Check: a fixture plugin whose
+   hook and MCP server each write a marker file; after every one of those operations the marker
+   is absent (stage 2 and 3a-ii tests).
+6. **Code in `<config>/plugins` needs a counted approval, bound to content, for new sessions.**
+   A new session loads the hooks or MCP servers of a plugin folder under `<config>/plugins` only
+   when the daemon's record for that folder holds a counted approval of its exact content hash
+   and of what it runs. That covers marketplace installs, agent installs, folders copied in by
+   hand, and folders moved or renamed there. A change of content (an update, an edit, a rename, a
+   link, a rewritten source file, a new kind of component) withholds the whole plugin from new
+   sessions until a fresh counted approval, whatever `extensions.disabled_plugins` says. Running
+   sessions keep what they loaded. Folders listed in `extensions.plugin_dirs` are outside this
+   goal, as today, and so is code running unconfined as the user (U5). Check: stage 3a-i and 4
+   tests.
+7. **Claude Code compatibility.** An unmodified Claude Code marketplace and its plugins load:
+   relative, `github` and `url` plugin sources, `plugin.json` component paths and inline
+   `mcpServers`, and marketplace entries with `strict: false`. Check: stage 1 parser tests,
+   stage 3a-ii's `strict: false` install test; by hand in
+   [stage 11](#stage-11-agents-docs-and-close-out), the official marketplace.
+8. **Secrets in the keychain.** A value a plugin's MCP server needs is stored in the secret
+   store and never written to a config file, the plugin folder, the journal or a log. Check:
+   stage 5 tests.
+
+## User decisions
+
+Made by the user on 2026-11-22 (U1 to U3) and 2026-11-23 (U4 to U7).
+
+- **U1. The official marketplace is pre-added.** Anthropic's official Claude Code plugin
+  marketplace is a built-in entry of `plugins.marketplaces`. Its exact source is not recorded in
+  this repository, so the plan names it **"the official marketplace source, confirmed at
+  implementation"**; [stage 2](#stage-2-marketplaces-in-the-daemon) confirms it from Anthropic's
+  Claude Code documentation, records the URL in this plan and pins it in the build, and
+  [stage 11](#stage-11-agents-docs-and-close-out) checks it against the live repository. Its name
+  is reserved for that pinned source, even while the user has it turned off, and "built-in" is
+  decided by source, not by name. Pre-adding it grants no trust.
+- **U2. A trusted project may suggest marketplaces and plugins.** A project folder in
+  `mcp.trusted_projects` may list, in its `.imperium/config.toml`, marketplaces and plugins to
+  **offer** the user. Offers are shown only; they never add a marketplace, install, approve or
+  enable anything ([stage 7](#stage-7-repository-suggestions)).
+- **U3. Plugin hooks block, never rewrite.** For every plugin under `<config>/plugins`, hooks
+  may block but never rewrite a tool call or prompt, including after an approval, for now.
+- **U4. Only the installed desktop app's native dialog approves.** An approval that lets a
+  plugin's hooks or servers run counts only when it comes from the native dialog of the
+  installed desktop app, identified by the daemon as described in
+  [who may approve](#who-may-approve). CLI approvals do not count until roadmap
+  [item 30](../12-roadmap.md#next-in-order)'s stronger caller check exists: a process detached
+  with a clean environment passes `peer::may_grant` (as `crates/imperium-core/src/peer.rs`
+  documents) and could approve with no dialog at all.
+- **U5. The threat model has a documented limit.** Approvals guard against the user accidentally
+  enabling a bad plugin, against callers that reach only the protocol, and against agents
+  confined by the OS or container tier. Agents and other code running **unconfined at tier 0** (the
+  default, and the only command tier on Windows) are **out of scope**: they already run arbitrary
+  code as the user and can write the approval store and the config directly. Checks that would
+  defend only against such code are dropped or kept only where they are cheap
+  ([threat model](#threat-model)). Review round 4 found that the OS tier did not confine an agent
+  from the daemon; [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240), merged at
+  `a58b0efa`, fixed that, and the OS tier now protects approvals within #240's limits (case 3).
+- **U6. An OS presence check where available.** After the dialog, the daemon itself raises an OS
+  presence check (Touch ID or the password on macOS, Windows Hello, polkit on Linux) where the OS
+  offers one without setup; a result reported by the app would mean nothing. Where none is
+  available, the dialog alone counts and the approval is labelled `dialog-only`
+  ([presence](#presence-check-per-os)).
+- **U7. No new code-plugin approvals on Windows until releases are signed.** Until Windows
+  release builds are Authenticode-signed and installed per-machine (roadmap
+  [item 59](../12-roadmap.md#next-in-order)), no new approval counts on Windows. Carried-over
+  approvals and plugins without hooks or servers keep working.
+
+## Threat model
+
+**What approvals protect against (in scope):**
+
+1. **The user's own mistakes.** Enabling a plugin with code without seeing what it runs, or
+   keeping an approval after its content changed. The trust prompt, the content-bound approval
+   and the re-ask on change cover this.
+2. **Callers that reach only the protocol.** Anything holding the daemon token over loopback TCP,
+   a paired phone, a mod frame, and every agent tool the daemon runs (`install_extension`, the
+   config tools). None of them can approve: approvals come only over the local socket, from the
+   app's process.
+3. **Agents confined by the container tier, and by the OS tier within #240's limits.**
+   - **Container tier:** protects approvals when its preconditions hold: the container has no
+     host networking (`--network none` or a bridge network, never `--network host`) and the
+     daemon's socket is not mounted into it (it mounts only the workspace), and **no session
+     folder or path grant contains `<config>` or `<data>`**. This plan relies on
+     [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) (merged at `a58b0efa`) to
+     enforce that last precondition for container sessions; it does not restate the mechanism. Such an agent cannot
+     write `plugin-installs.json`, the config or `<config>/plugins`, cannot read the daemon token,
+     and cannot reach the daemon.
+   - **OS tier: within #240's limits.** Before
+     [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240), bubblewrap's read-only root
+     (`--ro-bind / /`) and the shared host network let an OS-tier agent read `daemon.json`'s token,
+     reach the daemon over its socket or loopback TCP, and ask the **unconfined** daemon to act for
+     it (for example `config.set` of `extensions.plugin_dirs`, an ungated plugin folder whose hooks
+     then run unconfined). It could not *approve* (the daemon refuses its process,
+     [check 3](#who-may-approve)), but it did not need to. #240 (`fix/os-tier-daemon-escape`,
+     merged at `a58b0efa`) closes this. Among other things it hides `daemon.json`, `ipc/`,
+     `remotes/`, `devices.json` and the secret files; masks the runtime folder; strips
+     `IMPERIUM_*` and `DBUS_SESSION_BUS_ADDRESS` from the environment; guards the config and data
+     folders read-only; and makes the sandbox fail closed when a registered path is missing (see
+     #240 for the full list). The OS tier therefore protects approvals **within #240's limits**.
+     Its known remaining limits include abstract unix sockets (an X11 display, for example,
+     through which an agent could click a `dialog-only` approval), other files of the user such as
+     `~/.ssh`, the macOS runtime folder and keychain, and that Windows has no OS tier
+     ([remaining gaps](#remaining-gaps)). The full, current detail is in
+     [05 Isolation tiers](../05-tools-and-isolation.md#isolation-tiers).
+
+**What is out of scope (U5):** code running **unconfined as the user**. That is every agent
+command at tier 0 (the default on every platform, and the only command tier on Windows, where the
+OS tier does not exist yet), every hook and stdio MCP server of any plugin, and any other program
+the user runs. Such code can already do anything the user can: edit `plugin-installs.json` and
+the migration marker, the config and the plugin folders; replace files of a per-user install;
+inject into the desktop app (Windows process injection, `WEBVIEW2_*` variables or DLL search
+order when it launches the app, `ptrace` by the app's parent on Linux); and drive the dialog with
+input automation. Approvals are **not a boundary** against it, and no surface says they are. The
+safety floor asks about an agent's commands and writes that touch these files, as a guard
+against mistakes, not a defence ([05](../05-tools-and-isolation.md#permissions)). A user who
+wants approvals to hold against their agents runs those agents under the container tier
+(without host networking, and with no session folder or grant containing `<config>` or `<data>`),
+or under the OS tier within the limits of
+[#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) (merged at `a58b0efa`; case 3).
+
+**Proportionality.** The checks below are kept because they matter for an in-scope case, or are
+cheap one-liners that close common accidental paths. Runtime code-signature verification of the
+calling app, debugger detection, and requiring a root-owned install on Linux were in revision 3
+and are **dropped**: they defended only against same-user code at tier 0.
+
+## Scope and non-goals
+
+In scope: the marketplace format and the plugin manifest as Claude Code publishes them (the
+public format, from Imperium's existing parser and public documentation; no external site was
+fetched for this plan), marketplace storage, inspection and approval, install and lifecycle,
+plugin secrets and child environments, repository suggestions, CLI, protocol and desktop
+surfaces (including the daemon's identification of the desktop app and the OS presence check),
+and the agent tool `install_extension` taking `name@marketplace`.
+
+Non-goals (each with what would reopen it):
+
+- **Defending approvals against unconfined same-user code** (U5). Reopen when a tier confines
+  agents by default on every platform.
+- **A hosted Imperium registry** or search across marketplaces the user has not added. Reopen when
+  there is a service to host it.
+- **Automatic updates.** Refresh reports what changed; updating is always an explicit action.
+- **Signature verification of plugins** (see
+  [provenance](#provenance-and-signatures-declined-for-now)).
+- **A marketplace served as a bare `marketplace.json` URL**, and **npm or pip plugin sources**.
+  They are reported as unsupported with the source type named. Reopen when a marketplace the user
+  wants is published only that way (including the official one, if stage 2 finds it is).
+- **Sandboxing plugin hooks and MCP servers.** They run as today: as the user, outside the
+  isolation tier ([assumptions](#assumptions)). Reopen with roadmap work on running local servers
+  and hooks inside the isolation tier ([05](../05-tools-and-isolation.md#mcp)).
+- **Claude Code command features that run code**: `!` shell lines in command templates and
+  `allowed-tools` front matter. Imperium's commands stay text; the inspection flags them.
+- **Repository-scoped installs.** A repository's `.imperium/config.toml` cannot add marketplaces,
+  install, approve or enable a plugin; it may only suggest (U2). A trusted repository can still add
+  `extensions.plugin_dirs` whose plugins load ungated, as today
+  ([14](../14-projects-and-automation.md#environment-configuration-implemented)).
+- **Applying plugin changes to running sessions or without a daemon restart.**
+- **Imperium-native `imperium-plugin.toml` manifests and plugin permission manifests**
+  ([06](../06-extensibility.md#permissions-model-for-extensions)).
+- **Hook rewrites** (U3), **CLI approvals** (U4, reopen with item 30), and **approving on a machine
+  without the installed desktop app** (headless, SSH-only, phone).
+- **The trusted main-context mod loader.** Whether this plan's identification of the desktop app
+  is enough for main-context mods stays item 30's open decision, blocked on the user.
+
+## Assumptions
+
+Checked against the source at `88e8fd50`:
+
+- `imperium-extensions::plugins` loads a plugin from a fixed layout (`skills/`, `commands/`,
+  `agents/`, `hooks/hooks.json`, `.mcp.json`) and reads only `name` and `description` from
+  `plugin.json`; custom component paths and inline `mcpServers` are ignored, and a folder without
+  `.claude-plugin/plugin.json` is not a plugin.
+- `imperium-core::extension_install` does a safe fetch: shallow `git clone` without submodules,
+  LFS, prompts or the `ext::` transport, a 5-minute limit, a 256 MiB copy without `.git` or
+  symbolic links, an unpredictable staging folder (`Staging`), and `.imperium-source.json`
+  provenance. It refuses to install over an existing name. A plugin with hooks or servers lands
+  in `extensions.disabled_plugins`. `fetch` and `Staging` are `pub(crate)`; `git_fetch`, `git` and
+  `copy_tree` are private.
+- **Today's "downloaded" status is plugin-controlled.** `plugins::installed_by_agent` reads
+  `.imperium-source.json` inside the plugin folder. This plan replaces it with a daemon-owned
+  record ([stage 3a-i](#stage-3a-i-record-store-and-the-load-time-gate)).
+- **Today's switch is uncounted.** The Connectors switch turns a plugin on by editing
+  `extensions.disabled_plugins` through `config.set`, which any holder of the daemon token can
+  call. So can `extensions.plugin_dirs`.
+- `imperium-core::mod_install` has the inspect-then-install pattern with a content hash
+  (`tree_sha256`), a daemon-owned approval store (`mod-approvals.json`) and a `modified` state.
+  `crate::peer::may_grant` is not a boundary (its module documentation says so).
+- **The OS tier** (`crates/imperium-tools/src/sandbox.rs`) runs commands under bubblewrap with
+  `--ro-bind / /`, writable binds for the workspace only, `--unshare-pid`, and `--unshare-net`
+  when network is off (with network on it shares the host network); or Seatbelt on macOS. Since
+  [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) (merged at `a58b0efa`) it hides
+  the daemon's token, socket and secrets from commands and guards the config and data folders
+  read-only, within the limits in [05](../05-tools-and-isolation.md#isolation-tiers). It is not
+  available on Windows. The container tier
+  mounts only the workspace. Hooks and MCP servers never run in a tier.
+- The desktop app's Rust side talks to the daemon with `imperium-client`, which tries the local
+  socket first (`apps/desktop/src-tauri/src/daemon.rs`); it depends on `tauri-plugin-dialog`.
+  Installers ship `imperium-core` beside the app.
+- **Release signing today** ([11](../11-ci-cd.md#secrets)): macOS builds are signed and notarised
+  when the Apple secrets are set; Windows builds are not code-signed and the NSIS installer uses
+  Tauri's per-user default; Linux packages are not signed.
+- Plugin MCP servers have an empty `allow` list, so each of their tool calls asks unless a
+  permission rule allows it.
+- **Hooks and stdio MCP servers inherit the daemon's whole environment.**
+  [06 Hooks](../06-extensibility.md#hooks) says hooks run inside the session's isolation tier, but
+  `hooks.rs` runs them with `imperium_tools::shell`, and local MCP servers are not confined either
+  ([05](../05-tools-and-isolation.md#connectors-managing-mcp-servers-from-the-app-implemented)).
+  Only `${VAR}` **expansion** in a downloaded plugin's `.mcp.json` is restricted today. Stage 3a-i
+  fixes the 06 line; stage 5 adds an environment allowlist.
+- `extensions.disabled_plugins` is read when the daemon starts.
+- Environments are user-owned records in `<data>/environments.json`. A repository's
+  `.imperium/config.toml` may only narrow, except that a folder in `mcp.trusted_projects` may add
+  `extensions.plugin_dirs` and `[mcp.servers]` and disable plugins
+  ([14](../14-projects-and-automation.md#environment-configuration-implemented)).
+- Secret names are 1 to 64 characters of lowercase letters, digits, `.`, `_` and `-`
+  ([10](../10-configuration.md#secrets)).
+- The protocol is at 0.47 on `experimental`. Every stage that adds protocol takes **the next
+  minor at its merge**.
+- Rust is built and tested in CI only (`bash scripts/check-rust.sh`); locally run only
+  `cargo fmt --all --check`. Web checks: `bash scripts/check-web.sh` after `pnpm install`.
+
+## Relevant paths
+
+- `crates/imperium-extensions/src/plugins.rs`, `lib.rs`, `hooks.rs`; `crates/imperium-mcp/`
+- `crates/imperium-core/src/extension_install.rs`, `mod_install.rs`, `connectors.rs`,
+  `state/extensions.rs`, `environments.rs`, `peer.rs`, `config_changes.rs`, `rpc.rs`
+- `crates/imperium-config/src/settings.rs`, `environment.rs`, `mcp_servers.rs`
+- `crates/imperium-protocol/src/methods/` (new `plugins.rs`), `lib.rs` (`PROTOCOL_VERSION`),
+  `snapshots/methods.txt`, `packages/protocol/src/generated/`
+- `crates/imperium-policy/src/permissions.rs` (`FLOOR_PATHS`, `protect_dir`), `floor.rs`
+- `crates/imperium-tools/src/sandbox.rs` (the OS tier, for the threat model)
+- `crates/imperium-cli/src/main.rs`, `mods.rs` (prompt pattern), new `plugins.rs`
+- `apps/desktop/src-tauri/src/`, `apps/desktop/src-tauri/tauri.conf.json`,
+  `apps/desktop/src/connectors/` (the pattern), new `apps/desktop/src/plugins/`
+- `.github/workflows/build.yml` (signing and entitlements)
+
+## Related docs
+
+[06 Extensibility](../06-extensibility.md), [05 Tools and isolation](../05-tools-and-isolation.md),
+[10 Configuration](../10-configuration.md), [14 Environments](../14-projects-and-automation.md#environment-configuration-implemented),
+[07 Desktop](../07-desktop-ui.md#connectors-implemented), [11 CI/CD](../11-ci-cd.md#secrets),
+[02 Protocol](../02-architecture.md#protocol). For behaviour already built, those docs win; for
+anything planned here, this plan wins until its stage merges and updates them.
+
+## Decision
+
+**Chosen: a marketplace layer on the existing fetch, a daemon-owned record per plugin folder,
+and approvals that count only from the installed desktop app's dialog.** Marketplaces are git
+clones cached in the data folder; installs reuse `extension_install`'s fetch and land in
+`<config>/plugins/<name>`; the daemon keeps a record per folder (origin, source, commit, content
+hash, and the approval), and the session loader withholds any folder under `<config>/plugins`
+with code that does not match a record with a counted approval, by folder path, whatever the
+plugin's own files or `extensions.disabled_plugins` say.
+
+Rejected:
+
+- **Only extending `install_extension` with more source forms.** Fails goals 2, 3 and 6.
+- **Driving Claude Code's own `claude plugin` CLI or sharing `~/.claude/plugins`.** Imperium must
+  work without Claude Code installed, and Claude Code's trust decisions are not Imperium's.
+- **Two installed plugins of the same name from different marketplaces.** Skills, commands,
+  server names, `extensions.disabled_plugins` and agent profiles key on the plugin name. A taken
+  name is refused; the folder name must equal the manifest name.
+- **Approving only the hook and server command lines.** Hooks run scripts inside the plugin; the
+  approval covers the content hash and the run summary.
+- **Trusting `.imperium-source.json` or the manifest name for gating**, and **gating only recorded
+  folders** (moving a folder would escape it).
+- **Approvals from any token holder, or from `may_grant` callers** (U4).
+- **Verifying the app's code signature at run time, debugger checks, root-owned Linux installs**
+  (U5: they defended only against unconfined same-user code).
+
+## Security model
+
+Installing a plugin is installing code from the internet: once enabled, its hooks run on every
+matching event and its stdio MCP servers run as processes of the user, outside any isolation
+tier. Its skills and commands are text that steers agents. The controls below apply within the
+[threat model](#threat-model).
+
+### Nothing runs before approval
+
+- Adding or refreshing a marketplace clones it (the existing safe `git` invocation) and parses
+  JSON. Browsing reads the cached clone. Inspecting fetches the plugin to a staging folder and
+  parses it. Installing **fetches again**, checks that the content still has the inspected hash,
+  and moves that copy into place. None of these runs a hook, a server, a build step, an install
+  script, or a git hook.
+- A plugin with hooks or MCP servers is installed **withheld**; it loads only after a counted
+  approval. Skills-and-commands-only plugins load once installed, bound to their recorded hash.
+
+### The trust prompt shows exactly what runs
+
+`plugins.inspect` returns, every surface shows before installing or updating, and the desktop's
+native approval dialog repeats in short:
+
+- **Identity and provenance:** `name@marketplace`, version, the marketplace's source and commit,
+  the plugin's own source (the marketplace's repository or a third party's) and exact commit, and
+  author, homepage and licence **labelled as the plugin's own unverified claims**.
+- **Every hook:** event, matcher, and the full command line or URL, with `${CLAUDE_PLUGIN_ROOT}`
+  expanded; all can block, none can rewrite (U3).
+- **Every MCP server:** stdio command and arguments, or remote URL and header names; the
+  environment variables and `${VAR}` references it uses, and which are secrets.
+- **Launchers that fetch more code at start** (`npx`, `uvx`, `bunx`, `pipx run`, `docker run`
+  with an image not pinned by digest, any `@latest`), flagged. **A missing flag is not a
+  guarantee:** any hook script or server can download and run code on its own.
+- **Text components:** commands, agents and skills by name; commands with `!` shell lines or
+  `allowed-tools` flagged as not run by Imperium.
+- **Content hash:** SHA-256 over the plugin folder's files (paths and bytes, without `.git` and
+  Imperium's own `.imperium-*.json`), including `.claude-plugin/marketplace-entry.json`
+  ([stage 3a-ii](#stage-3a-ii-inspect-and-install)).
+- **For an update:** a diff of hooks and servers, and a statement that other files changed.
+
+### Pinning
+
+- An install pins the plugin to the commit fetched (a marketplace entry's `sha` or `ref` is
+  honoured; otherwise the default branch's head at inspect time). The marketplace clone is pinned
+  to the commit of its last refresh. Neither moves without an explicit refresh or update.
+- `--sha256` (CLI) and `sha256` (protocol) pin the content hash a previous inspection showed.
+
+### Updates re-ask
+
+- Any content change of a plugin with hooks or servers in either version installs the new
+  content **withheld** until a fresh counted approval. A plugin with neither installs and loads.
+- An update reads the source from the daemon's record, never from the plugin folder, and refuses
+  a different marketplace or source.
+
+### The load-time gate
+
+At session start the daemon looks at every folder under `<config>/plugins`. It withholds the
+**whole plugin** (skills and commands too) from the new session, whatever
+`extensions.disabled_plugins` says, when any of these holds:
+
+1. the folder has hooks or servers and **no record**: reason "not installed by Imperium: approve
+   to load". Approving it in the desktop app writes a record with `origin = user`;
+2. the folder name, the recorded name and the manifest name are not all equal;
+3. the folder contains a symbolic link or a reparse point (junction) anywhere;
+4. its content hash differs from the recorded one;
+5. it has hooks or servers and there is no counted (or carried-over) approval, or the approval's
+   hash or run summary (`runs()`, [stage 1](#stage-1-marketplace-and-manifest-parsers)) differs
+   from what is there now.
+
+An unrecorded folder with neither hooks nor servers loads as today. Gating is by canonical folder
+path. A withheld plugin is reported with the reason. The hash is computed for every folder when
+the daemon starts and kept in memory with its cache key: the sorted list of every file's relative
+path, size and modification time; a session start re-walks that list and rehashes a folder whose
+list differs.
+
+**Migration.** At stage 3a-i's first daemon start, every folder already in `<config>/plugins` is
+recorded with `origin = preexisting` and its current hash and run summary; a folder not in
+`extensions.disabled_plugins` gets a **carried-over** approval, so nothing the user runs today
+stops working. The daemon then writes a **migration marker**, `<data>/plugin-migration.json`,
+separate from the store. If the store is missing or unreadable while the marker exists, the daemon
+does not migrate again: every folder with code is withheld until approved. Deleting both files
+re-runs the migration and carries over whatever is present; only unconfined code can do that,
+which is out of scope (U5).
+
+### Provenance and signatures (declined for now)
+
+Claude Code marketplaces carry no signatures, and verifying git commit signatures needs an
+allowed-signers list nobody publishes. This plan **declines signature verification of plugins**
+and shows provenance instead. Revisit when the format adds signatures or the user wants
+`git verify-commit` against a signers file they maintain.
+
+### Who may approve
+
+**Only the installed desktop app's native dialog (U4), within the [threat model](#threat-model).**
+An approval is **counted** when all of these hold, checked by the daemon:
+
+1. **Local socket only.** Never loopback TCP, a paired phone or a mod frame. *(Protocol-only
+   callers.)*
+2. **The peer is identified without races.** Windows: at accept, the daemon opens the client
+   process (`GetNamedPipeClientProcessId`, then `OpenProcess`) and holds the handle for the
+   connection; the process's creation time must be no later than the accept, and the handle is
+   checked again at approve. Linux: `SO_PEERPIDFD` at accept (kernel 6.5 and later), else
+   `pidfd_open` on the `SO_PEERCRED` pid immediately at accept; all later reads go through the
+   pidfd. Because `pidfd_open` can still open a process that reused the pid in between, the
+   daemon reads the process's start time (`/proc/<pid>/stat` field 22, read while the pidfd shows
+   the process alive) and refuses a process that started later than the accept, as on Windows.
+   macOS: the connection's audit token. *(A reused process id cannot stand in for the app.)*
+3. **The peer is the installed app, outside any sandbox.** Its executable path is the desktop
+   app installed beside the running `imperium-core` (on macOS read with the audit token); on Linux
+   its mount and pid namespaces equal the daemon's (an OS-tier sandbox has its own); on macOS it is
+   not sandboxed (`sandbox_check` on its pid via the audit token). *(The CLI, and confined agents
+   that reach the daemon, for example through one of the OS tier's remaining limits.)*
+4. **Cheap refusals.** The peer's environment holds no `WEBVIEW2_*` variable
+   (`WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`, `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, …), no
+   `LD_PRELOAD`, `LD_LIBRARY_PATH` or `LD_AUDIT`, and no `DYLD_*`. The app calls
+   `SetDefaultDllDirectories` at start on Windows, and CI checks that macOS release entitlements
+   leave out `com.apple.security.cs.allow-dyld-environment-variables`,
+   `com.apple.security.cs.disable-library-validation` and WebKit inspection. *(Common accidental
+   and casual injection paths; not a boundary against unconfined code, U5.)*
+5. **A challenge bound to content.** The daemon issued a single-use challenge to that same
+   connection for this action, folder, hash and run-summary digest, valid two minutes; at approve
+   it recomputes the folder's hash and run summary and requires them to equal the challenged
+   values. *(Replay, and approving other content than the dialog showed.)*
+6. **The OS presence check passed** where available (U6, [below](#presence-check-per-os));
+   otherwise the approval is stored as `dialog-only`. *(Accidental clicks, and anything that can
+   click but cannot give the user's fingerprint, PIN or password.)*
+7. **Windows only (U7):** the daemon is a release build compiled with a **compile-time constant**
+   that only the signing job sets (for example `option_env!` of a variable defined only in that job
+   step, read at build time; never a file or an environment variable read at run time), and its
+   own executable lies under the per-machine Program Files folder as returned by
+   `SHGetKnownFolderPath(FOLDERID_ProgramFiles)` (never the `%ProgramFiles%` variable, which the
+   caller's environment controls). Until roadmap
+   [item 59](../12-roadmap.md#next-in-order) ships both, no new approval counts on Windows.
+
+The desktop's flow: the Plugins window asks the app's Rust side through a Tauri command
+(`plugin_approve`); the Rust side requests a challenge, shows a **native dialog**
+(`tauri-plugin-dialog`) with the plugin id, what it runs and the hash, and on *Approve* sends the
+approval with the challenge over its own local-socket connection; the daemon then raises the
+presence check. The webview never sends an approval.
+
+**Dev builds.** A release daemon never counts an approval from a debug build of the app. A debug
+daemon (`cfg(debug_assertions)`) uses a development verifier that accepts the app built in the
+same cargo target folder; its approvals are stored as `dev`, shown as `dev` in `plugins.list`, and
+ignored by release daemons. On a debug daemon approvals protect nothing
+([gaps](#remaining-gaps)).
+
+**The CLI records nothing that counts.** The CLI has no approving command; any approval that
+fails the checks records nothing (`approved: false`, with the reason). CLI commands that remain:
+`plugin marketplace add|list|refresh|remove`, `plugin browse`, `plugin inspect`,
+`plugin install` and `plugin update` (a plugin with code lands withheld, with a pointer to the
+desktop app), `plugin enable|disable` (enabling works only for an approved plugin),
+`plugin uninstall`, `plugin list`, `plugin secret set|delete`, and `plugin suggestions`.
+
+**Agents.** `install_extension` (any source, including `name@marketplace`) installs as today:
+withheld when the plugin has hooks or servers. An agent tool call cannot approve (case 2 of the
+threat model). A container-tier agent, within its preconditions, cannot write the store, read the
+token or reach the daemon (case 3). An OS-tier agent cannot pass the identity check either, and
+since [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) (merged at `a58b0efa`) it
+cannot read the token or write the config; it is confined within #240's limits (case 3). An
+unconfined agent can do what the user can (U5). The safety floor asks about an
+agent's shell running `imperium plugin marketplace add`, `imperium plugin install|update|enable`
+and `imperium config set|unset` of `extensions.disabled_plugins` or `extensions.plugin_dirs`, and
+about file-tool writes into `<config>/plugins`, `<data>/marketplaces`, `plugin-installs.json` and
+`plugin-migration.json` ([stage 6](#stage-6-cli-and-the-safety-floor)), as a guard against
+mistakes.
+
+**Turning a plugin off and on again** does not revoke its approval; `plugins.set_enabled` may
+turn an approved plugin back on from any caller.
+
+### Presence check per OS
+
+The daemon raises the check itself, after a valid challenge and before recording; a presence
+result reported by the app or any other caller is never accepted. Feasibility, from platform
+documentation and not yet prototyped (stage 8c prototypes each one first):
+
+| OS | Mechanism | Available without setup | Feasibility from `imperium-core` |
+| --- | --- | --- | --- |
+| macOS | LocalAuthentication, `LAContext.evaluatePolicy(.deviceOwnerAuthentication)` (Touch ID, else the login password), with the plugin id in the reason text | Always (the password is always set) | Expected to work from a per-user, non-bundled process in the login session, since the system draws the prompt. If the prototype shows it needs an app bundle, the daemon runs it in a small helper it ships and spawns, and reads the result from the helper's exit (a confined agent cannot interpose on that; unconfined code is out of scope) |
+| Windows | Windows Hello, `UserConsentVerifier` through `IUserConsentVerifierInterop::RequestVerificationForWindowAsync` | Only when Hello (PIN or biometrics) is set up | **Unverified.** The desktop interop needs a window handle and the prompt must reach the foreground, which a windowless background daemon may not get. The prototype tries a daemon-owned top-level window. If that does not work, Windows has no daemon-raised presence check: approvals count on the dialog alone, labelled `dialog-only`. Moot until U7's preconditions hold |
+| Linux | polkit `CheckAuthorization` over the system bus with `AllowUserInteraction`, subject the daemon's own process, for an action `org.imperium.plugins.approve` with `auth_self` (no `_keep`, so every approval asks) | When the `.deb` or `.rpm` installed the action file under `/usr/share/polkit-1/actions` and a polkit authentication agent runs in the session (desktop sessions do; headless and AppImage installs do not) | Feasible with a D-Bus client in the daemon; unavailable cases fall back to `dialog-only` |
+
+Within the threat model the check matters for accidental approvals and for confined code that can
+reach the user's display but not their fingerprint, PIN or password; it is not a boundary against
+unconfined same-user code, which could also run its own prompt or tamper with the daemon (U5).
+
+### What an approved plugin still cannot do
+
+- **Permission rules, the safety floor and agent profiles are unchanged.** Its MCP tools ask
+  unless a user rule allows them; floor-covered calls ask every time; an agent's `plugins`
+  allowlist and local-files-only lock
+  ([14](../14-projects-and-automation.md#agent-permission-profiles-implemented)) keep its servers
+  and hooks out of that agent's sessions.
+- **Hooks block but never rewrite** (U3).
+- **No daemon environment through `${VAR}`**, and from stage 5 an allowlisted process
+  environment. Until then hooks and servers inherit the daemon's whole environment.
+- **A repository cannot install or enable one** (it may suggest, U2, and disable).
+
+### Remaining gaps
+
+Stated plainly, so no surface claims more:
+
+- **Unconfined same-user code is out of scope (U5).** It can edit the store and marker, the
+  config and the plugin folders, delete both migration files to re-run the migration, inject into
+  the app or launch it with `WEBVIEW2_*` variables, DLL search-order tricks or `ptrace`, and drive
+  the dialog. Agents at tier 0, the default and Windows' only tier, are such code.
+- **The OS tier confines an agent from the daemon only within #240's limits.**
+  [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) (merged at `a58b0efa`) hides the
+  daemon's token, socket and secrets from OS-tier commands; its limits include abstract unix sockets (such as an X11 display, so an
+  OS-tier agent could still click a `dialog-only` approval's dialog), other user files such as
+  `~/.ssh`, the macOS runtime folder and keychain, and no OS tier on Windows; see
+  [05](../05-tools-and-isolation.md#isolation-tiers). The container tier protects only without host
+  networking, without the daemon's socket mounted, and with no session folder or grant containing
+  `<config>` or `<data>` (enforced by #240).
+- **`dialog-only` approvals** (Windows if Hello is infeasible or not set up, Linux without
+  polkit) rest on a click that input automation can make, including from an OS-tier agent that
+  reaches the display.
+- **Dev approvals protect nothing.** On a debug daemon any build in the target folder can approve;
+  such approvals are labelled `dev` and ignored by release daemons.
+- **`extensions.plugin_dirs` is ungated.** Any token holder can `config.set` it to add a folder of
+  plugins that load with hooks and servers and no record; a trusted repository can add one too.
+  Gating it is a follow-up outside this plan.
+- **Same-size edits with a restored modification time** are caught only at the next daemon start.
+- **Hooks and servers are unconfined.** An approved plugin runs as the user.
+
+### Secrets
+
+A server's `${VAR}` that is not `CLAUDE_PLUGIN_ROOT` is a **required secret** of the plugin. The
+user sets it with `imperium plugin secret set <plugin> <VAR>` (value from standard input or a
+prompt without echo), the desktop's password field, or `plugins.set_secret`; it is stored as
+`plugin.<plugin>.<var>` (lowercased; a name over 64 characters is refused) and read only when that
+plugin's server starts. A plugin with a missing required secret is listed as such and its server
+does not start. Uninstalling offers to delete its secrets. Setting a secret is not an approval.
+
+### Mod trust is separate
+
+UI mods keep their own install, permissions and trust ([06](../06-extensibility.md#installing-and-updating-mods-implemented)).
+A marketplace entry that is a mod (`mod.json`) is listed as unsupported.
+
+## Storage layout and configuration
+
+| What | Where | Owner |
+| --- | --- | --- |
+| Marketplaces | built-in default: the official marketplace (U1), its name reserved for its pinned source; user-added: `[plugins.marketplaces.<name>]` in `<config>/config.toml` (`source`, optional `revision`, `enabled = false` to turn the built-in one off), written with comments kept | defaults, user config |
+| Marketplace clone | `<data>/marketplaces/<name>/`, made on first browse or refresh, replaced atomically | daemon cache |
+| Marketplace state | `<data>/marketplaces.json`: commit read, refresh time, problems | daemon |
+| Installed plugin | `<config>/plugins/<name>/`; folder name = manifest name; `.claude-plugin/marketplace-entry.json` for a marketplace install; `.imperium-source.json` for display only | as today |
+| Records and approvals | `<data>/plugin-installs.json`, keyed by canonical folder path: name, origin (`marketplace`, `agent`, `user`, `preexisting`), id, source and commit, content hash, run summary, and an optional approval (hash, run summary, time, kind: `counted`, `dialog-only`, `carried-over` or `dev`) | daemon |
+| Migration marker | `<data>/plugin-migration.json`, written once after the migration | daemon |
+| On/off for the user | `extensions.disabled_plugins` (it can only turn off, never past the gate) | user config |
+| On/off per environment | `plugins: { enabled, disabled, dismissed_suggestions, muted_suggestion_sources }` on the environment record in `<data>/environments.json` | user-owned |
+| Suggestions | `[plugins] suggest_marketplaces` and `suggest_plugins` in a trusted project's `.imperium/config.toml` (U2) | repository, offers only |
+| Secrets | secret store, `plugin.<plugin>.<var>` | keychain |
+| Removed plugins | `<data>/config-trash/`, with a `config.changes` entry for `config.undo` | as today |
+
+A `dialog-only` approval counts as approved; the kind is shown in `plugins.list` and the desktop.
+
+**Effective state for a new session**, in order: passes the [load-time gate](#the-load-time-gate);
+not in `extensions.disabled_plugins`, unless the session's environment record lists it in
+`enabled`; not in the environment record's `disabled`; not disabled by a trusted repository's
+`.imperium/config.toml`; allowed by the agent profile.
+
+**Configuration layers.** `plugins.marketplaces` is read from built-in defaults (the official
+marketplace), the user config and environment variables ([10](../10-configuration.md#layers);
+stage 2 documents how that layer spells a table keyed by name); an environment variable can add a
+marketplace to browse, never an install or approval, and never takes the built-in name with
+another source. The environment layer accepts only `[plugins] suggest_marketplaces` and
+`suggest_plugins`, and only from a trusted folder.
+
+## Protocol additions
+
+A new `crates/imperium-protocol/src/methods/plugins.rs`, with TypeScript types generated for the
+desktop. A paired phone cannot call `plugins.*`. Each stage that adds methods takes **the next
+protocol minor at its merge** and updates `PROTOCOL_VERSION`, the version line in
+[02](../02-architecture.md#protocol), `snapshots/methods.txt` and the generated types.
+
+| Method | Stage | Does |
+| --- | --- | --- |
+| `plugins.marketplace_add` | 2 | `{source, revision?}` → `MarketplaceInfo`; refuses a name already added or the built-in name with another source |
+| `plugins.marketplace_list` | 2 | → `MarketplaceInfo[]` (name, source, `built_in` by source, commit, refreshed time, plugin count, problems) |
+| `plugins.marketplace_refresh` | 2 | `{name?}` → per marketplace the commit before and after and plugins added, removed and changed |
+| `plugins.marketplace_remove` | 2 | `{name}`; the built-in one is turned off, not freed |
+| `plugins.browse` | 2 | `{marketplace?, query?}` → `PluginListing[]` |
+| `plugins.inspect` | 3a-ii | `{id, revision?}` → `PluginPreview` (trust prompt contents, `sha256`, run summary, installed comparison) |
+| `plugins.install` | 3a-ii | `{id, sha256, environment?}` → `{name, path, withheld, reason, notes}`; never approves |
+| `plugins.uninstall` | 3b | `{name, delete_secrets}` |
+| `plugins.list` | 3b | `{environment?}` → plugins under `<config>/plugins` with id, origin, source, commit, approval kind (`counted`, `dialog-only`, `carried-over`, `dev`), `withheld` and its reason, effective on/off and what decided it, required and missing secrets |
+| `plugins.update` | 4 | `{name, sha256}` → like install, with `replaced`; never approves |
+| `plugins.set_enabled` | 4 | `{name, enabled, environment?}`; enabling a withheld plugin is refused with the reason |
+| `plugins.approval_challenge` | 8a | `{folder or name, sha256, runs_digest}` → `{challenge, expires}`; answered only to a peer passing checks 1 to 4 |
+| `plugins.approve` | 8a | `{folder or name, sha256, runs_digest, challenge}` → `{approved, kind, reason}`; counts only under [who may approve](#who-may-approve) |
+| `plugins.set_secret`, `plugins.delete_secret` | 5 | `{name, variable, value?}`; the value never returns |
+| `plugins.suggestions`, `plugins.dismiss_suggestion` | 7 | offers for an environment; dismiss one offer or a whole project folder |
+| `EnvironmentInfo.plugins` | 4 | the per-environment lists |
+
+`mcp.list`'s `PluginInfo` gains optional `id`, `origin` and `withheld` (stage 3b).
+
+## Stages
+
+Fifteen stages, ordered by dependency; each is one pull request of about 800 changed lines or
+fewer, tests included. Every stage: branch from `experimental`, update the docs its behaviour
+changes, run `cargo fmt --all --check` locally, and rely on CI for `bash scripts/check-rust.sh`
+and `bash scripts/check-web.sh`. A stage that grows past the limit splits at the seam its handoff
+notes name. **No new approval counts until [stage 8c](#stage-8c-os-presence-check) turns counting
+on**; earlier stages test through an injected verifier or records written directly.
+
+Precondition: [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) is merged before
+stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experimental` at
+`a58b0efa`.
+
+## Stage 1: Marketplace and manifest parsers
+
+- Objective: pure parsing in `imperium-extensions`, no daemon or protocol change.
+  (a) `marketplace.rs`: parse `.claude-plugin/marketplace.json` (`name`, `owner`, `metadata`
+  including `pluginRoot`, `plugins[]` with `name`, `source`, `description`, `version`, `author`,
+  `homepage`, `repository`, `license`, `keywords`, `category`, `tags`, `strict`, and the
+  component fields). Sources: a relative path (under `pluginRoot`, refused if it leaves the
+  repository), `{source: "github", repo, ref?, sha?}` (→ `https://github.com/<repo>.git`),
+  `{source: "url", url, ref?, sha?}`; anything else is an `Unsupported(type)` entry. Unknown
+  fields are ignored. Names pass `check_name`. A function writes an entry's **canonical JSON**
+  (sorted keys, no insignificant whitespace).
+  (b) `plugins.rs`: read the full `plugin.json` (`version`, `author`, `homepage`, `repository`,
+  `license`, `keywords`, and `commands`, `agents`, `hooks`, `mcpServers` as a path, a list of
+  paths, or for `hooks` and `mcpServers` an inline object), honour those paths inside the plugin
+  root only (a path through a link is refused) in addition to the default folders. A folder with
+  `.claude-plugin/marketplace-entry.json` and no `plugin.json` is a plugin whose manifest is the
+  entry (`strict: false`); with both, `plugin.json` wins and the entry's components add to it.
+  (c) `fn runs(&Plugin) -> RunSummary`: each hook (event, matcher, expanded command or URL) and
+  each server (command, args, URL, header names, `${VAR}` references), serialisable, comparable
+  and digestible, with the launcher flag.
+  (d) Replace `installed_by_agent` with a `downloaded` set of folders passed in `Sources`: a
+  plugin in that set never expands daemon `${VAR}` and its hooks get `may_rewrite = false`. Until
+  stage 3a-i fills the set, the caller passes the folders `installed_by_agent` would have named,
+  so this stage changes no behaviour.
+- Depends on: #240 merged.
+- Owned paths: `crates/imperium-extensions/src/marketplace.rs` (new), `plugins.rs`, `lib.rs`,
+  `crates/imperium-core/src/state/extensions.rs` (only to fill `downloaded` as before),
+  `crates/imperium-extensions/Cargo.toml` if a dev-dependency is needed.
+- Acceptance checks: unit tests (CI, `cargo test -p imperium-extensions`): each source form;
+  `pluginRoot`; `..` refused; an unsupported source listed; custom paths and inline `mcpServers`
+  and `hooks` loaded; a path outside the root or through a link refused; a folder with only
+  `marketplace-entry.json` loaded; canonical JSON stable across key order; `runs` flags
+  `npx -y pkg@latest` and two summaries of the same plugin compare equal; a plugin in `downloaded`
+  never reads the daemon environment and gets `may_rewrite = false`; existing tests unchanged.
+- Risks: unknown fields must stay ignored; component paths "add to the default folder" (record
+  the choice in the module doc).
+- Status: pending
+- Outcome:
+- Handoff notes: keep parsing free of I/O beyond reading the given folder.
+
+## Stage 2: Marketplaces in the daemon
+
+- Objective: add, list, refresh, remove and browse marketplaces through the protocol. `source`
+  accepts a git URL, a local folder (absolute, or `~`), or `owner/repo` (two name segments, no
+  scheme → GitHub HTTPS; a folder that exists wins, and the result says which was chosen). Clone
+  with `extension_install`'s helpers, made `pub(crate)` where private (`git_fetch`, `git`,
+  `copy_tree`) without moving them. A local folder is read in place. Write
+  `[plugins.marketplaces.<name>]` with comment-keeping edits (follow
+  `crates/imperium-config/src/mcp_servers.rs`) and `<data>/marketplaces.json`. `plugins.browse`
+  reads components from the clone for relative sources, `null` for external ones. Add `plugins`
+  settings with **the official marketplace as a built-in default** (U1): its source pinned in the
+  build, cloned lazily; `built_in` only for the pinned source; its name reserved for that source in
+  every layer, even while `enabled = false`. The environment layer refuses `[plugins]` (stage 7
+  later accepts the suggestion keys).
+- Depends on: stage 1.
+- Owned paths: `crates/imperium-core/src/marketplaces.rs` (new), `extension_install.rs`
+  (visibility only), `rpc.rs`, `crates/imperium-config/src/settings.rs`, `environment.rs`,
+  `crates/imperium-protocol/src/methods/plugins.rs` (new), `methods/mod.rs`, `lib.rs`,
+  `snapshots/methods.txt`, `packages/protocol/src/generated/`, docs 02, 06, 10, and this plan.
+- Acceptance checks: daemon tests with a fixture marketplace (git repository and folder): add
+  (each form; `owner/repo` asserted by URL without fetching), list, refresh after a new commit
+  reports the changed entry, remove; a taken name refused; a malformed `marketplace.json` in
+  `problems`; marker files absent after add, refresh and browse; the built-in entry listed with no
+  network at daemon start; removing it writes `enabled = false`; the built-in name with another
+  source refused while on and while off, from the user config and an environment variable; the
+  pinned source under another name not `built_in`; `[plugins]` in an environment file refused;
+  the snapshot lists the five methods; the next protocol minor at merge. **U1 check:** confirm the
+  official source from Anthropic's Claude Code documentation, record the URL and page in this
+  plan's Outcome, and pin it in a unit test; if it is not a git repository with
+  `.claude-plugin/marketplace.json`, stop and report instead of guessing.
+- Risks: clones take minutes; run them on a task, as `mods.inspect` does.
+- Status: pending
+- Outcome:
+- Handoff notes: if over 800 lines, split protocol and config (2a) from the daemon (2b).
+
+## Stage 3a-i: Record store and the load-time gate
+
+- Objective: `<data>/plugin-installs.json`, the migration and its separate marker
+  (`<data>/plugin-migration.json`), the digest cache, and the [load-time gate](#the-load-time-gate).
+  In `crates/imperium-core/src/state/extensions.rs`, compute the `withheld` and `downloaded`
+  folders and pass both in `Sources`, so `imperium_extensions::load_trusting` drops withheld
+  folders by canonical path. Define the `ApprovalVerifier` trait; its production implementation
+  counts nothing until stage 8c. Tests write records directly. Fix the 06 Hooks line about the
+  isolation tier and state the inherited environment.
+- Depends on: stage 1.
+- Owned paths: `crates/imperium-core/src/plugin_records.rs` (new), `state/extensions.rs`,
+  `crates/imperium-extensions/src/lib.rs` (`Sources.withheld`), docs 06.
+- Acceptance checks: daemon tests with records written directly:
+  - every folder with hooks or servers and no counted, `dialog-only`, carried-over or (debug only)
+    `dev` approval is withheld; removing it from `extensions.disabled_plugins` does not load it;
+  - an unrecorded folder with a hook (copied in, or a recorded folder moved to a new name) is
+    withheld with "not installed by Imperium: approve to load"; an unrecorded skills-only folder
+    loads;
+  - rewriting `.imperium-source.json` does not change the gate or the `${VAR}` and rewrite rules;
+  - renaming the manifest's `name`, or renaming the folder, withholds it;
+  - a symbolic link (on Windows a junction, where the test can make one) withholds it;
+  - renaming a file inside it (same count, same newest mtime) withholds it on the next session;
+  - a skill edit withholds the whole plugin; a hook added with a forged record hash is still
+    withheld because the run summary differs from the approval;
+  - migration: folders not in `disabled_plugins` get a carried-over approval and load, folders in
+    it are recorded without one; a second start does not re-migrate; a folder added later is
+    unrecorded; with the marker present and the store deleted or unreadable, every folder with code
+    is withheld and nothing is re-migrated;
+  - a `dev` approval is ignored by the release verifier.
+- Risks: hashing at daemon start (measure a 1,000-file walk in a test as an estimate); the gate
+  must cover every loader path (`grep -rn "load_with\|load_trusting\|fn load(" crates`).
+- Status: pending
+- Outcome:
+- Handoff notes: atomic writes; unreadable store → fail closed.
+
+## Stage 3a-ii: Inspect and install
+
+- Objective: `plugins.inspect` and `plugins.install`. Inspect fetches the plugin (relative:
+  copy from the clone; external: `extension_install::fetch` with `ref`/`sha`) into a `Staging`
+  folder, writes `.claude-plugin/marketplace-entry.json`, parses and hashes it (reuse
+  `mod_install::tree_sha256`). Install **fetches again**, writes the entry file again, refuses a
+  different hash, a taken name, a manifest name unlike the entry's, or a link in the source; moves
+  it to `<config>/plugins/<name>`; writes the record (`origin = marketplace`, no approval); journals
+  a `config.changes` entry. A plugin with code is withheld, with a pointer to the desktop app.
+- Depends on: stages 2 and 3a-i.
+- Owned paths: `crates/imperium-core/src/plugin_install.rs` (new), `mod_install.rs` (shared
+  hashing only), `config_changes.rs`, `rpc.rs`, protocol `methods/plugins.rs`, version, snapshot,
+  generated types, docs 02 and 06.
+- Acceptance checks: inspect then install the hook plugin → installed, recorded, withheld; a source
+  changed between inspect and install refused; a taken name refused; marker files absent; a
+  `strict: false` plugin installs, loads, and stays unmodified after a marketplace refresh; a
+  skills-only plugin installs and loads; a stray `approve` field is ignored and noted.
+- Risks: none beyond stage 3a-i's.
+- Status: pending
+- Outcome:
+- Handoff notes: none yet.
+
+## Stage 3b: Uninstall, list and undo
+
+- Objective: `plugins.uninstall` (to `config-trash`, record removed, secrets optional once stage 5
+  lands), `plugins.list` (every folder under `<config>/plugins`, recorded or not, with the approval
+  kind), `config.undo` of install and uninstall (with the record), `PluginInfo`'s `id`, `origin`
+  and `withheld`, and agent installs (`install_extension`, `kind = "plugin"`) recorded with
+  `origin = agent` and no approval.
+- Depends on: stage 3a-ii.
+- Owned paths: `crates/imperium-core/src/plugin_install.rs`, `extension_install.rs`,
+  `connectors.rs`, `config_changes.rs`, `rpc.rs`, protocol `methods/plugins.rs`,
+  `methods/connectors.rs`, version, snapshot, generated types, docs 02 and 06.
+- Acceptance checks: uninstall moves the folder and removes the record; undo restores both, or
+  removes both for an install; `plugins.list` reports withheld plugins with reasons (unrecorded
+  ones too) and shows `dev` approvals as `dev`; an agent install of a hook plugin is recorded and
+  withheld; `mcp.list` carries `withheld`.
+- Risks: undo must not restore a record over a folder replaced since.
+- Status: pending
+- Outcome:
+- Handoff notes: none yet.
+
+## Stage 4: Enable, disable, update and approve
+
+- Objective: `plugins.set_enabled` (user: `extensions.disabled_plugins` through `config.set`'s
+  path; environment: the record's `plugins` lists), `plugins.update`, the effective-state order,
+  and the approval **write path** (record an approval of a given kind for a folder, hash and run
+  summary; create an `origin = user` record for an unrecorded folder) behind `ApprovalVerifier`.
+  Enabling a withheld plugin is refused with its reason. Update never approves, keeps the previous
+  folder in `config-trash`, and reports "up to date" for an equal hash. `plugins.approve` itself
+  lands in stage 8a.
+- Depends on: stage 3b.
+- Owned paths: `crates/imperium-core/src/plugin_install.rs`, `plugin_records.rs`,
+  `environments.rs`, `state/extensions.rs`, `rpc.rs`, protocol `methods/plugins.rs`, the file
+  holding `EnvironmentInfo` (`grep -rn "pub struct EnvironmentInfo" crates/imperium-protocol`),
+  version, snapshot, generated types, docs 02, 06, 14.
+- Acceptance checks: disable for the user → not loaded in a new session; enable only for
+  environment A → loaded in A, not B; a trusted repository file disabling it in A wins; a
+  skill-only change to an approved hook plugin's update is withheld; an unchanged update is "up to
+  date"; an update naming another marketplace refused; enabling a withheld plugin refused; with a
+  test verifier, a written approval lets the plugin load (an unrecorded folder gets an
+  `origin = user` record); with the production verifier nothing is written; off then on needs no
+  new approval.
+- Risks: two places hold on/off; `plugins.list` says which decided.
+- Status: pending
+- Outcome:
+- Handoff notes: `extensions.disabled_plugins` stays the only user-level switch.
+
+## Stage 5: Plugin secrets and child environments
+
+- Objective: (a) required secrets from `runs`, `plugins.set_secret` and `plugins.delete_secret`,
+  `${VAR}` of a downloaded plugin read from `plugin.<plugin>.<var>` in the secret store, missing
+  secrets on `plugins.list`, servers with a missing secret not started (with a notice), and
+  `delete_secrets` on uninstall. (b) **Child environment allowlist** for hooks and stdio servers
+  of every plugin under `<config>/plugins`: a cleared environment plus `PATH`, `HOME` or
+  `USERPROFILE`, `SYSTEMROOT`, `TEMP`, `TMP`, `LANG`, `LC_*`, `TERM`, and on Windows `APPDATA`,
+  `LOCALAPPDATA`, `PATHEXT`, `COMSPEC`; the spawned-by-daemon mark; `CLAUDE_PLUGIN_ROOT`,
+  `CLAUDE_PROJECT_DIR`, `IMPERIUM_PROJECT_DIR`; and the variables its server definition sets.
+  User-configured hooks and servers keep today's environment.
+- Depends on: stage 3b.
+- Owned paths: `crates/imperium-extensions/src/plugins.rs`, `hooks.rs`, the stdio spawn in
+  `imperium-mcp` (`grep -rn "Command::new" crates/imperium-mcp/src`),
+  `crates/imperium-core/src/plugin_install.rs`, `state/extensions.rs`, `rpc.rs`, protocol
+  `methods/plugins.rs`, version, snapshot, generated types, docs 02, 06, 10.
+- Acceptance checks: with the in-memory secret store, a set secret reaches the server's
+  environment and nowhere else (config file, plugin folder, store and journal checked); a missing
+  one leaves the server unstarted with a notice and the skills available; a 65-character name
+  refused; the value never in a result; a plugin hook and server do not see `SOME_DAEMON_SECRET`
+  from the daemon's environment and do see `PATH` and the mark; a user hook still sees it.
+- Risks: the allowlist may break plugins needing other variables (the server definition can set
+  them); `FOO` and `foo` collide as secret names, refuse the second.
+- Status: pending
+- Outcome:
+- Handoff notes: if over 800 lines, split (a) and (b).
+
+## Stage 6: CLI and the safety floor
+
+- Objective: `imperium plugin marketplace add|list|refresh|remove`, `browse [query]
+  [--marketplace m]`, `inspect <name@mp>`, `install <name@mp> [--env <env>] [--sha256 h]
+  [--yes]`, `update <name> [--sha256 h] [--yes]`, `enable|disable <name> [--env <env>]`,
+  `uninstall <name> [--delete-secrets]`, `list [--env]`, `secret set|delete <name> <VAR>`. **No
+  approving command** (U4). Install and update print the trust prompt and ask `Install <id>?
+  [y/N]` (`--yes` without a terminal), then say a plugin with code is withheld until approved in
+  the desktop app. The floor: add `imperium plugin marketplace add`, `imperium plugin
+  install|update|enable`, and `imperium config set|unset` of `extensions.disabled_plugins` and
+  `extensions.plugin_dirs` to `crates/imperium-policy/src/floor.rs`; add `plugin-installs.json`,
+  `plugin-migration.json` and `marketplaces.json` to `FLOOR_PATHS`; `protect_dir` on
+  `<config>/plugins` and `<data>/marketplaces` (`grep -rn "protect_dir(" crates`).
+- Depends on: stages 4 and 5.
+- Owned paths: `crates/imperium-cli/src/plugins.rs` (new), `main.rs`, CLI snapshots and tests,
+  `crates/imperium-policy/src/floor.rs`, `permissions.rs`, the daemon's `protect_dir` call, docs
+  05 and 06.
+- Acceptance checks: help snapshot has no `approve`; against a test daemon, install with `--yes`
+  and no terminal → installed, withheld, with the desktop note; `enable` of it refused; `list`
+  shows it; floor tests: `imperium plugin marketplace add x`, `imperium plugin install x@y --yes`,
+  `imperium plugin enable x`, `imperium config set extensions.disabled_plugins []`,
+  `imperium config set extensions.plugin_dirs '["/tmp/x"]'` all ask; file-tool writes to the store,
+  the marker and `<config>/plugins/x/` ask; reads do not.
+- Risks: the floor is a guard against mistakes, not a control (U5).
+- Status: pending
+- Outcome:
+- Handoff notes: none yet.
+
+## Stage 7: Repository suggestions
+
+- Objective: U2. From a folder in `mcp.trusted_projects` only, the environment layer accepts
+  `[plugins] suggest_marketplaces = [{ source, revision? }]` and `suggest_plugins =
+  ["name@marketplace", ...]` (at most 20 each; one bad entry drops only itself). They become
+  offers on `plugins.suggestions {environment}`, with the file they came from and whether each is
+  already added or installed. `plugins.dismiss_suggestion` dismisses one offer, or with
+  `source_folder` mutes every suggestion from that project ("no suggestions from this project").
+  A suggestion adds, fetches, installs and enables nothing. `imperium plugin suggestions --env
+  <env>` prints the offers, and prints the commands that would act on them **only when standard
+  output is a terminal**.
+- Depends on: stages 4 and 6.
+- Owned paths: `crates/imperium-config/src/environment.rs`,
+  `crates/imperium-core/src/plugin_suggestions.rs` (new), `environments.rs`, `rpc.rs`, protocol
+  `methods/plugins.rs`, version, snapshot, generated types, `crates/imperium-cli/src/plugins.rs`,
+  CLI snapshots, docs 02, 06, 14.
+- Acceptance checks: an untrusted folder's suggestions refused and shown in `imperium env config`;
+  a trusted folder's offered; offering changes no marketplace, record, config or
+  `disabled_plugins`; a dismissed offer stays dismissed; a muted project offers nothing, even after
+  its file changes; with standard output redirected the CLI prints no commands; marker files
+  absent.
+- Risks: suggestion text is repository data; it goes only to the user's surfaces, never into a
+  prompt.
+- Status: pending
+- Outcome:
+- Handoff notes: none yet.
+
+## Stage 8a: Daemon identification of the desktop app
+
+- Objective: the production `ApprovalVerifier` checks 1 to 5 and 7 of
+  [who may approve](#who-may-approve), and the methods `plugins.approval_challenge` and
+  `plugins.approve`. Race-free peer identity: Windows `OpenProcess` at accept with the handle held
+  and the creation time checked against the accept time, re-checked at approve; Linux
+  `SO_PEERPIDFD`, or `pidfd_open` at accept with the start time read through it and refused when
+  later than the accept; macOS the audit token. Peer path equal to the app
+  installed beside `imperium-core`; Linux namespaces equal to the daemon's; macOS `sandbox_check`;
+  the environment refusals. At approve, the daemon **recomputes the folder's hash and run summary
+  and requires them to equal the challenged values**. U7: on Windows, count only in a release build
+  whose compile-time signed-build constant the signing job set, running from under
+  `SHGetKnownFolderPath(FOLDERID_ProgramFiles)`. The debug-only development
+  verifier (`dev`). **Counting stays off** (the verifier refuses with "presence check not built")
+  until stage 8c.
+- Depends on: stage 4; #240 merged.
+- Owned paths: `crates/imperium-core/src/app_identity/` (new: `mod.rs`, `windows.rs`, `macos.rs`,
+  `linux.rs`), the socket accept path that records peer identity (find with
+  `grep -rn "GetNamedPipeClientProcessId\|SO_PEERCRED\|peer_cred" crates/imperium-core/src`),
+  `plugin_records.rs`, `rpc.rs`, `crates/imperium-core/Cargo.toml`, protocol `methods/plugins.rs`,
+  version, snapshot, generated types, `.github/workflows/build.yml` (the signed-build constant, set
+  only in the signing job's build step),
+  docs 02, 06, 11.
+- Acceptance checks: per-platform unit tests in CI: a TCP connection refused before any process
+  check; the test binary refused (wrong path); Windows: a handle whose process was created after
+  the accept is refused, and a peer that exits and whose pid is reused before approve is refused;
+  Linux: identity read through the pidfd survives pid reuse (the test forks, exits and reuses
+  where it can, else asserts the pidfd path is used); Linux `pidfd_open` fallback: a process whose
+  start time is later than the accept time is refused (the test injects the accept time); Linux: a
+  peer in another mount or pid
+  namespace (a `unshare` child) refused; peers with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` or
+  `LD_PRELOAD` set refused; a challenge used twice, expired, from another connection, or for
+  another hash or run summary refused; a folder changed between challenge and approve refused; a
+  Windows build without the compile-time signed constant counts nothing, and setting an
+  environment variable or writing a file of that name at run time changes nothing; a daemon whose
+  executable is outside `FOLDERID_ProgramFiles` counts nothing even with `ProgramFiles` pointed at
+  its folder in its environment; the dev verifier exists only in debug
+  builds; with counting off nothing is recorded.
+- Risks: platform APIs new to the codebase, each needing its CI runner. Split if over 800 lines
+  (8a-i shared and Linux, 8a-ii Windows and macOS).
+- Status: pending
+- Outcome:
+- Handoff notes: no change to `peer::may_grant` or to mod approvals.
+
+## Stage 8b: Desktop approval command and native dialog
+
+- Objective: a Tauri command `plugin_approve { folder or name, action: install | update | approve,
+  environment? }`: it reads the preview, requests a challenge, shows a native dialog with
+  `tauri-plugin-dialog` (plugin id, hook and server command lines, flagged launchers, hash), and
+  on *Approve* sends `plugins.approve` with the challenge over its own `imperium-client`
+  connection on the **local socket only**. The command is allowed only from the app's own windows.
+  The app calls `SetDefaultDllDirectories` at start on Windows. CI checks the macOS release
+  entitlements leave out `allow-dyld-environment-variables`, `disable-library-validation` and
+  WebKit inspection.
+- Depends on: stage 8a.
+- Owned paths: `apps/desktop/src-tauri/src/plugin_approval.rs` (new), `main.rs`,
+  `apps/desktop/src-tauri/capabilities/`, `apps/desktop/src-tauri/tauri.conf.json` (entitlements),
+  `.github/workflows/build.yml` (the entitlement check), doc 07.
+- Acceptance checks: Rust unit tests in CI for the request it builds and for refusing a TCP-only
+  endpoint; the entitlement check fails on a deliberately bad entitlements file in a test; by hand
+  with a debug daemon and debug app: the dialog appears, the approval is recorded as `dev`; the
+  webview has no way to call `plugins.approve` with a challenge.
+- Risks: until stage 8c, approvals are recorded only by debug daemons.
+- Status: pending
+- Outcome:
+- Handoff notes: none yet.
+
+## Stage 8c: OS presence check
+
+- Objective: U6. First a prototype per OS of the mechanism in
+  [presence check per OS](#presence-check-per-os), run from `imperium-core` itself, recorded in
+  this plan's Outcome (works, works through a spawned helper, or infeasible). Then: after a valid
+  challenge, the daemon raises the check; success records `counted`; the check unavailable records
+  `dialog-only`; a refusal or cancel records nothing. Ship the polkit action file in the `.deb` and
+  `.rpm`. Turn counting on.
+- Depends on: stages 8a and 8b.
+- Owned paths: `crates/imperium-core/src/app_identity/presence/` (new, per OS), `Cargo.toml`,
+  `apps/desktop/src-tauri/` packaging for the polkit action (find the Linux bundle settings in
+  `tauri.conf.json`), docs 06 and 11, and this plan.
+- Acceptance checks: unit tests with an injected presence provider: success → `counted`;
+  unavailable → `dialog-only`; cancel → nothing recorded; a presence result sent by a client is
+  not a field the protocol accepts. By hand: on a signed macOS release candidate, approving shows
+  the system prompt and records `counted`; on a Linux desktop with the package installed, polkit
+  prompts and records `counted`, and with the action file removed the approval is `dialog-only`;
+  Windows: the prototype's result is recorded (counting there still waits for U7).
+- Risks: macOS may require a bundled helper; Windows Hello may be infeasible from the daemon (then
+  Windows is `dialog-only` once U7 holds).
+- Status: pending
+- Outcome:
+- Handoff notes: none yet.
+
+## Stage 9: Desktop Plugins window: marketplaces, browse and suggestions
+
+- Objective: a Plugins window on the Connectors pattern from #223 (shared `Dialog`, `Tabs`
+  *Installed*, *Browse*, *Marketplaces*, search, `EmptyState`, `LoadingState`, `Notice`,
+  `.card.interactive` cards, `--row-h` rows). *Browse* (cards with name, marketplace, description,
+  category, component counts, *Installed* / *Update available*, and a detail view), *Marketplaces*
+  (the official one marked built-in; add, refresh, remove, problems), and repository suggestions
+  with *Dismiss* and *No suggestions from this project*. No install button yet. Opened from the
+  title bar, the command palette, Settings, and a *Manage plugins* link in Connectors. A separate
+  window, because Connectors already has its own *Installed* and *Browse* for MCP servers.
+- Depends on: stages 2 and 7 (stage 3b for installed badges).
+- Owned paths: `apps/desktop/src/plugins/` (new), where `ConnectorsWindow` is mounted and opened
+  (`grep -rn "ConnectorsWindow" apps/desktop/src`), `apps/desktop/src/connectors/InstalledView.tsx`
+  (the link only), the command palette entry, `apps/desktop/src/styles/` (a new `plugins.css`
+  only if needed), `apps/desktop/test/`, doc 07.
+- Acceptance checks: `bash scripts/check-web.sh` passes; component tests with a mocked client for
+  filtering, an external-source card, marketplace add, refresh and remove, dismissing and muting;
+  by hand at 1280, 1024 and 420 px, light and dark, by keyboard, against
+  [07](../07-desktop-ui.md#theming) and [accessibility](../07-desktop-ui.md#accessibility-implemented).
+- Risks: stay on the shared components.
+- Status: pending
+- Outcome:
+- Handoff notes: none yet.
+
+## Stage 10: Desktop install, trust and update
+
+- Objective: the trust view (the full [trust prompt](#the-trust-prompt-shows-exactly-what-runs),
+  hooks and servers first) for install, update and approve, whose *Approve* invokes
+  `plugin_approve`; *Install without approving*; the *Installed* tab with on/off for the user and
+  per environment, update, *Approve* for withheld plugins (unrecorded and pre-existing too),
+  uninstall with "also delete saved secrets", and secret fields; the approval kind shown
+  (`dialog-only`, `carried-over`, `dev`); Connectors' rows show "needs approval". Where the
+  platform cannot approve (Windows before U7), *Approve* is replaced by the reason.
+- Depends on: stages 5, 8c and 9.
+- Owned paths: `apps/desktop/src/plugins/` (`InstalledView.tsx`, `TrustView.tsx`,
+  `SecretsForm.tsx`), `apps/desktop/src/connectors/InstalledView.tsx`, `apps/desktop/test/`,
+  doc 07.
+- Acceptance checks: `bash scripts/check-web.sh` passes; component tests: every hook and server
+  command from a mocked `PluginPreview` is listed; *Approve* invokes `plugin_approve` and the
+  webview never calls `plugins.approve`; an update with changed hooks shows the diff; saved
+  secrets are never shown; by hand on the signed macOS release candidate: install, approve
+  (presence prompt), enable, disable for one environment, update (withheld until approved again),
+  uninstall, undo.
+- Risks: none beyond stage 8's.
+- Status: pending
+- Outcome:
+- Handoff notes: none yet.
+
+## Stage 11: Agents, docs and close-out
+
+- Objective: `install_extension` with `kind = "plugin"` accepts `source = "name@marketplace"`
+  (recorded with `origin = agent`, withheld with code), with its schema text; a final pass over
+  05, 06, 07, 10, 11 and 14, including the [threat model](#threat-model) and
+  [remaining gaps](#remaining-gaps); roadmap item 51 marked implemented; the official marketplace
+  browsed live and one plugin inspected, installed and approved on a platform that can approve,
+  recorded with the marketplace's commit.
+- Depends on: stages 6 and 10.
+- Owned paths: `crates/imperium-core/src/extension_install.rs`,
+  `crates/imperium-protocol/src/tools.rs`, `crates/imperium-protocol/schemas/tools/install_extension.json`,
+  docs 05, 06, 07, 10, 11, 12, 14, and this plan.
+- Acceptance checks: an agent install of `x@fixture` with a hook is recorded, withheld and
+  unapproved; `python3 scripts/ci/check-links.py .` passes; **U1 check:** the built-in default
+  still matches the official marketplace's live source (`.claude-plugin/marketplace.json` present,
+  `name` matching), recorded with its commit; **threat-model check:** before this stage closes,
+  threat-model case 3, [remaining gaps](#remaining-gaps) and
+  [risks across stages](#risks-across-stages) are re-checked against #240 as merged and against
+  [05 Isolation tiers](../05-tools-and-isolation.md#isolation-tiers), and any drift is fixed in
+  this plan.
+- Risks: a real marketplace may use source types left out here; record them as follow-ups.
+- Status: pending
+- Outcome:
+- Handoff notes: none yet.
+
+## Risks across stages
+
+- **Approvals are not a boundary against unconfined code** (U5). With agents at tier 0, the
+  default, approvals protect against mistakes and protocol-only callers only. Docs and UI must not
+  claim more.
+- **An approved plugin runs as the user, unconfined.** The inspection makes the decision informed,
+  not safe; stage 5's allowlist limits what the code is handed, not what it can do.
+- **The OS tier holds only within #240's limits.**
+  [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) (merged at `a58b0efa`) closed the
+  daemon escape; the OS tier still holds only within its limits (abstract unix sockets such as X11, other user files,
+  the macOS runtime folder and keychain).
+- **`dialog-only` approvals** where no presence check exists rest on a click.
+- **Platforms that cannot approve.** Windows until [item 59](../12-roadmap.md#next-in-order), and
+  machines without the desktop app; plugins with code stay withheld there and the UI says why.
+- **Launchers and scripts outside the pin** make the hash cover only what is on disk.
+- **`config.set extensions.plugin_dirs`** from any token holder adds an ungated folder.
+- **A same-size edit with a restored modification time** is caught only at daemon restart.
+- **Format drift**: unknown fields ignored and unknown sources listed, so drift degrades to
+  "unsupported".
+- **Protocol minors**: concurrent PRs each take the next free minor at merge and update 02 by
+  merging, not force-pushing.
+
+## Open questions for the user
+
+None. U1 to U7 are recorded above. The one unverified point, Windows Hello from a windowless
+daemon, is resolved by U6's rule (if infeasible, Windows approvals are `dialog-only` once U7
+holds) and is prototyped in [stage 8c](#stage-8c-os-presence-check). Item 30's decision on
+main-context mods is referenced, not reopened.

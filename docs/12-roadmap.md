@@ -665,6 +665,33 @@ and `environments.agent_update` (protocol 0.28)
     permission-mode values); `auto` is in the CLI's `/mode` and the desktop's mode selector
     ([05](05-tools-and-isolation.md#auto-mode-implemented)).
 <!-- markdownlint-disable-next-line MD029 -->
+51. **Plugin marketplace** (planned). Claude Code's plugin marketplaces in Imperium: add a
+    marketplace (a git URL, a local folder, or a GitHub `owner/repo` holding
+    `.claude-plugin/marketplace.json`; Anthropic's official marketplace is pre-added), refresh
+    and remove it, browse its plugins with their descriptions and components, and install,
+    enable, disable (for the user or one environment), update and uninstall them, from the
+    desktop's Plugins window, `imperium plugin …` and new `plugins.*` methods. A trusted
+    project may suggest marketplaces and plugins, shown to the user as offers only. Nothing runs
+    at add, refresh, browse or install. The hooks and MCP servers of a plugin folder in the
+    config folder, however it got there, load in new sessions only with an approval bound to its
+    content hash and what it runs, and only the installed desktop app's native dialog can give
+    one: the daemon identifies the calling process (its path, outside any sandbox, without
+    process-id races), binds a single-use challenge to the content, and then raises the OS's own
+    presence check (Touch ID or password, Windows Hello, polkit) where one exists without setup,
+    else labels the approval dialog-only. The CLI cannot approve until
+    [item 30](#next-in-order)'s stronger check exists, and Windows counts no new approval until
+    [item 59](#next-in-order). Approvals guard against mistakes, protocol-only callers and agents
+    confined by the container tier (and by the OS tier within the limits of its daemon-escape fix,
+    [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240)); code running
+    unconfined as the user, including agents at the default tier, is out of scope, and the plan
+    says so. Any change of content, a link or a
+    renamed folder or manifest withholds the whole plugin until approved again. Plugin hooks block
+    but never rewrite; their processes get an allowlisted environment and their MCP secrets go to
+    the keychain. Builds on the Claude Code plugin loading of phase 5 and the agent installs of
+    [item 22](#next-in-order). The threat model, security model and its remaining gaps, storage,
+    protocol and fifteen stages are in the
+    [plugin marketplace plan](plans/plugin-marketplace.md).
+<!-- markdownlint-disable-next-line MD029 -->
 56. **Shared daemon lifetime** (implemented). One `imperium-core` per user, shared like a
     reference-counted pointer. The desktop app, every `imperium` command and the MCP bridge
     (`imperium mcp-serve`) find the daemon through `daemon.json` and start
@@ -725,6 +752,14 @@ and `environments.agent_update` (protocol 0.28)
     same tasks, building on the headless eval variants of [item 53](#next-in-order). Order: this
     is the first step of the reasoning-harness line, after the 0.3.0 version bump; the Imperium
     harness is then built as the second harness behind this switch.
+<!-- markdownlint-disable-next-line MD029 -->
+59. **Windows release signing and per-machine install** (planned). Windows release builds are
+    Authenticode-signed (the signing service is still to be chosen,
+    [11](11-ci-cd.md#secrets)) and the installer installs per-machine under Program Files, so
+    the app and `imperium-core` sit in a folder the user's own processes cannot write. Until both
+    hold, the [plugin marketplace](plans/plugin-marketplace.md) counts no new approval of a plugin
+    with hooks or MCP servers on Windows ([item 51](#next-in-order)); carried-over approvals and
+    plugins without code keep working.
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
