@@ -241,6 +241,17 @@ would run (`runs`) and so its approval do not depend on any secret. `plugins.lis
 plugin's `required_secrets` and `missing_secrets`. A plugin written by hand keeps reading the
 daemon's environment for `${VAR}`.
 
+**Child environment (no protocol change).** The hooks and stdio servers of every plugin under
+`<config>/plugins` start with a cleared environment, not the daemon's: only `PATH`, `HOME` or
+`USERPROFILE`, `SYSTEMROOT`, `TEMP`, `TMP`, `LANG`, `LC_*`, `TERM` and on Windows `APPDATA`,
+`LOCALAPPDATA`, `PATHEXT` and `COMSPEC`; the daemon's spawn mark (`IMPERIUM_SPAWNED_BY_DAEMON`, and
+`IMPERIUM_MCP_CHILD` for a server); `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR` and
+`IMPERIUM_PROJECT_DIR`; and what a server's own definition sets (`env`, and a saved secret in
+it). The daemon's other `IMPERIUM_*` variables and its token never reach such a child, nor does
+anything else in the daemon's environment. A plugin that needs another variable sets it in its
+server definition. User-configured `[[hooks]]` and servers, and plugins from `extensions.plugin_dirs`,
+keep today's environment.
+
 **Approval write path.** `plugin_records::record_approval` records an approval of a kind for a
 folder, its hash and run-summary digest (all must equal what is there now); an unrecorded
 folder gets an `origin = user` record. It writes only if the `ApprovalVerifier` allows the kind:

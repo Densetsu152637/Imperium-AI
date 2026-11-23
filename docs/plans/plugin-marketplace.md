@@ -1008,8 +1008,18 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   `PluginsSetSecretParams` has a `Debug` that hides the value; `delete_secrets` deletes the secrets
   of the variables the plugin's servers name (the keychain cannot be listed), and an undo of the
   uninstall does not bring them back.
-- Handoff notes: if over 800 lines, split (a) and (b). (b) must keep the secrets out of the
-  hook and server environments of anything but the one server that names them.
+- Outcome (b): hooks and stdio servers of plugins under `<config>/plugins` run with a cleared
+  environment plus `imperium_mcp::servers::plugin_child_env` (the allowlist and the spawn mark),
+  `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR`, `IMPERIUM_PROJECT_DIR` and the definition's own
+  variables. `load_with_secrets` marks them: `Hook.plugin_env_root` for a hook, and a reserved
+  `IMPERIUM_PLUGIN_CLEAN_ENV` entry in a stdio `ServerSpec`'s `env` (so no `Launch` or `ServerSpec`
+  signature changed) that `servers::start` turns into `env_clear` and never passes on. Choices: the
+  test is the plugin's canonical folder lying under `<config>/plugins`, so `plugin_dirs`
+  plugins keep the daemon's environment; the definition's variables come last and win; HTTP hooks
+  and servers have no child process.
+- Handoff notes: stage 6's CLI can call `plugins.set_secret` with the value from standard input.
+  A plugin that needs a variable from the daemon's environment now has to declare it itself; a
+  user who wants it can set it in the server definition's `env` of their own plugin_dirs copy.
 
 ## Stage 6: CLI and the safety floor
 

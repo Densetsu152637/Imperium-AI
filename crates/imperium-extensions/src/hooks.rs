@@ -103,6 +103,10 @@ pub struct Hook {
     /// Whether the hook's rewrites are honoured: true for the user's own configuration, false
     /// for a plugin an agent installed.
     pub may_rewrite: bool,
+    /// For a plugin under `<config>/plugins`: the plugin folder, and the command runs with a
+    /// cleared environment (`imperium_mcp::servers::plugin_child_env`) plus `CLAUDE_PLUGIN_ROOT`,
+    /// the project folders and the daemon's spawn mark. `None` keeps the daemon's environment.
+    pub plugin_env_root: Option<PathBuf>,
 }
 
 /// An HTTP hook's endpoint.
@@ -368,7 +372,15 @@ impl Hooks {
 }
 
 async fn run_one(hook: &Hook, input: &Value, cwd: &std::path::Path) -> Result<Answer, String> {
-    let mut child = imperium_tools::shell(&hook.command)
+    let mut command = imperium_tools::shell(&hook.command);
+    if let Some(root) = &hook.plugin_env_root {
+        // `env_clear` also drops the spawn mark `shell` set: it comes back with the allowlist.
+        command
+            .env_clear()
+            .envs(imperium_mcp::servers::plugin_child_env())
+            .env("CLAUDE_PLUGIN_ROOT", root);
+    }
+    let mut child = command
         .current_dir(cwd)
         .env("IMPERIUM_PROJECT_DIR", cwd)
         .env("CLAUDE_PROJECT_DIR", cwd)
@@ -615,6 +627,7 @@ impl ConfiguredHook {
             cwd: None,
             origin: origin.to_string(),
             may_rewrite: true,
+            plugin_env_root: None,
         })
     }
 }
@@ -677,6 +690,7 @@ pub fn parse_hooks_json(
                     timeout: entry.timeout.map_or(DEFAULT_TIMEOUT, Duration::from_secs),
                     cwd: None,
                     origin: origin.to_string(),
+                    plugin_env_root: None,
                 });
             }
         }
@@ -696,6 +710,7 @@ mod tests {
             command: command.into(),
             http: None,
             may_rewrite: true,
+            plugin_env_root: None,
             timeout: Duration::from_secs(10),
             cwd: None,
             origin: "test".into(),
