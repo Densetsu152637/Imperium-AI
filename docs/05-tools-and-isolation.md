@@ -973,6 +973,124 @@ folder does not reopen it: the file tools, the OS sandbox and the container moun
 overlaps a folder is mounted `:ro`) all keep the folder read-only, while grants elsewhere, such as
 the session's scratch folder, keep their mode.
 
+**The daemon is outside the OS tier (implemented):** a command that could read the daemon's
+access token, or connect to the daemon, could call `config.set` (adding an MCP server, a hook or
+an `extensions.plugin_dirs` entry), start a tier-0 session and so make the unconfined daemon run
+code for it. The OS tier is therefore not just read-only: it hides everything that would hand a
+command the daemon.
+
+| What | Where | In the OS tier |
+| --- | --- | --- |
+| Endpoint file (access token, port, socket path) | `<data>/daemon.json` | Linux: `/dev/null` bound over it; macOS: `file-read*` denied |
+| Local socket (`daemon.socket`) | `<data>/ipc/` (`daemon.sock`) | Linux: empty tmpfs over the folder; macOS: `file-read*` and `network-outbound` to a unix socket under it denied |
+| Paired phones | `<data>/devices.json` (SHA-256 of each token) | hidden like the endpoint file |
+| Forwarded remote daemons (`imperium remote`) | `<data>/remotes/` (`<name>.json`: the remote's token and its forwarded loopback port) | hidden like the socket folder (tmpfs, or denied). The forwarded local ports are not denied on macOS: they are not known when the daemon starts, and the token is hidden |
+| Encrypted secret store and its key | `<data>/secrets.enc`, `secrets.key`, `secrets.lock`, and the file named by `IMPERIUM_SECRETS_PASSPHRASE_FILE` | hidden like the endpoint file (a keychain-backed store has no files) |
+| The user's runtime folder: the session bus and keyring (the Secret Service holds the keychain's secrets), the systemd user manager's private socket (`systemd-run --user` would start a process outside the sandbox), ssh and gpg agent sockets, a rootless container runtime's socket | `$XDG_RUNTIME_DIR`, or `/run/user/<uid>` when it is unset | Linux: the whole folder is replaced by an empty tmpfs. Hiding it whole, not socket by socket, is deliberate: any one socket left in it can hand a command more than the sandbox gives it, and a list of known ones goes stale. The cost is that a Wayland socket there is hidden too, so Wayland programs do not start in the OS tier. X11 is not hidden by this: see the abstract-socket limit below |
+| Daemon, phone and API TCP ports | loopback ports from `daemon.port`, `phone.bind`, `api` | macOS: `network-outbound` to `localhost:<port>` denied. Linux: **not filtered**, see below |
+| Environment of the command | `IMPERIUM_*` (home, passphrase file, port overrides) and `DBUS_SESSION_BUS_ADDRESS` | removed before the command starts; only `IMPERIUM_SPAWNED_BY_DAEMON` is set |
+
+The masks are applied after every folder and grant mount, so a writable grant around the data
+folder (or a workspace inside it, the default) neither reopens them nor loses its own files; only
+paths that exist when a command starts are masked, and each is also masked under its resolved
+name. The daemon registers them when it starts (`imperium_tools::hide_from_os_sandbox`).
+
+Whether a writable grant around the data folder can reopen a hidden file differs by OS:
+
+- **Linux:** a mount point cannot be renamed, replaced or linked out of, and the masks are
+  mounted last, so the file stays hidden whatever the grants are. A mask is by path, so a rename
+  of a folder around it would carry the daemon's folders out of its reach (`mv ~/.local/share
+  ~/.local/sx`, then read `~/.local/sx/imperium/daemon.json` in the next command, which has no
+  mask for the new path). Bubblewrap therefore binds every folder between a writable path and a
+  guarded or hidden path onto itself (`--bind a a`, writable, outermost first, before the
+  guards): each is a mount point, and renaming one fails with `EBUSY`. As a second line, and
+  the only one in the container tier (a container has no such mount points), **every** command in
+  the OS or container tier is refused, in every session whatever its folders, with a clear error
+  while `<config>`, `<data>` or the daemon's endpoint file is missing. A command in one session
+  could otherwise move `~/.local/share` into a folder another session contains, where a later
+  command would find the daemon's files at a path with no mask. Tier 0 is unaffected, and the
+  hidden subfolders (`remotes/`, `ipc/`) are not part of this check: removing one in normal use
+  does not stop commands, and they are hidden whenever they exist. The daemon **creates
+  `<config>` and `<data>` at startup**, so the guards always apply: a folder that is missing
+  cannot be guarded, and nothing else creates `<config>`, so a command could otherwise create it
+  and write a `config.toml` of hooks or MCP servers that the daemon would then run. If a folder
+  cannot be created (a read-only home, a file in the way), it is still recorded, so it counts as
+  missing and every command in the OS and container tiers is refused with the same error
+  instead of running without the guard.
+- **macOS:** Seatbelt works by path, so for every hidden path it also denies `file-write*` (which
+  covers deleting or renaming it) and `file-link` (a hard link to a readable path), and it denies
+  `file-write-unlink` on every folder around it, so the folder cannot be renamed away to carry
+  the file to another path. A directory is denied by `subpath`, a file by `literal`.
+
+**The configuration and data folders are read-only to commands (implemented):** hiding the
+credentials is not enough when a session folder or a writable grant contains `<config>` and
+`<data>` themselves (a workspace of `~`, or a grant over the app-data folders): a command could
+write `config.toml` (adding a hook or an MCP server that the unconfined daemon then runs), plant a
+plugin or an approval file, or read what the masks do not cover. The daemon therefore registers
+both folders as guarded (`imperium_tools::guard_from_commands`), whatever the session:
+
+- **What stays writable inside them:** only the folders the daemon registers as open
+  (`imperium_tools::leave_writable_in_guards`): the workspaces root (`workspaces.root`, default
+  `<data>/workspaces`, which holds the default sessions workspace and every session's scratch
+  folder) and `<data>/worktrees` (auto-fix). A writable folder or grant anywhere else in a guarded
+  folder stays read-only: all of `<config>` (a grant at `<config>/sub` cannot write), and
+  `<data>` folders the daemon itself acts on, such as sessions, schedules, packs and approvals.
+- **OS tier, Linux:** after the writable binds, every guarded folder that a writable path is,
+  contains or is inside of is bound read-only; only then are the writable paths under an open
+  folder bound writable again (after all guard binds, so another name for the same folder cannot
+  cover them), then the read-only mount's `protected` folders and the credential masks follow.
+  Writable paths, guards and open folders are compared and emitted under every name they have
+  (a resolved link such as `/home` to `/var/home` as well as the configured one).
+- **OS tier, macOS:** `file-write*` is denied under each guarded folder and allowed again under a
+  writable path under an open folder, before the read-only and credential rules; names as above.
+- **Container tier:** a guarded folder is never mounted writable and what it holds is never
+  there:
+  - a mounted folder or grant that contains a guarded folder or a hidden path gets an empty tmpfs
+    over it at its path in the container (`--tmpfs /workspace/.config/imperium`), or for a hidden
+    file `/dev/null` mounted read-only over it;
+  - a mount that *is* a guarded folder (a grant of `<data>`), or is inside one outside the open
+    folders (`<data>/sessions`, `<config>/sub`), is mounted `:ro`, with the hidden files and
+    folders in it covered the same way;
+  - a mount that is, or is inside, a hidden path (a grant of `<data>/remotes` or `<data>/ipc`) is
+    replaced by an empty tmpfs: its content is never mounted;
+  - no mount point is used twice, which a container runtime refuses: a cover is skipped where
+    another mount or cover already has that path.
+  A workspace inside the workspaces root mounts only itself, so nothing around it is there.
+- The guard applies only to commands (and MCP servers and previews that run under a tier); tier 0
+  runs with the user's own rights, as always. Reads of the guarded folders are not blocked in the
+  OS tier beyond the credential list above: `config.toml` stays readable.
+
+With the network shared (`isolation.network` is `true`, the default), bubblewrap cannot filter
+one loopback port, so on Linux the daemon's TCP port stays **reachable but useless**: every
+request needs the access token, which the command cannot read, and a connection without it is
+refused with 401. `isolation.network = false` (`--unshare-net`) removes the port, and a command
+cannot open the unix socket in either case. Remaining limits of the OS tier:
+
+- It is not a confidentiality sandbox: the rest of the filesystem is readable, including the
+  user's other secrets (`~/.ssh`, cloud credentials, browser profiles) and `config.toml`.
+- **Abstract unix sockets stay reachable while the network is shared** (the default): X11's
+  `@/tmp/.X11-unix/X0` socket, and the abstract address a session bus can also listen on, are in
+  the network namespace, not the filesystem, so hiding the runtime folder does not close them. A
+  command can then talk to the X server (keystrokes, screenshots) or a bus. Set
+  `isolation.network = false` (`--unshare-net`) to close them; the daemon's TCP port goes with
+  them.
+- Sockets outside the runtime folder (under `/var/run` or the home folder) are not hidden. On
+  macOS the runtime folder is not hidden and the login keychain stays reachable: it asks the
+  user per item before it releases a secret another application stored.
+- A path reachable under another name (a second bind mount of the data folder) is not masked.
+- Windows has no OS tier, so commands fail there rather than running unsandboxed. The container
+  tier mounts only the workspace, so none of these files are in it; with Docker Desktop its
+  `host.docker.internal` reaches the host's loopback ports, again useless without the token.
+- Phone and API listeners that start after the daemon (a settings change) are not added to the
+  macOS port denial until the daemon restarts; both need credentials the command cannot read.
+
+Anything that treats the OS tier as the place to run untrusted code, such as the plugin
+marketplace's threat model ([06](06-extensibility.md)), depends on this section: a plugin's
+commands must not be able to turn into daemon calls. `crates/imperium-tools/tests/os_sandbox.rs`
+runs a real sandbox in CI (Linux and macOS) to show that the endpoint file is unreadable, the
+sockets cannot be opened, a hidden file cannot be renamed or linked out, and a workspace of the
+home folder cannot write `<config>` or `<data>`.
+
 ### Environment runtimes (implemented)
 
 An [environment's runtime](14-projects-and-automation.md#runtimes-implemented) can move a
@@ -1018,7 +1136,7 @@ follow the permission mode and the safety floor, not the worktree)
 | Tier            | Boundary                                                                     | Protects against                                    | Does not protect against                           |
 | --------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |
 | 0 — Policy      | Daemon refuses built-in file tools outside allowed roots and grants, and writes under read-only grants | Model mistakes with built-in tools                  | Code run through `exec`, which has the user's full rights |
-| 1 — OS sandbox  | Linux: Landlock + seccomp (bubblewrap); macOS: Seatbelt profile; Windows: AppContainer / restricted token (best effort) | Executed code reaching files outside allowed roots, optional network block | Kernel or sandbox escapes; Windows coverage is partial |
+| 1 — OS sandbox  | Linux: Landlock + seccomp (bubblewrap); macOS: Seatbelt profile; Windows: AppContainer / restricted token (best effort) | Executed code reaching files outside allowed roots, optional network block, and the daemon's own credentials and socket | Kernel or sandbox escapes; the user's other readable files; the daemon's TCP port while the network is shared (it needs the hidden token); Windows has no OS tier |
 | 2 — Container   | Docker/Podman container with only the workspace mounted                      | Executed code affecting the host                    | Container escapes; mounted folders are writable    |
 | 3 — Remote      | Separate machine over SSH                                                    | Anything on the local machine                       | The remote machine itself                          |
 
