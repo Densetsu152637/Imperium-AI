@@ -742,9 +742,11 @@ mod tests {
         }
         #[cfg(windows)]
         {
+            // `mklink` reads a `/` in the path as a switch: use the native separators.
+            let link: PathBuf = link.components().collect();
             std::process::Command::new("cmd")
                 .args(["/C", "mklink", "/J"])
-                .arg(link)
+                .arg(&link)
                 .arg(target)
                 .output()
                 .is_ok_and(|output| output.status.success())
