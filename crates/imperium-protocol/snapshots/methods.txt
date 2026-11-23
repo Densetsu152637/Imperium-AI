@@ -67,6 +67,8 @@ method pet.strip
 method phone.devices
 method phone.pair
 method phone.revoke
+method plugins.approval_challenge
+method plugins.approve
 method plugins.browse
 method plugins.delete_secret
 method plugins.dismiss_suggestion

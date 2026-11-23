@@ -264,7 +264,35 @@ keep today's environment.
 folder, its hash and run-summary digest (all must equal what is there now); an unrecorded
 folder gets an `origin = user` record. It writes only if the `ApprovalVerifier` allows the kind:
 the release verifier writes nothing and a debug one only `dev` until stage 8c, so no approval
-counts yet. `plugins.approve` is stage 8a.
+counts yet.
+
+**Approving a plugin (protocol 0.56; the desktop app only).** `plugins.approval_challenge {name,
+sha256, runs_digest}` gives a single-use challenge, valid two minutes, bound to the connection
+that asked and to the folder, hash and run-summary digest; it is refused unless the folder has
+that hash and digest now. `plugins.approve {name, sha256, runs_digest, challenge}` uses the
+challenge up, recomputes the folder's hash and run summary, requires them to equal the
+challenged ones, and answers `{approved, kind, reason}`; a refusal records nothing. Both are
+answered only to the desktop app installed beside `imperium-core`, which the daemon identifies
+itself (`crates/imperium-core/src/app_identity/`), never from what the caller sends:
+
+- the connection came in on the local socket; loopback TCP (a mod frame, a remote host) and a
+  paired phone are refused before any process is looked at;
+- on Linux, the peer is held from accept by a pidfd (`SO_PEERPIDFD`; only on a kernel that lacks
+  that option, `pidfd_open` on the `SO_PEERCRED` id, refusing a process that started after the
+  accept, while any other `SO_PEERPIDFD` error refuses the peer), and every read goes through
+  `/proc/<pid>` confirmed alive through that pidfd, so after the accept a reused process id never
+  stands in for it; on a kernel without the option (before 6.5), a pid reused between the peer's
+  connect and the accept is not detected;
+- its executable is the `imperium-desktop` beside the running `imperium-core`, and its mount and
+  pid namespaces are the daemon's (an OS-tier sandbox has its own);
+- its environment sets no `WEBVIEW2_*`, `DYLD_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH` or `LD_AUDIT`.
+
+These guard against mistakes and confined callers, not against unconfined code running as the
+user. The identity belongs to the process that connected, not to each message sent on the
+connection. **No approval counts yet**: a release daemon refuses every approval with "presence check
+not built" until the OS presence check lands, and a debug daemon records `dev` approvals (which
+release daemons ignore) for the debug app built beside it. Windows and macOS refuse every
+approval until their identification is built. The desktop app does not call these methods yet.
 
 **Repository suggestions (protocol 0.55; not a paired phone).** A project folder in
 `mcp.trusted_projects` may list, in its `.imperium/config.toml` (or `config.local.toml`),

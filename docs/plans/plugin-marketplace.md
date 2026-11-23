@@ -1178,9 +1178,57 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   builds; with counting off nothing is recorded.
 - Risks: platform APIs new to the codebase, each needing its CI runner. Split if over 800 lines
   (8a-i shared and Linux, 8a-ii Windows and macOS).
-- Status: pending
-- Outcome:
-- Handoff notes: no change to `peer::may_grant` or to mod approvals.
+- Status: 8a-i done, 8a-ii pending
+- Outcome: **8a-i (shared and Linux), protocol 0.56.** `crates/imperium-core/src/app_identity/`:
+  `mod.rs` holds check 1 (`local_only`, run before the plugin is looked up or any process is
+  read), the `Identify` trait with the production `InstalledApp` (checks 1 to 4 against
+  `imperium-desktop` beside the running executable), `refused_variable` (check 4's names, compared
+  ignoring case), `Challenges` (check 5) and the `challenge` and `approve` flows; `linux.rs` the
+  pidfd identity; `unsupported.rs` the Windows and macOS stub, which refuses with "not built for
+  this platform yet". `server.rs` takes the identity at accept beside the existing pid and accept
+  time (`PeerPid`), and `Connection` holds it with its own `Challenges`. `ApprovalVerifier` gained
+  `approval_kind` (check 6's answer): release refuses with "presence check not built", the
+  development `DebugVerifier`, now compiled only under `debug_assertions`, gives `dev`. Methods
+  `plugins.approval_challenge` and `plugins.approve` (`record_approval` lost its `dead_code`
+  allowance). Dependencies: `rustix` (already in the lock) for pidfds, `SO_PEERCRED`, `poll` and
+  `/proc`, and `nix` 0.31 with only `socket` for `SO_PEERPIDFD`, which `rustix` lacks, so the
+  module has no `unsafe` (the workspace forbids it). Choices: a challenge lives in the
+  connection that asked (so another connection cannot know it), at most eight open per
+  connection; a challenge is used up by any answer, refused or not; the challenge is refused
+  unless the folder has the named hash and digest now; `name` is resolved as `plugins.update`
+  does (folder name, plugin name or `name@marketplace`); approve re-runs checks 1 to 4 before
+  the challenge; failures of `plugins.approve` are a result (`approved: false`, `reason`), a
+  name that resolves to nothing is an error; the start-time check applies to the `pidfd_open`
+  path only (a socket's own pidfd is the connecting process), and it refuses only a process
+  started after the accept, so before 6.5 a pid reused between the peer's connect and the
+  accept is not detected (the planned check is against the accept, not the connect); the
+  fallback runs only when the kernel answers that it lacks `SO_PEERPIDFD` (`ENOPROTOOPT`,
+  whatever the version says, since distributions backport it), and any other `SO_PEERPIDFD`
+  error refuses the peer, since it means the peer has exited and its id may be another
+  process's (review findings).
+  Tests: TCP refused first (unit and through `Connection`); the test binary refused as the
+  desktop app; a socket peer held by `SO_PEERPIDFD` on kernels from 6.5; an exited peer refused
+  through its pidfd while `/proc/<pid>` still exists (reuse itself is not forced: `pid_max` is
+  large and unprivileged tests cannot pick a pid); the `pidfd_open` fallback with an injected
+  accept time; `LD_PRELOAD` and `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` in a real peer's
+  environment; a peer in another mount and pid namespace made with `unshare` (unprivileged, else
+  passwordless `sudo`; skipped with a `skipped:` line where neither works); challenge reuse,
+  expiry, another connection, another hash, digest or folder; a folder changed between
+  challenge and approve; nothing recorded with counting off; the dev verifier only in debug
+  builds.
+- Handoff notes: no change to `peer::may_grant` or to mod approvals (kept). **For 8a-ii:**
+  replace `unsupported.rs` with `windows.rs` and `macos.rs` behind the same `Peer`,
+  `at_accept` and `identify` (`identify(peer, app)` gets the canonical app path); Windows takes
+  `GetNamedPipeClientProcessId` then `OpenProcess` at accept in `at_accept`, holds the handle in
+  `Peer`, refuses a creation time later than the accept and re-checks the handle in `identify`,
+  and adds check 7 (the signing job's `option_env!` constant and
+  `SHGetKnownFolderPath(FOLDERID_ProgramFiles)`) with its `build.yml` change; macOS uses the
+  audit token for the path and `sandbox_check`. `imperium-core` forbids `unsafe` through the
+  workspace lints, so Win32 and macOS calls need either safe wrappers or the `imperium-ipc`
+  pattern (crate-level `deny` with one module allowed), which is a decision for that stage.
+  `refused_variable` already covers `DYLD_*` and Windows' case-insensitive names. Stage 8b's
+  app sends `plugins.approve` on its own local-socket connection, the same one that asked for
+  the challenge.
 
 ## Stage 8b: Desktop approval command and native dialog
 

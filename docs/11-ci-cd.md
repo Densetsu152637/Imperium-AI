@@ -26,6 +26,13 @@ always-running `CI gate` job fails if any job failed, so it can be the single re
 | `web`       | `package.json` exists | pnpm install (frozen), lint, typecheck, test, build          |
 | `python`    | `sidecars/media/pyproject.toml` exists | uv sync (locked), ruff, pytest              |
 
+On Linux the `rust` job's tests also exercise how the daemon identifies the desktop app for plugin
+approvals ([06](06-extensibility.md#plugin-marketplaces)): pidfds from the socket (`SO_PEERPIDFD`,
+kernel 6.5 or later; the runner's kernel is newer) and the namespace check, whose test makes a
+`sleep` in another mount and pid namespace with `unshare`, unprivileged where user namespaces are
+allowed, else through the runner's passwordless `sudo`. Where neither works that test prints a
+`skipped:` line and passes.
+
 ## Release channels
 
 There are two channels, each with its own branch, workflow, and update feed.

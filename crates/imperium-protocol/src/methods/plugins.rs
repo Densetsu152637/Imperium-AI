@@ -545,6 +545,76 @@ pub struct PluginsUpdateResult {
     pub notes: Vec<String>,
 }
 
+// ---- Approving a plugin ----
+
+/// `plugins.approval_challenge`: a single-use challenge for approving the installed plugin
+/// `name` (a folder name, plugin name or `name@marketplace` under `<config>/plugins`) with the
+/// content hash `sha256` and run-summary digest `runs_digest` the approval dialog shows. Answered
+/// only on the local socket, to the desktop app installed beside `imperium-core`, and only while
+/// the folder still has that hash and digest. The challenge is bound to the connection that asked
+/// and to that content, and expires after two minutes. Called by the desktop app's own process,
+/// never by its webview.
+#[derive(Debug)]
+pub struct PluginsApprovalChallenge;
+
+impl Method for PluginsApprovalChallenge {
+    const NAME: &'static str = "plugins.approval_challenge";
+    type Params = PluginsApprovalChallengeParams;
+    type Result = PluginsApprovalChallengeResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsApprovalChallengeParams {
+    pub name: String,
+    pub sha256: String,
+    pub runs_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsApprovalChallengeResult {
+    pub challenge: String,
+    // When the challenge stops being accepted, in Unix milliseconds.
+    #[ts(type = "number")]
+    pub expires_unix_ms: u64,
+}
+
+/// `plugins.approve`: approves the plugin `name` with the challenge
+/// `plugins.approval_challenge` gave this connection for the same hash and digest. The daemon
+/// checks the caller again, uses the challenge up, recomputes the folder's hash and run summary
+/// and requires them to equal the challenged ones. An approval that fails any check records
+/// nothing and says why (`approved: false` with `reason`). Until the OS presence check is built,
+/// no approval counts: a release daemon records nothing, and a debug daemon records `dev`
+/// approvals, which release daemons ignore.
+#[derive(Debug)]
+pub struct PluginsApprove;
+
+impl Method for PluginsApprove {
+    const NAME: &'static str = "plugins.approve";
+    type Params = PluginsApproveParams;
+    type Result = PluginsApproveResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsApproveParams {
+    pub name: String,
+    pub sha256: String,
+    pub runs_digest: String,
+    pub challenge: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsApproveResult {
+    pub approved: bool,
+    // The approval's kind when recorded: `counted`, `dialog-only` or `dev`.
+    pub kind: Option<String>,
+    // Why nothing was recorded.
+    pub reason: Option<String>,
+}
+
 // ---- Plugin secrets ----
 
 /// `plugins.set_secret`: saves the value of one `${VAR}` a plugin's server needs in the secret

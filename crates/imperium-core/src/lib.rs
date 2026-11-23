@@ -3,6 +3,7 @@
 
 #![warn(unreachable_pub)]
 
+mod app_identity;
 mod approvals;
 mod attachments;
 mod autofix;
