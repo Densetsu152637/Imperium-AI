@@ -708,9 +708,9 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   plan's Outcome, and pin it in a unit test; if it is not a git repository with
   `.claude-plugin/marketplace.json`, stop and report instead of guessing.
 - Risks: clones take minutes; run them on a task, as `mods.inspect` does.
-- Status: in progress. Split in two pull requests: 2a (this one) holds the config; 2b the
-  protocol and the daemon. The protocol could not go in 2a because the router test requires every
-  method in the snapshot to have a handler.
+- Status: done, in two pull requests: 2a (#244) holds the config; 2b the protocol and the
+  daemon. The protocol could not go in 2a because the router test requires every method in the
+  snapshot to have a handler.
 - Outcome: 2a: `[plugins.marketplaces.<name>]` settings with the official marketplace as a default
   (`claude-plugins-official`, source `anthropics/claude-plugins-official`); `Settings::validate`
   refuses the name with another source (compared by repository, so another spelling of the
@@ -720,7 +720,24 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   <https://code.claude.com/docs/en/discover-plugins> (the page's `/plugin marketplace add
   anthropics/claude-plugins-official`), and `git ls-remote` shows the repository with
   `.claude-plugin/marketplace.json` whose `name` is `claude-plugins-official`; a unit test pins it.
-- Handoff notes: if over 800 lines, split protocol and config (2a) from the daemon (2b).
+  2b: protocol 0.49 (`plugins.marketplace_add`, `_list`, `_refresh`, `_remove` and `plugins.browse`,
+  generated types, snapshot, handshake in the desktop client) and `crates/imperium-core/src/marketplaces.rs`.
+  Choices: the marketplace's name comes from its `marketplace.json`, not from the caller; a folder
+  source is stored as its absolute path and a configured `owner/repo` is always GitHub (the
+  folder-wins rule applies when adding only, against the daemon's working folder); refresh clones
+  again and compares the commit, keeping the copy in place when it is unchanged; the record
+  file keeps a hash of each entry so a refresh can name added, removed and changed plugins for a
+  folder too; `built_in` is the official name with its pinned source; `plugins.marketplace_list`
+  and `_remove` run on the connection, add, refresh and browse run on a task and are serialised
+  (one network operation at a time); browsing a plugin's `components` reads names and two JSON
+  files and never through a link. Tests use local git repositories (`file://`) and folders, no
+  network, and assert that no hook or server marker file appears.
+- Handoff notes: stage 3a-ii inspects a plugin with `marketplace::Entry` and `Source::clone_url`
+  from the cached clone (`<data>/marketplaces/<name>/`, or the folder for a folder source), using
+  `read_again`'s staging-clone pattern; the shared `OPERATIONS` lock in `marketplaces.rs` should
+  also guard a plugin fetch that reads a marketplace clone. `plugins.browse` leaves `installed`
+  out until stage 3b. The clone's `.git` is kept, so a later stage can read the commit with
+  `git rev-parse`; `Record.commit` is the commit of the last read.
 
 ## Stage 3a-i: Record store and the load-time gate
 
