@@ -22,9 +22,10 @@ use imperium_extensions::marketplace::Source as PluginSource;
 use imperium_extensions::plugins::{self, Plugin, inside};
 use imperium_protocol::methods::{
     InstallSource, InstalledPlugin, PluginHookRun, PluginInstalled, PluginPreview, PluginServerRun,
-    PluginsInspectParams, PluginsInstallParams, PluginsInstallResult, PluginsListResult,
-    PluginsSetEnabledParams, PluginsSetEnabledResult, PluginsUninstallParams,
-    PluginsUninstallResult, PluginsUpdateParams, PluginsUpdateResult,
+    PluginsDeleteSecretParams, PluginsInspectParams, PluginsInstallParams, PluginsInstallResult,
+    PluginsListResult, PluginsSecretResult, PluginsSetEnabledParams, PluginsSetEnabledResult,
+    PluginsSetSecretParams, PluginsUninstallParams, PluginsUninstallResult, PluginsUpdateParams,
+    PluginsUpdateResult,
 };
 
 use crate::extension_install::{self, ExtensionKind, Staging, check_name, move_tree, remove_tree};
@@ -554,6 +555,129 @@ fn resolve(state: &DaemonState, text: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// The secret store's name for the variable `variable` of the plugin `plugin`:
+/// `plugin.<plugin>.<variable>`, lowercased. Names compare ignoring case, so `FOO` and `foo` are
+/// one secret; one over 64 characters or with a character a secret name cannot hold is refused.
+pub(crate) fn secret_name(
+    plugin: &str,
+    variable: &str,
+) -> Result<imperium_config::SecretName, String> {
+    // Only a plain variable name: a `.` could name another plugin's secret (`${b.x}` of plugin `a`
+    // would be `plugin.a.b.x`, plugin `a.b`'s `x`).
+    if !plugins::is_variable(variable) {
+        return Err(format!(
+            "{variable} cannot be a secret: a variable name is letters, digits and '_', not starting with a digit"
+        ));
+    }
+    format!(
+        "plugin.{}.{}",
+        plugin.to_ascii_lowercase(),
+        variable.to_ascii_lowercase()
+    )
+    .parse()
+    .map_err(|_| {
+        format!(
+            "{variable} of {plugin} cannot be a secret: its store name, plugin.<plugin>.<variable> in lower case, may hold letters, digits, '.', '_' and '-' and be at most 64 characters"
+        )
+    })
+}
+
+/// Reads a downloaded plugin's `${VAR}` from the secret store (see [`secret_name`]).
+pub(crate) fn plugin_secrets(
+    store: std::sync::Arc<dyn imperium_config::SecretStore>,
+) -> plugins::PluginSecrets {
+    plugins::PluginSecrets::new(move |plugin, variable| {
+        let name = secret_name(plugin, variable).ok()?;
+        store.load(&name).ok().flatten()
+    })
+}
+
+/// The folder and plugin a secret call names. Only a plugin installed from a marketplace or by an
+/// agent reads saved secrets, and only a variable its servers name; of two variables that differ
+/// only by letter case the first in sorted order may be set and the other is refused.
+fn secret_target(
+    state: &DaemonState,
+    name: &str,
+    variable: &str,
+) -> Result<(Plugin, imperium_config::SecretName), String> {
+    let dir = resolve(state, name)?;
+    let record = plugin_records::record_for(state.paths(), &dir);
+    if !record.is_some_and(|record| record.origin.downloaded()) {
+        return Err(
+            "only a plugin installed from a marketplace or by an agent, or one you approved yourself, reads saved secrets"
+                .into(),
+        );
+    }
+    let plugin =
+        plugin_records::parse(&dir).ok_or("the folder holds no plugin that can be read")?;
+    if !plugin
+        .required_secrets
+        .iter()
+        .any(|known| known == variable)
+    {
+        return Err(format!(
+            "{} has no server that needs {variable}: it needs {}",
+            plugin.name,
+            if plugin.required_secrets.is_empty() {
+                "none".to_string()
+            } else {
+                plugin.required_secrets.join(", ")
+            }
+        ));
+    }
+    if let Some(other) = plugin
+        .required_secrets
+        .iter()
+        .find(|other| other.as_str() < variable && other.eq_ignore_ascii_case(variable))
+    {
+        return Err(format!(
+            "{variable} and {other} would be one saved secret (names compare ignoring letter case): {variable} is refused"
+        ));
+    }
+    let secret = secret_name(&plugin.name, variable)?;
+    Ok((plugin, secret))
+}
+
+/// `plugins.set_secret`. The value goes to the secret store and nowhere else, and not into a
+/// result or an error.
+pub(crate) fn set_secret(
+    state: &DaemonState,
+    params: PluginsSetSecretParams,
+) -> Result<PluginsSecretResult, String> {
+    let (plugin, secret) = secret_target(state, &params.name, &params.variable)?;
+    if params.value.is_empty() || params.value.len() > 64 * 1024 {
+        return Err("a secret value must be 1 byte to 64 KiB".into());
+    }
+    state
+        .secrets()
+        .store(&secret, &params.value)
+        .map_err(|error| format!("could not save the secret: {error}"))?;
+    Ok(PluginsSecretResult {
+        name: plugin.name,
+        variable: params.variable,
+        secret: secret.to_string(),
+        changed: true,
+    })
+}
+
+/// `plugins.delete_secret`.
+pub(crate) fn delete_secret(
+    state: &DaemonState,
+    params: PluginsDeleteSecretParams,
+) -> Result<PluginsSecretResult, String> {
+    let (plugin, secret) = secret_target(state, &params.name, &params.variable)?;
+    let changed = state
+        .secrets()
+        .delete(&secret)
+        .map_err(|error| format!("could not delete the secret: {error}"))?;
+    Ok(PluginsSecretResult {
+        name: plugin.name,
+        variable: params.variable,
+        secret: secret.to_string(),
+        changed,
+    })
+}
+
 /// The plugin's name: its record's, else its manifest's, else its folder's.
 fn plugin_name(state: &DaemonState, dir: &Path, asked: &str) -> String {
     plugin_records::record_for(state.paths(), dir)
@@ -575,6 +699,20 @@ pub(crate) async fn uninstall(
     let _serial = INSTALLS.lock().await;
     let dir = resolve(state, &params.name)?;
     let name = plugin_name(state, &dir, &params.name);
+    // Read before the folder moves: the variables its secrets were saved under.
+    let secrets: Vec<(String, String)> = if params.delete_secrets {
+        plugin_records::parse(&dir)
+            .map(|plugin| {
+                plugin
+                    .required_secrets
+                    .iter()
+                    .map(|variable| (plugin.name.clone(), variable.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let (change, mut notes) =
         crate::config_changes::uninstall_folder(state, None, ExtensionKind::Plugin, &name, &dir)?;
     Ok(PluginsUninstallResult {
@@ -583,10 +721,24 @@ pub(crate) async fn uninstall(
         kept_at: change.kept_at.clone().unwrap_or_default(),
         change_id: change.id,
         notes: {
-            notes.push(format!(
-                "undo it with config.undo {}; the plugin's secrets were not touched",
-                change.id
-            ));
+            if params.delete_secrets {
+                let deleted = secrets
+                    .iter()
+                    .filter(|(plugin, variable)| {
+                        secret_name(plugin, variable)
+                            .ok()
+                            .is_some_and(|secret| state.secrets().delete(&secret).unwrap_or(false))
+                    })
+                    .count();
+                notes.push(format!(
+                    "deleted {deleted} saved secret(s); undo does not bring them back"
+                ));
+            } else {
+                notes.push(format!(
+                    "undo it with config.undo {}; the plugin's secrets were not touched",
+                    change.id
+                ));
+            }
             notes
         },
     })
@@ -627,6 +779,13 @@ pub(crate) fn list(
                         .unwrap_or_default()
                 });
             let switch = plugin_switch(&name, &scope.user, &scope.repository, &scope.environment);
+            // Only a downloaded plugin reads saved secrets.
+            let required = match (&record, &parsed) {
+                (Some(record), Some(plugin)) if record.origin.downloaded() => {
+                    plugin.required_secrets.clone()
+                }
+                _ => Vec::new(),
+            };
             InstalledPlugin {
                 enabled: switch.on,
                 decided_by: switch.decided_by.into(),
@@ -646,6 +805,17 @@ pub(crate) fn list(
                 servers: parsed
                     .iter()
                     .flat_map(|plugin| plugin.servers.iter().map(|server| server.name.clone()))
+                    .collect(),
+                required_secrets: required.clone(),
+                missing_secrets: required
+                    .iter()
+                    .filter(|variable| {
+                        secret_name(&name, variable)
+                            .ok()
+                            .and_then(|secret| state.secrets().load(&secret).ok().flatten())
+                            .is_none()
+                    })
+                    .cloned()
                     .collect(),
                 folder: folder.display().to_string(),
                 name,
@@ -923,6 +1093,7 @@ mod tests {
                 {"name": "loose", "source": "./loose", "strict": false, "description": "Loose"},
                 {"name": "mismatch", "source": "./mismatch"},
                 {"name": "linky", "source": "./linky"},
+                {"name": "keyed", "source": "./keyed"},
             ]})
             .to_string(),
         );
@@ -964,6 +1135,20 @@ mod tests {
             r#"{"name": "linky"}"#,
         );
         write(&dir.join("linky/skills/s/SKILL.md"), "---\nname: s\n---\n");
+        write(
+            &dir.join("keyed/.claude-plugin/plugin.json"),
+            r#"{"name": "keyed"}"#,
+        );
+        // `FOO` and `foo` are one secret; the long name makes `plugin.keyed.<var>` 65 characters.
+        write(
+            &dir.join("keyed/.mcp.json"),
+            &json!({"mcpServers": {
+                "api": {"command": "echo", "env": {"TOKEN": "${API_KEY}"}},
+                "case": {"command": "echo", "env": {"A": "${FOO}", "B": "${foo}"}},
+                "long": {"command": "echo", "env": {"C": format!("${{{}}}", "A".repeat(52))}},
+            }})
+            .to_string(),
+        );
     }
 
     /// A state in a fresh home that has run the migration, and a folder marketplace added to it.
@@ -972,7 +1157,12 @@ mod tests {
         let market = tempfile::tempdir().unwrap();
         write_market(market.path());
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
-        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        let state = DaemonState::with_secrets(
+            Paths::under(home.path()),
+            settings,
+            None,
+            Arc::new(imperium_config::MemorySecrets::new()),
+        );
         state.migrate_plugins();
         marketplaces::add(
             &state,
@@ -1407,7 +1597,10 @@ mod tests {
     }
 
     fn uninstall_params(name: &str) -> PluginsUninstallParams {
-        PluginsUninstallParams { name: name.into() }
+        PluginsUninstallParams {
+            name: name.into(),
+            delete_secrets: false,
+        }
     }
 
     #[tokio::test]
@@ -1862,5 +2055,137 @@ mod tests {
                 .unwrap()
                 .contains("newer")
         );
+    }
+
+    fn secret_params(name: &str, variable: &str, value: &str) -> PluginsSetSecretParams {
+        PluginsSetSecretParams {
+            name: name.into(),
+            variable: variable.into(),
+            value: value.into(),
+        }
+    }
+
+    /// Every file under `dirs` that holds `needle`.
+    fn files_holding(dirs: &[&Path], needle: &str) -> Vec<PathBuf> {
+        dirs.iter()
+            .flat_map(|dir| all_files(dir))
+            .filter(|file| {
+                std::fs::read(file)
+                    .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(needle))
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_saved_secret_reaches_the_secret_store_and_nowhere_else() {
+        let (home, _market, state) = setup().await;
+        put(&state, "keyed@mk").await;
+        let value = "tok-9f3a-very-secret-value";
+        let row = |state: &DaemonState| {
+            list(state, None)
+                .unwrap()
+                .plugins
+                .into_iter()
+                .find(|plugin| plugin.name == "keyed")
+                .unwrap()
+        };
+        let before = row(&state);
+        assert_eq!(before.required_secrets.len(), 4);
+        assert_eq!(before.missing_secrets, before.required_secrets);
+
+        // A variable no server names, a name too long, and a second spelling are refused, and an
+        // error never holds the value.
+        for variable in ["OTHER".to_string(), "A".repeat(52), "foo".to_string()] {
+            let error = set_secret(&state, secret_params("keyed", &variable, value)).unwrap_err();
+            assert!(!error.contains(value), "{error}");
+        }
+        let long = set_secret(&state, secret_params("keyed", &"A".repeat(52), value)).unwrap_err();
+        assert!(long.contains("cannot be a secret"), "{long}");
+        let second = set_secret(&state, secret_params("keyed", "foo", value)).unwrap_err();
+        assert!(second.contains("one saved secret"), "{second}");
+
+        let done = set_secret(&state, secret_params("KEYED", "API_KEY", value)).unwrap();
+        assert_eq!(done.secret, "plugin.keyed.api_key");
+        assert!(!format!("{done:?}").contains(value));
+        set_secret(&state, secret_params("keyed", "FOO", value)).unwrap();
+        // It is in the store, and in no other file: not the config, the plugin folder, the
+        // record store or the journal.
+        let name = secret_name("keyed", "API_KEY").unwrap();
+        assert_eq!(state.secrets().load(&name).unwrap().as_deref(), Some(value));
+        let holding = files_holding(&[home.path()], value);
+        assert!(holding.is_empty(), "{holding:?}");
+        let after = row(&state);
+        assert!(!after.missing_secrets.contains(&"API_KEY".to_string()));
+        assert!(!after.missing_secrets.contains(&"FOO".to_string()));
+        assert!(!format!("{after:?}").contains(value));
+
+        // Delete it again.
+        let gone = delete_secret(
+            &state,
+            PluginsDeleteSecretParams {
+                name: "keyed".into(),
+                variable: "API_KEY".into(),
+            },
+        )
+        .unwrap();
+        assert!(gone.changed);
+        assert!(state.secrets().load(&name).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn uninstalling_can_delete_the_saved_secrets_and_only_a_downloaded_plugin_has_them() {
+        let (_home, _market, state) = setup().await;
+        put(&state, "keyed@mk").await;
+        set_secret(&state, secret_params("keyed", "API_KEY", "v1-secret")).unwrap();
+        let name = secret_name("keyed", "API_KEY").unwrap();
+        let done = uninstall(
+            &state,
+            PluginsUninstallParams {
+                name: "keyed".into(),
+                delete_secrets: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(state.secrets().load(&name).unwrap().is_none());
+        assert!(done.notes.iter().any(|note| note.contains("deleted 1")));
+
+        // Without the option the secret stays.
+        put(&state, "keyed@mk").await;
+        set_secret(&state, secret_params("keyed", "API_KEY", "v2-secret")).unwrap();
+        uninstall(&state, uninstall_params("keyed")).await.unwrap();
+        assert!(state.secrets().load(&name).unwrap().is_some());
+
+        // A folder nobody installed does not read saved secrets.
+        let manual = state.paths().config_dir().join("plugins/manual");
+        write(
+            &manual.join(".claude-plugin/plugin.json"),
+            r#"{"name": "manual"}"#,
+        );
+        write(
+            &manual.join(".mcp.json"),
+            r#"{"mcpServers": {"s": {"command": "x", "env": {"K": "${KEY}"}}}}"#,
+        );
+        let error = set_secret(&state, secret_params("manual", "KEY", "v")).unwrap_err();
+        assert!(error.contains("marketplace or by an agent"), "{error}");
+    }
+
+    #[test]
+    fn a_variable_with_a_dot_cannot_read_another_plugins_secret() {
+        let store: std::sync::Arc<dyn imperium_config::SecretStore> =
+            std::sync::Arc::new(imperium_config::MemorySecrets::new());
+        // Plugin `a.b`'s secret `x` is `plugin.a.b.x`, which plugin `a`'s `${b.x}` would be.
+        store
+            .store(&secret_name("a.b", "x").unwrap(), "other-plugins-value")
+            .unwrap();
+        let lookup = plugin_secrets(store);
+        let read = |plugin: &str, variable: &str| lookup.lookup_for_test(plugin, variable);
+        assert_eq!(read("a.b", "x").as_deref(), Some("other-plugins-value"));
+        assert_eq!(read("a", "b.x"), None);
+        assert!(secret_name("a", "b.x").is_err());
+        for bad in ["", "1abc", "a-b", "a b", "a.b"] {
+            assert!(secret_name("a", bad).is_err(), "{bad}");
+        }
+        assert!(secret_name("a", "_ok1").is_ok());
     }
 }

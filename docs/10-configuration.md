@@ -342,6 +342,12 @@ with a letter or digit. `imperium secret set <name>` (value from standard input,
 prompt without echo) and `imperium secret delete <name>` write the secret store directly (keychain, or the encrypted file below); the
 `secret.*` protocol methods arrive with the desktop settings UI.
 
+A plugin installed from a marketplace or by an agent keeps the values its servers' `${VAR}`
+need as the secrets `plugin.<plugin>.<var>` (lowercased, at most 64 characters in all), set
+with `plugins.set_secret` and removed with `plugins.delete_secret` or `plugins.uninstall` with
+`delete_secrets`; see [06](06-extensibility.md#plugin-marketplaces). The value is read when a
+session starts and goes into that server's environment, headers or URL only.
+
 ### Encrypted file fallback (implemented)
 
 On **Linux only**, where there is no usable keychain (headless without a Secret Service), the

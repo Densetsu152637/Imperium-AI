@@ -991,9 +991,33 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   from the daemon's environment and do see `PATH` and the mark; a user hook still sees it.
 - Risks: the allowlist may break plugins needing other variables (the server definition can set
   them); `FOO` and `foo` collide as secret names, refuse the second.
-- Status: pending
-- Outcome:
-- Handoff notes: if over 800 lines, split (a) and (b).
+- Status: in review, in two pull requests: (a) secrets (protocol 0.54) and (b) the child
+  environment allowlist, stacked on it (no protocol change)
+- Outcome (a): `plugins.set_secret`, `plugins.delete_secret`, `delete_secrets` on
+  `plugins.uninstall`, and `required_secrets` / `missing_secrets` on `plugins.list`
+  (`plugin_install.rs`, protocol 0.54, docs 02, 06 and 10). `imperium_extensions::plugins` gained
+  `PluginSecrets` (a lookup of `(plugin, variable)`), `discover_with` and `Plugin.required_secrets`;
+  `load_with_secrets` passes the lookup, which `DaemonState::extensions` backs with the secret
+  store. A downloaded plugin's `${VAR}` reads `plugin.<plugin>.<var>` (lowercased); a server with a
+  required variable (no `:-default`) and no secret is dropped with a notice that names the variable.
+  Choices: the value is read when a session loads its extensions (the `ServerSpec` holds the
+  expanded strings), not when the server starts; only a plugin whose record origin is
+  `marketplace` or `agent` accepts a secret; of two variables that differ only by letter case the
+  first in sorted order may be set and the other is refused; the check that the variable is one a
+  server names stops a secret for an arbitrary name; the value is capped at 64 KiB;
+  `PluginsSetSecretParams` has a `Debug` that hides the value; `delete_secrets` deletes the secrets
+  of the variables the plugin's servers name (the keychain cannot be listed), and an undo of the
+  uninstall does not bring them back.
+- Review fixes (a): a secret variable is `[A-Za-z_][A-Za-z0-9_]*` (in `secret_name`, in
+  `required_references`, and when a downloaded `${VAR}` resolves), so a `.` cannot name another
+  plugin's secret; secrets expand only into a stdio server's `env` and an HTTP server's `headers`
+  (a server naming a variable in its command, arguments or URL is dropped with a notice, and a
+  default there is used as written); `Debug` of `Launch` (so `ServerSpec` and `Plugin`) shows
+  names of `env` and headers but not values; origin `user` counts as downloaded, like
+  `marketplace` and `agent`, and is eligible for `set_secret`, so its `${VAR}` never reads the
+  daemon's environment, while `preexisting` plugins keep it (nothing that runs today stops).
+- Handoff notes: if over 800 lines, split (a) and (b). (b) must keep the secrets out of the
+  hook and server environments of anything but the one server that names them.
 
 ## Stage 6: CLI and the safety floor
 

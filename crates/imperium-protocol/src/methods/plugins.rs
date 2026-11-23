@@ -431,6 +431,10 @@ pub struct InstalledPlugin {
     pub reason: Option<String>,
     pub hooks: u32,
     pub servers: Vec<String>,
+    // The `${VAR}` names its servers need a saved secret for (only for a plugin installed from
+    // a marketplace or by an agent), and which of them have none yet.
+    pub required_secrets: Vec<String>,
+    pub missing_secrets: Vec<String>,
 }
 
 /// `plugins.uninstall`: moves a plugin's folder to `<data>/config-trash` and removes its record,
@@ -449,6 +453,9 @@ impl Method for PluginsUninstall {
 #[ts(export)]
 pub struct PluginsUninstallParams {
     pub name: String,
+    // Also delete the plugin's saved secrets (the folder's `${VAR}` names).
+    #[serde(default)]
+    pub delete_secrets: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -536,4 +543,66 @@ pub struct PluginsUpdateResult {
     pub withheld: bool,
     pub reason: Option<String>,
     pub notes: Vec<String>,
+}
+
+// ---- Plugin secrets ----
+
+/// `plugins.set_secret`: saves the value of one `${VAR}` a plugin's server needs in the secret
+/// store, as `plugin.<plugin>.<var>` (lowercased). Only a plugin installed from a marketplace or
+/// by an agent reads saved secrets, and only a variable its servers name. The value is never
+/// returned, logged or written anywhere but the secret store. Setting a secret is not an approval.
+#[derive(Debug)]
+pub struct PluginsSetSecret;
+
+impl Method for PluginsSetSecret {
+    const NAME: &'static str = "plugins.set_secret";
+    type Params = PluginsSetSecretParams;
+    type Result = PluginsSecretResult;
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsSetSecretParams {
+    pub name: String,
+    pub variable: String,
+    pub value: String,
+}
+
+// The value stays out of any `{:?}` of the request.
+impl std::fmt::Debug for PluginsSetSecretParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginsSetSecretParams")
+            .field("name", &self.name)
+            .field("variable", &self.variable)
+            .field("value", &"<hidden>")
+            .finish()
+    }
+}
+
+/// `plugins.delete_secret`: removes one saved secret of a plugin.
+#[derive(Debug)]
+pub struct PluginsDeleteSecret;
+
+impl Method for PluginsDeleteSecret {
+    const NAME: &'static str = "plugins.delete_secret";
+    type Params = PluginsDeleteSecretParams;
+    type Result = PluginsSecretResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsDeleteSecretParams {
+    pub name: String,
+    pub variable: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsSecretResult {
+    pub name: String,
+    pub variable: String,
+    // The secret store's name for it, `plugin.<plugin>.<var>`.
+    pub secret: String,
+    // For a delete: whether there was one.
+    pub changed: bool,
 }

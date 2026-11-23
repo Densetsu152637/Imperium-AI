@@ -194,6 +194,16 @@ impl Connection {
                         .map_err(refused)
                 })
             }
+            PluginsSetSecret::NAME => {
+                call::<PluginsSetSecret>(c.params.take(), |params: PluginsSetSecretParams| {
+                    crate::plugin_install::set_secret(&self.state, params).map_err(refused)
+                })
+            }
+            PluginsDeleteSecret::NAME => {
+                call::<PluginsDeleteSecret>(c.params.take(), |params: PluginsDeleteSecretParams| {
+                    crate::plugin_install::delete_secret(&self.state, params).map_err(refused)
+                })
+            }
             PluginsSetEnabled::NAME => {
                 call::<PluginsSetEnabled>(c.params.take(), |params: PluginsSetEnabledParams| {
                     crate::plugin_install::set_enabled(&self.state, params).map_err(refused)
