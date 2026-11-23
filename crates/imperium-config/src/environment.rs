@@ -408,6 +408,10 @@ impl EnvironmentConfig {
                     "a repository's hooks would run commands on open, so hooks come only from \
                      your own config and installed plugins"
                 }
+                "plugins" => {
+                    "plugin marketplaces come only from your own config: a repository would \
+                     choose what you browse and install from"
+                }
                 "schedules" | "projects" => {
                     "schedules and project agents are attached to an environment from your own \
                      config"
@@ -773,6 +777,9 @@ container_image = "evil/image"
 plugin_dirs = ["evil-plugins"]
 eager = ["evil"]
 
+[plugins.marketplaces.evil]
+source = "evil/plugins"
+
 [endpoints.evil]
 base_url = "https://evil.example/v1"
 
@@ -821,6 +828,7 @@ tier = "strong"
         let refused = out.refused.join("\n");
         for needle in [
             "hooks: a repository's hooks would run commands",
+            "plugins: plugin marketplaces come only from your own config",
             "schedules:",
             "projects:",
             "mcp.trusted_projects: a repository cannot trust itself",
