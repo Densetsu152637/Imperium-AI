@@ -210,9 +210,11 @@ fn reparse_point(_: &std::fs::Metadata) -> bool {
     false
 }
 
-/// Whether `name` at the folder's top is left out of the hash.
+/// Whether `name` at the folder's top is left out of the hash: `.git`, and the one file Imperium
+/// writes into a plugin folder. Any other file, `.imperium-*.json` ones a plugin ships included,
+/// is content (a hook can run it).
 fn excluded(name: &str) -> bool {
-    name == ".git" || (name.starts_with(".imperium-") && name.ends_with(".json"))
+    name == ".git" || name == plugins::SOURCE_FILE
 }
 
 /// Lists every file under `root` without following links. Stops at the first link found.
@@ -225,9 +227,6 @@ fn walk(root: &Path, prefix: &str, stamps: &mut Vec<Stamp>) -> Result<Option<Str
     let fail = |error: std::io::Error| format!("{}: {error}", folder.display());
     for entry in std::fs::read_dir(&folder).map_err(fail)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if prefix.is_empty() && excluded(&name) {
-            continue;
-        }
         let relative = if prefix.is_empty() {
             name
         } else {
@@ -235,8 +234,12 @@ fn walk(root: &Path, prefix: &str, stamps: &mut Vec<Stamp>) -> Result<Option<Str
         };
         let meta = std::fs::symlink_metadata(entry.path())
             .map_err(|error| format!("{relative}: {error}"))?;
+        // The link check comes before any exclusion: a link is refused whatever its name.
         if is_link(&meta) {
             return Ok(Some(relative));
+        }
+        if prefix.is_empty() && excluded(&relative) {
+            continue;
         }
         if meta.is_dir() {
             if let Some(link) = walk(root, &relative, stamps)? {
@@ -332,6 +335,9 @@ pub(crate) struct Withheld {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Gate {
     pub(crate) withheld: Vec<Withheld>,
+    /// The folders the gate lets through: the only ones under `<config>/plugins` a session may
+    /// load (a folder that appears after the gate ran is not among them).
+    pub(crate) allowed: Vec<PathBuf>,
     /// Folders whose record says the content was downloaded (a marketplace or an agent).
     pub(crate) downloaded: Vec<PathBuf>,
 }
@@ -365,8 +371,9 @@ pub(crate) fn gate(paths: &Paths, verifier: &dyn ApprovalVerifier) -> Gate {
         {
             gate.downloaded.push(folder.clone());
         }
-        if let Some(reason) = judge(&folder, record, verifier) {
-            gate.withheld.push(Withheld { folder, reason });
+        match judge(&folder, record, verifier) {
+            Some(reason) => gate.withheld.push(Withheld { folder, reason }),
+            None => gate.allowed.push(folder),
         }
     }
     gate
@@ -402,7 +409,11 @@ fn judge(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    if folder_name != record.name || record.name != plugin.name {
+    // A preexisting or user plugin (a clone, say) may sit in a folder of another name; one
+    // that Imperium downloaded sits in `<name>`. A moved folder is a new canonical path with no
+    // record either way, and a changed manifest name changes the hash.
+    let named_for_it = !record.origin.downloaded() || folder_name == record.name;
+    if !named_for_it || record.name != plugin.name {
         return Some(format!(
             "the folder name ({folder_name}), the recorded name ({}) and the manifest name ({}) differ",
             record.name, plugin.name
@@ -430,8 +441,9 @@ fn judge(
 /// What [`migrate`] did.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Migration {
-    /// This many folders were recorded.
-    Recorded(usize),
+    /// This many folders were recorded; each of `skipped` could not be carried over, with why
+    /// and what to do.
+    Recorded { count: usize, skipped: Vec<String> },
     /// The marker already exists: the store is not rebuilt even if it is missing or unreadable.
     Done,
     /// The store exists but cannot be read: it is left as it is and nothing is carried over.
@@ -453,32 +465,53 @@ pub(crate) fn migrate(paths: &Paths, disabled: &[String]) -> Result<Migration, S
     if !absent {
         return Ok(Migration::Done);
     }
-    let count = match read_store(paths) {
+    let (count, skipped) = match read_store(paths) {
         Stored::Unreadable(_) => return Ok(Migration::Damaged),
         // A store with no marker (a crash between the two writes): keep it, finish the marker.
-        Stored::Found(_) => 0,
+        Stored::Found(_) => (0, Vec::new()),
         Stored::Missing => {
-            let store = record_present(paths, disabled);
+            let (store, skipped) = record_present(paths, disabled);
             write_json(&store_path(paths), &store)?;
-            store.plugins.len()
+            (store.plugins.len(), skipped)
         }
     };
     write_json(
         &marker_path(paths),
         &serde_json::json!({ "version": 1, "migrated_unix_ms": unix_ms() }),
     )?;
-    Ok(Migration::Recorded(count))
+    Ok(Migration::Recorded { count, skipped })
 }
 
-fn record_present(paths: &Paths, disabled: &[String]) -> Store {
+/// The records for the folders present, and a report for each folder that is not carried over.
+fn record_present(paths: &Paths, disabled: &[String]) -> (Store, Vec<String>) {
     let mut store = Store::default();
+    let mut skipped = Vec::new();
     for folder in plugins::plugin_folders(&[plugins_dir(paths)]) {
         let (Ok(canon), Some(plugin)) = (folder.canonicalize(), parse(&folder)) else {
             continue;
         };
-        let Ok(seen) = look(&canon) else {
+        let shown = folder.display();
+        if std::fs::symlink_metadata(&folder).is_ok_and(|meta| is_link(&meta)) {
+            skipped.push(format!(
+                "{shown} is a link: replace it with a real folder, or approve it once approvals exist"
+            ));
             continue;
+        }
+        let seen = match look(&canon) {
+            Ok(seen) => seen,
+            Err(error) => {
+                skipped.push(format!(
+                    "{shown} cannot be read ({error}): fix it, or approve it once approvals exist"
+                ));
+                continue;
+            }
         };
+        if let Some(link) = &seen.link {
+            skipped.push(format!(
+                "{shown} contains a link at {link}: remove it, or approve it once approvals exist"
+            ));
+            continue;
+        }
         let runs = plugins::runs(&plugin).digest();
         let approval = (!disabled.contains(&plugin.name)).then(|| Approval {
             hash: seen.hash.clone(),
@@ -504,7 +537,7 @@ fn record_present(paths: &Paths, disabled: &[String]) -> Store {
             },
         );
     }
-    store
+    (store, skipped)
 }
 
 #[cfg(test)]
@@ -680,9 +713,15 @@ mod tests {
         let reasons = reasons(&home, &DebugVerifier);
         assert!(reasons[0].1.contains("differ"), "{reasons:?}");
 
-        // The folder renamed and its record moved with it (a rewritten store): the names differ.
+        // A downloaded plugin's folder renamed and its record moved with it (a rewritten store):
+        // the names differ.
         let second = plugin(&home, "second", "second", true);
-        record(&home, &second, Origin::User, Some(ApprovalKind::Counted));
+        record(
+            &home,
+            &second,
+            Origin::Marketplace,
+            Some(ApprovalKind::Counted),
+        );
         let renamed = plugins_dir(&home.paths).join("renamed");
         std::fs::rename(&second, &renamed).unwrap();
         let mut store = match read_store(&home.paths) {
@@ -723,9 +762,7 @@ mod tests {
         let root = plugin(&home, "linked", "linked", true);
         record(&home, &root, Origin::User, Some(ApprovalKind::Counted));
         let outside = tempfile::tempdir().unwrap();
-        if !make_link(outside.path(), &root.join("skills/out")) {
-            return;
-        }
+        assert!(make_link(outside.path(), &root.join("skills/out")));
         let reasons = reasons(&home, &DebugVerifier);
         assert!(reasons[0].1.contains("symbolic link"), "{reasons:?}");
         // A skills-only folder with a link is withheld too.
@@ -782,7 +819,13 @@ mod tests {
         plugin(&home, "off", "off", true);
         plugin(&home, "skills", "skills", false);
         let disabled = vec!["off".to_string()];
-        assert_eq!(migrate(&home.paths, &disabled), Ok(Migration::Recorded(3)));
+        assert_eq!(
+            migrate(&home.paths, &disabled),
+            Ok(Migration::Recorded {
+                count: 3,
+                skipped: Vec::new()
+            })
+        );
         assert_eq!(withheld(&home), ["off"]);
         let Stored::Found(store) = read_store(&home.paths) else {
             panic!("no store");
@@ -800,6 +843,66 @@ mod tests {
         plugin(&home, "later", "later", true);
         assert_eq!(migrate(&home.paths, &[]), Ok(Migration::Done));
         assert!(withheld(&home).contains(&"later".to_string()));
+    }
+
+    #[test]
+    fn a_preexisting_clone_in_a_folder_of_another_name_keeps_loading() {
+        let home = home();
+        plugin(&home, "some-repo", "tool", true);
+        migrate(&home.paths, &[]).unwrap();
+        assert!(withheld(&home).is_empty());
+        let moved = plugins_dir(&home.paths).join("renamed-repo");
+        std::fs::rename(plugins_dir(&home.paths).join("some-repo"), &moved).unwrap();
+        // Moved: another canonical path, so no record.
+        assert_eq!(withheld(&home), ["renamed-repo"]);
+    }
+
+    #[test]
+    fn migration_reports_a_folder_with_a_link_and_the_gate_withholds_it() {
+        let home = home();
+        let linked = plugin(&home, "linked", "linked", true);
+        plugin(&home, "fine", "fine", true);
+        let outside = tempfile::tempdir().unwrap();
+        assert!(make_link(outside.path(), &linked.join("skills/out")));
+        let Ok(Migration::Recorded { count, skipped }) = migrate(&home.paths, &[]) else {
+            panic!("not migrated");
+        };
+        assert_eq!(count, 1);
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert!(skipped[0].contains("link") && skipped[0].contains("approve"));
+        assert_eq!(withheld(&home), ["linked"]);
+    }
+
+    #[test]
+    fn a_shipped_imperium_json_file_is_content_and_a_link_named_so_is_refused() {
+        let home = home();
+        let root = plugin(&home, "lint", "lint", true);
+        write(&root.join(".imperium-run.json"), "{\"a\": 1}");
+        record(&home, &root, Origin::User, Some(ApprovalKind::Counted));
+        assert!(withheld(&home).is_empty());
+        write(&root.join(".imperium-run.json"), "{\"a\": 22}");
+        assert_eq!(withheld(&home), ["lint"]);
+        // Imperium's own provenance file is not content.
+        let other = plugin(&home, "other", "other", true);
+        write(&other.join(plugins::SOURCE_FILE), "{}");
+        record(&home, &other, Origin::User, Some(ApprovalKind::Counted));
+        write(&other.join(plugins::SOURCE_FILE), r#"{"changed": true}"#);
+        assert_eq!(withheld(&home), ["lint"]);
+        // A link named like an excluded file is still found.
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::remove_file(other.join(plugins::SOURCE_FILE)).unwrap();
+        assert!(make_link(outside.path(), &other.join(plugins::SOURCE_FILE)));
+        assert!(withheld(&home).contains(&"other".to_string()));
+    }
+
+    #[test]
+    fn the_gate_names_the_folders_it_allows() {
+        let home = home();
+        let good = plugin(&home, "good", "good", false);
+        plugin(&home, "bad", "bad", true);
+        let gate = gate(&home.paths, &DebugVerifier);
+        assert_eq!(gate.allowed, [good]);
+        assert_eq!(gate.withheld.len(), 1);
     }
 
     #[test]

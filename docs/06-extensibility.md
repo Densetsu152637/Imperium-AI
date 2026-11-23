@@ -76,22 +76,30 @@ permissions, UI mod entry points, and router hints.
   folder under `<config>/plugins` and withholds the **whole plugin** (skills, commands and agents
   too) from the new session, whatever `extensions.disabled_plugins` says, when: the folder has
   hooks or MCP servers and no record (`not installed by Imperium: approve to load`); the folder
-  name, recorded name and manifest name are not all equal; the folder is, or holds, a symbolic
+  name, recorded name and manifest name are not all equal (the folder name is compared only for
+  plugins Imperium downloaded; a preexisting or user plugin, such as a clone, may sit in a folder
+  of another name); the folder is, or holds, a symbolic
   link, junction or other reparse point; its content hash differs from the recorded one; or it
   has hooks or servers and no approval the build honours whose hash and run summary digest
   (`plugins::runs`) equal what is there now. An unrecorded folder with neither hooks nor servers
-  loads. A withheld plugin is reported in the session's notices with the reason. The records are
+  loads. The gate returns the folders it allows, and a session loads a folder under
+  `<config>/plugins` only if it is among them, so a folder renamed into place after the gate ran
+  is not loaded. A withheld plugin is reported in the session's notices with the reason. The records are
   `<data>/plugin-installs.json` (by canonical folder path: name, origin, source, content hash,
   run-summary digest, optional approval); a store the daemon cannot read counts as empty, so every
   folder with code is withheld, and is never overwritten. The content hash is SHA-256 over each
-  file's relative path, length and bytes (without a top-level `.git` and `.imperium-*.json`),
+  file's relative path, length and bytes (without a top-level `.git` and `.imperium-source.json`,
+  the one file Imperium writes into a plugin folder; any other file, a shipped
+  `.imperium-*.json` included, is content),
   cached in memory by the sorted list of every file's path, size and modification time, so a
   session start walks the folder (stat only) and rehashes one whose list changed. Plugins in
   `extensions.plugin_dirs` are not gated. The first daemon start with this release **migrates**:
   every folder already in `<config>/plugins` is recorded (`preexisting`, or `agent` when its
   provenance file names a session) and a folder whose plugin is not in
   `extensions.disabled_plugins` gets a `carried-over` approval, so nothing that runs today stops;
-  `<data>/plugin-migration.json` then marks it done, and with the marker present and the store
+  a folder that is or holds a link is not carried over: it is recorded nowhere, stays withheld, and
+  the daemon logs it at start with the reason and what to do (remove the link, or approve it
+  once approvals exist). `<data>/plugin-migration.json` then marks it done, and with the marker present and the store
   missing or unreadable nothing is migrated again. **No new approval counts yet**: nothing
   writes a counted or dialog-only approval until the desktop approval lands, so a plugin with
   code that is installed or copied in afterwards stays withheld. Editing any file of a recorded

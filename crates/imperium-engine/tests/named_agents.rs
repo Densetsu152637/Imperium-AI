@@ -202,7 +202,7 @@ async fn start_routed(
         lazy: true,
         eager: Vec::new(),
         downloaded: Vec::new(),
-        withheld: Vec::new(),
+        allowed: None,
     });
     let seen = Arc::new(Mutex::new(Vec::new()));
     let url = model(root, sub, Arc::clone(&seen)).await;

@@ -55,11 +55,13 @@ pub struct Sources {
     /// installs fill it, the daemon passes the folders an agent installed
     /// ([`plugins::agent_installed`]).
     pub downloaded: Vec<PathBuf>,
-    /// Plugin folders the daemon's load-time gate refuses: they are dropped whole (skills,
-    /// commands, agents, hooks and servers), whatever `disabled_plugins` says. Folders are
-    /// matched as the plugin directories name them (or by canonical path). The caller reports
-    /// why; nothing here reads the folder.
-    pub withheld: Vec<PathBuf>,
+    /// The daemon's load-time gate: when `Some`, a plugin folder under `<config_dir>/plugins`
+    /// loads only if it is listed (as the plugin directories name it, or by canonical path), and
+    /// is otherwise dropped whole (skills, commands, agents, hooks and servers), whatever
+    /// `disabled_plugins` says; a folder that appears after the list was made is not loaded.
+    /// Folders of `plugin_dirs` outside `<config_dir>/plugins` are not affected. `None` gates
+    /// nothing.
+    pub allowed: Option<Vec<PathBuf>>,
 }
 
 /// Everything extensions contribute to a session.
@@ -175,11 +177,14 @@ pub fn load_trusting(
 ) -> Extensions {
     let mut plugin_dirs = vec![sources.config_dir.join("plugins")];
     plugin_dirs.extend(sources.plugin_dirs.iter().cloned());
-    let (mut plugins, mut notices) = plugins::discover_except(
+    let (mut plugins, mut notices) = plugins::discover_gated(
         &plugin_dirs,
         sources.server_timeout,
         &sources.downloaded,
-        &sources.withheld,
+        sources
+            .allowed
+            .as_deref()
+            .map(|allowed| (sources.config_dir.join("plugins"), allowed)),
     );
     plugins.retain(|plugin| !sources.disabled_plugins.contains(&plugin.name));
     // A repository can add plugin folders to an environment's configuration, and a plugin there
@@ -323,7 +328,7 @@ mod tests {
             lazy,
             eager: eager.iter().map(|name| name.to_string()).collect(),
             downloaded: Vec::new(),
-            withheld: Vec::new(),
+            allowed: None,
         }
     }
 
@@ -357,6 +362,38 @@ mod tests {
 
     fn agent_file(name: &str, description: &str) -> String {
         format!("---\nname: {name}\ndescription: {description}\n---\nSECRET {description} BODY\n")
+    }
+
+    #[test]
+    fn a_gated_plugin_folder_loads_only_when_it_is_in_the_allowed_set() {
+        let (config, project) = fixture();
+        let mut gated = sources(config.path(), project.path(), true, &[]);
+        assert!(!load(&gated).hooks.is_empty());
+        // The folder is missing from the allowed set (it appeared after the gate ran).
+        gated.allowed = Some(Vec::new());
+        let refused = load(&gated);
+        assert!(refused.hooks.is_empty());
+        assert!(refused.skills.iter().all(|skill| skill.name != "style"));
+        gated.allowed = Some(vec![config.path().join("plugins/lint")]);
+        assert!(!load(&gated).hooks.is_empty());
+        // A folder of `plugin_dirs` outside `<config>/plugins` is not gated.
+        let own = tempfile::tempdir().unwrap();
+        write(
+            &own.path().join("mine/.claude-plugin/plugin.json"),
+            r#"{"name": "mine"}"#,
+        );
+        write(
+            &own.path().join("mine/skills/own/SKILL.md"),
+            "---
+name: own
+description: Mine
+---
+body
+",
+        );
+        gated.allowed = Some(Vec::new());
+        gated.plugin_dirs = vec![own.path().to_path_buf()];
+        assert!(load(&gated).skills.iter().any(|skill| skill.name == "own"));
     }
 
     #[test]

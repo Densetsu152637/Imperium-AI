@@ -258,22 +258,30 @@ pub fn discover(
     server_timeout: Duration,
     downloaded: &[PathBuf],
 ) -> (Vec<Plugin>, Vec<String>) {
-    discover_except(dirs, server_timeout, downloaded, &[])
+    discover_gated(dirs, server_timeout, downloaded, None)
 }
 
-/// [`discover`], leaving out the folders in `withheld` (matched as named or by canonical path):
-/// the load-time gate's refusals. A withheld folder is not read at all.
-pub fn discover_except(
+/// [`discover`] with the load-time gate: for `Some((gated, allowed))`, a plugin folder inside
+/// `gated` (or `gated` itself) is read only if it is in `allowed` (matched as named or by
+/// canonical path); any other is skipped without being read. Folders outside `gated` are
+/// unaffected.
+pub fn discover_gated(
     dirs: &[PathBuf],
     server_timeout: Duration,
     downloaded: &[PathBuf],
-    withheld: &[PathBuf],
+    gate: Option<(PathBuf, &[PathBuf])>,
 ) -> (Vec<Plugin>, Vec<String>) {
     let mut plugins = Vec::new();
     let mut problems = Vec::new();
     for root in plugin_folders(dirs) {
-        if withheld.iter().any(|folder| same_folder(folder, &root)) {
-            continue;
+        if let Some((gated, allowed)) = &gate {
+            let inside = match (root.canonicalize(), gated.canonicalize()) {
+                (Ok(root), Ok(gated)) => root.starts_with(gated),
+                _ => root.starts_with(gated),
+            };
+            if inside && !allowed.iter().any(|folder| same_folder(folder, &root)) {
+                continue;
+            }
         }
         // An agent-installed folder is downloaded whatever the caller passed.
         let is_downloaded =

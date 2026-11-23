@@ -234,7 +234,7 @@ async fn start_with(
         lazy: true,
         eager: Vec::new(),
         downloaded: Vec::new(),
-        withheld: Vec::new(),
+        allowed: None,
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
     let seen = Arc::new(Mutex::new(Vec::new()));

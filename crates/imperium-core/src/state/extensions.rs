@@ -11,8 +11,11 @@ impl DaemonState {
     pub fn migrate_plugins(&self) {
         let disabled = self.settings().extensions.disabled_plugins.clone();
         match crate::plugin_records::migrate(&self.paths, &disabled) {
-            Ok(crate::plugin_records::Migration::Recorded(count)) => {
+            Ok(crate::plugin_records::Migration::Recorded { count, skipped }) => {
                 tracing::info!(plugins = count, "recorded the installed plugins");
+                for report in skipped {
+                    tracing::warn!("plugin not carried over, so it stays withheld: {report}");
+                }
             }
             Ok(crate::plugin_records::Migration::Done) => {}
             Ok(crate::plugin_records::Migration::Damaged) => tracing::warn!(
@@ -102,11 +105,6 @@ impl DaemonState {
         let gate =
             crate::plugin_records::gate(&self.paths, crate::plugin_records::production_verifier());
         downloaded.extend(gate.downloaded);
-        let withheld: Vec<PathBuf> = gate
-            .withheld
-            .iter()
-            .map(|withheld| withheld.folder.clone())
-            .collect();
         let mut extensions = imperium_extensions::load_trusting(
             &Sources {
                 config_dir: self.paths.config_dir().to_path_buf(),
@@ -132,7 +130,7 @@ impl DaemonState {
                 lazy: self.settings().extensions.lazy,
                 eager: self.settings().extensions.eager.clone(),
                 downloaded,
-                withheld,
+                allowed: Some(gate.allowed),
             },
             &|plugin| profile.is_none_or(|profile| profile.allows_plugin(plugin)),
             project_trusted,
@@ -207,6 +205,24 @@ mod tests {
         let after = load();
         assert!(!after.hooks.is_empty());
         assert!(after.skills.iter().any(|skill| skill.name == "style"));
+
+        // A second plugin with a hook, not in `disabled_plugins` and never recorded, stays out
+        // while the first loads.
+        assert!(state.settings().extensions.disabled_plugins.is_empty());
+        let later = state.paths().config_dir().join("plugins/later");
+        write(
+            &later.join(".claude-plugin/plugin.json"),
+            r#"{"name": "later"}"#,
+        );
+        write(&later.join("hooks/hooks.json"), hook);
+        let with_later = load();
+        assert!(!with_later.hooks.is_empty());
+        assert!(
+            with_later
+                .notices
+                .iter()
+                .any(|notice| notice.contains("plugin later is withheld"))
+        );
 
         // A change to any file withholds the whole plugin again.
         write(

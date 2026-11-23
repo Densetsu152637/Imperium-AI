@@ -89,7 +89,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         lazy: true,
         eager: Vec::new(),
         downloaded: Vec::new(),
-        withheld: Vec::new(),
+        allowed: None,
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
 
@@ -254,7 +254,7 @@ async fn lifecycle_events_reach_http_hooks_with_their_payloads() {
         lazy: true,
         eager: Vec::new(),
         downloaded: Vec::new(),
-        withheld: Vec::new(),
+        allowed: None,
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
     let session = Session::spawn(SessionConfig {
@@ -423,7 +423,7 @@ async fn hooked_turn(event: &str, answer: Value) -> Rewrite {
         lazy: true,
         eager: Vec::new(),
         downloaded: Vec::new(),
-        withheld: Vec::new(),
+        allowed: None,
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
     let session = Session::spawn(SessionConfig {
