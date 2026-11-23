@@ -1193,6 +1193,7 @@ async fn session_bound_tools_and_hooks_follow_the_writers_own_worktree() {
         lazy: true,
         eager: Vec::new(),
         downloaded: Vec::new(),
+        allowed: None,
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
     let requests: Requests = Arc::default();
