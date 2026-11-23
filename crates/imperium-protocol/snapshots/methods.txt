@@ -69,6 +69,7 @@ method phone.pair
 method phone.revoke
 method plugins.browse
 method plugins.delete_secret
+method plugins.dismiss_suggestion
 method plugins.inspect
 method plugins.install
 method plugins.list
@@ -78,6 +79,7 @@ method plugins.marketplace_refresh
 method plugins.marketplace_remove
 method plugins.set_enabled
 method plugins.set_secret
+method plugins.suggestions
 method plugins.uninstall
 method plugins.update
 method projects.list

@@ -385,6 +385,37 @@ impl Environments {
         })
     }
 
+    /// Records that the user dismissed the plugin suggestion `key` in the environment `id`.
+    pub fn dismiss_suggestion(
+        &self,
+        id: &str,
+        key: &str,
+    ) -> Result<EnvironmentInfo, EnvironmentError> {
+        self.change_one(id, |env| {
+            let dismissed = &mut env.plugins.dismissed_suggestions;
+            if !dismissed.iter().any(|entry| entry == key) {
+                dismissed.push(key.to_string());
+            }
+            Ok(())
+        })
+    }
+
+    /// Records that the user muted every plugin suggestion from the project folder `folder`
+    /// (its canonical path) in the environment `id`.
+    pub fn mute_suggestion_source(
+        &self,
+        id: &str,
+        folder: &str,
+    ) -> Result<EnvironmentInfo, EnvironmentError> {
+        self.change_one(id, |env| {
+            let muted = &mut env.plugins.muted_suggestion_sources;
+            if !muted.iter().any(|entry| entry == folder) {
+                muted.push(folder.to_string());
+            }
+            Ok(())
+        })
+    }
+
     /// Records an agent's session id.
     pub fn set_agent_session(
         &self,
