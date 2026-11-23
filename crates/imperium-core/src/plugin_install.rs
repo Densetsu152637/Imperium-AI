@@ -355,6 +355,19 @@ pub(crate) async fn inspect(
     Ok(preview(state, &staged, &dest))
 }
 
+/// Creates the install folder exclusively: anything already there (a folder that appeared since
+/// the name check, or one that a name like `foo.` maps to on Windows) is an error, so nothing is
+/// ever moved into, merged with or written over an existing folder.
+fn claim(dest: &Path) -> Result<(), String> {
+    std::fs::create_dir(dest).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            format!("{} already exists: it is not installed over", dest.display())
+        } else {
+            format!("{}: {error}", dest.display())
+        }
+    })
+}
+
 /// `plugins.install`.
 pub(crate) async fn install(
     state: &DaemonState,
@@ -397,7 +410,11 @@ pub(crate) async fn install(
         }
     }
     let dest = plugins_dir.join(&name);
-    move_tree(&staged.out, &dest)?;
+    claim(&dest)?;
+    if let Err(error) = move_tree(&staged.out, &dest) {
+        remove_tree(&dest);
+        return Err(error);
+    }
     let source = InstallSource {
         kind: if staged.source_kind == "path" {
             "path"
@@ -496,6 +513,7 @@ mod tests {
             &json!({"name": "mk", "owner": {"name": "Owner"}, "plugins": [
                 {"name": "hooked", "source": "./hooked", "description": "Hooks"},
                 {"name": "plain", "source": "./plain"},
+                {"name": "plain.", "source": "./plain"},
                 {"name": "loose", "source": "./loose", "strict": false, "description": "Loose"},
                 {"name": "mismatch", "source": "./mismatch"},
                 {"name": "linky", "source": "./linky"},
@@ -693,6 +711,95 @@ mod tests {
             error.contains("collide") || error.contains("already installed"),
             "{error}"
         );
+    }
+
+    /// Every file under `home` with its bytes, by path relative to it.
+    fn snapshot(home: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        all_files(home)
+            .into_iter()
+            .map(|file| {
+                let name = file
+                    .strip_prefix(home)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\', "/");
+                (name, std::fs::read(&file).unwrap())
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_name_ending_in_a_dot_is_refused_and_the_existing_plugin_is_left_alone() {
+        let (home, _market, state) = setup().await;
+        let preview = inspect(&state, inspect_params("plain@mk")).await.unwrap();
+        install(&state, install_params("plain@mk", &preview.sha256))
+            .await
+            .unwrap();
+        let before = snapshot(home.path());
+        // `plain.` names the folder `plain` on Windows: the entry is refused when the marketplace
+        // is read, so it is not listed.
+        let error = install(&state, install_params("plain.@mk", &preview.sha256))
+            .await
+            .unwrap_err();
+        assert!(error.contains("lists no plugin"), "{error}");
+        assert!(inspect(&state, inspect_params("plain.@mk")).await.is_err());
+        assert_eq!(snapshot(home.path()), before);
+        let record = plugin_records::record_for(state.paths(), &dest(&state, "plain")).unwrap();
+        assert_eq!(record.id.as_deref(), Some("plain@mk"));
+    }
+
+    #[test]
+    fn an_install_folder_that_exists_is_never_merged_into() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = home.path().join("foo");
+        write(&folder.join("keep.txt"), "mine");
+        let error = claim(&folder).unwrap_err();
+        assert!(error.contains("already exists"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(folder.join("keep.txt")).unwrap(),
+            "mine"
+        );
+        assert_eq!(all_files(&folder).len(), 1);
+        // A free name is claimed as an empty folder.
+        let free = home.path().join("bar");
+        claim(&free).unwrap();
+        assert!(free.is_dir() && all_files(&free).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_install_writes_only_its_folder_the_record_store_and_the_journal() {
+        let (home, _market, state) = setup().await;
+        write(
+            &dest(&state, "other/.claude-plugin/plugin.json"),
+            r#"{"name": "other"}"#,
+        );
+        write(
+            &dest(&state, "other/skills/x/SKILL.md"),
+            "---
+name: x
+---
+",
+        );
+        let before = snapshot(home.path());
+        let preview = inspect(&state, inspect_params("hooked@mk")).await.unwrap();
+        assert_eq!(snapshot(home.path()), before, "an inspection writes nothing");
+        install(&state, install_params("hooked@mk", &preview.sha256))
+            .await
+            .unwrap();
+        let after = snapshot(home.path());
+        let allowed = |name: &str| {
+            name.starts_with("config/plugins/hooked/")
+                || name == "data/plugin-installs.json"
+                || name == "data/config-changes.json"
+        };
+        for (name, bytes) in &before {
+            if !allowed(name) {
+                assert_eq!(after.get(name), Some(bytes), "{name} changed or was removed");
+            }
+        }
+        for name in after.keys().filter(|name| !before.contains_key(*name)) {
+            assert!(allowed(name), "{name} was written");
+        }
     }
 
     #[tokio::test]
