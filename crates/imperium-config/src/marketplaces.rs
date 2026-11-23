@@ -171,7 +171,9 @@ mod tests {
         for (text, source) in layers {
             all.push(Layer::new(source.clone(), text.parse().unwrap()));
         }
-        Config::from_layers(all).settings()
+        Config::from_layers(all)
+            .settings()
+            .map_err(|error| error.to_string())
     }
 
     #[test]
