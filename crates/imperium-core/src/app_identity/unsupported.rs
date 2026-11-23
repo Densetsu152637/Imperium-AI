@@ -1,4 +1,4 @@
-//! Windows and macOS: not built yet (stage 8a-ii of the plugin marketplace plan). Every approval
+//! macOS: not built yet (stage 8a-ii of the plugin marketplace plan). Every approval
 //! is refused, so these platforms record nothing.
 
 use std::path::Path;
@@ -23,4 +23,9 @@ pub(super) fn identify(_: &Peer, _: &Path) -> Result<(), String> {
         "identifying the desktop app is not built for this platform yet: nothing was recorded"
             .into(),
     )
+}
+
+/// Check 7 applies on Windows only.
+pub(super) fn may_count(_: crate::plugin_records::ApprovalKind) -> Result<(), String> {
+    Ok(())
 }

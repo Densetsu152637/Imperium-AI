@@ -30,8 +30,13 @@ On Linux the `rust` job's tests also exercise how the daemon identifies the desk
 approvals ([06](06-extensibility.md#plugin-marketplaces)): pidfds from the socket (`SO_PEERPIDFD`,
 kernel 6.5 or later; the runner's kernel is newer) and the namespace check, whose test makes a
 `sleep` in another mount and pid namespace with `unshare`, unprivileged where user namespaces are
-allowed, else through the runner's passwordless `sudo`. Where neither works that test prints a
-`skipped:` line and passes.
+allowed, else through the runner's passwordless `sudo`. Where neither works that test fails on CI
+(the `CI` variable is set) and prints a `skipped:` line elsewhere. On Windows they exercise the
+held process handle (an exited peer, a process created after the accept, the image path) and
+U7: a test build without the compile-time `IMPERIUM_SIGNED_BUILD` constant counts nothing, and
+a child test run with that variable set, a file of that name beside the binary and
+`ProgramFiles` pointed at its folder counts nothing either. No workflow sets the constant yet:
+it belongs to the Windows Authenticode signing step of roadmap item 59, which does not exist.
 
 ## Release channels
 

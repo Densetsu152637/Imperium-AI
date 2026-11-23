@@ -53,6 +53,10 @@ nix = { version = "0.31.3", default-features = false, features = ["socket"] }
 rustix = { version = "1.1.6", features = ["event", "fs", "net", "param", "process", "time"] }
 
 [target.'cfg(windows)'.dependencies]
+# Check 7 of plugin approvals: the per-machine Program Files folder from
+# SHGetKnownFolderPath(FOLDERID_ProgramFiles) through dirs-sys's safe wrapper.
+dirs-sys = "0.5.0"
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell"] }
 # The daemon puts itself in a kill-on-close job, so its children end with it however it dies.
 win32job = "2.0.3"
 

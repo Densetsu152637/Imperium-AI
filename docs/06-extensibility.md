@@ -283,16 +283,31 @@ itself (`crates/imperium-core/src/app_identity/`), never from what the caller se
   `/proc/<pid>` confirmed alive through that pidfd, so after the accept a reused process id never
   stands in for it; on a kernel without the option (before 6.5), a pid reused between the peer's
   connect and the accept is not detected;
-- its executable is the `imperium-desktop` beside the running `imperium-core`, and its mount and
-  pid namespaces are the daemon's (an OS-tier sandbox has its own);
-- its environment sets no `WEBVIEW2_*`, `DYLD_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH` or `LD_AUDIT`.
+- on Windows, the client of the pipe is opened at accept (`GetNamedPipeClientProcessId`, then
+  `OpenProcess`) and its handle is held for the connection; at the challenge and again at approve
+  the process must not have exited and must have been created no later than the accept, so a
+  reused process id never stands in for it;
+- its executable is the `imperium-desktop` beside the running `imperium-core` (on Windows read
+  through the held handle), and on Linux its mount and pid namespaces are the daemon's (an
+  OS-tier sandbox has its own);
+- on Linux, its environment sets no `WEBVIEW2_*`, `DYLD_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH` or
+  `LD_AUDIT`. On Windows the daemon does not read the peer's environment (that would mean
+  reading another process's memory): it checks the path, the creation time and the rule below,
+  and the desktop app itself checks its own environment for `WEBVIEW2_*` and similar overrides
+  at start and refuses the approval flow if any is set (stage 8b);
+- on Windows (U7), an approval other than a debug build's `dev` one counts only in a release
+  build compiled with the signing job's constant (`IMPERIUM_SIGNED_BUILD`, read with
+  `option_env!` at compile time, never at run time) that runs from under the per-machine Program
+  Files folder from `SHGetKnownFolderPath(FOLDERID_ProgramFiles)` (never the `ProgramFiles`
+  variable). No build sets the constant until Windows releases are Authenticode-signed and
+  installed per-machine, so no new approval counts on Windows.
 
 These guard against mistakes and confined callers, not against unconfined code running as the
 user. The identity belongs to the process that connected, not to each message sent on the
 connection. **No approval counts yet**: a release daemon refuses every approval with "presence check
 not built" until the OS presence check lands, and a debug daemon records `dev` approvals (which
-release daemons ignore) for the debug app built beside it. Windows and macOS refuse every
-approval until their identification is built. The desktop app does not call these methods yet.
+release daemons ignore) for the debug app built beside it. macOS refuses every approval until
+its identification is built. The desktop app does not call these methods yet.
 
 **Repository suggestions (protocol 0.55; not a paired phone).** A project folder in
 `mcp.trusted_projects` may list, in its `.imperium/config.toml` (or `config.local.toml`),

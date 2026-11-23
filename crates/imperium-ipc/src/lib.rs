@@ -17,7 +17,7 @@ mod windows;
 #[cfg(unix)]
 pub use unix::{Listener, Stream, connect, peer_pid};
 #[cfg(windows)]
-pub use windows::{Listener, Stream, connect, peer_pid};
+pub use windows::{ClientProcess, Listener, Stream, client_process, connect, peer_pid};
 
 #[cfg(all(test, any(unix, windows)))]
 mod tests {

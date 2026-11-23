@@ -2447,6 +2447,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "constant_time_eq",
+ "dirs-sys 0.5.0",
  "futures-util",
  "getrandom 0.4.3",
  "imperium-api",
@@ -2486,6 +2487,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "win32job",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

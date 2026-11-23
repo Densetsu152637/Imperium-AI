@@ -225,7 +225,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | --------------------- | ---------------------------------------------------------------------- |
 | `imperium-api`        | Shared types and traits: chat messages, tool specs, usage and pricing, the local-model and tool-provider interfaces, Markdown front matter (implemented) |
 | `imperium-client`     | The client of the daemon protocol, used by the CLI and the tests (implemented) |
-| `imperium-ipc`        | Same-user local sockets: Unix domain socket, Windows named pipe (the one crate that allows `unsafe`, for the pipe's ACL) |
+| `imperium-ipc`        | Same-user local sockets: Unix domain socket, Windows named pipe (the one crate that allows `unsafe`, for the pipe's ACL and the pipe client's process handle) |
 | `imperium-protocol`   | Wire types, method/event definitions, TS export                        |
 | `imperium-engine`     | Agent engine library: sessions, agent loop, delegation, task graph, event bus |
 | `imperium-models`     | Endpoint clients behind `ChatClient`, model registry, router, cost accounting |
