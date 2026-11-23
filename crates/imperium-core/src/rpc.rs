@@ -1528,11 +1528,31 @@ mod tests {
             json!({"project_dir": project.path()}),
         )));
         let id = created["session_id"].as_str().unwrap().to_string();
-        for (n, command, args) in [
-            (3, "init", "the tests"),
-            (4, "code_review", "high 123"),
-            (5, "security_review", ""),
-        ] {
+        let session = connection.state.session(&id).unwrap();
+        // The text of the user turns the session has started, once `count` of them have.
+        let started = |count: usize| {
+            let session = session.clone();
+            async move {
+                for _ in 0..200 {
+                    let (history, _) = session.subscribe_with_history();
+                    let texts: Vec<String> = history
+                        .into_iter()
+                        .filter_map(|event| match event.event {
+                            imperium_protocol::session::SessionEvent::TurnStarted {
+                                text, ..
+                            } => Some(text),
+                            _ => None,
+                        })
+                        .collect();
+                    if texts.len() >= count {
+                        return texts;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                panic!("the session did not start {count} turns");
+            }
+        };
+        let mut send = |n: i64, command: &str, args: &str| {
             let sent = connection.handle_text(&request(
                 n,
                 SessionBuiltin::NAME,
@@ -1540,7 +1560,18 @@ mod tests {
             ));
             assert_eq!(error_code(&sent), None, "{command}: {:?}", sent.response);
             assert!(result_of(&sent)["id"].is_string());
-        }
+        };
+        send(3, "init", "the tests");
+        let texts = started(1).await;
+        assert!(texts[0].contains("AGENTS.md"), "{}", texts[0]);
+        assert!(texts[0].ends_with("the tests"), "{}", texts[0]);
+        send(4, "code_review", "high 123");
+        let texts = started(2).await;
+        assert!(texts[1].contains("Effort: high"), "{}", texts[1]);
+        assert!(texts[1].contains("`gh pr diff 123`"), "{}", texts[1]);
+        send(5, "security_review", "");
+        let texts = started(3).await;
+        assert!(texts[2].contains("exploitability"), "{}", texts[2]);
         let unknown = connection.handle_text(&request(
             6,
             SessionBuiltin::NAME,

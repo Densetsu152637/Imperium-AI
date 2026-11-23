@@ -75,8 +75,11 @@ fn parse_target(text: &str) -> ReviewTarget {
     }
     // `https://github.com/owner/repo/pull/123`, possibly with a trailing path or fragment. The
     // URL is kept whole: it may name another repository than the session's.
-    let one_word = !text.contains(|c: char| c.is_whitespace() || c == '`');
-    if one_word && (text.starts_with("http://") || text.starts_with("https://")) {
+    // Only URL characters: nothing a shell or the prompt's quoting could read otherwise.
+    let url_only = text
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._~:/?#=%@+-".contains(c));
+    if url_only && (text.starts_with("http://") || text.starts_with("https://")) {
         let is_pull_request = text
             .split(['/', '?', '#'])
             .skip_while(|part| *part != "pull")
@@ -120,7 +123,7 @@ pub fn review_prompt(kind: ReviewKind, args: &str) -> String {
              say so and stop.\n",
         ),
         ReviewTarget::PullRequestUrl(url) => format!(
-            "- The pull request at `{url}`, which may be in another repository than this one. Use \n             `gh pr view {url}` and `gh pr diff {url}` with the URL exactly as given, when `gh` is \n             installed and signed in. If it is not, say so and stop. Do not check anything out; read \n             this repository's files only where they are the same project.
+            "- The pull request at `{url}`, which may be in another repository than this one. Use              `gh pr view {url}` and `gh pr diff {url}` with the URL exactly as given, when `gh` is              installed and signed in. If it is not, say so and stop. Do not check anything out;              read this repository's files only where they are the same project.
 "
         ),
         ReviewTarget::PullRequest(number) => format!(
@@ -223,6 +226,14 @@ mod tests {
         assert_eq!(
             parse("high https://github.com/o/r/pull/9").target,
             ReviewTarget::PullRequestUrl("https://github.com/o/r/pull/9".into())
+        );
+        assert_eq!(
+            parse("https://h/pull/1;cmd").target,
+            ReviewTarget::Named("https://h/pull/1;cmd".into())
+        );
+        assert_eq!(
+            parse("https://h/pull/1/$(id)").target,
+            ReviewTarget::Named("https://h/pull/1/$(id)".into())
         );
         // Not one word: a target the agent reads, not a URL handed to `gh`.
         assert_eq!(
