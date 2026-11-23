@@ -282,7 +282,7 @@ pub fn discover_gated(
             let listed_inside = root.starts_with(gated);
             let resolved_inside = matches!(
                 (root.canonicalize(), gated.canonicalize()),
-                (Ok(root), Ok(gated)) if root.starts_with(gated)
+                (Ok(root), Ok(gated)) if root.starts_with(&gated)
             );
             let inside = listed_inside || resolved_inside;
             if inside && !allowed.iter().any(|folder| same_folder(folder, &root)) {
