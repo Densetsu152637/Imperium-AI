@@ -1315,7 +1315,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   `get-task-allow`, which attaching WebKit's inspector needs, and `cs.debugger`). Choices the plan
   did not fix: the challenge is requested after the *Approve* click, not before the dialog (it
   lives two minutes, and an install has no folder to challenge before it); the dialog refuses a
-  plugin whose text exceeds 6,000 characters instead of cutting it, and writes control and
+  plugin whose text exceeds 40 lines or has a line over 200 characters instead of cutting it (naming what is too long and pointing to `imperium plugin inspect`), lists each server's environment, header and variable names, and writes control and
   bidirectional characters out; the plugin's own description is not shown; the webview passes
   `name`, `action` and `environment` and nothing else, and gets `{approved, kind, reason,
   cancelled, installed}`; *approve* and *update* resolve a plain name through `plugins.list` to the
@@ -1332,7 +1332,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   neither approval method; `refused_variable` moved with its test. In CI: the entitlements check on
   the real file and on the bad fixture (macOS bundle job). Not verified: the by-hand check below, that the call succeeds in the shipped app (the test covers the call), and that Tauri's access control list rejects a mod frame's call (the
   frame's origin handling is Tauri's, tested here only through the capability file).
-  By hand, with a debug daemon and the debug app from the same cargo target folder: in a
+  By hand, with a debug daemon and the debug app (also try one large plugin, with more than 40 hook lines or a 200-character command: the dialog must refuse it, not cut it) from the same cargo target folder: in a
   scratch config folder add a marketplace holding a plugin with a hook, run
   `imperium plugin install` for it (withheld), then in the app's devtools console run
   `window.__TAURI_INTERNALS__.invoke("plugin_approve", {name: "p@m", action: "approve"})`; the dialog
@@ -1352,7 +1352,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   method, so a protocol change, for *Approve for withheld plugins (unrecorded and pre-existing
   too)*). Any new app command needs its name in `build.rs`, the `generate_handler!` list and the
   capability (a test fails otherwise); a new window label that must call commands goes in the
-  capability's `windows`, and `plugin_approve` stays limited to `main` and `panel-*`. Stage 8c
+  capability's `windows`, and `plugin_approve` stays limited to `main` and `panel-*`. The signed-app entitlement check (reading the built app's signature with `codesign`, not only the configured file) is left for item 59's signing step. Stage 8c
   adds no app code: the presence prompt is the daemon's, so the approve call may take long
   (the app waits up to five minutes).
 

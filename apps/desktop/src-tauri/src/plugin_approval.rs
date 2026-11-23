@@ -46,9 +46,12 @@ const QUICK_TIMEOUT: Duration = Duration::from_secs(15);
 const APPROVE_TIMEOUT: Duration = Duration::from_secs(300);
 /// The longest name or environment the command takes.
 const MAX_TEXT: usize = 256;
-/// The most text the dialog shows. A plugin whose run summary does not fit is refused rather than
-/// shown cut short: an approval must be for everything the dialog listed.
-const MAX_DIALOG: usize = 6000;
+/// The most lines the dialog shows. Windows and GTK message boxes do not scroll, so a longer
+/// summary would run off the screen. A plugin that exceeds a limit is refused rather than shown cut
+/// short: an approval must be for everything the dialog listed.
+const MAX_LINES: usize = 40;
+/// The longest line the dialog shows, in characters.
+const MAX_LINE: usize = 200;
 
 /// What the approval is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -301,18 +304,47 @@ fn dialog_text(action: Action, preview: &PluginPreview) -> Result<String, String
                 what,
                 if server.launcher { "  (LAUNCHER)" } else { "" }
             ));
+            // What the server is given or reads: variable and header names (never values).
+            let mut needs = Vec::new();
+            for (label, names) in [
+                ("environment", &server.env_names),
+                ("headers", &server.header_names),
+                ("variables", &server.variables),
+            ] {
+                if !names.is_empty() {
+                    let names: Vec<String> = names.iter().map(|name| show(name)).collect();
+                    needs.push(format!("{label}: {}", names.join(", ")));
+                }
+            }
+            if !needs.is_empty() {
+                text.push_str(&format!("    uses {}\n", needs.join("; ")));
+            }
         }
     }
     for note in &preview.notes {
         text.push_str(&format!("\nNote: {}\n", show(note)));
     }
-    if text.chars().count() > MAX_DIALOG {
+    fits(&preview.id, &text)?;
+    Ok(text)
+}
+
+/// Refuses a summary the dialog cannot show whole: too many lines, or a line too long.
+fn fits(id: &str, text: &str) -> Result<(), String> {
+    let lines = text.lines().count();
+    if lines > MAX_LINES {
         return Err(format!(
-            "{} runs too much to show in full here, so it cannot be approved",
-            preview.id
+            "{id} cannot be approved here: its summary is {lines} lines and the dialog shows at most \
+             {MAX_LINES}. Read it with `imperium plugin inspect {id}`"
         ));
     }
-    Ok(text)
+    if let Some(long) = text.lines().find(|line| line.chars().count() > MAX_LINE) {
+        let start: String = long.chars().take(40).collect();
+        return Err(format!(
+            "{id} cannot be approved here: the line starting \"{start}\" is longer than {MAX_LINE} \
+             characters, which the dialog cannot show whole. Read it with `imperium plugin inspect {id}`"
+        ));
+    }
+    Ok(())
 }
 
 /// Calls one daemon method, giving up after `limit`.
@@ -534,7 +566,7 @@ mod tests {
                 env_names: vec!["API_KEY".into()],
                 url: None,
                 header_names: vec![],
-                variables: vec![],
+                variables: vec!["REGION".into()],
                 launcher: true,
             }],
             launcher: true,
@@ -650,6 +682,11 @@ mod tests {
         ] {
             assert!(text.contains(wanted), "missing {wanted:?} in:\n{text}");
         }
+        // The server's variable names are listed, with headers and `${VAR}` references.
+        assert!(
+            text.contains("uses environment: API_KEY; variables: REGION"),
+            "{text}"
+        );
         // What the plugin says about itself is not shown beside what it runs.
         assert!(!text.contains("Does nothing"));
     }
@@ -668,12 +705,45 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_that_does_not_fit_the_dialog_is_refused_not_cut_short() {
+    fn server_variables_are_listed_and_written_out_like_other_text() {
+        let mut preview = preview();
+        preview.servers[0].header_names = vec!["X-Key\nApprove q@m?".into()];
+        preview.servers[0].variables = vec!["A\u{202e}B".into()];
+        let text = dialog_text(Action::Install, &preview).unwrap();
+        assert!(
+            text.contains(
+                r"uses environment: API_KEY; headers: X-Key\nApprove q@m?; variables: A\u{202e}B"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains('\u{202e}'));
+        assert_eq!(text.matches("Approve q@m?").count(), 1);
+    }
+
+    #[test]
+    fn a_plugin_with_too_many_lines_is_refused_not_cut_short() {
         let mut preview = preview();
         let hook = preview.hooks[0].clone();
-        preview.hooks = vec![hook; 200];
+        preview.hooks = vec![hook; MAX_LINES];
         let error = dialog_text(Action::Approve, &preview).unwrap_err();
-        assert!(error.contains("cannot be approved"), "{error}");
+        assert!(
+            error.contains("lines") && error.contains("imperium plugin inspect p@m"),
+            "{error}"
+        );
+        preview.hooks.truncate(10);
+        assert!(dialog_text(Action::Approve, &preview).is_ok());
+    }
+
+    #[test]
+    fn a_plugin_with_a_too_long_line_is_refused_and_named() {
+        let mut preview = preview();
+        preview.hooks[0].command = format!("run-{}", "x".repeat(MAX_LINE));
+        let error = dialog_text(Action::Approve, &preview).unwrap_err();
+        assert!(
+            error.contains("longer than 200") && error.contains("imperium plugin inspect"),
+            "{error}"
+        );
+        assert!(error.contains("PreToolUse [Bash]: run-"), "{error}");
     }
 
     #[test]

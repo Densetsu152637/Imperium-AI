@@ -414,9 +414,9 @@ has no code that names `plugins.approve` or `plugins.approval_challenge` (a test
   loopback TCP), asks `plugins.inspect` for the plugin's preview, and shows a native dialog
   (`tauri-plugin-dialog`, a warning, buttons *Approve* and *Cancel*) built only from that
   preview: the plugin id, its source and commit, the content hash, every hook and server command
-  line with flagged launchers, and the daemon's notes. The plugin's own description is not shown.
+  line with flagged launchers, each server's environment, header and `${VAR}` names (never values), and the daemon's notes. The plugin's own description is not shown.
   Control and direction-changing characters in a command are written out (`\n`, `\u{202e}`), and a
-  plugin whose summary would not fit in about 6,000 characters is refused rather than shown cut
+  plugin whose summary exceeds 40 lines or has a line over 200 characters (message boxes do not scroll) is refused, with a pointer to `imperium plugin inspect`, rather than shown cut
   short. On *Approve* the app installs or updates the plugin when `action` says so (the daemon
   refuses a hash other than the previewed one), then asks for a challenge for the previewed hash
   and run-summary digest and answers it, on the one connection. The challenge is requested after
