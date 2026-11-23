@@ -728,12 +728,14 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   again and compares the commit, keeping the copy in place when it is unchanged; the record
   file keeps a hash of each entry so a refresh can name added, removed and changed plugins for a
   folder too; `built_in` is the official name with its pinned source; `plugins.marketplace_list`
-  and `_remove` run on the connection, add, refresh and browse run on a task and are serialised
-  (one network operation at a time); browsing a plugin's `components` reads names and two JSON
+  runs on the connection, add, refresh, remove and browse run on a task and are serialised
+  (one network operation at a time); names compare ignoring letter case and a name ending in a
+  dot is refused, the clone folder is keyed by the lower-cased name, and clones are staged under
+  `<data>/.staging`; browsing a plugin's `components` reads names and two JSON
   files and never through a link. Tests use local git repositories (`file://`) and folders, no
   network, and assert that no hook or server marker file appears.
 - Handoff notes: stage 3a-ii inspects a plugin with `marketplace::Entry` and `Source::clone_url`
-  from the cached clone (`<data>/marketplaces/<name>/`, or the folder for a folder source), using
+  from the cached clone (`<data>/marketplaces/<lower-cased name>/`, or the folder for a folder source), using
   `read_again`'s staging-clone pattern; the shared `OPERATIONS` lock in `marketplaces.rs` should
   also guard a plugin fetch that reads a marketplace clone. `plugins.browse` leaves `installed`
   out until stage 3b. The clone's `.git` is kept, so a later stage can read the commit with
