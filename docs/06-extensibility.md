@@ -72,6 +72,30 @@ permissions, UI mod entry points, and router hints.
   [plugin marketplace plan](plans/plugin-marketplace.md).
 - **Hooks:** see below. Problems (a skill without a description, an unsupported hook event)
   are shown as session notices.
+- **The load-time gate (implemented).** At each session start the daemon checks every plugin
+  folder under `<config>/plugins` and withholds the **whole plugin** (skills, commands and agents
+  too) from the new session, whatever `extensions.disabled_plugins` says, when: the folder has
+  hooks or MCP servers and no record (`not installed by Imperium: approve to load`); the folder
+  name, recorded name and manifest name are not all equal; the folder is, or holds, a symbolic
+  link, junction or other reparse point; its content hash differs from the recorded one; or it
+  has hooks or servers and no approval the build honours whose hash and run summary digest
+  (`plugins::runs`) equal what is there now. An unrecorded folder with neither hooks nor servers
+  loads. A withheld plugin is reported in the session's notices with the reason. The records are
+  `<data>/plugin-installs.json` (by canonical folder path: name, origin, source, content hash,
+  run-summary digest, optional approval); a store the daemon cannot read counts as empty, so every
+  folder with code is withheld, and is never overwritten. The content hash is SHA-256 over each
+  file's relative path, length and bytes (without a top-level `.git` and `.imperium-*.json`),
+  cached in memory by the sorted list of every file's path, size and modification time, so a
+  session start walks the folder (stat only) and rehashes one whose list changed. Plugins in
+  `extensions.plugin_dirs` are not gated. The first daemon start with this release **migrates**:
+  every folder already in `<config>/plugins` is recorded (`preexisting`, or `agent` when its
+  provenance file names a session) and a folder whose plugin is not in
+  `extensions.disabled_plugins` gets a `carried-over` approval, so nothing that runs today stops;
+  `<data>/plugin-migration.json` then marks it done, and with the marker present and the store
+  missing or unreadable nothing is migrated again. **No new approval counts yet**: nothing
+  writes a counted or dialog-only approval until the desktop approval lands, so a plugin with
+  code that is installed or copied in afterwards stays withheld. Editing any file of a recorded
+  plugin, its skills included, withholds it until it is recorded again.
 
 ### Plugin marketplaces
 
@@ -288,7 +312,12 @@ Hook events: `session.start`, `session.end`, `prompt.submit`, `turn.start`, `tur
 - A hook is a command (any executable receiving JSON on stdin) or an HTTP endpoint.
 - `tool.before` and `prompt.submit` hooks can allow, deny, or rewrite
   ([below](#rewriting-hooks-implemented)); others observe.
-- Hooks run with timeouts and inside the session's isolation tier.
+- Hooks run with timeouts. **They are not confined by the isolation tier**: a command hook is
+  started through `imperium_tools::shell` with the daemon's whole environment (plus
+  `IMPERIUM_PROJECT_DIR` and `CLAUDE_PROJECT_DIR`), as a process of the user, and an HTTP hook is
+  sent by the daemon itself. A stdio MCP server of a plugin is not confined either. A later stage
+  of the [plugin marketplace plan](plans/plugin-marketplace.md) adds an environment allowlist for
+  plugin hooks and servers.
 
 **Implemented:** hooks for `session.start`, `session.end`, `prompt.submit`, `turn.start`,
 `turn.end`, `tool.before`, `tool.after`, `agent.spawn`, `agent.complete`, and

@@ -55,6 +55,11 @@ pub struct Sources {
     /// installs fill it, the daemon passes the folders an agent installed
     /// ([`plugins::agent_installed`]).
     pub downloaded: Vec<PathBuf>,
+    /// Plugin folders the daemon's load-time gate refuses: they are dropped whole (skills,
+    /// commands, agents, hooks and servers), whatever `disabled_plugins` says. Folders are
+    /// matched as the plugin directories name them (or by canonical path). The caller reports
+    /// why; nothing here reads the folder.
+    pub withheld: Vec<PathBuf>,
 }
 
 /// Everything extensions contribute to a session.
@@ -170,8 +175,12 @@ pub fn load_trusting(
 ) -> Extensions {
     let mut plugin_dirs = vec![sources.config_dir.join("plugins")];
     plugin_dirs.extend(sources.plugin_dirs.iter().cloned());
-    let (mut plugins, mut notices) =
-        plugins::discover(&plugin_dirs, sources.server_timeout, &sources.downloaded);
+    let (mut plugins, mut notices) = plugins::discover_except(
+        &plugin_dirs,
+        sources.server_timeout,
+        &sources.downloaded,
+        &sources.withheld,
+    );
     plugins.retain(|plugin| !sources.disabled_plugins.contains(&plugin.name));
     // A repository can add plugin folders to an environment's configuration, and a plugin there
     // runs commands once trusted; it still must not rewrite what the user or the model asked.
@@ -314,6 +323,7 @@ mod tests {
             lazy,
             eager: eager.iter().map(|name| name.to_string()).collect(),
             downloaded: Vec::new(),
+            withheld: Vec::new(),
         }
     }
 

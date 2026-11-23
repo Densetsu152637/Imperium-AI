@@ -772,9 +772,37 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   - a `dev` approval is ignored by the release verifier.
 - Risks: hashing at daemon start (measure a 1,000-file walk in a test as an estimate); the gate
   must cover every loader path (`grep -rn "load_with\|load_trusting\|fn load(" crates`).
-- Status: pending
-- Outcome:
-- Handoff notes: atomic writes; unreadable store → fail closed.
+- Status: in review
+- Outcome: `crates/imperium-core/src/plugin_records.rs`: the store (`<data>/plugin-installs.json`,
+  `Record` and `Approval`, written atomically), the migration and its marker, the content hash
+  with its in-memory cache, `ApprovalVerifier` (`ReleaseVerifier` honours counted, dialog-only and
+  carried-over approvals and never `dev`; `DebugVerifier` also `dev`; nothing writes a counted or
+  dialog-only approval, so no new approval counts) and `gate`, called from
+  `DaemonState::extensions`, which passes `Sources.withheld` and a `downloaded` set made of the
+  record origins `marketplace` and `agent` plus the provenance-file folders as before. Withheld
+  reasons are session notices. `DaemonState::migrate_plugins` runs at daemon start after
+  `migrate_memory`. `plugins::discover_except` skips withheld folders by canonical path.
+  Choices: only folders directly under `<config>/plugins` are gated (`extensions.plugin_dirs`
+  are the user's or a trusted project's own choice and load as before); a folder that is itself
+  a link is withheld; a folder holding a link is not hashed; `.git` and `.imperium-*.json` are
+  left out of the hash only at the folder's top; the record keeps the run-summary digest, not
+  the summary; a missing or unreadable migration marker counts as present, a store with no
+  marker is kept and only the marker is written, and an unreadable store is never replaced;
+  migration records an agent-installed folder (provenance file with a session) as `agent` and the
+  rest as `preexisting`, and carries over an approval for every recorded folder whose plugin is
+  not disabled, skills-only ones included; the existing agent_config test for a plugin with a
+  server now expects it to stay withheld after the user turns it on, until the migration
+  carries it over.
+- Handoff notes: atomic writes; unreadable store → fail closed. Stage 3a-ii hashes with
+  `plugin_records::look` (or moves its walk into `mod_install`'s shared hashing), because the
+  gate hash leaves out only a top-level `.git` and `.imperium-*.json` and `tree_sha256` leaves
+  out `.git` and `.imperium-source.json` at any depth: the install's recorded hash must be the
+  one the gate computes. A record is written with `plugin_records::write_json` and the `Store`
+  types. Stage 4's approve must write the approval with the hash and run-summary digest it
+  challenged, and a skills-only plugin the user edits needs a way to be recorded again (the gate
+  withholds any content change, and a skills-only plugin has no approval to renew). There is a
+  window between the gate's hash and the session's file reads that only a same-user writer can
+  use (U5).
 
 ## Stage 3a-ii: Inspect and install
 

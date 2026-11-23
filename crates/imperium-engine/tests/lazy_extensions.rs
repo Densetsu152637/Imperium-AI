@@ -149,6 +149,7 @@ fn start(
         lazy,
         eager: eager.iter().map(|name| name.to_string()).collect(),
         downloaded: Vec::new(),
+        withheld: Vec::new(),
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
     Session::spawn(SessionConfig {

@@ -523,8 +523,8 @@ async fn an_installed_plugin_with_a_server_stays_off_until_the_user_turns_it_on(
     assert!(!*ok, "{output}");
     assert_eq!(starts.load(Ordering::SeqCst), 0, "the server was started");
 
-    // Once the user turns it on in Connectors (a setting the daemon reads at start), a new
-    // session can activate it.
+    // Turning it on in Connectors (a setting the daemon reads at start) is not an approval: the
+    // load-time gate still withholds a plugin with a server that nobody recorded or approved.
     let saved = rpc(
         &mut connection,
         "config.set",
@@ -533,6 +533,19 @@ async fn an_installed_plugin_with_a_server_stays_off_until_the_user_turns_it_on(
     .unwrap();
     assert_eq!(saved["restart"], true);
     let state = reopen(home.path());
+    let (_, turn) = run_prompt(&state, project.path(), deny, "activate words").await;
+    let (tool, ok, output) = &turn.tools[0];
+    assert_eq!(tool, "activate_plugin");
+    assert!(!*ok, "{output}");
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        0,
+        "the gate let the server start"
+    );
+
+    // The first start with a plugin already installed and turned on records it with a
+    // carried-over approval, so a new session can activate it.
+    state.migrate_plugins();
     let (_, turn) = run_prompt(&state, project.path(), deny, "activate words").await;
     let (tool, ok, output) = &turn.tools[0];
     assert_eq!(tool, "activate_plugin");

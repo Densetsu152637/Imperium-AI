@@ -6,6 +6,22 @@ impl DaemonState {
         self.paths.config_dir().join("mods")
     }
 
+    /// The first-start plugin migration (`plugin_records::migrate`). Run when the daemon starts,
+    /// before any session loads plugins; it does nothing once its marker exists.
+    pub fn migrate_plugins(&self) {
+        let disabled = self.settings().extensions.disabled_plugins.clone();
+        match crate::plugin_records::migrate(&self.paths, &disabled) {
+            Ok(crate::plugin_records::Migration::Recorded(count)) => {
+                tracing::info!(plugins = count, "recorded the installed plugins");
+            }
+            Ok(crate::plugin_records::Migration::Done) => {}
+            Ok(crate::plugin_records::Migration::Damaged) => tracing::warn!(
+                "the plugin record file is unreadable; plugins with code stay withheld"
+            ),
+            Err(error) => tracing::warn!(%error, "could not record the installed plugins"),
+        }
+    }
+
     /// Workflow packs and the project's instructions and documentation, unless the workflow is
     /// turned off. Packs that cannot be read are reported in `notices`.
     pub(super) fn context(
@@ -76,11 +92,21 @@ impl DaemonState {
         // A project's agent files are read only when the user trusts the project, as for its
         // `.mcp.json` servers.
         let project_trusted = self.settings().mcp.trusts(project_dir);
-        // Folders an agent installed hold downloaded content: no daemon `${VAR}`, no rewriting
-        // hooks. (Marketplace installs join this set in a later stage.)
+        // Folders an agent installed or a marketplace installed hold downloaded content: no
+        // daemon `${VAR}`, no rewriting hooks. The record says which; a folder's provenance file
+        // can only add to the set.
         let mut plugin_dirs = vec![self.paths.config_dir().join("plugins")];
         plugin_dirs.extend(settings.extensions.plugin_dirs.iter().cloned());
-        let downloaded = imperium_extensions::plugins::agent_installed_folders(&plugin_dirs);
+        let mut downloaded = imperium_extensions::plugins::agent_installed_folders(&plugin_dirs);
+        // The load-time gate: a plugin it withholds loads nothing, whatever `disabled_plugins` says.
+        let gate =
+            crate::plugin_records::gate(&self.paths, crate::plugin_records::production_verifier());
+        downloaded.extend(gate.downloaded);
+        let withheld: Vec<PathBuf> = gate
+            .withheld
+            .iter()
+            .map(|withheld| withheld.folder.clone())
+            .collect();
         let mut extensions = imperium_extensions::load_trusting(
             &Sources {
                 config_dir: self.paths.config_dir().to_path_buf(),
@@ -106,10 +132,20 @@ impl DaemonState {
                 lazy: self.settings().extensions.lazy,
                 eager: self.settings().extensions.eager.clone(),
                 downloaded,
+                withheld,
             },
             &|plugin| profile.is_none_or(|profile| profile.allows_plugin(plugin)),
             project_trusted,
         );
+        for withheld in &gate.withheld {
+            let name = withheld.folder.file_name().map_or_else(
+                || withheld.folder.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            extensions
+                .notices
+                .push(format!("plugin {name} is withheld: {}", withheld.reason));
+        }
         // HTTP hooks' `${secret:name}` headers read the keychain, nothing else.
         let secrets = Arc::clone(&self.secrets);
         extensions.hooks = std::mem::take(&mut extensions.hooks).with_secrets(
@@ -119,5 +155,66 @@ impl DaemonState {
             }),
         );
         extensions
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use imperium_config::{Config, Layer, Paths};
+
+    use super::*;
+
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn the_load_time_gate_decides_what_a_session_loads_from_a_plugin() {
+        let home = tempfile::tempdir().unwrap();
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        let root = state.paths().config_dir().join("plugins/lint");
+        write(
+            &root.join(".claude-plugin/plugin.json"),
+            r#"{"name": "lint"}"#,
+        );
+        write(
+            &root.join("skills/style/SKILL.md"),
+            "---\nname: style\ndescription: House style\n---\nbody\n",
+        );
+        let hook = r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "check"}]}]}}"#;
+        write(&root.join("hooks/hooks.json"), hook);
+        let project = tempfile::tempdir().unwrap();
+        let load = || {
+            let settings = state.settings();
+            state.extensions(project.path(), &settings, None)
+        };
+
+        // Not recorded: the whole plugin is withheld, skills included, and the user is told.
+        let before = load();
+        assert!(before.hooks.is_empty());
+        assert!(before.skills.is_empty());
+        assert!(
+            before
+                .notices
+                .iter()
+                .any(|notice| notice.contains("not installed by Imperium: approve to load"))
+        );
+
+        // Migration records it with a carried-over approval.
+        state.migrate_plugins();
+        let after = load();
+        assert!(!after.hooks.is_empty());
+        assert!(after.skills.iter().any(|skill| skill.name == "style"));
+
+        // A change to any file withholds the whole plugin again.
+        write(
+            &root.join("skills/style/SKILL.md"),
+            "---\nname: style\ndescription: House style\n---\nedited\n",
+        );
+        let changed = load();
+        assert!(changed.hooks.is_empty());
+        assert!(changed.skills.is_empty());
     }
 }
