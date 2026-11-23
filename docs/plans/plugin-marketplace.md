@@ -830,9 +830,25 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   `strict: false` plugin installs, loads, and stays unmodified after a marketplace refresh; a
   skills-only plugin installs and loads; a stray `approve` field is ignored and noted.
 - Risks: none beyond stage 3a-i's.
-- Status: pending
-- Outcome:
-- Handoff notes: none yet.
+- Status: in progress, in two pull requests: 3a-ii-1 (inspect, protocol 0.50) in review; 3a-ii-2
+  (install, protocol 0.51) next, stacked on it. The split is the size limit's: both together came
+  to about 1,270 changed lines.
+- Outcome (part 1): `plugins.inspect` (`crates/imperium-core/src/plugin_install.rs`, `rpc/config.rs`,
+  generated types, snapshot, docs 02 and 06). It stages the plugin under `<data>/.staging`
+  (`Staging::new(<data>)`), writes the entry file, parses with `plugins::discover`, and hashes with
+  `plugin_records::measure` (the gate's walk, uncached), so an installed folder hashes as
+  inspected. Choices: hashing reuses the gate's walk, not `mod_install::tree_sha256` (which skips
+  `.git` and `.imperium-source.json` at any depth and is left as it is); the copy refuses links
+  outright instead of dropping them (`extension_install::fetch`'s copy drops them silently) and
+  leaves out only a top-level `.git` and `.imperium-source.json`; a plugin inside the
+  marketplace's repository is copied while holding the marketplace operation lock (a refresh
+  cannot replace the clone under the copy), an external one is cloned outside it; a pinned `sha`
+  that the clone's commit does not start with is refused; a relative source with a `revision` is
+  refused; the preview shows hook and server commands with the install folder substituted for the
+  staging folder. External sources (`github`, `url`) are tested at `fetch_git` only: a
+  `Source::Url` must be `https`, so no test can point an entry at a local repository.
+- Handoff notes: part 2 adds `plugins.install` (protocol 0.51), `plugin_records::add_record`, the
+  journal entry and the install tests; it reuses `stage`.
 
 ## Stage 3b: Uninstall, list and undo
 
