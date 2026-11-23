@@ -361,7 +361,10 @@ pub(crate) async fn inspect(
 fn claim(dest: &Path) -> Result<(), String> {
     std::fs::create_dir(dest).map_err(|error| {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
-            format!("{} already exists: it is not installed over", dest.display())
+            format!(
+                "{} already exists: it is not installed over",
+                dest.display()
+            )
         } else {
             format!("{}: {error}", dest.display())
         }
@@ -722,7 +725,7 @@ mod tests {
                     .strip_prefix(home)
                     .unwrap()
                     .to_string_lossy()
-                    .replace('\', "/");
+                    .replace('\\', "/");
                 (name, std::fs::read(&file).unwrap())
             })
             .collect()
@@ -775,14 +778,15 @@ mod tests {
         );
         write(
             &dest(&state, "other/skills/x/SKILL.md"),
-            "---
-name: x
----
-",
+            "---\nname: x\n---\n",
         );
         let before = snapshot(home.path());
         let preview = inspect(&state, inspect_params("hooked@mk")).await.unwrap();
-        assert_eq!(snapshot(home.path()), before, "an inspection writes nothing");
+        assert_eq!(
+            snapshot(home.path()),
+            before,
+            "an inspection writes nothing"
+        );
         install(&state, install_params("hooked@mk", &preview.sha256))
             .await
             .unwrap();
@@ -794,7 +798,11 @@ name: x
         };
         for (name, bytes) in &before {
             if !allowed(name) {
-                assert_eq!(after.get(name), Some(bytes), "{name} changed or was removed");
+                assert_eq!(
+                    after.get(name),
+                    Some(bytes),
+                    "{name} changed or was removed"
+                );
             }
         }
         for name in after.keys().filter(|name| !before.contains_key(*name)) {
