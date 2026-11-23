@@ -85,7 +85,9 @@ pub struct Plugin {
 /// value, or `None` when none is set. The daemon backs it with its secret store. A downloaded
 /// server that needs a variable with no value is dropped, with a note naming the variable.
 #[derive(Clone)]
-pub struct PluginSecrets(std::sync::Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>);
+pub struct PluginSecrets(std::sync::Arc<SecretLookup>);
+
+type SecretLookup = dyn Fn(&str, &str) -> Option<String> + Send + Sync;
 
 impl PluginSecrets {
     pub fn new(lookup: impl Fn(&str, &str) -> Option<String> + Send + Sync + 'static) -> Self {
