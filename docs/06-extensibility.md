@@ -172,8 +172,10 @@ load-time gate's (the files' paths, lengths and bytes without a top-level `.git`
 **Installing (protocol 0.51; not a paired phone).** `plugins.install {id, sha256, revision?}`
 (the `revision` the inspection was given, if any) **fetches again** and refuses content whose hash
 is not `sha256`, a folder of that name (or one that differs only by letter case), a manifest name
-unlike the entry's, and any link or junction in the source. It moves the folder to
-`<config>/plugins/<name>`, writes `.imperium-source.json` and the record (`origin = marketplace`,
+unlike the entry's, and any link or junction in the source. It creates
+`<config>/plugins/<name>` exclusively first (the install fails if anything is there, so an existing
+folder is never merged into or overwritten; on Windows the move's copy fallback still always runs,
+but only into the empty folder just claimed), moves the content into it, writes `.imperium-source.json` and the record (`origin = marketplace`,
 no approval) and journals a `config.changes` entry (`config.undo` removes the folder). It never
 approves: a plugin with hooks or servers is installed **withheld**, and the result's `withheld`
 and `reason` (the gate's) say so and point at the desktop app, since nothing counts an approval

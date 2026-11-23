@@ -856,8 +856,9 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   a pinned `sha` that the clone's commit does not start with is refused, also when a `revision`
   is given; plugin names (the entry's, and `extension_install::check_name`) may not end with a dot,
   which Windows drops; the install folder is created exclusively (`create_dir`) and the content
-  moved into it, so nothing is ever merged into or written over an existing folder (it fails
-  where `move_tree` would have fallen back to a merging copy); a relative source with a
+  moved into it, so nothing is ever merged into or written over an existing folder (the install
+  fails if the folder exists; on Windows `move_tree`'s copy fallback still always runs, but only
+  into the empty folder this install just claimed); a relative source with a
   `revision` is refused; the preview shows hook and server commands with the install folder
   substituted for the staging folder.
 - Handoff notes: stage 3b's `plugins.list` reads the same records; `config.undo` of a marketplace
