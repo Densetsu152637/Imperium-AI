@@ -708,8 +708,18 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   plan's Outcome, and pin it in a unit test; if it is not a git repository with
   `.claude-plugin/marketplace.json`, stop and report instead of guessing.
 - Risks: clones take minutes; run them on a task, as `mods.inspect` does.
-- Status: pending
-- Outcome:
+- Status: in progress. Split in two pull requests: 2a (this one) holds the config; 2b the
+  protocol and the daemon. The protocol could not go in 2a because the router test requires every
+  method in the snapshot to have a handler.
+- Outcome: 2a: `[plugins.marketplaces.<name>]` settings with the official marketplace as a default
+  (`claude-plugins-official`, source `anthropics/claude-plugins-official`); `Settings::validate`
+  refuses the name with another source (compared by repository, so another spelling of the
+  same repository passes) in every layer, on or off; comment-keeping writers
+  (`save_marketplace`, `set_marketplace_enabled`, `remove_marketplace`); `[plugins]` refused in an
+  environment file. **U1 check:** the source is confirmed from Claude Code's documentation,
+  <https://code.claude.com/docs/en/discover-plugins> (the page's `/plugin marketplace add
+  anthropics/claude-plugins-official`), and `git ls-remote` shows the repository with
+  `.claude-plugin/marketplace.json` whose `name` is `claude-plugins-official`; a unit test pins it.
 - Handoff notes: if over 800 lines, split protocol and config (2a) from the daemon (2b).
 
 ## Stage 3a-i: Record store and the load-time gate

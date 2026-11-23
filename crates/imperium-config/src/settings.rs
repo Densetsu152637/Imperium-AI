@@ -104,6 +104,12 @@ max_swaps_per_min = 6
 swap_gain = 2.0
 # Longest a call waits for room or a slot on a local model before it fails.
 max_wait_s = 600
+
+[plugins.marketplaces.claude-plugins-official]
+# Anthropic's official plugin marketplace (see docs/06-extensibility.md#plugin-marketplaces).
+# Listed without any download; its clone is made on the first browse or refresh. The name is
+# reserved for this source in every layer: turn it off with `enabled = false`, never repoint it.
+source = "anthropics/claude-plugins-official"
 "#;
 
 /// Typed view of the merged configuration. Keys this build does not know are ignored, so a
@@ -126,6 +132,9 @@ pub struct Settings {
     pub mcp: McpSettings,
     #[serde(default)]
     pub extensions: ExtensionSettings,
+    /// `[plugins]`: plugin marketplaces (see docs/06-extensibility.md#plugin-marketplaces).
+    #[serde(default)]
+    pub plugins: PluginSettings,
     #[serde(default)]
     pub memory: MemorySettings,
     #[serde(default)]
@@ -208,6 +217,15 @@ impl Settings {
     /// that exist in the table.
     pub fn validate(&self) -> Result<(), String> {
         self.budgets.validate()?;
+        if let Some(official) = self.plugins.marketplaces.get(OFFICIAL_MARKETPLACE)
+            && !same_marketplace_source(&official.source, OFFICIAL_MARKETPLACE_SOURCE)
+        {
+            return Err(format!(
+                "plugins.marketplaces.{OFFICIAL_MARKETPLACE}: the name is reserved for \
+                 {OFFICIAL_MARKETPLACE_SOURCE}; it can be turned off with enabled = false, not \
+                 pointed at another source"
+            ));
+        }
         for reserved in [LLAMACPP_ENDPOINT, VLLM_ENDPOINT] {
             if self.endpoints.contains_key(reserved) {
                 return Err(format!(
@@ -1450,6 +1468,85 @@ impl Default for McpServerSettings {
 
 fn enabled() -> bool {
     true
+}
+
+/// The official marketplace's name: reserved for [`OFFICIAL_MARKETPLACE_SOURCE`] in every layer.
+pub const OFFICIAL_MARKETPLACE: &str = "claude-plugins-official";
+
+/// The official marketplace's source, pinned in the build: Anthropic's Claude Code documentation
+/// (https://code.claude.com/docs/en/discover-plugins) adds it with
+/// `/plugin marketplace add anthropics/claude-plugins-official`, a GitHub repository with
+/// `.claude-plugin/marketplace.json` whose `name` is `claude-plugins-official`.
+pub const OFFICIAL_MARKETPLACE_SOURCE: &str = "anthropics/claude-plugins-official";
+
+/// Plugin marketplaces by name.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct PluginSettings {
+    /// `[plugins.marketplaces.<name>]`. The official marketplace is built in (and may be turned
+    /// off); an entry the user adds is read from its source.
+    #[serde(default)]
+    pub marketplaces: BTreeMap<String, MarketplaceSettings>,
+}
+
+impl Default for PluginSettings {
+    fn default() -> Self {
+        PluginSettings {
+            marketplaces: BTreeMap::from([(
+                OFFICIAL_MARKETPLACE.to_string(),
+                MarketplaceSettings {
+                    source: OFFICIAL_MARKETPLACE_SOURCE.to_string(),
+                    revision: None,
+                    enabled: true,
+                },
+            )]),
+        }
+    }
+}
+
+/// One `[plugins.marketplaces.<name>]` entry.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct MarketplaceSettings {
+    /// A git URL, a folder on this machine, or `owner/repo` on GitHub.
+    pub source: String,
+    /// A branch, tag, or commit (git only).
+    #[serde(default)]
+    pub revision: Option<String>,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+}
+
+/// Whether two marketplace sources name the same repository: `owner/repo` is
+/// `https://github.com/owner/repo.git`, GitHub names are case-insensitive, and a trailing `/` or
+/// `.git` does not matter. Any other source compares as written.
+pub fn same_marketplace_source(a: &str, b: &str) -> bool {
+    fn canonical(source: &str) -> String {
+        let source = source.trim();
+        let shorthand = source.split_once('/').is_some_and(|(owner, repo)| {
+            let part = |text: &str| {
+                !text.is_empty()
+                    && !text.starts_with(['.', '-'])
+                    && text
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            };
+            part(owner) && part(repo)
+        });
+        let github = if shorthand {
+            Some(source.to_string())
+        } else {
+            source
+                .strip_prefix("https://github.com/")
+                .map(|rest| rest.trim_end_matches('/').to_string())
+        };
+        match github {
+            Some(path) => {
+                let path = path.strip_suffix(".git").unwrap_or(&path);
+                format!("github:{}", path.to_ascii_lowercase())
+            }
+            None => source.to_string(),
+        }
+    }
+    canonical(a) == canonical(b)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

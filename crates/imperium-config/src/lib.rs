@@ -17,6 +17,7 @@ mod endpoints;
 mod environment;
 mod layers;
 mod local_models;
+mod marketplaces;
 mod mcp_servers;
 mod paths;
 mod permissions;
@@ -40,6 +41,9 @@ pub use local_models::{
     ModelLaunch, NO_CONTEXT_LIMIT, TableOverride, check_alias, check_card, check_launch,
     check_local_model,
 };
+pub use marketplaces::{
+    remove_marketplace, save_marketplace, set_marketplace_enabled, valid_marketplace_name,
+};
 pub use mcp_servers::{
     MAX_SERVER_NAME, remove_mcp_server, save_mcp_server, set_mcp_server_enabled, valid_server_name,
 };
@@ -62,11 +66,13 @@ pub use settings::{
     ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HarnessMode, HarnessSettings,
     HookSettings, ImageSettings, InitiativeSettings, IsolationSettings, KnowledgeSettings,
     LLAMACPP_ENDPOINT, ListModelsScope, LlamaCppSettings, LoadSettings, LocalWhisperSettings,
-    Location, McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings, MemorySettings,
-    MemoryWrite, ModelPlacement, ModelSettings, OpenAiApiSettings, PetSettings, PhoneSettings,
-    PolicySettings, Preference, ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings,
-    RuntimeSettings, ScheduleSettings, SecretRef, SessionSearchScope, SessionSettings, Settings,
-    Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, VoiceSettings, VoiceTranscription,
-    WebSettings, WorkflowSettings, WorkspacesSettings, WritePolicy, default_workspaces_root,
+    Location, MarketplaceSettings, McpServerSettings, McpSettings, MediaServiceSettings,
+    MediaSettings, MemorySettings, MemoryWrite, ModelPlacement, ModelSettings,
+    OFFICIAL_MARKETPLACE, OFFICIAL_MARKETPLACE_SOURCE, OpenAiApiSettings, PetSettings,
+    PhoneSettings, PluginSettings, PolicySettings, Preference, ProjectSettings, ResumeSettings,
+    RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef, SessionSearchScope,
+    SessionSettings, Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, VoiceSettings,
+    VoiceTranscription, WebSettings, WorkflowSettings, WorkspacesSettings, WritePolicy,
+    default_workspaces_root, same_marketplace_source,
 };
 pub use settings::{SuggestionCandidate, default_suggestions};

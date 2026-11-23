@@ -209,7 +209,7 @@ fn write_server(table: &mut dyn TableLike, server: &McpServerSettings) {
 }
 
 /// Sets or removes one key, keeping an existing value's comments and spacing.
-fn set_key(table: &mut dyn TableLike, key: &str, value: Option<Value>) {
+pub(crate) fn set_key(table: &mut dyn TableLike, key: &str, value: Option<Value>) {
     match value {
         Some(mut value) => match table.get_mut(key).and_then(Item::as_value_mut) {
             Some(existing) => {

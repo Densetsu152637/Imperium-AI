@@ -73,6 +73,18 @@ permissions, UI mod entry points, and router hints.
 - **Hooks:** see below. Problems (a skill without a description, an unsupported hook event)
   are shown as session notices.
 
+### Plugin marketplaces
+
+Plugin marketplaces ([plan](plans/plugin-marketplace.md)) are configured as
+`[plugins.marketplaces.<name>]` in the user's `config.toml` (`source`, `revision`, `enabled`; see
+[10](10-configuration.md)). Anthropic's official marketplace, `claude-plugins-official`, is built
+in: its source is pinned to `anthropics/claude-plugins-official` (the address Claude Code's own
+documentation gives, <https://code.claude.com/docs/en/discover-plugins>, a GitHub repository
+with `.claude-plugin/marketplace.json`). It can be turned off with `enabled = false` but its name
+never takes another source, in the user config or an environment variable; the same source under
+another name is an ordinary marketplace. An environment's `.imperium/config.toml` cannot set
+`[plugins]`: a repository does not choose what its user browses.
+
 ### Named agents (implemented)
 
 A named agent is a subagent a file defines, in Claude Code's format, so plugins and projects can
