@@ -46,12 +46,16 @@ const QUICK_TIMEOUT: Duration = Duration::from_secs(15);
 const APPROVE_TIMEOUT: Duration = Duration::from_secs(300);
 /// The longest name or environment the command takes.
 const MAX_TEXT: usize = 256;
-/// The most lines the dialog shows. Windows and GTK message boxes do not scroll, so a longer
-/// summary would run off the screen. A plugin that exceeds a limit is refused rather than shown cut
+/// The most lines one dialog page shows, header included. Windows and GTK message boxes do not
+/// scroll, so a longer page would run off the screen.
+const PAGE_LINES: usize = 40;
+/// Where a displayed line is broken; each continuation starts with `↳ ` and counts toward the page.
+const WRAP: usize = 100;
+/// The most pages a summary may take. A plugin that needs more is refused rather than shown cut
 /// short: an approval must be for everything the dialog listed.
-const MAX_LINES: usize = 40;
-/// The longest line the dialog shows, in characters.
-const MAX_LINE: usize = 200;
+const MAX_PAGES: usize = 10;
+/// Marks a line continued from the one above.
+const CONTINUED: &str = "↳ ";
 
 /// What the approval is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -236,17 +240,10 @@ fn show(value: &str) -> String {
     shown
 }
 
-/// What the dialog says, from the daemon's preview alone: the plugin, where it came from, every
-/// hook and server command line with launchers flagged, and the content hash the approval is
-/// bound to. Refused when it would not fit, so nothing the plugin runs is left out.
-fn dialog_text(action: Action, preview: &PluginPreview) -> Result<String, String> {
+/// What the dialog says below its header, from the daemon's preview alone: where the plugin came
+/// from, every hook and server command line with launchers flagged, and what the servers use.
+fn summary(preview: &PluginPreview) -> String {
     let mut text = String::new();
-    let verb = match action {
-        Action::Install => "Install and approve",
-        Action::Update => "Update and approve",
-        Action::Approve => "Approve",
-    };
-    text.push_str(&format!("{verb} {}?\n\n", show(&preview.id)));
     text.push_str(
         "Approving lets this plugin run the commands below on your computer, outside Imperium's \
          tool sandbox, with your permissions.\n\n",
@@ -259,10 +256,6 @@ fn dialog_text(action: Action, preview: &PluginPreview) -> Result<String, String
     if let Some(commit) = &preview.commit {
         text.push_str(&format!("Commit: {}\n", show(commit)));
     }
-    text.push_str(&format!(
-        "Content hash (SHA-256): {}\n",
-        show(&preview.sha256)
-    ));
     if preview.launcher {
         text.push_str(
             "\nFLAGGED: it starts a launcher (npx, uvx, @latest or similar) that downloads and runs \
@@ -324,27 +317,126 @@ fn dialog_text(action: Action, preview: &PluginPreview) -> Result<String, String
     for note in &preview.notes {
         text.push_str(&format!("\nNote: {}\n", show(note)));
     }
-    fits(&preview.id, &text)?;
-    Ok(text)
+    text
 }
 
-/// Refuses a summary the dialog cannot show whole: too many lines, or a line too long.
-fn fits(id: &str, text: &str) -> Result<(), String> {
-    let lines = text.lines().count();
-    if lines > MAX_LINES {
+/// Breaks a line longer than [`WRAP`] characters, marking each continuation with `↳`. Never splits
+/// inside a written-out escape (`\n`, `\u{202e}`), so escaped text stays escaped across the break.
+fn wrap(line: &str) -> Vec<String> {
+    let mut atoms: Vec<&str> = Vec::new();
+    let mut rest = line;
+    while let Some(first) = rest.chars().next() {
+        let mut length = first.len_utf8();
+        if first == '\\' {
+            if rest[1..].starts_with("u{") {
+                if let Some(close) = rest.find('}') {
+                    length = close + 1;
+                }
+            } else if matches!(rest[1..].chars().next(), Some('n' | 'r' | 't')) {
+                length = 2;
+            }
+        }
+        atoms.push(&rest[..length]);
+        rest = &rest[length..];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut width = 0;
+    for atom in atoms {
+        let size = atom.chars().count();
+        if width + size > WRAP && width > 0 {
+            lines.push(std::mem::replace(&mut current, CONTINUED.to_string()));
+            width = CONTINUED.chars().count();
+        }
+        current.push_str(atom);
+        width += size;
+    }
+    lines.push(current);
+    lines
+}
+
+/// One native message box: its title and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Page {
+    title: String,
+    text: String,
+}
+
+/// What the dialog shows, as pages of at most [`PAGE_LINES`] lines (long lines wrapped, and counted
+/// wrapped). Every page repeats the plugin id and the content hash the approval is bound to. A
+/// summary of more than [`MAX_PAGES`] pages is refused, so nothing the plugin runs is left out.
+fn dialog_pages(action: Action, preview: &PluginPreview) -> Result<Vec<Page>, String> {
+    let verb = match action {
+        Action::Install => "Install and approve",
+        Action::Update => "Update and approve",
+        Action::Approve => "Approve",
+    };
+    let mut header = wrap(&format!("{verb} {}?", show(&preview.id)));
+    header.extend(wrap(&format!(
+        "Content hash (SHA-256): {}",
+        show(&preview.sha256)
+    )));
+    header.push(String::new());
+    let room = PAGE_LINES.saturating_sub(header.len());
+    let id = &preview.id;
+    if room < 5 {
         return Err(format!(
-            "{id} cannot be approved here: its summary is {lines} lines and the dialog shows at most \
-             {MAX_LINES}. Read it with `imperium plugin inspect {id}`"
+            "{id} cannot be approved here: its name is too long to show. Read it with `imperium plugin inspect {id}`"
         ));
     }
-    if let Some(long) = text.lines().find(|line| line.chars().count() > MAX_LINE) {
-        let start: String = long.chars().take(40).collect();
+    let body: Vec<String> = summary(preview).lines().flat_map(wrap).collect();
+    let mut chunks: Vec<Vec<String>> = Vec::new();
+    for line in body {
+        let full = chunks.last().is_none_or(|chunk| chunk.len() >= room);
+        if !full {
+            if let Some(chunk) = chunks.last_mut() {
+                chunk.push(line);
+            }
+        } else if !(line.is_empty() && !chunks.is_empty()) {
+            // A page does not open with a blank line.
+            chunks.push(vec![line]);
+        }
+    }
+    if chunks.len() > MAX_PAGES {
         return Err(format!(
-            "{id} cannot be approved here: the line starting \"{start}\" is longer than {MAX_LINE} \
-             characters, which the dialog cannot show whole. Read it with `imperium plugin inspect {id}`"
+            "{id} cannot be approved here: its summary takes {} pages and the dialog shows at most \
+             {MAX_PAGES}. Read it with `imperium plugin inspect {id}`",
+            chunks.len()
         ));
     }
-    Ok(())
+    let count = chunks.len();
+    Ok(chunks
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| Page {
+            title: if count == 1 {
+                "Approve plugin".to_string()
+            } else {
+                format!("Approve plugin - page {} of {count}", index + 1)
+            },
+            text: header
+                .iter()
+                .chain(&chunk)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        })
+        .collect())
+}
+
+/// Shows each page in turn with `show(page, last)`, which answers `true` for *Next* or *Approve*.
+/// Stops at the first *Cancel*; `true` only when every page, the last included, was accepted.
+async fn confirm_pages<F, Fut>(pages: &[Page], mut show: F) -> bool
+where
+    F: FnMut(&Page, bool) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for (index, page) in pages.iter().enumerate() {
+        if !show(page, index + 1 == pages.len()).await {
+            return false;
+        }
+    }
+    true
 }
 
 /// Calls one daemon method, giving up after `limit`.
@@ -406,15 +498,21 @@ async fn resolve_id(client: &mut Client, action: Action, name: &str) -> Result<S
         })
 }
 
-/// Shows the dialog and waits for the answer: `true` only for *Approve*.
-async fn confirm<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>, text: String) -> bool {
+/// Shows one page as a native box and waits for the answer: *Next* (or *Approve* on the last page)
+/// is `true`, *Cancel* or closing the box is `false`.
+async fn native_page<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+    page: Page,
+    last: bool,
+) -> bool {
     let (answer, answered) = tokio::sync::oneshot::channel();
     app.dialog()
-        .message(text)
-        .title("Approve plugin")
+        .message(page.text)
+        .title(page.title)
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            "Approve".into(),
+            if last { "Approve" } else { "Next" }.into(),
             "Cancel".into(),
         ))
         .parent(window)
@@ -441,8 +539,12 @@ async fn flow<R: Runtime>(
         ));
     }
     check_preview(action, &preview)?;
-    let text = dialog_text(action, &preview)?;
-    if !confirm(app, window, text).await {
+    let pages = dialog_pages(action, &preview)?;
+    if !confirm_pages(&pages, |page, last| {
+        native_page(app, window, page.clone(), last)
+    })
+    .await
+    {
         return Ok(Outcome {
             cancelled: true,
             reason: Some("cancelled: nothing was installed or recorded".into()),
@@ -666,10 +768,20 @@ mod tests {
         assert!(check_preview(Action::Update, &found).is_err());
     }
 
+    /// Every page's text, joined.
+    fn shown(action: Action, preview: &PluginPreview) -> String {
+        dialog_pages(action, preview)
+            .unwrap()
+            .iter()
+            .map(|page| page.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn the_dialog_shows_the_id_the_commands_the_flags_and_the_hash() {
         let preview = preview();
-        let text = dialog_text(Action::Install, &preview).unwrap();
+        let text = shown(Action::Install, &preview);
         for wanted in [
             "Install and approve p@m?",
             "/plugins/p/hooks/check.sh --strict",
@@ -689,13 +801,16 @@ mod tests {
         );
         // What the plugin says about itself is not shown beside what it runs.
         assert!(!text.contains("Does nothing"));
+        let pages = dialog_pages(Action::Install, &preview).unwrap();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].title, "Approve plugin");
     }
 
     #[test]
     fn the_dialog_writes_out_characters_that_could_disguise_a_command() {
         let mut preview = preview();
         preview.hooks[0].command = "echo hi\nApprove q@m?\u{202e}evil".into();
-        let text = dialog_text(Action::Approve, &preview).unwrap();
+        let text = shown(Action::Approve, &preview);
         assert!(
             text.contains("echo hi\\nApprove q@m?\\u{202e}evil"),
             "{text}"
@@ -709,7 +824,7 @@ mod tests {
         let mut preview = preview();
         preview.servers[0].header_names = vec!["X-Key\nApprove q@m?".into()];
         preview.servers[0].variables = vec!["A\u{202e}B".into()];
-        let text = dialog_text(Action::Install, &preview).unwrap();
+        let text = shown(Action::Install, &preview);
         assert!(
             text.contains(
                 r"uses environment: API_KEY; headers: X-Key\nApprove q@m?; variables: A\u{202e}B"
@@ -721,29 +836,125 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_with_too_many_lines_is_refused_not_cut_short() {
-        let mut preview = preview();
-        let hook = preview.hooks[0].clone();
-        preview.hooks = vec![hook; MAX_LINES];
-        let error = dialog_text(Action::Approve, &preview).unwrap_err();
-        assert!(
-            error.contains("lines") && error.contains("imperium plugin inspect p@m"),
-            "{error}"
-        );
-        preview.hooks.truncate(10);
-        assert!(dialog_text(Action::Approve, &preview).is_ok());
+    fn a_long_line_is_wrapped_and_marked_and_loses_nothing() {
+        let line = format!("run-{}", "x".repeat(250));
+        let lines = wrap(&line);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|line| line.chars().count() <= WRAP));
+        assert!(!lines[0].starts_with(CONTINUED));
+        assert!(lines[1..].iter().all(|line| line.starts_with(CONTINUED)));
+        let joined: String = lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                if index == 0 {
+                    line.as_str()
+                } else {
+                    &line[CONTINUED.len()..]
+                }
+            })
+            .collect();
+        assert_eq!(joined, line);
+        assert_eq!(wrap("short"), ["short"]);
     }
 
     #[test]
-    fn a_plugin_with_a_too_long_line_is_refused_and_named() {
+    fn a_written_out_escape_is_never_split_by_a_wrap() {
+        let line = format!(r"{}\u{{202e}}tail", "a".repeat(WRAP - 3));
+        let lines = wrap(&line);
+        assert_eq!(lines[0], "a".repeat(WRAP - 3));
+        assert_eq!(lines[1], format!(r"{CONTINUED}\u{{202e}}tail"));
+        let line = format!(r"{}\nrest", "b".repeat(WRAP - 1));
+        assert_eq!(wrap(&line)[1], format!(r"{CONTINUED}\nrest"));
+        // Through the dialog: a command whose escape straddles the break stays escaped.
         let mut preview = preview();
-        preview.hooks[0].command = format!("run-{}", "x".repeat(MAX_LINE));
-        let error = dialog_text(Action::Approve, &preview).unwrap_err();
+        preview.hooks[0].command = format!("{}\u{202e}end", "c".repeat(80));
+        let text = shown(Action::Approve, &preview);
+        assert!(!text.contains('\u{202e}'));
+        assert!(text.contains(r"\u{202e}"), "{text}");
+        assert!(text.lines().all(|line| line.chars().count() <= WRAP));
+    }
+
+    fn many_hooks(count: usize) -> PluginPreview {
+        let mut preview = preview();
+        let hook = preview.hooks[0].clone();
+        preview.hooks = vec![hook; count];
+        preview
+    }
+
+    #[test]
+    fn a_long_summary_is_split_into_numbered_pages_each_with_the_id_and_hash() {
+        let preview = many_hooks(90);
+        let pages = dialog_pages(Action::Update, &preview).unwrap();
+        assert!(pages.len() > 1);
+        let count = pages.len();
+        for (index, page) in pages.iter().enumerate() {
+            assert_eq!(
+                page.title,
+                format!("Approve plugin - page {} of {count}", index + 1)
+            );
+            assert!(page.text.lines().count() <= PAGE_LINES, "{}", page.text);
+            assert!(
+                page.text.starts_with("Update and approve p@m?\n"),
+                "{}",
+                page.text
+            );
+            assert!(page.text.contains(&"c".repeat(64)));
+        }
+        // Every hook is on some page, and none twice.
+        let hooks: usize = pages
+            .iter()
+            .map(|page| page.text.matches("PreToolUse [Bash]").count())
+            .sum();
+        assert_eq!(hooks, 90);
+    }
+
+    #[test]
+    fn wrapped_lines_count_toward_the_page_height() {
+        let mut preview = many_hooks(30);
+        preview.hooks[0].command = format!("run-{}", "x".repeat(WRAP * 6));
+        let pages = dialog_pages(Action::Approve, &preview).unwrap();
+        assert!(pages.len() > 1, "wrapping alone pushes it past one page");
         assert!(
-            error.contains("longer than 200") && error.contains("imperium plugin inspect"),
+            pages
+                .iter()
+                .all(|page| page.text.lines().count() <= PAGE_LINES)
+        );
+    }
+
+    #[test]
+    fn a_summary_over_ten_pages_is_refused_with_a_pointer() {
+        let error = dialog_pages(Action::Approve, &many_hooks(400)).unwrap_err();
+        assert!(
+            error.contains("pages") && error.contains("imperium plugin inspect p@m"),
             "{error}"
         );
-        assert!(error.contains("PreToolUse [Bash]: run-"), "{error}");
+        // Ten pages still show.
+        assert!(dialog_pages(Action::Approve, &many_hooks(250)).is_ok());
+    }
+
+    #[test]
+    fn the_pages_are_shown_in_turn_and_cancel_stops_at_once() {
+        let pages = dialog_pages(Action::Approve, &many_hooks(90)).unwrap();
+        assert!(pages.len() >= 3);
+        let mut seen = Vec::new();
+        let accepted = tauri::async_runtime::block_on(confirm_pages(&pages, |page, last| {
+            seen.push((page.title.clone(), last));
+            std::future::ready(true)
+        }));
+        assert!(accepted);
+        assert_eq!(seen.len(), pages.len());
+        assert!(seen.iter().take(pages.len() - 1).all(|(_, last)| !last));
+        assert!(seen.last().unwrap().1, "only the last page offers Approve");
+
+        // Cancel on page 2: nothing after it is shown, and the answer is no.
+        let mut shown_pages = 0;
+        let accepted = tauri::async_runtime::block_on(confirm_pages(&pages, |_, _| {
+            shown_pages += 1;
+            std::future::ready(shown_pages < 2)
+        }));
+        assert!(!accepted);
+        assert_eq!(shown_pages, 2);
     }
 
     #[test]
