@@ -415,8 +415,8 @@ has no code that names `plugins.approve` or `plugins.approval_challenge` (a test
   (`tauri-plugin-dialog`, a warning, buttons *Approve* and *Cancel*) built only from that
   preview: the plugin id, its source and commit, the content hash, every hook and server command
   line with flagged launchers, each server's environment, header and `${VAR}` names (never values), and the daemon's notes. The plugin's own description is not shown.
-  Control and direction-changing characters in a command are written out (`\n`, `\u{202e}`). Lines over
-  100 characters are broken, each continuation marked `↳` (never inside an escape), and the summary is shown
+  Control and direction-changing characters in a command are written out (`\n`, `\u{202e}`), and a real backslash is doubled (`\\`) so plugin text cannot pass for an escape. Lines over
+  100 characters are broken, each continuation marked `↳` (never inside an escape the app wrote: `\\`, `\n`, `\r`, `\t` or `\u{` with one to six hex digits and `}`), and the summary is shown
   as pages of at most 40 lines titled "page i of n", each repeating the plugin id and the hash, because
   Windows and GTK message boxes do not scroll. Every page but the last offers *Next* and *Cancel*; the last
   offers *Approve* and *Cancel*, and *Cancel* on any page ends the flow with nothing installed or sent. A

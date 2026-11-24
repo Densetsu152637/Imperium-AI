@@ -1316,7 +1316,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   did not fix: the challenge is requested after the *Approve* click, not before the dialog (it
   lives two minutes, and an install has no folder to challenge before it); the dialog shows the summary as pages of at most 40 lines ("page i of n", the id and hash on every page,
   *Next* and *Cancel*, then *Approve* and *Cancel* on the last; *Cancel* anywhere ends the flow), wraps lines over
-  100 characters with a `↳` mark (never inside an escape), refuses a summary over 10 pages with a pointer to
+  100 characters with a `↳` mark (never inside an escape the app wrote: `\\`, `\n`, `\r`, `\t`, `\u{hex}`; a real backslash is doubled, so text that only looks like an escape wraps like any other, which a review found), refuses a summary over 10 pages with a pointer to
   `imperium plugin inspect`, lists each server's environment, header and variable names, and writes control and
   bidirectional characters out; the plugin's own description is not shown; the webview passes
   `name`, `action` and `environment` and nothing else, and gets `{approved, kind, reason,

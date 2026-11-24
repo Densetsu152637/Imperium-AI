@@ -220,13 +220,17 @@ fn check_preview(action: Action, preview: &PluginPreview) -> Result<(), String> 
 }
 
 /// Shows a value on one line, with control characters and the characters that reorder or hide
-/// text written out, so a command line cannot change how the dialog reads.
+/// text written out (and a backslash doubled), so a command line cannot change how the dialog reads.
 fn show(value: &str) -> String {
     let mut shown = String::with_capacity(value.len());
     for c in value.chars() {
         let hidden = c.is_control()
             || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}');
-        if hidden {
+        if c == '\\' {
+            // A real backslash is doubled, so a plugin cannot write something that reads as an
+            // escape this function made (`\u{202e}`), and `wrap` can tell the two apart.
+            shown.push_str("\\\\");
+        } else if hidden {
             match c {
                 '\n' => shown.push_str("\\n"),
                 '\r' => shown.push_str("\\r"),
@@ -320,22 +324,39 @@ fn summary(preview: &PluginPreview) -> String {
     text
 }
 
+/// The length of the escape `show` wrote at the start of `text` (which starts with a backslash):
+/// `\\`, `\n`, `\r`, `\t`, or `\u{` and one to six hex digits and `}`. Anything else is an ordinary
+/// character, so text that only looks like an escape cannot make an unbreakable piece.
+fn escape_len(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    match bytes.get(1) {
+        Some(b'\\' | b'n' | b'r' | b't') => 2,
+        Some(b'u') if bytes.get(2) == Some(&b'{') => {
+            let digits = bytes[3..]
+                .iter()
+                .take_while(|byte| byte.is_ascii_hexdigit())
+                .count();
+            if (1..=6).contains(&digits) && bytes.get(3 + digits) == Some(&b'}') {
+                4 + digits
+            } else {
+                1
+            }
+        }
+        _ => 1,
+    }
+}
+
 /// Breaks a line longer than [`WRAP`] characters, marking each continuation with `↳`. Never splits
 /// inside a written-out escape (`\n`, `\u{202e}`), so escaped text stays escaped across the break.
 fn wrap(line: &str) -> Vec<String> {
     let mut atoms: Vec<&str> = Vec::new();
     let mut rest = line;
     while let Some(first) = rest.chars().next() {
-        let mut length = first.len_utf8();
-        if first == '\\' {
-            if rest[1..].starts_with("u{") {
-                if let Some(close) = rest.find('}') {
-                    length = close + 1;
-                }
-            } else if matches!(rest[1..].chars().next(), Some('n' | 'r' | 't')) {
-                length = 2;
-            }
-        }
+        let length = if first == '\\' {
+            escape_len(rest)
+        } else {
+            first.len_utf8()
+        };
         atoms.push(&rest[..length]);
         rest = &rest[length..];
     }
@@ -873,6 +894,65 @@ mod tests {
         assert!(!text.contains('\u{202e}'));
         assert!(text.contains(r"\u{202e}"), "{text}");
         assert!(text.lines().all(|line| line.chars().count() <= WRAP));
+    }
+
+    #[test]
+    fn text_that_only_looks_like_an_escape_is_wrapped_like_any_other() {
+        // `\u{` and 3,000 characters before any `}` is not an escape `show` made.
+        let line = format!(r"\u{{{}}}", "x".repeat(3000));
+        let lines = wrap(&line);
+        assert!(lines.len() > 30);
+        assert!(lines.iter().all(|line| line.chars().count() <= WRAP));
+        // Neither are too many digits, a missing brace, or a non-hex digit.
+        for fake in [r"\u{1234567}", r"\u{12", r"\u{zz}", r"\u{}", r"\q"] {
+            assert_eq!(escape_len(fake), 1, "{fake}");
+        }
+        for real in [
+            r"\\",
+            r"\n",
+            r"\r",
+            r"\t",
+            r"\u{202e}",
+            r"\u{1f600}",
+            r"\u{a}",
+        ] {
+            assert_eq!(escape_len(real), real.len(), "{real}");
+        }
+        // Through the dialog.
+        let mut preview = preview();
+        preview.hooks[0].command = format!(r"\u{{{}}}", "y".repeat(3000));
+        let pages = dialog_pages(Action::Approve, &preview);
+        let text = match pages {
+            Ok(pages) => pages
+                .iter()
+                .map(|page| page.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(error) => error,
+        };
+        assert!(
+            text.lines().all(|line| line.chars().count() <= WRAP),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_literal_backslash_is_doubled_so_it_differs_from_an_escaped_character() {
+        assert_eq!(show(r"\u{202e}"), r"\\u{202e}");
+        assert_eq!(show("\u{202e}"), r"\u{202e}");
+        assert_eq!(show("a\\nb"), r"a\\nb");
+        assert_eq!(show("a\nb"), r"a\nb");
+        let mut preview = preview();
+        preview.hooks[0].command = r"echo \u{202e}".into();
+        assert!(shown(Action::Approve, &preview).contains(r"echo \\u{202e}"));
+    }
+
+    #[test]
+    fn a_doubled_backslash_is_never_split_by_a_wrap() {
+        let line = format!(r"{}\\tail", "a".repeat(WRAP - 1));
+        let lines = wrap(&line);
+        assert_eq!(lines[0], "a".repeat(WRAP - 1));
+        assert_eq!(lines[1], format!(r"{CONTINUED}\\tail"));
     }
 
     fn many_hooks(count: usize) -> PluginPreview {
