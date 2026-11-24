@@ -772,6 +772,7 @@ and `environments.agent_update` (protocol 0.28)
     hold, the [plugin marketplace](plans/plugin-marketplace.md) counts no new approval of a plugin
     with hooks or MCP servers on Windows ([item 51](#next-in-order)); carried-over approvals and
     plugins without code keep working.
+<!-- markdownlint-disable-next-line MD029 -->
 60. **Approve a folder that did not come from a marketplace** (planned). The
     [plugin marketplace](plans/plugin-marketplace.md)'s Plugins window cannot approve a withheld
     plugin folder that has no marketplace id (a pre-existing or unrecorded one), because
