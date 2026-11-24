@@ -66,12 +66,13 @@ pub(crate) async fn run_command(
     let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
     let child = workspace
         .sandbox()
-        .named_command(
+        .named_command_for(
             &roots,
             workspace.grants(),
             command,
             None,
             workspace.is_read_only(),
+            workspace.session_gh(),
         )?
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

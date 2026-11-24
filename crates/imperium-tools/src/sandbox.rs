@@ -259,6 +259,56 @@ fn hidden_masks() -> Vec<Mask> {
     masks_for(&paths)
 }
 
+/// Variables that hand a command the GitHub CLI's login; dropped from a session's commands unless
+/// its environment is in `github.session_gh`.
+const GITHUB_ENV: [&str; 3] = ["GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"];
+
+/// Where `gh` keeps its login file (`hosts.yml`): `GH_CONFIG_DIR`, else `$XDG_CONFIG_HOME/gh`,
+/// else `~/.config/gh`. Not the OS keyring, which a newer `gh` may use instead.
+fn gh_config_dirs_from(
+    gh_config_dir: Option<OsString>,
+    xdg_config_home: Option<OsString>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut add = |dir: PathBuf| {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    };
+    if let Some(dir) = gh_config_dir.filter(|dir| !dir.is_empty()) {
+        add(PathBuf::from(dir));
+    }
+    if let Some(xdg) = xdg_config_home.filter(|dir| !dir.is_empty()) {
+        add(PathBuf::from(xdg).join("gh"));
+    }
+    if let Some(home) = home {
+        add(home.join(".config").join("gh"));
+    }
+    dirs
+}
+
+/// The masks that hide `gh`'s config folder from a command in the OS sandbox, none when the
+/// session's environment keeps `gh`'s login.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+fn gh_masks(session_gh: bool) -> Vec<Mask> {
+    let dirs = gh_config_dirs_from(
+        std::env::var_os("GH_CONFIG_DIR"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME").map(PathBuf::from),
+    );
+    gh_masks_for(&dirs, session_gh)
+}
+
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+fn gh_masks_for(dirs: &[PathBuf], session_gh: bool) -> Vec<Mask> {
+    if session_gh {
+        Vec::new()
+    } else {
+        masks_for(dirs)
+    }
+}
+
 /// The user's runtime folder, hidden whole: it holds the session bus, the keyring, the systemd
 /// user manager's private socket (`systemd-run --user` would start a process outside the
 /// sandbox), the ssh and gpg agent sockets and a rootless container runtime's socket, and any one
@@ -379,6 +429,41 @@ impl Sandbox {
         name: Option<&str>,
         read_only: bool,
     ) -> Result<Command, ToolError> {
+        self.named_command_for(roots, grants, command, name, read_only, true)
+    }
+
+    /// Like [`Sandbox::named_command`] for a session whose environment keeps `gh`'s login or
+    /// not (`session_gh`, [`crate::Workspace::with_session_gh`]). Without it, the command's
+    /// environment drops `GH_TOKEN`, `GITHUB_TOKEN` and `GH_CONFIG_DIR`, and the OS sandbox
+    /// hides `gh`'s config folder (not the OS keyring; tier 0 hides nothing).
+    pub(crate) fn named_command_for(
+        &self,
+        roots: &[&Path],
+        grants: &[GrantedPath],
+        command: &str,
+        name: Option<&str>,
+        read_only: bool,
+        session_gh: bool,
+    ) -> Result<Command, ToolError> {
+        let mut process =
+            self.unscoped_command(roots, grants, command, name, read_only, session_gh)?;
+        if !session_gh {
+            for name in GITHUB_ENV {
+                process.env_remove(name);
+            }
+        }
+        Ok(process)
+    }
+
+    fn unscoped_command(
+        &self,
+        roots: &[&Path],
+        grants: &[GrantedPath],
+        command: &str,
+        name: Option<&str>,
+        read_only: bool,
+        session_gh: bool,
+    ) -> Result<Command, ToolError> {
         let Some(root) = roots.first() else {
             return Err(ToolError::Io("the workspace has no folder".into()));
         };
@@ -412,7 +497,15 @@ impl Sandbox {
                 } else {
                     Vec::new()
                 };
-                os_command(root, &writable, &protected, command, *network).map(|mut process| {
+                os_command(
+                    root,
+                    &writable,
+                    &protected,
+                    command,
+                    *network,
+                    gh_masks(session_gh),
+                )
+                .map(|mut process| {
                     // Nothing that names the daemon or its files is inherited; the mark below
                     // is the one `IMPERIUM_*` variable a command is meant to carry.
                     for name in daemon_env_names(std::env::vars_os().map(|(name, _)| name)) {
@@ -661,8 +754,11 @@ fn os_command(
     protected: &[&Path],
     command: &str,
     network: bool,
+    extra_hidden: Vec<Mask>,
 ) -> Result<Command, ToolError> {
     let mut process = Command::new("bwrap");
+    let mut hidden = hidden_masks();
+    hidden.extend(extra_hidden);
     let writable = writable_names(writable);
     let guards = relevant_guards(current_guards(), &writable);
     process
@@ -670,7 +766,7 @@ fn os_command(
             &shown(&writable),
             &displayed(protected),
             &guards,
-            &hidden_masks(),
+            &hidden,
             &cwd.display().to_string(),
             network,
         ))
@@ -768,8 +864,11 @@ fn os_command(
     protected: &[&Path],
     command: &str,
     network: bool,
+    extra_hidden: Vec<Mask>,
 ) -> Result<Command, ToolError> {
     let mut process = Command::new("sandbox-exec");
+    let mut hidden = hidden_masks();
+    hidden.extend(extra_hidden);
     let writable = writable_names(writable);
     let guards = relevant_guards(current_guards(), &writable);
     process
@@ -779,7 +878,7 @@ fn os_command(
                 &shown(&writable),
                 &displayed(protected),
                 &guards,
-                &hidden_masks(),
+                &hidden,
                 &HIDDEN
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -892,6 +991,7 @@ fn os_command(
     _protected: &[&Path],
     _command: &str,
     _network: bool,
+    _extra_hidden: Vec<Mask>,
 ) -> Result<Command, ToolError> {
     Err(ToolError::Io(
         "the OS sandbox tier is not available on this platform yet; set isolation.tier = \
@@ -902,6 +1002,70 @@ fn os_command(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gh_config_folder_is_hidden_unless_the_environment_keeps_the_login() {
+        let config = tempfile::tempdir().unwrap();
+        let dirs = vec![
+            config.path().to_path_buf(),
+            PathBuf::from("/does/not/exist/gh"),
+        ];
+        let hidden = gh_masks_for(&dirs, false);
+        assert!(!hidden.is_empty(), "the existing config folder is masked");
+        let name = config
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            hidden
+                .iter()
+                .all(|mask| mask.dir && mask.path.contains(&name))
+        );
+        assert!(
+            gh_masks_for(&dirs, true).is_empty(),
+            "github.session_gh keeps it"
+        );
+    }
+
+    #[test]
+    fn gh_config_folder_candidates_follow_ghs_own_lookup() {
+        let dirs = gh_config_dirs_from(
+            Some("/custom/gh".into()),
+            Some("/xdg".into()),
+            Some(PathBuf::from("/home/me")),
+        );
+        assert_eq!(
+            dirs,
+            [
+                PathBuf::from("/custom/gh"),
+                PathBuf::from("/xdg/gh"),
+                PathBuf::from("/home/me/.config/gh")
+            ]
+        );
+        assert!(gh_config_dirs_from(None, Some("".into()), None).is_empty());
+    }
+
+    #[test]
+    fn a_session_command_drops_the_github_variables_unless_the_environment_keeps_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let removed = |session_gh: bool| -> Vec<String> {
+            let process = Sandbox::Policy
+                .named_command_for(&[dir.path()], &[], "true", None, false, session_gh)
+                .unwrap();
+            process
+                .as_std()
+                .get_envs()
+                .filter(|(_, value)| value.is_none())
+                .map(|(name, _)| name.to_string_lossy().into_owned())
+                .collect()
+        };
+        let mut dropped = removed(false);
+        dropped.sort();
+        assert_eq!(dropped, ["GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"]);
+        assert!(removed(true).is_empty());
+    }
+
     use super::*;
 
     #[test]

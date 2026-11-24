@@ -222,6 +222,7 @@ listed; edit them in the file.
 | `github.watch` | none | `[[github.watch]]` with `repo` (`owner/name`) and `project` (a local clone whose `origin` is that repository) |
 | `github.autofix.enabled` | `false` | Fix the user's pull requests whose checks fail ([auto-fix](14-projects-and-automation.md#github-auto-fix)) |
 | `github.autofix.push` | `ask` | `ask` queues an approval before each push; `auto` pushes without asking |
+| `github.session_gh` | none | Ids of environments whose sessions keep the GitHub CLI's login. Every other environment's commands drop `GH_TOKEN`, `GITHUB_TOKEN` and `GH_CONFIG_DIR`, and the OS sandbox hides `gh`'s config folder ([auto-fix](14-projects-and-automation.md#github-auto-fix)); setting it hands those sessions the login |
 | `github.autofix.max_attempts_per_pr`, `poll_s`, `model` | `3`, `120`, default model | Stop after this many failing commits per pull request; polling interval; model for fix sessions |
 | `hooks` | none | `[[hooks]]` entries with `event`, optional `matcher`, `timeout_s`, and either `command` or `url` (an HTTP hook, with optional `headers` whose values may use `${secret:name}` from the keychain); see [hooks](06-extensibility.md#hooks) |
 

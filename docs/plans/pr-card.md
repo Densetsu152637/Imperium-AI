@@ -489,8 +489,31 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   tier 0: none asserts that `gh auth token` fails in a tier-0 shell.
 - Risks: users whose only credential is `gh`'s login in the child's config folder may lose `gh`
   where the OS sandbox tier applies, unless they set `github.session_gh`; docs state it.
-- Status: pending
-- Outcome: -
+- Status: done (this change)
+- Outcome:
+  - `review_pull_request` needed no change: its only `gh` call is `gh pr create`, which stays.
+  - The daemon builds `DaemonGitHub::standard()` (`HttpGitHub::api` with `GhAuthToken`, plus
+    `GhCli` for logs) in place of `GhCli`. `autofix.rs` takes the trait object, so its call sites
+    are unchanged. **S1:** `failure_log` stays on `gh run view --log-failed` (failed steps only):
+    the API's whole-job log ends in post-job noise. A test serves a job log with a failed step
+    followed by post-job noise through the fake and shows the daemon source returns the failed
+    step's text only. **S2:** `failing_prs` resolves the login (`viewer`, cached until the token
+    refreshes) and runs a GraphQL search `repo:o/r is:pr is:open author:<login>`; a test has 60
+    pull requests by others and one by the user. `repo_merge_settings` still errors for a token
+    without push access (nothing here uses it).
+  - **`github.session_gh`** is a user-layer list of environment ids (a list, not a per-environment
+    flag, because an environment's own files can only narrow settings and the protocol has no
+    place for a per-environment widening; no protocol change). The session's workspace carries
+    it. Commands (`run_command`, background commands) drop `GH_TOKEN`, `GITHUB_TOKEN` and
+    `GH_CONFIG_DIR` unless the environment is listed; the OS sandbox hides `gh`'s config folder
+    unless it is listed. MCP servers and hooks always drop the inherited variables (a server's own
+    configured `env` is kept): they have no environment context, so `session_gh` does not reach
+    them.
+  - Not done: the sentinel-token test through a daemon auto-fix run. It needs a daemon test to
+    build `HttpGitHub::new(fake_url, ...)`, which the `test-host` guard forbids outside
+    `imperium-github`; the sentinel checks stay in `imperium-github`'s tests. Decide whether
+    `imperium-core`'s dev-dependencies may enable `test-host` (stage 3 needs it for the daemon
+    tests against the fake).
 - Handoff notes: keep this PR free of new behaviour so a regression bisects to it alone.
 
 ## Stage 3: Binding, status model and live updates

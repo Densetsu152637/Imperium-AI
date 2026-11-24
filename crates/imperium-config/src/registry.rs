@@ -190,6 +190,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("github.autofix.enabled", "GitHub auto-fix", Bool, "Fix your pull requests whose checks fail."),
     choice("github.autofix.push", "Auto-fix pushes", &["ask", "auto"], "Ask before each push, or push without asking."),
     def("github.autofix.max_attempts_per_pr", "Auto-fix attempts", Integer, "Failing commits per pull request before auto-fix stops."),
+    def("github.session_gh", "Environments that keep gh's login", StringList, "Ids of environments whose sessions keep the GitHub CLI's login: their commands keep GH_TOKEN, GITHUB_TOKEN and GH_CONFIG_DIR and the OS sandbox does not hide gh's config folder. Off for every other environment."),
     def("github.autofix.poll_s", "Auto-fix polling (seconds)", Integer, "How often pull requests are checked."),
     def("github.autofix.model", "Auto-fix model", STRING, "Model for fix sessions; empty uses the default model."),
     live(choice("permissions.mode", "Permission mode", &["ask", "default", "auto", "accept_edits", "plan", "full"], "How new sessions approve their agents' actions: ask (before anything that is not read-only, whatever the allow rules say), default (writes and commands ask unless a rule allows them), auto (like default, but a small classifier model lets routine in-scope calls run; anything it is unsure of asks you, and the safety floor, deny rules and ask rules are never put to it), accept_edits (file edits run without asking), plan (read and plan only: no writes or commands), or full (everything runs except what deny rules or the safety floor stop). Each session can change its own.")),
@@ -702,6 +703,16 @@ mod tests {
         assert_eq!(key.def.kind, SettingKind::SecretRef);
         assert_eq!(key.value, Json::from("brave"), "only the secret's name");
         assert_eq!(key.source.kind(), "user");
+    }
+
+    #[test]
+    fn github_session_gh_names_environments_and_is_off_by_default() {
+        let (_home, paths) = home();
+        let config = load(&paths, None, owned(&[])).unwrap();
+        assert!(config.settings().unwrap().github.session_gh.is_empty());
+        set_user_setting(&paths, "github.session_gh", &Json::from(vec!["env-a"]), []).unwrap();
+        let config = load(&paths, None, owned(&[])).unwrap();
+        assert_eq!(config.settings().unwrap().github.session_gh, ["env-a"]);
     }
 
     #[test]

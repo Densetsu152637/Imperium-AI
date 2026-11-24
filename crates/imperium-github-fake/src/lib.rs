@@ -196,9 +196,22 @@ impl FakeGithub {
     }
 
     pub fn add_pr(&self, repo: &str, number: u64, title: &str, head_ref: &str, head_sha: &str) {
+        self.add_pr_by(repo, number, "me", title, head_ref, head_sha);
+    }
+
+    /// Like [`FakeGithub::add_pr`], opened by `author` (the fake's signed-in user is `me`).
+    pub fn add_pr_by(
+        &self,
+        repo: &str,
+        number: u64,
+        author: &str,
+        title: &str,
+        head_ref: &str,
+        head_sha: &str,
+    ) {
         let pr = Pr {
             title: title.to_string(),
-            author: "me".to_string(),
+            author: author.to_string(),
             state: "OPEN".to_string(),
             draft: false,
             head_ref: head_ref.to_string(),
@@ -568,20 +581,30 @@ async fn graphql(
                 "autoMergeRequest": pr.auto_merge.as_ref().map(|(m, _)| json!({"mergeMethod": m})),
                 "commits": rollup(pr)}}}))
         }
-        "FailingPrs" => {
-            let nodes: Vec<Value> = world.repos.get(&key).map_or_else(Vec::new, |repo| {
+        "Viewer" => ok(json!({"viewer": {"login": "me"}})),
+        "SearchPrs" => {
+            // `repo:o/r is:pr is:open author:login`, matched on the server like GitHub's search.
+            let query = vars["q"].as_str().unwrap_or_default();
+            let term = |prefix: &str| {
+                query
+                    .split_whitespace()
+                    .find_map(|word| word.strip_prefix(prefix))
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let (repo, author) = (term("repo:"), term("author:"));
+            let nodes: Vec<Value> = world.repos.get(&repo).map_or_else(Vec::new, |repo| {
                 repo.prs
                     .iter()
-                    .filter(|(_, pr)| pr.state == "OPEN")
+                    .filter(|(_, pr)| pr.state == "OPEN" && pr.author == author)
+                    .take(100)
                     .map(|(n, pr)| {
                         json!({"number": n, "headRefName": pr.head_ref,
-                               "headRefOid": pr.head_sha, "author": {"login": pr.author},
-                               "commits": rollup(pr)})
+                               "headRefOid": pr.head_sha, "commits": rollup(pr)})
                     })
                     .collect()
             });
-            ok(json!({"viewer": {"login": "me"},
-                      "repository": {"pullRequests": {"nodes": nodes}}}))
+            ok(json!({"search": {"nodes": nodes}}))
         }
         "ReviewThreads" => {
             let Some(pr) = world.repos.get(&key).and_then(|r| r.prs.get(&number)) else {

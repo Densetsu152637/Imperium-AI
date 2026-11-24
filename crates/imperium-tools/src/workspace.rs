@@ -59,6 +59,9 @@ pub struct Workspace {
     /// and commands run only where the isolation tier can keep them from writing there.
     /// Writable grants (the scratch folder, attachments) stay writable.
     read_only: bool,
+    /// The environment keeps `gh`'s login in its commands (`github.session_gh`): the GitHub
+    /// variables are not dropped and the OS sandbox does not hide `gh`'s config folder.
+    session_gh: bool,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -120,6 +123,7 @@ impl Workspace {
             profile: AgentProfile::default(),
             protected: Vec::new(),
             read_only: false,
+            session_gh: false,
         })
     }
 
@@ -168,6 +172,7 @@ impl Workspace {
             profile: AgentProfile::default(),
             protected: Vec::new(),
             read_only: false,
+            session_gh: false,
         })
     }
 
@@ -464,6 +469,21 @@ impl Workspace {
             read_only: true,
             ..self
         }
+    }
+
+    /// The same workspace whose commands keep `gh`'s login (`github.session_gh` is set for the
+    /// session's environment); by default `GH_TOKEN`, `GITHUB_TOKEN` and `GH_CONFIG_DIR` are
+    /// dropped from a command's environment and the OS sandbox hides `gh`'s config folder.
+    pub fn with_session_gh(self, on: bool) -> Self {
+        Workspace {
+            session_gh: on,
+            ..self
+        }
+    }
+
+    /// Whether commands keep `gh`'s login ([`Workspace::with_session_gh`]).
+    pub fn session_gh(&self) -> bool {
+        self.session_gh
     }
 
     /// Whether the folders are a read-only mount ([`Workspace::with_read_only`]).

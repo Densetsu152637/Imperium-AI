@@ -45,6 +45,8 @@ pub struct HttpGitHub {
     base: String,
     tokens: Arc<dyn TokenSource>,
     token: Mutex<Option<Secret>>,
+    /// The signed-in user's login, for the search in `failing_prs`.
+    login: Mutex<Option<String>>,
     limits: Mutex<Limits>,
     /// Longest a call sleeps for the rate limit; a longer wait is an error instead.
     max_wait: Duration,
@@ -114,6 +116,7 @@ impl HttpGitHub {
             base,
             tokens,
             token: Mutex::new(None),
+            login: Mutex::new(None),
             limits: Mutex::new(Limits::default()),
             max_wait: Duration::from_secs(60),
             reserve: 100,
@@ -142,6 +145,8 @@ impl HttpGitHub {
             return Ok(token);
         }
         let fresh = self.tokens.token().await?;
+        // A new token may belong to another account.
+        *self.login.lock().expect("login lock") = None;
         *self.token.lock().expect("token lock") = Some(fresh.clone());
         Ok(fresh)
     }
@@ -334,21 +339,43 @@ impl HttpGitHub {
         Ok(parse_status(pr))
     }
 
+    /// The signed-in user's login, asked once and kept until the token is refreshed.
+    async fn viewer_login(&self) -> Result<String, String> {
+        if let Some(login) = self.login.lock().expect("login lock").clone() {
+            return Ok(login);
+        }
+        let data = self
+            .graphql(queries::VIEWER, &queries::viewer(), json!({}))
+            .await?;
+        let login = data["viewer"]["login"].as_str().unwrap_or_default();
+        let valid =
+            !login.is_empty() && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if !valid {
+            return Err("GitHub did not return a usable login for this token".to_string());
+        }
+        *self.login.lock().expect("login lock") = Some(login.to_string());
+        Ok(login.to_string())
+    }
+
+    /// Open pull requests by the signed-in user with a failed check, found by a search on
+    /// GitHub (`repo:o/r is:pr is:open author:<login>`), so a repository with many open pull
+    /// requests by others does not hide them. The login is resolved explicitly: `@me` does not
+    /// work with every kind of token.
     async fn failing(&self, repo: &str) -> Result<Vec<FailingPr>, String> {
-        let (owner, name) = split_repo(repo)?;
+        split_repo(repo)?;
+        let login = self.viewer_login().await?;
+        let query = format!("repo:{repo} is:pr is:open author:{login}");
         let data = self
             .graphql(
-                queries::FAILING_PRS,
-                &queries::failing_prs(),
-                json!({"owner": owner, "name": name}),
+                queries::SEARCH_PRS,
+                &queries::search_prs(),
+                json!({"q": query}),
             )
             .await?;
-        let me = data["viewer"]["login"].as_str().unwrap_or_default();
-        let nodes = data["repository"]["pullRequests"]["nodes"].as_array();
-        Ok(nodes
+        Ok(data["search"]["nodes"]
+            .as_array()
             .into_iter()
             .flatten()
-            .filter(|pr| pr["author"]["login"].as_str() == Some(me))
             .filter_map(|pr| {
                 let failed: Vec<_> = parse_checks(pr)
                     .into_iter()

@@ -380,6 +380,10 @@ async fn run_one(hook: &Hook, input: &Value, cwd: &std::path::Path) -> Result<An
             .envs(imperium_mcp::servers::plugin_child_env())
             .env("CLAUDE_PLUGIN_ROOT", root);
     }
+    // A hook does not inherit the GitHub CLI's login.
+    for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"] {
+        command.env_remove(name);
+    }
     let mut child = command
         .current_dir(cwd)
         .env("IMPERIUM_PROJECT_DIR", cwd)

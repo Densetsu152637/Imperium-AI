@@ -970,6 +970,19 @@ The file tools stay tier 0 (they run in the daemon, confined to the workspace). 
 forcing tiers per model or agent, GPU flags for containers, Windows AppContainer, and a default
 dev image.
 
+**The GitHub CLI's login (implemented, pull-request card plan stage 2).** The daemon talks to
+GitHub itself, with the token from `gh auth token` kept in its memory. A session's commands
+(`run_command` and background commands, in every tier) and its MCP servers and hooks do not
+inherit `GH_TOKEN`, `GITHUB_TOKEN` or `GH_CONFIG_DIR` (a variable an MCP server's own `env` or
+`secret_env` sets is kept). In the OS tier the sandbox also hides `gh`'s config folder
+(`GH_CONFIG_DIR`, else `$XDG_CONFIG_HOME/gh`, else `~/.config/gh`). This is not a guarantee that a
+session cannot use `gh`: tier 0 hides nothing, so a command there can still run `gh auth token`
+or read the config folder, and the OS keyring (where a newer `gh` may keep the login) is not
+hidden by this rule. An environment whose id is in `github.session_gh` keeps all of it for its
+sessions' commands (the login is then available to the model's commands); hooks and MCP servers
+always drop the inherited variables. Users whose only credential is `gh`'s login in its config
+folder lose `gh` in the OS tier unless they list the environment in `github.session_gh`.
+
 **Read-only mounts (implemented):** a session started with `read_only`
 ([14](14-projects-and-automation.md#narrowed-sessions-implemented)) mounts its folders read-only
 under each tier: the OS tier binds nothing in the folders writable (the whole filesystem is

@@ -481,6 +481,11 @@ pub struct GithubSettings {
     pub watch: Vec<GithubWatch>,
     #[serde(default)]
     pub autofix: AutofixSettings,
+    /// Ids of environments whose sessions keep `gh`'s login: their commands keep `GH_TOKEN`,
+    /// `GITHUB_TOKEN` and `GH_CONFIG_DIR`, and the OS sandbox does not hide `gh`'s config folder.
+    /// Empty (the default) for every other environment (docs/14, "GitHub auto-fix").
+    #[serde(default)]
+    pub session_gh: Vec<String>,
 }
 
 /// One `[[github.watch]]` entry: a repository and the local clone fixes are made from.
