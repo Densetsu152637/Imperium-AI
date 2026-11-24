@@ -96,6 +96,52 @@ impl World {
         Connection::new(Arc::clone(&self.daemon))
     }
 
+    /// A session's record, `<data>/sessions/<id>.meta.json`.
+    fn meta_path(&self, id: &str) -> std::path::PathBuf {
+        imperium_config::Paths::under(self._home.path())
+            .data_dir()
+            .join("sessions")
+            .join(format!("{id}.meta.json"))
+    }
+
+    fn meta(&self, id: &str) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(self.meta_path(id)).unwrap()).unwrap()
+    }
+
+    fn write_meta(&self, id: &str, meta: &Value) {
+        std::fs::write(self.meta_path(id), meta.to_string()).unwrap();
+    }
+
+    /// Stops the daemon and starts another on the same data folder. The caller drops its
+    /// sessions and connections first.
+    async fn restart(self) -> World {
+        let World {
+            fake,
+            daemon,
+            notices,
+            _home,
+            folders,
+        } = self;
+        drop(notices);
+        drop(daemon);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let daemon = DaemonState::new(
+            imperium_config::Paths::under(_home.path()),
+            settings(""),
+            None,
+        );
+        let github = HttpGitHub::new(&fake.url(), Arc::new(StaticToken::new(TOKEN))).unwrap();
+        daemon.pr_monitor().attach(Arc::new(github));
+        let notices = daemon.announcements();
+        World {
+            fake,
+            daemon,
+            notices,
+            _home,
+            folders,
+        }
+    }
+
     /// The `pull_requests.changed` notifications since the last call, as `(session, status)`.
     fn changes(&mut self) -> Vec<(String, Value)> {
         let mut found = Vec::new();
@@ -137,7 +183,7 @@ async fn call(connection: &mut Connection, id: i64, method: &str, params: Value)
 
 async fn shake(connection: &mut Connection) {
     let handshake = json!({"client": {"name": "test", "version": "0"},
-                           "protocol": {"major": 0, "minor": 57}});
+                           "protocol": {"major": 0, "minor": 58}});
     result(call(connection, 1, "system.handshake", handshake).await);
 }
 
@@ -517,6 +563,200 @@ async fn the_poller_pushes_changes_without_any_client_polling() {
     world.fake.set_check(REPO, 7, "lint", Some("FAILURE"));
     let seen = wait_for(&mut world, |s| s["checks"]["failed"] == 1).await;
     assert_eq!(seen["checks"]["failing_names"], json!(["lint"]));
+}
+
+async fn status_of(connection: &mut Connection, session: &str) -> Value {
+    result(
+        call(
+            connection,
+            30,
+            "pull_requests.status",
+            json!({"session_id": session}),
+        )
+        .await,
+    )
+}
+
+#[tokio::test]
+async fn a_restart_restores_the_binding_its_switches_and_the_last_status() {
+    let mut world = World::new("").await;
+    world.fake.set_check(REPO, 7, "lint", Some("FAILURE"));
+    let session = world.session();
+    let id = session.id().to_string();
+    let mut connection = world.connection();
+    shake(&mut connection).await;
+    bind(&mut connection, &id).await;
+    let monitor = world.daemon.pr_monitor();
+    assert!(monitor.set_switches(&world.daemon, &id, Some(true), Some(false)));
+    assert!(!monitor.set_switches(&world.daemon, "nobody", Some(true), None));
+    // The switches reach the card; the session's row has the link.
+    let before = status_of(&mut connection, &id).await;
+    assert_eq!(before["auto_fix"], true);
+    assert_eq!(before["auto_archive_on_close"], false);
+    assert_eq!(
+        world.daemon.summary(&session).pull_request_url.as_deref(),
+        Some(URL)
+    );
+    // The record holds the link, the switches and the last status.
+    let meta = world.meta(&id);
+    assert_eq!(meta["pull_request"]["url"], URL);
+    assert_eq!(meta["pull_request"]["auto_fix"], true);
+    assert_eq!(meta["pull_request"]["auto_archive_on_close"], false);
+    assert_eq!(meta["pull_request"]["status"]["checks"]["failed"], 1);
+
+    drop((connection, session));
+    let mut world = world.restart().await;
+    assert_eq!(world.daemon.resume_sessions(), 1);
+    let session = world.daemon.session(&id).expect("the session resumed");
+    assert_eq!(session.status().0, SessionStatus::Watching);
+    assert_eq!(
+        world.daemon.summary(&session).pull_request_url.as_deref(),
+        Some(URL)
+    );
+    // Before GitHub is asked again, the card has the saved status and the saved switches.
+    let mut connection = world.connection();
+    shake(&mut connection).await;
+    let after = status_of(&mut connection, &id).await;
+    assert_eq!(after["title"], "Add the thing");
+    assert_eq!(after["checks"]["failed"], 1);
+    assert_eq!(after["auto_fix"], true);
+    assert_eq!(after["auto_archive_on_close"], false);
+    // The first poll finds the same pull request and says nothing; a change is announced once,
+    // still with the session's switches.
+    world.poll().await;
+    assert!(world.changes().is_empty());
+    world.fake.set_check(REPO, 7, "docs", Some("FAILURE"));
+    world.poll().await;
+    let changes = world.changes();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].0, id);
+    assert_eq!(changes[0].1["checks"]["failed"], 2);
+    assert_eq!(changes[0].1["auto_fix"], true);
+    assert_eq!(
+        world.meta(&id)["pull_request"]["status"]["checks"]["failed"],
+        2
+    );
+
+    // Unbinding removes the record, so the next restart brings the session back unbound.
+    result(
+        call(
+            &mut connection,
+            31,
+            "pull_requests.unbind",
+            json!({"session_id": id}),
+        )
+        .await,
+    );
+    assert!(world.meta(&id).get("pull_request").is_none());
+    drop((connection, session));
+    let world = world.restart().await;
+    assert_eq!(world.daemon.resume_sessions(), 1);
+    let session = world.daemon.session(&id).unwrap();
+    assert_eq!(session.status().0, SessionStatus::Idle);
+    assert!(world.daemon.summary(&session).pull_request_url.is_none());
+}
+
+#[tokio::test]
+async fn an_old_record_loads_and_a_broken_one_is_ignored() {
+    let mut world = World::new("").await;
+    let old = world.session().id().to_string();
+    let broken = world.session().id().to_string();
+    let partial = world.session().id().to_string();
+    // A record from before the binding was kept has no `pull_request` key at all.
+    assert!(world.meta(&old).get("pull_request").is_none());
+    let mut meta = world.meta(&broken);
+    meta["pull_request"] = json!({"url": 5, "status": "junk"});
+    world.write_meta(&broken, &meta);
+    // Only the link: the switches and the status take their defaults.
+    let mut meta = world.meta(&partial);
+    meta["pull_request"] = json!({ "url": URL });
+    world.write_meta(&partial, &meta);
+
+    let mut world = world.restart().await;
+    assert_eq!(world.daemon.resume_sessions(), 3);
+    for id in [&old, &broken] {
+        let session = world.daemon.session(id).expect("the session resumed");
+        assert_eq!(session.status().0, SessionStatus::Idle, "{id}");
+        assert!(world.daemon.summary(&session).pull_request_url.is_none());
+    }
+    let session = world.daemon.session(&partial).unwrap();
+    assert_eq!(session.status().0, SessionStatus::Watching);
+    world.poll().await;
+    let mut connection = world.connection();
+    shake(&mut connection).await;
+    let status = status_of(&mut connection, &partial).await;
+    assert_eq!(status["title"], "Add the thing");
+    assert_eq!(status["auto_fix"], false);
+    assert_eq!(status["auto_archive_on_close"], true);
+    assert_eq!(world.changes().len(), 1);
+}
+
+#[tokio::test]
+async fn a_pull_request_a_session_opened_is_bound_to_it_if_it_is_the_origins() {
+    let mut world = World::new("").await;
+    let session = world.session();
+    let id = session.id().to_string();
+    let monitor = world.daemon.pr_monitor();
+    // Another repository, another host and a page that is not a pull request are not bound.
+    for url in [
+        "https://github.com/other/repo/pull/7",
+        "https://example.com/owner/repo/pull/7",
+        "https://github.com/owner/repo/issues/7",
+    ] {
+        assert!(
+            monitor.bind_opened(&world.daemon, &id, url).is_err(),
+            "{url}"
+        );
+    }
+    assert_eq!(session.status().0, SessionStatus::Idle);
+    assert!(world.daemon.summary(&session).pull_request_url.is_none());
+    assert!(world.meta(&id).get("pull_request").is_none());
+
+    monitor.bind_opened(&world.daemon, &id, URL).unwrap();
+    assert_eq!(
+        world.daemon.summary(&session).pull_request_url.as_deref(),
+        Some(URL)
+    );
+    assert_eq!(
+        session.status(),
+        (SessionStatus::Watching, Some("owner/repo#7".to_string()))
+    );
+    assert_eq!(world.meta(&id)["pull_request"]["url"], URL);
+    world.poll().await;
+    let changes = world.changes();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].1["title"], "Add the thing");
+}
+
+#[tokio::test]
+async fn an_archived_session_keeps_the_link_and_drops_the_binding() {
+    let mut world = World::new("").await;
+    let session = world.session();
+    let id = session.id().to_string();
+    world.daemon.watch(&session, Some((REPO.into(), 7)));
+    world.poll().await;
+    world.fake.merge(REPO, 7);
+    world.poll().await;
+    // A merge archives the session (the default), which ends the binding but keeps the link
+    // for its row.
+    assert!(world.daemon.session(&id).is_none());
+    let archived = world.daemon.archived_sessions();
+    assert_eq!(archived.len(), 1);
+    assert_eq!(archived[0].status, SessionStatus::Merged);
+    assert_eq!(archived[0].pull_request_url.as_deref(), Some(URL));
+    let meta = world.meta(&id);
+    assert!(meta.get("pull_request").is_none());
+    assert_eq!(meta["pull_request_url"], URL);
+
+    drop(session);
+    let world = world.restart().await;
+    assert_eq!(world.daemon.resume_sessions(), 0);
+    let archived = world.daemon.archived_sessions();
+    assert_eq!(archived[0].pull_request_url.as_deref(), Some(URL));
+    // Unarchiving does not bind a pull request that is over again.
+    let back = world.daemon.unarchive(&id).unwrap();
+    assert!(back.pull_request_url.is_none());
+    assert!(world.meta(&id).get("pull_request_url").is_none());
 }
 
 /// Waits for a `pull_requests.changed` whose status satisfies `found`.

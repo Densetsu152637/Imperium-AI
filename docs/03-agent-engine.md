@@ -858,7 +858,8 @@ the wait ([14](14-projects-and-automation.md#quiet-periods)).
 Every event is appended to the session journal, `<data>/sessions/<session-id>.jsonl` (one JSON
 object per line with an `at_ms` timestamp; implemented). A running session also keeps its events in memory
 so clients that attach later replay them. Sessions continue after a daemon restart
-(implemented): each records `<id>.meta.json` (project and model) and, after every root turn,
+(implemented): each records `<id>.meta.json` (project and model, and the bound pull request's
+link, switches and last status when it has one) and, after every root turn,
 `<id>.messages.json` (the root's conversation); on start the daemon re-opens sessions whose
 journal changed within `agents.resume_days`, replays the journal so clients see the transcript,
 restores the conversation under the current instructions, and reports a turn the restart cut

@@ -146,6 +146,11 @@ impl DaemonState {
                 },
             };
             let (session, events) = created?;
+            // The pull request it was bound to, with its switches and last status. An older
+            // record has none.
+            if let Some(record) = meta.get("pull_request") {
+                self.pr_monitor.restore(self, &session, record);
+            }
             // A brief still waiting for a quiet machine is sent once the project agents start
             // ([`crate::project_agent::start`]).
             if let Some(brief) = meta["deferred_brief"]["text"].as_str() {
@@ -214,6 +219,23 @@ impl DaemonState {
         if let Err(error) = std::fs::write(&path, serde_json::Value::Object(meta).to_string()) {
             tracing::warn!(path = %path.display(), %error, "could not record the session");
         }
+    }
+
+    /// Records a session's pull-request binding (its URL, switches and last status) with the
+    /// session so it survives a restart; `None` removes it. A session that is gone, or not
+    /// remembered, has nothing to record.
+    pub(crate) fn record_pull_request(&self, id: &str, record: Option<serde_json::Value>) {
+        if record.is_some() && self.session(id).is_none() {
+            return;
+        }
+        self.update_meta(id, |meta| match record {
+            Some(record) => {
+                meta.insert("pull_request".into(), record);
+            }
+            None => {
+                meta.remove("pull_request");
+            }
+        });
     }
 
     /// The configured resume policy for usage limits.
@@ -506,6 +528,7 @@ impl DaemonState {
             comparison_id: placement.comparison_id,
             read_only: placement.read_only,
             started_by: placement.started_by,
+            pull_request_url: self.pr_monitor.url_of(session.id()),
             created_at: created_at(&self.journal_path(session.id())),
             title: placement
                 .title
@@ -621,6 +644,8 @@ impl DaemonState {
             fields.insert("pinned".into(), false.into());
             fields.insert("forked_from".into(), id.into());
             fields.remove("deferred_brief");
+            // The pull request belongs to the session it was bound to.
+            fields.remove("pull_request");
         }
         std::fs::write(self.meta_path(&new_id), meta.to_string())
             .map_err(|error| error.to_string())?;

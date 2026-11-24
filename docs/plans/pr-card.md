@@ -627,9 +627,43 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   with its URL in `SessionInfo.pull_request_url`; a merged PR marks the session merged and
   archives per the setting; an old record without the field loads.
 - Risks: the session record's schema version (add a field with a default, no migration).
-- Status: pending
-- Outcome: -
-- Handoff notes: attempt counts and comment cursors persist in stage 7, not here.
+- Status: done (this change)
+- Outcome:
+  - **Protocol 0.58.** `SessionSummary.pull_request_url` (optional; the plan calls the type
+    `SessionInfo`, the code's is `SessionSummary`), the `repo#n` string in `status_detail` is
+    unchanged. No method changed, so `snapshots/methods.txt` is unchanged; the desktop handshake
+    minor, `PROTOCOL_VERSION`, docs/02 and the generated `SessionSummary.ts` are updated.
+  - **Persistence.** The session record (`<id>.meta.json`) gets one optional key,
+    `pull_request` (`{url, auto_fix, auto_archive_on_close, status}`), read leniently (a missing
+    key or an unparseable one is no binding), so there is no schema version and no migration.
+    `PrMonitor` writes it on bind, unbind, every status change and `set_switches`, and
+    `resume_from_meta` restores it (`PrMonitor::restore`: no announcement, no second origin
+    check, the saved status shown until the first poll; a poll that finds the same status is
+    silent). A binding is per session (`Binding {key, auto_fix, auto_archive_on_close}`); the
+    shared cached status stays switch-free and each delivery (`status`, `fresh_status`,
+    `refresh`, `pull_requests.changed`) overlays the session's own switches. `set_switches` is
+    public for stage 7's `set_monitor`.
+  - **Auto-bind.** `review::pull_request` calls `PrMonitor::bind_opened` with the link `gh`
+    printed: `parse_pr_url` and `check_repo` (the stage 3 origin check), then `bind`. A refusal is
+    logged and the open succeeds as before (a link on another host, `gh` printing nothing). It
+    replaces a binding the session had.
+  - **Merged and closed.** Unchanged from stage 3 (the poller marks `merged` and archives per
+    `sessions.auto_archive_on_pr_close`). Archiving removes `pull_request` from the record and
+    keeps the link as `pull_request_url` for the archived row, so unarchiving does not poll a
+    pull request that is over. A branch (`session.branch`) or rewound copy does not inherit the
+    key.
+  - **Session summaries.** `bind` and `unbind` announce `session.updated` when the link
+    changes, so lists show it without asking.
+  - **Other.** `autofix::is_invisible` has its own doc comment and `neutralise` its own back.
+  - Tests: `cargo test -p imperium-core --test pr_monitor` (a restart restores binding, switches
+    and last status; an old record loads; an opened pull request binds, a foreign one does not;
+    archive keeps the link, drops the binding). Not run locally (CI builds).
+- Handoff notes: attempt counts and comment cursors persist in stage 7, not here. Stage 7's
+  `set_monitor` calls `PrMonitor::set_switches` (it records and announces); `auto_fix` and
+  `auto_archive_on_close` are inert until then, and the archive rule reads the setting, not the
+  binding's switch. `SessionSummary.pull_request_url` is the card's source for the link on
+  session rows. Not verified: nothing was built or run locally, including the hand-edited
+  `SessionSummary.ts`.
 
 ## Stage 5: Desktop pull-request card
 

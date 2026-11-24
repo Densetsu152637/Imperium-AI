@@ -116,6 +116,7 @@ impl DaemonState {
             comparison_id: meta["comparison_id"].as_str().map(str::to_string),
             read_only: meta["read_only"] == true,
             started_by: serde_json::from_value(meta["started_by"].clone()).ok(),
+            pull_request_url: meta["pull_request_url"].as_str().map(str::to_string),
         };
         self.archived_map().insert(id.to_string(), summary);
     }
@@ -192,7 +193,13 @@ impl DaemonState {
         let path = self.meta_path(id);
         if let Some(mut meta) = read_meta(&path) {
             if let Some(fields) = meta.as_object_mut() {
-                for key in ["archived", "archived_at", "status", "status_detail"] {
+                for key in [
+                    "archived",
+                    "archived_at",
+                    "status",
+                    "status_detail",
+                    "pull_request_url",
+                ] {
                     fields.remove(key);
                 }
             }
@@ -247,6 +254,12 @@ impl DaemonState {
         meta["isolation"] = summary.isolation.clone().into();
         meta["status"] = serde_json::to_value(summary.status).unwrap_or(Value::Null);
         meta["status_detail"] = summary.status_detail.clone().into();
+        // The archived row keeps the link; the binding itself ends, so unarchiving does not
+        // poll a pull request that is over.
+        if let Some(fields) = meta.as_object_mut() {
+            fields.remove("pull_request");
+        }
+        meta["pull_request_url"] = summary.pull_request_url.clone().into();
         std::fs::write(&path, meta.to_string())?;
         session.stop_processes();
         // Dropping the daemon's handle stops the session once its current step ends.
@@ -291,7 +304,13 @@ impl DaemonState {
             return Err(ArchiveError::NotFound(id.to_string()));
         };
         if let Some(fields) = meta.as_object_mut() {
-            for key in ["archived", "archived_at", "status", "status_detail"] {
+            for key in [
+                "archived",
+                "archived_at",
+                "status",
+                "status_detail",
+                "pull_request_url",
+            ] {
                 fields.remove(key);
             }
         }
