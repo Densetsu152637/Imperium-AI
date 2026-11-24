@@ -83,6 +83,7 @@ export function InstalledView({
   onBrowse,
   onCustom,
   onPluginEnable,
+  onManagePlugins,
 }: {
   installed: McpListResult | null;
   query: string;
@@ -99,6 +100,7 @@ export function InstalledView({
   onBrowse: () => void;
   onCustom: () => void;
   onPluginEnable: (plugin: PluginInfo, enabled: boolean) => void;
+  onManagePlugins?: () => void;
 }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [forget, setForget] = useState(true);
@@ -278,6 +280,11 @@ export function InstalledView({
       <section className="connectors-section" aria-labelledby="plugins-heading">
         <div className="connectors-section-head">
           <h3 id="plugins-heading">Plugins</h3>
+          {onManagePlugins && (
+            <button className="small" onClick={onManagePlugins}>
+              <Puzzle aria-hidden="true" /> Manage plugins
+            </button>
+          )}
         </div>
         {installed.plugins.length === 0 ? (
           <p className="connectors-note">

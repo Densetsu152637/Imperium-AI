@@ -6,7 +6,7 @@
 // `?panel=<id>`: it connects to the daemon itself but shows only that panel. The main window
 // owns the layout and the list of detached panels; see panelWindows.ts.
 
-import { Check, PanelLeft, PanelRight, Plug, Plus, Settings } from "lucide-react";
+import { Check, PanelLeft, PanelRight, Plug, Plus, Puzzle, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
@@ -135,6 +135,7 @@ import { Tour } from "./tour/Tour";
 import { useTour } from "./tour/useTour";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./shared/panelWindows";
 import { ConnectorsWindow } from "./connectors/ConnectorsWindow";
+import { PluginsWindow } from "./plugins/PluginsWindow";
 import { EnvironmentWindow } from "./environments/EnvironmentWindow";
 import { setDoc, subscribeDoc } from "./shared/store";
 import { useDaemon } from "./shared/DaemonControl";
@@ -257,6 +258,8 @@ export function App() {
     setModelDialog,
     showConnectors,
     setShowConnectors,
+    showPlugins,
+    setShowPlugins,
   } = useWindows(isDetached, settings.shortcuts);
   // Below 600 px one column shows at a time (layout/fold.ts), and the panel editor is off.
   const layoutWidth = useLayoutWidth(settings.uiScale);
@@ -1074,6 +1077,7 @@ export function App() {
     closeWindows: () => {
       setShowSettings(false);
       setShowConnectors(false);
+      setShowPlugins(false);
     },
   });
 
@@ -1446,6 +1450,7 @@ export function App() {
         setShowSettings(true);
       },
       openConnectors: () => setShowConnectors(true),
+      openPlugins: () => setShowPlugins(true),
       configureModels: () => setModelDialog({ tab: "local" }),
       openPanel: (id) => {
         const spec = findPanel(id);
@@ -1636,6 +1641,13 @@ export function App() {
             tooltip="Connectors: MCP servers, plugins, and skills"
           />
           <IconButton
+            icon={Puzzle}
+            onClick={() => setShowPlugins((open) => !open)}
+            aria-expanded={showPlugins}
+            label="Plugins"
+            tooltip="Plugins: marketplaces and what they list"
+          />
+          <IconButton
             icon={PANELS_ICON}
             className="layout-toggle"
             onClick={() => setEditingLayout((editing) => !editing)}
@@ -1655,7 +1667,17 @@ export function App() {
           />
         </div>
       </header>
-      {showConnectors && <ConnectorsWindow client={client} onClose={() => setShowConnectors(false)} />}
+      {showConnectors && (
+        <ConnectorsWindow
+          client={client}
+          onClose={() => setShowConnectors(false)}
+          onManagePlugins={() => {
+            setShowConnectors(false);
+            setShowPlugins(true);
+          }}
+        />
+      )}
+      {showPlugins && <PluginsWindow client={client} environment={envId} onClose={() => setShowPlugins(false)} />}
       {showSettings && (
         <SettingsWindow
           settings={settings}
@@ -1672,6 +1694,10 @@ export function App() {
           onOpenConnectors={() => {
             setShowSettings(false);
             setShowConnectors(true);
+          }}
+          onOpenPlugins={() => {
+            setShowSettings(false);
+            setShowPlugins(true);
           }}
           onOpenModels={() => {
             setShowSettings(false);
