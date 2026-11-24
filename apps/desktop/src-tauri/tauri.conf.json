@@ -43,6 +43,18 @@
       "../../../pets/": "pets/",
       "mods/": "mods/"
     },
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/polkit-1/actions/org.imperium.plugins.approve.policy": "linux/org.imperium.plugins.approve.policy"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/polkit-1/actions/org.imperium.plugins.approve.policy": "linux/org.imperium.plugins.approve.policy"
+        }
+      }
+    },
     "macOS": {
       "entitlements": "entitlements.plist"
     },

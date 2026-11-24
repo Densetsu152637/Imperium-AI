@@ -51,6 +51,10 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # rustix for pidfds, SO_PEERCRED, poll and /proc; nix only for SO_PEERPIDFD, which rustix lacks.
 nix = { version = "0.31.3", default-features = false, features = ["socket"] }
 rustix = { version = "1.1.6", features = ["event", "fs", "net", "param", "process", "time"] }
+# The presence check of plugin approvals (`app_identity/presence/linux.rs`): polkit over the
+# system bus. Already in the lock through notify-rust; the blocking API keeps the check on the
+# thread that waits for it.
+zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Identifying the desktop app for plugin approvals (`app_identity/macos.rs`) without `unsafe`: nix

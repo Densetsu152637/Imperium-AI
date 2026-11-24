@@ -11,6 +11,7 @@ on:
       - scripts/ci/build-desktop.sh
       - scripts/ci/package-cli.sh
       - scripts/ci/install-linux-deps.sh
+      - scripts/ci/check-linux-packages.sh
       - rust-toolchain.toml
       - Cargo.lock
       - apps/desktop/src-tauri/**

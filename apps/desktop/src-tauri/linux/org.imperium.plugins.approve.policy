@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  The OS presence check of Imperium's plugin approvals (docs/06-extensibility.md, "Who may approve
+  a plugin"). After the desktop app's approval dialog, imperium-core asks polkit to authenticate
+  the user for this action, with itself as the subject. auth_self, never auth_self_keep: every
+  approval asks again. Installed by the .deb and .rpm under /usr/share/polkit-1/actions.
+-->
+<policyconfig>
+  <vendor>Imperium</vendor>
+  <vendor_url>https://github.com/Densetsu152637/Imperium-AI</vendor_url>
+  <action id="org.imperium.plugins.approve">
+    <description>Approve an Imperium plugin</description>
+    <message>Authentication is required to approve the Imperium plugin $(plugin), so its hooks and servers can run</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

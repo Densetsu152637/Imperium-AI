@@ -6,9 +6,11 @@
 #![allow(unsafe_code)]
 
 mod dll;
+mod hello;
 mod process;
 
 pub use dll::harden_dll_search;
+pub use hello::hello_check;
 pub use process::{ClientProcess, client_process};
 
 use std::ffi::c_void;

@@ -11,7 +11,10 @@
 
 mod loader_env;
 #[cfg(target_os = "macos")]
+mod macos_presence;
+#[cfg(target_os = "macos")]
 mod macos_sandbox;
+mod presence;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
@@ -19,12 +22,16 @@ mod windows;
 
 pub use loader_env::refused_variable;
 #[cfg(target_os = "macos")]
+pub use macos_presence::device_owner_check;
+#[cfg(target_os = "macos")]
 pub use macos_sandbox::is_sandboxed;
+pub use presence::Presence;
 #[cfg(unix)]
 pub use unix::{Listener, Stream, connect, peer_pid};
 #[cfg(windows)]
 pub use windows::{
-    ClientProcess, Listener, Stream, client_process, connect, harden_dll_search, peer_pid,
+    ClientProcess, Listener, Stream, client_process, connect, harden_dll_search, hello_check,
+    peer_pid,
 };
 
 #[cfg(all(test, any(unix, windows)))]

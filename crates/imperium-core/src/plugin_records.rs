@@ -13,9 +13,10 @@
 //! treated as empty, so every folder with code is withheld until approved; a damaged store is
 //! never overwritten.
 //!
-//! No approval is created here. Nothing counts a new approval until stage 8c, so the only
-//! approvals the gate meets are the carried-over ones [`migrate`] writes (and, in tests, records
-//! written directly). [`ApprovalVerifier`] says which stored kinds the gate honours.
+//! No approval is decided here: [`record_approval`] writes one only after `app_identity::conclude`
+//! has run every check of who may approve, the OS presence check included, and [`migrate`] writes
+//! the carried-over ones. [`ApprovalVerifier`] says which stored kinds the gate honours and which
+//! kind a new approval is recorded as.
 //!
 //! The content hash is SHA-256 over each file's relative path, length and bytes in path order
 //! (as `mod_install::tree_sha256`), leaving out `.git` and Imperium's own `.imperium-*.json` at
@@ -35,6 +36,8 @@ use imperium_config::Paths;
 use imperium_extensions::plugins;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::app_identity::presence::{PresenceProvider, kind_for};
 
 const STORE_FILE: &str = "plugin-installs.json";
 const MARKER_FILE: &str = "plugin-migration.json";
@@ -129,20 +132,24 @@ pub(crate) struct Store {
     pub(crate) plugins: BTreeMap<String, Record>,
 }
 
-/// Decides which stored approvals the gate honours.
+/// Decides which stored approvals the gate honours, and what a new approval is recorded as.
 pub(crate) trait ApprovalVerifier: Send + Sync {
     fn honours(&self, kind: ApprovalKind) -> bool;
-    /// Whether [`record_approval`] may write an approval of `kind`. The production verifier
-    /// writes nothing until stage 8c, so no caller can make an approval count before then.
+    /// Whether [`record_approval`] may write an approval of `kind`.
     fn may_write(&self, kind: ApprovalKind) -> bool;
-    /// The kind a new approval that passed the identity checks and its challenge is recorded
-    /// as, or why none is. Check 6 (the OS presence check) decides this from stage 8c; until
-    /// then the release verifier refuses, so nothing is recorded as a counted approval.
-    fn approval_kind(&self) -> Result<ApprovalKind, String>;
+    /// Check 6: the kind a new approval that passed the identity checks and its challenge is
+    /// recorded as, or why none is. A release build raises the OS presence check through
+    /// `presence` for `plugin` (named in the prompt): passed is `counted`, unavailable is
+    /// `dialog-only`, refused is an error, so nothing is recorded.
+    fn approval_kind(
+        &self,
+        presence: &dyn PresenceProvider,
+        plugin: &str,
+    ) -> Result<ApprovalKind, String>;
 }
 
-/// A release build: counted, dialog-only and carried-over approvals; never `dev`. Nothing writes
-/// a counted or dialog-only approval until stage 8c.
+/// A release build: honours counted, dialog-only and carried-over approvals, never `dev`, and
+/// records a new approval as `counted` or `dialog-only` by the OS presence check.
 // A debug build uses it only in tests.
 #[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) struct ReleaseVerifier;
@@ -152,17 +159,23 @@ impl ApprovalVerifier for ReleaseVerifier {
         kind != ApprovalKind::Dev
     }
 
-    fn may_write(&self, _: ApprovalKind) -> bool {
-        false
+    /// Only what the presence check decides; `carried-over` is written by [`migrate`] alone.
+    fn may_write(&self, kind: ApprovalKind) -> bool {
+        matches!(kind, ApprovalKind::Counted | ApprovalKind::DialogOnly)
     }
 
-    fn approval_kind(&self) -> Result<ApprovalKind, String> {
-        Err("presence check not built: no approval counts yet, so nothing was recorded".into())
+    fn approval_kind(
+        &self,
+        presence: &dyn PresenceProvider,
+        plugin: &str,
+    ) -> Result<ApprovalKind, String> {
+        kind_for(presence.check(plugin))
     }
 }
 
 /// A debug build (the development verifier, which exists only in debug builds): also honours
-/// `dev` approvals, and records an approval that passed the identity checks as `dev`.
+/// `dev` approvals, and records an approval that passed the identity checks as `dev`, without a
+/// presence check.
 #[cfg(debug_assertions)]
 pub(crate) struct DebugVerifier;
 
@@ -177,12 +190,12 @@ impl ApprovalVerifier for DebugVerifier {
         kind == ApprovalKind::Dev
     }
 
-    fn approval_kind(&self) -> Result<ApprovalKind, String> {
+    fn approval_kind(&self, _: &dyn PresenceProvider, _: &str) -> Result<ApprovalKind, String> {
         Ok(ApprovalKind::Dev)
     }
 }
 
-/// A verifier for tests: honours and writes every kind.
+/// A verifier for tests: honours and writes every kind, and counts without a presence check.
 #[cfg(test)]
 pub(crate) struct TestVerifier;
 
@@ -196,7 +209,7 @@ impl ApprovalVerifier for TestVerifier {
         true
     }
 
-    fn approval_kind(&self) -> Result<ApprovalKind, String> {
+    fn approval_kind(&self, _: &dyn PresenceProvider, _: &str) -> Result<ApprovalKind, String> {
         Ok(ApprovalKind::Counted)
     }
 }
@@ -440,7 +453,7 @@ pub(crate) fn add_record_at(paths: &Paths, key: String, record: Record) -> Resul
 /// the approval was asked for), so other content than was shown is never approved. A folder with
 /// no record gets one with `origin = user`; a recorded one takes the approved hash and digest as
 /// its own (this is also how a skills-only plugin the user edited is recorded again). Nothing here
-/// decides who may approve: `app_identity::approve` does before it calls this.
+/// decides who may approve: `app_identity::conclude` does before it calls this.
 pub(crate) fn record_approval(
     paths: &Paths,
     verifier: &dyn ApprovalVerifier,
@@ -450,7 +463,10 @@ pub(crate) fn record_approval(
     runs: &str,
 ) -> Result<(), String> {
     if !verifier.may_write(kind) {
-        return Err("this build does not count approvals yet: nothing was recorded".into());
+        return Err(format!(
+            "this build does not record {} approvals: nothing was recorded",
+            kind.as_str()
+        ));
     }
     let (canon, now_hash, now_runs, plugin) = content(folder)?;
     if now_hash != hash || now_runs != runs {
@@ -728,7 +744,7 @@ fn record_present(paths: &Paths, disabled: &[String]) -> (Store, Vec<String>) {
         let shown = folder.display();
         if std::fs::symlink_metadata(&folder).is_ok_and(|meta| is_link(&meta)) {
             skipped.push(format!(
-                "{shown} is a link: replace it with a real folder, or approve it once approvals exist"
+                "{shown} is a link: replace it with a real folder, then approve it in the desktop app"
             ));
             continue;
         }
@@ -736,14 +752,14 @@ fn record_present(paths: &Paths, disabled: &[String]) -> (Store, Vec<String>) {
             Ok(seen) => seen,
             Err(error) => {
                 skipped.push(format!(
-                    "{shown} cannot be read ({error}): fix it, or approve it once approvals exist"
+                    "{shown} cannot be read ({error}): fix it, then approve it in the desktop app"
                 ));
                 continue;
             }
         };
         if let Some(link) = &seen.link {
             skipped.push(format!(
-                "{shown} contains a link at {link}: remove it, or approve it once approvals exist"
+                "{shown} contains a link at {link}: remove it, then approve it in the desktop app"
             ));
             continue;
         }
@@ -962,10 +978,20 @@ mod tests {
             )
         };
 
-        // The production verifier writes nothing (no approval counts before stage 8c).
+        // A kind the verifier does not write is refused: a debug build writes only `dev`, a
+        // release build never `dev`.
+        #[cfg(debug_assertions)]
         assert!(!production_verifier().may_write(ApprovalKind::Counted));
-        let error = ask(production_verifier(), &hash, &runs).unwrap_err();
-        assert!(error.contains("does not count"), "{error}");
+        let error = record_approval(
+            &home.paths,
+            &ReleaseVerifier,
+            &folder,
+            ApprovalKind::Dev,
+            &hash,
+            &runs,
+        )
+        .unwrap_err();
+        assert!(error.contains("does not record dev"), "{error}");
         assert!(record_for(&home.paths, &folder).is_none());
         assert_eq!(reasons(&home, &ReleaseVerifier).len(), 1);
 

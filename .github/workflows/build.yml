@@ -110,6 +110,11 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/ci/build-desktop.sh "$TAURI_TARGET" "$BUNDLES" "$VERSION"
+      # The presence check of plugin approvals needs polkit's action file from the .deb and .rpm.
+      - name: Check the Linux packages carry the polkit action
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/ci/check-linux-packages.sh
       - name: Package CLI
         shell: bash
         env:
