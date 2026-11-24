@@ -887,7 +887,7 @@ async fn only_the_imperium_command_may_start_an_evaluation_session() {
 }
 
 /// A daemon state that never calls `allow_eval_over_tcp`, as the real daemon never does.
-fn plain_state(data: &std::path::Path) -> DaemonState {
+fn plain_state(data: &std::path::Path) -> Arc<DaemonState> {
     let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
     DaemonState::new(Paths::under(data), settings, None)
 }
