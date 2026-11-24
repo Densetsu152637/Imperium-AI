@@ -694,3 +694,82 @@ async fn a_project_agent_of_an_environment_keeps_the_stricter_mode_its_file_asks
         Some("plan")
     );
 }
+
+const GH_VARS: [&str; 3] = ["GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"];
+const GH_ENV_TEST: &str = "a_sessions_commands_keep_the_gh_login_only_in_listed_environments";
+
+/// The variables of `GH_VARS` a command's environment dump holds.
+fn gh_vars_in(dump: &str) -> Vec<&'static str> {
+    GH_VARS
+        .into_iter()
+        .filter(|name| {
+            dump.lines()
+                .any(|line| line.starts_with(&format!("{name}=")))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_sessions_commands_keep_the_gh_login_only_in_listed_environments() {
+    if std::env::var_os("IMPERIUM_GH_ENV_CHILD").is_none() {
+        // The test process cannot set its own environment, so it runs itself with the GitHub
+        // variables set, as a daemon started from a shell that has them would see them.
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([GH_ENV_TEST, "--exact", "--test-threads=1"])
+            .env("IMPERIUM_GH_ENV_CHILD", "1")
+            .env("GH_TOKEN", "sentinel-gh-token")
+            .env("GITHUB_TOKEN", "sentinel-github-token")
+            .env("GH_CONFIG_DIR", "/sentinel/gh")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let listed = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let dump = if cfg!(windows) {
+        "set > envdump.txt"
+    } else {
+        "env > envdump.txt"
+    };
+    let model = fake_model(vec![("run_command", json!({"command": dump}))]).await;
+    let full = "[permissions]\nmode = \"full\"";
+
+    // Two environments; then a daemon whose settings list one of them.
+    let first = daemon(home.path(), &model.url, full);
+    let mut connection = connect(&first);
+    let id = |name: &str, folder: &Path, connection: &mut Connection| {
+        let env = call(
+            connection,
+            2,
+            "environments.create",
+            json!({"name": name, "folders": [folder]}),
+        );
+        env["id"].as_str().unwrap().to_string()
+    };
+    let listed_id = id("Listed", listed.path(), &mut connection);
+    let other_id = id("Other", other.path(), &mut connection);
+    drop(connection);
+    drop(first);
+
+    let settings = format!("{full}\n[github]\nsession_gh = [\"{listed_id}\"]");
+    let state = daemon(home.path(), &model.url, &settings);
+    let mut connection = connect(&state);
+    for (env_id, folder, expected) in [
+        (&listed_id, listed.path(), GH_VARS.to_vec()),
+        (&other_id, other.path(), Vec::new()),
+    ] {
+        let created = call(
+            &mut connection,
+            3,
+            "session.create",
+            json!({"environment_id": env_id}),
+        );
+        let session = created["session_id"].as_str().unwrap().to_string();
+        let results = run_turn(&state, &session).await;
+        assert!(results[0].0, "{results:?}");
+        let dumped = std::fs::read_to_string(folder.join("envdump.txt")).unwrap();
+        assert_eq!(gh_vars_in(&dumped), expected, "environment {env_id}");
+    }
+}

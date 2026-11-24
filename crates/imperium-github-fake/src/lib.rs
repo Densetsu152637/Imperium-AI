@@ -376,7 +376,9 @@ fn admit(
         authorized,
     });
     if let Some(status) = world.fail_status.take() {
-        return Some(reply(status, json!({"message": "server error"})));
+        // Like a server that echoes the request it could not serve: the client must scrub it.
+        let message = format!("server error (Authorization: Bearer {})", world.token);
+        return Some(reply(status, json!({"message": message})));
     }
     if let Some(limit) = world.rate_limit.take() {
         let mut response = reply(limit.status, json!({"message": "API rate limit exceeded"}));
@@ -418,14 +420,13 @@ async fn blob(
             authorized: headers.contains_key("authorization"),
         });
     // The whole job log: the failed step, then a post-job step.
-    format!(
-        "log of job {id}: step failed
-##[group]Post job cleanup
-Post-job noise
-##[endgroup]
-"
-    )
-    .into_response()
+    let log = [
+        format!("log of job {id}: step failed"),
+        "##[group]Post job cleanup".to_string(),
+        "Post-job noise".to_string(),
+        "##[endgroup]".to_string(),
+    ];
+    format!("{}\n", log.join("\n")).into_response()
 }
 
 fn repo_json(repo: &Repo) -> Value {
@@ -722,10 +723,16 @@ mod tests {
                     section = line.to_string();
                 } else if line.contains("test-host") && !line.starts_with('#') {
                     let client = manifest.ends_with("crates/imperium-github/Cargo.toml");
-                    let allowed = client
+                    let core = manifest.ends_with("crates/imperium-core/Cargo.toml");
+                    let allowed = (client
                         && ((line == "test-host = []" && section == "[features]")
                             || (section == "[dev-dependencies]"
-                                && line.starts_with("imperium-github =")));
+                                && line.starts_with("imperium-github ="))))
+                        // The daemon's tests run against the fake: this one dev-dependency line.
+                        || (core
+                            && section == "[dev-dependencies]"
+                            && line
+                                == "imperium-github = { path = \"../imperium-github\", features = [\"test-host\"] }");
                     assert!(
                         allowed,
                         "{} names test-host in `{line}` under {section}",

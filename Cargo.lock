@@ -2459,6 +2459,7 @@ dependencies = [
  "imperium-engine",
  "imperium-extensions",
  "imperium-github",
+ "imperium-github-fake",
  "imperium-ipc",
  "imperium-local",
  "imperium-mcp",

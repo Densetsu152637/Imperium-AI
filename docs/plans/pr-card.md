@@ -509,11 +509,21 @@ Each stage is one pull request against `experimental`, with the docs it changes.
     unless it is listed. MCP servers and hooks always drop the inherited variables (a server's own
     configured `env` is kept): they have no environment context, so `session_gh` does not reach
     them.
-  - Not done: the sentinel-token test through a daemon auto-fix run. It needs a daemon test to
-    build `HttpGitHub::new(fake_url, ...)`, which the `test-host` guard forbids outside
-    `imperium-github`; the sentinel checks stay in `imperium-github`'s tests. Decide whether
-    `imperium-core`'s dev-dependencies may enable `test-host` (stage 3 needs it for the daemon
-    tests against the fake).
+  - Design choices (accepted): `github.session_gh` is a list of environment ids; MCP servers and
+    hooks always drop the three variables; `Sandbox::named_command` (five arguments) is kept for
+    callers with no environment and behaves as before.
+  - Tests through the daemon: `tests/autofix_token.rs` runs an auto-fix run against the fake
+    GitHub through `HttpGitHub::new(fake_url, StaticToken(sentinel))`; GitHub's error reply echoes
+    the token, and the sentinel is absent from every notification, every prompt sent to the
+    model, the approval text, and every file under the daemon's home (the journal).
+    `tests/environment_config.rs` runs itself with `GH_TOKEN`, `GITHUB_TOKEN` and
+    `GH_CONFIG_DIR` set and shows, from an environment dump written by a session's
+    `run_command`, that a listed environment keeps them and another does not.
+  - `imperium-core`'s dev-dependencies may enable `imperium-github/test-host` (one exact line,
+    checked by the manifest guard); the `cargo tree` leak check on normal edges still passes.
+  - The live check also covers `failing_prs` (`Viewer` and `SearchPrs`): with the workflow's
+    installation token `viewer` is refused ("not accessible"), which the test reports as
+    `VIEWER=not-accessible`; with `LIVE_READ_PAT` it must resolve (`VIEWER=ok`).
 - Handoff notes: keep this PR free of new behaviour so a regression bisects to it alone.
 
 ## Stage 3: Binding, status model and live updates
