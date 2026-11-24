@@ -74,7 +74,7 @@ pub struct PrMonitor {
 
 /// Held by a connection that shows pull requests; the poller runs faster meanwhile.
 #[derive(Debug)]
-pub struct Watch(Arc<PrMonitor>);
+pub(crate) struct Watch(Arc<PrMonitor>);
 
 impl Drop for Watch {
     fn drop(&mut self) {
