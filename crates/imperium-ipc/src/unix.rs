@@ -129,6 +129,13 @@ mod tests {
         assert!(!Path::new(&address).exists());
     }
 
+    #[test]
+    fn a_plain_file_where_the_folder_belongs_is_an_error_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(DIRECTORY), b"not a folder").unwrap();
+        assert!(Listener::bind(dir.path()).is_err());
+    }
+
     #[tokio::test]
     async fn a_stale_socket_is_replaced_but_a_live_one_or_a_plain_file_is_not() {
         let dir = tempfile::tempdir().unwrap();
