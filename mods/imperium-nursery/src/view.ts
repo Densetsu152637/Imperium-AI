@@ -451,20 +451,23 @@ export class Room {
     }
     if (this.opts.badges && entry.kind === "session") {
       const n = busySubs(entry.arbiter);
-      cell.badge.hidden = n === 0;
-      if (n > 0) {
-        cell.badge.textContent = String(n);
+      // Painting runs every display frame: write to the DOM only when something changed.
+      if (cell.badge.hidden !== (n === 0)) cell.badge.hidden = n === 0;
+      const count = String(n);
+      if (n > 0 && cell.badge.textContent !== count) {
+        cell.badge.textContent = count;
         cell.badge.title = `${n} subagent${n === 1 ? "" : "s"} working`;
       }
     }
     this.stand(cell, entry, now);
     if (!pet) {
-      cell.sprite.className = "sprite missing";
+      if (cell.sprite.className !== "sprite missing") cell.sprite.className = "sprite missing";
       this.size(cell, { width: this.metrics.above, height: this.metrics.above }, 1);
-      cell.note.textContent = entry.petId ? "pet not installed" : "no pet";
+      const note = entry.petId ? "pet not installed" : "no pet";
+      if (cell.note.textContent !== note) cell.note.textContent = note;
       return;
     }
-    cell.sprite.className = "sprite";
+    if (cell.sprite.className !== "sprite") cell.sprite.className = "sprite";
     if (cell.note.textContent) cell.note.textContent = "";
     const cur = this.nursery.view(entry, now);
     let anim = cur.kind === "look" ? "look" : resolveAnimation(pet.catalog, cur.name);
@@ -616,6 +619,9 @@ export const reducedMotion = (): boolean =>
   (globalThis.document?.documentElement?.classList.contains("reduce-motion") ?? false) ||
   (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
 
+/** How often the frame loop runs its membership ticks, in ms. */
+const TICK_MS = 50;
+
 /** One shared loop paints every room: a single timer however many pets there are. */
 export class FrameLoop {
   private rooms = new Set<Room>();
@@ -627,7 +633,7 @@ export class FrameLoop {
     this.rooms.add(room);
   }
 
-  /** Called every frame before painting (for ticks that change membership). */
+  /** Called before painting, at most every `TICK_MS` (for ticks that change membership). */
   onFrame(fn: () => void): void {
     this.tickers.push(fn);
   }
@@ -637,13 +643,14 @@ export class FrameLoop {
     this.running = true;
     const frame = (): void => {
       const now = Date.now();
-      // 20 frames a second is plenty: the shortest frame lasts 90 ms.
-      if (now - this.last >= 50) {
+      // Membership ticks are cheap to delay; painting runs on every display frame, so a pet that
+      // is dragged or walks moves at the monitor's refresh rate (movement is scaled by elapsed time).
+      if (now - this.last >= TICK_MS) {
         this.last = now;
         for (const fn of this.tickers) fn();
-        const reduced = reducedMotion();
-        for (const room of this.rooms) room.paint(now, reduced);
       }
+      const reduced = reducedMotion();
+      for (const room of this.rooms) room.paint(now, reduced);
       requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
