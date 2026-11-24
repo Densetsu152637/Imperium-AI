@@ -3,6 +3,14 @@
 set -euo pipefail
 
 cargo fmt --all --check
+
+# The test-only `test-host` feature of imperium-github (any API host) must not reach a shipped build.
+for package in imperium-core imperium-cli imperium-desktop; do
+  if cargo tree --locked -p "$package" --edges normal,features | grep -F 'imperium-github feature "test-host"'; then
+    echo "$package enables imperium-github's test-host feature in a normal build." >&2
+    exit 1
+  fi
+done
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 

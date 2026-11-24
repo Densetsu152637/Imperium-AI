@@ -12,11 +12,19 @@ const REPO: &str = "Densetsu152637/Imperium-AI";
 const OWNER: &str = "Densetsu152637";
 /// A merged pull request, pinned.
 const MERGED_PR: u64 = 266;
+/// The fixture pull request (closed, never merged) that carries one review thread.
+const THREAD_PR: u64 = 271;
 /// The repository's merge flags as of 2026-11-24: squash, merge commit and rebase on, auto-merge off.
 const FLAGS: (bool, bool, bool, bool) = (true, true, true, false);
 
 fn token() -> String {
     std::env::var("GITHUB_TOKEN").expect("GITHUB_TOKEN must be set to run the live check")
+}
+
+/// Set by the workflow when it runs with the `LIVE_READ_PAT` token: then the owner must be able to
+/// write and the merge flags must be readable.
+fn expects_write() -> bool {
+    std::env::var("LIVE_EXPECT_WRITE").is_ok_and(|v| v == "1")
 }
 
 fn client() -> HttpGitHub {
@@ -66,33 +74,25 @@ async fn pr_status_of_a_merged_pull_request_parses() {
 
 #[tokio::test]
 #[ignore = "needs GITHUB_TOKEN and the network"]
-async fn review_threads_parse_on_a_pull_request_that_has_some() {
-    // Find a pull request with review threads through `gh`; skip with a note when there is none.
-    let query = "query{repository(owner:\"Densetsu152637\",name:\"Imperium-AI\"){pullRequests(first:100,states:[MERGED,CLOSED,OPEN],orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number reviewThreads(first:1){totalCount}}}}}";
-    let output = std::process::Command::new("gh")
-        .args(["api", "graphql", "-f", &format!("query={query}")])
-        .output();
-    let found = output.ok().filter(|o| o.status.success()).and_then(|o| {
-        let value: serde_json::Value = serde_json::from_slice(&o.stdout).ok()?;
-        value["data"]["repository"]["pullRequests"]["nodes"]
-            .as_array()?
-            .iter()
-            .find(|pr| pr["reviewThreads"]["totalCount"].as_u64().unwrap_or(0) > 0)
-            .and_then(|pr| pr["number"].as_u64())
-    });
-    let Some(number) = found else {
-        eprintln!(
-            "SKIPPED: no pull request with review threads in {REPO} (or `gh` is unavailable)"
-        );
-        return;
-    };
-    let threads = client().review_threads(REPO, number).await.unwrap();
-    assert!(!threads.is_empty());
+async fn review_threads_parse_on_the_fixture_pull_request() {
+    // A closed, never-merged fixture pull request with one review thread (docs/11-ci-cd.md).
+    let threads = client().review_threads(REPO, THREAD_PR).await.unwrap();
     assert!(
-        threads
-            .iter()
-            .all(|t| !t.id.is_empty() && !t.comments.is_empty())
+        !threads.is_empty(),
+        "the fixture pull request #{THREAD_PR} has no review threads: was it deleted or edited?"
     );
+    for thread in &threads {
+        assert!(thread.id.starts_with("PRRT_"), "{}", thread.id);
+        assert_eq!(thread.path, "docs/plans/fixture-review-thread.md");
+        assert!(!thread.comments.is_empty());
+        let comment = &thread.comments[0];
+        assert!(comment.id > 0 && !comment.author.is_empty() && !comment.body.is_empty());
+        assert!(
+            comment.url.starts_with("https://github.com/"),
+            "{}",
+            comment.url
+        );
+    }
 }
 
 #[tokio::test]
@@ -102,6 +102,10 @@ async fn merge_settings_equal_the_repository_flags() {
     let settings = match client().repo_merge_settings(REPO).await {
         Ok(settings) => settings,
         Err(error) => {
+            assert!(
+                !expects_write(),
+                "the PAT could not read the merge flags: {error}"
+            );
             assert!(error.contains("push access"), "{error}");
             eprintln!("NOTE: token cannot read the merge flags: {error}");
             return;
@@ -122,10 +126,19 @@ async fn merge_settings_equal_the_repository_flags() {
 #[ignore = "needs GITHUB_TOKEN and the network"]
 async fn the_owner_can_write_or_the_refusal_is_clean() {
     match client().collaborator_permission(REPO, OWNER).await {
-        Ok(permission) => assert!(permission.can_write(), "{permission:?}"),
+        Ok(permission) => {
+            assert!(permission.can_write(), "{permission:?}");
+            eprintln!("BRANCH=ok");
+        }
         Err(error) => {
-            assert!(error.contains("403"), "{error}");
+            // A personal token that should be able to write must not take this branch.
+            assert!(!expects_write(), "the PAT was refused: {error}");
             assert!(!error.contains(&token()), "the token leaked into an error");
+            assert!(
+                error.contains("403") && error.contains("Resource not accessible by integration"),
+                "an unexpected refusal: {error}"
+            );
+            eprintln!("BRANCH=403");
         }
     }
 }
