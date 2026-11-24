@@ -773,6 +773,15 @@ and `environments.agent_update` (protocol 0.28)
     with hooks or MCP servers on Windows ([item 51](#next-in-order)); carried-over approvals and
     plugins without code keep working.
 
+60. **Approve a folder that did not come from a marketplace** (planned). The
+    [plugin marketplace](plans/plugin-marketplace.md)'s Plugins window cannot approve a withheld
+    plugin folder that has no marketplace id (a pre-existing or unrecorded one), because
+    `plugins.inspect` previews only `name@marketplace`. Add a daemon method, `plugins.inspect_folder`
+    (the folder's name; the same `PluginPreview` of what it runs, its content hash and run digest,
+    read from the installed folder), so the trust view can list exactly what the folder would run
+    and the app's `plugin_approve` can take an `approve` action for it (the challenge binds that
+    hash and digest as for any plugin). It is a protocol change, so it follows stage 11.
+
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
 rather than a separate snapshot store.
