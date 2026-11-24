@@ -72,6 +72,36 @@ pub async fn push(worktree: &Path, branch: &str) -> Result<(), String> {
         .map(|_| ())
 }
 
+/// Paths the worktree's last commit changed (a rename counts as a delete and an add).
+pub async fn changed_files(worktree: &Path) -> Result<Vec<String>, String> {
+    let out = git(
+        worktree,
+        &[
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            "HEAD~1",
+            "HEAD",
+        ],
+    )
+    .await?;
+    Ok(out
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// `git diff --stat` of the worktree's last commit.
+pub async fn diff_stat(worktree: &Path) -> Result<String, String> {
+    git(
+        worktree,
+        &["diff", "--stat=100", "--no-renames", "HEAD~1", "HEAD"],
+    )
+    .await
+}
+
 /// The commit the worktree is at.
 pub async fn head(worktree: &Path) -> Result<String, String> {
     git(worktree, &["rev-parse", "HEAD"]).await

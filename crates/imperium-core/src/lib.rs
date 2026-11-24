@@ -60,7 +60,9 @@ mod worktrees;
 mod writers;
 
 pub use approvals::Approvals;
-pub use autofix::{fix_ci, watch_pull_requests};
+pub use autofix::{
+    FIX_TOOLS, ci_config_paths, ci_prompt, fix_ci, push_approval, watch_pull_requests,
+};
 pub use bench::Bench;
 pub use downloads::Downloads;
 pub use endpoint::EndpointFile;
