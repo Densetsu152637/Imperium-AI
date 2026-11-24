@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use imperium_github::{FailingPr, GhFuture, GitHub};
+use imperium_github::{FailingPr, GhFuture, GitHub, PrStatus};
 use imperium_protocol::session::SessionStatus;
 
 #[derive(Debug, Default)]
@@ -24,6 +24,29 @@ impl GitHub for FakeGitHub {
     fn pr_state<'a>(&'a self, _repo: &'a str, _number: u64) -> GhFuture<'a, String> {
         let merged = self.merged.load(Ordering::SeqCst);
         Box::pin(async move { Ok(if merged { "MERGED" } else { "OPEN" }.to_string()) })
+    }
+
+    fn pr_status<'a>(&'a self, _repo: &'a str, number: u64) -> GhFuture<'a, PrStatus> {
+        let merged = self.merged.load(Ordering::SeqCst);
+        Box::pin(async move {
+            Ok(PrStatus {
+                node_id: String::new(),
+                number,
+                title: "A change".into(),
+                url: String::new(),
+                state: if merged { "MERGED" } else { "OPEN" }.into(),
+                is_draft: false,
+                head_ref: "feature".into(),
+                head_sha: "abc".into(),
+                base_ref: "main".into(),
+                is_in_merge_queue: false,
+                review_decision: None,
+                mergeable: "MERGEABLE".into(),
+                merge_state: "CLEAN".into(),
+                auto_merge: None,
+                checks: Vec::new(),
+            })
+        })
     }
 }
 
@@ -54,7 +77,9 @@ async fn watched_pull_requests_turn_into_merged_sessions() {
         (SessionStatus::Watching, Some("owner/repo#12".into()))
     );
     let github = Arc::new(FakeGitHub::default());
-    imperium_core::watch_pull_requests(&daemon, github.clone(), Duration::from_millis(50));
+    daemon
+        .pr_monitor()
+        .start(&daemon, github.clone(), Duration::from_millis(50));
     github.merged.store(true, Ordering::SeqCst);
     for _ in 0..100 {
         if session.status().0 == SessionStatus::Merged {

@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime};
 
 use imperium_core::{DaemonState, SessionOptions};
 use imperium_engine::{LaunchFuture, SessionLauncher};
-use imperium_github::{FailingPr, GhFuture, GitHub};
+use imperium_github::{FailingPr, GhFuture, GitHub, PrStatus};
 use imperium_protocol::session::SessionStatus;
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -192,6 +192,29 @@ impl GitHub for FakeGitHub {
         let merged = self.merged.load(Ordering::SeqCst);
         Box::pin(async move { Ok(if merged { "MERGED" } else { "OPEN" }.to_string()) })
     }
+
+    fn pr_status<'a>(&'a self, _repo: &'a str, number: u64) -> GhFuture<'a, PrStatus> {
+        let merged = self.merged.load(Ordering::SeqCst);
+        Box::pin(async move {
+            Ok(PrStatus {
+                node_id: String::new(),
+                number,
+                title: "A change".into(),
+                url: String::new(),
+                state: if merged { "MERGED" } else { "OPEN" }.into(),
+                is_draft: false,
+                head_ref: "feature".into(),
+                head_sha: "abc".into(),
+                base_ref: "main".into(),
+                is_in_merge_queue: false,
+                review_decision: None,
+                mergeable: "MERGEABLE".into(),
+                merge_state: "CLEAN".into(),
+                auto_merge: None,
+                checks: Vec::new(),
+            })
+        })
+    }
 }
 
 async fn watch_until_merged(extra: &str) -> (Arc<DaemonState>, String, tempfile::TempDir) {
@@ -203,7 +226,9 @@ async fn watch_until_merged(extra: &str) -> (Arc<DaemonState>, String, tempfile:
         .unwrap();
     state.watch(&session, Some(("owner/repo".into(), 7)));
     let github = Arc::new(FakeGitHub::default());
-    imperium_core::watch_pull_requests(&state, github.clone(), Duration::from_millis(30));
+    state
+        .pr_monitor()
+        .start(&state, github.clone(), Duration::from_millis(30));
     github.merged.store(true, Ordering::SeqCst);
     for _ in 0..100 {
         if session.status().0 == SessionStatus::Merged {

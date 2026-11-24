@@ -109,6 +109,28 @@ async fn a_paired_phone_approves_a_queued_action() {
     let refused = next(&mut phone, Some(2), None).await;
     assert_eq!(refused["error"]["code"], -32005, "{refused}");
 
+    // Phones read a pull request's status (here: none is bound) but cannot bind or unbind.
+    send(
+        &mut phone,
+        20,
+        "pull_requests.status",
+        json!({"session_id": "s"}),
+    )
+    .await;
+    let status = next(&mut phone, Some(20), None).await;
+    assert_ne!(status["error"]["code"], -32005, "{status}");
+    for (id, method) in [(21, "pull_requests.bind"), (22, "pull_requests.unbind")] {
+        send(
+            &mut phone,
+            id,
+            method,
+            json!({"session_id": "s", "url": "u"}),
+        )
+        .await;
+        let refused = next(&mut phone, Some(id), None).await;
+        assert_eq!(refused["error"]["code"], -32005, "{method}: {refused}");
+    }
+
     // Unattended work queues an approval; the phone hears about it and approves it.
     let answer =
         daemon

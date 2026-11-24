@@ -255,7 +255,7 @@ impl DaemonState {
             .expect("session map lock is never poisoned by a panic while held")
             .remove(id);
         self.forget_browser(id);
-        super::lock_watches(&self.watches).remove(id);
+        self.pr_monitor().forget(id);
         self.placements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

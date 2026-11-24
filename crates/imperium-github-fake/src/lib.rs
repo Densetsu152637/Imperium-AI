@@ -70,6 +70,10 @@ pub struct Pr {
     pub head_sha: String,
     pub review_decision: Option<String>,
     pub mergeable: String,
+    /// GitHub's `mergeStateStatus`: `CLEAN`, `DIRTY`, `BLOCKED`, `BEHIND`, ...
+    pub merge_state: String,
+    pub base_ref: String,
+    pub in_merge_queue: bool,
     /// `(name, status, conclusion)` as the check-run API reports them.
     pub checks: Vec<(String, String, Option<String>)>,
     pub threads: Vec<Thread>,
@@ -218,6 +222,9 @@ impl FakeGithub {
             head_sha: head_sha.to_string(),
             review_decision: None,
             mergeable: "MERGEABLE".to_string(),
+            merge_state: "CLEAN".to_string(),
+            base_ref: "main".to_string(),
+            in_merge_queue: false,
             checks: Vec::new(),
             threads: Vec::new(),
             auto_merge: None,
@@ -232,6 +239,23 @@ impl FakeGithub {
 
     pub fn set_draft(&self, repo: &str, number: u64, draft: bool) {
         self.with_pr(repo, number, |pr| pr.draft = draft);
+    }
+
+    /// Sets `mergeable` (`MERGEABLE`, `CONFLICTING`, `UNKNOWN`) and `mergeStateStatus`.
+    pub fn set_mergeable(&self, repo: &str, number: u64, mergeable: &str, merge_state: &str) {
+        self.with_pr(repo, number, |pr| {
+            pr.mergeable = mergeable.to_string();
+            pr.merge_state = merge_state.to_string();
+        });
+    }
+
+    pub fn set_in_merge_queue(&self, repo: &str, number: u64, queued: bool) {
+        self.with_pr(repo, number, |pr| pr.in_merge_queue = queued);
+    }
+
+    /// Closes the pull request without merging it.
+    pub fn close(&self, repo: &str, number: u64) {
+        self.with_pr(repo, number, |pr| pr.state = "CLOSED".to_string());
     }
 
     pub fn set_review_decision(&self, repo: &str, number: u64, decision: Option<&str>) {
@@ -586,7 +610,8 @@ async fn graphql(
                 "url": format!("https://github.com/{key}/pull/{number}"), "state": pr.state,
                 "isDraft": pr.draft, "headRefName": pr.head_ref, "headRefOid": pr.head_sha,
                 "reviewDecision": pr.review_decision, "mergeable": pr.mergeable,
-                "mergeStateStatus": "CLEAN",
+                "mergeStateStatus": pr.merge_state, "baseRefName": pr.base_ref,
+                "isInMergeQueue": pr.in_merge_queue,
                 "autoMergeRequest": pr.auto_merge.as_ref().map(|(m, _)| json!({"mergeMethod": m})),
                 "commits": rollup(pr)}}}))
         }

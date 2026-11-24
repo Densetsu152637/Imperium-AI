@@ -457,44 +457,6 @@ fn announce(
     );
 }
 
-/// Checks pull requests that sessions watch: merged ones mark their session merged, closed
-/// ones end the watch, and either way the session is archived when
-/// `sessions.auto_archive_on_pr_close` allows (a merged session still working is archived at a
-/// later check, once it is idle). Runs every `poll` while the daemon runs.
-pub fn watch_pull_requests(daemon: &Arc<DaemonState>, github: Arc<dyn GitHub>, poll: Duration) {
-    let daemon = Arc::downgrade(daemon);
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(poll).await;
-            let Some(state) = daemon.upgrade() else {
-                return;
-            };
-            for (session_id, repo, number) in state.watched() {
-                let Some(session) = state.session(&session_id) else {
-                    continue;
-                };
-                match github.pr_state(&repo, number).await.as_deref() {
-                    Ok("MERGED") => {
-                        session.set_watch(Some((
-                            imperium_protocol::session::SessionStatus::Merged,
-                            format!("{repo}#{number}"),
-                        )));
-                        state.archive_after_pull_request(&session);
-                    }
-                    Ok("CLOSED") => {
-                        state.watch(&session, None);
-                        state.archive_after_pull_request(&session);
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::debug!(%repo, number, %error, "could not check a watched pull request")
-                    }
-                }
-            }
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
