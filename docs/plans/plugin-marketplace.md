@@ -1618,7 +1618,9 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   next candidate is `learning-output-style`), installs it through the app's native dialog and
   polkit, and asserts `origin: marketplace; approval: counted` with the marketplace's commit in
   its record. The run's evidence is `live-evidence.json` in the logs artifact and the job's step
-  summary; the first run is recorded in [11](../11-ci-cd.md#live-official-marketplace-presence-liveyml).
+  summary; the first run (marketplace commit `5cec6716767283f4675a05f5f8855b5b49c81783`, plugin
+  `explanatory-output-style`, `counted`) is recorded in
+  [11](../11-ci-cd.md#live-official-marketplace-presence-liveyml).
   **Threat-model check**, against #240 as merged and 05's isolation tiers; drift fixed: the
   container tier's folder precondition is now enforced by #240 (a mount that contains or is
   `<config>` or `<data>` is emptied or read-only), the Linux loopback port, `isolation.network =

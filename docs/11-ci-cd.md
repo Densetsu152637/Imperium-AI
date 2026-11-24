@@ -120,6 +120,14 @@ The evidence (the marketplace's commit, plugin, content hash, approval kind and 
 type counts) is written to `live-evidence.json` in the `presence-e2e-logs` artifact and to
 the job summary.
 
+**First run** (2026-11-24, the pull request that added it, Actions run 45348457592): the
+marketplace was at commit `5cec6716767283f4675a05f5f8855b5b49c81783` (the remote's `HEAD` at the
+end of the run was the same), 317 plugins; `explanatory-output-style@claude-plugins-official`
+(content hash `39ad85b735b90390d00c45390dccf68ad64bfd98a8531366ed46ec03c9041a62`) was inspected,
+installed and approved through the native dialog and polkit, and `imperium plugin list` showed it
+`origin: marketplace; approval: counted` at that commit. Source types counted: 55 `path`, 159
+`url`, 4 `url` with a `path`, 98 `git-subdir`, 1 `command`.
+
 **It does not gate merges.** It needs the network and a repository this one does not control, so
 a failure can be the marketplace's (a renamed plugin, a moved repository, GitHub being slow),
 not a regression. It is not called by `ci.yml`; it runs on a weekly schedule (Monday 03:17 UTC),
