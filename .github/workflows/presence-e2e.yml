@@ -100,4 +100,22 @@ jobs:
         shell: bash
         env:
           FILTER: ${{ matrix.filter }}
-        run: cargo test -p imperium-ipc --locked -- --nocapture "$FILTER"
+        run: |
+          cargo test -p imperium-ipc --locked --no-run
+          cargo test -p imperium-ipc --locked -- --nocapture "$FILTER" &
+          tests=$!
+          # The prototype's evidence on macOS: what the screen shows while the check waits.
+          if [ "$RUNNER_OS" = macOS ]; then
+            sleep 12
+            mkdir -p presence-screen
+            screencapture -x presence-screen/during-check.png || echo "screencapture failed"
+          fi
+          wait "$tests"
+      - name: Keep the screen capture
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: presence-macos-screen
+          path: presence-screen/
+          if-no-files-found: ignore
+          retention-days: 14

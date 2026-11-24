@@ -15,6 +15,9 @@
 //! Windows Hello on Windows (both in `imperium-ipc`, which allows the `unsafe` calls); another
 //! platform has none, so its approvals are `dialog-only`.
 
+// A debug build records `dev` without a presence check, so outside its tests nothing here runs.
+#![cfg_attr(debug_assertions, allow(dead_code))]
+
 use std::time::Duration;
 
 pub(crate) use imperium_ipc::Presence;
