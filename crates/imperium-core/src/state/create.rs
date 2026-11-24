@@ -437,6 +437,15 @@ impl DaemonState {
         if options.read_only {
             workspace = workspace.with_read_only();
         }
+        // Commands drop the GitHub CLI's login unless the user listed this environment.
+        let session_gh = options.environment_id.as_ref().is_some_and(|id| {
+            self.settings()
+                .github
+                .session_gh
+                .iter()
+                .any(|listed| listed == id)
+        });
+        workspace = workspace.with_session_gh(session_gh);
         // An environment's sessions also get its repositories' worktrees, unless it turned them
         // off. A session started on its own worktrees keeps to them, so its edits stay apart
         // from the user's checkout.

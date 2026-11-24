@@ -52,4 +52,4 @@ jobs:
         shell: bash
       - name: Report the permission branch
         if: always()
-        run: grep -E "BRANCH=" live.log >> "$GITHUB_STEP_SUMMARY" || true
+        run: grep -E "BRANCH=|VIEWER=" live.log >> "$GITHUB_STEP_SUMMARY" || true

@@ -12,7 +12,8 @@ pub(crate) const RATE: &str = "rateLimit { cost remaining }";
 
 /// The operation name sent with each document (the fake dispatches on it).
 pub(crate) const PR_STATUS: &str = "PrStatus";
-pub(crate) const FAILING_PRS: &str = "FailingPrs";
+pub(crate) const VIEWER: &str = "Viewer";
+pub(crate) const SEARCH_PRS: &str = "SearchPrs";
 pub(crate) const REVIEW_THREADS: &str = "ReviewThreads";
 pub(crate) const REPLY: &str = "ReplyToThread";
 pub(crate) const ENABLE_AUTO_MERGE: &str = "EnableAutoMerge";
@@ -29,13 +30,17 @@ pub(crate) fn pr_status() -> String {
     )
 }
 
-pub(crate) fn failing_prs() -> String {
+pub(crate) fn viewer() -> String {
+    format!("query Viewer {{ viewer {{ login }} {RATE} }}")
+}
+
+/// The open pull requests a search finds, with their checks. Searched on the server so a
+/// repository with many open pull requests does not hide the user's.
+pub(crate) fn search_prs() -> String {
     format!(
-        "query FailingPrs($owner: String!, $name: String!) {{
-  viewer {{ login }}
-  repository(owner: $owner, name: $name) {{
-    pullRequests(states: OPEN, first: 50, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{
-      number headRefName headRefOid author {{ login }} {ROLLUP} }} }} }}
+        "query SearchPrs($q: String!) {{
+  search(query: $q, type: ISSUE, first: 100) {{ nodes {{ ... on PullRequest {{
+    number headRefName headRefOid {ROLLUP} }} }} }}
   {RATE} }}"
     )
 }

@@ -435,6 +435,11 @@ async fn start(spec: ServerSpec, auth: Option<Arc<dyn TokenSource>>) -> Result<S
             if env.iter().any(|(key, _)| key == CLEAN_ENV) {
                 process.env_clear().envs(plugin_child_env());
             }
+            // The GitHub CLI's login is not inherited; a server that needs a token gets it from its
+            // own configured variables, which are set below.
+            for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"] {
+                process.env_remove(name);
+            }
             process
                 .args(args)
                 .envs(

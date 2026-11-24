@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use imperium_github::{
-    API_BASE, AutoMerge, GitHub, HttpGitHub, MergeMethod, Permission, StaticToken,
+    API_BASE, AutoMerge, DaemonGitHub, FailingPr, GhFuture, GitHub, HttpGitHub, MergeMethod,
+    Permission, StaticToken,
 };
 use imperium_github_fake::{FakeGithub, RateLimitReply};
 
@@ -426,4 +427,84 @@ fn no_config_layer_or_project_file_can_name_a_host() {
             "{key}: {error}"
         );
     }
+}
+
+#[tokio::test]
+async fn failing_prs_are_found_among_many_open_pull_requests_by_others() {
+    let (fake, client, _) = setup("tok").await;
+    for number in 1..=60 {
+        let name = format!("other-{number}");
+        fake.add_pr_by(REPO, number, "someone-else", &name, &name, "sha");
+        fake.set_check(REPO, number, "build", Some("FAILURE"));
+    }
+    fake.add_pr(REPO, 61, "mine", "feat/mine", "abc");
+    fake.set_check(REPO, 61, "lint", Some("FAILURE"));
+    fake.add_pr(REPO, 62, "mine, passing", "feat/ok", "def");
+    fake.set_check(REPO, 62, "lint", Some("SUCCESS"));
+    let failing = client.failing_prs(REPO).await.unwrap();
+    assert_eq!(failing.len(), 1, "{failing:?}");
+    assert_eq!(
+        (failing[0].number, failing[0].branch.as_str()),
+        (61, "feat/mine")
+    );
+    assert_eq!(failing[0].checks, ["lint"]);
+    // Found by a search on the server for the signed-in login, not by listing the first 50.
+    let search = fake
+        .requests()
+        .into_iter()
+        .find(|r| r.operation.as_deref() == Some("SearchPrs"))
+        .unwrap();
+    assert!(
+        search.body.contains("repo:o/r is:pr is:open author:me"),
+        "{}",
+        search.body
+    );
+    // The login is asked once.
+    client.failing_prs(REPO).await.unwrap();
+    let viewers = fake
+        .requests()
+        .iter()
+        .filter(|r| r.operation.as_deref() == Some("Viewer"))
+        .count();
+    assert_eq!(viewers, 1);
+}
+
+#[derive(Debug)]
+struct FailedStepOnly;
+
+impl GitHub for FailedStepOnly {
+    fn failing_prs<'a>(&'a self, _: &'a str) -> GhFuture<'a, Vec<FailingPr>> {
+        Box::pin(async { Err("not used".to_string()) })
+    }
+    fn failure_log<'a>(&'a self, _: &'a str, _: &'a str) -> GhFuture<'a, String> {
+        Box::pin(async { Ok("lint: greeting.txt must end with a newline".to_string()) })
+    }
+    fn pr_state<'a>(&'a self, _: &'a str, _: u64) -> GhFuture<'a, String> {
+        Box::pin(async { Err("not used".to_string()) })
+    }
+}
+
+#[tokio::test]
+async fn fix_ci_gets_the_failed_step_not_the_job_log_with_post_job_noise() {
+    let (fake, client, _) = setup("tok").await;
+    let url = "https://github.com/o/r/actions/runs/1/job/55";
+    // The whole job log the API serves ends with a post-job step.
+    let whole = client.failure_log(REPO, url).await.unwrap();
+    assert!(whole.contains("Post-job noise"), "{whole}");
+    fake.add_pr(REPO, 1, "t", "b", "s");
+    // The daemon's source takes pull-request data from the API and the log from `gh`.
+    let daemon = DaemonGitHub::new(Arc::new(client), Arc::new(FailedStepOnly));
+    let log = daemon.failure_log(REPO, url).await.unwrap();
+    assert_eq!(log, "lint: greeting.txt must end with a newline");
+    assert!(!log.contains("Post-job noise"));
+    assert!(daemon.pr_state(REPO, 1).await.unwrap() == "OPEN");
+    let log_requests = fake
+        .requests()
+        .iter()
+        .filter(|r| r.path.contains("/logs"))
+        .count();
+    assert_eq!(
+        log_requests, 1,
+        "only the direct client call fetched a job log"
+    );
 }

@@ -161,6 +161,89 @@ impl GitHub for GhCli {
     }
 }
 
+/// What the daemon uses: [`HttpGitHub`] for pull-request data, and the `gh` CLI for a failed
+/// check's log. `gh run view --log-failed` returns only the failed steps' lines, which is what
+/// Fix CI needs; the REST log of a whole job ends in post-job noise, so [`HttpGitHub`]'s
+/// `failure_log` is deliberately not used for it.
+#[derive(Debug)]
+pub struct DaemonGitHub {
+    api: std::sync::Arc<dyn GitHub>,
+    logs: std::sync::Arc<dyn GitHub>,
+}
+
+impl DaemonGitHub {
+    /// `api` answers everything except `failure_log`, which `logs` answers.
+    pub fn new(api: std::sync::Arc<dyn GitHub>, logs: std::sync::Arc<dyn GitHub>) -> Self {
+        Self { api, logs }
+    }
+
+    /// The daemon's source: `https://api.github.com` with the token from `gh auth token`, and
+    /// `gh` for logs.
+    pub fn standard() -> Result<Self, String> {
+        let api = HttpGitHub::api(std::sync::Arc::new(GhAuthToken))?;
+        Ok(Self::new(
+            std::sync::Arc::new(api),
+            std::sync::Arc::new(GhCli),
+        ))
+    }
+}
+
+impl GitHub for DaemonGitHub {
+    fn failing_prs<'a>(&'a self, repo: &'a str) -> GhFuture<'a, Vec<FailingPr>> {
+        self.api.failing_prs(repo)
+    }
+
+    fn failure_log<'a>(&'a self, repo: &'a str, details_url: &'a str) -> GhFuture<'a, String> {
+        self.logs.failure_log(repo, details_url)
+    }
+
+    fn pr_state<'a>(&'a self, repo: &'a str, number: u64) -> GhFuture<'a, String> {
+        self.api.pr_state(repo, number)
+    }
+
+    fn pr_status<'a>(&'a self, repo: &'a str, number: u64) -> GhFuture<'a, PrStatus> {
+        self.api.pr_status(repo, number)
+    }
+
+    fn review_threads<'a>(&'a self, repo: &'a str, number: u64) -> GhFuture<'a, Vec<ReviewThread>> {
+        self.api.review_threads(repo, number)
+    }
+
+    fn new_comments<'a>(
+        &'a self,
+        repo: &'a str,
+        number: u64,
+        since: Option<u64>,
+    ) -> GhFuture<'a, Vec<ReviewComment>> {
+        self.api.new_comments(repo, number, since)
+    }
+
+    fn collaborator_permission<'a>(
+        &'a self,
+        repo: &'a str,
+        login: &'a str,
+    ) -> GhFuture<'a, Permission> {
+        self.api.collaborator_permission(repo, login)
+    }
+
+    fn repo_merge_settings<'a>(&'a self, repo: &'a str) -> GhFuture<'a, MergeSettings> {
+        self.api.repo_merge_settings(repo)
+    }
+
+    fn reply_to_thread<'a>(&'a self, thread_id: &'a str, body: &'a str) -> GhFuture<'a, u64> {
+        self.api.reply_to_thread(thread_id, body)
+    }
+
+    fn set_auto_merge<'a>(
+        &'a self,
+        repo: &'a str,
+        number: u64,
+        change: &'a AutoMerge,
+    ) -> GhFuture<'a, ()> {
+        self.api.set_auto_merge(repo, number, change)
+    }
+}
+
 /// The job id in an Actions URL such as `.../actions/runs/1/job/2`.
 fn job_id(url: &str) -> Option<String> {
     let (_, rest) = url.split_once("/job/")?;

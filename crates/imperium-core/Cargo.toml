@@ -82,7 +82,8 @@ workspace = true
 imperium-client = { path = "../imperium-client" }
 imperium-config = { path = "../imperium-config" }
 imperium-core = { path = ".", features = ["testing"] }
-imperium-github = { path = "../imperium-github" }
+imperium-github = { path = "../imperium-github", features = ["test-host"] }
+imperium-github-fake = { path = "../imperium-github-fake" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "test-util"] }
 tokio-tungstenite = "0.30.0"

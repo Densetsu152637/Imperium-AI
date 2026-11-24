@@ -140,7 +140,11 @@ async fn run() -> anyhow::Result<()> {
     // After the agents started, so their sessions are known.
     daemon.sweep_orphan_scratch();
     daemon.start_scheduler();
-    daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));
+    // Pull-request data over the API with `gh`'s token; failed-check logs still through `gh`.
+    match imperium_github::DaemonGitHub::standard() {
+        Ok(github) => daemon.start_autofix(std::sync::Arc::new(github)),
+        Err(error) => tracing::warn!(%error, "GitHub auto-fix did not start"),
+    }
     daemon.start_auto_archive();
     daemon.start_session_index();
     // A daemon a client started for itself exits when no client and no work uses it. The clock

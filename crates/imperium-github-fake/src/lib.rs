@@ -196,9 +196,22 @@ impl FakeGithub {
     }
 
     pub fn add_pr(&self, repo: &str, number: u64, title: &str, head_ref: &str, head_sha: &str) {
+        self.add_pr_by(repo, number, "me", title, head_ref, head_sha);
+    }
+
+    /// Like [`FakeGithub::add_pr`], opened by `author` (the fake's signed-in user is `me`).
+    pub fn add_pr_by(
+        &self,
+        repo: &str,
+        number: u64,
+        author: &str,
+        title: &str,
+        head_ref: &str,
+        head_sha: &str,
+    ) {
         let pr = Pr {
             title: title.to_string(),
-            author: "me".to_string(),
+            author: author.to_string(),
             state: "OPEN".to_string(),
             draft: false,
             head_ref: head_ref.to_string(),
@@ -363,7 +376,9 @@ fn admit(
         authorized,
     });
     if let Some(status) = world.fail_status.take() {
-        return Some(reply(status, json!({"message": "server error"})));
+        // Like a server that echoes the request it could not serve: the client must scrub it.
+        let message = format!("server error (Authorization: Bearer {})", world.token);
+        return Some(reply(status, json!({"message": message})));
     }
     if let Some(limit) = world.rate_limit.take() {
         let mut response = reply(limit.status, json!({"message": "API rate limit exceeded"}));
@@ -404,7 +419,14 @@ async fn blob(
             operation: None,
             authorized: headers.contains_key("authorization"),
         });
-    format!("log of job {id}: step failed\n").into_response()
+    // The whole job log: the failed step, then a post-job step.
+    let log = [
+        format!("log of job {id}: step failed"),
+        "##[group]Post job cleanup".to_string(),
+        "Post-job noise".to_string(),
+        "##[endgroup]".to_string(),
+    ];
+    format!("{}\n", log.join("\n")).into_response()
 }
 
 fn repo_json(repo: &Repo) -> Value {
@@ -568,20 +590,30 @@ async fn graphql(
                 "autoMergeRequest": pr.auto_merge.as_ref().map(|(m, _)| json!({"mergeMethod": m})),
                 "commits": rollup(pr)}}}))
         }
-        "FailingPrs" => {
-            let nodes: Vec<Value> = world.repos.get(&key).map_or_else(Vec::new, |repo| {
+        "Viewer" => ok(json!({"viewer": {"login": "me"}})),
+        "SearchPrs" => {
+            // `repo:o/r is:pr is:open author:login`, matched on the server like GitHub's search.
+            let query = vars["q"].as_str().unwrap_or_default();
+            let term = |prefix: &str| {
+                query
+                    .split_whitespace()
+                    .find_map(|word| word.strip_prefix(prefix))
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let (repo, author) = (term("repo:"), term("author:"));
+            let nodes: Vec<Value> = world.repos.get(&repo).map_or_else(Vec::new, |repo| {
                 repo.prs
                     .iter()
-                    .filter(|(_, pr)| pr.state == "OPEN")
+                    .filter(|(_, pr)| pr.state == "OPEN" && pr.author == author)
+                    .take(100)
                     .map(|(n, pr)| {
                         json!({"number": n, "headRefName": pr.head_ref,
-                               "headRefOid": pr.head_sha, "author": {"login": pr.author},
-                               "commits": rollup(pr)})
+                               "headRefOid": pr.head_sha, "commits": rollup(pr)})
                     })
                     .collect()
             });
-            ok(json!({"viewer": {"login": "me"},
-                      "repository": {"pullRequests": {"nodes": nodes}}}))
+            ok(json!({"search": {"nodes": nodes}}))
         }
         "ReviewThreads" => {
             let Some(pr) = world.repos.get(&key).and_then(|r| r.prs.get(&number)) else {
@@ -691,10 +723,16 @@ mod tests {
                     section = line.to_string();
                 } else if line.contains("test-host") && !line.starts_with('#') {
                     let client = manifest.ends_with("crates/imperium-github/Cargo.toml");
-                    let allowed = client
+                    let core = manifest.ends_with("crates/imperium-core/Cargo.toml");
+                    let allowed = (client
                         && ((line == "test-host = []" && section == "[features]")
                             || (section == "[dev-dependencies]"
-                                && line.starts_with("imperium-github =")));
+                                && line.starts_with("imperium-github ="))))
+                        // The daemon's tests run against the fake: this one dev-dependency line.
+                        || (core
+                            && section == "[dev-dependencies]"
+                            && line
+                                == "imperium-github = { path = \"../imperium-github\", features = [\"test-host\"] }");
                     assert!(
                         allowed,
                         "{} names test-host in `{line}` under {section}",

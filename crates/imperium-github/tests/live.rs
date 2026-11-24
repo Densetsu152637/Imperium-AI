@@ -167,3 +167,38 @@ async fn mutations_with_bogus_ids_are_unresolvable_not_invalid() {
         .unwrap_err();
     refused_as_unresolvable(&error);
 }
+
+#[tokio::test]
+#[ignore = "needs GITHUB_TOKEN and the network"]
+async fn failing_prs_resolves_the_login_and_searches_without_errors() {
+    // `Viewer` then `SearchPrs`: the login resolves, and a search on this repository parses
+    // (there may be no failing pull request by this login, so only the call is asserted).
+    let client = client();
+    let failing = match client.failing_prs(REPO).await {
+        Ok(failing) => failing,
+        Err(error) => {
+            // The workflow token is an installation token, which has no `viewer`.
+            assert!(
+                !expects_write(),
+                "the PAT could not resolve its login: {error}"
+            );
+            assert!(!error.contains(&token()), "the token leaked into an error");
+            // Or its `viewer` is the app, which the client reports as such (found by this check).
+            let lower = error.to_ascii_lowercase();
+            assert!(
+                lower.contains("not accessible") || lower.contains("app installation token"),
+                "an unexpected refusal: {error}"
+            );
+            eprintln!("VIEWER=refused");
+            return;
+        }
+    };
+    eprintln!("VIEWER=ok");
+    for pr in &failing {
+        assert!(pr.number > 0 && !pr.branch.is_empty());
+        assert_eq!(pr.head_sha.len(), 40, "{}", pr.head_sha);
+        assert!(!pr.checks.is_empty());
+    }
+    let (cost, remaining) = client.graphql_budget();
+    assert!(cost >= 1 && remaining.is_some(), "rateLimit was not parsed");
+}

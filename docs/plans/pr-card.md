@@ -489,8 +489,41 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   tier 0: none asserts that `gh auth token` fails in a tier-0 shell.
 - Risks: users whose only credential is `gh`'s login in the child's config folder may lose `gh`
   where the OS sandbox tier applies, unless they set `github.session_gh`; docs state it.
-- Status: pending
-- Outcome: -
+- Status: done (this change)
+- Outcome:
+  - `review_pull_request` needed no change: its only `gh` call is `gh pr create`, which stays.
+  - The daemon builds `DaemonGitHub::standard()` (`HttpGitHub::api` with `GhAuthToken`, plus
+    `GhCli` for logs) in place of `GhCli`. `autofix.rs` takes the trait object, so its call sites
+    are unchanged. **S1:** `failure_log` stays on `gh run view --log-failed` (failed steps only):
+    the API's whole-job log ends in post-job noise. A test serves a job log with a failed step
+    followed by post-job noise through the fake and shows the daemon source returns the failed
+    step's text only. **S2:** `failing_prs` resolves the login (`viewer`, cached until the token
+    refreshes) and runs a GraphQL search `repo:o/r is:pr is:open author:<login>`; a test has 60
+    pull requests by others and one by the user. `repo_merge_settings` still errors for a token
+    without push access (nothing here uses it).
+  - **`github.session_gh`** is a user-layer list of environment ids (a list, not a per-environment
+    flag, because an environment's own files can only narrow settings and the protocol has no
+    place for a per-environment widening; no protocol change). The session's workspace carries
+    it. Commands (`run_command`, background commands) drop `GH_TOKEN`, `GITHUB_TOKEN` and
+    `GH_CONFIG_DIR` unless the environment is listed; the OS sandbox hides `gh`'s config folder
+    unless it is listed. MCP servers and hooks always drop the inherited variables (a server's own
+    configured `env` is kept): they have no environment context, so `session_gh` does not reach
+    them.
+  - Design choices (accepted): `github.session_gh` is a list of environment ids; MCP servers and
+    hooks always drop the three variables; `Sandbox::named_command` (five arguments) is kept for
+    callers with no environment and behaves as before.
+  - Tests through the daemon: `tests/autofix_token.rs` runs an auto-fix run against the fake
+    GitHub through `HttpGitHub::new(fake_url, StaticToken(sentinel))`; GitHub's error reply echoes
+    the token, and the sentinel is absent from every notification, every prompt sent to the
+    model, the approval text, and every file under the daemon's home (the journal).
+    `tests/environment_config.rs` runs itself with `GH_TOKEN`, `GITHUB_TOKEN` and
+    `GH_CONFIG_DIR` set and shows, from an environment dump written by a session's
+    `run_command`, that a listed environment keeps them and another does not.
+  - `imperium-core`'s dev-dependencies may enable `imperium-github/test-host` (one exact line,
+    checked by the manifest guard); the `cargo tree` leak check on normal edges still passes.
+  - The live check also covers `failing_prs` (`Viewer` and `SearchPrs`): with the workflow's
+    installation token `viewer` is the app (`...[bot]`) or refused, which the client reports
+    as an error ("an app installation token") and the test accepts as `VIEWER=refused`; with `LIVE_READ_PAT` it must resolve (`VIEWER=ok`).
 - Handoff notes: keep this PR free of new behaviour so a regression bisects to it alone.
 
 ## Stage 3: Binding, status model and live updates

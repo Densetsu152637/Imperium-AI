@@ -160,6 +160,10 @@ shapes GitHub does not accept. It asserts, on `Densetsu152637/Imperium-AI`:
 - The mutations `EnableAutoMerge`, `DisableAutoMerge` and `ReplyToThread`, sent with bogus ids
   so nothing changes: each must fail as "could not resolve" or "not accessible", not as a
   parse or validation error.
+- `failing_prs` (`Viewer` then `SearchPrs`): the login resolves and the search parses. The
+  workflow token (an installation token) has no user `viewer` (GitHub answers with the app, or
+  "not accessible"), so there the test accepts that clean refusal and prints `VIEWER=refused`; with the personal token it must
+  print `VIEWER=ok`.
 - On every error, the token does not appear.
 
 **Optional personal token.** The workflow token cannot read the merge flags or the owner's

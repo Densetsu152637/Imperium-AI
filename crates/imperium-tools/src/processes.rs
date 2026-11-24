@@ -295,12 +295,13 @@ impl Processes {
         let container = container_name(&id);
         let roots = workspace.command_roots();
         let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
-        let mut process = workspace.sandbox().named_command(
+        let mut process = workspace.sandbox().named_command_for(
             &roots,
             workspace.grants(),
             command,
             Some(&container),
             workspace.is_read_only(),
+            workspace.session_gh(),
         )?;
         process
             .stdin(Stdio::null())
