@@ -52,6 +52,8 @@ struct Tracked {
     last_error: Option<String>,
     failures: u32,
     next_due: Instant,
+    /// When the status was last read successfully.
+    read_at: Option<Instant>,
 }
 
 #[derive(Debug, Default)]
@@ -176,15 +178,6 @@ impl PrMonitor {
             .collect()
     }
 
-    /// The repositories some session has a pull request bound from.
-    pub(crate) fn bound_repos(&self) -> Vec<String> {
-        self.lock()
-            .tracked
-            .values()
-            .map(|tracked| tracked.repo.clone())
-            .collect()
-    }
-
     /// Binds `session` to a pull request, replacing any it had, and polls soon. The status is
     /// filled in by the poller (or [`Self::refresh`]); a pull request another session already
     /// follows is announced to this session at once.
@@ -203,6 +196,7 @@ impl PrMonitor {
                 last_error: None,
                 failures: 0,
                 next_due: Instant::now(),
+                read_at: None,
             });
             if let Some(old) = replaced.filter(|old| *old != key) {
                 Self::drop_if_unused(&mut inner, &old);
@@ -270,6 +264,19 @@ impl PrMonitor {
                 |error| format!("the pull request could not be read: {error}"),
             )
         })
+    }
+
+    /// The session's cached status when it was read without error less than one poll interval
+    /// ago, so a bind does not spend GitHub quota on a pull request the poller just read.
+    pub(crate) fn fresh_status(&self, session_id: &str) -> Option<PrStatus> {
+        let interval = self.interval();
+        let inner = self.lock();
+        let tracked = inner.tracked.get(inner.sessions.get(session_id)?)?;
+        let fresh = tracked.read_at.is_some_and(|at| at.elapsed() < interval);
+        tracked
+            .status
+            .clone()
+            .filter(|s| fresh && s.error.is_none())
     }
 
     /// Reads a session's pull request from GitHub now and updates the cache.
@@ -365,6 +372,7 @@ impl PrMonitor {
                 Ok(mut fresh) => {
                     tracked.failures = 0;
                     tracked.last_error = None;
+                    tracked.read_at = Some(Instant::now());
                     tracked.next_due = Instant::now() + interval;
                     let changed = match &tracked.status {
                         Some(old) => {
@@ -380,7 +388,7 @@ impl PrMonitor {
                     (Ok(fresh), changed, sessions)
                 }
                 Err(error) => {
-                    let error: String = error.chars().take(ERROR_CHARS).collect();
+                    let error = clean(&error, ERROR_CHARS);
                     tracked.failures += 1;
                     tracked.last_error = Some(error.clone());
                     tracked.next_due = Instant::now() + backoff(tracked.failures, interval, &error);
@@ -475,16 +483,7 @@ fn apply_overlay(session: &Session, status: &PrStatus) {
 /// Text from GitHub, safe to show: no control or direction-changing characters, and capped.
 fn clean(text: &str, max: usize) -> String {
     text.chars()
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(
-                    c,
-                    '\u{200B}'..='\u{200F}'
-                        | '\u{202A}'..='\u{202E}'
-                        | '\u{2066}'..='\u{2069}'
-                        | '\u{FEFF}'
-                )
-        })
+        .filter(|c| !c.is_control() && !crate::autofix::is_invisible(*c))
         .take(max)
         .collect()
 }
@@ -664,9 +663,10 @@ fn origin_repo(folder: &Path) -> Option<String> {
     github_repo(&crate::safe_git::text(&output))
 }
 
-/// Refuses a repository that is neither the session's `origin` nor one the user's sessions
-/// already have a pull request bound from.
-pub(crate) fn check_repo(state: &DaemonState, session: &Session, repo: &str) -> Result<(), String> {
+/// Refuses a repository that is not one of the session's own `origin` remotes (a linked
+/// worktree or a subfolder of a checkout resolves to its checkout's `origin`). Another session's
+/// binding of a repository does not make it this session's.
+pub(crate) fn check_repo(session: &Session, repo: &str) -> Result<(), String> {
     let workspace = session.workspace();
     let mut folders = workspace.folders_display();
     folders.push(workspace.root().display().to_string());
@@ -674,18 +674,10 @@ pub(crate) fn check_repo(state: &DaemonState, session: &Session, repo: &str) -> 
         .iter()
         .filter_map(|folder| origin_repo(Path::new(folder)))
         .any(|origin| origin.eq_ignore_ascii_case(repo))
-        || state
-            .pr_monitor()
-            .bound_repos()
-            .iter()
-            .any(|bound| bound.eq_ignore_ascii_case(repo))
     {
         return Ok(());
     }
-    Err(format!(
-        "{repo} is not this session's origin repository, and none of your sessions has a pull \
-         request bound from it"
-    ))
+    Err(format!("{repo} is not this session's origin repository"))
 }
 
 #[cfg(test)]
@@ -717,6 +709,16 @@ mod tests {
         ] {
             assert!(parse_pr_url(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn github_text_loses_control_and_invisible_characters() {
+        let message = "GitHub returned 500: \u{202E}gnp.exe\u{2066}\n\u{E0041}\u{AD}x\u{2029}y";
+        assert_eq!(
+            clean(message, ERROR_CHARS),
+            "GitHub returned 500: gnp.exexy"
+        );
+        assert_eq!(clean(&"a".repeat(500), ERROR_CHARS).len(), ERROR_CHARS);
     }
 
     #[test]

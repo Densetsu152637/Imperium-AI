@@ -627,7 +627,7 @@ impl Connection {
                         ));
                     };
                     // The same check as `pull_requests.bind`: an alias for it, not a way round it.
-                    crate::pr_monitor::check_repo(&state, &session, &repo).map_err(refused)?;
+                    crate::pr_monitor::check_repo(&session, &repo).map_err(refused)?;
                     state.watch(&session, Some((repo, number)));
                     None
                 }

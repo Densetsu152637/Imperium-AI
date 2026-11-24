@@ -274,6 +274,24 @@ const DATA_MARK: &str = "CI-DATA";
 /// direction-changing characters go (newlines and tabs stay only when `multiline`), backticks
 /// become apostrophes so no code fence can be opened or closed, and the block's own marker is
 /// broken in any letter case.
+/// Invisible and direction-changing characters: soft hyphen, Arabic letter mark, Mongolian vowel
+/// separator, zero-width and direction marks, line and paragraph separators, bidi controls,
+/// word joiners and invisible operators, byte order mark, interlinear annotation and tag
+/// characters. One set for the CI-log envelope and for text shown on the card.
+pub(crate) fn is_invisible(c: char) -> bool {
+    matches!(c,
+        '\u{AD}'
+        | '\u{61C}'
+        | '\u{180E}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{2028}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{206F}'
+        | '\u{FEFF}'
+        | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{E0000}'..='\u{E007F}')
+}
+
 fn neutralise(text: &str, multiline: bool) -> String {
     let mut cleaned: String = text
         .chars()
@@ -281,16 +299,7 @@ fn neutralise(text: &str, multiline: bool) -> String {
             '\n' | '\t' if multiline => Some(c),
             '\n' | '\r' | '\t' => Some(' '),
             '`' => Some('\''),
-            '\u{AD}'
-            | '\u{61C}'
-            | '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{2028}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{206F}'
-            | '\u{FEFF}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{E0000}'..='\u{E007F}' => None,
+            c if is_invisible(c) => None,
             c if c.is_control() => None,
             c => Some(c),
         })
@@ -455,6 +464,43 @@ fn announce(
             summary,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_credential_failure_is_reported_once_until_a_poll_succeeds() {
+        let mut failures = ListFailures::default();
+        let error = "gh has no GitHub token; run `gh auth login`";
+        let reason = failures.failed("o/r", error).expect("reported at once");
+        assert!(
+            reason.contains("o/r") && reason.contains("gh auth login"),
+            "{reason}"
+        );
+        assert_eq!(failures.failed("o/r", error), None);
+        assert_eq!(
+            failures.failed("o/r", "GitHub rejected the token (401)"),
+            None
+        );
+        // Another repository is reported on its own.
+        assert!(failures.failed("o/other", error).is_some());
+        failures.succeeded("o/r");
+        assert!(failures.failed("o/r", error).is_some());
+    }
+
+    #[test]
+    fn other_failures_are_reported_only_when_they_persist() {
+        let mut failures = ListFailures::default();
+        assert_eq!(failures.failed("o/r", "GitHub returned 502"), None);
+        assert_eq!(failures.failed("o/r", "GitHub returned 502"), None);
+        assert!(failures.failed("o/r", "GitHub returned 502").is_some());
+        assert_eq!(failures.failed("o/r", "GitHub returned 502"), None);
+        // A success in between starts the count again.
+        failures.succeeded("o/r");
+        assert_eq!(failures.failed("o/r", "GitHub returned 502"), None);
+    }
 }
 
 #[cfg(test)]

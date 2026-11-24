@@ -20,6 +20,9 @@ impl Connection {
                         let (session, repo, number) = prepared?;
                         let monitor = state.pr_monitor();
                         monitor.bind(&state, &session, &repo, number);
+                        if let Some(status) = monitor.fresh_status(session.id()) {
+                            return Ok(status);
+                        }
                         match monitor.refresh(&state, session.id()).await {
                             Ok(status) => Ok(status),
                             Err(error) => {
@@ -72,6 +75,6 @@ fn bind_target(
         .session(&params.session_id)
         .ok_or_else(|| ErrorObject::new(codes::SESSION_NOT_FOUND, "no such session"))?;
     let (repo, number) = crate::pr_monitor::parse_pr_url(&params.url).map_err(refused)?;
-    crate::pr_monitor::check_repo(state, &session, &repo).map_err(refused)?;
+    crate::pr_monitor::check_repo(&session, &repo).map_err(refused)?;
     Ok((session, repo, number))
 }

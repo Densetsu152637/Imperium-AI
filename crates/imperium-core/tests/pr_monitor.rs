@@ -239,13 +239,29 @@ async fn a_session_binds_by_url_and_an_unrelated_repository_is_refused() {
     // A refused bind changed nothing.
     assert!(world.changes().is_empty());
 
-    // A session in some other repository may follow a repository that is already bound.
+    // A session whose own origin is another repository cannot bind this one, although another
+    // session has it bound.
     let elsewhere = repository("https://github.com/someone/else.git");
     let (other, _) = world
         .daemon
         .create_session(&elsewhere.path().display().to_string(), None)
         .unwrap();
-    bind(&mut connection, other.id()).await;
+    let refused = call(
+        &mut connection,
+        16,
+        "pull_requests.bind",
+        json!({"session_id": other.id(), "url": URL}),
+    )
+    .await;
+    assert_eq!(error(refused).0, codes::INVALID_PARAMS);
+    let unbound = call(
+        &mut connection,
+        17,
+        "pull_requests.status",
+        json!({"session_id": other.id()}),
+    )
+    .await;
+    assert_eq!(error(unbound).0, codes::INVALID_PARAMS);
     // And unbinding says so, switches the overlay off and announces it.
     let unbound = result(
         call(

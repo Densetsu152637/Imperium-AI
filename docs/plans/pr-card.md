@@ -295,7 +295,7 @@ through the same approvals path as a push approval; it cannot enable auto-merge.
 
 | Method or notification | Stage | Does |
 | --- | --- | --- |
-| `pull_requests.bind` | 3 | `{session_id, url}` → `PrStatus`; refuses a repository that is not the session's `origin` or one the user's sessions already have a PR bound from |
+| `pull_requests.bind` | 3 | `{session_id, url}` → `PrStatus`; refuses a repository that is not the session's `origin` (a repository another session has bound does not count) |
 | `pull_requests.unbind` | 3 | `{session_id}`; turns the session's switches off |
 | `pull_requests.status` | 3 | `{session_id}` → `PrStatus` from the daemon's cache |
 | `pull_requests.changed` (notification) | 3 | `{session_id, status}` on any change, bind and unbind |
@@ -586,9 +586,8 @@ Each stage is one pull request against `experimental`, with the docs it changes.
     without sending it.
   - **Binding.** `bind` takes only `https://github.com/<owner>/<repo>/pull/<n>` (and a trailing
     `/files`, `/commits` or `/checks`, a query or fragment) and refuses a repository that is
-    neither the session's `origin` (`git config --get remote.origin.url` through `safe_git`, so
-    nothing the repository's config names runs) nor one a session already has a pull request
-    bound from. A failed first read unbinds again. `session.control` `watch` and `unwatch` are
+    not the session's `origin` (`git config --get remote.origin.url` through `safe_git`, so
+    nothing the repository's config names runs; another session's binding does not count). A failed first read unbinds again. `session.control` `watch` and `unwatch` are
     aliases (the same repository check); `DaemonState::watch` is the daemon's own entry (Fix CI
     after a push) with no check, since the repository comes from the user's `[[github.watch]]`.
     The watch loop left `autofix.rs`; `watch_pull_requests` no longer exists and the tests start
