@@ -3,6 +3,22 @@
 set -euo pipefail
 
 cargo fmt --all --check
+
+# The test-only `test-host` feature of imperium-github (any API host) must not reach a shipped build.
+for package in imperium-core imperium-cli imperium-desktop; do
+  # Captured first, so a failing `cargo tree` stops the script instead of reading as "not found".
+  tree="$(cargo tree --locked -p "$package" --edges normal,features)"
+  if grep -F 'imperium-github feature "test-host"' <<<"$tree"; then
+    echo "$package enables imperium-github's test-host feature in a normal build." >&2
+    exit 1
+  fi
+done
+# Positive control: with dev edges the feature is listed, so the grep above matches the real format.
+tree="$(cargo tree --locked -p imperium-github --edges all,features)"
+grep -qF 'imperium-github feature "test-host"' <<<"$tree" || {
+  echo "cargo tree no longer lists imperium-github's test-host feature; fix the leak check." >&2
+  exit 1
+}
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 

@@ -690,9 +690,14 @@ mod tests {
                 if line.starts_with('[') {
                     section = line.to_string();
                 } else if line.contains("test-host") && !line.starts_with('#') {
+                    let client = manifest.ends_with("crates/imperium-github/Cargo.toml");
+                    let allowed = client
+                        && ((line == "test-host = []" && section == "[features]")
+                            || (section == "[dev-dependencies]"
+                                && line.starts_with("imperium-github =")));
                     assert!(
-                        section == "[dev-dependencies]" || section == "[features]",
-                        "{} enables test-host under {section}",
+                        allowed,
+                        "{} names test-host in `{line}` under {section}",
                         manifest.display()
                     );
                 } else if line.contains("imperium-github-fake") && !line.starts_with('#') {

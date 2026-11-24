@@ -452,6 +452,14 @@ impl HttpGitHub {
             .rest(&format!("/repos/{owner}/{name}"), false)
             .await?
             .unwrap_or(Value::Null);
+        // GitHub leaves these fields out for a token without push access; reading that as "all
+        // methods off" would be wrong, so it is an error.
+        if value["allow_squash_merge"].is_null() {
+            return Err(
+                "GitHub did not report the merge settings (the token needs push access)"
+                    .to_string(),
+            );
+        }
         let flag = |key: &str| value[key].as_bool().unwrap_or_default();
         Ok(MergeSettings {
             squash: flag("allow_squash_merge"),
@@ -476,6 +484,10 @@ impl HttpGitHub {
 
     async fn auto_merge(&self, repo: &str, number: u64, change: &AutoMerge) -> Result<(), String> {
         let node = self.status(repo, number).await?.node_id;
+        self.auto_merge_node(&node, change).await
+    }
+
+    async fn auto_merge_node(&self, node: &str, change: &AutoMerge) -> Result<(), String> {
         match change {
             AutoMerge::Enable {
                 method,
@@ -496,6 +508,24 @@ impl HttpGitHub {
             }
         }
         Ok(())
+    }
+
+    /// The auto-merge mutation for a pull request's GraphQL node id, for the live check that
+    /// sends bogus ids to validate the documents against GitHub's schema.
+    #[cfg(feature = "test-host")]
+    pub async fn set_auto_merge_by_node(
+        &self,
+        node: &str,
+        change: &AutoMerge,
+    ) -> Result<(), String> {
+        self.auto_merge_node(node, change).await
+    }
+
+    /// The last GraphQL query's cost and the points remaining, as parsed from `rateLimit`.
+    #[cfg(feature = "test-host")]
+    pub fn graphql_budget(&self) -> (u32, Option<u32>) {
+        let limits = self.limits.lock().expect("limits lock");
+        (limits.last_cost, limits.graphql_remaining)
     }
 
     /// The tail of a job's log. GitHub answers with a redirect to storage; that second request
