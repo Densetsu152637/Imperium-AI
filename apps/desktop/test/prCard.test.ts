@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { PrStatus } from "@imperium/protocol";
 
-import { describePr, nextStatus, oneLine, parseBindInput, refOfUrl, safeLink } from "../src/sessions/prCard.ts";
+import { describePr, isFirstRead, nextStatus, oneLine, parseBindInput, refOfUrl, safeLink } from "../src/sessions/prCard.ts";
 
 const status = (over: Partial<PrStatus> = {}): PrStatus => ({
   url: "https://github.com/owner/repo/pull/7",
@@ -194,6 +194,15 @@ test("a status answer never replaces a newer notification", () => {
   assert.equal(nextStatus(newer, old, true), old);
   assert.equal(nextStatus(newer, null, true), null);
   assert.equal(nextStatus(newer, null, false), null);
+});
+
+test("a null notification only clears the shown status", () => {
+  assert.equal(nextStatus(status(), null, true), null);
+});
+
+test("a binding awaiting its first read is not a failure", () => {
+  assert.equal(isFirstRead("the pull request has not been read yet"), true);
+  assert.equal(isFirstRead("the pull request could not be read: rate limited"), false);
 });
 
 test("the bind field accepts a pull request address and refuses everything else", () => {

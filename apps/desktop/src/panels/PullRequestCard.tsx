@@ -5,7 +5,7 @@
 // and is drawn as text (`sessions/prCard.ts` cleans it); the link opens in the user's own browser.
 
 import { ChevronDown, ChevronRight, ExternalLink, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import type { PrStatus, PullRequestsChangedParams } from "@imperium/protocol";
 
@@ -15,10 +15,10 @@ import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { ToolState } from "../components/ToolState";
 import type { DaemonClient } from "../daemon/client";
-import { message } from "../plugins/model";
+import { message } from "../shared/plainText";
 import { formatAgo } from "../shared/ago";
 import { openExternal } from "../shared/openExternal";
-import { describePr, nextStatus, parseBindInput, refOfUrl, type PrCardView, type StateIcon } from "../sessions/prCard";
+import { describePr, isFirstRead, nextStatus, parseBindInput, refOfUrl, type PrCardView, type StateIcon } from "../sessions/prCard";
 
 const STATE_ICONS = {
   open: GitPullRequest,
@@ -39,6 +39,9 @@ export function PullRequestCard({ sessionId, url, archived, client }: Props) {
   const [status, setStatus] = useState<PrStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const bound = Boolean(url) && !archived;
+  // Where focus goes when the card changes shape under the user's keys: to the bind link after
+  // the binding ends, to the Details toggle after a bind.
+  const focusAfter = useRef<"bind-link" | "details" | null>(null);
 
   // Follow the session's pull request: the daemon's cached status, then every change.
   useEffect(() => {
@@ -70,36 +73,74 @@ export function PullRequestCard({ sessionId, url, archived, client }: Props) {
       </p>
     ) : null;
   }
-  if (!bound) return client ? <BindForm sessionId={sessionId} client={client} onBound={setStatus} /> : null;
+  if (!bound) {
+    return client ? (
+      <BindForm
+        key={sessionId}
+        sessionId={sessionId}
+        client={client}
+        focusLink={focusAfter.current === "bind-link"}
+        onFocused={() => (focusAfter.current = null)}
+        onBound={(bound) => {
+          focusAfter.current = "details";
+          setStatus(bound);
+        }}
+      />
+    ) : null;
+  }
   if (!status) {
     return (
       <section className="pr-card" aria-label="Pull request">
-        {loadError ? (
+        {loadError && !isFirstRead(loadError) ? (
           <Notice tone="warn" title="Could not read the pull request">
             {loadError}
           </Notice>
         ) : (
           <p className="pr-loading muted" role="status">
-            <GitPullRequest aria-hidden="true" /> Reading {refOfUrl(url!)}…
+            <GitPullRequest aria-hidden="true" /> Reading {refOfUrl(url!)}…{loadError ? ` ${loadError}` : ""}
           </p>
         )}
       </section>
     );
   }
-  return <Bound status={status} sessionId={sessionId} client={client} onUnbound={() => setStatus(null)} />;
+  return (
+    <Bound
+      key={sessionId}
+      status={status}
+      sessionId={sessionId}
+      client={client}
+      focusToggle={focusAfter.current === "details"}
+      onFocused={() => (focusAfter.current = null)}
+      onUnbound={() => {
+        focusAfter.current = "bind-link";
+        setStatus(null);
+      }}
+    />
+  );
 }
 
 function Bound({
   status,
   sessionId,
   client,
+  focusToggle,
+  onFocused,
   onUnbound,
 }: {
   status: PrStatus;
   sessionId: string;
   client: DaemonClient | null;
+  /** Focus the Details toggle once, as the card has just replaced the bind form. */
+  focusToggle: boolean;
+  onFocused: () => void;
   onUnbound: () => void;
 }) {
+  const toggle = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!focusToggle) return;
+    toggle.current?.focus();
+    onFocused();
+  }, []);
   const view = describePr(status);
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -134,6 +175,7 @@ function Bound({
           </button>
         )}
         <button
+          ref={toggle}
           type="button"
           className="ghost small"
           aria-expanded={open}
@@ -237,8 +279,30 @@ function Controls({ view }: { view: PrCardView }) {
 }
 
 /** The empty state: no pull request is bound, so a one-line prompt that opens the bind field. */
-function BindForm({ sessionId, client, onBound }: { sessionId: string; client: DaemonClient; onBound: (status: PrStatus) => void }) {
+function BindForm({
+  sessionId,
+  client,
+  focusLink,
+  onFocused,
+  onBound,
+}: {
+  sessionId: string;
+  client: DaemonClient;
+  /** Focus the link once, as the card has just returned to its empty state. */
+  focusLink: boolean;
+  onFocused: () => void;
+  onBound: (status: PrStatus) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const link = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(focusLink);
+  // After Cancel or an ended binding, the link the user came from takes focus back.
+  useEffect(() => {
+    if (open || !returnFocus.current) return;
+    returnFocus.current = false;
+    link.current?.focus();
+    onFocused();
+  }, [open]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -250,7 +314,7 @@ function BindForm({ sessionId, client, onBound }: { sessionId: string; client: D
       <p className="pr-card pr-empty muted">
         <GitPullRequest aria-hidden="true" />
         <span>No pull request is bound to this session.</span>
-        <button type="button" className="link" onClick={() => setOpen(true)}>
+        <button ref={link} type="button" className="link" onClick={() => setOpen(true)}>
           Bind a pull request
         </button>
       </p>
@@ -278,6 +342,7 @@ function BindForm({ sessionId, client, onBound }: { sessionId: string; client: D
     <form
       className="pr-card pr-bind"
       aria-label="Bind a pull request"
+      noValidate
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -298,7 +363,11 @@ function BindForm({ sessionId, client, onBound }: { sessionId: string; client: D
         <button type="submit" className="primary small" disabled={busy}>
           {busy ? "Binding…" : "Bind"}
         </button>
-        <button type="button" className="ghost small" onClick={() => setOpen(false)}>
+        <button type="button" className="ghost small" onClick={() => {
+            returnFocus.current = true;
+            setOpen(false);
+          }}
+        >
           Cancel
         </button>
       </div>

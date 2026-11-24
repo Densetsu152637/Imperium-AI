@@ -6,7 +6,7 @@
 
 import type { PrMergeMethod, PrStatus } from "@imperium/protocol";
 
-import { plain } from "../plugins/model.ts";
+import { plain } from "../shared/plainText.ts";
 
 export type Tone = "neutral" | "accent" | "ok" | "warn" | "danger";
 
@@ -203,3 +203,6 @@ export function parseBindInput(text: string): BindInput {
   if (!match) return { ok: false, reason: "Use an address like https://github.com/owner/repo/pull/12." };
   return { ok: true, url: `https://github.com/${match[1]}/${match[2]}/pull/${match[3]}` };
 }
+
+/** The daemon's answer while a fresh binding awaits its first read: not a failure. */
+export const isFirstRead = (reason: string): boolean => reason.startsWith("the pull request has not been read yet");

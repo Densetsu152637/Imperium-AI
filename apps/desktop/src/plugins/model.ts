@@ -23,21 +23,15 @@ import type {
   PluginsSuggestionsResult,
 } from "@imperium/protocol";
 
+import { message, plain } from "../shared/plainText.ts";
+
 /** The part of the daemon client the window uses, so tests can stand in for it. */
 export type Caller = { call<Result>(method: string, params?: unknown): Promise<Result> };
 
 export type Installed = Map<string, InstalledPlugin>;
 
-// Control, bidirectional-override and zero-width characters can hide or reorder text.
-// eslint-disable-next-line no-control-regex
-const HIDDEN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\u206a-\u206f\ufeff]/g;
-
-/** Repository- or marketplace-supplied text with control and direction-changing characters removed. */
-export function plain(text: string | null | undefined): string {
-  return (text ?? "").replace(HIDDEN, "").trim();
-}
-
-export const message = (error: unknown) => plain(error instanceof Error ? error.message : String(error));
+// The helpers moved to shared/plainText.ts; the Plugins window keeps importing them from here.
+export { message, plain };
 
 /** Every word of the query appears in some text (the Connectors rule). */
 export function matches(query: string, ...texts: (string | null | undefined)[]): boolean {

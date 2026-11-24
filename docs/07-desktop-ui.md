@@ -1563,8 +1563,8 @@ A session bound to a pull request (`SessionSummary.pull_request_url`,
 plan (`panels/PullRequestCard.tsx`, styles in `styles/pull-request.css`, rules in
 `sessions/prCard.ts`, tested in `test/prCard.test.ts`). The card reads `pull_requests.status` once
 and then follows the `pull_requests.changed` notifications of its session (an answer that arrives
-after a newer notification does not replace it; a null status after an unbind returns the card to
-its empty state). It never polls and never calls GitHub. `imperium pr status` prints the same data
+after a newer notification does not replace it; a null status only clears what is shown, and the
+empty state follows the session summary losing its `pull_request_url` through `session.updated`). It never polls and never calls GitHub. `imperium pr status` prints the same data
 in a terminal.
 
 - **Collapsed:** a state badge (*Open*, *Draft*, *Merged*, *Closed*, each with its own icon), the
@@ -1582,7 +1582,10 @@ in a terminal.
   method is not allowed. Auto-merge says why GitHub will not take it now: a draft (*GitHub does not
   allow auto-merge on a draft*), a merged or closed pull request, or `auto_merge.reason_unavailable`.
 - **Errors:** `PrStatus.error` shows in a warning `Notice` above the last good data, which stays;
-  the card does not blank. A failed first read shows the daemon's reason.
+  the card does not blank. A binding still awaiting its first read shows the neutral loading line with the daemon's
+  reason; a real failure shows the warning. Focus moves with the card: Cancel and ending the binding
+  return it to *Bind a pull request*, and a successful bind puts it on *Details*. Switching sessions
+  resets the card.
 - **No pull request:** one muted line with *Bind a pull request*, which opens an address field
   (`https://github.com/owner/repo/pull/12`, checked in the window before it is sent) and *Bind*
   (`pull_requests.bind`); the daemon's refusal (another repository, no token) shows under the
