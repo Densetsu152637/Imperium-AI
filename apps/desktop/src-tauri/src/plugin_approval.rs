@@ -1147,7 +1147,12 @@ mod tests {
                 if path.is_dir() {
                     scan(&path, found);
                 } else if let Ok(text) = std::fs::read_to_string(&path) {
-                    for method in ["plugins.approve", "plugins.approval_challenge", "approval_challenge", "PluginsApprove"] {
+                    for method in [
+                        "plugins.approve",
+                        "plugins.approval_challenge",
+                        "approval_challenge",
+                        "PluginsApprove",
+                    ] {
                         if text.contains(method) {
                             found.push(format!("{} names {method}", path.display()));
                         }
