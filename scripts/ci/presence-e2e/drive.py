@@ -256,11 +256,16 @@ class Driver:
         self.session = webdriver("POST", "/session", capabilities, timeout=120)["sessionId"]
         webdriver("POST", f"/session/{self.session}/timeouts", {"script": 420_000})
         for _ in range(240):
-            kind = webdriver(
-                "POST",
-                f"/session/{self.session}/execute/sync",
-                {"script": "return typeof window.__TAURI_INTERNALS__", "args": []},
-            )
+            try:
+                kind = webdriver(
+                    "POST",
+                    f"/session/{self.session}/execute/sync",
+                    {"script": "return typeof window.__TAURI_INTERNALS__", "args": []},
+                )
+            except OSError:
+                # The page is still loading (or the driver is busy): ask again.
+                time.sleep(0.5)
+                continue
             if kind == "object":
                 break
             time.sleep(0.5)
@@ -365,6 +370,8 @@ class Driver:
             log(f"closing the session: {error}")
         os.killpg(self.process.pid, signal.SIGTERM)
         self.process.wait(timeout=30)
+        # Let the port and the app's window go before the next driver starts on the same port.
+        time.sleep(3)
 
 
 # ---- The native dialog, through AT-SPI ----
