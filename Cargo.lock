@@ -2566,6 +2566,10 @@ dependencies = [
 name = "imperium-github"
 version = "0.2.0"
 dependencies = [
+ "imperium-config",
+ "imperium-github",
+ "imperium-github-fake",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

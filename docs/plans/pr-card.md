@@ -2,8 +2,8 @@
 
 Revision: 2026-11-24, revision 3 (plan critic rounds 1 and 2: F1 to F8, N1 to N3 and their
 improvements, and the root's answers to the open questions folded in); written against `experimental` at `7518405a`
-(last updated). Roadmap [item 54](../12-roadmap.md#next-in-order). Status: planned (no stage
-started).
+(last updated). Roadmap [item 54](../12-roadmap.md#next-in-order). Status: in progress (stage 1
+done; stage 2 next).
 
 Claude Code's desktop app binds a pull request to a session and shows it as a card (state,
 checks, review decision, mergeability) that updates by itself. The user can turn on **auto-fix**
@@ -268,6 +268,11 @@ the PR touches.
 6. **The API host is fixed (F6).** The token goes only to `https://api.github.com`. The base URL
    is a constructor argument of `HttpGitHub`; the daemon builds it from a constant, and tests
    inject a client or a fake in process. No setting, environment variable or file selects a host.
+   `HttpGitHub::new(base_url, ...)` exists only under the `test-host` cargo feature, which only
+   the crate's own dev-dependencies enable. The HTTP client keeps honouring `HTTPS_PROXY`,
+   `HTTP_PROXY` and `NO_PROXY` (corporate proxies); a proxy sees only a TLS tunnel to
+   `api.github.com` whose certificate is still verified, so it cannot read the token or change
+   the host.
 7. **Loops and cost.** The daemon's own replies carry a footer marker and recorded ids and never
    wake the session. A comment cursor, the attempt cap, the replies-per-hour cap and a budget
    (built in [stage 8](#stage-8-replies-and-injection-corpus), not assumed) bound the rest.
@@ -404,9 +409,58 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   `cargo clippy` clean.
 - Risks: GraphQL shapes drift (queries live in one module with fixtures from the documented
   shapes); the fake diverging from GitHub.
-- Status: pending
-- Outcome: -
-- Handoff notes: nothing calls the new code yet, so this stage cannot change behaviour.
+- Status: done in two stacked pull requests: the fake server (#268), then the client (this change).
+- Outcome:
+  - `imperium-github-fake` (dev-only, `publish = false`; a test fails if a manifest names it
+    outside `[dev-dependencies]`). `FakeGithub::start(token)` serves on a loopback port and a test
+    passes `fake.url()` to `HttpGitHub::new`. The fake dispatches GraphQL on `operationName`
+    (`PrStatus`, `FailingPrs`, `ReviewThreads`, `ReplyToThread`, `EnableAutoMerge`,
+    `DisableAutoMerge`) and answers the REST calls the client makes; it also sends the
+    `x-ratelimit-*` headers on GraphQL replies and redirects job logs to a second path that
+    records whether the token was sent.
+  - `imperium-github`: the `GitHub` trait keeps `failing_prs`, `failure_log` and `pr_state` and
+    gains `pr_status`, `review_threads`, `new_comments` (a comment-id cursor), `collaborator_permission`,
+    `repo_merge_settings`, `reply_to_thread` and `set_auto_merge`. The new methods have
+    "not supported" defaults, so `GhCli` and tests' own fakes (as in `tests/autofix.rs`) compile unchanged.
+    `HttpGitHub::api(tokens)` is the daemon's constructor (host from the `API_BASE` constant);
+    `HttpGitHub::new(base_url, tokens)` takes a base URL as its only host input, accepts
+    `https`, or `http` on loopback, and exists only under the `test-host` feature (enabled by the
+    crate's own dev-dependencies, never in a release build). `reqwest` still honours
+    `HTTPS_PROXY`. Redirects are never followed with the token; the one place
+    GitHub redirects (job logs) is followed without it.
+  - `Secret` has no `Debug` or `Display` (compile-fail doctests); `scrub` removes the token,
+    token-shaped words and `Bearer` values from every error. `TokenSource` has `GhAuthToken`
+    (`gh auth token --hostname github.com`, `GH_HOST`, `GH_TOKEN` and `GITHUB_TOKEN` removed from
+    its environment) and `StaticToken`. A 401 fetches a fresh token once.
+  - Rate limits: `Retry-After` and `x-ratelimit-reset` with remaining 0 block the next call; a wait
+    longer than the policy's `max_wait` (default 60 s) is an error, not a sleep; the GraphQL
+    `rateLimit` cost and remaining points defer a query when fewer than `reserve` (default 100)
+    plus the last query's cost remain.
+  - Host-pinning test: a child run of the test with `GITHUB_API_URL`, `GITHUB_SERVER_URL` and
+    `GH_HOST` set, a scan that no client source reads the environment, config layers and a project
+    `.imperium/config.toml` naming a host, and the settings editor refusing `github.api_url`,
+    `github.host` and `github.base_url` as unknown settings. Loading still tolerates unknown keys
+    in files (as it does for every key); nothing reads them, which is what the pinning rests on.
+    The plan's "recording connector sees only `api.github.com`" is covered structurally (the
+    constructor takes no configuration) rather than by a connector, because a request cannot be
+    sent to the real host in CI.
+  - `failure_log` for `HttpGitHub` returns the last 64 KiB of the job's whole log, not only the
+    failed steps (the REST endpoint has no failed-only form); callers still frame it as untrusted.
+- Handoff notes: nothing calls `HttpGitHub` yet, so this stage cannot change behaviour. Stage 2
+  builds `HttpGitHub::api(Arc::new(GhAuthToken))` in the daemon and migrates the call sites.
+  - **S1.** `failure_log` returns the last 64 KiB of the whole job log, so the tail is mostly
+    post-job noise. Stage 2 must either keep `GhCli::failure_log` for Fix CI, or cut the log to
+    the failed step's section (using `##[group]` markers and the step conclusions from
+    `GET /actions/jobs/{id}`). Fetch the tail with `Range: bytes=-65536` or a ring buffer. Add a
+    test with a failed step followed by post-job noise.
+  - **S2.** `failing_prs` takes the first 50 open PRs and filters by author on the client, so it
+    misses the user's PRs when a repository has more than 50 open. Use a GraphQL
+    `search(query: "repo:o/r is:pr is:open author:@me", ...)`; `@me` does not work with an
+    installation token. Add a test with 60 other people's PRs plus one of the user's.
+  - Stage 7: `new_comments` stops at 10 pages and applies the cursor on the client. Use the REST
+    `since` parameter plus the id cursor.
+  - GraphQL documents are in `queries.rs` and are written from GitHub's documented shapes; a
+    live check (`tests/live.rs`, run by a separate workflow job) validates them against the real API.
 
 ## Stage 2: Call-site migration to the new client
 

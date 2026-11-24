@@ -239,7 +239,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-memory`     | Global memory and environment `Memory.md`: entries, index, search, redaction, migration of older project memory (implemented) |
 | `imperium-config`     | Layered config, schema validation, secret store (keychain, encrypted file, in-memory)  |
 | `imperium-automation` | Schedule triggers (cron, interval, one-shot), missed runs, run history (implemented); project agents (planned) |
-| `imperium-github`     | Failing pull request checks through `gh`, auto-fix worktrees, commit and push (implemented) |
+| `imperium-github`     | Failing pull request checks through `gh`, auto-fix worktrees, commit and push (implemented); `HttpGitHub`, a GraphQL and REST client pinned to `api.github.com` with a `Secret` token, scrubbed errors and rate-limit handling (implemented, not yet called: [pull-request card plan](plans/pr-card.md), stage 1) |
 | `imperium-github-fake` | A fake GitHub API server for tests (dev-only: only `[dev-dependencies]` may name it, never in a release build; [plan](plans/pr-card.md#stage-1-github-client-and-fake-github-server)) |
 | `imperium-media`      | Image (OpenAI-compatible, ComfyUI), speech, and transcription tools (implemented) |
 | `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours run in the desktop's mod frames, not here ([16](16-pets.md)) |
@@ -283,7 +283,7 @@ one is added without editing its callers:
 | Image generation | `ImageGenerator` (`imperium-media`) | `OpenAiImages`, `ComfyUi` | `media.image.backend` through `ImageGenerators::register` / `build` |
 | Local model leasing | `LocalModels` (`imperium-api`) | The `imperium-local` supervisor | The daemon at start |
 | Local memory residency | `ResidencyPolicy` (`imperium-local::residency`) | `Standard` (the arbiter's rules), `CorePolicy` (`imperium-core::residency`) | The daemon's residency controller installs `CorePolicy` with `Supervisor::set_policy` |
-| GitHub | `GitHub` (`imperium-github`) | REST client | The daemon at start |
+| GitHub | `GitHub` (`imperium-github`) | `GhCli` (auto-fix today), `HttpGitHub` (the card, from stage 2) | The daemon at start |
 | Model clients | `ChatClient` (`imperium-models`), with an optional `Tokenizer` | `OpenAiCompatible`, `LlamaCpp` | `endpoints.<id>.kind` (default `openai`) through `ChatClients::register` / `build`, given to each session as `SessionConfig::clients` |
 | Agent tools beyond the agent's own | `ToolProvider` (`imperium-api`) | `WebTools` (`imperium-web`, with the browser), `MediaTools` (`imperium-media`), `McpTools` (`imperium-mcp`) | The daemon for each session, as `SessionConfig::tools` |
 
