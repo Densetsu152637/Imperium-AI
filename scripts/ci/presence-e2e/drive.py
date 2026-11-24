@@ -38,7 +38,8 @@ APP = RELEASE / "imperium-desktop"
 HOME = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "presence-e2e-home"
 MARKET = LOGS / "market"
 MARKET_NAME = "e2e"
-ENV_NAME = "e2e-env"
+# The environment the app selects on a fresh home: the daemon's default one.
+ENV_NAME = "Home"
 DRIVER = "http://127.0.0.1:4444"
 DIALOG_TITLE = "Approve plugin"
 
@@ -532,10 +533,6 @@ def main():
     driver = None
     try:
         cli("plugin", "marketplace", "add", "--", str(MARKET))
-        # An environment, made before the app starts so that it is the one the app selects (the
-        # Plugins window turns plugins on and off for it).
-        (HOME / "work").mkdir(parents=True, exist_ok=True)
-        cli("env", "create", ENV_NAME, str(HOME / "work"))
         driver = Driver("main")
 
         def approve_counted():
