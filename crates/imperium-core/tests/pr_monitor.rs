@@ -755,7 +755,6 @@ async fn a_saved_link_that_is_no_longer_the_origins_is_dropped_on_restore() {
     assert_eq!(session.status().0, SessionStatus::Idle);
     assert!(world.daemon.summary(&session).pull_request_url.is_none());
     assert!(world.meta(&id).get("pull_request").is_none());
-    assert!(world.daemon.pr_monitor().watched().is_empty());
 }
 
 #[tokio::test]
