@@ -1133,7 +1133,8 @@ configuration (including `.gitmodules` and `.gitattributes`) or git hooks, or a 
 anything but the one fix commit, is flagged in that request and always asks, even with
 `push = "auto"`. Residual risk: approved commands run code the session wrote, and with
 `push = "auto"` a non-CI file that CI executes (`package.json` scripts, `build.rs`, a
-`Makefile`, tests) is pushed without asking. Only on approval does it push to the
+`Makefile`, tests) is pushed without asking, and then runs in CI with the repository's secrets.
+Only on approval does it push to the
 pull request's branch, as a plain push. It never force-pushes, merges, closes, or approves.
 After `max_attempts_per_pr` (default 3) failing commits on one pull request it stops and
 says so. Progress goes to every client as `autofix.event` notifications (`started`,

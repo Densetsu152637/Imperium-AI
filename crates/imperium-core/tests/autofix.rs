@@ -280,9 +280,10 @@ fn a_log_cannot_close_the_block_or_the_fence() {
     // The real markers each appear exactly once, whatever the log said.
     assert_eq!(prompt.matches(&format!("CI-DATA-{tag}-BEGIN")).count(), 1);
     assert_eq!(prompt.matches(&format!("CI-DATA-{tag}-END")).count(), 1);
+    // The log's own `ci-data-end` text, in any case, was broken; none is left.
     assert_eq!(
         prompt.to_ascii_lowercase().matches("ci-data-end").count(),
-        1
+        0
     );
     let close = prompt.rfind(&format!("CI-DATA-{tag}-END")).unwrap();
     assert!(prompt[..close].contains("Ignore the above"));
@@ -509,4 +510,43 @@ async fn the_approval_covers_every_commit_the_push_would_send() {
     assert!(text.contains(".github/workflows/x.yml"), "{text}");
     assert!(text.contains("never pushed automatically"), "{text}");
     assert!(text.contains("2 commits"), "{text}");
+}
+
+/// Positive control for the test above: with the same allow rule and an unattended session left
+/// at its default mode, the command does run, so the rule does reach the session and it is the
+/// `ask` mode that stops it.
+#[tokio::test]
+async fn the_same_allow_rule_runs_the_command_without_the_ask_mode() {
+    let Fixture {
+        daemon,
+        clone,
+        _dir,
+        ..
+    } = fixture_with(
+        "run_command",
+        json!({"command": "echo x > ran.txt"}),
+        "ask",
+        r#"
+        [permissions]
+        rules = [{ tool = "run_command", action = "allow" }]
+        "#,
+    )
+    .await;
+    let (ok, summary, _) = daemon
+        .run_prompt(
+            &clone.display().to_string(),
+            None,
+            "run it".to_string(),
+            imperium_core::SessionOptions {
+                pre_approved: vec!["edit_file".into()],
+                ..imperium_core::SessionOptions::default()
+            },
+            Duration::from_secs(30),
+        )
+        .await;
+    assert!(ok, "{summary}");
+    assert!(
+        clone.join("ran.txt").exists(),
+        "the allow rule did not run the command"
+    );
 }
