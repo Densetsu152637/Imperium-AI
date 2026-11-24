@@ -2,8 +2,8 @@
 
 Revision: 2026-11-24, revision 3 (plan critic rounds 1 and 2: F1 to F8, N1 to N3 and their
 improvements, and the root's answers to the open questions folded in); written against `experimental` at `7518405a`
-(last updated). Roadmap [item 54](../12-roadmap.md#next-in-order). Status: in progress (stage 1
-done; stage 2 next).
+(last updated). Roadmap [item 54](../12-roadmap.md#next-in-order). Status: in progress (stages 1 and 2
+done; stage 3 in review; stage 4 next).
 
 Claude Code's desktop app binds a pull request to a session and shows it as a card (state,
 checks, review decision, mergeability) that updates by itself. The user can turn on **auto-fix**
@@ -295,7 +295,7 @@ through the same approvals path as a push approval; it cannot enable auto-merge.
 
 | Method or notification | Stage | Does |
 | --- | --- | --- |
-| `pull_requests.bind` | 3 | `{session_id, url}` → `PrStatus`; refuses a repository that is not the session's `origin` or one the user's sessions already have a PR bound from |
+| `pull_requests.bind` | 3 | `{session_id, url}` → `PrStatus`; refuses a repository that is not the session's `origin` (a repository another session has bound does not count) |
 | `pull_requests.unbind` | 3 | `{session_id}`; turns the session's switches off |
 | `pull_requests.status` | 3 | `{session_id}` → `PrStatus` from the daemon's cache |
 | `pull_requests.changed` (notification) | 3 | `{session_id, status}` on any change, bind and unbind |
@@ -557,10 +557,60 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   on one PR share one poll; `Retry-After` pauses polling; protocol snapshot and type generation
   checks pass.
 - Risks: poll rate against rate limits (conditional requests and a floor); a PR on another host.
-- Status: pending
-- Outcome: -
-- Handoff notes: `PrStatus` is the only source the card and the CLI read. If the stage passes
-  about 800 lines, move the poller's back-off and rate-limit handling to stage 4.
+- Status: done (this change)
+- Outcome:
+  - **Protocol 0.57.** `crates/imperium-protocol/src/methods/pull_requests.rs`:
+    `pull_requests.bind` (`{session_id, url}` → `PrStatus`), `pull_requests.unbind`
+    (`{session_id}` → `{was_bound}`), `pull_requests.status` (the cache) and the
+    `pull_requests.changed` notification (`{session_id, status}`, `status` null after an
+    unbind). `PrStatus` is the plan's shape (`state` is `open | draft | merged | closed` with
+    `draft` beside it; `checks` is `{passed, failed, pending, failing_names}`; `updated_at` is
+    milliseconds of the last change; `error?`). `auto_fix` and `untrusted_handled` are always
+    false and `auto_archive_on_close` is the setting's value until stages 4 and 7.
+    `SessionInfo.pull_request_url` is stage 4's, not added. A paired phone may call
+    `pull_requests.status` only.
+  - **`pr_monitor.rs`.** `DaemonState::pr_monitor()` holds the cache (`PrMonitor`, which replaces
+    `DaemonState.watches`) and the poller. One tracked entry per distinct pull request
+    (repository compared without case); sessions bound to it share one poll. A status is built
+    from `HttpGitHub::pr_status` plus the repository's merge methods (`repo_merge_settings`,
+    cached 5 minutes, an error cached as long, so a token without push access does not retry
+    every poll); the card's link is rebuilt as `https://github.com/<repo>/pull/<n>`, and titles,
+    names and the error are capped and stripped of control and direction characters. A change is
+    detected by comparing the new status with the cached one (not `updated_at`); one
+    `pull_requests.changed` goes to every bound session on a change and none otherwise. A poll
+    that fails keeps the last good status and sets `error` (one notification when the error text
+    changes, one when it clears). The interval is `poll_s` (floor 10 s from `start_autofix`),
+    `min(poll_s, 60)` while a connection has called a `pull_requests.*` method, and each failure
+    doubles a pull request's wait (up to 15 minutes, and at least the wait GitHub's rate limit
+    reported). `HttpGitHub` itself already refuses a call inside a `Retry-After` or reset window
+    without sending it.
+  - **Binding.** `bind` takes only `https://github.com/<owner>/<repo>/pull/<n>` (and a trailing
+    `/files`, `/commits` or `/checks`, a query or fragment) and refuses a repository that is
+    not the session's `origin` (`git config --get remote.origin.url` through `safe_git`, so
+    nothing the repository's config names runs; another session's binding does not count). A failed first read unbinds again. `session.control` `watch` and `unwatch` are
+    aliases (the same repository check); `DaemonState::watch` is the daemon's own entry (Fix CI
+    after a push) with no check, since the repository comes from the user's `[[github.watch]]`.
+    The watch loop left `autofix.rs`; `watch_pull_requests` no longer exists and the tests start
+    `PrMonitor::start`. A closed pull request keeps its binding and shows `closed`; the session
+    is archived per `sessions.auto_archive_on_pr_close` and the binding is dropped with it.
+  - **Fake and client.** `PrStatus` of the client gained `base_ref` and `is_in_merge_queue`
+    (GraphQL `baseRefName` and `isInMergeQueue`); the fake serves both and has `set_mergeable`,
+    `set_in_merge_queue` and `close`.
+  - **Stage 2 review follow-ups** (the log scan, the `failed` event for a listing that cannot
+    work, the `GH_TOKEN` source) are in the change before this one (#274; see stage 2).
+  - Tests: `cargo test -p imperium-core --test pr_monitor` (bind by URL, an unrelated repository,
+    one notification per change and none without, an error, two sessions on one poll, a
+    `Retry-After`, the live poller); unit tests for URL and remote parsing, back-off, check
+    counts, the failure reporter and the token sources; `tests/phone.rs` checks a phone's scopes.
+- Handoff notes: `PrStatus` is the only source the card and the CLI read. The poller's back-off
+  and rate-limit handling stayed in this stage (it is small). The binding is in memory: stage 4
+  persists it, binds on `session.review_pull_request` and adds `SessionInfo.pull_request_url`.
+  A bound pull request is polled while it stays bound, merged ones included, until the session is
+  archived. The card must show `error` with the last good data, not blank it. Stage 6 needs
+  `allowed_methods` and `auto_merge.reason_unavailable` (`repo_merge_settings` fails for a token
+  without push access: the status then says the token cannot read the merge settings).
+  Not verified in this stage: nothing was built or run locally (CI builds), including the
+  hand-written generated TypeScript.
 
 ## Stage 4: Persistence and auto-bind
 

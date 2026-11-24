@@ -138,6 +138,7 @@ mod errors;
 mod models;
 mod pets;
 mod policy;
+mod pull_requests;
 mod sessions;
 mod system;
 use errors::*;
@@ -233,6 +234,8 @@ pub struct Connection {
     resources: Option<crate::resources::Watch>,
     /// The topics chosen with `events.subscribe`; narrows what `receives` lets through.
     events: crate::events::EventFilter,
+    /// Held from the first `pull_requests.*` call until the connection ends.
+    pr_watch: Option<crate::pr_monitor::Watch>,
     /// Held from `system.lease` until the connection ends.
     lease: Option<crate::lifetime::LeaseGuard>,
 }
@@ -255,6 +258,7 @@ impl Connection {
             challenges: crate::app_identity::Challenges::default(),
             resources: None,
             events: crate::events::EventFilter::default(),
+            pr_watch: None,
             lease: None,
         }
     }
@@ -291,6 +295,7 @@ impl Connection {
             challenges: crate::app_identity::Challenges::default(),
             resources: None,
             events: crate::events::EventFilter::default(),
+            pr_watch: None,
             lease: None,
         }
     }
@@ -426,6 +431,9 @@ impl Connection {
             return outcome;
         }
         if let Some(outcome) = self.dispatch_environments(&mut c) {
+            return outcome;
+        }
+        if let Some(outcome) = self.dispatch_pull_requests(&mut c) {
             return outcome;
         }
         if let Some(outcome) = self.dispatch_sessions(&mut c) {

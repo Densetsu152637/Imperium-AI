@@ -61,6 +61,10 @@ pub struct PrStatus {
     pub is_draft: bool,
     pub head_ref: String,
     pub head_sha: String,
+    /// The branch the pull request merges into.
+    pub base_ref: String,
+    /// Waiting in the base branch's merge queue.
+    pub is_in_merge_queue: bool,
     pub review_decision: Option<String>,
     /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN`.
     pub mergeable: String,
@@ -199,6 +203,8 @@ pub(crate) fn parse_status(pr: &Value) -> PrStatus {
         is_draft: pr["isDraft"].as_bool().unwrap_or_default(),
         head_ref: text(pr, "headRefName"),
         head_sha: text(pr, "headRefOid"),
+        base_ref: text(pr, "baseRefName"),
+        is_in_merge_queue: pr["isInMergeQueue"].as_bool().unwrap_or_default(),
         review_decision: pr["reviewDecision"].as_str().map(str::to_string),
         mergeable: text(pr, "mergeable"),
         merge_state: text(pr, "mergeStateStatus"),

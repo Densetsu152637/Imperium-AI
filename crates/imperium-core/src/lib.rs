@@ -43,6 +43,7 @@ mod phone;
 mod plugin_install;
 mod plugin_records;
 mod plugin_suggestions;
+mod pr_monitor;
 mod project_agent;
 pub mod residency;
 mod resources;
@@ -61,9 +62,7 @@ mod worktrees;
 mod writers;
 
 pub use approvals::Approvals;
-pub use autofix::{
-    FIX_TOOLS, ci_config_paths, ci_prompt, fix_ci, push_approval, watch_pull_requests,
-};
+pub use autofix::{FIX_TOOLS, ci_config_paths, ci_prompt, fix_ci, push_approval};
 pub use bench::Bench;
 pub use downloads::Downloads;
 pub use endpoint::EndpointFile;
@@ -75,6 +74,7 @@ pub use local::LocalRuntime;
 pub use openai::OpenAiApi;
 pub use pets::PetEngine;
 pub use phone::Devices;
+pub use pr_monitor::PrMonitor;
 pub use project_agent::ProjectAgents;
 pub use resources::{ResourceMonitor, Watch as ResourceWatch};
 pub use rpc::{Connection, Deferred, Handled, Subscription, next_event};

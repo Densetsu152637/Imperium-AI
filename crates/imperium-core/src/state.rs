@@ -286,8 +286,8 @@ pub struct DaemonState {
     phone_address: OnceLock<std::net::SocketAddr>,
     /// The OpenAI-compatible API server for other tools.
     openai: crate::openai::OpenAiApi,
-    /// Pull requests sessions watch: session id to (repo, number).
-    watches: Mutex<HashMap<String, (String, u64)>>,
+    /// The pull requests sessions are bound to, their cached status and the poller.
+    pr_monitor: Arc<crate::pr_monitor::PrMonitor>,
     /// Turns what the daemon sees into quiet, busy, or saturated ([`start_sampling`]).
     monitor: Arc<LoadMonitor>,
     /// A load view to use instead of the monitor (for tests).
@@ -411,7 +411,7 @@ impl DaemonState {
             devices,
             phone_address: OnceLock::new(),
             openai: crate::openai::OpenAiApi::default(),
-            watches: Mutex::new(HashMap::new()),
+            pr_monitor: Arc::default(),
             monitor,
             load_override: OnceLock::new(),
             pending_briefs: Mutex::new(Vec::new()),
@@ -730,12 +730,17 @@ impl DaemonState {
         &self.approvals
     }
 
-    /// Starts GitHub auto-fix when it is enabled and repositories are watched, and the watcher
-    /// for pull requests sessions follow.
+    /// Starts GitHub auto-fix when it is enabled and repositories are watched, and the monitor
+    /// of the pull requests sessions are bound to.
     pub fn start_autofix(self: &Arc<Self>, github: Arc<dyn imperium_github::GitHub>) {
         let poll = std::time::Duration::from_secs(self.settings().github.autofix.poll_s.max(10));
-        crate::autofix::watch_pull_requests(self, Arc::clone(&github), poll);
+        self.pr_monitor.start(self, Arc::clone(&github), poll);
         crate::autofix::start(self, github);
+    }
+
+    /// The pull requests sessions are bound to.
+    pub fn pr_monitor(&self) -> &Arc<crate::pr_monitor::PrMonitor> {
+        &self.pr_monitor
     }
 
     pub fn scheduler(&self) -> Option<&Arc<Scheduler>> {
@@ -1198,14 +1203,6 @@ pub(crate) fn bundled_dirs(relative: &str) -> Vec<PathBuf> {
 fn same_path(a: &str, b: &str) -> bool {
     a == b
         || matches!((Path::new(a).canonicalize(), Path::new(b).canonicalize()), (Ok(x), Ok(y)) if x == y)
-}
-
-fn lock_watches(
-    watches: &Mutex<HashMap<String, (String, u64)>>,
-) -> std::sync::MutexGuard<'_, HashMap<String, (String, u64)>> {
-    watches
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn lock_pending(

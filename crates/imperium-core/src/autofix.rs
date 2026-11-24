@@ -274,6 +274,24 @@ const DATA_MARK: &str = "CI-DATA";
 /// direction-changing characters go (newlines and tabs stay only when `multiline`), backticks
 /// become apostrophes so no code fence can be opened or closed, and the block's own marker is
 /// broken in any letter case.
+/// Invisible and direction-changing characters: soft hyphen, Arabic letter mark, Mongolian vowel
+/// separator, zero-width and direction marks, line and paragraph separators, bidi controls,
+/// word joiners and invisible operators, byte order mark, interlinear annotation and tag
+/// characters. One set for the CI-log envelope and for text shown on the card.
+pub(crate) fn is_invisible(c: char) -> bool {
+    matches!(c,
+        '\u{AD}'
+        | '\u{61C}'
+        | '\u{180E}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{2028}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{206F}'
+        | '\u{FEFF}'
+        | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{E0000}'..='\u{E007F}')
+}
+
 fn neutralise(text: &str, multiline: bool) -> String {
     let mut cleaned: String = text
         .chars()
@@ -281,16 +299,7 @@ fn neutralise(text: &str, multiline: bool) -> String {
             '\n' | '\t' if multiline => Some(c),
             '\n' | '\r' | '\t' => Some(' '),
             '`' => Some('\''),
-            '\u{AD}'
-            | '\u{61C}'
-            | '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{2028}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{206F}'
-            | '\u{FEFF}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{E0000}'..='\u{E007F}' => None,
+            c if is_invisible(c) => None,
             c if c.is_control() => None,
             c => Some(c),
         })
@@ -455,44 +464,6 @@ fn announce(
             summary,
         },
     );
-}
-
-/// Checks pull requests that sessions watch: merged ones mark their session merged, closed
-/// ones end the watch, and either way the session is archived when
-/// `sessions.auto_archive_on_pr_close` allows (a merged session still working is archived at a
-/// later check, once it is idle). Runs every `poll` while the daemon runs.
-pub fn watch_pull_requests(daemon: &Arc<DaemonState>, github: Arc<dyn GitHub>, poll: Duration) {
-    let daemon = Arc::downgrade(daemon);
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(poll).await;
-            let Some(state) = daemon.upgrade() else {
-                return;
-            };
-            for (session_id, repo, number) in state.watched() {
-                let Some(session) = state.session(&session_id) else {
-                    continue;
-                };
-                match github.pr_state(&repo, number).await.as_deref() {
-                    Ok("MERGED") => {
-                        session.set_watch(Some((
-                            imperium_protocol::session::SessionStatus::Merged,
-                            format!("{repo}#{number}"),
-                        )));
-                        state.archive_after_pull_request(&session);
-                    }
-                    Ok("CLOSED") => {
-                        state.watch(&session, None);
-                        state.archive_after_pull_request(&session);
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::debug!(%repo, number, %error, "could not check a watched pull request")
-                    }
-                }
-            }
-        }
-    });
 }
 
 #[cfg(test)]

@@ -43,6 +43,7 @@ const READ_METHODS: &[&str] = &[
     "pet.list",
     "pet.strip",
     "projects.list",
+    "pull_requests.status",
 ];
 const APPROVE_METHODS: &[&str] = &["approvals.respond", "pet.interact"];
 

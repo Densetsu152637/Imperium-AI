@@ -23,7 +23,7 @@ pub(crate) fn pr_status() -> String {
     format!(
         "query PrStatus($owner: String!, $name: String!, $number: Int!) {{
   repository(owner: $owner, name: $name) {{ pullRequest(number: $number) {{
-    id number title url state isDraft headRefName headRefOid reviewDecision mergeable mergeStateStatus
+    id number title url state isDraft headRefName headRefOid baseRefName isInMergeQueue reviewDecision mergeable mergeStateStatus
     autoMergeRequest {{ mergeMethod }}
     {ROLLUP} }} }}
   {RATE} }}"

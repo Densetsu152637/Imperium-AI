@@ -1170,6 +1170,39 @@ daemon's memory only and is never written to a prompt, tool result, journal, log
 reply. Auto-fix needs a user's token: an app installation token cannot name "the signed-in user's
 pull requests" and is reported as a failure.
 
+**Pull requests bound to sessions (implemented, [pull-request card plan](plans/pr-card.md),
+stage 3).** A session can be bound to a pull request: `pull_requests.bind` takes the session and
+the URL (`https://github.com/<owner>/<repo>/pull/<n>`, optionally followed by `/files`,
+`/commits` or `/checks`, a query or a fragment; nothing else) and answers with the pull request's
+**status**. The repository must be the session's `origin` remote (read from the folder's git
+config; a linked worktree or a subfolder resolves to its checkout's `origin`), and a repository
+another session has bound does not count: a binding must not let a session follow, and later be
+woken by, a repository that is not its own. A bind answers from the cache when the pull request
+was read less than one poll interval ago, so repeated binds spend no GitHub quota. A
+session has at most one pull request; `pull_requests.unbind` ends it. The daemon keeps one cached
+status per pull request, however many sessions follow it, and refreshes it itself every `poll_s`
+(120 s; at most 60 s while a client has asked for a status), so clients never poll GitHub. Every
+change, and every bind and unbind, goes to every client as `pull_requests.changed`
+(`{session_id, status}`; `status` is null after an unbind); a poll that finds nothing new says
+nothing. `pull_requests.status` reads the cache. A paired phone receives every
+`pull_requests.changed` notification like any other client, may call `pull_requests.status`, and
+cannot bind or unbind. The status has the title, state (`open`, `draft`, `merged`, `closed`), head commit,
+base and head branch, check counts with the names of failing checks, review decision,
+mergeability (`mergeable`, `conflicting`, `unknown`) and GitHub's merge state (`queued` in a
+merge queue), the repository's allowed merge methods, the auto-merge request GitHub holds (and
+why it cannot be turned on: a draft, a repository that does not allow it, a merge queue, a
+closed pull request), `auto_fix` and `auto_archive_on_close`, and an `error`. Every text in it
+came from GitHub: it is capped, has control characters and every invisible or direction-changing character
+(the set Fix CI's log envelope strips too) removed, and the
+link is always rebuilt as `https://github.com/<repo>/pull/<n>`. When a poll fails the last good
+status stays, with `error` set; failures back off (the interval doubled each time, at most 15
+minutes), and a rate limit GitHub reports is waited out. The session shows `watching` while the
+pull request is open and `merged` once it merges, and is archived on a merge or close as
+`sessions.auto_archive_on_pr_close` says. The old `session.control` `watch` and `unwatch`
+actions are aliases for bind and unbind, with the same repository check. Not yet: the binding
+survives only until the daemon restarts, a pull request opened by `session.review_pull_request`
+is not bound automatically, and the card, the auto-fix switch and auto-merge are later stages.
+
 ### Events
 
 Delivered by polling the GitHub API (default, works behind NAT) or by a webhook through the

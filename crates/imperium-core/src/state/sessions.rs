@@ -227,28 +227,21 @@ impl DaemonState {
         }
     }
 
-    /// Links a session to a pull request it watches; the watcher marks it merged when the
-    /// pull request merges. `None` stops watching.
-    pub fn watch(&self, session: &Session, target: Option<(String, u64)>) {
-        let key = session.id().to_string();
-        match target {
-            Some((repo, number)) => {
-                session.set_watch(Some((SessionStatus::Watching, format!("{repo}#{number}"))));
-                lock_watches(&self.watches).insert(key, (repo, number));
-            }
-            None => {
-                session.set_watch(None);
-                lock_watches(&self.watches).remove(&key);
-            }
-        }
+    /// Pull requests sessions follow that are not yet merged or closed, by session id.
+    pub fn watched(&self) -> Vec<(String, String, u64)> {
+        self.pr_monitor.watched()
     }
 
-    /// Pull requests sessions watch, by session id.
-    pub fn watched(&self) -> Vec<(String, String, u64)> {
-        lock_watches(&self.watches)
-            .iter()
-            .map(|(id, (repo, number))| (id.clone(), repo.clone(), *number))
-            .collect()
+    /// Binds a session to a pull request (the old `watch`, now the same as
+    /// `pull_requests.bind` without its repository check, for the daemon's own callers); the
+    /// monitor marks the session merged when the pull request merges. `None` unbinds.
+    pub fn watch(&self, session: &Session, target: Option<(String, u64)>) {
+        match target {
+            Some((repo, number)) => self.pr_monitor.bind(self, session, &repo, number),
+            None => {
+                self.pr_monitor.unbind(self, session);
+            }
+        }
     }
 
     /// Stops and forgets a session so it does not continue after a restart, removing its

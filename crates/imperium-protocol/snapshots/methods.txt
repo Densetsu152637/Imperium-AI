@@ -86,6 +86,9 @@ method plugins.uninstall
 method plugins.update
 method projects.list
 method projects.message
+method pull_requests.bind
+method pull_requests.status
+method pull_requests.unbind
 method runtime.install
 method runtime.set_server
 method runtime.status
@@ -154,6 +157,7 @@ notification model.swapped_out
 notification models.bench_progress
 notification models.download_progress
 notification pet.state
+notification pull_requests.changed
 notification runtime.install_progress
 notification runtime.update_progress
 notification schedule.event
