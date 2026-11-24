@@ -156,7 +156,21 @@ function List({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-export function DetailView({ plugin, state, onBack }: { plugin: PluginListing; state: ListingState; onBack: () => void }) {
+export function DetailView({
+  plugin,
+  state,
+  onBack,
+  onInstall,
+  onUpdate,
+}: {
+  plugin: PluginListing;
+  state: ListingState;
+  onBack: () => void;
+  /** Opens the trust view to install. */
+  onInstall: () => void;
+  /** Opens the trust view to update. */
+  onUpdate: () => void;
+}) {
   const c = plugin.components;
   const back = useRef<HTMLButtonElement>(null);
   // The card that opened this is gone from the page, so focus starts on Back.
@@ -207,7 +221,21 @@ export function DetailView({ plugin, state, onBack }: { plugin: PluginListing; s
       ) : (
         <p className="connectors-note">The marketplace does not say what this plugin contains.</p>
       )}
-      <Notice tone="info">Installing from this window is not available yet.</Notice>
+      {plugin.source_kind === "unsupported" ? (
+        <Notice tone="info">This version cannot read this plugin's source, so it cannot be installed.</Notice>
+      ) : (
+        <div className="trust-actions">
+          {state === "available" ? (
+            <button className="primary" onClick={onInstall}>
+              Install…
+            </button>
+          ) : (
+            <button className="primary" onClick={onUpdate}>
+              Review update…
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -7,6 +7,13 @@ import type {
   MarketplaceInfo,
   MarketplaceRefresh,
   PluginListing,
+  PluginPreview,
+  PluginsInstallResult,
+  PluginsSecretResult,
+  PluginsSetEnabledResult,
+  PluginsUninstallResult,
+  PluginsUpdateResult,
+  ConfigUndoResult,
   PluginsBrowseResult,
   PluginsDismissSuggestionResult,
   PluginsListResult,
@@ -124,15 +131,35 @@ export type Offers = Pick<PluginsSuggestionsResult, "source_folder" | "trusted" 
 /** Whether any offer is left to show. */
 export const offerCount = (offers: Offers | null): number => (offers ? offers.marketplaces.length + offers.plugins.length : 0);
 
-/** The daemon calls the window makes. None installs, enables or approves anything. */
+/**
+ * The daemon calls the window makes. Counting an approval is not one of them: that is the app's
+ * own `plugin_approve` command (approve.ts), and the webview has no daemon method for it.
+ */
 export function pluginsApi(client: Caller, environment: string | null) {
   return {
     marketplaces: async (): Promise<MarketplaceInfo[]> =>
       (await client.call<PluginsMarketplaceListResult>("plugins.marketplace_list")).marketplaces,
     browse: (marketplace?: string): Promise<PluginsBrowseResult> =>
       client.call<PluginsBrowseResult>("plugins.browse", marketplace ? { marketplace } : {}),
-    installed: (): Promise<PluginsListResult> =>
-      client.call<PluginsListResult>("plugins.list", environment ? { environment } : {}),
+    /** The installed plugins as the user sees them (`scope` null) or as an environment does; by default the window's own. */
+    installed: (scope: string | null = environment): Promise<PluginsListResult> =>
+      client.call<PluginsListResult>("plugins.list", scope ? { environment: scope } : {}),
+    inspect: (id: string, revision?: string): Promise<PluginPreview> =>
+      client.call<PluginPreview>("plugins.inspect", revision ? { id, revision } : { id }),
+    install: (preview: Pick<PluginPreview, "id" | "sha256">, env?: string | null): Promise<PluginsInstallResult> =>
+      client.call<PluginsInstallResult>("plugins.install", env ? { id: preview.id, sha256: preview.sha256, environment: env } : { id: preview.id, sha256: preview.sha256 }),
+    update: (preview: Pick<PluginPreview, "id" | "sha256">): Promise<PluginsUpdateResult> =>
+      client.call<PluginsUpdateResult>("plugins.update", { name: preview.id, sha256: preview.sha256 }),
+    setEnabled: (name: string, enabled: boolean, env?: string | null): Promise<PluginsSetEnabledResult> =>
+      client.call<PluginsSetEnabledResult>("plugins.set_enabled", env ? { name, enabled, environment: env } : { name, enabled }),
+    uninstall: (name: string, deleteSecrets: boolean): Promise<PluginsUninstallResult> =>
+      client.call<PluginsUninstallResult>("plugins.uninstall", { name, delete_secrets: deleteSecrets }),
+    undo: (id: number): Promise<ConfigUndoResult> => client.call<ConfigUndoResult>("config.undo", { id }),
+    /** Write-only: the value goes to the daemon and is never read back. */
+    setSecret: (name: string, variable: string, value: string): Promise<PluginsSecretResult> =>
+      client.call<PluginsSecretResult>("plugins.set_secret", { name, variable, value }),
+    deleteSecret: (name: string, variable: string): Promise<PluginsSecretResult> =>
+      client.call<PluginsSecretResult>("plugins.delete_secret", { name, variable }),
     suggestions: (): Promise<PluginsSuggestionsResult | null> =>
       environment ? client.call<PluginsSuggestionsResult>("plugins.suggestions", { environment }) : Promise.resolve(null),
     addMarketplace: (source: string, revision?: string): Promise<MarketplaceInfo> =>
@@ -159,6 +186,12 @@ export function withoutOffer(offers: Offers, key: string): Offers {
 }
 
 export const mutedOffers = (offers: Offers): Offers => ({ ...offers, muted: true, marketplaces: [], plugins: [] });
+
+/** Uninstalls a plugin, then reads the list again; the change id lets the user undo it. */
+export async function uninstallSequence(api: Api, name: string, deleteSecrets: boolean, scope: string | null) {
+  const result = await api.uninstall(name, deleteSecrets);
+  return { changeId: result.change_id, name: plain(name), installed: await api.installed(scope) };
+}
 
 export type Draft = { source: string; revision: string };
 export const EMPTY_DRAFT: Draft = { source: "", revision: "" };

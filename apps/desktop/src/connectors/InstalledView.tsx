@@ -300,6 +300,11 @@ export function InstalledView({
                 </span>
                 <div className="connector-row-title">
                   <strong>{plugin.name}</strong>
+                  {plugin.withheld && (
+                    <Badge tone="warn" title={plugin.withheld_reason ?? undefined}>
+                      Needs approval
+                    </Badge>
+                  )}
                   <span className="connector-row-counts">
                     {[
                       count(plugin.skills, "skill"),

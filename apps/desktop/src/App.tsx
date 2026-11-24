@@ -1677,7 +1677,7 @@ export function App() {
           }}
         />
       )}
-      {showPlugins && <PluginsWindow client={client} environment={envId} onClose={() => setShowPlugins(false)} />}
+      {showPlugins && <PluginsWindow client={client} environment={envId} environmentName={environmentName} onClose={() => setShowPlugins(false)} />}
       {showSettings && (
         <SettingsWindow
           settings={settings}
