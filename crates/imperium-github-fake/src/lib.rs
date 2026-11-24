@@ -417,7 +417,15 @@ async fn blob(
             operation: None,
             authorized: headers.contains_key("authorization"),
         });
-    format!("log of job {id}: step failed\n").into_response()
+    // The whole job log: the failed step, then a post-job step.
+    format!(
+        "log of job {id}: step failed
+##[group]Post job cleanup
+Post-job noise
+##[endgroup]
+"
+    )
+    .into_response()
 }
 
 fn repo_json(repo: &Repo) -> Value {
