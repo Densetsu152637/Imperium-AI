@@ -240,6 +240,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-config`     | Layered config, schema validation, secret store (keychain, encrypted file, in-memory)  |
 | `imperium-automation` | Schedule triggers (cron, interval, one-shot), missed runs, run history (implemented); project agents (planned) |
 | `imperium-github`     | Failing pull request checks through `gh`, auto-fix worktrees, commit and push (implemented) |
+| `imperium-github-fake` | A fake GitHub API server for tests (dev-only: only `[dev-dependencies]` may name it, never in a release build; [plan](plans/pr-card.md#stage-1-github-client-and-fake-github-server)) |
 | `imperium-media`      | Image (OpenAI-compatible, ComfyUI), speech, and transcription tools (implemented) |
 | `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours run in the desktop's mod frames, not here ([16](16-pets.md)) |
 | `imperium-core`       | The daemon (`imperium-core` binary, formerly `imperiumd`), also a library for tests |
