@@ -616,6 +616,9 @@ export const reducedMotion = (): boolean =>
   (globalThis.document?.documentElement?.classList.contains("reduce-motion") ?? false) ||
   (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
 
+/** How often the frame loop runs its membership ticks, in ms. */
+const TICK_MS = 50;
+
 /** One shared loop paints every room: a single timer however many pets there are. */
 export class FrameLoop {
   private rooms = new Set<Room>();
@@ -627,7 +630,7 @@ export class FrameLoop {
     this.rooms.add(room);
   }
 
-  /** Called every frame before painting (for ticks that change membership). */
+  /** Called before painting, at most every `TICK_MS` (for ticks that change membership). */
   onFrame(fn: () => void): void {
     this.tickers.push(fn);
   }
@@ -637,13 +640,14 @@ export class FrameLoop {
     this.running = true;
     const frame = (): void => {
       const now = Date.now();
-      // 20 frames a second is plenty: the shortest frame lasts 90 ms.
-      if (now - this.last >= 50) {
+      // Membership ticks are cheap to delay; painting runs on every display frame, so a pet that
+      // is dragged or walks moves at the monitor's refresh rate (movement is scaled by elapsed time).
+      if (now - this.last >= TICK_MS) {
         this.last = now;
         for (const fn of this.tickers) fn();
-        const reduced = reducedMotion();
-        for (const room of this.rooms) room.paint(now, reduced);
       }
+      const reduced = reducedMotion();
+      for (const room of this.rooms) room.paint(now, reduced);
       requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
