@@ -35,6 +35,7 @@ export function useWindows(isDetached: boolean, shortcuts: AppSettings["shortcut
   const [settingsRequest, setSettingsRequest] = useState<{ section: string } | null>(null);
   const [modelDialog, setModelDialog] = useState<ModelDialogTarget | null>(null);
   const [showConnectors, setShowConnectors] = useState(false);
+  const [showPlugins, setShowPlugins] = useState(false);
 
   // Esc leaves the panel editor, unless a dialog is open (it closes that instead).
   useEffect(() => {
@@ -73,5 +74,7 @@ export function useWindows(isDetached: boolean, shortcuts: AppSettings["shortcut
     setModelDialog,
     showConnectors,
     setShowConnectors,
+    showPlugins,
+    setShowPlugins,
   };
 }
