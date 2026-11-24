@@ -78,8 +78,14 @@ its Linux job builds the release daemon, CLI and desktop app.
   plugin with 91 hooks (pages titled "page i of n", nothing installed); polkit refusing a wrong
   password (installed, withheld, nothing recorded); no authentication agent (`dialog-only`); the
   action file removed while an agent runs (`dialog-only`, polkit never asked); and the app started
-  with `LD_PRELOAD` (refused with its name, no dialog, nothing sent). Each one checks the
-  command's answer and `imperium plugin list`. The logs (daemon, CLI, agents, tauri-driver) are
+  with `LD_PRELOAD` (refused with its name, no dialog, nothing sent); and the **Plugins window's
+  trust UI**, driven in the same app session through WebDriver (clicks and reads of the page's own
+  elements): open the window, the plugin's detail and trust view (the hook and the hash listed),
+  *Approve and install* (the native dialog, polkit, `counted`), off and on for the environment (the
+  user's view unchanged) and for the user, an update from the marketplace shown in the trust view and
+  taken with *Update without approving* (withheld, not approved), *Approve* from the row (`counted`
+  again), uninstall and *Undo*. Each one checks the command's answer or the page, and `imperium
+  plugin list`. The logs (daemon, CLI, agents, tauri-driver) are
   kept as the `presence-e2e-logs` artifact.
 - **macOS and Windows** (`headless`): runs `imperium-ipc`'s presence tests with their output
   shown, so the log records what LocalAuthentication and Windows Hello answer on a runner with

@@ -38,6 +38,7 @@ APP = RELEASE / "imperium-desktop"
 HOME = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "presence-e2e-home"
 MARKET = LOGS / "market"
 MARKET_NAME = "e2e"
+ENV_NAME = "e2e-env"
 DRIVER = "http://127.0.0.1:4444"
 DIALOG_TITLE = "Approve plugin"
 
@@ -71,7 +72,7 @@ def hooks(commands):
 def make_market():
     """A folder marketplace: one-hook plugins for each scenario, and `big`, whose summary takes
     several dialog pages (about 90 hooks and one 300-character command)."""
-    plugins = ["alpha", "gamma", "delta", "epsilon", "zeta"]
+    plugins = ["alpha", "gamma", "delta", "epsilon", "zeta", "uix"]
     entries = [{"name": name, "source": f"./{name}"} for name in plugins + ["big"]]
     write(
         MARKET / ".claude-plugin/marketplace.json",
@@ -80,10 +81,17 @@ def make_market():
     for name in plugins:
         write(MARKET / name / ".claude-plugin/plugin.json", json.dumps({"name": name}))
         write(MARKET / name / "hooks/hooks.json", hooks([f"echo {name}"]))
+    set_uix("echo uix-1")
     write(MARKET / "big/.claude-plugin/plugin.json", json.dumps({"name": "big"}))
     commands = [f"echo hook-{index}" for index in range(90)]
     commands.append("echo " + "x" * 295)
     write(MARKET / "big/hooks/hooks.json", hooks(commands))
+
+
+def set_uix(command):
+    """The Plugins window scenario's plugin: one hook, whose command a scenario changes to make
+    an update."""
+    write(MARKET / "uix/hooks/hooks.json", hooks([command]))
 
 
 # ---- The daemon and the command line ----
@@ -130,11 +138,12 @@ def start_daemon():
     raise Failed("the daemon wrote no endpoint with a local socket")
 
 
-def plugin_list():
-    """`imperium plugin list` as {name: (state, approval)}."""
+def plugin_list(environment=None):
+    """`imperium plugin list` (for an environment, when given) as {name: (state, approval)}."""
     listed = {}
     current = None
-    for line in cli("plugin", "list").splitlines():
+    args = ["plugin", "list"] + (["--env", environment] if environment else [])
+    for line in cli(*args).splitlines():
         if line and not line.startswith(" ") and ": " in line:
             name = line.split(" ", 1)[0].split(":", 1)[0]
             state = line.rsplit(": ", 1)[1]
@@ -296,6 +305,58 @@ class Driver:
         wait.result = result
         return wait
 
+    def js(self, script, *args):
+        return webdriver(
+            "POST", f"/session/{self.session}/execute/sync", {"script": script, "args": list(args)}
+        )
+
+    def ui_click(self, selector, text=None, limit=30):
+        """Clicks the first visible element matching `selector` whose trimmed text is `text` (any
+        text when None), waiting for it to appear."""
+        script = (
+            "const [sel, text] = arguments;"
+            "const el = [...document.querySelectorAll(sel)]"
+            ".filter(e => e.getClientRects().length > 0)"
+            ".find(e => text === null || e.textContent.trim() === text);"
+            "if (!el || el.disabled) return false; el.click(); return true;"
+        )
+        deadline = time.time() + limit
+        while time.time() < deadline:
+            if self.js(script, selector, text):
+                return
+            time.sleep(0.5)
+        describe_screen(f"no-element-{int(time.time())}")
+        raise Failed(f"no enabled element {selector!r} with text {text!r} to click: {self.page()}")
+
+    def ui_text(self, selector):
+        return self.js(
+            "const el = document.querySelector(arguments[0]); return el ? el.textContent : null;",
+            selector,
+        )
+
+    def ui_wait(self, selector, text=None, limit=30):
+        """Waits for an element matching `selector` whose text contains `text`; its text."""
+        deadline = time.time() + limit
+        while time.time() < deadline:
+            found = self.js(
+                "const [sel, text] = arguments;"
+                "const el = [...document.querySelectorAll(sel)]"
+                ".find(e => text === null || e.textContent.includes(text));"
+                "return el ? el.textContent : null;",
+                selector,
+                text,
+            )
+            if found is not None:
+                return found
+            time.sleep(0.5)
+        raise Failed(f"no element {selector!r} containing {text!r}: {self.page()}")
+
+    def page(self):
+        """The visible text of the Plugins window, for a failure message."""
+        return self.js(
+            "const d = document.querySelector('[role=dialog]'); return d ? d.innerText.slice(0, 1500) : document.body.innerText.slice(0, 500);"
+        )
+
     def close(self):
         try:
             webdriver("DELETE", f"/session/{self.session}", timeout=30)
@@ -446,6 +507,18 @@ def set_action_file(installed):
     raise Failed(f"polkit did not {'load' if installed else 'drop'} the action")
 
 
+class Pending:
+    """Stands for a call that is under way in the page, for `next_dialog`, which stops waiting when
+    the call it is given has answered; the page's own answer shows in its notice instead."""
+
+    class thread:
+        @staticmethod
+        def is_alive():
+            return True
+
+    result = {}
+
+
 def scenario(name, run):
     log(f"--- scenario {name}")
     run()
@@ -459,6 +532,10 @@ def main():
     driver = None
     try:
         cli("plugin", "marketplace", "add", "--", str(MARKET))
+        # An environment, made before the app starts so that it is the one the app selects (the
+        # Plugins window turns plugins on and off for it).
+        (HOME / "work").mkdir(parents=True, exist_ok=True)
+        cli("env", "create", ENV_NAME, str(HOME / "work"))
         driver = Driver("main")
 
         def approve_counted():
@@ -540,11 +617,114 @@ def main():
             agent = None
             set_action_file(True)
 
+        def plugins_window():
+            """The Plugins window's trust UI, end to end: install, approve (polkit), enable and
+            disable for one environment and for the user, update (withheld until approved
+            again), uninstall and undo. Each step is checked through `imperium plugin list`."""
+            nonlocal agent
+            env_name = ENV_NAME
+            agent = Agent(daemon.pid, PASSWORD, "window")
+            driver.ui_click('button[aria-label="Plugins"]')
+            driver.ui_wait("[role=dialog]", "Plugins")
+
+            # Install: Browse, the plugin's detail, the trust view with what it runs.
+            driver.ui_click('button[data-plugin-id="uix@' + MARKET_NAME + '"]')
+            driver.ui_click("button", "Install\u2026")
+            trust = driver.ui_wait(".trust-view", "echo uix-1")
+            check("Hooks (1)" in trust, f"the trust view does not count the hook: {trust}")
+            check("Content hash" in trust, f"the trust view shows no hash: {trust}")
+            check("uix@" + MARKET_NAME in trust, f"the trust view does not name the plugin: {trust}")
+
+            # Approve and install: the native dialog, then polkit.
+            driver.ui_click("button", "Approve and install")
+            answer_pages(["Approve"], Pending)
+            told = driver.ui_wait(".notice-box", "Approved", limit=60)
+            check("device" in told, f"the window did not report a counted approval: {told}")
+            check(plugin_list().get("uix") == ("on", "counted"), f"plugin list: {plugin_list()}")
+            check("org.imperium.plugins.approve" in agent.text(), "polkit asked nothing")
+            row = driver.ui_wait('[data-plugin="uix"]', "counted")
+            check("Withheld" not in row, f"the installed row says withheld: {row}")
+
+            # Disable and enable for one environment, then for the user.
+            driver.ui_click("button", "In " + env_name)
+            label = f"uix on in {env_name}"
+            driver.ui_click(f'[role=switch][aria-label="{label}"]')
+            for _ in range(20):
+                if plugin_list(env_name).get("uix", ("", ""))[0] == "off":
+                    break
+                time.sleep(0.5)
+            check(plugin_list(env_name).get("uix", ("", ""))[0] == "off", "off for the environment")
+            check(plugin_list().get("uix", ("", ""))[0] == "on", "the user's view should stay on")
+            driver.ui_click(f'[role=switch][aria-label="{label}"]')
+            for _ in range(20):
+                if plugin_list(env_name).get("uix", ("", ""))[0] == "on":
+                    break
+                time.sleep(0.5)
+            check(plugin_list(env_name).get("uix", ("", ""))[0] == "on", "on again for the environment")
+            driver.ui_click("button", "For you")
+            driver.ui_click('[role=switch][aria-label="uix on for you"]')
+            for _ in range(20):
+                if plugin_list().get("uix", ("", ""))[0] == "off":
+                    break
+                time.sleep(0.5)
+            check(plugin_list().get("uix", ("", ""))[0] == "off", "off for the user")
+            driver.ui_click('[role=switch][aria-label="uix on for you"]')
+            for _ in range(20):
+                if plugin_list().get("uix") == ("on", "counted"):
+                    break
+                time.sleep(0.5)
+            check(plugin_list().get("uix") == ("on", "counted"), f"on again: {plugin_list()}")
+
+            # Update: the marketplace changes the hook; the trust view shows the new command, and
+            # updating without approving leaves it withheld until it is approved again.
+            set_uix("echo uix-2")
+            cli("plugin", "marketplace", "refresh", MARKET_NAME)
+            driver.ui_click('button[aria-label="Check uix for an update"]')
+            trust = driver.ui_wait(".trust-view", "echo uix-2")
+            check("Update" in trust, f"not an update view: {trust}")
+            driver.ui_click("button", "Update without approving")
+            driver.ui_wait(".notice-box", "withheld")
+            listed = plugin_list()
+            check(listed.get("uix") == ("withheld", "not approved"), f"plugin list: {listed}")
+            row = driver.ui_wait('[data-plugin="uix"]', "Withheld")
+            check("Not approved" in row, f"the row does not say not approved: {row}")
+
+            # Approve the update from the row.
+            driver.ui_click('[data-plugin="uix"] button', "Approve")
+            trust = driver.ui_wait(".trust-view", "echo uix-2")
+            driver.ui_click(".trust-view button.primary", "Approve")
+            answer_pages(["Approve"], Pending)
+            driver.ui_wait(".notice-box", "Approved", limit=60)
+            for _ in range(20):
+                if plugin_list().get("uix") == ("on", "counted"):
+                    break
+                time.sleep(0.5)
+            check(plugin_list().get("uix") == ("on", "counted"), f"plugin list: {plugin_list()}")
+
+            # Uninstall, then undo.
+            driver.ui_click("button[data-uninstall=uix]")
+            driver.ui_click('[role=alertdialog] button.danger', "Uninstall")
+            driver.ui_wait(".notice-box", "Uninstalled uix")
+            for _ in range(20):
+                if "uix" not in plugin_list():
+                    break
+                time.sleep(0.5)
+            check("uix" not in plugin_list(), f"still installed: {plugin_list()}")
+            driver.ui_click(".notice-box button", "Undo")
+            for _ in range(20):
+                if plugin_list().get("uix") == ("on", "counted"):
+                    break
+                time.sleep(0.5)
+            check(plugin_list().get("uix") == ("on", "counted"), f"undo did not restore it: {plugin_list()}")
+            agent.stop()
+            agent = None
+
         scenario("approve, polkit passes: counted", approve_counted)
         scenario("cancel on page 2 of a multi-page plugin: nothing installed", cancel_on_page_two)
         scenario("polkit refuses (wrong password): nothing recorded", refused)
         scenario("no authentication agent: dialog-only", no_agent)
         scenario("action file removed: dialog-only", no_action_file)
+        scenario("Plugins window: install, approve, enable, update, uninstall, undo", plugins_window)
         driver.close()
         driver = None
 
