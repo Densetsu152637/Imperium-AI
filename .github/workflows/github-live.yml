@@ -44,10 +44,10 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Run the live check
         env:
-          # With the optional LIVE_READ_PAT secret, never on a pull request: the owner must be able
+          # With the optional LIVE_READ_PAT secret, only on experimental and never on a pull request: the owner must be able
           # to write and the merge flags must be readable (docs/11-ci-cd.md).
-          GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && secrets.LIVE_READ_PAT || secrets.GITHUB_TOKEN }}
-          LIVE_EXPECT_WRITE: ${{ github.event_name != 'pull_request' && secrets.LIVE_READ_PAT && '1' || '' }}
+          GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/experimental' && secrets.LIVE_READ_PAT || secrets.GITHUB_TOKEN }}
+          LIVE_EXPECT_WRITE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/experimental' && secrets.LIVE_READ_PAT && '1' || '' }}
         run: cargo test -p imperium-github --test live --locked -- --ignored --nocapture 2>&1 | tee live.log
         shell: bash
       - name: Report the permission branch
