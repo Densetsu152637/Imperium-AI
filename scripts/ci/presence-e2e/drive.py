@@ -319,7 +319,9 @@ def walk(node, depth=0):
 
 
 def dialogs():
-    """The app's open approval dialogs (GTK message dialogs titled "Approve plugin...")."""
+    """The app's open approval dialogs, as (title, node). GTK names a message dialog's accessible
+    after its kind ("Warning"), so a dialog is an alert or dialog holding a label that starts with
+    "Approve plugin": the primary text, which is the page's title."""
     found = []
     desktop = Atspi.get_desktop(0)
     desktop.clear_cache()
@@ -330,8 +332,13 @@ def dialogs():
         app.clear_cache()
         for position in range(app.get_child_count()):
             window = app.get_child_at_index(position)
-            if window is not None and (window.get_name() or "").startswith(DIALOG_TITLE):
-                found.append(window)
+            if window is None or window.get_role() not in (Atspi.Role.ALERT, Atspi.Role.DIALOG):
+                continue
+            for node in walk(window):
+                name = node.get_name() or ""
+                if node.get_role() == Atspi.Role.LABEL and name.startswith(DIALOG_TITLE):
+                    found.append((name, window))
+                    break
     return found
 
 
@@ -367,8 +374,7 @@ def next_dialog(seen, call, limit=60):
     while time.time() < deadline:
         if not call.thread.is_alive():
             raise Failed(f"plugin_approve answered before a dialog was seen: {call.result}")
-        for dialog in dialogs():
-            title = dialog.get_name()
+        for title, dialog in dialogs():
             if title in seen:
                 continue
             nodes = list(walk(dialog))
