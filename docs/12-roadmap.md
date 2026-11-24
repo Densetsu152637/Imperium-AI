@@ -751,6 +751,17 @@ and `environments.agent_update` (protocol 0.28)
     and only the `imperium` command may use them. `--agent <name>` runs an agent file as the
     root (`tools: []` means no tools), for single-turn critics.
 <!-- markdownlint-disable-next-line MD029 -->
+54. **Pull-request card, auto-merge and review-comment fix** (planned). Claude Code's pull-request
+    monitor in Imperium: a live card in the session (title, state, checks, review decision,
+    mergeability), an auto-merge switch that only the user can turn on, with the merge method
+    chosen, and auto-fix that also answers new review comments in the session that opened the
+    pull request, treating comment text as untrusted data. Built on a daemon GitHub client and a
+    fake GitHub test server so every check runs in CI
+    ([plan](plans/pr-card.md), [14](14-projects-and-automation.md#github-auto-fix)).
+<!-- markdownlint-disable-next-line MD029 -->
+55. **Terminal and file panes** (planned). Claude's desktop app shows a terminal and a file
+    viewer beside the conversation; Imperium gets the same two panes. No plan yet.
+<!-- markdownlint-disable-next-line MD029 -->
 57. **Per-environment worktree folder** (planned). An environment can set its own git worktrees
     root folder. Sessions in that environment create and discover their worktrees there instead
     of in the global worktrees folder (`sessions.worktree_dir`, Settings → Sessions;
