@@ -9,11 +9,14 @@ use imperium_github::{
     DaemonGitHub, GhAuthToken, GhCli, HttpGitHub, Secret, TokenFuture, TokenSource,
 };
 
+/// Reads a variable by name.
+type Lookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// A token held in an environment variable of the daemon itself. The first of `names` that is
 /// set and not blank wins; the value is never printed.
 pub struct EnvToken {
     names: Vec<&'static str>,
-    lookup: Box<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    lookup: Lookup,
 }
 
 impl EnvToken {
@@ -42,7 +45,7 @@ impl TokenSource for EnvToken {
         Box::pin(async move {
             self.names
                 .iter()
-                .filter_map(|name| (self.lookup)(*name))
+                .filter_map(|name| (self.lookup)(name))
                 .map(|value| value.trim().to_string())
                 .find(|value| !value.is_empty())
                 .map(Secret::new)
