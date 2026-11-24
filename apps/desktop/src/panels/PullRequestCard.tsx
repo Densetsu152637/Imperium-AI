@@ -111,10 +111,10 @@ export function PullRequestCard({ sessionId, url, archived, client }: Props) {
       client={client}
       focusToggle={focusAfter.current === "details"}
       onFocused={() => (focusAfter.current = null)}
-      onUnbound={() => {
-        focusAfter.current = "bind-link";
-        setStatus(null);
-      }}
+      // The daemon announces the unbind (session.updated) before it answers, so the bind form can
+      // mount first: ask for the focus before the call, and withdraw it if the call fails.
+      onUnbinding={(started) => (focusAfter.current = started ? "bind-link" : null)}
+      onUnbound={() => setStatus(null)}
     />
   );
 }
@@ -125,6 +125,7 @@ function Bound({
   client,
   focusToggle,
   onFocused,
+  onUnbinding,
   onUnbound,
 }: {
   status: PrStatus;
@@ -133,6 +134,8 @@ function Bound({
   /** Focus the Details toggle once, as the card has just replaced the bind form. */
   focusToggle: boolean;
   onFocused: () => void;
+  /** True just before `pull_requests.unbind` is sent, false if it failed. */
+  onUnbinding: (started: boolean) => void;
   onUnbound: () => void;
 }) {
   const toggle = useRef<HTMLButtonElement>(null);
@@ -151,10 +154,12 @@ function Bound({
   const unbind = async () => {
     if (!client) return;
     setProblem(null);
+    onUnbinding(true);
     try {
       await client.call("pull_requests.unbind", { session_id: sessionId });
       onUnbound();
     } catch (error) {
+      onUnbinding(false);
       setProblem(message(error));
     }
   };
@@ -363,7 +368,10 @@ function BindForm({
         <button type="submit" className="primary small" disabled={busy}>
           {busy ? "Binding…" : "Bind"}
         </button>
-        <button type="button" className="ghost small" onClick={() => {
+        <button
+          type="button"
+          className="ghost small"
+          onClick={() => {
             returnFocus.current = true;
             setOpen(false);
           }}
