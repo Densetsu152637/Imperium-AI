@@ -451,20 +451,23 @@ export class Room {
     }
     if (this.opts.badges && entry.kind === "session") {
       const n = busySubs(entry.arbiter);
-      cell.badge.hidden = n === 0;
-      if (n > 0) {
-        cell.badge.textContent = String(n);
+      // Painting runs every display frame: write to the DOM only when something changed.
+      if (cell.badge.hidden !== (n === 0)) cell.badge.hidden = n === 0;
+      const count = String(n);
+      if (n > 0 && cell.badge.textContent !== count) {
+        cell.badge.textContent = count;
         cell.badge.title = `${n} subagent${n === 1 ? "" : "s"} working`;
       }
     }
     this.stand(cell, entry, now);
     if (!pet) {
-      cell.sprite.className = "sprite missing";
+      if (cell.sprite.className !== "sprite missing") cell.sprite.className = "sprite missing";
       this.size(cell, { width: this.metrics.above, height: this.metrics.above }, 1);
-      cell.note.textContent = entry.petId ? "pet not installed" : "no pet";
+      const note = entry.petId ? "pet not installed" : "no pet";
+      if (cell.note.textContent !== note) cell.note.textContent = note;
       return;
     }
-    cell.sprite.className = "sprite";
+    if (cell.sprite.className !== "sprite") cell.sprite.className = "sprite";
     if (cell.note.textContent) cell.note.textContent = "";
     const cur = this.nursery.view(entry, now);
     let anim = cur.kind === "look" ? "look" : resolveAnimation(pet.catalog, cur.name);
