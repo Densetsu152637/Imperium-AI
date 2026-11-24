@@ -67,6 +67,7 @@ import { Composer } from "./Composer";
 import { CompareForm } from "./ComparePanel";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { ModelSuggestionCard } from "./ModelSuggestionCard";
+import { PullRequestCard } from "./PullRequestCard";
 import {
   EffortSelect,
   PermissionModeSelect,
@@ -323,6 +324,13 @@ export function SessionPanel({
           <span>{startedByNote(session.summary.started_by)}</span>
         </p>
       )}
+
+      <PullRequestCard
+        sessionId={sessionId}
+        url={session.summary.pull_request_url ?? null}
+        archived={archived}
+        client={client}
+      />
 
       {session.plan && <PlanView plan={session.plan} />}
 

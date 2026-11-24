@@ -2389,6 +2389,8 @@ dependencies = [
  "imperium-client",
  "imperium-config",
  "imperium-core",
+ "imperium-github",
+ "imperium-github-fake",
  "imperium-ipc",
  "imperium-local",
  "imperium-memory",

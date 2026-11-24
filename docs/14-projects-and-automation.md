@@ -1217,8 +1217,17 @@ bound to the session that opened it as soon as `gh` reports its link, through th
 session's origin is simply not bound, and the open itself is unaffected); it replaces any pull
 request the session had bound. The session's summary carries the link as `pull_request_url`. An
 archived session drops the binding (unarchiving does not poll a closed pull request) and keeps
-the link for its row; a branch or a rewound copy of a session does not inherit the binding. Not
-yet: the card, the auto-fix switch and auto-merge are later stages.
+the link for its row; a branch or a rewound copy of a session does not inherit the binding.
+
+**The card and `imperium pr status` (implemented, stage 5).** The desktop's session view shows the
+bound pull request as a card ([07](07-desktop-ui.md#pull-request-card-implemented)), and
+`imperium pr status [SESSION]` prints the same `PrStatus` in a terminal: the repository and number,
+state, address, title, branches, check counts with the failing names, review, conflicts and merge
+state, the allowed merge methods, the auto-fix and auto-merge switches and the last error. With no
+session it lists every running session that has a pull request bound. Both read the daemon's cache
+(`pull_requests.status`); neither calls GitHub. The CLI writes every control and direction character
+as `\u{..}` (the daemon already strips them, so this is a second line of defence for a terminal).
+Not yet: turning the auto-fix and auto-merge switches on (later stages).
 
 ### Events
 

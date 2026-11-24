@@ -168,6 +168,11 @@ enum Command {
         #[command(subcommand)]
         command: ApprovalsCommand,
     },
+    /// Pull requests bound to sessions: what the desktop's pull-request card shows.
+    Pr {
+        #[command(subcommand)]
+        command: PrCommand,
+    },
     /// Scheduled tasks the daemon runs.
     Schedule {
         #[command(subcommand)]
@@ -630,6 +635,15 @@ enum ApprovalsCommand {
     Approve { id: u64 },
     /// Decline a request.
     Deny { id: u64 },
+}
+
+#[derive(Debug, Subcommand)]
+enum PrCommand {
+    /// Show the pull request bound to a session, or to each running session when none is named.
+    Status {
+        /// The session's id (see `imperium session list`).
+        session: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1157,6 +1171,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ApprovalsCommand::Approve { id } => approvals::respond(id, true),
             ApprovalsCommand::Deny { id } => approvals::respond(id, false),
         },
+        Command::Pr {
+            command: PrCommand::Status { session },
+        } => block_on(async {
+            let (mut client, _) = connect().await?;
+            print!(
+                "{}",
+                imperium_cli::pr::status(&mut client, session.as_deref()).await?
+            );
+            Ok(())
+        }),
         Command::Schedule {
             command: ScheduleCommand::List,
         } => schedule::list(),

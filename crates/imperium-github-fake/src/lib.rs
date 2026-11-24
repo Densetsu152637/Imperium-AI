@@ -749,12 +749,13 @@ mod tests {
                 } else if line.contains("test-host") && !line.starts_with('#') {
                     let client = manifest.ends_with("crates/imperium-github/Cargo.toml");
                     let core = manifest.ends_with("crates/imperium-core/Cargo.toml");
+                    let cli = manifest.ends_with("crates/imperium-cli/Cargo.toml");
                     let allowed = (client
                         && ((line == "test-host = []" && section == "[features]")
                             || (section == "[dev-dependencies]"
                                 && line.starts_with("imperium-github ="))))
-                        // The daemon's tests run against the fake: this one dev-dependency line.
-                        || (core
+                        // The daemon's and the command line's tests run against the fake: this one dev-dependency line.
+                        || ((core || cli)
                             && section == "[dev-dependencies]"
                             && line
                                 == "imperium-github = { path = \"../imperium-github\", features = [\"test-host\"] }");
