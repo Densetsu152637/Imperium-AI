@@ -135,15 +135,17 @@ export function PluginsWindow({
   }, [api]);
 
   /** Runs one action; its result is applied only if the connection and environment are still the same. */
-  const act = async <T,>(what: string, run: () => Promise<T>, apply: (value: T) => void) => {
+  const act = async <T,>(what: string, run: () => Promise<T>, apply: (value: T) => void): Promise<boolean> => {
     const token = generation.current;
     setBusy(what);
     setError(null);
     try {
       const value = await run();
       if (generation.current === token) apply(value);
+      return true;
     } catch (failure) {
       if (generation.current === token) setError(message(failure));
+      return false;
     } finally {
       setBusy(null);
     }
@@ -251,7 +253,7 @@ export function PluginsWindow({
   } else if (tab === "browse") {
     body = (
       <>
-        <SuggestionsView offers={offers} onReview={review} onFind={find} onDismiss={(key) => void dismiss(key)} onMute={(folder) => void mute(folder)} />
+        <SuggestionsView offers={offers} onReview={review} onFind={find} onDismiss={dismiss} onMute={mute} />
         <BrowseView
           plugins={browse?.plugins ?? null}
           problems={browse?.problems ?? []}

@@ -18,8 +18,9 @@ export function SuggestionsView({
   offers: Offers | null;
   onReview: (offer: SuggestedMarketplace) => void;
   onFind: (id: string) => void;
-  onDismiss: (key: string) => void;
-  onMute: (folder: string) => void;
+  /** Resolve true when the daemon took it; on false the focus plan is dropped. */
+  onDismiss: (key: string) => Promise<boolean>;
+  onMute: (folder: string) => Promise<boolean>;
 }) {
   const section = useRef<HTMLElement>(null);
   const mutedNote = useRef<HTMLDivElement>(null);
@@ -34,6 +35,9 @@ export function SuggestionsView({
     const target = buttons && buttons.length > 0 ? buttons[Math.min(want.row, buttons.length - 1)] : null;
     (target ?? document.querySelector<HTMLElement>("[role=tabpanel]"))?.focus();
   }, [offers]);
+  const clearOnFailure = (ok: boolean) => {
+    if (!ok) after.current = null;
+  };
   if (!offers) return null;
   if (offers.muted)
     return (
@@ -55,7 +59,7 @@ export function SuggestionsView({
             className="small"
             onClick={() => {
               after.current = "muted";
-              onMute(offers.source_folder!);
+              void onMute(offers.source_folder!).then(clearOnFailure);
             }}
           >
             <BellOff aria-hidden="true" /> No suggestions from this project
@@ -88,7 +92,7 @@ export function SuggestionsView({
                 aria-label={`Dismiss marketplace ${plain(offer.source)}`}
                 onClick={() => {
                   after.current = { row: index };
-                  onDismiss(offer.key);
+                  void onDismiss(offer.key).then(clearOnFailure);
                 }}
               >
                 <X aria-hidden="true" /> Dismiss
@@ -122,7 +126,7 @@ export function SuggestionsView({
                 aria-label={`Dismiss plugin ${plain(offer.id)}`}
                 onClick={() => {
                   after.current = { row: offers.marketplaces.length + index };
-                  onDismiss(offer.key);
+                  void onDismiss(offer.key).then(clearOnFailure);
                 }}
               >
                 <X aria-hidden="true" /> Dismiss
