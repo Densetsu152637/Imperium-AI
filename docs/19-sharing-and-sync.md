@@ -43,7 +43,7 @@ a conversation (not offered today, [12](12-roadmap.md) item 7).
 | Config layers | Defaults, user `config.toml`, app `models.toml`, host, project `.imperium/config.toml` (shareable) and `.imperium/config.local.toml` (git-ignored), session, environment variables | [10](10-configuration.md#layers) |
 | Shareable project files | `.imperium/config.toml`, `.imperium/policy/`, `.imperium/skills/` | [17](17-memory.md#scopes), [10](10-configuration.md#layers), [08](08-agent-policy.md#layering-and-overrides), [06](06-extensibility.md) |
 | Environments, permissions | `environments.json` in the data folder, with each environment's folders, runtime and permission rules; global rules in `[permissions]` | [14](14-projects-and-automation.md#environments-implemented), [05](05-tools-and-isolation.md#permissions) |
-| Plugin trust | A plugin with hooks or MCP servers that an agent installs is added to `extensions.disabled_plugins`; nothing in it runs until the user turns it on in Connectors, where its source is shown; installs record `.imperium-source.json` provenance and are logged in the config change journal with undo | [06](06-extensibility.md#agents-manage-the-app-config-implemented), PR #122 |
+| Plugin trust | A plugin with hooks or MCP servers that an agent installs is added to `extensions.disabled_plugins`; nothing in it runs: it is withheld until the user approves it in the Imperium desktop app; a plugin installed from a git URL or folder cannot be approved there yet (roadmap item 60). Its source is shown; installs record `.imperium-source.json` provenance and are logged in the config change journal with undo | [06](06-extensibility.md#agents-manage-the-app-config-implemented), PR #122 |
 | Settings export | "Import/export of the whole configuration (secrets excluded)" is listed as a recommended option, not built | [10](10-configuration.md#other-recommended-options) |
 | Memory sync | Global memory stays local unless the user enables syncing it to an SSH host | [17](17-memory.md#scopes) |
 
@@ -329,8 +329,8 @@ Principles:
    after the user accepts, per change, on each machine.
 3. **Plugins keep the PR #122 rule.** A synced plugin or mod is installed through the same
    install path as an agent's, with the same outcome: one with hooks or MCP servers is added to
-   `extensions.disabled_plugins` and does not run until the user turns it on in Connectors,
-   where the source, commit and "installed by team sync `<name>`" are shown
+   `extensions.disabled_plugins` and does not run: it is withheld until the user approves it in the Imperium desktop app; a plugin installed from a git URL or folder cannot be approved there yet (roadmap item 60).
+   Connectors shows the source, commit and "installed by team sync `<name>`" are shown
    ([06](06-extensibility.md#agents-manage-the-app-config-implemented)). Team-installed
    plugins do not read the daemon's environment through `${VAR}`, as for agent-installed ones.
    Skills and commands without hooks or servers are listed at once as a proposal, not

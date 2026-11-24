@@ -24,7 +24,8 @@
 //! - Only `https://` Git URLs are accepted, without credentials in the URL; other schemes are
 //!   an invalid entry rather than an unsupported one, since they would reach the fetch step.
 //! - Any other `source` type (`npm`, `git-subdir`, ...) is [`Source::Unsupported`], listed but
-//!   not installable.
+//!   not installable; so is a `url` source that carries a `path` (a folder of another
+//!   repository), which is never read as the whole repository.
 //! - [`Entry::canonical_json`] writes the entry as it was given (unknown fields included), with
 //!   sorted keys and no insignificant whitespace, so the same entry always gives the same bytes.
 
@@ -302,6 +303,11 @@ fn parse_source(source: &Value, plugin_root: Option<&str>) -> Result<Source, Str
                         sha: optional_sha(text("sha"))?,
                     })
                 }
+                // A folder inside another repository (as `git-subdir`): installing the root would
+                // not be what the marketplace lists, so it is not installable.
+                Some("url") if object.get("path").is_some_and(|path| !path.is_null()) => {
+                    Ok(Source::Unsupported("url+path".into()))
+                }
                 Some("url") => {
                     let url = text("url").ok_or("the url source has no url")?;
                     Ok(Source::Url {
@@ -472,6 +478,10 @@ mod tests {
         assert_eq!(
             source_of(r#"{"source": "git-subdir", "url": "https://x.test/r.git"}"#),
             Source::Unsupported("git-subdir".into())
+        );
+        assert_eq!(
+            source_of(r#"{"source": "url", "url": "https://x.test/r.git", "path": "plugins/p"}"#),
+            Source::Unsupported("url+path".into())
         );
         assert_eq!(source_of("42"), Source::Unsupported("unknown".into()));
         assert_eq!(

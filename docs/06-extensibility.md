@@ -136,6 +136,10 @@ a git hook, and a plugin's own files are not fetched at all.
   ever cloned (no commit, no count). `built_in` is true for the official name and its pinned
   source only; the pinned source under another name is an ordinary marketplace. A folder is
   read where it lies, so its count and problems are current.
+- Source types: `path` (a folder of the marketplace), `github` and `url` (a whole repository) install;
+  anything else is listed as unsupported and cannot be installed: `git-subdir`, `command`, `npm`, and a
+  `url` with a `path`. In the official marketplace on 2026-11-24 that is 98 `git-subdir`, 4 `url` with
+  `path` and 1 `command` of 317 entries ([plan](plans/plugin-marketplace.md#remaining-gaps)).
 - `plugins.marketplace_refresh {name?}` fetches again (every enabled marketplace without a
   name) and reports the commit before and after and the plugins **added, removed and changed**
   (an entry changed when its canonical JSON did). One that cannot be fetched keeps its last
@@ -538,7 +542,8 @@ registry yet, so a bare name is refused (`name@marketplace` is not a bare name: 
 
 **A marketplace plugin by name.** `install_extension` with `kind = "plugin"` and `source =
 "name@marketplace"` (a name, an `@`, a marketplace the user added, the official one included;
-a folder of that spelling that exists wins, and `path` is refused) installs a plugin of that
+when a marketplace of that name is added it wins over a folder of that spelling in the session's
+folder, which `./x@y` reaches instead; the result text says which was used; `path` is refused) installs a plugin of that
 marketplace the way `plugins.install` does: it fetches the plugin into a staging folder, writes
 its marketplace entry beside it, hashes it, and installs it exclusively into
 `<config>/plugins/<name>`. Nothing runs, and no person saw its trust prompt, so the record is
@@ -556,7 +561,9 @@ start, and an agent's `activate_plugin` would start its servers: downloaded code
 user with no approval, which is the same as the install running it. So the install adds the
 plugin to `extensions.disabled_plugins` and tells the agent so. A disabled plugin is not offered
 to sessions, `activate_plugin` cannot start it, and nothing in it runs until the user turns it on
-in Connectors (a setting the daemon reads at start, so it applies after a restart), where its
+in Connectors (a setting the daemon reads at start, so it applies after a restart), and, since the
+load-time gate, is withheld until it is approved in the desktop app (a plugin installed from a git URL
+or folder cannot be approved there yet, roadmap item 60), where its
 source (URL, commit, and the installing session) is shown. A plugin
 with neither (skills and commands only) is listed at once. Agent-installed plugins also never
 read the daemon's environment through `${VAR}` in `.mcp.json` (see [Compatibility](#compatibility-with-existing-formats)),

@@ -631,6 +631,11 @@ async fn an_agent_installs_a_marketplace_plugin_and_one_with_code_is_withheld_an
         &market.path().join("y/skills/note/SKILL.md"),
         "---\nname: note\ndescription: Notes\n---\nbody\n",
     );
+    // A folder of the same spelling in the session's folder: the added marketplace wins.
+    write(
+        &project.path().join("x@fixture/.claude-plugin/plugin.json"),
+        r#"{"name": "folderx"}"#,
+    );
     let url = scripted_model(vec![(
         "install fixture",
         vec![
@@ -682,6 +687,10 @@ async fn an_agent_installs_a_marketplace_plugin_and_one_with_code_is_withheld_an
         output.contains("withheld and unapproved") && output.contains("desktop app"),
         "{output}"
     );
+    assert!(
+        output.contains("from the marketplace fixture, not the folder x@fixture"),
+        "{output}"
+    );
     assert!(turn.tools[1].1, "{}", turn.tools[1].2);
     // A name the marketplace does not list, a marketplace that is not added, and a skill named
     // like a marketplace plugin are all refused.
@@ -707,6 +716,14 @@ async fn an_agent_installs_a_marketplace_plugin_and_one_with_code_is_withheld_an
     assert!(x["approval"].is_null(), "{x}");
     assert_eq!(x["withheld"], true);
     assert_eq!(x["hooks"], 1);
+    assert!(
+        listed["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|plugin| plugin["name"] != "folderx"),
+        "the folder was installed: {listed}"
+    );
     let y = find("y");
     assert_eq!(y["origin"], "agent");
     assert_eq!(y["withheld"], false);

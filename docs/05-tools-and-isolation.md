@@ -673,8 +673,7 @@ action: `allow` (run without asking), `ask` (ask even where the tool would not),
   did not install asks); a rule narrows them to *ask* or *deny*
   ([06](06-extensibility.md#agents-manage-the-app-config-implemented)). An install running
   without asking does not let the installed code run: a plugin with hooks or MCP servers is
-  installed turned off, and `activate_plugin` (which never asks) cannot start it, until the user
-  turns it on in Connectors.
+  installed turned off, and `activate_plugin` (which never asks) cannot start it; it is withheld until the user approves it in the Imperium desktop app; a plugin installed from a git URL or folder cannot be approved there yet (roadmap item 60).
 - **The review pane's steps** `git_commit` (commit a session's changes) and
   `open_pull_request` (push the branch and open a pull request with `gh`): not agent tools but
   the user's own actions from the review pane, gated the same way with rules without a

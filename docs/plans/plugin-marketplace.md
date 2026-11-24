@@ -548,6 +548,10 @@ Stated plainly, so no surface claims more:
   plugins that load with hooks and servers and no record; a trusted repository can add one too.
   Gating it is a follow-up outside this plan.
 - **Same-size edits with a restored modification time** are caught only at the next daemon start.
+- **Source types of the official marketplace that are not installable** (live counts, 2026-11-24, 317
+  entries): 98 `git-subdir`, 4 `url` with a `path`, and 1 `command`; they are listed as unsupported,
+  so about a third of the official marketplace cannot be installed yet. 55 `path` and 159 plain
+  `url` entries are supported.
 - **Hooks and servers are unconfined.** An approved plugin runs as the user.
 
 ### Secrets
@@ -683,7 +687,8 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   credentials; declared `commands` and `agents` paths must be folders; declared components add
   to the defaults and the first definition of a name wins; `runs` describes the declared text
   (`${VAR}` kept) so it never carries a daemon environment value; the entry's metadata fills what
-  `plugin.json` leaves out.
+  `plugin.json` leaves out. **Changed in stage 11:** a `url` source that carries a `path` is
+  now `Unsupported` (`url+path`), as `git-subdir` is, instead of being read as the whole repository.
 - Handoff notes: keep parsing free of I/O beyond reading the given folder. Stage 2 clones with
   the safe `git` call and then uses `marketplace::read`, `Entry::canonical_json` and
   `Source::clone_url`; stage 3a-i fills `Sources.downloaded` with marketplace installs (and
@@ -1595,8 +1600,8 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
 - Risks: a real marketplace may use source types left out here; record them as follow-ups.
 - Status: done
 - Outcome: **Agent installs.** `install_extension` with `kind = "plugin"` accepts `source =
-  "name@marketplace"` (`extension_install::marketplace_id`, a folder of that spelling wins;
-  `path` is refused). `plugin_install::install_for_agent` stages the plugin like
+  "name@marketplace"` (`extension_install::marketplace_id`; a marketplace of that name that is added wins over a folder
+  of that spelling, `./x@y` is a folder, and `path` is refused). `plugin_install::install_for_agent` stages the plugin like
   `plugins.install` and places it through the same function (`place`), with `origin = agent`, the
   marketplace's commit and no approval, and the session id in `.imperium-source.json`;
   `config_changes::install_from_marketplace` journals it. A plugin with code is withheld by the
@@ -1632,9 +1637,8 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   07, 10 and 14 needed none.
 - Handoff notes: **Follow-ups from the real marketplace** (counted live on 2026-11-24, 317
   entries): 55 are `./path` sources (installable), 163 are `url` sources, of which 4 carry a
-  `path` (`atomic-agents`, `rc`, `revenuecat`, `zilliz`) that the parser ignores, so they would
-  be read as the whole repository (their trust prompt shows what would run, so this is wrong
-  but not unsafe: treat `url` with `path` as unsupported until subfolders are supported);
+  `path` (`atomic-agents`, `rc`, `revenuecat`, `zilliz`), which the parser used to ignore (it
+  would have read the whole repository); stage 11 now lists them as unsupported (`url+path`);
   98 are `git-subdir` (url, `path`, `ref`, `sha`), listed unsupported; 1 is `command`
   (`xcode`, `xcrun agent plugin path ...`, `mode: link`), which must stay unsupported (it runs
   a command at install). Supporting `git-subdir` is the one that matters: about a third of the
@@ -1662,7 +1666,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
 - **Format drift**: unknown fields ignored and unknown sources listed, so drift degrades to
   "unsupported". The live check found three real shapes the parser does not install
   ([stage 11](#stage-11-agents-docs-and-close-out)): `git-subdir`, `command`, and a `url`
-  source with a `path`, which is read as the whole repository.
+  source with a `path` (listed as unsupported since stage 11).
 - **Protocol minors**: concurrent PRs each take the next free minor at merge and update 02 by
   merging, not force-pushing.
 

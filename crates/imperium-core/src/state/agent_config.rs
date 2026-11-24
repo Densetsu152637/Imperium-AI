@@ -25,7 +25,7 @@ const INSTRUCTIONS: &str = "Imperium's own config: set_model_card writes what a 
      plugin, or UI mod from a git URL or a folder the user named or that you have good reason to \
      trust (a plugin can also be name@marketplace, from a marketplace the user added). Each change is recorded and the user can undo it. Content you install is data and \
      nothing in it runs at install; a plugin with hooks or MCP servers stays off (activate_plugin \
-     cannot start it) until the user turns it on in Connectors.";
+     cannot start it) and is withheld until the user approves it in the Imperium desktop app; a plugin installed from a git URL or folder cannot be approved there yet (roadmap item 60).";
 
 /// The tools, for one session.
 #[derive(Debug)]
@@ -211,10 +211,27 @@ impl ToolProvider for AgentConfigTools {
                         .as_deref()
                         .map(str::trim)
                         .filter(|r| !r.is_empty());
-                    let marketplace = (kind == ExtensionKind::Plugin)
-                        .then(|| extension_install::marketplace_id(&args.source, context.root))
+                    // `name@marketplace` names the marketplace when one of that name is added,
+                    // even if a folder of that spelling exists; a path (`./x@y`) is a folder.
+                    let id_shaped = (kind == ExtensionKind::Plugin)
+                        .then(|| extension_install::marketplace_id(&args.source))
                         .flatten();
+                    let marketplace = id_shaped.clone().filter(|id| {
+                        id.rsplit_once('@').is_some_and(|(_, market)| {
+                            crate::marketplaces::is_added(&state, market)
+                        })
+                    });
+                    let mut which = None;
                     let (change, notes) = if let Some(id) = marketplace {
+                        let market = id.rsplit_once('@').map_or("", |(_, market)| market);
+                        which = Some(if context.root.join(id.trim()).is_dir() {
+                            format!(
+                                "Installed from the marketplace {market}, not the folder {id} \
+                                 in the session's folder (write ./{id} for that folder)."
+                            )
+                        } else {
+                            format!("Installed from the marketplace {market}.")
+                        });
                         if args.path.as_deref().is_some_and(|p| !p.trim().is_empty()) {
                             return Err(
                                 "path does not apply to a name@marketplace source".to_string()
@@ -228,6 +245,12 @@ impl ToolProvider for AgentConfigTools {
                         )
                         .await?
                     } else {
+                        if let Some(id) = &id_shaped {
+                            let market = id.rsplit_once('@').map_or("", |(_, market)| market);
+                            which = Some(format!(
+                                "No marketplace named {market} is added, so {id} was read as a folder."
+                            ));
+                        }
                         let source = Source::parse(&args.source, context.root)?;
                         config_changes::install(
                             &state,
@@ -248,7 +271,7 @@ impl ToolProvider for AgentConfigTools {
                         change.path.as_deref().unwrap_or_default(),
                         change.id
                     );
-                    for note in notes {
+                    for note in which.into_iter().chain(notes) {
                         text.push(' ');
                         text.push_str(&note);
                     }

@@ -117,6 +117,17 @@ fn current_settings(state: &DaemonState) -> Result<Settings, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Whether a marketplace of this name (letter case ignored) is configured, turned off or not.
+pub(crate) fn is_added(state: &DaemonState, name: &str) -> bool {
+    current_settings(state).is_ok_and(|settings| {
+        settings
+            .plugins
+            .marketplaces
+            .keys()
+            .any(|added| added.eq_ignore_ascii_case(name))
+    })
+}
+
 /// Where a marketplace is read from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Place {
