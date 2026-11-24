@@ -227,6 +227,11 @@ impl DaemonState {
         }
     }
 
+    /// Pull requests sessions follow that are not yet merged or closed, by session id.
+    pub fn watched(&self) -> Vec<(String, String, u64)> {
+        self.pr_monitor.watched()
+    }
+
     /// Binds a session to a pull request (the old `watch`, now the same as
     /// `pull_requests.bind` without its repository check, for the daemon's own callers); the
     /// monitor marks the session merged when the pull request merges. `None` unbinds.

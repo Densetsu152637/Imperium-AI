@@ -158,6 +158,24 @@ impl PrMonitor {
         }
     }
 
+    /// The pull requests still worth watching, as `(session id, repo, number)`: bound and not
+    /// yet seen merged or closed. They keep a daemon that nobody else uses from exiting.
+    pub(crate) fn watched(&self) -> Vec<(String, String, u64)> {
+        let inner = self.lock();
+        inner
+            .sessions
+            .iter()
+            .filter_map(|(id, key)| {
+                let tracked = inner.tracked.get(key)?;
+                let over = tracked
+                    .status
+                    .as_ref()
+                    .is_some_and(|s| matches!(s.state, PrState::Merged | PrState::Closed));
+                (!over).then(|| (id.clone(), tracked.repo.clone(), tracked.number))
+            })
+            .collect()
+    }
+
     /// The repositories some session has a pull request bound from.
     pub(crate) fn bound_repos(&self) -> Vec<String> {
         self.lock()
