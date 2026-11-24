@@ -624,6 +624,11 @@ def main():
             nonlocal agent
             env_name = ENV_NAME
             agent = Agent(daemon.pid, PASSWORD, "window")
+            # The first-run tour starts by itself and closes the windows it finds open; skip it.
+            try:
+                driver.ui_click("button", "Skip tour", limit=20)
+            except Failed:
+                log("no first-run tour was showing")
             driver.ui_click('button[aria-label="Plugins"]')
             driver.ui_wait("[role=dialog]", "Plugins")
 
