@@ -687,9 +687,54 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   render inert); `cargo test -p imperium-cli --test pr` with an in-process daemon and the fake.
 - Risks: the desktop has no browser E2E, so the view-model stays pure for `node --test`; add a
   render test only if the existing test setup allows it (confirm before writing it).
-- Status: pending
-- Outcome: -
-- Handoff notes: reuse the `Switch` and `ToolState` components; no new dependency.
+- Status: done (this change)
+- Outcome:
+  - **Card.** `apps/desktop/src/panels/PullRequestCard.tsx` sits in `SessionPanel.tsx` between the
+    header notes and the plan. It reads `pull_requests.status` when `SessionSummary.pull_request_url`
+    is set (the stage 4 field is the "bound" signal, so an unbound session makes no call), follows
+    `pull_requests.changed` for its own session, and never polls. Collapsed it is a state badge,
+    title, `repo#n`, *Open* and *Details*, plus one line of facts (checks with a `ToolState` icon,
+    review, conflicts, merge state) and the failing check names (five, then a count). *Details* has
+    the branches, the two switches, the method picker and *Stop following this pull request*
+    (`pull_requests.unbind`). Unbound, it is one muted line with *Bind a pull request*, which opens
+    an address field (`pull_requests.bind`); an archived session shows only the link text.
+  - **Disabled controls.** *Fix CI and review comments* and *Auto-merge* are `Switch` `disabled`
+    and the picker is `Select` `inert`, each with its reason beside it and in its accessible name,
+    until stages 6 and 7. The picker lists `allowed_methods` only. Auto-merge also says why GitHub
+    will not take it (a draft, merged, closed, or `auto_merge.reason_unavailable`).
+  - **View-model.** `apps/desktop/src/sessions/prCard.ts` is pure (`describePr`, `nextStatus`,
+    `parseBindInput`, `safeLink`, `refOfUrl`). Every GitHub string goes through the Plugins
+    window's `plain()` and onto one line, and is drawn as React text: no Markdown, no `href`. The
+    one link is shown only for exactly `https://github.com/<owner>/<repo>/pull/<n>` and opens with
+    `openExternal`. An `error` shows in a warning `Notice` over the last good data. A
+    `pull_requests.status` answer older than a notification already shown does not replace it.
+  - **CLI.** `imperium pr status [SESSION]` (`crates/imperium-cli/src/pr.rs`, a module of the
+    library so a test can reach it) prints the status as `key: value` lines with every control
+    and direction character written as `\u{..}`; with no session it lists each running session that
+    has a pull request. The help snapshot (`snapshots/help.txt`) was edited by hand to match.
+  - **Paths that differ from the plan.** The session store is `sessions/sessions.ts` and the
+    daemon client has no per-method wrapper (the card calls `client.call`), so neither changed;
+    the card's rules live in `sessions/prCard.ts` and its styles in `styles/pull-request.css` (the
+    desktop keeps one stylesheet per surface). `imperium-cli` gained `imperium-github` (feature
+    `test-host`) and `imperium-github-fake` as dev-dependencies, and `Cargo.lock` was edited to
+    match; `check-rust.sh`'s leak check reads normal edges only.
+  - Tests: `pnpm test` in `apps/desktop` (`test/prCard.test.ts`: draft, failing, running, no
+    checks, changes requested, conflicting, merged, closed, error, unbound input, a method not
+    allowed, unreadable methods, hostile titles, unsafe links, ordering of answers, and a source
+    check that the card has no `innerHTML`, Markdown renderer or `href`); `cargo test -p
+    imperium-cli --test pr` (in-process daemon and the fake: nothing bound, one session, every
+    session, hostile text escaped) and the `escape` unit test. The Rust tests did not run locally
+    (CI builds).
+  - No render test: the desktop has no DOM test setup, so the check on the markup is the source
+    check above and the browser check below.
+- Handoff notes: the switches are the stage 6 and stage 7 places: replace `disabled` and `inert`
+  in `Controls` with the real handlers and drop the matching `reason` in `describePr`
+  (`AUTO_FIX_PENDING`, `AUTO_MERGE_PENDING`); stage 6's confirmation names the method and branch,
+  which `PrCardView` already has. The card sits above the transcript, so a long failing list is
+  capped at five. A session row in the sidebar does not show the pull request yet
+  (`SessionSummary.pull_request_url` is available for it). Not verified: nothing was built or run
+  locally except `pnpm typecheck`, `pnpm test` and `cargo fmt`; the card has not been looked at in
+  a browser, including its narrow-width and forced-colours rendering.
 
 ## Stage 6: Auto-merge, desktop only
 

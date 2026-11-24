@@ -41,7 +41,7 @@
   min-height: 0;
 }
 
-.session > :is(.plan, .archived-note, .needs-model, .stopped-banner, .queue, .session-drawer, .composer-area, .session-footer, .composer, .new-session-intro, .new-session-error, .branch-note) {
+.session > :is(.plan, .archived-note, .needs-model, .stopped-banner, .queue, .session-drawer, .composer-area, .session-footer, .composer, .new-session-intro, .new-session-error, .branch-note, .pr-card) {
   flex: none;
   width: calc(100% - 2 * var(--session-gutter));
   max-width: var(--col-max);

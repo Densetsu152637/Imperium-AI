@@ -1,0 +1,157 @@
+/* The pull-request card in the session view (panels/PullRequestCard.tsx). Its width and gutter come
+   from the shared `.session > :is(...)` rule in session.css. */
+
+.pr-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-block: var(--sp-2) 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: var(--fs-md);
+}
+
+/* The one-line states, with no box: an archived row, the empty state, the first read. */
+.pr-archived,
+.pr-empty,
+.pr-loading {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  background: none;
+  border-color: transparent;
+  padding-inline: 0;
+  font-size: var(--fs-sm);
+}
+
+.pr-card .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  flex: none;
+}
+
+.pr-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.pr-title {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  overflow-wrap: anywhere;
+}
+
+.pr-ref {
+  font-size: var(--fs-sm);
+}
+
+/* One quiet line of facts. Each carries words (and the checks an icon), so colour is never the only cue. */
+.pr-facts,
+.pr-failing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pr-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.pr-fact.tone-ok {
+  color: var(--ok);
+}
+
+.pr-fact.tone-warn {
+  color: var(--warn);
+}
+
+.pr-fact.tone-danger {
+  color: var(--danger);
+}
+
+.pr-failing {
+  flex-direction: column;
+  font-size: var(--fs-sm);
+  font-family: var(--font-code);
+}
+
+.pr-failing li {
+  overflow-wrap: anywhere;
+}
+
+.pr-details,
+.pr-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.pr-details {
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+
+.pr-branches,
+.pr-control p {
+  margin: 0;
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.pr-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.pr-method {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.pr-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.pr-bind {
+  gap: var(--sp-2);
+}
+
+.pr-bind label {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.pr-bind-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.pr-bind-row input {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.pr-bind p {
+  margin: 0;
+  font-size: var(--fs-sm);
+}

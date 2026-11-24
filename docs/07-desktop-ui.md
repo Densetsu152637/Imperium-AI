@@ -1556,6 +1556,43 @@ archive); *Open* shows a column's branch as an ordinary session, whose note link
 side-by-side view. The column state, standouts and form rules are in
 `apps/desktop/src/sessions/branches.ts` (tested in `test/branches.test.ts`).
 
+### Pull-request card (implemented)
+
+A session bound to a pull request (`SessionSummary.pull_request_url`,
+[14](14-projects-and-automation.md#github-auto-fix)) shows a card between its header notes and the
+plan (`panels/PullRequestCard.tsx`, styles in `styles/pull-request.css`, rules in
+`sessions/prCard.ts`, tested in `test/prCard.test.ts`). The card reads `pull_requests.status` once
+and then follows the `pull_requests.changed` notifications of its session (an answer that arrives
+after a newer notification does not replace it; a null status after an unbind returns the card to
+its empty state). It never polls and never calls GitHub. `imperium pr status` prints the same data
+in a terminal.
+
+- **Collapsed:** a state badge (*Open*, *Draft*, *Merged*, *Closed*, each with its own icon), the
+  title, `owner/repo#12`, an *Open* button and a *Details* disclosure; then one line of facts, each
+  with words as well as colour: the checks (a `ToolState` icon for running, passed or failed, and
+  `N failing`, `N running`, `All N passing` or `No checks`), the review decision, conflicts and
+  GitHub's merge state (*In the merge queue*, *Behind its base branch*, and so on). Failing checks
+  are listed under it (five, then *and N more*). A merged or closed pull request keeps only its
+  checks line.
+- **Details:** the branches, the *Fix CI and review comments* and *Auto-merge* switches, the merge
+  method picker and *Stop following this pull request* (`pull_requests.unbind`). Both switches and
+  the picker are **disabled** until the stages that build them, each with a short reason beside it
+  and in its accessible name (`Switch` `disabled`, `Select` `inert`). The picker lists only
+  `allowed_methods`, and says so when the repository's methods could not be read or the requested
+  method is not allowed. Auto-merge says why GitHub will not take it now: a draft (*GitHub does not
+  allow auto-merge on a draft*), a merged or closed pull request, or `auto_merge.reason_unavailable`.
+- **Errors:** `PrStatus.error` shows in a warning `Notice` above the last good data, which stays;
+  the card does not blank. A failed first read shows the daemon's reason.
+- **No pull request:** one muted line with *Bind a pull request*, which opens an address field
+  (`https://github.com/owner/repo/pull/12`, checked in the window before it is sent) and *Bind*
+  (`pull_requests.bind`); the daemon's refusal (another repository, no token) shows under the
+  field. An archived session shows only *Pull request owner/repo#12*, with no polling.
+- **GitHub's text is data.** Titles, branch names, check names and the error are drawn as React
+  text only: no Markdown, no HTML, no `href`. They go through the Plugins window's `plain()` (control
+  and direction characters removed) and onto one line. The one link, *Open*, is shown only when the
+  daemon's address is exactly `https://github.com/<owner>/<repo>/pull/<n>` and opens in the user's
+  own browser (`openExternal`).
+
 ### Exporting transcripts (implemented)
 
 A session's ⋯ menu in the Sessions panel has **Export as Markdown** and **Export as JSON**,
