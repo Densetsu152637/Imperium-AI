@@ -425,7 +425,8 @@ impl Connection {
             Err(ErrorObject::new(
                 codes::FORBIDDEN,
                 "evaluation sessions are for the imperium command on this machine, not for \
-                 phones, mods or the API",
+                 phones, mods or the API; the command needs the daemon's local socket \
+                 (`daemon.socket`) and is refused over TCP",
             ))
         }
     }

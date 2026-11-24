@@ -143,8 +143,8 @@ fn local_socket(endpoint: &DaemonEndpoint) -> Result<&str, String> {
         .as_deref()
         .filter(|socket| !socket.is_empty())
         .ok_or_else(|| {
-            "the daemon serves no local socket (`daemon.socket` is off), and approvals are taken \
-             only over it, never over loopback TCP"
+            "the daemon serves no local socket (turned off by `daemon.socket`, or it could not open \
+             it; see the daemon log), and approvals are taken only over it, never over loopback TCP"
                 .to_string()
         })
 }

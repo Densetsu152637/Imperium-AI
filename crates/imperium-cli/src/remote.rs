@@ -138,7 +138,8 @@ pub fn connect(
                  connect without --socket"
             ),
             None => bail!(
-                "{destination} has no local socket; set daemon.socket = true there and restart its daemon"
+                "{destination} has no local socket; set daemon.socket = true there and restart its daemon, \
+                 or check its log for why the socket could not open"
             ),
         };
         if cfg!(windows) {

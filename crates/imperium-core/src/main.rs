@@ -72,7 +72,7 @@ async fn run() -> anyhow::Result<()> {
                 Some(listener)
             }
             Err(error) => {
-                tracing::warn!(%error, "could not open the local socket; evaluation runs and plugin approvals need it");
+                tracing::warn!(%error, data_dir = %paths.data_dir().display(), "could not open the local socket; evaluation runs and plugin approvals need it");
                 None
             }
         }
