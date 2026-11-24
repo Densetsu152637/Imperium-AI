@@ -103,8 +103,9 @@ mod tests {
         ));
     }
 
-    /// What the check answers on a CI runner, which has no one to answer a prompt: never passed.
-    /// Printed so the CI log records it (the stage 8c outcome). Outside CI it would prompt whoever
+    /// What the check answers on a CI runner, which has no one to answer a prompt: the system
+    /// prompt goes up and is withdrawn when nobody answers in time. Printed so the CI log records
+    /// it (the stage 8c outcome). Outside CI it would prompt whoever
     /// runs the tests, so it is skipped there.
     #[test]
     fn a_headless_runner_never_passes() {
@@ -114,7 +115,11 @@ mod tests {
         }
         let answer = device_owner_check("approve a test plugin", Duration::from_secs(20));
         println!("LocalAuthentication presence check on this runner: {answer:?}");
-        assert_ne!(answer, Presence::Passed);
+        // Not unavailable and not an early refusal: the prompt was up until it was withdrawn.
+        assert!(
+            matches!(&answer, Presence::Refused(why) if why.contains("nobody answered in time")),
+            "{answer:?}"
+        );
     }
 
     #[test]

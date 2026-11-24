@@ -8,9 +8,13 @@
 //! from a caller that is not root or the action's owner, so the prompt cannot name the plugin; the
 //! app's dialog, shown just before, does.
 //!
-//! Unavailable (so the approval is `dialog-only`): no system bus or polkit, the action file not
-//! installed (an AppImage, a source build), or no authentication agent for this process
-//! (headless). Every other "no" is a refusal.
+//! Unavailable (so the approval is `dialog-only`): no system bus; no polkit on it (its name has
+//! no owner and is not activatable); the action not registered (an AppImage, a source build); or
+//! no authentication agent for this process (polkit answers "challenge", as when headless).
+//! Every other "no" is a refusal, and so is every error once polkit is known to be there: the bus
+//! failing to say whether polkit runs, `EnumerateActions` failing (`ServiceUnknown`,
+//! `NameHasNoOwner` from a polkit that went away, anything else), or `CheckAuthorization`
+//! failing.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -58,14 +62,10 @@ fn check_action(action: &str, timeout: Duration) -> Presence {
         Ok(bus) => bus,
         Err(error) => return Presence::Unavailable(format!("no system bus: {error}")),
     };
-    match registered(&bus, action) {
-        Ok(true) => {}
-        Ok(false) => {
-            return Presence::Unavailable(format!(
-                "polkit has no action {action}: the package's action file is not installed"
-            ));
-        }
-        Err(error) => return Presence::Unavailable(format!("polkit did not answer: {error}")),
+    let present = polkit_present(&bus).map_err(|error| error.to_string());
+    let listed = || registered(&bus, action).map_err(|error| error.to_string());
+    if let Some(answer) = before_asking(present, listed, action) {
+        return answer;
     }
     let subject = match own_subject() {
         Ok(subject) => subject,
@@ -110,6 +110,60 @@ fn check_action(action: &str, timeout: Duration) -> Presence {
             Presence::Refused("nobody answered in time, so the prompt was cancelled".into())
         }
     }
+}
+
+/// What the bus said before polkit is asked: `None` to go on and ask. `present` is whether
+/// polkit is on the bus at all; `registered` lists its actions, asked only when it is.
+fn before_asking(
+    present: Result<bool, String>,
+    registered: impl FnOnce() -> Result<bool, String>,
+    action: &str,
+) -> Option<Presence> {
+    match present {
+        Err(error) => Some(Presence::Refused(format!(
+            "the system bus did not say whether polkit runs: {error}"
+        ))),
+        Ok(false) => Some(Presence::Unavailable(
+            "no polkit on the system bus (not installed)".into(),
+        )),
+        Ok(true) => match registered() {
+            Ok(true) => None,
+            Ok(false) => Some(Presence::Unavailable(format!(
+                "polkit has no action {action}: the package's action file is not installed"
+            ))),
+            Err(error) => Some(Presence::Refused(format!(
+                "polkit did not list its actions: {error}"
+            ))),
+        },
+    }
+}
+
+/// Whether polkit is on the system bus: its name has an owner now, or the bus can start it.
+fn polkit_present(bus: &Connection) -> zbus::Result<bool> {
+    let call = |method: &str| {
+        bus.call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            method,
+            &(),
+        )
+    };
+    let owned: bool = bus
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "NameHasOwner",
+            &(POLKIT,),
+        )?
+        .body()
+        .deserialize()?;
+    if owned {
+        return Ok(true);
+    }
+    let activatable: Vec<String> = call("ListActivatableNames")?.body().deserialize()?;
+    Ok(activatable.iter().any(|name| name == POLKIT))
 }
 
 /// Whether polkit knows `action` (its action file is installed).
@@ -179,6 +233,38 @@ mod tests {
             verdict((false, false, HashMap::new())),
             Presence::Refused(_)
         ));
+    }
+
+    /// Only a missing polkit or an unregistered action is unavailable before polkit is asked; an
+    /// error once polkit is known to be there is a refusal, and the actions are listed only when
+    /// polkit is there.
+    #[test]
+    fn errors_before_the_check_map_to_unavailable_or_refused() {
+        let action = "org.imperium.plugins.approve";
+        let never = || -> Result<bool, String> { panic!("polkit's actions must not be listed") };
+        assert!(matches!(
+            before_asking(Ok(false), never, action),
+            Some(Presence::Unavailable(why)) if why.contains("no polkit")
+        ));
+        assert!(matches!(
+            before_asking(Err("Disconnected".into()), never, action),
+            Some(Presence::Refused(_))
+        ));
+        assert!(matches!(
+            before_asking(Ok(true), || Ok(false), action),
+            Some(Presence::Unavailable(why)) if why.contains("action file")
+        ));
+        for error in [
+            "org.freedesktop.DBus.Error.ServiceUnknown",
+            "org.freedesktop.DBus.Error.NameHasNoOwner",
+            "org.freedesktop.DBus.Error.NoReply",
+        ] {
+            assert!(matches!(
+                before_asking(Ok(true), || Err(error.to_string()), action),
+                Some(Presence::Refused(why)) if why.contains(error)
+            ));
+        }
+        assert_eq!(before_asking(Ok(true), || Ok(true), action), None);
     }
 
     /// An action polkit does not know (as when the action file is not installed) is unavailable,

@@ -3,27 +3,16 @@ name: Presence e2e
 # The plugin-approval flow end to end with the OS presence check (docs/11-ci-cd.md, "Presence
 # end-to-end"): on Linux, the release daemon and the release desktop app under Xvfb, the native
 # dialog answered through the accessibility bus and polkit answered through pkttyagent; on macOS and
-# Windows, what the presence check answers on a headless runner. Separate and path-filtered, since
-# the Linux job builds both release binaries.
+# Windows, what the presence check answers on a headless runner. Called by ci.yml when a change
+# touches the paths scripts/ci/detect.sh lists (and so gated by its "CI gate" job), since the Linux
+# job builds both release binaries; also runnable by hand. No concurrency group of its own: the
+# caller's applies.
 on:
-  pull_request:
-    paths:
-      - .github/workflows/presence-e2e.yml
-      - scripts/ci/presence-e2e/**
-      - crates/imperium-core/src/app_identity/**
-      - crates/imperium-core/src/plugin_records.rs
-      - crates/imperium-core/src/rpc/config.rs
-      - crates/imperium-ipc/**
-      - apps/desktop/src-tauri/src/plugin_approval.rs
-      - apps/desktop/src-tauri/linux/**
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   linux:

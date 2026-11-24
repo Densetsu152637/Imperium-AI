@@ -12,7 +12,7 @@ updates.
 | `build.yml`         | Called by release workflows only                     | Builds desktop bundles and CLI archives       |
 | `release.yml`       | Tags `v*` (for example `v0.4.0`, `v0.5.0-beta.1`)    | Main-channel GitHub Release                   |
 | `experimental.yml`  | Pushes to `experimental`, manual run on it           | Experimental-channel GitHub pre-release       |
-| `presence-e2e.yml`  | Pull requests touching plugin approval, manual run   | Plugin approval end to end with the OS presence check |
+| `presence-e2e.yml`  | Called by `ci.yml` when plugin approval changes, manual run | Plugin approval end to end with the OS presence check |
 
 ### Checks (`ci.yml`)
 
@@ -50,10 +50,13 @@ runs only on CI (the `CI` variable), since elsewhere it would prompt whoever run
 
 ### Presence end-to-end (`presence-e2e.yml`)
 
-Runs on pull requests that touch `app_identity/`, `plugin_records.rs`, `rpc/config.rs`,
-`imperium-ipc`, the app's `plugin_approval.rs`, the polkit action file, `scripts/ci/presence-e2e/`
-or the workflow, and by hand. It is not a required check; it is kept apart because its Linux job
-builds the release daemon, CLI and desktop app.
+`ci.yml` calls it as its `presence-e2e` job when the change touches `app_identity/`,
+`plugin_records.rs`, `rpc/config.rs`, `imperium-ipc`, the app's `plugin_approval.rs`, the polkit
+action file, `scripts/ci/presence-e2e/` or the workflow (`scripts/ci/detect.sh` compares the change
+with its base: the pull request's base, the merge group's base or the pushed-over commit, and runs
+it when that cannot be read). The `CI gate` job needs it, so it **gates merges** whenever it runs;
+otherwise it is skipped and the gate passes. It can also be run by hand. It runs only then because
+its Linux job builds the release daemon, CLI and desktop app.
 
 - **Linux** (`ubuntu-24.04`): `scripts/ci/presence-e2e/build.sh` builds the three release
   binaries into `target/release` (release, since only a release daemon records `counted` and
