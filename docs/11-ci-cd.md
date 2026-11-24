@@ -13,6 +13,7 @@ updates.
 | `release.yml`       | Tags `v*` (for example `v0.4.0`, `v0.5.0-beta.1`)    | Main-channel GitHub Release                   |
 | `experimental.yml`  | Pushes to `experimental`, manual run on it           | Experimental-channel GitHub pre-release       |
 | `presence-e2e.yml`  | Called by `ci.yml` when plugin approval changes, manual run | Plugin approval end to end with the OS presence check |
+| `github-live.yml`   | Pushes to `experimental`, weekly, manual run, same-repository pull requests that change it | Read-only check of the GitHub client against the real API (informational) |
 
 ### Checks (`ci.yml`)
 
@@ -134,6 +135,34 @@ not a regression. It is not called by `ci.yml`; it runs on a weekly schedule (Mo
 by hand (`workflow_dispatch`), and on a pull request only when the harness or the workflow
 itself changes, where it shows as its own check. A scheduled failure is a prompt to look at the
 marketplace, not at a pull request.
+
+### GitHub live check (`github-live.yml`)
+
+The GitHub client in `imperium-github` is tested in CI against a fake server
+(`imperium-github-fake`), which only proves the client agrees with the fake. This job runs
+`crates/imperium-github/tests/live.rs` (`cargo test -p imperium-github --test live -- --ignored`)
+against the real API with the workflow's `GITHUB_TOKEN`, to catch GraphQL documents or REST
+shapes GitHub does not accept. It asserts, on `Densetsu152637/Imperium-AI`:
+
+- `pr_status` on merged pull request #266: state `MERGED`, a 40-hex head SHA, a node id,
+  checks that parse, known `mergeable` and `reviewDecision` values, and that the `rateLimit`
+  cost and remaining points were parsed.
+- `review_threads` on a pull request that has review threads (found with `gh`; skipped with a
+  note when none exists).
+- `repo_merge_settings` equals the repository's real flags, pinned in the test (squash, merge
+  commit and rebase on, auto-merge off; update the pin if the repository settings change).
+- `collaborator_permission` for the owner: write access, or a clean 403 with the token scrubbed
+  if the workflow token is refused.
+- The mutations `EnableAutoMerge`, `DisableAutoMerge` and `ReplyToThread`, sent with bogus ids
+  so nothing changes: each must fail as "could not resolve" or "not accessible", not as a
+  parse or validation error.
+- On every error, the token does not appear.
+
+Permissions are `contents: read` and `pull-requests: read`. It never runs for a pull request
+from a fork (the job's `if` checks the head repository) and has no `pull_request_target`
+trigger. The job is `continue-on-error: true`, so a failure shows but does not fail the run;
+remove that line after it has passed twice. A failure is a prompt to look at GitHub's schema or
+the pinned values, not at a pull request.
 
 ## Release channels
 
