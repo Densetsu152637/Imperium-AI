@@ -353,12 +353,8 @@ def describe_screen(name):
                     f"  {window.get_role_name()} {window.get_name()!r} "
                     f"children={window.get_child_count()}"
                 )
-    (LOGS / f"atspi-{name}.txt").write_text("
-".join(lines) + "
-")
-    log("accessibility tree:
-" + "
-".join(lines))
+    (LOGS / f"atspi-{name}.txt").write_text(chr(10).join(lines) + chr(10))
+    log("accessibility tree:" + chr(10) + chr(10).join(lines))
     with open(LOGS / f"xwininfo-{name}.txt", "w") as out:
         subprocess.run(["xwininfo", "-root", "-tree"], stdout=out, stderr=subprocess.STDOUT)
     subprocess.run(["import", "-window", "root", str(LOGS / f"screen-{name}.png")], check=False)
