@@ -507,6 +507,8 @@ mod tests {
     fn defaults_parse_into_settings() {
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
         assert_eq!(settings.daemon.port, 0);
+        // Evaluation runs and plugin approvals are refused without the local socket.
+        assert!(settings.daemon.socket);
         assert!(settings.models.suggest_downloads);
         assert!(!settings.models.suggestions.is_empty());
     }

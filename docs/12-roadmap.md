@@ -434,7 +434,7 @@ and `environments.agent_update` (protocol 0.28)
     results, and a per-call "fetch fresh" option.
 33. **Protocol transport** (implemented). `events.subscribe` and `events.unsubscribe` let a
     connection choose which notification topics it receives, only ever narrowing what it may
-    receive anyway; and `daemon.socket` (off by default) also serves the same protocol, with
+    receive anyway; and `daemon.socket` (on by default since evaluation runs and plugin approvals need it) also serves the same protocol, with
     the same token, on a Unix domain socket (mode 0600 in a 0700 folder) or a Windows named
     pipe (an ACL for the current user only). The CLI uses the socket when the endpoint file
     names one, and `imperium remote connect --socket` forwards the host's socket over SSH

@@ -61,13 +61,21 @@ async fn run() -> anyhow::Result<()> {
     // A command in the OS sandbox must not reach the daemon (see `imperium_tools::hide_loopback_port`).
     imperium_tools::hide_loopback_port(address.port());
     let token = AccessToken::generate().context("could not generate an access token")?;
-    // Opt-in (`daemon.socket`): the same protocol on a socket only this user can open. It is
-    // bound after the single-instance lock, so a leftover socket from a crash is safe to replace.
+    // `daemon.socket` (on by default): the same protocol on a socket only this user can open. It
+    // is bound after the single-instance lock, so a leftover socket from a crash is safe to
+    // replace. A socket that cannot be opened is logged rather than fatal: the loopback listener
+    // still serves the app, only evaluation runs and plugin approvals need the socket.
     let ipc = if settings.daemon.socket {
-        let listener = imperium_ipc::Listener::bind(paths.data_dir())
-            .context("could not open the local socket")?;
-        tracing::info!(socket = %listener.address(), "listening on a local socket");
-        Some(listener)
+        match imperium_ipc::Listener::bind(paths.data_dir()) {
+            Ok(listener) => {
+                tracing::info!(socket = %listener.address(), "listening on a local socket");
+                Some(listener)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not open the local socket; evaluation runs and plugin approvals need it");
+                None
+            }
+        }
     } else {
         None
     };

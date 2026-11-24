@@ -125,12 +125,15 @@ service) is **persistent** and never exits for want of clients.
   bytes generated at every launch. It is never bound to a public interface. Browser-based
   clients (the desktop webview), which cannot set headers, instead offer the subprotocols
   `imperium.v0` and `imperium.token.<token>`; the daemon selects `imperium.v0`.
-- **Local socket (implemented, opt-in):** with `daemon.socket = true` the daemon also serves
-  the same HTTP and WebSocket server, with the same `/rpc` path and the same token check, on a
-  Unix domain socket or a Windows named pipe. A local connection is not trusted for being
-  local: without the token the upgrade gets 401 there too. It is off by default because most
-  people never forward the daemon, and a listener nobody uses should not exist. The address
-  goes in `daemon.json` as `socket`.
+- **Local socket (implemented, on by default):** with `daemon.socket` on (the default) the
+  daemon also serves the same HTTP and WebSocket server, with the same `/rpc` path and the same
+  token check, on a Unix domain socket or a Windows named pipe. A local connection is not
+  trusted for being local: without the token the upgrade gets 401 there too. It is on by
+  default because the `imperium` command needs it for evaluation runs (`imperium run
+  --headless`, which the daemon refuses over loopback TCP, since a page in the app's window
+  reaches the daemon there) and the desktop app for plugin approvals. If it cannot be opened the
+  daemon logs a warning and serves loopback TCP alone. The address goes in `daemon.json` as
+  `socket`.
   - Unix: `<data>/ipc/daemon.sock`. The `ipc` folder is created mode 0700 and the socket set to
     0600, so only the current user can open it, even in the instant between creating and
     changing the socket. At start a socket nobody answers on (left by a crash) is replaced; a
@@ -164,7 +167,7 @@ service) is **persistent** and never exits for want of clients.
   topics; a malformed topic gets `-32602`. Paired phones may not call these methods. Replies
   to calls are never filtered, and `session.subscribe` still returns a session's history.
 - **Discovery (implemented):** on start the daemon writes `<data>/daemon.json` (URL, token,
-  PID, protocol version, and the local socket's address when `daemon.socket` is on), readable
+  PID, protocol version, and the local socket's address when `daemon.socket` is on, as it is by default), readable
   only by the user (mode 0600 on Unix; per-user directory ACL on Windows), and removes it on
   shutdown. Clients that find a `socket` there try it before the URL. It holds a lock on `<data>/daemon.lock`, so only one
   daemon runs per user; a second start exits with "already running". A daemon killed without
