@@ -348,6 +348,14 @@ impl HttpGitHub {
             .graphql(queries::VIEWER, &queries::viewer(), json!({}))
             .await?;
         let login = data["viewer"]["login"].as_str().unwrap_or_default();
+        if login.ends_with("[bot]") {
+            // An installation token's viewer is the app; its pull requests are searched by
+            // `app/<name>`, which is not what auto-fix means by "the user's".
+            return Err(
+                "the token is an app installation token, not a user's: failing_prs needs a                  user token (gh auth login)"
+                    .to_string(),
+            );
+        }
         let valid =
             !login.is_empty() && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
         if !valid {

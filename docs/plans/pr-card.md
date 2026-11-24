@@ -522,8 +522,8 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   - `imperium-core`'s dev-dependencies may enable `imperium-github/test-host` (one exact line,
     checked by the manifest guard); the `cargo tree` leak check on normal edges still passes.
   - The live check also covers `failing_prs` (`Viewer` and `SearchPrs`): with the workflow's
-    installation token `viewer` is refused ("not accessible"), which the test reports as
-    `VIEWER=not-accessible`; with `LIVE_READ_PAT` it must resolve (`VIEWER=ok`).
+    installation token `viewer` is the app (`...[bot]`) or refused, which the client reports
+    as an error ("an app installation token") and the test accepts as `VIEWER=refused`; with `LIVE_READ_PAT` it must resolve (`VIEWER=ok`).
 - Handoff notes: keep this PR free of new behaviour so a regression bisects to it alone.
 
 ## Stage 3: Binding, status model and live updates

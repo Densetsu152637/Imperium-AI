@@ -161,8 +161,8 @@ shapes GitHub does not accept. It asserts, on `Densetsu152637/Imperium-AI`:
   so nothing changes: each must fail as "could not resolve" or "not accessible", not as a
   parse or validation error.
 - `failing_prs` (`Viewer` then `SearchPrs`): the login resolves and the search parses. The
-  workflow token (an installation token) has no `viewer`, so there the test accepts a clean
-  "not accessible" refusal and prints `VIEWER=not-accessible`; with the personal token it must
+  workflow token (an installation token) has no user `viewer` (GitHub answers with the app, or
+  "not accessible"), so there the test accepts that clean refusal and prints `VIEWER=refused`; with the personal token it must
   print `VIEWER=ok`.
 - On every error, the token does not appear.
 

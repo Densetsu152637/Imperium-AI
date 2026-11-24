@@ -183,11 +183,13 @@ async fn failing_prs_resolves_the_login_and_searches_without_errors() {
                 "the PAT could not resolve its login: {error}"
             );
             assert!(!error.contains(&token()), "the token leaked into an error");
+            // Or its `viewer` is the app, which the client reports as such (found by this check).
+            let lower = error.to_ascii_lowercase();
             assert!(
-                error.to_ascii_lowercase().contains("not accessible"),
+                lower.contains("not accessible") || lower.contains("app installation token"),
                 "an unexpected refusal: {error}"
             );
-            eprintln!("VIEWER=not-accessible");
+            eprintln!("VIEWER=refused");
             return;
         }
     };
