@@ -303,8 +303,9 @@ itself (`crates/imperium-core/src/app_identity/`), never from what the caller se
   start, so for such a process macOS shows none and the hardened runtime's library validation is
   what holds instead. On Windows the daemon does not read the peer's environment (that would mean
   reading another process's memory): it checks the path, the creation time and the rule below,
-  and the desktop app itself checks its own environment for `WEBVIEW2_*` and similar overrides
-  at start and refuses the approval flow if any is set (stage 8b);
+  and the desktop app itself checks its own environment at start for the same list (one function,
+  `imperium_ipc::refused_variable`, used by both) and, if any is set, `plugin_approve` answers with the
+  variable's name and sends nothing;
 - on Windows (U7), an approval other than a debug build's `dev` one counts only in a release
   build compiled with the signing job's constant (`IMPERIUM_SIGNED_BUILD`, read with
   `option_env!` at compile time, never at run time) that runs from under the per-machine Program
@@ -316,7 +317,11 @@ These guard against mistakes and confined callers, not against unconfined code r
 user. The identity belongs to the process that connected, not to each message sent on the
 connection. **No approval counts yet**: a release daemon refuses every approval with "presence check
 not built" until the OS presence check lands, and a debug daemon records `dev` approvals (which
-release daemons ignore) for the debug app built beside it. The desktop app does not call these methods yet.
+release daemons ignore) for the debug app built beside it. The desktop app calls these methods from its Rust side only, on
+its own local-socket connection, after a native dialog built from the daemon's preview
+([plugin approval](07-desktop-ui.md#plugin-approval-implemented)); its web view never does. The macOS release app asks for no
+entitlements, and CI fails the build if its entitlements file carries `allow-dyld-environment-variables`,
+`disable-library-validation` or WebKit inspection (`get-task-allow`). On Windows the app calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` first thing at start (`imperium_ipc::harden_dll_search`).
 
 **Repository suggestions (protocol 0.55; not a paired phone).** A project folder in
 `mcp.trusted_projects` may list, in its `.imperium/config.toml` (or `config.local.toml`),

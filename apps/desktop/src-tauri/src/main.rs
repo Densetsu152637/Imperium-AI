@@ -9,6 +9,7 @@
 mod browser;
 mod daemon;
 mod mod_frames;
+mod plugin_approval;
 mod store;
 mod update;
 
@@ -33,6 +34,12 @@ fn paint_background(window: &tauri::WebviewWindow) {
 }
 
 fn main() {
+    // First, before anything loads a DLL by name: search only the app directory and System32.
+    // A failure is logged, not fatal: the app still runs, only without the narrower search.
+    #[cfg(windows)]
+    if let Err(error) = imperium_ipc::harden_dll_search() {
+        eprintln!("could not narrow the DLL search path: {error}");
+    }
     let background = update::background();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -45,6 +52,8 @@ fn main() {
                 .build(),
         )
         .manage(daemon::DaemonControl::default())
+        // The app's own environment, read at start (see `plugin_approval`).
+        .manage(plugin_approval::Guard::capture())
         .register_uri_scheme_protocol(mod_frames::SCHEME, |_context, request| {
             mod_frames::serve(request)
         })
@@ -108,6 +117,7 @@ fn main() {
             update::update_restart,
             update::update_install_now,
             update::update_switch_install,
+            plugin_approval::plugin_approve,
         ])
         .build(tauri::generate_context!())
         .expect("the Imperium window could not start")

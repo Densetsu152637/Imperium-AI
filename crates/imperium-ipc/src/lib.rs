@@ -9,6 +9,7 @@
 
 #![warn(unreachable_pub)]
 
+mod loader_env;
 #[cfg(target_os = "macos")]
 mod macos_sandbox;
 #[cfg(unix)]
@@ -16,12 +17,15 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
+pub use loader_env::refused_variable;
 #[cfg(target_os = "macos")]
 pub use macos_sandbox::is_sandboxed;
 #[cfg(unix)]
 pub use unix::{Listener, Stream, connect, peer_pid};
 #[cfg(windows)]
-pub use windows::{ClientProcess, Listener, Stream, client_process, connect, peer_pid};
+pub use windows::{
+    ClientProcess, Listener, Stream, client_process, connect, harden_dll_search, peer_pid,
+};
 
 #[cfg(all(test, any(unix, windows)))]
 mod tests {

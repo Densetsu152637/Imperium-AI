@@ -79,29 +79,11 @@ pub(crate) fn installed_app() -> Result<PathBuf, String> {
     })
 }
 
-/// The first variable in `names` whose presence refuses a peer (check 4): any `WEBVIEW2_*` or
-/// `DYLD_*`, and `LD_PRELOAD`, `LD_LIBRARY_PATH` and `LD_AUDIT`. Names compare ignoring case
-/// only on Windows, as Windows does; elsewhere the loader honours only these exact names, and
-/// macOS lists lowercase strings of its own (`dyld_file=`, from the kernel's `apple[]` vector)
-/// next to the environment.
-// Windows reads no peer environment: the app checks its own (stage 8b).
-#[cfg_attr(windows, allow(dead_code))]
-pub(crate) fn refused_variable<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<String> {
-    names.into_iter().find_map(|name| {
-        let upper = if cfg!(windows) {
-            name.to_ascii_uppercase()
-        } else {
-            name.to_string()
-        };
-        let refused = upper.starts_with("WEBVIEW2_")
-            || upper.starts_with("DYLD_")
-            || matches!(
-                upper.as_str(),
-                "LD_PRELOAD" | "LD_LIBRARY_PATH" | "LD_AUDIT"
-            );
-        refused.then(|| name.to_string())
-    })
-}
+/// The first variable in `names` whose presence refuses a peer (check 4). The list lives in
+/// `imperium-ipc`, so the desktop app applies the same one to its own environment (stage 8b);
+/// Windows reads no peer environment.
+#[cfg_attr(windows, allow(unused_imports))]
+pub(crate) use imperium_ipc::refused_variable;
 
 /// Check 1: the connection came in on the local socket. Callers run it before anything else
 /// about an approval, so a TCP caller learns nothing more.
@@ -335,28 +317,6 @@ mod tests {
         let mut challenges = Challenges::default();
         let error = challenge(&InstalledApp, None, &mut challenges, &asked).unwrap_err();
         assert!(error.contains("local socket"), "{error}");
-    }
-
-    #[test]
-    fn loader_and_webview_overrides_are_refused() {
-        assert_eq!(refused_variable(["PATH", "HOME"]), None);
-        for name in [
-            "LD_PRELOAD",
-            "LD_LIBRARY_PATH",
-            "LD_AUDIT",
-            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
-            "DYLD_INSERT_LIBRARIES",
-        ] {
-            assert_eq!(refused_variable(["PATH", name]).as_deref(), Some(name));
-        }
-        // Case matters except on Windows, where names compare ignoring it.
-        let lower = refused_variable(["webview2_user_data_folder", "dyld_file"]);
-        if cfg!(windows) {
-            assert_eq!(lower.as_deref(), Some("webview2_user_data_folder"));
-        } else {
-            assert_eq!(lower, None);
-        }
     }
 
     #[test]

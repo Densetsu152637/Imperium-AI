@@ -2498,6 +2498,7 @@ version = "0.2.0"
 dependencies = [
  "imperium-client",
  "imperium-config",
+ "imperium-ipc",
  "imperium-protocol",
  "reqwest",
  "semver",

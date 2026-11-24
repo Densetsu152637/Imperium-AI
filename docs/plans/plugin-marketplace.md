@@ -1292,13 +1292,71 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   with a debug daemon and debug app: the dialog appears, the approval is recorded as `dev`; the
   webview has no way to call `plugins.approve` with a challenge.
 - Risks: until stage 8c, approvals are recorded only by debug daemons.
-- Status: pending
-- Outcome:
+- Status: done; protocol unchanged (0.56)
+- Outcome: `apps/desktop/src-tauri/src/plugin_approval.rs` holds the command
+  `plugin_approve(name, action, environment?)`. It is allowed only from `main` and `panel-*`
+  (`own_window`, plus the access control list: `build.rs` lists every app command through
+  `tauri_build::AppManifest::commands`, so each needs an `allow-<command>` permission, and
+  `capabilities/default.json` gives all of them to `["main", "panel-*"]` and nothing remote; a test
+  keeps `build.rs`, `generate_handler!` and the capability equal and checks no capability gives
+  `plugin_approve` to another window, a remote page or a webview list). It connects with
+  `Client::connect_socket` on the endpoint's local socket only (`local_socket` refuses an
+  endpoint with none), asks `plugins.inspect` for the preview, shows the `tauri-plugin-dialog`
+  message dialog built from that preview alone (id, source, commit, hash, every hook and server
+  command line, `LAUNCHER` flags, notes), and on *Approve* installs or updates when the action says so,
+  then `plugins.approval_challenge` and `plugins.approve` for the previewed hash and digest on the
+  same connection. The `refused_variable` list moved from `app_identity` to `imperium-ipc`
+  (`loader_env.rs`, which both the daemon and the app depend on); `app_identity` re-exports it. The
+  app captures its environment at start (`Guard`); a refused variable makes `plugin_approve` answer
+  `approved: false` naming it and send nothing. macOS: `entitlements.plist` (empty, named in
+  `tauri.conf.json`), `scripts/ci/check-entitlements.py`, a bad fixture in `scripts/ci/fixtures/`, and
+  a "Check macOS release entitlements" step in `build.yml` that checks the configured file and
+  requires the check to fail on the fixture naming all three keys (it also forbids
+  `get-task-allow`, which attaching WebKit's inspector needs, and `cs.debugger`). Choices the plan
+  did not fix: the challenge is requested after the *Approve* click, not before the dialog (it
+  lives two minutes, and an install has no folder to challenge before it); the dialog shows the summary as pages of at most 40 lines ("page i of n", the id and hash on every page,
+  *Next* and *Cancel*, then *Approve* and *Cancel* on the last; *Cancel* anywhere ends the flow), wraps lines over
+  100 characters with a `↳` mark (never inside an escape the app wrote: `\\`, `\n`, `\r`, `\t`, `\u{hex}`; a real backslash is doubled, so text that only looks like an escape wraps like any other, which a review found), refuses a summary over 10 pages with a pointer to
+  `imperium plugin inspect`, lists each server's environment, header and variable names, and writes control and
+  bidirectional characters out; the plugin's own description is not shown; the webview passes
+  `name`, `action` and `environment` and nothing else, and gets `{approved, kind, reason,
+  cancelled, installed}`; *approve* and *update* resolve a plain name through `plugins.list` to the
+  plugin's `name@marketplace`, and a plugin with no marketplace id (pre-existing, user) is
+  refused because `plugins.inspect` cannot preview it; *approve* requires the installed copy to
+  equal the marketplace's current content. **`SetDefaultDllDirectories`** (user decision): no safe wrapper exists in the lock, so the one
+  `unsafe` call lives in `imperium-ipc`'s allowed Windows module (`windows/dll.rs`, with a SAFETY comment) as
+  `harden_dll_search() -> io::Result<()>` using `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`; the app calls it first in
+  `main` on Windows and, on error, prints and continues. The linker flag was rejected. Windows-only test: it returns Ok.
+  Tests (Rust, in CI): the request parameters carry the previewed hash and digest and an install
+  never carries `approve`; a TCP-only endpoint is refused; the windows allowed; what each action
+  accepts; the dialog's content, its escaping and its refusal when too long; a refused environment
+  variable refuses with its name; the capability and `build.rs` checks above; the interface names
+  neither approval method; `refused_variable` moved with its test. In CI: the entitlements check on
+  the real file and on the bad fixture (macOS bundle job). Not verified: the by-hand check below, that the call succeeds in the shipped app (the test covers the call), and that Tauri's access control list rejects a mod frame's call (the
+  frame's origin handling is Tauri's, tested here only through the capability file).
+  By hand, with a debug daemon and the debug app (also try one large plugin, with about 90 hooks and one 300-character command: the dialog must show several pages titled "page i of n", each with the id and hash, *Cancel* on page 2 must end it with nothing installed, and only the last page offers *Approve*; with 400 hooks it must refuse) from the same cargo target folder: in a
+  scratch config folder add a marketplace holding a plugin with a hook, run
+  `imperium plugin install` for it (withheld), then in the app's devtools console run
+  `window.__TAURI_INTERNALS__.invoke("plugin_approve", {name: "p@m", action: "approve"})`; the dialog
+  appears with the id, hook command and hash, *Approve* returns `{approved: true, kind: "dev"}`
+  and `imperium plugin list` shows `dev`; *Cancel* returns `cancelled: true`; start the app with
+  `LD_PRELOAD=x` (or `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=x` on Windows) and the answer names the
+  variable; with `daemon.socket` off the answer says there is no local socket.
 - Handoff notes: from 8a-ii, the daemon does not read the peer's environment on Windows. At
   start the app checks its own environment for `WEBVIEW2_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH`,
   `LD_AUDIT` and `DYLD_*` (`app_identity::refused_variable`'s list) and, if any is set, refuses
   the approval flow (`plugin_approve` answers with the variable's name and sends nothing). Item
-  59's Windows signing step must set `IMPERIUM_SIGNED_BUILD` in that step only.
+  59's Windows signing step must set `IMPERIUM_SIGNED_BUILD` in that step only. **From 8b:** stage 10's
+  *Approve* calls `invoke("plugin_approve", {name, action, environment?})` and reads
+  `{approved, kind, reason, cancelled, installed}`; show `reason` when `approved` is false, and note
+  that `installed: true` with `approved: false` means the plugin is now installed withheld. A
+  plugin with no marketplace id cannot be approved until the daemon can preview a folder (a new
+  method, so a protocol change, for *Approve for withheld plugins (unrecorded and pre-existing
+  too)*). Any new app command needs its name in `build.rs`, the `generate_handler!` list and the
+  capability (a test fails otherwise); a new window label that must call commands goes in the
+  capability's `windows`, and `plugin_approve` stays limited to `main` and `panel-*`. The signed-app entitlement check (reading the built app's signature with `codesign`, not only the configured file) is left for item 59's signing step. Stage 8c
+  adds no app code: the presence prompt is the daemon's, so the approve call may take long
+  (the app waits up to five minutes).
 
 ## Stage 8c: OS presence check
 
