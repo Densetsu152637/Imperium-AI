@@ -98,7 +98,15 @@ async fn review_threads_parse_on_a_pull_request_that_has_some() {
 #[tokio::test]
 #[ignore = "needs GITHUB_TOKEN and the network"]
 async fn merge_settings_equal_the_repository_flags() {
-    let settings = client().repo_merge_settings(REPO).await.unwrap();
+    // The workflow's read-only token is not told the flags: that is an error, never "all off".
+    let settings = match client().repo_merge_settings(REPO).await {
+        Ok(settings) => settings,
+        Err(error) => {
+            assert!(error.contains("push access"), "{error}");
+            eprintln!("NOTE: token cannot read the merge flags: {error}");
+            return;
+        }
+    };
     assert_eq!(
         (
             settings.squash,

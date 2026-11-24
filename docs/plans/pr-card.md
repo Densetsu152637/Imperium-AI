@@ -457,6 +457,9 @@ Each stage is one pull request against `experimental`, with the docs it changes.
     misses the user's PRs when a repository has more than 50 open. Use a GraphQL
     `search(query: "repo:o/r is:pr is:open author:@me", ...)`; `@me` does not work with an
     installation token. Add a test with 60 other people's PRs plus one of the user's.
+  - Found by the live check: GitHub leaves the merge flags out of `GET /repos/{r}` for a token
+    without push access, so `repo_merge_settings` returns an error then (not "all methods off").
+    Stage 6 must treat that error as "cannot enable auto-merge here".
   - Stage 7: `new_comments` stops at 10 pages and applies the cursor on the client. Use the REST
     `since` parameter plus the id cursor.
   - GraphQL documents are in `queries.rs` and are written from GitHub's documented shapes; a

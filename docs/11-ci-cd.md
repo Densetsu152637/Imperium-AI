@@ -150,7 +150,9 @@ shapes GitHub does not accept. It asserts, on `Densetsu152637/Imperium-AI`:
 - `review_threads` on a pull request that has review threads (found with `gh`; skipped with a
   note when none exists).
 - `repo_merge_settings` equals the repository's real flags, pinned in the test (squash, merge
-  commit and rebase on, auto-merge off; update the pin if the repository settings change).
+  commit and rebase on, auto-merge off; update the pin if the repository settings change). A
+  token without push access is not sent the flags (the first run found this); the client
+  reports that as an error, and the check accepts it as a pass with a note.
 - `collaborator_permission` for the owner: write access, or a clean 403 with the token scrubbed
   if the workflow token is refused.
 - The mutations `EnableAutoMerge`, `DisableAutoMerge` and `ReplyToThread`, sent with bogus ids

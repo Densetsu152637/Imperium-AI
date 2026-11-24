@@ -452,6 +452,14 @@ impl HttpGitHub {
             .rest(&format!("/repos/{owner}/{name}"), false)
             .await?
             .unwrap_or(Value::Null);
+        // GitHub leaves these fields out for a token without push access; reading that as "all
+        // methods off" would be wrong, so it is an error.
+        if value["allow_squash_merge"].is_null() {
+            return Err(
+                "GitHub did not report the merge settings (the token needs push access)"
+                    .to_string(),
+            );
+        }
         let flag = |key: &str| value[key].as_bool().unwrap_or_default();
         Ok(MergeSettings {
             squash: flag("allow_squash_merge"),
