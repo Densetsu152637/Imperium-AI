@@ -8,6 +8,7 @@ answer and what `imperium plugin list` then shows. Prints one "scenario ...: pas
 exits non-zero on the first failure. Standard library and PyGObject only.
 """
 
+import http.client
 import json
 import os
 import pty
@@ -218,11 +219,20 @@ def webdriver(method, path, body=None, timeout=60):
     request = urllib.request.Request(
         DRIVER + path, data=data, method=method, headers={"Content-Type": "application/json"}
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.load(response)["value"]
-    except urllib.error.HTTPError as error:
-        raise Failed(f"WebDriver {method} {path}: {error.code} {error.read().decode()}") from None
+    # tauri-driver reuses its connection to WebKitWebDriver, which drops idle ones: the first
+    # request after a quiet spell can be refused before it is read, and asking again works. A
+    # long `execute/async` (an approval) is never repeated.
+    attempts = 1 if "execute/async" in path else 4
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.load(response)["value"]
+        except urllib.error.HTTPError as error:
+            raise Failed(f"WebDriver {method} {path}: {error.code} {error.read().decode()}") from None
+        except (http.client.RemoteDisconnected, ConnectionResetError):
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(1)
 
 
 class Driver:
