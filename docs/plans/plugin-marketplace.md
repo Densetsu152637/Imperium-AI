@@ -1402,9 +1402,24 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   by hand at 1280, 1024 and 420 px, light and dark, by keyboard, against
   [07](../07-desktop-ui.md#theming) and [accessibility](../07-desktop-ui.md#accessibility-implemented).
 - Risks: stay on the shared components.
-- Status: pending
-- Outcome:
-- Handoff notes: none yet.
+- Status: done (the by-hand check at 1280, 1024 and 420 px is the user's, against a fake core)
+- Outcome: `apps/desktop/src/plugins/` (`PluginsWindow`, `BrowseView` with the detail, `MarketplacesView`,
+  `SuggestionsView`, `InstalledView`, `model.ts`), `styles/plugins.css`, opened from a title-bar icon, the
+  palette's *Open Plugins*, Settings → Connectors and a *Manage plugins* button in Connectors' Installed view;
+  doc 07's *Plugins window* section. No protocol change. Tests: `test/pluginsModel.test.ts` runs the window's
+  rules and daemon calls against a mocked client (filtering, an external-source card, marketplace add,
+  refresh and remove, dismissing one offer and muting a project, no call that installs or approves). There is no
+  DOM test harness in `apps/desktop` (tests load `.ts` only), so the components are covered by typecheck, lint
+  and the by-hand check. Choices: the method names are the protocol's `plugins.marketplace_add|list|refresh|remove`;
+  Browse is the default tab; offers sit above Browse's cards; a marketplace offer's *Review* only fills the add form;
+  Installed is read-only; the daemon has no update flag, so *Update available* is a proxy (the marketplace's commit
+  differs from a path plugin's install commit, or the last refresh here listed it as changed); every
+  marketplace- or repository-supplied string passes through `plain` and is rendered as text, and the homepage is
+  text, not a link.
+- Handoff notes: stage 10 owns *Installed*'s on/off, update, approve and uninstall (this view only lists), the
+  trust view and secrets; a real `update_available` from the daemon would replace the proxy in `listingState`; the
+  built-in marketplace, once turned off, shows *Off* with no way back in this window (re-adding its source is the
+  way, untested); there is no un-mute for a muted project.
 
 ## Stage 10: Desktop install, trust and update
 

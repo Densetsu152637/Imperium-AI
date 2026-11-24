@@ -1,0 +1,112 @@
+/* The Plugins window reuses the Connectors cards, rows and forms (connectors.css); these are the few rules only it needs. */
+
+.plugin-card-open {
+  all: unset;
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+
+.plugin-card-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: calc(2 * var(--px));
+}
+
+/* Marketplace descriptions vary in length: three lines keep the cards even. */
+.plugin-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.plugin-card-foot {
+  flex-wrap: wrap;
+}
+
+.plugin-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  max-width: calc(640 * var(--px));
+}
+
+.plugin-add-form h3,
+.plugin-offers h3 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.plugin-offers h3 .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  vertical-align: calc(-2 * var(--px));
+}
+
+.plugin-offers .connectors-section-head {
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.plugin-offer-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-sm);
+}
+
+.plugin-detail {
+  max-width: calc(720 * var(--px));
+}
+
+.plugin-detail-description {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+}
+
+.plugin-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(220 * var(--px)), 1fr));
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0;
+}
+
+.plugin-facts dt {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.plugin-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-md);
+}
+
+.plugin-detail-group h4 {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+}
+
+.plugin-detail-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-detail-list code {
+  padding: calc(1 * var(--px)) var(--sp-2);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}

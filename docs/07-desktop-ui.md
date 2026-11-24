@@ -343,7 +343,7 @@ the queue, waits, tool calls, attachments, the transcript's follow-scroll and vo
 model configuration dialog and its forms, telemetry and budgets), `environments/` (the
 environment window, icons, the environments hook and the lookup by id), `settings/` (the
 Settings window, one file per section, the app settings and the shortcuts), `connectors/` (the
-Connectors window and its views and forms), `tour/` (the first-run tour and its hook), `review/`,
+Connectors window and its views and forms), `plugins/` (the Plugins window and its views, with `model.ts` holding its rules and daemon calls), `tour/` (the first-run tour and its hook), `review/`,
 and `shared/` (the connection banner, the daemon cache, the windows hook, notifications, the
 store, panel windows and the icon registry), beside `panels/`, `components/`, `layout/`, `mods/`,
 `commands/` and `daemon/`. Pure rules live in `.ts` files, tested under `apps/desktop/test/` (for example
@@ -830,7 +830,7 @@ click away, never removed.
   Header actions are small icon-only buttons with an `aria-label` and tooltip: *+* for New
   environment and New session (beside the Sessions sort), the sliders for *Configure models*.
 - **Title bar:** a flat strip with the wordmark (the one place the chrome gradient stays), the
-  connection state and the version; Connectors, the panel editor toggle and Settings are one group of
+  connection state and the version; Connectors, Plugins, the panel editor toggle and Settings are one group of
   `IconButton`s, each with a tooltip that also shows on keyboard focus. A project layout is marked
   with an accent `Badge`.
 - **Launch focus:** once the panels have rendered, the app asks for document focus and moves it to
@@ -864,7 +864,7 @@ windows; pressing it again closes it. It is the shared `Dialog` (one column, no 
 top of the window) with one search box over:
 
 - **Actions:** new session, new session in each environment, new environment, Open Settings,
-  Open Connectors, Configure models, switch to the light or dark theme, check for updates, and
+  Open Connectors, Open Plugins, Configure models, switch to the light or dark theme, check for updates, and
   for the open session: compact the conversation, archive or unarchive, pin or unpin.
 - **Sessions** by title (with the environment's name), and **Archived sessions** in a group of
   their own; choosing one opens it.
@@ -999,7 +999,7 @@ tested in `test/tourSteps.test.ts`.
 
 ## Connectors (implemented)
 
-**Connectors** (the plug icon in the title bar, or Settings → Connectors) opens a window like Claude's and
+**Connectors** (the plug icon in the title bar, the command palette, or Settings → Connectors) opens a window like Claude's and
 ChatGPT's connector directories. It is the shared `Dialog` (one column, a header, the scrolling body; below
 600 px wide it is the full-screen sheet, with no rule of its own for narrow windows), with `Tabs` (*Installed*
 with its count, and *Browse*) and a search box between the header and the body. Escape steps back from a form,
@@ -1026,6 +1026,41 @@ then closes the window. Failures show as a `Notice`; empty and loading states ar
 Adding or saving a connector tests it straight away. The window talks to the daemon's `mcp.*`
 methods and the directory comes from the daemon; see
 [managing MCP servers from the app](05-tools-and-isolation.md#connectors-managing-mcp-servers-from-the-app-implemented).
+The Installed view's *Plugins* heading has a *Manage plugins* button that closes Connectors and opens the
+Plugins window.
+
+## Plugins window (implemented)
+
+**Plugins** (the puzzle icon in the title bar, *Open Plugins* in the command palette, Settings → Connectors →
+Plugins, or *Manage plugins* in Connectors) is a separate window from Connectors, whose own Installed and Browse
+are for MCP servers. It is the same shared `Dialog` with `Tabs` and a search box, the Connectors cards
+(`.card.interactive`), `--row-h` rows, `Badge`, `Notice`, `EmptyState` and `LoadingState`; its few own rules are
+in `styles/plugins.css`. Escape steps back from a plugin's detail, then closes the window. It installs, enables
+and approves nothing; the install flow is [stage 10 of the marketplace plan](plans/plugin-marketplace.md).
+
+- **Browse** (the default): cards for what the enabled marketplaces list (`plugins.browse`), with name,
+  marketplace, a three-line description, category, component counts (skills, commands, agents, hooks, servers, when
+  the marketplace says), and *Installed* or *Update available*. Chips filter by marketplace (when more than one is
+  on) and by category; the search matches name, id, description, category, marketplace, author, keywords and tags. A card
+  opens the detail: the facts, the source (an external source is shown as its kind and address), the components, and
+  a note that installing is not available yet. *Installed* comes from `plugins.list` for the selected environment;
+  the daemon has no update flag, so *Update available* means the marketplace's commit differs from the one a
+  plugin from the marketplace's own repository was installed at, or the last refresh in this window listed it as changed.
+- **Suggested by this project:** above the cards, the selected environment's offers (`plugins.suggestions`): marketplaces
+  and plugins the project's `.imperium/config.toml` suggests, with the file each came from. *Review* on a marketplace
+  offer fills the Marketplaces form and moves there without adding anything; *Find* on a plugin offer searches
+  Browse. *Dismiss* (`plugins.dismiss_suggestion` with the offer's key) forgets one offer, and *No suggestions from this
+  project* mutes the folder (the muted state shows as a note; there is no un-mute yet). Offer text is the repository's:
+  it is drawn as plain text, with control and direction-changing characters removed, never as HTML or markdown, and
+  goes nowhere else.
+- **Marketplaces:** a form (source, optional revision) and the list: the built-in official marketplace marked *Built in*
+  (removing it turns it off), each marketplace's source, commit, plugin count and last refresh, refresh per row and
+  *Refresh all* with a one-line result each (added, removed, changed, or the error), remove with a confirmation, and
+  the problems a marketplace reported.
+- **Installed:** the plugins on this computer for the selected environment (read-only here): *Withheld*, *Off* and *Needs
+  secrets* badges, origin, commit and the reason a plugin is withheld.
+
+The rules and the daemon calls live in `plugins/model.ts`, tested by `test/pluginsModel.test.ts` against a mocked client.
 
 ## Settings and persistence (implemented)
 

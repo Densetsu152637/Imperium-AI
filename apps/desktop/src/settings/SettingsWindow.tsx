@@ -4,7 +4,7 @@
 // and written through the daemon's config.describe / config.set into its config file. Both
 // persist across versions.
 
-import { FolderPlus, Plug, Search, SlidersHorizontal, Volume2 } from "lucide-react";
+import { FolderPlus, Plug, Puzzle, Search, SlidersHorizontal, Volume2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ConfigDescribeResult, ConfigEntry, ConfigSetResult, ModListResult } from "@imperium/protocol";
 import { ApiSection } from "../components/ApiSection";
@@ -55,6 +55,8 @@ type Props = {
   onDock: (id: string) => void;
   /** Opens the Connectors window (MCP servers, plugins, skills). */
   onOpenConnectors: () => void;
+  /** Opens the Plugins window (marketplaces, browse, project suggestions). */
+  onOpenPlugins: () => void;
   /** Opens the model configuration dialog (local models and model-table rows). */
   onOpenModels: () => void;
   /** Closes Settings and starts the first-run tour again. */
@@ -258,6 +260,11 @@ export function SettingsWindow(props: Props) {
             >
               <button className="primary" onClick={props.onOpenConnectors}>
                 <Plug aria-hidden="true" /> Open connectors
+              </button>
+            </Row>
+            <Row label="Plugins" description="Add plugin marketplaces, browse the plugins they list, and see what your project suggests.">
+              <button className="primary" onClick={props.onOpenPlugins}>
+                <Puzzle aria-hidden="true" /> Open plugins
               </button>
             </Row>
             {config && configRows(config.entries.filter((entry) => entry.section === "mcp" || entry.section === "extensions"))}

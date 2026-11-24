@@ -31,10 +31,13 @@ export function ConnectorsWindow({
   client,
   onClose,
   initialTab = "installed",
+  onManagePlugins,
 }: {
   client: DaemonClient | null;
   onClose: () => void;
   initialTab?: Tab;
+  /** Opens the Plugins window (marketplaces and plugin browse), which this one leaves. */
+  onManagePlugins?: () => void;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [view, setView] = useState<View>({ kind: "list" });
@@ -246,6 +249,7 @@ export function ConnectorsWindow({
         onBrowse={() => setTab("browse")}
         onCustom={() => setView({ kind: "custom", editing: null })}
         onPluginEnable={setPluginEnabled}
+        onManagePlugins={onManagePlugins}
       />
     );
   }

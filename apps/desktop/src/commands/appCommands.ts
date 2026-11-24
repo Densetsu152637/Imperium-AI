@@ -21,6 +21,7 @@ import {
   Pin,
   PinOff,
   Plug,
+  Puzzle,
   Route,
   Settings,
   SunMoon,
@@ -62,6 +63,7 @@ export type AppCommandContext = {
   setModel: (spec: string) => void;
   openSettings: (section?: string) => void;
   openConnectors: () => void;
+  openPlugins: () => void;
   configureModels: () => void;
   openPanel: (id: string) => void;
   closePanel: (id: string) => void;
@@ -161,6 +163,7 @@ export function appCommands(app: AppCommandContext): Command[] {
   }
   add({ id: "settings.open", group: "actions", title: "Open Settings", keywords: ["preferences", "options"], icon: Settings, shortcutAction: "settings.toggle", run: () => app.openSettings() });
   add({ id: "connectors.open", group: "actions", title: "Open Connectors", keywords: ["mcp", "plugins", "skills", "servers"], icon: Plug, run: app.openConnectors });
+  add({ id: "plugins.open", group: "actions", title: "Open Plugins", keywords: ["marketplace", "plugin", "extensions", "suggestions"], icon: Puzzle, run: app.openPlugins });
   add({ id: "models.configure", group: "actions", title: "Configure models", keywords: ["local models", "model table", "endpoints"], icon: Boxes, run: app.configureModels });
   add({
     id: "theme.toggle",
