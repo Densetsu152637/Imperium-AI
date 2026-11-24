@@ -689,6 +689,12 @@ mod tests {
                 let line = line.trim();
                 if line.starts_with('[') {
                     section = line.to_string();
+                } else if line.contains("test-host") && !line.starts_with('#') {
+                    assert!(
+                        section == "[dev-dependencies]" || section == "[features]",
+                        "{} enables test-host under {section}",
+                        manifest.display()
+                    );
                 } else if line.contains("imperium-github-fake") && !line.starts_with('#') {
                     let own = text.contains("name = \"imperium-github-fake\"");
                     assert!(

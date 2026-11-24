@@ -1,3 +1,4 @@
+#![cfg(feature = "test-host")]
 //! `HttpGitHub` against the in-process fake GitHub: every method, token refresh, secret hygiene,
 //! errors, rate limits and host pinning.
 

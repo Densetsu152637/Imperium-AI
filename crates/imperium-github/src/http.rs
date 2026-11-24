@@ -1,6 +1,12 @@
 //! [`HttpGitHub`]: the GitHub client over GraphQL and REST. It sends the token only to its base
 //! URL, never follows a redirect with the token, scrubs every error, and slows down when GitHub
 //! says it is rate limited.
+//!
+//! Proxies: the underlying `reqwest` client keeps honouring `HTTPS_PROXY`, `HTTP_PROXY` and
+//! `NO_PROXY`, because users behind a corporate proxy need it. The proxy sees only a TLS tunnel
+//! (`CONNECT api.github.com:443`); the certificate of `api.github.com` is still verified, so a
+//! proxy cannot read the token or change the host. A proxy is therefore part of the trust path
+//! only for availability.
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -67,6 +73,7 @@ fn split_repo(repo: &str) -> Result<(&str, &str), String> {
     }
 }
 
+#[cfg(feature = "test-host")]
 fn is_loopback_http(base: &str) -> bool {
     ["http://127.0.0.1", "http://localhost", "http://[::1]"]
         .iter()
@@ -82,8 +89,10 @@ impl HttpGitHub {
         Self::build(API_BASE.to_string(), tokens)
     }
 
-    /// A client for another base URL, for in-process tests against the fake server. Plain `http`
-    /// is accepted only for a loopback address, so a token cannot be sent in the clear elsewhere.
+    /// A client for another base URL, for in-process tests against the fake server. It exists
+    /// only with the `test-host` feature, which only this crate's dev-dependencies enable, so no
+    /// shipped code can pass a host. Plain `http` is accepted only for a loopback address.
+    #[cfg(feature = "test-host")]
     pub fn new(base_url: &str, tokens: Arc<dyn TokenSource>) -> Result<Self, String> {
         let base = base_url.trim_end_matches('/');
         if !(base.starts_with("https://") || is_loopback_http(base)) {

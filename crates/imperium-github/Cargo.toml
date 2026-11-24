@@ -16,7 +16,13 @@ tokio = { version = "1.54.1", features = ["process", "rt", "macros", "time"] }
 [lints]
 workspace = true
 
+[features]
+# `HttpGitHub::new` (any base URL), for tests against the fake. Enabled only by this crate's own
+# dev-dependency below; never in a release build.
+test-host = []
+
 [dev-dependencies]
+imperium-github = { path = ".", features = ["test-host"] }
 imperium-config = { path = "../imperium-config" }
 imperium-github-fake = { path = "../imperium-github-fake" }
 tempfile = "3.27.0"

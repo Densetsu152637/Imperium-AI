@@ -268,6 +268,11 @@ the PR touches.
 6. **The API host is fixed (F6).** The token goes only to `https://api.github.com`. The base URL
    is a constructor argument of `HttpGitHub`; the daemon builds it from a constant, and tests
    inject a client or a fake in process. No setting, environment variable or file selects a host.
+   `HttpGitHub::new(base_url, ...)` exists only under the `test-host` cargo feature, which only
+   the crate's own dev-dependencies enable. The HTTP client keeps honouring `HTTPS_PROXY`,
+   `HTTP_PROXY` and `NO_PROXY` (corporate proxies); a proxy sees only a TLS tunnel to
+   `api.github.com` whose certificate is still verified, so it cannot read the token or change
+   the host.
 7. **Loops and cost.** The daemon's own replies carry a footer marker and recorded ids and never
    wake the session. A comment cursor, the attempt cap, the replies-per-hour cap and a budget
    (built in [stage 8](#stage-8-replies-and-injection-corpus), not assumed) bound the rest.
@@ -418,8 +423,10 @@ Each stage is one pull request against `experimental`, with the docs it changes.
     `repo_merge_settings`, `reply_to_thread` and `set_auto_merge`. The new methods have
     "not supported" defaults, so `GhCli` and tests' own fakes (as in `tests/autofix.rs`) compile unchanged.
     `HttpGitHub::api(tokens)` is the daemon's constructor (host from the `API_BASE` constant);
-    `HttpGitHub::new(base_url, tokens)` takes a base URL as its only host input and accepts
-    `https`, or `http` on loopback. Redirects are never followed with the token; the one place
+    `HttpGitHub::new(base_url, tokens)` takes a base URL as its only host input, accepts
+    `https`, or `http` on loopback, and exists only under the `test-host` feature (enabled by the
+    crate's own dev-dependencies, never in a release build). `reqwest` still honours
+    `HTTPS_PROXY`. Redirects are never followed with the token; the one place
     GitHub redirects (job logs) is followed without it.
   - `Secret` has no `Debug` or `Display` (compile-fail doctests); `scrub` removes the token,
     token-shaped words and `Bearer` values from every error. `TokenSource` has `GhAuthToken`
@@ -441,9 +448,19 @@ Each stage is one pull request against `experimental`, with the docs it changes.
     failed steps (the REST endpoint has no failed-only form); callers still frame it as untrusted.
 - Handoff notes: nothing calls `HttpGitHub` yet, so this stage cannot change behaviour. Stage 2
   builds `HttpGitHub::api(Arc::new(GhAuthToken))` in the daemon and migrates the call sites.
-  GraphQL documents are in `queries.rs` and are written from GitHub's documented shapes; they
-  have not been run against the real API, so stage 2's first live run should check them
-  (`pr_status`, `review_threads` and `set_auto_merge` especially).
+  - **S1.** `failure_log` returns the last 64 KiB of the whole job log, so the tail is mostly
+    post-job noise. Stage 2 must either keep `GhCli::failure_log` for Fix CI, or cut the log to
+    the failed step's section (using `##[group]` markers and the step conclusions from
+    `GET /actions/jobs/{id}`). Fetch the tail with `Range: bytes=-65536` or a ring buffer. Add a
+    test with a failed step followed by post-job noise.
+  - **S2.** `failing_prs` takes the first 50 open PRs and filters by author on the client, so it
+    misses the user's PRs when a repository has more than 50 open. Use a GraphQL
+    `search(query: "repo:o/r is:pr is:open author:@me", ...)`; `@me` does not work with an
+    installation token. Add a test with 60 other people's PRs plus one of the user's.
+  - Stage 7: `new_comments` stops at 10 pages and applies the cursor on the client. Use the REST
+    `since` parameter plus the id cursor.
+  - GraphQL documents are in `queries.rs` and are written from GitHub's documented shapes; a
+    live check (`tests/live.rs`, run by a separate workflow job) validates them against the real API.
 
 ## Stage 2: Call-site migration to the new client
 
