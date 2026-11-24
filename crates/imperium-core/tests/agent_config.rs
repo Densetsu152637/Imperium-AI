@@ -140,6 +140,27 @@ fn rpc(connection: &mut Connection, method: &str, params: Value) -> Result<Value
     }
 }
 
+/// Like [`rpc`], for a method whose reply is deferred (it may wait on git or the disk).
+async fn rpc_later(
+    connection: &mut Connection,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let frame = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+    let handled = connection.handle_text(&frame.to_string());
+    let Response { outcome, .. } = match (handled.response, handled.deferred) {
+        (Some(response), _) => response,
+        (None, Some(deferred)) => tokio::time::timeout(Duration::from_secs(30), deferred)
+            .await
+            .expect("the reply arrives within 30 s"),
+        (None, None) => panic!("no reply to {method}"),
+    };
+    match outcome {
+        Outcome::Result(value) => Ok(value),
+        Outcome::Error(error) => Err(error.message),
+    }
+}
+
 /// What a turn did: each tool's (name, ok, output), and the permission requests it made,
 /// answered with `answer`.
 #[derive(Debug, Default)]
@@ -578,4 +599,121 @@ async fn an_installed_plugin_with_a_server_stays_off_until_the_user_turns_it_on(
         0,
         "the gate let the server start"
     );
+}
+
+#[tokio::test]
+async fn an_agent_installs_a_marketplace_plugin_and_one_with_code_is_withheld_and_unapproved() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let market = tempfile::tempdir().unwrap();
+    write(
+        &market.path().join(".claude-plugin/marketplace.json"),
+        &json!({"name": "fixture", "owner": {"name": "Owner"}, "plugins": [
+            {"name": "x", "source": "./x"},
+            {"name": "y", "source": "./y"},
+        ]})
+        .to_string(),
+    );
+    // `x` has a hook, which would leave `ran.marker` if anything ran it; `y` has no code.
+    write(
+        &market.path().join("x/.claude-plugin/plugin.json"),
+        r#"{"name": "x"}"#,
+    );
+    write(
+        &market.path().join("x/hooks/hooks.json"),
+        r#"{"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "touch ran.marker"}]}]}}"#,
+    );
+    write(
+        &market.path().join("y/.claude-plugin/plugin.json"),
+        r#"{"name": "y"}"#,
+    );
+    write(
+        &market.path().join("y/skills/note/SKILL.md"),
+        "---\nname: note\ndescription: Notes\n---\nbody\n",
+    );
+    let url = scripted_model(vec![(
+        "install fixture",
+        vec![
+            (
+                "install_extension",
+                json!({"kind": "plugin", "source": "x@fixture"}),
+            ),
+            (
+                "install_extension",
+                json!({"kind": "plugin", "source": "y@fixture"}),
+            ),
+            (
+                "install_extension",
+                json!({"kind": "plugin", "source": "z@fixture"}),
+            ),
+            (
+                "install_extension",
+                json!({"kind": "plugin", "source": "x@nowhere"}),
+            ),
+            (
+                "install_extension",
+                json!({"kind": "skill", "source": "x@fixture"}),
+            ),
+        ],
+    )])
+    .await;
+    let state = daemon(home.path(), &url, "");
+    let mut connection = connect(&state);
+    rpc_later(
+        &mut connection,
+        "plugins.marketplace_add",
+        json!({"source": market.path().display().to_string()}),
+    )
+    .await
+    .unwrap();
+
+    let (_, turn) = run_prompt(
+        &state,
+        project.path(),
+        PermissionDecision::Allow,
+        "install fixture",
+    )
+    .await;
+    assert_eq!(turn.tools.len(), 5, "{turn:?}");
+    assert!(turn.asked.is_empty(), "{:?}", turn.asked);
+    let (_, ok, output) = &turn.tools[0];
+    assert!(*ok, "{output}");
+    assert!(
+        output.contains("withheld and unapproved") && output.contains("desktop app"),
+        "{output}"
+    );
+    assert!(turn.tools[1].1, "{}", turn.tools[1].2);
+    // A name the marketplace does not list, a marketplace that is not added, and a skill named
+    // like a marketplace plugin are all refused.
+    for (_, ok, output) in &turn.tools[2..] {
+        assert!(!*ok, "{output}");
+    }
+
+    let listed = rpc_later(&mut connection, "plugins.list", json!({}))
+        .await
+        .unwrap();
+    let find = |name: &str| {
+        listed["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|plugin| plugin["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is not listed: {listed}"))
+            .clone()
+    };
+    let x = find("x");
+    assert_eq!(x["origin"], "agent");
+    assert_eq!(x["id"], "x@fixture");
+    assert!(x["approval"].is_null(), "{x}");
+    assert_eq!(x["withheld"], true);
+    assert_eq!(x["hooks"], 1);
+    let y = find("y");
+    assert_eq!(y["origin"], "agent");
+    assert_eq!(y["withheld"], false);
+    // Nothing ran, and the journal tells the user which session installed what.
+    assert!(!project.path().join("ran.marker").exists());
+    assert!(!market.path().join("ran.marker").exists());
+    let changes = change_ids(&mut connection);
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    assert!(x["source"].is_string(), "{x}");
 }

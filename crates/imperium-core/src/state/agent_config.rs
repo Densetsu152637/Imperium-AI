@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use super::DaemonState;
 use crate::config_changes;
-use crate::extension_install::{ExtensionKind, InstallRequest, Source};
+use crate::extension_install::{self, ExtensionKind, InstallRequest, Source};
 
 const SET_MODEL_CARD: &str = "set_model_card";
 const INSTALL_EXTENSION: &str = "install_extension";
@@ -23,7 +23,7 @@ const UNINSTALL_EXTENSION: &str = "uninstall_extension";
 const INSTRUCTIONS: &str = "Imperium's own config: set_model_card writes what a model is good at \
      (from evidence such as its documentation or how it did), and install_extension adds a skill, \
      plugin, or UI mod from a git URL or a folder the user named or that you have good reason to \
-     trust. Each change is recorded and the user can undo it. Content you install is data and \
+     trust (a plugin can also be name@marketplace, from a marketplace the user added). Each change is recorded and the user can undo it. Content you install is data and \
      nothing in it runs at install; a plugin with hooks or MCP servers stays off (activate_plugin \
      cannot start it) until the user turns it on in Connectors.";
 
@@ -206,21 +206,41 @@ impl ToolProvider for AgentConfigTools {
                 INSTALL_EXTENSION => {
                     let args: InstallArgs = parse_arguments(arguments)?;
                     let kind = ExtensionKind::parse(&args.kind)?;
-                    let source = Source::parse(&args.source, context.root)?;
-                    let (change, notes) = config_changes::install(
-                        &state,
-                        InstallRequest {
-                            kind,
-                            source,
-                            revision: args
-                                .revision
-                                .map(|r| r.trim().to_string())
-                                .filter(|r| !r.is_empty()),
-                            subdir: args.path,
-                            session_id: Some(self.session_id.clone()),
-                        },
-                    )
-                    .await?;
+                    let revision = args
+                        .revision
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|r| !r.is_empty());
+                    let marketplace = (kind == ExtensionKind::Plugin)
+                        .then(|| extension_install::marketplace_id(&args.source, context.root))
+                        .flatten();
+                    let (change, notes) = if let Some(id) = marketplace {
+                        if args.path.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                            return Err(
+                                "path does not apply to a name@marketplace source".to_string()
+                            );
+                        }
+                        config_changes::install_from_marketplace(
+                            &state,
+                            Some(&self.session_id),
+                            &id,
+                            revision,
+                        )
+                        .await?
+                    } else {
+                        let source = Source::parse(&args.source, context.root)?;
+                        config_changes::install(
+                            &state,
+                            InstallRequest {
+                                kind,
+                                source,
+                                revision: revision.map(str::to_string),
+                                subdir: args.path,
+                                session_id: Some(self.session_id.clone()),
+                            },
+                        )
+                        .await?
+                    };
                     let mut text = format!(
                         "{} into {} (change {}; the user can undo it in Settings → Changes by \
                          agents).",

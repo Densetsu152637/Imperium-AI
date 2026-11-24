@@ -259,7 +259,8 @@ and `environments.agent_update` (protocol 0.28)
 22. **Agents manage the app config** (implemented). By default, and outside configured
     environment projects too, agents may add to the user's local app config: filling in model
     cards (`set_model_card`), and downloading and installing mods, plugins, and skills
-    (`install_extension`, `uninstall_extension`) from a git URL or a local folder. Each change
+    (`install_extension`, `uninstall_extension`) from a git URL or a local folder (a plugin may also
+    be `name@marketplace`, [item 51](#next-in-order)). Each change
     goes through the permission rules, so the user can narrow it to *ask* or *deny*, and is
     recorded in a change journal so it can be undone (Settings → *Changes by agents*,
     `imperium config changes` / `undo`). Installs show where they came from
@@ -665,7 +666,7 @@ and `environments.agent_update` (protocol 0.28)
     permission-mode values); `auto` is in the CLI's `/mode` and the desktop's mode selector
     ([05](05-tools-and-isolation.md#auto-mode-implemented)).
 <!-- markdownlint-disable-next-line MD029 -->
-51. **Plugin marketplace** (planned). Claude Code's plugin marketplaces in Imperium: add a
+51. **Plugin marketplace** (implemented). Claude Code's plugin marketplaces in Imperium: add a
     marketplace (a git URL, a local folder, or a GitHub `owner/repo` holding
     `.claude-plugin/marketplace.json`; Anthropic's official marketplace is pre-added), refresh
     and remove it, browse its plugins with their descriptions and components, and install,
@@ -688,7 +689,12 @@ and `environments.agent_update` (protocol 0.28)
     renamed folder or manifest withholds the whole plugin until approved again. Plugin hooks block
     but never rewrite; their processes get an allowlisted environment and their MCP secrets go to
     the keychain. Builds on the Claude Code plugin loading of phase 5 and the agent installs of
-    [item 22](#next-in-order). The threat model, security model and its remaining gaps, storage,
+    [item 22](#next-in-order): an agent's `install_extension` may name a plugin as
+    `name@marketplace`, recorded as an agent install and withheld when it has code. A weekly
+    live run installs and approves a plugin of the real official marketplace
+    ([11](11-ci-cd.md#live-official-marketplace-presence-liveyml)). Follow-ups: the marketplace's
+    `git-subdir` sources (about a third of the official entries) are listed but not installable,
+    item 60, and item 59. The threat model, security model and its remaining gaps, storage,
     protocol and fifteen stages are in the
     [plugin marketplace plan](plans/plugin-marketplace.md).
 <!-- markdownlint-disable-next-line MD029 -->

@@ -1,0 +1,33 @@
+name: Presence e2e (live official marketplace)
+
+# The real official marketplace (anthropics/claude-plugins-official) end to end: the built-in
+# default is cloned from the network and checked (U1), browsed, one small plugin with a hook is
+# inspected, installed and approved through the native dialog and polkit, and the record must be
+# `counted` with the marketplace's commit (docs/11-ci-cd.md, "Live official marketplace"). It runs
+# the Linux job of presence-e2e.yml with `live`.
+#
+# It needs the network and a repository outside this one, so it is not part of ci.yml and does not
+# gate merges: it runs weekly, by hand, and on a pull request only when the harness or this file
+# changes (where a failure is the harness's own).
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/presence-live.yml"
+      - "scripts/ci/presence-e2e/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  live:
+    name: live official marketplace
+    uses: ./.github/workflows/presence-e2e.yml
+    with:
+      live: true

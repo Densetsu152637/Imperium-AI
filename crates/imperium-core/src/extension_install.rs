@@ -120,6 +120,20 @@ impl Source {
     }
 }
 
+/// `source` as a marketplace plugin id (`name@marketplace`), when it is one: not a URL, not
+/// scp-like (no `:`), no path separator, and not a folder under `base`.
+pub(crate) fn marketplace_id(source: &str, base: &Path) -> Option<String> {
+    let source = source.trim();
+    let (name, market) = source.rsplit_once('@')?;
+    let plain = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('-')
+            && !part.contains(|c: char| c.is_whitespace() || matches!(c, '/' | '\\' | ':' | '~'))
+    };
+    (plain(name) && plain(market) && !name.contains('@') && !base.join(source).is_dir())
+        .then(|| source.to_string())
+}
+
 /// `user@host:path` (git's scp-like syntax), but not a Windows drive (`C:\...`).
 fn is_scp_like(source: &str) -> bool {
     let Some((host, path)) = source.split_once(':') else {
@@ -879,6 +893,32 @@ mod tests {
         );
         for bad in ["ext::sh -c x", "-u", "some-registry-name", "ftp://x/y", ""] {
             assert!(Source::parse(bad, base.path()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_marketplace_plugin_id_is_told_from_a_url_a_path_and_a_folder() {
+        let base = tempfile::tempdir().unwrap();
+        std::fs::create_dir(base.path().join("x@fixture")).unwrap();
+        let id = |source: &str| marketplace_id(source, base.path());
+        assert_eq!(id("y@fixture").as_deref(), Some("y@fixture"));
+        assert_eq!(id("  y@fixture ").as_deref(), Some("y@fixture"));
+        // A folder of that name is a folder.
+        assert_eq!(id("x@fixture"), None);
+        for other in [
+            "git@github.com:a/b.git",
+            "https://user@host/a",
+            "a/b@c",
+            "~/b@c",
+            "C:\\x@y",
+            "-x@y",
+            "@fixture",
+            "x@",
+            "a@b@c",
+            "x @y",
+            "plain",
+        ] {
+            assert_eq!(id(other), None, "{other}");
         }
     }
 

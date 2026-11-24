@@ -6,10 +6,21 @@ name: Presence e2e
 # Windows, what the presence check answers on a headless runner. Called by ci.yml when a change
 # touches the paths scripts/ci/detect.sh lists (and so gated by its "CI gate" job), since the Linux
 # job builds both release binaries; also runnable by hand. No concurrency group of its own: the
-# caller's applies.
+# caller's applies. With `live` it runs only the Linux job's live scenario (presence-live.yml
+# calls it so), which clones the real official marketplace and so is never part of the gate.
 on:
   workflow_call:
+    inputs:
+      live:
+        description: Run the live scenario against the real official marketplace instead (needs network)
+        type: boolean
+        default: false
   workflow_dispatch:
+    inputs:
+      live:
+        description: Run the live scenario against the real official marketplace instead (needs network)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,6 +35,7 @@ jobs:
       # build-script layout.
       RUSTUP_TOOLCHAIN: 1.99.1
       E2E_LOGS: ${{ github.workspace }}/e2e-logs
+      E2E_LIVE: ${{ inputs.live && '1' || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,6 +76,7 @@ jobs:
 
   headless:
     name: presence check on a headless runner (${{ matrix.os }})
+    if: ${{ !inputs.live }}
     strategy:
       fail-fast: false
       matrix:

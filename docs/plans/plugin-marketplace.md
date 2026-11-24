@@ -3,14 +3,15 @@
 Revision: 2026-11-23, revision 6 (plan review rounds 4 and 5: the OS tier's daemon escape and the
 limits of PR 240, the container tier's folder precondition, pidfd start time, the Windows release
 checks); written against `experimental` at `88e8fd50` (last updated). Roadmap
-[item 51](../12-roadmap.md#next-in-order). Status: planned; no stage started.
+[item 51](../12-roadmap.md#next-in-order). Status: implemented (stages 1 to 11); the
+threat-model check of stage 11 is dated 2026-11-24.
 
 Imperium already loads Claude Code plugins from folders and lets agents install one from a git
 URL or a folder ([06](../06-extensibility.md#agents-manage-the-app-config-implemented)). What it
 lacks is Claude Code's **marketplace**: a catalogue repository the user adds once, browses, and
 installs, enables, disables, updates and uninstalls plugins from by name. This plan adds that,
 with the trust model a download that can run code needs, on the CLI, the protocol and the
-desktop app. It implements nothing; each stage below is one pull request.
+desktop app. Each stage below was one pull request.
 
 ## Goals
 
@@ -124,12 +125,17 @@ Made by the user on 2026-11-22 (U1 to U3) and 2026-11-23 (U4 to U7).
 3. **Agents confined by the container tier, and by the OS tier within #240's limits.**
    - **Container tier:** protects approvals when its preconditions hold: the container has no
      host networking (`--network none` or a bridge network, never `--network host`) and the
-     daemon's socket is not mounted into it (it mounts only the workspace), and **no session
-     folder or path grant contains `<config>` or `<data>`**. This plan relies on
-     [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) (merged at `a58b0efa`) to
-     enforce that last precondition for container sessions; it does not restate the mechanism. Such an agent cannot
-     write `plugin-installs.json`, the config or `<config>/plugins`, cannot read the daemon token,
-     and cannot reach the daemon.
+     daemon's socket is not mounted into it (it mounts only the workspace). A session folder
+     or path grant that contains `<config>` or `<data>` is no longer a precondition the user
+     must keep: since [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) (merged
+     at `a58b0efa`) such a mount is covered by an empty tmpfs, or mounted read-only with the
+     daemon's credentials covered, and every container command is refused while `<config>`,
+     `<data>` or the endpoint file is missing
+     ([05](../05-tools-and-isolation.md#isolation-tiers) has the mechanism; this plan does not
+     restate it). Such an agent cannot write `plugin-installs.json`, the config or
+     `<config>/plugins`, cannot read the daemon token, and cannot reach the daemon's socket.
+     With a bridge network and Docker Desktop, `host.docker.internal` reaches the daemon's
+     loopback port, which answers 401 without the token it cannot read.
    - **OS tier: within #240's limits.** Before
      [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240), bubblewrap's read-only root
      (`--ro-bind / /`) and the shared host network let an OS-tier agent read `daemon.json`'s token,
@@ -138,15 +144,20 @@ Made by the user on 2026-11-22 (U1 to U3) and 2026-11-23 (U4 to U7).
      then run unconfined). It could not *approve* (the daemon refuses its process,
      [check 3](#who-may-approve)), but it did not need to. #240 (`fix/os-tier-daemon-escape`,
      merged at `a58b0efa`) closes this. Among other things it hides `daemon.json`, `ipc/`,
-     `remotes/`, `devices.json` and the secret files; masks the runtime folder; strips
-     `IMPERIUM_*` and `DBUS_SESSION_BUS_ADDRESS` from the environment; guards the config and data
-     folders read-only; and makes the sandbox fail closed when a registered path is missing (see
-     #240 for the full list). The OS tier therefore protects approvals **within #240's limits**.
-     Its known remaining limits include abstract unix sockets (an X11 display, for example,
-     through which an agent could click a `dialog-only` approval), other files of the user such as
-     `~/.ssh`, the macOS runtime folder and keychain, and that Windows has no OS tier
-     ([remaining gaps](#remaining-gaps)). The full, current detail is in
-     [05 Isolation tiers](../05-tools-and-isolation.md#isolation-tiers).
+     `remotes/`, `devices.json` and the secret files; on Linux masks the runtime folder (macOS
+     does not); strips `IMPERIUM_*` and `DBUS_SESSION_BUS_ADDRESS` from the environment; guards
+     the config and data folders read-only (so `<config>/plugins`, `<data>/marketplaces` and
+     `plugin-installs.json` cannot be written, whatever the session's folders); and makes the
+     sandbox fail closed when a registered path is missing (see #240 for the full list). The OS
+     tier therefore protects approvals **within #240's limits**. Its known remaining limits
+     include: on Linux the daemon's loopback port, which stays reachable with the shared
+     network but answers 401 without the token (`isolation.network = false` removes it); abstract
+     unix sockets while the network is shared (an X11 display, for example, through which an
+     agent could click a `dialog-only` approval; `isolation.network = false` closes them too);
+     sockets outside the runtime folder and a second bind mount of the data folder; other
+     files of the user such as `~/.ssh` and a readable `config.toml`; the macOS runtime folder
+     and keychain; and that Windows has no OS tier ([remaining gaps](#remaining-gaps)). The
+     full, current detail is in [05 Isolation tiers](../05-tools-and-isolation.md#isolation-tiers).
 
 **What is out of scope (U5):** code running **unconfined as the user**. That is every agent
 command at tier 0 (the default on every platform, and the only command tier on Windows, where the
@@ -520,12 +531,14 @@ Stated plainly, so no surface claims more:
   the dialog. Agents at tier 0, the default and Windows' only tier, are such code.
 - **The OS tier confines an agent from the daemon only within #240's limits.**
   [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) (merged at `a58b0efa`) hides the
-  daemon's token, socket and secrets from OS-tier commands; its limits include abstract unix sockets (such as an X11 display, so an
-  OS-tier agent could still click a `dialog-only` approval's dialog), other user files such as
+  daemon's token, socket and secrets from OS-tier commands; its limits include the daemon's
+  loopback port on Linux (reachable, useless without the token), abstract unix sockets while the
+  network is shared (such as an X11 display, so an OS-tier agent could still click a
+  `dialog-only` approval's dialog), sockets outside the runtime folder, other user files such as
   `~/.ssh`, the macOS runtime folder and keychain, and no OS tier on Windows; see
-  [05](../05-tools-and-isolation.md#isolation-tiers). The container tier protects only without host
-  networking, without the daemon's socket mounted, and with no session folder or grant containing
-  `<config>` or `<data>` (enforced by #240).
+  [05](../05-tools-and-isolation.md#isolation-tiers). The container tier protects only without
+  host networking and without the daemon's socket mounted; a folder or grant containing
+  `<config>` or `<data>` is made read-only or empty by #240.
 - **`dialog-only` approvals** (Windows if Hello is infeasible or not set up, Linux without
   polkit) rest on a click that input automation can make, including from an OS-tier agent that
   reaches the display.
@@ -1580,9 +1593,52 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   [05 Isolation tiers](../05-tools-and-isolation.md#isolation-tiers), and any drift is fixed in
   this plan.
 - Risks: a real marketplace may use source types left out here; record them as follow-ups.
-- Status: pending
-- Outcome:
-- Handoff notes: none yet.
+- Status: done
+- Outcome: **Agent installs.** `install_extension` with `kind = "plugin"` accepts `source =
+  "name@marketplace"` (`extension_install::marketplace_id`, a folder of that spelling wins;
+  `path` is refused). `plugin_install::install_for_agent` stages the plugin like
+  `plugins.install` and places it through the same function (`place`), with `origin = agent`, the
+  marketplace's commit and no approval, and the session id in `.imperium-source.json`;
+  `config_changes::install_from_marketplace` journals it. A plugin with code is withheld by the
+  gate (it is not added to `extensions.disabled_plugins`), and the agent is told so. The tool's
+  schema text, its prompt instructions and doc 06 say it. No protocol change: the tool schema is
+  not a method, so the protocol stays at 0.56. Tests: the integration test in
+  `crates/imperium-core/tests/agent_config.rs` drives the tool from a scripted model against a
+  marketplace named `fixture`: `x@fixture` (one hook) is recorded `origin = agent`, with no
+  approval, withheld, its hook never run; `y@fixture` (skills only) loads; an unknown plugin, an
+  unknown marketplace and a skill given `x@fixture` are refused; the journal holds two changes.
+  A unit test covers what `marketplace_id` takes for an id.
+  **Live official marketplace (U1 check).** `presence-live.yml` (weekly, by hand, and on a pull
+  request that touches the harness; not in `ci.yml`, so it never gates a merge) runs the Linux
+  presence harness with `E2E_LIVE=1` (`drive.py`, `live()`): the built-in default is listed
+  without a download, refreshed from the network, its clone's origin must be
+  `https://github.com/anthropics/claude-plugins-official`, `.claude-plugin/marketplace.json` must
+  be there with the name `claude-plugins-official`, and the daemon's commit and plugin count
+  must be the clone's; it browses, inspects `explanatory-output-style` (a hook, no server; the
+  next candidate is `learning-output-style`), installs it through the app's native dialog and
+  polkit, and asserts `origin: marketplace; approval: counted` with the marketplace's commit in
+  its record. The run's evidence is `live-evidence.json` in the logs artifact and the job's step
+  summary; the first run is recorded in [11](../11-ci-cd.md#live-official-marketplace-presence-liveyml).
+  **Threat-model check**, against #240 as merged and 05's isolation tiers; drift fixed: the
+  container tier's folder precondition is now enforced by #240 (a mount that contains or is
+  `<config>` or `<data>` is emptied or read-only), the Linux loopback port, `isolation.network =
+  false`, sockets outside the runtime folder and the second-bind-mount limit were missing from
+  the OS tier's limits, the runtime-folder mask is Linux-only, and the stale "pending" status
+  of this plan. Case 2 and the rest of the model needed no change. **Docs:** 05, 06, 07, 10, 11
+  and 14 re-read for plugin text; changes in 05 (a pointer to the threat model), 06 (agent
+  installs by name), 11 (the live run and the harness's mode) and 12 (item 51 implemented).
+  07, 10 and 14 needed none.
+- Handoff notes: **Follow-ups from the real marketplace** (counted live on 2026-11-24, 317
+  entries): 55 are `./path` sources (installable), 163 are `url` sources, of which 4 carry a
+  `path` (`atomic-agents`, `rc`, `revenuecat`, `zilliz`) that the parser ignores, so they would
+  be read as the whole repository (their trust prompt shows what would run, so this is wrong
+  but not unsafe: treat `url` with `path` as unsupported until subfolders are supported);
+  98 are `git-subdir` (url, `path`, `ref`, `sha`), listed unsupported; 1 is `command`
+  (`xcode`, `xcrun agent plugin path ...`, `mode: link`), which must stay unsupported (it runs
+  a command at install). Supporting `git-subdir` is the one that matters: about a third of the
+  official marketplace. Also still open: roadmap item 60 (approving a folder that did not come
+  from a marketplace), item 59 (Windows), gating `extensions.plugin_dirs`, and the macOS
+  presence prompt, which is verified only as far as the headless runner shows.
 
 ## Risks across stages
 
@@ -1593,8 +1649,8 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   not safe; stage 5's allowlist limits what the code is handed, not what it can do.
 - **The OS tier holds only within #240's limits.**
   [#240](https://github.com/Densetsu152637/Imperium-AI/pull/240) (merged at `a58b0efa`) closed the
-  daemon escape; the OS tier still holds only within its limits (abstract unix sockets such as X11, other user files,
-  the macOS runtime folder and keychain).
+  daemon escape; the OS tier still holds only within its limits (the loopback port, abstract
+  unix sockets such as X11, other user files, the macOS runtime folder and keychain).
 - **`dialog-only` approvals** where no presence check exists rest on a click.
 - **Platforms that cannot approve.** Windows until [item 59](../12-roadmap.md#next-in-order), and
   machines without the desktop app; plugins with code stay withheld there and the UI says why.
@@ -1602,7 +1658,9 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
 - **`config.set extensions.plugin_dirs`** from any token holder adds an ungated folder.
 - **A same-size edit with a restored modification time** is caught only at daemon restart.
 - **Format drift**: unknown fields ignored and unknown sources listed, so drift degrades to
-  "unsupported".
+  "unsupported". The live check found three real shapes the parser does not install
+  ([stage 11](#stage-11-agents-docs-and-close-out)): `git-subdir`, `command`, and a `url`
+  source with a `path`, which is read as the whole repository.
 - **Protocol minors**: concurrent PRs each take the next free minor at merge and update 02 by
   merging, not force-pushing.
 

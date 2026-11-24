@@ -1094,7 +1094,8 @@ cannot open the unix socket in either case. Remaining limits of the OS tier:
   macOS port denial until the daemon restarts; both need credentials the command cannot read.
 
 Anything that treats the OS tier as the place to run untrusted code, such as the plugin
-marketplace's threat model ([06](06-extensibility.md)), depends on this section: a plugin's
+marketplace's [threat model](plans/plugin-marketplace.md#threat-model) (case 3: approvals hold
+against a confined agent within the limits above; [06](06-extensibility.md#plugin-marketplaces)), depends on this section: a plugin's
 commands must not be able to turn into daemon calls. `crates/imperium-tools/tests/os_sandbox.rs`
 runs a real sandbox in CI (Linux and macOS) to show that the endpoint file is unreadable, the
 sockets cannot be opened, a hidden file cannot be renamed or linked out, and a workspace of the

@@ -86,10 +86,46 @@ its Linux job builds the release daemon, CLI and desktop app.
   taken with *Update without approving* (withheld, not approved), *Approve* from the row (`counted`
   again), uninstall and *Undo*. Each one checks the command's answer or the page, and `imperium
   plugin list`. The logs (daemon, CLI, agents, tauri-driver) are
-  kept as the `presence-e2e-logs` artifact.
+  kept as the `presence-e2e-logs` artifact. With `live` the job runs the
+  [live scenario](#live-official-marketplace-presence-liveyml) alone.
 - **macOS and Windows** (`headless`): runs `imperium-ipc`'s presence tests with their output
   shown, so the log records what LocalAuthentication and Windows Hello answer on a runner with
   nobody at it; neither may pass, and Windows must say Hello is unavailable.
+
+### Live official marketplace (`presence-live.yml`)
+
+The scenarios above use a folder marketplace. This one uses the real
+`anthropics/claude-plugins-official`, the built-in default. It calls `presence-e2e.yml` with
+`live: true`, which runs the Linux job (the macOS and Windows jobs are skipped) with
+`E2E_LIVE=1`, so `drive.py` runs its `live()` scenario instead of the folder ones, on a fresh
+home:
+
+1. The official marketplace is listed as built in and read from nothing (no download yet).
+2. `imperium plugin marketplace refresh` clones it. **U1 check:** the clone's origin is
+   `https://github.com/anthropics/claude-plugins-official`, it holds
+   `.claude-plugin/marketplace.json` whose `name` is `claude-plugins-official`, the daemon's
+   commit is the clone's `HEAD` and its plugin count is the manifest's. The commit is recorded
+   (the remote's `HEAD` is logged beside it, since it may move during the run).
+3. `imperium plugin browse` lists it; the live source types are counted and logged (what the
+   parser leaves out is a follow-up in the [plan](plans/plugin-marketplace.md#stage-11-agents-docs-and-close-out)).
+4. The first of `explanatory-output-style` and `learning-output-style` (small plugins that
+   live in the marketplace's own repository and run one hook; `E2E_LIVE_PLUGINS` overrides the
+   list) that is still offered with a hook is inspected: the output must show the marketplace's
+   commit and a content hash.
+5. It is installed and approved through the app's native dialog (which must show that hash)
+   and polkit, as in the folder scenarios, and `imperium plugin list` must show it on with
+   `origin: marketplace; approval: counted` and the marketplace's commit.
+
+The evidence (the marketplace's commit, plugin, content hash, approval kind and the source
+type counts) is written to `live-evidence.json` in the `presence-e2e-logs` artifact and to
+the job summary.
+
+**It does not gate merges.** It needs the network and a repository this one does not control, so
+a failure can be the marketplace's (a renamed plugin, a moved repository, GitHub being slow),
+not a regression. It is not called by `ci.yml`; it runs on a weekly schedule (Monday 03:17 UTC),
+by hand (`workflow_dispatch`), and on a pull request only when the harness or the workflow
+itself changes, where it shows as its own check. A scheduled failure is a prompt to look at the
+marketplace, not at a pull request.
 
 ## Release channels
 
@@ -116,8 +152,8 @@ The version is **0.2.0**, set when the last roadmap item (the final cleanup, ite
 experimental builds are `0.2.<run>-experimental`. It is declared in the Cargo workspace
 (`Cargo.toml`, which every crate and the Tauri shell inherit, and the path dependencies'
 versions), `apps/desktop/package.json` and `apps/desktop/src-tauri/tauri.conf.json`, and the
-desktop and phone clients send it in their handshake. `PROTOCOL_VERSION` is separate and stays
-at 0.44; the mods, `packages/protocol` and `packages/mod-sdk` keep their own versions.
+desktop and phone clients send it in their handshake. `PROTOCOL_VERSION` is separate and moves
+with the protocol ([02](02-architecture.md)); the mods, `packages/protocol` and `packages/mod-sdk` keep their own versions.
 
 ### Desktop updates
 

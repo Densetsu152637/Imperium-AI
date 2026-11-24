@@ -138,6 +138,33 @@ pub(crate) async fn install(
 ) -> Result<(ConfigChange, Vec<String>), String> {
     let session_id = request.session_id.clone();
     let installed = extension_install::install(state, request).await?;
+    Ok(record_install(
+        state,
+        session_id.as_deref(),
+        installed,
+        None,
+    ))
+}
+
+/// `install_extension` of a marketplace plugin (`name@marketplace`): installs it with
+/// `origin = agent` and records the install.
+pub(crate) async fn install_from_marketplace(
+    state: &DaemonState,
+    session_id: Option<&str>,
+    id: &str,
+    revision: Option<&str>,
+) -> Result<(ConfigChange, Vec<String>), String> {
+    let installed =
+        crate::plugin_install::install_for_agent(state, id, revision, session_id).await?;
+    Ok(record_install(state, session_id, installed, Some(id)))
+}
+
+fn record_install(
+    state: &DaemonState,
+    session_id: Option<&str>,
+    installed: extension_install::Installed,
+    id: Option<&str>,
+) -> (ConfigChange, Vec<String>) {
     let source = &installed.source;
     let from = match &source.revision {
         Some(revision) => format!("{} at {}", source.location, short(revision)),
@@ -145,11 +172,11 @@ pub(crate) async fn install(
     };
     let mut change = blank(
         "install",
-        session_id.as_deref(),
+        session_id,
         format!(
             "Installed the {} {} from {from}",
             installed.kind.as_str(),
-            installed.name
+            id.unwrap_or(&installed.name)
         ),
     );
     change.extension_kind = Some(installed.kind.as_str().into());
@@ -158,7 +185,7 @@ pub(crate) async fn install(
     change.source = Some(installed.source.clone());
     change.disabled = installed.disabled;
     change.sha256 = installed.sha256.clone();
-    Ok((record(state, change), installed.notes))
+    (record(state, change), installed.notes)
 }
 
 /// A marketplace plugin installed by `plugins.install`: records the install. The folder carries
