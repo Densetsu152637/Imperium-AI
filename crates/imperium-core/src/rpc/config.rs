@@ -262,28 +262,9 @@ impl Connection {
                     .map_err(refused)
                 },
             ),
-            PluginsApprove::NAME => {
-                call::<PluginsApprove>(c.params.take(), |params: PluginsApproveParams| {
-                    crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
-                    let folder = crate::plugin_install::resolve(&self.state, &params.name)
-                        .map_err(refused)?;
-                    let asked = crate::app_identity::Asked {
-                        folder: &folder,
-                        hash: &params.sha256,
-                        runs: &params.runs_digest,
-                        now_ms: imperium_api::time::unix_ms(),
-                    };
-                    Ok(crate::app_identity::approve(
-                        self.state.paths(),
-                        &crate::app_identity::InstalledApp,
-                        crate::plugin_records::production_verifier(),
-                        self.identity.as_deref(),
-                        &mut self.challenges,
-                        &asked,
-                        &params.challenge,
-                    ))
-                })
-            }
+            // Checks 1 to 5 now, on this connection, which holds the challenge; the presence
+            // check can wait minutes for the user, so it and the record run off the connection.
+            PluginsApprove::NAME => self.plugins_approve(c),
             ConfigChanges::NAME => {
                 call::<ConfigChanges>(c.params.take(), |_: ConfigChangesParams| {
                     Ok(ConfigChangesResult {
@@ -297,5 +278,49 @@ impl Connection {
             }),
             _ => return None,
         })
+    }
+
+    /// `plugins.approve`: refused at once over anything but the local socket or for a name that
+    /// resolves to nothing; otherwise answered with `{approved, kind, reason}` once the presence
+    /// check and the record are done.
+    fn plugins_approve(&mut self, c: &mut Dispatch<'_>) -> Result<Value, ErrorObject> {
+        let params: PluginsApproveParams = decode::<PluginsApprove>(c.params.take())?;
+        crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
+        let folder = crate::plugin_install::resolve(&self.state, &params.name).map_err(refused)?;
+        let asked = crate::app_identity::Asked {
+            folder: &folder,
+            hash: &params.sha256,
+            runs: &params.runs_digest,
+            now_ms: imperium_api::time::unix_ms(),
+        };
+        let redeemed = crate::app_identity::redeem(
+            self.state.paths(),
+            &crate::app_identity::InstalledApp,
+            self.identity.as_deref(),
+            &mut self.challenges,
+            &asked,
+            &params.challenge,
+        );
+        let state = Arc::clone(&self.state);
+        let peer = self.identity.clone();
+        *c.later = Some(Box::pin(async move {
+            let outcome = match redeemed {
+                Ok(redeemed) => tokio::task::spawn_blocking(move || {
+                    crate::app_identity::conclude(
+                        state.paths(),
+                        &crate::app_identity::InstalledApp,
+                        crate::plugin_records::production_verifier(),
+                        &crate::app_identity::presence::System,
+                        peer.as_deref(),
+                        &redeemed,
+                    )
+                })
+                .await
+                .map_err(|error| refused(error.to_string()))?,
+                Err(reason) => Err(reason),
+            };
+            Ok(to_value(&crate::app_identity::answer(outcome)))
+        }));
+        Ok(Value::Null)
     }
 }

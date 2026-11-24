@@ -21,11 +21,17 @@ jobs:
       rust: ${{ steps.detect.outputs.rust }}
       web: ${{ steps.detect.outputs.web }}
       python: ${{ steps.detect.outputs.python }}
+      presence: ${{ steps.detect.outputs.presence }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # detect.sh's change detection, tested on a scratch repository (a rename of a watched file).
+      - name: Test the change detection
+        run: bash scripts/ci/test-detect.sh
       - id: detect
+        env:
+          DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: bash scripts/ci/detect.sh
 
   docs:
@@ -109,6 +115,12 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - run: bash scripts/check-python.sh
 
+  # Plugin approval end to end with the OS presence check, only when the change touches it.
+  presence-e2e:
+    needs: detect
+    if: needs.detect.outputs.presence == 'true'
+    uses: ./.github/workflows/presence-e2e.yml
+
   # Work lands on experimental; main only takes experimental, once it has been released there.
   source:
     name: source branch
@@ -130,7 +142,7 @@ jobs:
   gate:
     name: CI gate
     if: always()
-    needs: [detect, docs, workflows, rust, web, python, source]
+    needs: [detect, docs, workflows, rust, web, python, presence-e2e, source]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

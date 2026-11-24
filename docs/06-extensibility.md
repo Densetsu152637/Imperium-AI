@@ -98,11 +98,11 @@ permissions, UI mod entry points, and router hints.
   provenance file names a session) and a folder whose plugin is not in
   `extensions.disabled_plugins` gets a `carried-over` approval, so nothing that runs today stops;
   a folder that is or holds a link is not carried over: it is recorded nowhere, stays withheld, and
-  the daemon logs it at start with the reason and what to do (remove the link, or approve it
-  once approvals exist). `<data>/plugin-migration.json` then marks it done, and with the marker present and the store
-  missing or unreadable nothing is migrated again. **No new approval counts yet**: nothing
-  writes a counted or dialog-only approval until the desktop approval lands, so a plugin with
-  code that is installed or copied in afterwards stays withheld. Editing any file of a recorded
+  the daemon logs it at start with the reason and what to do (remove the link, then approve it
+  in the desktop app). `<data>/plugin-migration.json` then marks it done, and with the marker present and the store
+  missing or unreadable nothing is migrated again. A plugin with code that is installed or
+  copied in afterwards stays withheld until it is approved in the desktop app's native dialog
+  (`counted` or `dialog-only`, below). Editing any file of a recorded
   plugin, its skills included, withholds it until it is recorded again.
 
 ### Plugin marketplaces
@@ -178,8 +178,8 @@ folder is never merged into or overwritten; on Windows the move's copy fallback 
 but only into the empty folder just claimed), moves the content into it, writes `.imperium-source.json` and the record (`origin = marketplace`,
 no approval) and journals a `config.changes` entry (`config.undo` removes the folder). It never
 approves: a plugin with hooks or servers is installed **withheld**, and the result's `withheld`
-and `reason` (the gate's) say so and point at the desktop app, since nothing counts an approval
-yet; a plugin with neither loads. A stray `approve` or `environment` is ignored and noted.
+and `reason` (the gate's) say so and point at the desktop app, the only place an approval
+counts; a plugin with neither loads. A stray `approve` or `environment` is ignored and noted.
 
 **Listing and uninstalling (protocol 0.52; not a paired phone).** `plugins.list` returns every
 plugin folder under `<config>/plugins`, recorded or not: name, folder, `id`, `origin`
@@ -263,8 +263,8 @@ keep today's environment.
 **Approval write path.** `plugin_records::record_approval` records an approval of a kind for a
 folder, its hash and run-summary digest (all must equal what is there now); an unrecorded
 folder gets an `origin = user` record. It writes only if the `ApprovalVerifier` allows the kind:
-the release verifier writes nothing and a debug one only `dev` until stage 8c, so no approval
-counts yet.
+the release verifier writes `counted` and `dialog-only` (what the presence check decides) and a
+debug one only `dev`; `carried-over` comes from the migration alone.
 
 **Approving a plugin (protocol 0.56; the desktop app only).** `plugins.approval_challenge {name,
 sha256, runs_digest}` gives a single-use challenge, valid two minutes, bound to the connection
@@ -315,9 +315,41 @@ itself (`crates/imperium-core/src/app_identity/`), never from what the caller se
 
 These guard against mistakes and confined callers, not against unconfined code running as the
 user. The identity belongs to the process that connected, not to each message sent on the
-connection. **No approval counts yet**: a release daemon refuses every approval with "presence check
-not built" until the OS presence check lands, and a debug daemon records `dev` approvals (which
-release daemons ignore) for the debug app built beside it. The desktop app calls these methods from its Rust side only, on
+connection.
+
+**The OS presence check (stage 8c).** After the challenge is answered, and before anything is
+recorded, a release daemon raises the operating system's presence check itself
+(`crates/imperium-core/src/app_identity/presence/`); `plugins.approve` has no field through which a
+caller could report one, and a field a client adds is dropped when the request is read. The
+answer decides the record: **passed** records `counted`; **unavailable**, where the OS offers no
+check without setup, records `dialog-only` (the dialog alone, logged with the reason); a
+**refusal**, cancel, failure or no answer within four minutes records nothing (`approved: false`,
+"the presence check did not pass"). The identity checks run again after the answer, since it can
+take minutes, and the folder must still hold the challenged content. The call is answered when the
+check ends, off the connection's task. Per OS:
+
+- Linux: polkit's `CheckAuthorization` over the system bus with `AllowUserInteraction`, for the
+  action `org.imperium.plugins.approve` (`auth_self` for any, inactive and active sessions, never
+  `_keep`, so every approval asks), with the daemon's own process (pid, start time, uid) as the
+  subject. No details are sent: polkit 0.121 and later refuses details from a caller that is not
+  root or the action's owner, so polkit's prompt cannot name the plugin (the app's dialog just
+  before does). The `.deb` and `.rpm` install the action
+  file under `/usr/share/polkit-1/actions` (`apps/desktop/src-tauri/linux/`). Unavailable: no
+  system bus or polkit, the action not registered (an AppImage or a source build), or no
+  authentication agent for the daemon's process (polkit answers "challenge"), as on a headless
+  machine. Through `zbus`, already in the lock.
+- macOS: LocalAuthentication's `deviceOwnerAuthentication` (Touch ID, else the login password),
+  with the plugin id in the reason (`imperium_ipc::device_owner_check`, in `imperium-ipc`'s
+  `unsafe`-allowed `macos_presence.rs`). Unavailable: `canEvaluatePolicy` fails, or the answer is
+  "no passcode", "not interactive" or biometry missing; a prompt nobody answers is withdrawn.
+- Windows: Windows Hello (`UserConsentVerifier`), raised for a one-pixel top-level window the
+  daemon owns through `IUserConsentVerifierInterop` (`imperium_ipc::hello_check`, in
+  `windows/hello.rs`). Unavailable: Hello not set up, no device, disabled by policy, or the system
+  refusing to prompt for the daemon. Moot until U7 holds: check 7 refuses before anyone is asked.
+- Elsewhere: unavailable, so `dialog-only`.
+
+A debug daemon records `dev` approvals (which release daemons ignore) for the debug app built
+beside it, without a presence check. The desktop app calls these methods from its Rust side only, on
 its own local-socket connection, after a native dialog built from the daemon's preview
 ([plugin approval](07-desktop-ui.md#plugin-approval-implemented)); its web view never does. The macOS release app asks for no
 entitlements, and CI fails the build if its entitlements file carries `allow-dyld-environment-variables`,

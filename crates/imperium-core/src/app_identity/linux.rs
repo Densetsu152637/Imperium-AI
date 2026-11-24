@@ -173,7 +173,7 @@ fn link_at(dir: &OwnedFd, name: &str) -> Result<Vec<u8>, String> {
 
 /// Field 22 of a `stat` line: the start time in clock ticks since boot. The second field, the
 /// command name, may hold spaces and parentheses, so fields are counted after its last `)`.
-fn start_ticks(stat: &[u8]) -> Option<u64> {
+pub(super) fn start_ticks(stat: &[u8]) -> Option<u64> {
     let close = stat.iter().rposition(|&byte| byte == b')')?;
     let rest = std::str::from_utf8(&stat[close + 1..]).ok()?;
     rest.split_whitespace().nth(19)?.parse().ok()

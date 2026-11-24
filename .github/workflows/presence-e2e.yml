@@ -1,0 +1,111 @@
+name: Presence e2e
+
+# The plugin-approval flow end to end with the OS presence check (docs/11-ci-cd.md, "Presence
+# end-to-end"): on Linux, the release daemon and the release desktop app under Xvfb, the native
+# dialog answered through the accessibility bus and polkit answered through pkttyagent; on macOS and
+# Windows, what the presence check answers on a headless runner. Called by ci.yml when a change
+# touches the paths scripts/ci/detect.sh lists (and so gated by its "CI gate" job), since the Linux
+# job builds both release binaries; also runnable by hand. No concurrency group of its own: the
+# caller's applies.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: presence e2e (linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # As in build.yml: tauri-build 2.6.3 cannot find the target folder with Rust 1.100's
+      # build-script layout.
+      RUSTUP_TOOLCHAIN: 1.99.1
+      E2E_LOGS: ${{ github.workspace }}/e2e-logs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.99.1
+      - name: Install build and test packages
+        run: >-
+          bash scripts/ci/install-linux-deps.sh
+          xvfb at-spi2-core python3-gi gir1.2-atspi-2.0 webkit2gtk-driver polkitd pkexec
+          x11-utils imagemagick
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: presence-e2e
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked --version 2.0.6
+      - name: Build the release daemon, CLI and desktop app
+        timeout-minutes: 75
+        run: bash scripts/ci/presence-e2e/build.sh
+      - name: Run the presence scenarios
+        timeout-minutes: 20
+        run: bash scripts/ci/presence-e2e/run.sh
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: presence-e2e-logs
+          path: e2e-logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  headless:
+    name: presence check on a headless runner (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            filter: macos_presence
+          - os: windows-latest
+            filter: hello
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: presence-headless
+      # Prints what the presence provider answers here and asserts it never passes (on Windows,
+      # that Hello is unavailable, so an approval would be dialog-only).
+      - name: Run the presence provider
+        shell: bash
+        env:
+          FILTER: ${{ matrix.filter }}
+        run: |
+          cargo test -p imperium-ipc --locked --no-run
+          cargo test -p imperium-ipc --locked -- --nocapture "$FILTER" &
+          tests=$!
+          # The prototype's evidence on macOS: what the screen shows while the check waits.
+          if [ "$RUNNER_OS" = macOS ]; then
+            sleep 12
+            mkdir -p presence-screen
+            screencapture -x presence-screen/during-check.png || echo "screencapture failed"
+          fi
+          wait "$tests"
+      - name: Keep the screen capture
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: presence-macos-screen
+          path: presence-screen/
+          if-no-files-found: ignore
+          retention-days: 14

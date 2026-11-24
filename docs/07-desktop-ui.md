@@ -437,9 +437,12 @@ has no code that names `plugins.approve` or `plugins.approval_challenge` (a test
   answers `approved: false` with the variable's name and sends nothing. The daemon reads no peer
   environment on Windows, so this is the check there.
 - **The answer** is `{ approved, kind, reason, cancelled, installed }`: `installed` says this call
-  put the plugin's folder in place even when the approval then failed. Until the OS presence
-  check (stage 8c) a release daemon refuses ("presence check not built") and a debug daemon
-  records `dev`.
+  put the plugin's folder in place even when the approval then failed. After the dialog the
+  daemon raises the OS presence check itself (polkit, Touch ID or the password, Windows Hello),
+  so the call can wait minutes for the user; the app waits up to five. A release daemon then
+  answers `counted` (the check passed), `dialog-only` (the OS offers no check here) or a refusal
+  that records nothing (the check was refused, cancelled or timed out); a debug daemon records
+  `dev` without a presence check ([06](06-extensibility.md#plugin-marketplaces)).
 - **macOS entitlements.** `apps/desktop/src-tauri/entitlements.plist` (named by
   `bundle.macOS.entitlements`) asks for none. The Build workflow runs
   `scripts/ci/check-entitlements.py` on it and fails the macOS job if it carries

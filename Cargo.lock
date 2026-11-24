@@ -2490,6 +2490,7 @@ dependencies = [
  "tracing-subscriber",
  "win32job",
  "windows-sys 0.61.2",
+ "zbus 5.19.0",
 ]
 
 [[package]]
@@ -2575,9 +2576,15 @@ dependencies = [
 name = "imperium-ipc"
 version = "0.2.0"
 dependencies = [
+ "block2",
  "getrandom 0.4.3",
+ "objc2",
+ "objc2-foundation",
+ "objc2-local-authentication",
  "tempfile",
  "tokio",
+ "windows 0.62.2",
+ "windows-future 0.3.2",
  "windows-sys 0.61.2",
 ]
 
@@ -3643,6 +3650,17 @@ dependencies = [
  "bitflags 2.13.2",
  "objc2",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-local-authentication"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e48e0b8b339e0d9d2ed4416b7f93f9d4daadff7d4dd797f89867cde11aeac607"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-foundation",
 ]
 
 [[package]]

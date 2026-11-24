@@ -12,6 +12,7 @@ updates.
 | `build.yml`         | Called by release workflows only                     | Builds desktop bundles and CLI archives       |
 | `release.yml`       | Tags `v*` (for example `v0.4.0`, `v0.5.0-beta.1`)    | Main-channel GitHub Release                   |
 | `experimental.yml`  | Pushes to `experimental`, manual run on it           | Experimental-channel GitHub pre-release       |
+| `presence-e2e.yml`  | Called by `ci.yml` when plugin approval changes, manual run | Plugin approval end to end with the OS presence check |
 
 ### Checks (`ci.yml`)
 
@@ -40,6 +41,49 @@ it belongs to the Windows Authenticode signing step of roadmap item 59, which do
 On macOS they connect a `python3` child over a Unix socket and check its audit token: the code
 path, `WEBVIEW2_*` and `DYLD_*` variables in its environment, an exited peer, and a peer started under
 `sandbox-exec`; a missing `python3` or `sandbox-exec` fails on CI and skips elsewhere.
+
+The presence check's unit tests run in the same job: an injected provider's answers (passed is
+`counted`, unavailable `dialog-only`, refused nothing), a presence field a client adds to
+`plugins.approve` being dropped, polkit's answers mapped, and on Linux a real polkit query for an
+action that is not installed, which must be unavailable. On macOS and Windows the real provider
+runs only on CI (the `CI` variable), since elsewhere it would prompt whoever runs the tests.
+
+### Presence end-to-end (`presence-e2e.yml`)
+
+`ci.yml` calls it as its `presence-e2e` job when the change touches any of: in `imperium-core`,
+`app_identity/`, `plugin_records.rs`, `rpc/config.rs`, `server.rs` and `plugin_install.rs`;
+`imperium-extensions`' `plugins.rs`; `imperium-ipc`; the app's `plugin_approval.rs`, `main.rs`,
+`capabilities/`, `tauri.conf.json` and `linux/` (the polkit action); `scripts/ci/presence-e2e/`,
+`scripts/ci/detect.sh` and `scripts/ci/install-linux-deps.sh`; `presence-e2e.yml` and `ci.yml`; and
+`Cargo.lock`. `scripts/ci/detect.sh` compares the change with its base (the pull request's base,
+the merge group's base or the pushed-over commit) without rename detection, so moving a watched
+file lists its old path and still runs the test, and it runs the test when the base cannot be
+read. `scripts/ci/test-detect.sh`, run by the `detect` job first, checks that on a scratch
+repository: a rename of a watched file, an edit of one and an unknown base run it; an unrelated
+edit does not. The `CI gate` job needs it, so it **gates merges** whenever it runs;
+otherwise it is skipped and the gate passes. It can also be run by hand. It runs only then because
+its Linux job builds the release daemon, CLI and desktop app.
+
+- **Linux** (`ubuntu-24.04`): `scripts/ci/presence-e2e/build.sh` builds the three release
+  binaries into `target/release` (release, since only a release daemon records `counted` and
+  `dialog-only`; a debug one records `dev`), and `run.sh` sets up what a desktop has: Xvfb, a
+  session bus with the accessibility bus, polkitd with the action file installed, and a throwaway
+  password for the runner's user. `drive.py` then starts the daemon on a scratch home, adds a
+  folder marketplace, and drives the app through `tauri-driver` (WebKit's WebDriver), calling the
+  app's own `plugin_approve` from its main window. It answers the native dialog by pressing its
+  buttons through AT-SPI, reads the dialog's text, and answers polkit through `pkttyagent`
+  registered for the daemon's process, in a terminal of its own. Scenarios: approve with polkit
+  passing (`counted`; the dialog names the plugin and shows the hook and hash, and polkit's
+  prompt is the action's message); *Cancel* on page 2 of a
+  plugin with 91 hooks (pages titled "page i of n", nothing installed); polkit refusing a wrong
+  password (installed, withheld, nothing recorded); no authentication agent (`dialog-only`); the
+  action file removed while an agent runs (`dialog-only`, polkit never asked); and the app started
+  with `LD_PRELOAD` (refused with its name, no dialog, nothing sent). Each one checks the
+  command's answer and `imperium plugin list`. The logs (daemon, CLI, agents, tauri-driver) are
+  kept as the `presence-e2e-logs` artifact.
+- **macOS and Windows** (`headless`): runs `imperium-ipc`'s presence tests with their output
+  shown, so the log records what LocalAuthentication and Windows Hello answer on a runner with
+  nobody at it; neither may pass, and Windows must say Hello is unavailable.
 
 ## Release channels
 
@@ -145,6 +189,11 @@ Losing the key means installed apps can no longer update, so keep a copy outside
   the user's settings and data are left alone.
   On Windows the CLI is in the install folder; on Linux the deb puts it on `PATH`.
 - Linux builds use Ubuntu 22.04 for an older glibc baseline.
+- The deb and rpm install polkit's action for plugin approvals' presence check
+  (`/usr/share/polkit-1/actions/org.imperium.plugins.approve.policy`, from
+  `apps/desktop/src-tauri/linux/`); `scripts/ci/check-linux-packages.sh` fails the Linux bundle job
+  if a built package lacks it or carries another copy. The AppImage cannot install it, so its
+  approvals are `dialog-only`.
 - MSI and RPM reject the hyphen in pre-release versions, so pre-release and experimental builds
   ship NSIS on Windows and AppImage and deb on Linux.
 - Every release includes `SHA256SUMS`.

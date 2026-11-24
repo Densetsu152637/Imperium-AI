@@ -14,8 +14,9 @@
 //! 5. it answers a single-use challenge ([`Challenges`]) issued to the same connection for the
 //!    same folder, hash and run summary, at most two minutes old, and the folder still has that
 //!    hash and run summary when it answers;
-//! 6. the OS presence check passed (stage 8c): until then [`ApprovalVerifier::approval_kind`]
-//!    refuses in a release build, so nothing is recorded as counted;
+//! 6. the OS presence check, which the daemon raises itself after the challenge ([`presence`]):
+//!    passed records `counted`, unavailable records `dialog-only`, refused records nothing (a
+//!    debug build records `dev` without asking);
 //! 7. on Windows, a release build compiled by the signing job, running from under the
 //!    per-machine Program Files folder (`windows::may_count`); a debug build's `dev` approval is
 //!    exempt.
@@ -31,6 +32,10 @@ use imperium_config::Paths;
 use imperium_protocol::methods::{PluginsApprovalChallengeResult, PluginsApproveResult};
 
 use crate::plugin_records::{self, ApprovalKind, ApprovalVerifier};
+
+pub(crate) mod presence;
+
+use presence::PresenceProvider;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -201,18 +206,83 @@ pub(crate) fn challenge(
     })
 }
 
-/// `plugins.approve`: every check of the module documentation; records the approval only when
-/// all pass and `verifier` gives a kind. A refusal records nothing and says why.
-pub(crate) fn approve(
+/// What checks 1 to 5 established about an approval: the folder and the content the challenge
+/// was issued for, and the plugin id the presence prompt names.
+pub(crate) struct Redeemed {
+    folder: PathBuf,
+    hash: String,
+    runs: String,
+    plugin: String,
+}
+
+/// `plugins.approve`, first part: checks 1 to 5 again, using the challenge up. Quick, so it runs
+/// on the connection that holds the challenge; [`conclude`] then asks the user.
+pub(crate) fn redeem(
     paths: &Paths,
     identify: &dyn Identify,
-    verifier: &dyn ApprovalVerifier,
     peer: Option<&Peer>,
     challenges: &mut Challenges,
     asked: &Asked<'_>,
     token: &str,
-) -> PluginsApproveResult {
-    match approved(paths, identify, verifier, peer, challenges, asked, token) {
+) -> Result<Redeemed, String> {
+    // Checks 1 to 4 again: the peer must still be the app that asked for the challenge.
+    identify.identify(peer)?;
+    let canon = asked
+        .folder
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", asked.folder.display()))?;
+    challenges.redeem(token, &canon, asked.hash, asked.runs, asked.now_ms)?;
+    // The folder must still hold what the challenge was issued for.
+    let (_, hash, runs, plugin) = plugin_records::content(&canon)?;
+    if hash != asked.hash || runs != asked.runs {
+        return Err("the plugin changed since the challenge: nothing was recorded".into());
+    }
+    let plugin = plugin_records::record_for(paths, &canon)
+        .and_then(|record| record.id)
+        .unwrap_or(plugin.name);
+    Ok(Redeemed {
+        folder: canon,
+        hash,
+        runs,
+        plugin,
+    })
+}
+
+/// `plugins.approve`, second part: check 7 (Windows) before anyone is asked, check 6 (the
+/// presence check, which may wait minutes for the user), the identity once more, and the record.
+/// The kind recorded, or why nothing was.
+pub(crate) fn conclude(
+    paths: &Paths,
+    identify: &dyn Identify,
+    verifier: &dyn ApprovalVerifier,
+    presence: &dyn PresenceProvider,
+    peer: Option<&Peer>,
+    redeemed: &Redeemed,
+) -> Result<ApprovalKind, String> {
+    // A verifier that may write a counted approval raises the presence check: where check 7
+    // refuses such an approval anyway (Windows before U7), the user is not asked for nothing.
+    if verifier.may_write(ApprovalKind::Counted) {
+        platform::may_count(ApprovalKind::Counted)?;
+    }
+    let kind = verifier.approval_kind(presence, &redeemed.plugin)?;
+    platform::may_count(kind)?;
+    // The check can take minutes: the peer must still be the app that asked.
+    identify.identify(peer)?;
+    // `record_approval` reads the folder again and refuses content other than the challenged.
+    plugin_records::record_approval(
+        paths,
+        verifier,
+        &redeemed.folder,
+        kind,
+        &redeemed.hash,
+        &redeemed.runs,
+    )?;
+    Ok(kind)
+}
+
+/// The protocol answer for an approval's outcome: a refusal records nothing and says why.
+pub(crate) fn answer(outcome: Result<ApprovalKind, String>) -> PluginsApproveResult {
+    match outcome {
         Ok(kind) => PluginsApproveResult {
             approved: true,
             kind: Some(kind.as_str().into()),
@@ -226,36 +296,30 @@ pub(crate) fn approve(
     }
 }
 
-fn approved(
+/// `plugins.approve` in one call: every check of the module documentation; records the approval
+/// only when all pass and `verifier` gives a kind.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn approve(
     paths: &Paths,
     identify: &dyn Identify,
     verifier: &dyn ApprovalVerifier,
+    presence: &dyn PresenceProvider,
     peer: Option<&Peer>,
     challenges: &mut Challenges,
     asked: &Asked<'_>,
     token: &str,
-) -> Result<ApprovalKind, String> {
-    // Checks 1 to 4 again: the peer must still be the app that asked for the challenge.
-    identify.identify(peer)?;
-    let canon = asked
-        .folder
-        .canonicalize()
-        .map_err(|error| format!("{}: {error}", asked.folder.display()))?;
-    challenges.redeem(token, &canon, asked.hash, asked.runs, asked.now_ms)?;
-    // The folder must still hold what the challenge was issued for.
-    let (_, hash, runs, _) = plugin_records::content(&canon)?;
-    if hash != asked.hash || runs != asked.runs {
-        return Err("the plugin changed since the challenge: nothing was recorded".into());
-    }
-    let kind = verifier.approval_kind()?;
-    platform::may_count(kind)?;
-    plugin_records::record_approval(paths, verifier, &canon, kind, &hash, &runs)?;
-    Ok(kind)
+) -> PluginsApproveResult {
+    answer(
+        redeem(paths, identify, peer, challenges, asked, token)
+            .and_then(|redeemed| conclude(paths, identify, verifier, presence, peer, &redeemed)),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_identity::presence::Presence;
     use crate::plugin_records::{ReleaseVerifier, TestVerifier};
 
     /// Passes checks 1 to 4 for any local-socket connection, so the challenge can be tested on
@@ -402,10 +466,12 @@ mod tests {
         let mut challenges = Challenges::default();
         let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
         std::fs::write(home.folder.join("README.md"), "changed").unwrap();
+        let presence = Answers::new(Presence::Passed);
         let result = approve(
             &home.paths,
             &LocalPeer,
             &TestVerifier,
+            &presence,
             Some(&peer),
             &mut challenges,
             &asked,
@@ -413,11 +479,182 @@ mod tests {
         );
         assert!(!result.approved);
         assert!(result.reason.unwrap().contains("changed since"));
+        assert!(presence.asked().is_empty());
         assert!(plugin_records::record_for(&home.paths, &home.folder).is_none());
     }
 
+    /// A presence provider that answers `answer` and records which plugins it was asked about.
+    struct Answers {
+        answer: Presence,
+        asked: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Answers {
+        fn new(answer: Presence) -> Self {
+            Answers {
+                answer,
+                asked: std::sync::Mutex::default(),
+            }
+        }
+
+        fn asked(&self) -> Vec<String> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    impl PresenceProvider for Answers {
+        fn check(&self, plugin: &str) -> Presence {
+            self.asked.lock().unwrap().push(plugin.to_string());
+            self.answer.clone()
+        }
+    }
+
+    /// One whole approval of `home`'s plugin with `verifier` and `presence`.
+    fn approve_with(
+        home: &Home,
+        verifier: &dyn ApprovalVerifier,
+        presence: &dyn PresenceProvider,
+    ) -> PluginsApproveResult {
+        let (hash, runs) = content(home);
+        let asked = Asked {
+            folder: &home.folder,
+            hash: &hash,
+            runs: &runs,
+            now_ms: 0,
+        };
+        let peer = Peer::test_peer();
+        let mut challenges = Challenges::default();
+        let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
+        approve(
+            &home.paths,
+            &LocalPeer,
+            verifier,
+            presence,
+            Some(&peer),
+            &mut challenges,
+            &asked,
+            &issued.challenge,
+        )
+    }
+
+    fn recorded_kind(home: &Home) -> Option<ApprovalKind> {
+        plugin_records::record_for(&home.paths, &home.folder)
+            .and_then(|record| record.approval)
+            .map(|approval| approval.kind)
+    }
+
+    /// The release verifier asks the injected presence provider after a valid challenge, and its
+    /// answer decides the record: passed is `counted`, unavailable is `dialog-only`, a refusal or
+    /// cancel records nothing.
     #[test]
-    fn with_counting_off_nothing_is_recorded() {
+    fn the_presence_check_decides_what_is_recorded() {
+        for (answer, kind) in [
+            (Presence::Passed, Some(ApprovalKind::Counted)),
+            (
+                Presence::Unavailable("no agent".into()),
+                Some(ApprovalKind::DialogOnly),
+            ),
+            (Presence::Refused("cancelled".into()), None),
+        ] {
+            let home = home();
+            let presence = Answers::new(answer.clone());
+            let result = approve_with(&home, &ReleaseVerifier, &presence);
+            if cfg!(windows) {
+                // Check 7: this unsigned test build counts nothing on Windows, and the user is not
+                // asked about an approval that could not count.
+                assert!(!result.approved);
+                let reason = result.reason.unwrap();
+                assert!(reason.contains("not a signed release build"), "{reason}");
+                assert!(presence.asked().is_empty());
+                assert_eq!(recorded_kind(&home), None);
+                continue;
+            }
+            // The prompt names the plugin.
+            assert_eq!(presence.asked(), vec!["p".to_string()], "{answer:?}");
+            assert_eq!(result.approved, kind.is_some(), "{answer:?}: {result:?}");
+            assert_eq!(result.kind, kind.map(|kind| kind.as_str().to_string()));
+            assert_eq!(recorded_kind(&home), kind, "{answer:?}");
+            if kind.is_none() {
+                let reason = result.reason.unwrap();
+                assert!(reason.contains("cancelled"), "{reason}");
+                assert!(reason.contains("nothing was recorded"), "{reason}");
+            }
+        }
+    }
+
+    /// A refused identity or challenge never reaches the presence check, so the user is never
+    /// asked about an approval that could not be recorded.
+    #[test]
+    fn nobody_is_asked_before_the_challenge_holds() {
+        let home = home();
+        let (hash, runs) = content(&home);
+        let asked = Asked {
+            folder: &home.folder,
+            hash: &hash,
+            runs: &runs,
+            now_ms: 0,
+        };
+        let peer = Peer::test_peer();
+        let presence = Answers::new(Presence::Passed);
+        let mut challenges = Challenges::default();
+        let result = approve(
+            &home.paths,
+            &LocalPeer,
+            &ReleaseVerifier,
+            &presence,
+            Some(&peer),
+            &mut challenges,
+            &asked,
+            "not-a-challenge",
+        );
+        assert!(!result.approved);
+        let result = approve(
+            &home.paths,
+            &InstalledApp,
+            &ReleaseVerifier,
+            &presence,
+            None,
+            &mut challenges,
+            &asked,
+            "not-a-challenge",
+        );
+        assert!(result.reason.unwrap().contains("local socket"));
+        assert!(presence.asked().is_empty());
+        assert_eq!(recorded_kind(&home), None);
+    }
+
+    /// `plugins.approve` has no field for a presence result: one a client adds is dropped when the
+    /// request is read, and the kind still comes from the daemon's own check.
+    #[test]
+    fn a_presence_result_sent_by_a_client_is_not_accepted() {
+        let params: imperium_protocol::methods::PluginsApproveParams =
+            serde_json::from_value(serde_json::json!({
+                "name": "p",
+                "sha256": "h",
+                "runs_digest": "r",
+                "challenge": "c",
+                "presence": "passed",
+                "kind": "counted",
+                "approval_kind": "counted",
+            }))
+            .unwrap();
+        let read = serde_json::to_value(&params).unwrap();
+        let mut keys: Vec<_> = read.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, ["challenge", "name", "runs_digest", "sha256"]);
+
+        // And with the check refused, nothing is recorded whatever the client claimed.
+        let home = home();
+        let presence = Answers::new(Presence::Refused("cancelled".into()));
+        let result = approve_with(&home, &ReleaseVerifier, &presence);
+        assert!(!result.approved);
+        assert_eq!(recorded_kind(&home), None);
+    }
+
+    /// The test verifier counts without a presence check (the flow's other checks are tested with
+    /// it): recorded once, and the challenge cannot be answered again.
+    #[test]
+    fn a_counted_approval_is_recorded_once() {
         let home = home();
         let (hash, runs) = content(&home);
         let asked = Asked {
@@ -428,26 +665,13 @@ mod tests {
         };
         let peer = Peer::test_peer();
         let mut challenges = Challenges::default();
+        let presence = Answers::new(Presence::Passed);
         let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
-        let result = approve(
-            &home.paths,
-            &LocalPeer,
-            &ReleaseVerifier,
-            Some(&peer),
-            &mut challenges,
-            &asked,
-            &issued.challenge,
-        );
-        assert!(!result.approved);
-        assert!(result.reason.unwrap().contains("presence check not built"));
-        assert!(plugin_records::record_for(&home.paths, &home.folder).is_none());
-
-        // The same flow with a verifier that counts records the approval, once.
-        let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
-        let result = approve(
+        let first = approve(
             &home.paths,
             &LocalPeer,
             &TestVerifier,
+            &presence,
             Some(&peer),
             &mut challenges,
             &asked,
@@ -455,42 +679,49 @@ mod tests {
         );
         if cfg!(windows) {
             // Check 7: this unsigned test build counts nothing on Windows, whatever the verifier.
-            assert!(!result.approved);
-            let reason = result.reason.unwrap();
+            assert!(!first.approved);
+            let reason = first.reason.unwrap();
             assert!(reason.contains("not a signed release build"), "{reason}");
-            assert!(plugin_records::record_for(&home.paths, &home.folder).is_none());
             return;
         }
-        assert!(result.approved, "{:?}", result.reason);
-        assert_eq!(result.kind.as_deref(), Some("counted"));
-        let result = approve(
+        assert!(first.approved, "{:?}", first.reason);
+        assert_eq!(first.kind.as_deref(), Some("counted"));
+        let again = approve(
             &home.paths,
             &LocalPeer,
             &TestVerifier,
+            &presence,
             Some(&peer),
             &mut challenges,
             &asked,
             &issued.challenge,
         );
-        assert!(!result.approved);
+        assert!(!again.approved);
     }
 
     #[test]
     fn the_dev_verifier_exists_only_in_debug_builds() {
-        // `DebugVerifier` is compiled only under `debug_assertions`; the production verifier of a
-        // release build gives no kind at all.
+        // `DebugVerifier` is compiled only under `debug_assertions` and records `dev` without
+        // asking anyone; the production verifier of a release build asks the presence check.
+        let refused = Answers::new(Presence::Refused("cancelled".into()));
         #[cfg(debug_assertions)]
-        assert_eq!(
-            plugin_records::production_verifier().approval_kind(),
-            Ok(ApprovalKind::Dev)
-        );
+        {
+            assert_eq!(
+                plugin_records::production_verifier().approval_kind(&refused, "p"),
+                Ok(ApprovalKind::Dev)
+            );
+            assert!(refused.asked().is_empty());
+        }
         #[cfg(not(debug_assertions))]
         assert!(
             plugin_records::production_verifier()
-                .approval_kind()
+                .approval_kind(&refused, "p")
                 .is_err()
         );
-        assert!(ReleaseVerifier.approval_kind().is_err());
+        assert!(ReleaseVerifier.approval_kind(&refused, "p").is_err());
         assert!(!ReleaseVerifier.may_write(ApprovalKind::Dev));
+        assert!(!ReleaseVerifier.may_write(ApprovalKind::CarriedOver));
+        assert!(ReleaseVerifier.may_write(ApprovalKind::Counted));
+        assert!(ReleaseVerifier.may_write(ApprovalKind::DialogOnly));
     }
 }
