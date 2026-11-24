@@ -50,11 +50,17 @@ runs only on CI (the `CI` variable), since elsewhere it would prompt whoever run
 
 ### Presence end-to-end (`presence-e2e.yml`)
 
-`ci.yml` calls it as its `presence-e2e` job when the change touches `app_identity/`,
-`plugin_records.rs`, `rpc/config.rs`, `imperium-ipc`, the app's `plugin_approval.rs`, the polkit
-action file, `scripts/ci/presence-e2e/` or the workflow (`scripts/ci/detect.sh` compares the change
-with its base: the pull request's base, the merge group's base or the pushed-over commit, and runs
-it when that cannot be read). The `CI gate` job needs it, so it **gates merges** whenever it runs;
+`ci.yml` calls it as its `presence-e2e` job when the change touches any of: in `imperium-core`,
+`app_identity/`, `plugin_records.rs`, `rpc/config.rs`, `server.rs` and `plugin_install.rs`;
+`imperium-extensions`' `plugins.rs`; `imperium-ipc`; the app's `plugin_approval.rs`, `main.rs`,
+`capabilities/`, `tauri.conf.json` and `linux/` (the polkit action); `scripts/ci/presence-e2e/`,
+`scripts/ci/detect.sh` and `scripts/ci/install-linux-deps.sh`; `presence-e2e.yml` and `ci.yml`; and
+`Cargo.lock`. `scripts/ci/detect.sh` compares the change with its base (the pull request's base,
+the merge group's base or the pushed-over commit) without rename detection, so moving a watched
+file lists its old path and still runs the test, and it runs the test when the base cannot be
+read. `scripts/ci/test-detect.sh`, run by the `detect` job first, checks that on a scratch
+repository: a rename of a watched file, an edit of one and an unknown base run it; an unrelated
+edit does not. The `CI gate` job needs it, so it **gates merges** whenever it runs;
 otherwise it is skipped and the gate passes. It can also be run by hand. It runs only then because
 its Linux job builds the release daemon, CLI and desktop app.
 

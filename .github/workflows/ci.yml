@@ -26,6 +26,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # detect.sh's change detection, tested on a scratch repository (a rename of a watched file).
+      - name: Test the change detection
+        run: bash scripts/ci/test-detect.sh
       - id: detect
         env:
           DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}

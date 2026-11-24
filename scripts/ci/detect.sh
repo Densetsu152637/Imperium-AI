@@ -13,13 +13,26 @@ has() { if [ -e "$1" ]; then echo true; else echo false; fi; }
   echo "desktop=$(has apps/desktop/src-tauri/tauri.conf.json)"
 } >> "$out"
 
-# The paths the presence end-to-end test covers (.github/workflows/presence-e2e.yml).
-presence_paths='^(\.github/workflows/presence-e2e\.yml|scripts/ci/presence-e2e/|crates/imperium-core/src/app_identity/|crates/imperium-core/src/plugin_records\.rs|crates/imperium-core/src/rpc/config\.rs|crates/imperium-ipc/|apps/desktop/src-tauri/src/plugin_approval\.rs|apps/desktop/src-tauri/linux/)'
+# The paths the presence end-to-end test covers (.github/workflows/presence-e2e.yml): the approval
+# flow, what it is built and run with, and this detection itself.
+presence_paths='^('
+presence_paths+='\.github/workflows/presence-e2e\.yml|\.github/workflows/ci\.yml|'
+presence_paths+='scripts/ci/presence-e2e/|scripts/ci/detect\.sh|scripts/ci/install-linux-deps\.sh|'
+presence_paths+='crates/imperium-core/src/app_identity/|crates/imperium-core/src/plugin_records\.rs|'
+presence_paths+='crates/imperium-core/src/rpc/config\.rs|crates/imperium-core/src/server\.rs|'
+presence_paths+='crates/imperium-core/src/plugin_install\.rs|crates/imperium-extensions/src/plugins\.rs|'
+presence_paths+='crates/imperium-ipc/|'
+presence_paths+='apps/desktop/src-tauri/src/plugin_approval\.rs|apps/desktop/src-tauri/src/main\.rs|'
+presence_paths+='apps/desktop/src-tauri/capabilities/|apps/desktop/src-tauri/tauri\.conf\.json|'
+presence_paths+='apps/desktop/src-tauri/linux/|Cargo\.lock'
+presence_paths+=')'
 presence=true
 base="${DIFF_BASE:-}"
 if [ -n "$base" ] && [ "$base" != 0000000000000000000000000000000000000000 ] &&
-  { git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q --no-tags --depth=1 origin "$base"; }; then
-  if git diff --name-only "$base" HEAD | grep -qE "$presence_paths"; then
+  { git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q --no-tags --depth=1 origin "$base" 2>/dev/null; }; then
+  # Without rename detection, a moved file lists its old path too, so moving watched code away
+  # still runs the test.
+  if git diff --name-only --no-renames "$base" HEAD | grep -qE "$presence_paths"; then
     presence=true
   else
     presence=false
