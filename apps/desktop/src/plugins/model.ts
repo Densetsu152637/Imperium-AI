@@ -23,14 +23,14 @@ export type Installed = Map<string, InstalledPlugin>;
 
 // Control, bidirectional-override and zero-width characters can hide or reorder text.
 // eslint-disable-next-line no-control-regex
-const HIDDEN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/g;
+const HIDDEN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\u206a-\u206f\ufeff]/g;
 
 /** Repository- or marketplace-supplied text with control and direction-changing characters removed. */
 export function plain(text: string | null | undefined): string {
   return (text ?? "").replace(HIDDEN, "").trim();
 }
 
-export const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+export const message = (error: unknown) => plain(error instanceof Error ? error.message : String(error));
 
 /** Every word of the query appears in some text (the Connectors rule). */
 export function matches(query: string, ...texts: (string | null | undefined)[]): boolean {
@@ -101,10 +101,11 @@ export function marketplaceSummary(info: MarketplaceInfo): string {
 
 /** One line for what a refresh found. */
 export function refreshSummary(refresh: MarketplaceRefresh): string {
-  if (refresh.error) return `${refresh.name}: could not refresh. ${plain(refresh.error)}`;
+  const name = plain(refresh.name);
+  if (refresh.error) return `${name}: could not refresh. ${plain(refresh.error)}`;
   const changes = [part(refresh.added.length, "plugin") && `${refresh.added.length} added`, refresh.removed.length > 0 ? `${refresh.removed.length} removed` : null, refresh.changed.length > 0 ? `${refresh.changed.length} changed` : null];
   const found = changes.filter(Boolean).join(", ");
-  return `${refresh.name}: ${found || "already up to date"}.`;
+  return `${name}: ${found || "already up to date"}.`;
 }
 
 /** The ids (`name@marketplace`, lower case) a set of refreshes reports as changed. */
@@ -158,3 +159,44 @@ export function withoutOffer(offers: Offers, key: string): Offers {
 }
 
 export const mutedOffers = (offers: Offers): Offers => ({ ...offers, muted: true, marketplaces: [], plugins: [] });
+
+export type Draft = { source: string; revision: string };
+export const EMPTY_DRAFT: Draft = { source: "", revision: "" };
+
+/** What *Review* on a marketplace offer puts in the add form: the offer's own words, cleaned, added to nothing. */
+export const reviewDraft = (offer: { source: string; revision: string | null }): Draft => ({ source: plain(offer.source), revision: plain(offer.revision) });
+
+/** What *Find* on a plugin offer searches for: the plugin's name, without its marketplace. */
+export const findQuery = (id: string): string => plain(id).split("@")[0] ?? "";
+
+export type Api = ReturnType<typeof pluginsApi>;
+
+export type Reloaded = { marketplaces: MarketplaceInfo[]; browse: PluginsBrowseResult; browseError: string | null };
+
+/** The marketplace list and the listings, read again; a failed browse leaves an empty one and says why. */
+export async function reload(api: Api): Promise<Reloaded> {
+  const marketplaces = await api.marketplaces();
+  try {
+    return { marketplaces, browse: await api.browse(), browseError: null };
+  } catch (failure) {
+    return { marketplaces, browse: { plugins: [], problems: [] }, browseError: message(failure) };
+  }
+}
+
+/** Adds a marketplace, then reads everything that depends on it (the list, the listings, the offers). */
+export async function addSequence(api: Api, draft: Draft): Promise<Reloaded & { notes: string[]; offers: PluginsSuggestionsResult | null }> {
+  const added = await api.addMarketplace(draft.source, draft.revision);
+  return { notes: [`Added ${plain(added.name)}.`], ...(await reload(api)), offers: await api.suggestions() };
+}
+
+/** Refreshes one marketplace or all, then reads the list and listings again. */
+export async function refreshSequence(api: Api, name?: string): Promise<Reloaded & { notes: string[]; changed: Set<string> }> {
+  const refreshed = await api.refresh(name);
+  return { notes: refreshed.map(refreshSummary), changed: changedIds(refreshed), ...(await reload(api)) };
+}
+
+/** Removes a marketplace (the built-in one is turned off), then reads the list and listings again. */
+export async function removeSequence(api: Api, name: string): Promise<Reloaded & { notes: string[] }> {
+  const result = await api.remove(name);
+  return { notes: [`${result.disabled ? "Turned off" : "Removed"} ${plain(name)}.`], ...(await reload(api)) };
+}

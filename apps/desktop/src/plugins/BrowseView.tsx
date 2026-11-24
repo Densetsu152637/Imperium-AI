@@ -2,6 +2,7 @@
 // marketplace supplies is drawn as plain text through `plain`; nothing here installs a plugin.
 
 import { ArrowLeft, Check, CircleArrowUp, Puzzle, SearchX } from "lucide-react";
+import { useEffect, useRef } from "react";
 import type { InstalledPlugin, MarketplaceInfo, PluginListing } from "@imperium/protocol";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
@@ -97,6 +98,7 @@ export function BrowseView({
                     <h3>
                       <button
                         className="plugin-card-open"
+                        data-plugin-id={plugin.id}
                         onClick={(event) => {
                           event.stopPropagation();
                           onOpen(plugin.id);
@@ -156,6 +158,9 @@ function List({ title, items }: { title: string; items: string[] }) {
 
 export function DetailView({ plugin, state, onBack }: { plugin: PluginListing; state: ListingState; onBack: () => void }) {
   const c = plugin.components;
+  const back = useRef<HTMLButtonElement>(null);
+  // The card that opened this is gone from the page, so focus starts on Back.
+  useEffect(() => back.current?.focus(), []);
   const facts: [string, string | null][] = [
     ["Marketplace", plain(plugin.marketplace)],
     ["Version", plain(plugin.version) || null],
@@ -167,7 +172,7 @@ export function DetailView({ plugin, state, onBack }: { plugin: PluginListing; s
   ];
   return (
     <div className="connector-form plugin-detail">
-      <button type="button" className="ghost back" onClick={onBack}>
+      <button ref={back} type="button" className="ghost back" onClick={onBack}>
         <ArrowLeft aria-hidden="true" /> Back
       </button>
       <div className="connector-form-head">

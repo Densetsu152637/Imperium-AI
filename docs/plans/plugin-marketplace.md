@@ -1402,7 +1402,7 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   by hand at 1280, 1024 and 420 px, light and dark, by keyboard, against
   [07](../07-desktop-ui.md#theming) and [accessibility](../07-desktop-ui.md#accessibility-implemented).
 - Risks: stay on the shared components.
-- Status: done (the by-hand check at 1280, 1024 and 420 px is the user's, against a fake core)
+- Status: in review (#260); set to done at merge
 - Outcome: `apps/desktop/src/plugins/` (`PluginsWindow`, `BrowseView` with the detail, `MarketplacesView`,
   `SuggestionsView`, `InstalledView`, `model.ts`), `styles/plugins.css`, opened from a title-bar icon, the
   palette's *Open Plugins*, Settings → Connectors and a *Manage plugins* button in Connectors' Installed view;
@@ -1415,11 +1415,15 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   Installed is read-only; the daemon has no update flag, so *Update available* is a proxy (the marketplace's commit
   differs from a path plugin's install commit, or the last refresh here listed it as changed); every
   marketplace- or repository-supplied string passes through `plain` and is rendered as text, and the homepage is
-  text, not a link.
+  text, not a link. By-hand check against a fake core at 1280 and 420 px, light and dark: hostile offer and
+  description text shown literally, no install control, and the arrow-key focus bug (the search box taking
+  focus from the tabs) found and fixed. 1024 px and forced colours were not checked. Review fixes: focus is kept
+  or moved when a focused control unmounts, answers for an older environment are dropped, a failed load ends its
+  spinner, and the cleaning also strips soft hyphens, isolates, invisible operators and line separators.
 - Handoff notes: stage 10 owns *Installed*'s on/off, update, approve and uninstall (this view only lists), the
   trust view and secrets; a real `update_available` from the daemon would replace the proxy in `listingState`; the
-  built-in marketplace, once turned off, shows *Off* with no way back in this window (re-adding its source is the
-  way, untested); there is no un-mute for a muted project.
+  built-in marketplace, once turned off, shows *Off* and a *Turn on* button that adds its source again
+  (assumed, not verified against the daemon, to re-enable it); there is no un-mute for a muted project.
 
 ## Stage 10: Desktop install, trust and update
 

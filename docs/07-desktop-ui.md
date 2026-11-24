@@ -1054,7 +1054,7 @@ and approves nothing; the install flow is [stage 10 of the marketplace plan](pla
   it is drawn as plain text, with control and direction-changing characters removed, never as HTML or markdown, and
   goes nowhere else.
 - **Marketplaces:** a form (source, optional revision) and the list: the built-in official marketplace marked *Built in*
-  (removing it turns it off), each marketplace's source, commit, plugin count and last refresh, refresh per row and
+  (removing it turns it off, and a turned-off one has *Turn on*, which adds its source again), each marketplace's source, commit, plugin count and last refresh, refresh per row and
   *Refresh all* with a one-line result each (added, removed, changed, or the error), remove with a confirmation, and
   the problems a marketplace reported.
 - **Installed:** the plugins on this computer for the selected environment (read-only here): *Withheld*, *Off* and *Needs

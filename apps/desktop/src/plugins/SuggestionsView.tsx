@@ -2,6 +2,7 @@
 // The text is the repository's, so it is drawn as plain text and goes nowhere else. An offer adds,
 // installs and enables nothing: a marketplace offer only fills the add form for the user to check.
 
+import { useEffect, useRef } from "react";
 import { BellOff, Lightbulb, X } from "lucide-react";
 import type { SuggestedMarketplace } from "@imperium/protocol";
 import { Notice } from "../components/Notice";
@@ -20,29 +21,50 @@ export function SuggestionsView({
   onDismiss: (key: string) => void;
   onMute: (folder: string) => void;
 }) {
+  const section = useRef<HTMLElement>(null);
+  const mutedNote = useRef<HTMLDivElement>(null);
+  /** Where focus goes once the control the user pressed is gone: the next row's Dismiss, or the muted note. */
+  const after = useRef<{ row: number } | "muted" | null>(null);
+  useEffect(() => {
+    const want = after.current;
+    if (!want) return;
+    after.current = null;
+    if (want === "muted") return mutedNote.current?.focus();
+    const buttons = section.current?.querySelectorAll<HTMLElement>("[data-dismiss]");
+    const target = buttons && buttons.length > 0 ? buttons[Math.min(want.row, buttons.length - 1)] : null;
+    (target ?? document.querySelector<HTMLElement>("[role=tabpanel]"))?.focus();
+  }, [offers]);
   if (!offers) return null;
   if (offers.muted)
     return (
-      <Notice tone="info" title="No suggestions from this project">
-        Suggestions from this project are turned off.
-      </Notice>
+      <div ref={mutedNote} tabIndex={-1} className="plugin-muted">
+        <Notice tone="info" title="No suggestions from this project">
+          Suggestions from this project are turned off.
+        </Notice>
+      </div>
     );
   if (offerCount(offers) === 0) return null;
   return (
-    <section className="connectors-section plugin-offers" aria-labelledby="plugin-offers-heading">
+    <section ref={section} className="connectors-section plugin-offers" aria-labelledby="plugin-offers-heading">
       <div className="connectors-section-head">
         <h3 id="plugin-offers-heading">
           <Lightbulb aria-hidden="true" /> Suggested by this project
         </h3>
         {offers.source_folder && (
-          <button className="small" onClick={() => onMute(offers.source_folder!)}>
+          <button
+            className="small"
+            onClick={() => {
+              after.current = "muted";
+              onMute(offers.source_folder!);
+            }}
+          >
             <BellOff aria-hidden="true" /> No suggestions from this project
           </button>
         )}
       </div>
       <p className="connectors-note">The project's files suggest these. Nothing is added or installed until you do it.</p>
       <ul className="connector-rows">
-        {offers.marketplaces.map((offer) => (
+        {offers.marketplaces.map((offer, index) => (
           <li key={offer.key} className="connector-row">
             <span />
             <div className="connector-row-title">
@@ -60,7 +82,15 @@ export function SuggestionsView({
                   Review
                 </button>
               )}
-              <button className="small" aria-label={`Dismiss marketplace ${plain(offer.source)}`} onClick={() => onDismiss(offer.key)}>
+              <button
+                className="small"
+                data-dismiss
+                aria-label={`Dismiss marketplace ${plain(offer.source)}`}
+                onClick={() => {
+                  after.current = { row: index };
+                  onDismiss(offer.key);
+                }}
+              >
                 <X aria-hidden="true" /> Dismiss
               </button>
             </div>
@@ -71,7 +101,7 @@ export function SuggestionsView({
             </div>
           </li>
         ))}
-        {offers.plugins.map((offer) => (
+        {offers.plugins.map((offer, index) => (
           <li key={offer.key} className="connector-row">
             <span />
             <div className="connector-row-title">
@@ -86,7 +116,15 @@ export function SuggestionsView({
                   Find
                 </button>
               )}
-              <button className="small" aria-label={`Dismiss plugin ${plain(offer.id)}`} onClick={() => onDismiss(offer.key)}>
+              <button
+                className="small"
+                data-dismiss
+                aria-label={`Dismiss plugin ${plain(offer.id)}`}
+                onClick={() => {
+                  after.current = { row: offers.marketplaces.length + index };
+                  onDismiss(offer.key);
+                }}
+              >
                 <X aria-hidden="true" /> Dismiss
               </button>
             </div>

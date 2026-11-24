@@ -110,3 +110,13 @@
   font-size: var(--fs-xs);
   overflow-wrap: anywhere;
 }
+
+/* The search box stays mounted on Marketplaces so tab arrows never land in it; `hidden` must beat .search-field's display. */
+.search-field[hidden] {
+  display: none;
+}
+
+.plugin-muted:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: calc(2 * var(--px));
+}

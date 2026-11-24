@@ -10,9 +10,7 @@ import { Field } from "../components/Field";
 import { IconButton } from "../components/IconButton";
 import { LoadingState, Spinner } from "../components/LoadingState";
 import { Notice } from "../components/Notice";
-import { marketplaceSummary, plain } from "./model";
-
-export type Draft = { source: string; revision: string };
+import { marketplaceSummary, plain, type Draft } from "./model";
 
 export function MarketplacesView({
   marketplaces,
@@ -22,6 +20,7 @@ export function MarketplacesView({
   onAdd,
   onRefresh,
   onRemove,
+  onTurnOn,
   notes,
 }: {
   marketplaces: MarketplaceInfo[] | null;
@@ -32,12 +31,24 @@ export function MarketplacesView({
   onAdd: () => void;
   onRefresh: (name?: string) => void;
   onRemove: (name: string) => void;
+  /** Adds a turned-off marketplace's source again. */
+  onTurnOn: (marketplace: MarketplaceInfo) => void;
   /** What the last refresh reported, as plain lines. */
   notes: string[];
 }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const source = useRef<HTMLInputElement>(null);
   const formId = useId();
+  const rows = useRef<HTMLUListElement>(null);
+  // The confirmation takes focus on Cancel, the safe choice; closing it gives focus back to the row's remove button.
+  useEffect(() => {
+    if (confirming) rows.current?.querySelector<HTMLElement>("[data-cancel]")?.focus();
+  }, [confirming]);
+  const closeConfirm = () => {
+    const name = confirming;
+    setConfirming(null);
+    if (name) window.setTimeout(() => rows.current?.querySelector<HTMLElement>(`[data-remove="${CSS.escape(name)}"]`)?.focus());
+  };
   // An offer from a project fills the form and sends the user here; put the cursor on it.
   useEffect(() => {
     if (draft.source) source.current?.focus();
@@ -85,7 +96,7 @@ export function MarketplacesView({
         {marketplaces.length === 0 ? (
           <EmptyState icon={Library} title="No marketplaces" body="Add one above to browse the plugins it lists." />
         ) : (
-          <ul className="connector-rows">
+          <ul ref={rows} className="connector-rows">
             {marketplaces.map((m) => (
               <li key={m.name} className="connector-row" data-enabled={m.enabled}>
                 <span className="connector-icon small" aria-hidden="true">
@@ -98,12 +109,18 @@ export function MarketplacesView({
                   {m.problems.length > 0 && <Badge tone="warn">{m.problems.length === 1 ? "1 problem" : `${m.problems.length} problems`}</Badge>}
                 </div>
                 <div className="connector-row-actions">
+                  {!m.enabled && (
+                    <button className="small" disabled={busy !== null} onClick={() => onTurnOn(m)}>
+                      Turn on
+                    </button>
+                  )}
                   <IconButton icon={RefreshCw} label={`Refresh ${plain(m.name)}`} size="sm" disabled={busy !== null || !m.enabled} onClick={() => onRefresh(m.name)} />
                   <IconButton
                     icon={Trash}
                     label={`${m.built_in ? "Turn off" : "Remove"} ${plain(m.name)}`}
                     size="sm"
                     disabled={busy !== null || !m.enabled}
+                    data-remove={m.name}
                     onClick={() => setConfirming(m.name)}
                   />
                 </div>
@@ -112,7 +129,8 @@ export function MarketplacesView({
                     {plain(m.source)}
                     {m.revision ? ` @ ${plain(m.revision)}` : ""}
                   </code>
-                  <span className="connector-row-source">{busy === m.name ? "Refreshing…" : marketplaceSummary(m)}</span>
+                  <span className="connector-row-source">{busy === m.name ? "Working…" : marketplaceSummary(m)}</span>
+                  {!m.enabled && <span className="connector-row-source">Turned off. Turn on adds this source again.</span>}
                   {m.problems.map((problem) => (
                     <Notice key={problem} tone="warn">
                       {plain(problem)}
@@ -127,12 +145,13 @@ export function MarketplacesView({
                         className="danger small"
                         onClick={() => {
                           setConfirming(null);
+                          document.querySelector<HTMLElement>("[role=tabpanel]")?.focus();
                           onRemove(m.name);
                         }}
                       >
                         {m.built_in ? "Turn off" : "Remove"}
                       </button>
-                      <button className="small" onClick={() => setConfirming(null)}>
+                      <button className="small" data-cancel onClick={closeConfirm}>
                         Cancel
                       </button>
                     </div>

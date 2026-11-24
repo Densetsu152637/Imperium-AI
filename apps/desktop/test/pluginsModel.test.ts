@@ -5,17 +5,23 @@ import { test } from "node:test";
 import type { InstalledPlugin, MarketplaceInfo, MarketplaceRefresh, PluginListing } from "@imperium/protocol";
 
 import {
+  addSequence,
   categoriesOf,
   changedIds,
   componentSummary,
   filterListings,
+  findQuery,
   installedById,
   listingState,
   marketplaceSummary,
+  message,
   mutedOffers,
   plain,
   pluginsApi,
+  refreshSequence,
   refreshSummary,
+  removeSequence,
+  reviewDraft,
   shortPath,
   withoutOffer,
   type Caller,
@@ -181,14 +187,80 @@ test("with no environment there are no offers to read and none to dismiss", asyn
   assert.deepEqual(calls, [{ method: "plugins.list", params: {} }]);
 });
 
-test("the window calls no method that installs, approves, enables or touches secrets", async () => {
+test("plain also removes soft hyphens, isolates, invisible operators and line separators", () => {
+  for (const c of ["\u00ad", "\u061c", "\u2028", "\u2029", "\u2060", "\u2064", "\u206a", "\u206f", "\u2066", "\ufeff"]) assert.equal(plain(`a${c}b`), "ab");
+  assert.equal(plain("a b\tc"), "a b\tc");
+});
+
+test("every name and error shown passes through plain, including a refresh's marketplace name", () => {
+  const base: MarketplaceRefresh = { name: "ev\u202Eil", commit_before: null, commit_after: null, added: [], removed: [], changed: [], problems: [], error: null };
+  assert.equal(refreshSummary(base), "evil: already up to date.");
+  assert.equal(refreshSummary({ ...base, error: "bad\u202E!" }), "evil: could not refresh. bad!");
+  assert.equal(message(new Error("x\u200By")), "xy");
+});
+
+test("review and find use the offer's words cleaned, and add nothing", () => {
+  assert.deepEqual(reviewDraft({ source: "a/b\u202E", revision: null }), { source: "a/b", revision: "" });
+  assert.equal(findQuery("li\u200Bnt@official"), "lint");
+});
+
+test("add, refresh and remove each read the list and the listings again, and name things cleaned", async () => {
   const { client, calls } = mock({
-    "plugins.marketplace_list": { marketplaces: [] },
+    "plugins.marketplace_add": market({ name: "mi\u202Ene", built_in: false }),
+    "plugins.marketplace_refresh": { refreshed: [{ name: "mine", commit_before: null, commit_after: "b", added: [], removed: [], changed: ["fmt"], problems: [], error: null }] },
+    "plugins.marketplace_remove": { name: "mine", disabled: true },
+    "plugins.marketplace_list": { marketplaces: [market({})] },
     "plugins.browse": { plugins: [], problems: [] },
-    "plugins.list": { plugins: [], problems: [] },
     "plugins.suggestions": { source_folder: null, trusted: false, muted: false, marketplaces: [], plugins: [] },
   });
   const api = pluginsApi(client, "e");
-  await Promise.all([api.marketplaces(), api.browse(), api.installed(), api.suggestions()]);
-  for (const { method } of calls) assert.doesNotMatch(method, /install|approve|set_enabled|secret|update|uninstall/);
+  const added = await addSequence(api, { source: "a/b", revision: "" });
+  assert.deepEqual(added.notes, ["Added mine."]);
+  assert.deepEqual(calls.map((c) => c.method), ["plugins.marketplace_add", "plugins.marketplace_list", "plugins.browse", "plugins.suggestions"]);
+  const refreshed = await refreshSequence(api, "mine");
+  assert.deepEqual([...refreshed.changed], ["fmt@mine"]);
+  assert.equal(refreshed.marketplaces.length, 1);
+  assert.deepEqual((await removeSequence(api, "mine")).notes, ["Turned off mine."]);
+});
+
+test("a failed browse after an add leaves an empty listing and says why", async () => {
+  const { client } = mock({ "plugins.marketplace_add": market({}), "plugins.marketplace_list": { marketplaces: [] }, "plugins.suggestions": null });
+  const result = await addSequence(pluginsApi(client, "e"), { source: "a/b", revision: "" });
+  assert.deepEqual(result.browse, { plugins: [], problems: [] });
+  assert.match(result.browseError ?? "", /unexpected plugins.browse/);
+});
+
+test("the window calls only the allow-listed methods, and nothing that installs, approves, enables or touches secrets", async () => {
+  const { client, calls } = mock({
+    "plugins.marketplace_list": { marketplaces: [] },
+    "plugins.marketplace_add": market({}),
+    "plugins.marketplace_refresh": { refreshed: [] },
+    "plugins.marketplace_remove": { name: "x", disabled: false },
+    "plugins.browse": { plugins: [], problems: [] },
+    "plugins.list": { plugins: [], problems: [] },
+    "plugins.suggestions": { source_folder: null, trusted: false, muted: false, marketplaces: [], plugins: [] },
+    "plugins.dismiss_suggestion": { dismissed: true, muted: false },
+  });
+  const api = pluginsApi(client, "e");
+  await api.marketplaces();
+  await api.browse();
+  await api.installed();
+  await api.suggestions();
+  await api.addMarketplace("a/b");
+  await api.refresh();
+  await api.remove("x");
+  await api.dismissOffer("k");
+  await api.muteProject("/p");
+  assert.equal(Object.keys(api).length, 9, "every function in pluginsApi was invoked above");
+  const allowed = new Set([
+    "plugins.marketplace_list",
+    "plugins.browse",
+    "plugins.list",
+    "plugins.suggestions",
+    "plugins.marketplace_add",
+    "plugins.marketplace_refresh",
+    "plugins.marketplace_remove",
+    "plugins.dismiss_suggestion",
+  ]);
+  assert.deepEqual(new Set(calls.map((c) => c.method)), allowed);
 });
