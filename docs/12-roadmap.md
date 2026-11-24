@@ -753,7 +753,7 @@ and `environments.agent_update` (protocol 0.28)
 <!-- markdownlint-disable-next-line MD029 -->
 54. **Pull-request card, auto-merge and review-comment fix** (planned). Claude Code's pull-request
     monitor in Imperium: a live card in the session (title, state, checks, review decision,
-    mergeability), an auto-merge switch that only the user can turn on, with the merge method
+    mergeability), an auto-merge switch that only the user can turn on, in the desktop app, with the merge method
     chosen, and auto-fix that also answers new review comments in the session that opened the
     pull request, treating comment text as untrusted data. Built on a daemon GitHub client and a
     fake GitHub test server so every check runs in CI
