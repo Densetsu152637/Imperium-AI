@@ -484,7 +484,9 @@ turn an approved plugin back on from any caller.
 
 The daemon raises the check itself, after a valid challenge and before recording; a presence
 result reported by the app or any other caller is never accepted. Feasibility, from platform
-documentation and not yet prototyped (stage 8c prototypes each one first):
+documentation, then prototyped in stage 8c (results in its
+[Outcome](#stage-8c-os-presence-check): Linux works, macOS works without a helper, Windows is
+verified only as unavailable on a runner without Hello):
 
 | OS | Mechanism | Available without setup | Feasibility from `imperium-core` |
 | --- | --- | --- | --- |
@@ -1378,9 +1380,93 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   Windows: the prototype's result is recorded (counting there still waits for U7).
 - Risks: macOS may require a bundled helper; Windows Hello may be infeasible from the daemon (then
   Windows is `dialog-only` once U7 holds).
-- Status: pending
-- Outcome:
-- Handoff notes: none yet.
+- Status: done; protocol unchanged (0.56)
+- Outcome: **Prototypes, run from the daemon's own code in CI:**
+  - **Linux: works.** The `presence-e2e.yml` Linux job (Ubuntu 24.04, polkit 124) runs the release
+    daemon and app with the action file installed and `pkttyagent` registered for the daemon's
+    process: polkit prompts ("AUTHENTICATING FOR org.imperium.plugins.approve", "Authenticating
+    as: runner"), the right password records `counted`, a wrong one ("pam_authenticate failed")
+    records nothing. With no agent polkit answers "not authorized, challenge", mapped to
+    `dialog-only`; with the action file removed `EnumerateActions` lacks it, so `dialog-only`
+    without polkit being asked. The subject `{pid, start-time, uid (int32)}` is accepted.
+    **Finding:** polkit refuses `CheckAuthorization` details from a caller that is not root or the
+    action's owner ("Only trusted callers ... can use CheckAuthorization() and pass details"), so
+    the request sends none and polkit's prompt cannot name the plugin; the action's message points
+    at Imperium's dialog, which does.
+  - **macOS: works without a helper.** On the `macos-latest` runner, `canEvaluatePolicy` succeeds
+    for `deviceOwnerAuthentication` from a plain test binary and `evaluatePolicy` puts up the
+    system password prompt, captured on screen ("<binary> is trying to approve a test plugin. Enter
+    the password for the user ... to allow this.", *Cancel* and *OK*). Nobody answers on a runner,
+    so after the timeout the prompt is withdrawn and the answer is a refusal (nothing recorded),
+    not `dialog-only`: the password is always set, as the table above expected. Not answered in CI
+    (no password for the runner's user and no assistive access to type it).
+  - **Windows: availability only.** `UserConsentVerifier::CheckAvailabilityAsync` answers
+    `DeviceNotPresent` on `windows-latest`, so the provider is unavailable there (an approval would
+    be `dialog-only` once U7 holds). Whether `RequestVerificationForWindowAsync` for the daemon's
+    one-pixel top-level window reaches the foreground is **unverified**: no runner has Hello set
+    up. Moot until U7: check 7 refuses before anyone is asked.
+
+  **Implementation.** `crates/imperium-core/src/app_identity/presence/`: `PresenceProvider`
+  (`check(plugin) -> Presence`), the production `System`, `kind_for` (passed `counted`,
+  unavailable `dialog-only`, refused an error, so nothing is recorded), the plugin id written out
+  (control and bidi characters) and capped at 120 characters for prompts, and `ANSWER_TIME`
+  (240 s; the app waits 300 s). `linux.rs` uses polkit through `zbus` 5.19's blocking API (already
+  in the lock): `EnumerateActions` first (not registered: unavailable), then `CheckAuthorization`
+  with `AllowUserInteraction` and a cancellation id, and `CancelCheckAuthorization` on timeout.
+  macOS (`imperium-ipc/src/macos_presence.rs`, `objc2-local-authentication` 0.3.2, new in the
+  lock) and Windows (`imperium-ipc/src/windows/hello.rs`, `windows` 0.62 renamed `windows-api`
+  beside the crate's own `windows` module, and `windows-future`) live in `imperium-ipc`'s
+  `unsafe`-allowed modules with SAFETY comments; `Presence` is `imperium_ipc::Presence`.
+  `ApprovalVerifier::approval_kind(presence, plugin)`: the release verifier raises the check and
+  writes only `counted` and `dialog-only`; the debug verifier records `dev` without a check; the
+  test verifier counts without one. `app_identity::approve` is split into `redeem` (checks 1 to
+  5, on the connection that holds the challenge), `conclude` (check 7 first for a verifier that
+  may write `counted`, so Windows never prompts for an approval that cannot count; then the
+  presence check; check 7 again; the identity again, since the check can take minutes; then the
+  record, which reads the folder again) and `answer`. `plugins.approve` refuses a TCP caller or an
+  unknown name at once, else replies when `conclude` ends in `spawn_blocking`, off the
+  connection's task. Packaging: `apps/desktop/src-tauri/linux/org.imperium.plugins.approve.policy`
+  (`auth_self` for any, inactive and active), installed by `bundle.linux.deb.files` and
+  `rpm.files`; `scripts/ci/check-linux-packages.sh`, a step of the Build workflow's Linux jobs,
+  fails a package without it or with another copy.
+
+  **Choices the plan did not fix:** a polkit error during the check (not before it) is a refusal,
+  not unavailable; only no bus, no polkit, an unregistered action and "challenge" are unavailable.
+  An unanswered prompt is withdrawn after four minutes and refused. The macOS errors
+  `PasscodeNotSet`, `NotInteractive` and missing biometry are unavailable, every other failure a
+  refusal. Windows `DeviceNotPresent`, `NotConfiguredForUser` and `DisabledByPolicy` are
+  unavailable, and so is a failed request for the window. The e2e test uses release builds (only a
+  release daemon records `counted` or `dialog-only`), so it needed no test hook: AT-SPI drives the
+  GTK dialog (GTK names a message dialog's accessible after its kind, "Warning", so the test finds
+  it by its title label).
+
+  **Tests.** Unit, in CI on all three platforms: an injected provider's three answers decide the
+  record (on Windows check 7 refuses first and the provider is never asked); nobody is asked
+  before the identity and challenge hold, or for a changed folder; a `presence`, `kind` or
+  `approval_kind` field a client adds to `plugins.approve` is dropped when the request is read;
+  polkit's answers mapped; a real polkit query for an action that is not installed is
+  unavailable; the subject is this process; the macOS and Windows answer mappings; the dev
+  verifier only in debug builds. End to end (`presence-e2e.yml`, Linux), each with a "scenario
+  ...: passed" line: approve with polkit passing (`counted`, the dialog showing the id, the hook
+  and the hash, `plugin list` "on, counted"); *Cancel* on page 2 of 3 of a plugin with 91 hooks
+  (titles "page i of n", no *Approve* before the last page, nothing installed); a wrong password
+  (installed, withheld, "not approved"); no agent (`dialog-only`); the action file removed while
+  an agent runs (`dialog-only`, the agent never asked); the app started with `LD_PRELOAD`
+  (refused naming it, no dialog, nothing sent). Headless runs on macOS and Windows record the
+  answers above.
+
+  **Not verified:** a Hello prompt from the daemon on a machine with Hello (no runner has it); a
+  Touch ID or password approval on a signed macOS release (no signing or answering on runners);
+  polkit with a desktop session's own agent (CI registers `pkttyagent` for the daemon's process; a
+  desktop agent registers for the session, which polkit consults the same way).
+- Handoff notes: approvals now count. Stage 10's *Approve* reads `kind` (`counted` or
+  `dialog-only`; `dev` from a debug daemon) and must expect `plugin_approve` to wait up to five
+  minutes while the OS prompt is up. A headless Mac refuses (nobody answers the prompt) rather than
+  giving `dialog-only`. Item 59 must, with a signed per-machine build on a machine with Hello,
+  confirm the Hello prompt reaches the foreground from the daemon; if it does not, make the Windows
+  provider answer unavailable (`dialog-only`) instead. The AppImage cannot install the polkit
+  action, so its approvals are `dialog-only`. `scripts/ci/presence-e2e/` is the place to add
+  scenarios for later approval paths (stage 10's window, update and approve actions).
 
 ## Stage 9: Desktop Plugins window: marketplaces, browse and suggestions
 
