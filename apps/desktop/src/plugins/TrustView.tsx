@@ -39,9 +39,22 @@ function Diff({ diff }: { diff: RunDiff }) {
       </Notice>
     );
   if (diff.kind === "unchanged")
-    return (
+    // The run digest covers command lines, URLs and the names of variables and headers, not the
+    // scripts they run or the values of a server's variables, so a changed file is not calm news.
+    return diff.otherFilesChanged ? (
+      <Notice tone="warn" title="Hooks and servers read the same, but other files changed">
+        The command lines, URLs and variable names are the same, but other files changed. That can include the scripts these hooks run and the values
+        of the servers' variables and headers.
+      </Notice>
+    ) : (
       <Notice tone="info" title="Hooks and servers are unchanged">
-        {diff.otherFilesChanged ? "Other files in the plugin changed." : "Nothing else changed either."}
+        Nothing else changed either.
+      </Notice>
+    );
+  if (diff.added.length === 0 && diff.removed.length === 0)
+    return (
+      <Notice tone="warn" title="What runs is the same, in a different order">
+        The same hooks and servers are listed, but their order changed. Other files may have changed too.
       </Notice>
     );
   return (

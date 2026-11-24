@@ -91,6 +91,9 @@ test("an update shows what changed in what runs, by digest first and then by lin
   // Same digest, different content: only other files changed.
   assert.deepEqual(diffRuns(preview({ sha256: "h0" }), after), { kind: "unchanged", otherFilesChanged: true });
   assert.deepEqual(diffRuns(preview(), after), { kind: "unchanged", otherFilesChanged: false });
+  // A reorder alone: the digest differs but every line is still there.
+  const reordered = diffRuns(preview(), preview({ hooks: [...preview().hooks].reverse(), runs_digest: "d3" }));
+  assert.deepEqual(reordered, { kind: "changed", added: [], removed: [] });
   // The installed version could not be read.
   assert.deepEqual(diffRuns(null, after), { kind: "unknown" });
   // A removed hook is listed as removed.
