@@ -1551,8 +1551,10 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   counts" wording after an answer; the trust view and uninstall notice are in the window, not a separate dialog; an
   install from the window is for the user, never an environment; the scope chips appear only with a selected
   environment.
-- Handoff notes: the by-hand check on a signed macOS release candidate and the automated Linux scenario are
-  recorded under the e2e pull request. A folder that did not come from a marketplace still cannot be approved
+- Handoff notes: the by-hand check on a signed macOS release candidate is replaced by an automated Linux scenario
+  (`scripts/ci/presence-e2e/drive.py`, "Plugins window: install, approve, enable, update, uninstall, undo", doc 11):
+  it drives the window through tauri-driver and polkit and checks each step through `imperium plugin list`; the
+  macOS presence prompt itself stays unverified (item 59). A folder that did not come from a marketplace still cannot be approved
   from the window (the daemon has no preview for a folder; owned by [item 60](../12-roadmap.md#next-in-order), not
   stage 11, whose scope is `install_extension`, docs and close-out); a real `update_available` flag would still replace
   stage 9's proxy.
