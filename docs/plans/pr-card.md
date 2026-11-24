@@ -489,7 +489,7 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   tier 0: none asserts that `gh auth token` fails in a tier-0 shell.
 - Risks: users whose only credential is `gh`'s login in the child's config folder may lose `gh`
   where the OS sandbox tier applies, unless they set `github.session_gh`; docs state it.
-- Status: done (this change)
+- Status: done (#272), with its review follow-ups in the next change
 - Outcome:
   - `review_pull_request` needed no change: its only `gh` call is `gh pr create`, which stays.
   - The daemon builds `DaemonGitHub::standard()` (`HttpGitHub::api` with `GhAuthToken`, plus
@@ -524,6 +524,18 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   - The live check also covers `failing_prs` (`Viewer` and `SearchPrs`): with the workflow's
     installation token `viewer` is the app (`...[bot]`) or refused, which the client reports
     as an error ("an app installation token") and the test accepts as `VIEWER=refused`; with `LIVE_READ_PAT` it must resolve (`VIEWER=ok`).
+  - **Review follow-ups** (the change after #272, stage 3's first part): (1) `tests/autofix_token.rs`
+    also captures every log line of the run at TRACE through a tracing subscriber and asserts the
+    sentinel is absent from it (and that something was logged). (2) A poll that cannot list a
+    repository's pull requests sends one `autofix.event` `failed` with the reason when the error
+    is a credential one (no `gh` login, an app installation token, a rejected token;
+    `imperium_github::is_credential_error`) or after 3 failures in a row, and not again until a
+    poll of that repository succeeds; the pull request number in it is 0. (3)
+    `imperium-core/src/github_token.rs`: `EnvToken` (`GH_TOKEN`, then `GITHUB_TOKEN` from the
+    daemon's own environment) and `GhThenEnv` (`gh auth token`, then the environment), which the
+    daemon uses through `daemon_github()` in place of `DaemonGitHub::standard()`, documented in
+    [14](../14-projects-and-automation.md#github-auto-fix). `imperium-github` still reads no
+    environment variable, so its host-pinning scan stays true.
 - Handoff notes: keep this PR free of new behaviour so a regression bisects to it alone.
 
 ## Stage 3: Binding, status model and live updates

@@ -550,3 +550,60 @@ async fn the_same_allow_rule_runs_the_command_without_the_ask_mode() {
         "the allow rule did not run the command"
     );
 }
+
+/// A GitHub whose pull-request listing fails the way a missing `gh` login does.
+#[derive(Debug)]
+struct NoLogin;
+
+impl GitHub for NoLogin {
+    fn failing_prs<'a>(&'a self, _repo: &'a str) -> GhFuture<'a, Vec<FailingPr>> {
+        Box::pin(async { Err("gh has no GitHub token; run `gh auth login`".to_string()) })
+    }
+
+    fn failure_log<'a>(&'a self, _repo: &'a str, _url: &'a str) -> GhFuture<'a, String> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn pr_state<'a>(&'a self, _repo: &'a str, _number: u64) -> GhFuture<'a, String> {
+        Box::pin(async { Ok("OPEN".to_string()) })
+    }
+}
+
+#[tokio::test]
+async fn a_listing_that_cannot_work_is_reported_to_the_user() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().display().to_string().replace('\\', "/");
+    let config = format!(
+        "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"http://127.0.0.1:9/v1\"\n\
+         [workflow]\nenabled = false\n[[github.watch]]\nrepo = \"owner/repo\"\nproject = \"{path}\"\n\
+         [github.autofix]\nenabled = true\n"
+    );
+    let settings = imperium_config::Config::from_layers([
+        imperium_config::Layer::defaults(),
+        imperium_config::Layer::new(
+            imperium_config::Source::User("test".into()),
+            config.parse().unwrap(),
+        ),
+    ])
+    .settings()
+    .unwrap();
+    let daemon =
+        imperium_core::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+    let mut announcements = daemon.announcements();
+    daemon.start_autofix(Arc::new(NoLogin));
+    // The first poll runs at once: the user is told why auto-fix cannot work, in one event.
+    let event = loop {
+        let notification = tokio::time::timeout(Duration::from_secs(10), announcements.recv())
+            .await
+            .expect("an announcement within 10 s")
+            .unwrap();
+        if notification.method == "autofix.event" {
+            break notification.params;
+        }
+    };
+    assert_eq!(event["status"], "failed", "{event}");
+    assert_eq!(event["repo"], "owner/repo");
+    let summary = event["summary"].as_str().unwrap();
+    assert!(summary.contains("gh auth login"), "{summary}");
+}
