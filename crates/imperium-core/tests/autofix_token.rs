@@ -17,6 +17,29 @@ use tokio::net::TcpListener;
 
 const SENTINEL: &str = "ghp_SENTINEL0123456789abcdefghijklmnop";
 
+/// A tracing writer that keeps everything the daemon logs, so the test can search it.
+#[derive(Clone, Default)]
+struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+    type Writer = LogBuffer;
+
+    fn make_writer(&'a self) -> LogBuffer {
+        self.clone()
+    }
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
@@ -78,6 +101,16 @@ fn files(dir: &Path, found: &mut Vec<(std::path::PathBuf, Vec<u8>)>) {
 #[tokio::test]
 async fn the_github_token_is_absent_from_an_auto_fix_runs_journal_notifications_prompts_and_approval()
  {
+    // Every log line of the run, at every level, on this thread (a current-thread test runtime
+    // runs the daemon's tasks here).
+    let logs = LogBuffer::default();
+    let _logging = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .finish(),
+    );
     let fake = FakeGithub::start(SENTINEL).await;
     fake.add_repo("owner/repo");
     // GitHub's reply to the log request is an error that echoes the token it was sent.
@@ -190,6 +223,16 @@ async fn the_github_token_is_absent_from_an_auto_fix_runs_journal_notifications_
             assert!(!text.contains(SENTINEL), "the token is in {what}: {text}");
         }
     }
+    // The log: the run logged (so the capture works) and the token is not in it.
+    let logged = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+    assert!(
+        logged.contains("auto-fix"),
+        "nothing was logged: {logged:?}"
+    );
+    assert!(
+        !logged.contains(SENTINEL),
+        "the token is in the log: {logged}"
+    );
     // The journal and everything else the daemon wrote under its home.
     let mut written = Vec::new();
     files(&home, &mut written);

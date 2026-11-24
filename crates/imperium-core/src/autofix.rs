@@ -4,7 +4,7 @@
 //! pushed to the pull request's branch only after approval (`push = "ask"`, the default) —
 //! never force-pushed, merged, or closed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Duration;
@@ -38,15 +38,22 @@ async fn poll_loop(daemon: Weak<DaemonState>, github: Arc<dyn GitHub>, poll: Dur
     // Commits already handled, and attempts per pull request.
     let mut handled: HashMap<(String, u64), String> = HashMap::new();
     let attempts: Arc<Mutex<HashMap<(String, u64), u32>>> = Arc::default();
+    let mut failures = ListFailures::default();
     loop {
         let Some(state) = daemon.upgrade() else {
             return;
         };
         for watch in state.settings().github.watch.clone() {
             let failing = match github.failing_prs(&watch.repo).await {
-                Ok(failing) => failing,
+                Ok(failing) => {
+                    failures.succeeded(&watch.repo);
+                    failing
+                }
                 Err(error) => {
                     tracing::warn!(repo = %watch.repo, %error, "could not list pull requests");
+                    if let Some(reason) = failures.failed(&watch.repo, &error) {
+                        announce(&state, &watch.repo, 0, "failed", None, reason);
+                    }
                     continue;
                 }
             };
@@ -85,6 +92,41 @@ async fn poll_loop(daemon: Weak<DaemonState>, github: Arc<dyn GitHub>, poll: Dur
         }
         drop(state);
         tokio::time::sleep(poll).await;
+    }
+}
+
+/// How many polls in a row must fail before a failure that might pass is reported.
+const REPORT_AFTER: u32 = 3;
+
+/// Which repositories' listing failures were reported, so the user hears about a persistent
+/// failure once (as an `autofix.event` with status `failed`) instead of a log line on every
+/// poll, and again only after a poll succeeded in between.
+#[derive(Debug, Default)]
+struct ListFailures {
+    consecutive: HashMap<String, u32>,
+    reported: HashSet<String>,
+}
+
+impl ListFailures {
+    /// Records a failed poll; returns the reason to tell the user when this one should be
+    /// reported. A missing, refused or app-installation credential is reported at once, since
+    /// waiting does not fix it; anything else after [`REPORT_AFTER`] failures in a row.
+    fn failed(&mut self, repo: &str, error: &str) -> Option<String> {
+        let count = self.consecutive.entry(repo.to_string()).or_insert(0);
+        *count += 1;
+        let persistent = imperium_github::is_credential_error(error) || *count >= REPORT_AFTER;
+        if !persistent || !self.reported.insert(repo.to_string()) {
+            return None;
+        }
+        let error: String = error.chars().take(300).collect();
+        Some(format!(
+            "auto-fix cannot list pull requests for {repo}: {error}. It tries again every poll and says nothing more until a poll works."
+        ))
+    }
+
+    fn succeeded(&mut self, repo: &str) {
+        self.consecutive.remove(repo);
+        self.reported.remove(repo);
     }
 }
 
@@ -451,4 +493,41 @@ pub fn watch_pull_requests(daemon: &Arc<DaemonState>, github: Arc<dyn GitHub>, p
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_credential_failure_is_reported_once_until_a_poll_succeeds() {
+        let mut failures = ListFailures::default();
+        let error = "gh has no GitHub token; run `gh auth login`";
+        let reason = failures.failed("o/r", error).expect("reported at once");
+        assert!(
+            reason.contains("o/r") && reason.contains("gh auth login"),
+            "{reason}"
+        );
+        assert_eq!(failures.failed("o/r", error), None);
+        assert_eq!(
+            failures.failed("o/r", "GitHub rejected the token (401)"),
+            None
+        );
+        // Another repository is reported on its own.
+        assert!(failures.failed("o/other", error).is_some());
+        failures.succeeded("o/r");
+        assert!(failures.failed("o/r", error).is_some());
+    }
+
+    #[test]
+    fn other_failures_are_reported_only_when_they_persist() {
+        let mut failures = ListFailures::default();
+        assert_eq!(failures.failed("o/r", "GitHub returned 502"), None);
+        assert_eq!(failures.failed("o/r", "GitHub returned 502"), None);
+        assert!(failures.failed("o/r", "GitHub returned 502").is_some());
+        assert_eq!(failures.failed("o/r", "GitHub returned 502"), None);
+        // A success in between starts the count again.
+        failures.succeeded("o/r");
+        assert_eq!(failures.failed("o/r", "GitHub returned 502"), None);
+    }
 }

@@ -37,6 +37,18 @@ pub struct FailingPr {
     pub details_url: String,
 }
 
+/// Whether `error` says the credential is missing or refused, which waiting does not fix: no `gh`
+/// login, an app installation token where a user's is needed, or a token GitHub rejected.
+pub fn is_credential_error(error: &str) -> bool {
+    [
+        "gh has no GitHub token",
+        "rejected the token",
+        "app installation token",
+    ]
+    .iter()
+    .any(|marker| error.contains(marker))
+}
+
 pub type GhFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 
 fn unsupported<'a, T: Send + 'a>(what: &'static str) -> GhFuture<'a, T> {

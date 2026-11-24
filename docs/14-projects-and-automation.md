@@ -1143,7 +1143,12 @@ After `max_attempts_per_pr` (default 3) failing commits on one pull request it s
 says so. Progress goes to every client as `autofix.event` notifications (`started`,
 `awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, `stopped`); approvals are
 answered in the desktop app's Approvals panel or with `imperium approvals list|approve|deny`
-(`approvals.list` and `approvals.respond`, with `approval.requested` notifications). Not yet:
+(`approvals.list` and `approvals.respond`, with `approval.requested` notifications). When the
+daemon cannot list a repository's pull requests and waiting will not fix it (no `gh` login and no
+`GH_TOKEN`, an app installation token, a token GitHub rejects), it sends one `autofix.event` with
+status `failed` (pull request number 0, since it is not about one pull request) and the reason, instead of a log line on every poll; the same failure is not sent
+again until a poll of that repository succeeds. Any other failure is sent after three polls in a
+row fail. Not yet:
 review, conflict, triage, and workflow-failure responders, `github.*` hook events, webhooks,
 labelled or all pull requests, budgets, `comment`, and persisting attempt counts across
 restarts.
@@ -1153,6 +1158,17 @@ login itself. Sessions' commands, MCP servers and hooks drop `GH_TOKEN`, `GITHUB
 `GH_CONFIG_DIR`, and the OS sandbox hides `gh`'s config folder, unless the environment's id is
 listed in `github.session_gh` ([10](10-configuration.md); the limits, including tier 0, are in
 [05](05-tools-and-isolation.md#isolation-tiers)).
+
+**Which token the daemon uses.** `gh auth token` first (the signed-in `gh` account; `GH_TOKEN`
+and `GITHUB_TOKEN` are removed from that call's environment). When `gh` has no login and
+`GH_TOKEN` (or, failing that, `GITHUB_TOKEN`) is set in **the daemon's own environment**, that
+token is used instead, so a user whose only credential is an environment variable still gets
+pull-request data. The environment variable is read in `imperium-core`, never by the client
+crate, which reads no environment at all; the host the token goes to is fixed regardless. A token
+`gh` supplied and GitHub refused is not retried with the environment's. The token lives in the
+daemon's memory only and is never written to a prompt, tool result, journal, log, notification or
+reply. Auto-fix needs a user's token: an app installation token cannot name "the signed-in user's
+pull requests" and is reported as a failure.
 
 ### Events
 

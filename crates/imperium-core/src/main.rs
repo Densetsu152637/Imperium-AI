@@ -141,7 +141,7 @@ async fn run() -> anyhow::Result<()> {
     daemon.sweep_orphan_scratch();
     daemon.start_scheduler();
     // Pull-request data over the API with `gh`'s token; failed-check logs still through `gh`.
-    match imperium_github::DaemonGitHub::standard() {
+    match imperium_core::daemon_github() {
         Ok(github) => daemon.start_autofix(std::sync::Arc::new(github)),
         Err(error) => tracing::warn!(%error, "GitHub auto-fix did not start"),
     }
