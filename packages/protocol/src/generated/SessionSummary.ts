@@ -104,4 +104,11 @@ read_only: boolean,
  * Set when a persistent agent started the session (or the user started one of its
  * suggestions): shown as "started by <agent>" with the reason.
  */
-started_by?: StartedBy, };
+started_by?: StartedBy, 
+/**
+ * The pull request the session is bound to (`pull_requests.bind`, or opened by
+ * `session.review_pull_request`), as `https://github.com/<owner>/<repo>/pull/<n>`. Kept
+ * across restarts; absent from daemons that predate it and while nothing is bound. The
+ * `status_detail` `repo#n` watch string keeps its format.
+ */
+pull_request_url?: string, };

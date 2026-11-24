@@ -193,6 +193,7 @@ impl DaemonState {
                 "archived_at",
                 "status",
                 "status_detail",
+                "pull_request",
             ] {
                 fields.remove(key);
             }

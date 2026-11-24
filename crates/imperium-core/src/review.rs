@@ -1080,6 +1080,15 @@ pub(crate) fn pull_request(
         .rev()
         .find(|line| line.starts_with("http"))
         .map(str::to_string);
+    // The pull request is the session's own: follow it, through the same origin check as
+    // `pull_requests.bind`. A link that is not a GitHub pull request of the origin is not bound.
+    if let Some(url) = &url
+        && let Err(reason) = state
+            .pr_monitor()
+            .bind_opened(state, &params.session_id, url)
+    {
+        tracing::info!(session = %params.session_id, %reason, "the new pull request was not bound");
+    }
     Ok(SessionReviewPullRequestResult {
         opened: true,
         needs_confirmation: false,

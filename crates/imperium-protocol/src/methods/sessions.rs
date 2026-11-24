@@ -420,6 +420,13 @@ pub struct SessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub started_by: Option<crate::initiative::StartedBy>,
+    /// The pull request the session is bound to (`pull_requests.bind`, or opened by
+    /// `session.review_pull_request`), as `https://github.com/<owner>/<repo>/pull/<n>`. Kept
+    /// across restarts; absent from daemons that predate it and while nothing is bound. The
+    /// `status_detail` `repo#n` watch string keeps its format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pull_request_url: Option<String>,
 }
 
 /// Where a branched session came from.

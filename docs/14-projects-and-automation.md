@@ -1199,9 +1199,26 @@ status stays, with `error` set; failures back off (the interval doubled each tim
 minutes), and a rate limit GitHub reports is waited out. The session shows `watching` while the
 pull request is open and `merged` once it merges, and is archived on a merge or close as
 `sessions.auto_archive_on_pr_close` says. The old `session.control` `watch` and `unwatch`
-actions are aliases for bind and unbind, with the same repository check. Not yet: the binding
-survives only until the daemon restarts, a pull request opened by `session.review_pull_request`
-is not bound automatically, and the card, the auto-fix switch and auto-merge are later stages.
+actions are aliases for bind and unbind, with the same repository check.
+
+**Persistence and auto-bind (implemented, stage 4, protocol 0.58).** The binding is kept in the
+session's record (`<id>.meta.json`, key `pull_request`: the link, the `auto_fix` and
+`auto_archive_on_close` switches and the last status), written on bind, on every change of the
+status and on unbind, so a restart brings the session back bound, with its switches and the last
+good status shown at once; the first poll after the restart announces a change only when
+the pull request differs from the saved status. A record without the key (written before this)
+loads as an unbound session, and a record that does not parse is ignored. A restored link is
+checked against the session's `origin` again: one that no longer matches (the record was edited,
+or the remote changed) is dropped from the record and logged. The switches belong to the binding (`auto_fix` off, `auto_archive_on_close`
+as the setting was at bind time) and are inert until stage 7; the archive rule above still reads
+`sessions.auto_archive_on_pr_close`. A pull request opened by `session.review_pull_request` is
+bound to the session that opened it as soon as `gh` reports its link, through the same
+`origin` check as `pull_requests.bind` (a link that is not a github.com pull request of the
+session's origin is simply not bound, and the open itself is unaffected); it replaces any pull
+request the session had bound. The session's summary carries the link as `pull_request_url`. An
+archived session drops the binding (unarchiving does not poll a closed pull request) and keeps
+the link for its row; a branch or a rewound copy of a session does not inherit the binding. Not
+yet: the card, the auto-fix switch and auto-merge are later stages.
 
 ### Events
 

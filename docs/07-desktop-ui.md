@@ -235,7 +235,9 @@ session changed and puts it back or commits it (roadmap item 6):
 - **Commit:** a message box prefilled with the session's title and its files, *Commit*, and
   *Open pull request* (the message's first line is the title, the rest the body). Both ask
   first, inline, unless a permission rule allows them (`git_commit`, `open_pull_request`);
-  without `gh` the pull request's commands are shown to copy. A repository picker appears when
+  without `gh` the pull request's commands are shown to copy. A pull request that opens is
+  bound to the session at once (it shows as *watching*, and the link is the session's
+  `pull_request_url`), see [14](14-projects-and-automation.md#github-auto-fix). A repository picker appears when
   the session has several (the same Select). Failures, successes and the missing-`gh` hint are
   shared Notices; an empty review, a binary file and a session with nothing to review use the
   shared compact empty state, and the first read shows the delayed loading state. Rows wrap

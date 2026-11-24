@@ -16,9 +16,10 @@ use imperium_engine::Session;
 use imperium_github::{Check, GitHub, MergeSettings};
 use imperium_protocol::methods::{
     PULL_REQUESTS_CHANGED, PrAutoMerge, PrChecks, PrConflictState, PrMergeMethod, PrReview,
-    PrState, PrStatus, PullRequestsChangedParams,
+    PrState, PrStatus, PullRequestsChangedParams, SESSION_UPDATED,
 };
 use imperium_protocol::session::SessionStatus;
+use serde_json::Value;
 use tokio::sync::Notify;
 
 use crate::DaemonState;
@@ -56,9 +57,17 @@ struct Tracked {
     read_at: Option<Instant>,
 }
 
+/// A session's binding: its pull request and its own switches (stage 7 acts on them).
+#[derive(Debug, Clone)]
+struct Binding {
+    key: Key,
+    auto_fix: bool,
+    auto_archive_on_close: bool,
+}
+
 #[derive(Debug, Default)]
 struct Inner {
-    sessions: HashMap<String, Key>,
+    sessions: HashMap<String, Binding>,
     tracked: HashMap<Key, Tracked>,
     settings: HashMap<String, (Instant, Result<MergeSettings, String>)>,
 }
@@ -167,8 +176,8 @@ impl PrMonitor {
         inner
             .sessions
             .iter()
-            .filter_map(|(id, key)| {
-                let tracked = inner.tracked.get(key)?;
+            .filter_map(|(id, binding)| {
+                let tracked = inner.tracked.get(&binding.key)?;
                 let over = tracked
                     .status
                     .as_ref()
@@ -186,23 +195,31 @@ impl PrMonitor {
             repo: repo.to_ascii_lowercase(),
             number,
         };
-        let cached = {
+        let archive = state.settings().sessions.auto_archive_on_pr_close;
+        let (cached, moved) = {
             let mut inner = self.lock();
-            let replaced = inner.sessions.insert(session.id().to_string(), key.clone());
-            inner.tracked.entry(key.clone()).or_insert_with(|| Tracked {
-                repo: repo.to_string(),
-                number,
-                status: None,
-                last_error: None,
-                failures: 0,
-                next_due: Instant::now(),
-                read_at: None,
-            });
-            if let Some(old) = replaced.filter(|old| *old != key) {
-                Self::drop_if_unused(&mut inner, &old);
+            let previous = inner.sessions.get(session.id()).cloned();
+            let moved = previous.as_ref().is_none_or(|old| old.key != key);
+            // The same pull request again keeps the switches the session has.
+            let binding = match previous.as_ref().filter(|old| old.key == key) {
+                Some(old) => old.clone(),
+                None => Binding {
+                    key: key.clone(),
+                    auto_fix: false,
+                    auto_archive_on_close: archive,
+                },
+            };
+            inner.sessions.insert(session.id().to_string(), binding);
+            Self::track(&mut inner, repo, number, None);
+            if let Some(old) = previous.filter(|old| old.key != key) {
+                Self::drop_if_unused(&mut inner, &old.key);
             }
-            inner.tracked.get(&key).and_then(|t| t.status.clone())
+            (
+                inner.tracked.get(&key).and_then(|t| t.status.clone()),
+                moved,
+            )
         };
+        self.save(state, session.id());
         match cached {
             Some(status) => {
                 apply_overlay(session, &status);
@@ -210,17 +227,167 @@ impl PrMonitor {
                     PULL_REQUESTS_CHANGED,
                     PullRequestsChangedParams {
                         session_id: session.id().to_string(),
-                        status: Some(status),
+                        status: Some(self.personal(session.id(), status)),
                     },
                 );
             }
             None => session.set_watch(Some((SessionStatus::Watching, format!("{repo}#{number}")))),
         }
+        if moved {
+            state.announce(SESSION_UPDATED, state.summary(session));
+        }
         self.kick.notify_one();
     }
 
+    /// The tracked entry for a pull request, made when nobody follows it yet. `saved` is a
+    /// status read before a restart, kept only until the first poll replaces it.
+    fn track(inner: &mut Inner, repo: &str, number: u64, saved: Option<PrStatus>) {
+        let key = Key {
+            repo: repo.to_ascii_lowercase(),
+            number,
+        };
+        let tracked = inner.tracked.entry(key).or_insert_with(|| Tracked {
+            repo: repo.to_string(),
+            number,
+            status: None,
+            last_error: None,
+            failures: 0,
+            next_due: Instant::now(),
+            read_at: None,
+        });
+        if tracked.status.is_none() {
+            tracked.status = saved;
+        }
+    }
+
+    /// `status` with this session's own switches.
+    fn personal(&self, session_id: &str, mut status: PrStatus) -> PrStatus {
+        if let Some(binding) = self.lock().sessions.get(session_id) {
+            status.auto_fix = binding.auto_fix;
+            status.auto_archive_on_close = binding.auto_archive_on_close;
+        }
+        status
+    }
+
+    /// Sets a session's per-binding switches and records them. They act from stage 7 on; until
+    /// then they are only kept and shown. False when the session has no binding.
+    pub fn set_switches(
+        &self,
+        state: &DaemonState,
+        session_id: &str,
+        auto_fix: Option<bool>,
+        auto_archive_on_close: Option<bool>,
+    ) -> bool {
+        {
+            let mut inner = self.lock();
+            let Some(binding) = inner.sessions.get_mut(session_id) else {
+                return false;
+            };
+            binding.auto_fix = auto_fix.unwrap_or(binding.auto_fix);
+            binding.auto_archive_on_close =
+                auto_archive_on_close.unwrap_or(binding.auto_archive_on_close);
+        }
+        self.save(state, session_id);
+        if let Ok(status) = self.status(session_id) {
+            state.announce(
+                PULL_REQUESTS_CHANGED,
+                PullRequestsChangedParams {
+                    session_id: session_id.to_string(),
+                    status: Some(status),
+                },
+            );
+        }
+        true
+    }
+
+    /// Writes a session's binding, switches and last status into its record, so a restart
+    /// brings them back.
+    fn save(&self, state: &DaemonState, session_id: &str) {
+        let record = {
+            let inner = self.lock();
+            let Some(binding) = inner.sessions.get(session_id) else {
+                return;
+            };
+            let tracked = inner.tracked.get(&binding.key);
+            serde_json::json!({
+                "url": tracked.map(|t| pr_url(&t.repo, t.number)),
+                "auto_fix": binding.auto_fix,
+                "auto_archive_on_close": binding.auto_archive_on_close,
+                "status": tracked.and_then(|t| t.status.as_ref()),
+            })
+        };
+        state.record_pull_request(session_id, Some(record));
+    }
+
+    /// Takes a session's binding back after a restart from what [`Self::save`] wrote. Nothing
+    /// is announced (the session is starting). The repository is checked against the session's
+    /// `origin` again, so a binding always means the session's own repository even after the
+    /// record was edited or the remote changed; a record that fails the check is dropped, with
+    /// its `pull_request` key, and logged. A record that does not parse is ignored.
+    pub(crate) fn restore(&self, state: &DaemonState, session: &Session, record: &Value) {
+        let Some((repo, number)) = record["url"]
+            .as_str()
+            .and_then(|url| parse_pr_url(url).ok())
+        else {
+            return;
+        };
+        if let Err(reason) = check_repo(session, &repo) {
+            tracing::warn!(session = %session.id(), %reason, "the saved pull request is not this session's own; it is unbound");
+            state.record_pull_request(session.id(), None);
+            return;
+        }
+        let saved = serde_json::from_value::<PrStatus>(record["status"].clone())
+            .ok()
+            .filter(|s| s.repo.eq_ignore_ascii_case(&repo) && s.number == number);
+        {
+            let mut inner = self.lock();
+            inner.sessions.insert(
+                session.id().to_string(),
+                Binding {
+                    key: Key {
+                        repo: repo.to_ascii_lowercase(),
+                        number,
+                    },
+                    auto_fix: record["auto_fix"].as_bool().unwrap_or(false),
+                    auto_archive_on_close: record["auto_archive_on_close"]
+                        .as_bool()
+                        .unwrap_or(state.settings().sessions.auto_archive_on_pr_close),
+                },
+            );
+            Self::track(&mut inner, &repo, number, saved.clone());
+        }
+        match saved {
+            Some(status) => apply_overlay(session, &status),
+            None => session.set_watch(Some((SessionStatus::Watching, format!("{repo}#{number}")))),
+        }
+        self.kick.notify_one();
+    }
+
+    /// Binds the session that `session.review_pull_request` just opened `url` for. The pull
+    /// request is the session's own, so it goes through the same origin check as
+    /// `pull_requests.bind`.
+    pub fn bind_opened(
+        &self,
+        state: &DaemonState,
+        session_id: &str,
+        url: &str,
+    ) -> Result<(), String> {
+        let session = state.session(session_id).ok_or("no such session")?;
+        let (repo, number) = parse_pr_url(url)?;
+        check_repo(&session, &repo)?;
+        self.bind(state, &session, &repo, number);
+        Ok(())
+    }
+
+    /// The link of the pull request a session is bound to.
+    pub(crate) fn url_of(&self, session_id: &str) -> Option<String> {
+        let inner = self.lock();
+        let tracked = inner.tracked.get(&inner.sessions.get(session_id)?.key)?;
+        Some(pr_url(&tracked.repo, tracked.number))
+    }
+
     fn drop_if_unused(inner: &mut Inner, key: &Key) {
-        if !inner.sessions.values().any(|bound| bound == key) {
+        if !inner.sessions.values().any(|bound| bound.key == *key) {
             inner.tracked.remove(key);
         }
     }
@@ -231,6 +398,8 @@ impl PrMonitor {
         let was_bound = self.forget(session.id());
         session.set_watch(None);
         if was_bound {
+            state.record_pull_request(session.id(), None);
+            state.announce(SESSION_UPDATED, state.summary(session));
             state.announce(
                 PULL_REQUESTS_CHANGED,
                 PullRequestsChangedParams {
@@ -245,38 +414,44 @@ impl PrMonitor {
     /// Drops a session's binding without telling anyone (the session itself is gone).
     pub(crate) fn forget(&self, session_id: &str) -> bool {
         let mut inner = self.lock();
-        let Some(key) = inner.sessions.remove(session_id) else {
+        let Some(binding) = inner.sessions.remove(session_id) else {
             return false;
         };
-        Self::drop_if_unused(&mut inner, &key);
+        Self::drop_if_unused(&mut inner, &binding.key);
         true
     }
 
     /// The cached status of a session's pull request.
     pub(crate) fn status(&self, session_id: &str) -> Result<PrStatus, String> {
         const UNBOUND: &str = "no pull request is bound to this session";
-        let inner = self.lock();
-        let key = inner.sessions.get(session_id).ok_or(UNBOUND)?;
-        let tracked = inner.tracked.get(key).ok_or(UNBOUND)?;
-        tracked.status.clone().ok_or_else(|| {
-            tracked.last_error.as_ref().map_or_else(
-                || "the pull request has not been read yet".to_string(),
-                |error| format!("the pull request could not be read: {error}"),
-            )
-        })
+        let status = {
+            let inner = self.lock();
+            let key = &inner.sessions.get(session_id).ok_or(UNBOUND)?.key;
+            let tracked = inner.tracked.get(key).ok_or(UNBOUND)?;
+            tracked.status.clone().ok_or_else(|| {
+                tracked.last_error.as_ref().map_or_else(
+                    || "the pull request has not been read yet".to_string(),
+                    |error| format!("the pull request could not be read: {error}"),
+                )
+            })?
+        };
+        Ok(self.personal(session_id, status))
     }
 
     /// The session's cached status when it was read without error less than one poll interval
     /// ago, so a bind does not spend GitHub quota on a pull request the poller just read.
     pub(crate) fn fresh_status(&self, session_id: &str) -> Option<PrStatus> {
         let interval = self.interval();
-        let inner = self.lock();
-        let tracked = inner.tracked.get(inner.sessions.get(session_id)?)?;
-        let fresh = tracked.read_at.is_some_and(|at| at.elapsed() < interval);
-        tracked
-            .status
-            .clone()
-            .filter(|s| fresh && s.error.is_none())
+        let status = {
+            let inner = self.lock();
+            let tracked = inner.tracked.get(&inner.sessions.get(session_id)?.key)?;
+            let fresh = tracked.read_at.is_some_and(|at| at.elapsed() < interval);
+            tracked
+                .status
+                .clone()
+                .filter(|s| fresh && s.error.is_none())?
+        };
+        Some(self.personal(session_id, status))
     }
 
     /// Reads a session's pull request from GitHub now and updates the cache.
@@ -289,9 +464,10 @@ impl PrMonitor {
             .lock()
             .sessions
             .get(session_id)
-            .cloned()
+            .map(|binding| binding.key.clone())
             .ok_or("no pull request is bound to this session")?;
-        self.read(state, &key).await
+        let status = self.read(state, &key).await?;
+        Ok(self.personal(session_id, status))
     }
 
     /// One poll pass: reads each pull request that is due (all of them when `force`), and
@@ -362,7 +538,7 @@ impl PrMonitor {
             let sessions: Vec<String> = inner
                 .sessions
                 .iter()
-                .filter(|(_, bound)| *bound == key)
+                .filter(|(_, bound)| bound.key == *key)
                 .map(|(id, _)| id.clone())
                 .collect();
             let Some(tracked) = inner.tracked.get_mut(key) else {
@@ -410,11 +586,12 @@ impl PrMonitor {
                 if let (Some(session), Some(status)) = (state.session(id), &status) {
                     apply_overlay(&session, status);
                 }
+                self.save(state, id);
                 state.announce(
                     PULL_REQUESTS_CHANGED,
                     PullRequestsChangedParams {
                         session_id: id.clone(),
-                        status: status.clone(),
+                        status: status.clone().map(|s| self.personal(id, s)),
                     },
                 );
             }
@@ -468,6 +645,11 @@ fn backoff(failures: u32, interval: Duration, error: &str) -> Duration {
         delay = delay.max(Duration::from_secs(wait).min(MAX_BACKOFF));
     }
     delay
+}
+
+/// The link the card shows, always built here and never taken from GitHub.
+fn pr_url(repo: &str, number: u64) -> String {
+    format!("https://github.com/{repo}/pull/{number}")
 }
 
 /// What a session shows for its pull request's state.
@@ -560,7 +742,7 @@ fn build(
         _ => None,
     };
     PrStatus {
-        url: format!("https://github.com/{repo}/pull/{number}"),
+        url: pr_url(repo, number),
         repo: repo.to_string(),
         number,
         title: clean(&pr.title, TITLE_CHARS),
@@ -683,6 +865,66 @@ pub(crate) fn check_repo(session: &Session, repo: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_rewound_fork_of_a_bound_session_is_not_bound() {
+        let config = "[models]
+default = \"fake:m\"
+[endpoints.fake]
+base_url = \"http://127.0.0.1:9/v1\"
+[workflow]
+enabled = false
+";
+        let settings = imperium_config::Config::from_layers([
+            imperium_config::Layer::defaults(),
+            imperium_config::Layer::new(
+                imperium_config::Source::User("test".into()),
+                config.parse().unwrap(),
+            ),
+        ])
+        .settings()
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec![
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/owner/repo.git",
+            ],
+        ] {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(folder.path())
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let state = DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        let (session, _) = state
+            .create_session(&folder.path().display().to_string(), None)
+            .unwrap();
+        state.watch(&session, Some(("owner/repo".into(), 7)));
+        let meta = |id: &str| -> Value {
+            let path = imperium_config::Paths::under(home.path())
+                .data_dir()
+                .join("sessions")
+                .join(format!("{id}.meta.json"));
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        };
+        assert_eq!(
+            meta(session.id())["pull_request"]["url"],
+            "https://github.com/owner/repo/pull/7"
+        );
+        let fork = state.fork_session(session.id(), 0, None).unwrap();
+        assert!(meta(&fork).get("pull_request").is_none());
+        let running = state.session(&fork).expect("the fork runs");
+        assert!(state.summary(&running).pull_request_url.is_none());
+        assert!(state.pr_monitor().url_of(session.id()).is_some());
+    }
 
     #[test]
     fn pull_request_urls_are_read_strictly() {

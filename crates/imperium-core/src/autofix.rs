@@ -270,10 +270,6 @@ pub async fn fix_ci(
 /// Marker of the untrusted block; the text inside has it broken.
 const DATA_MARK: &str = "CI-DATA";
 
-/// Makes third-party text safe to quote inside the untrusted block: control, invisible and
-/// direction-changing characters go (newlines and tabs stay only when `multiline`), backticks
-/// become apostrophes so no code fence can be opened or closed, and the block's own marker is
-/// broken in any letter case.
 /// Invisible and direction-changing characters: soft hyphen, Arabic letter mark, Mongolian vowel
 /// separator, zero-width and direction marks, line and paragraph separators, bidi controls,
 /// word joiners and invisible operators, byte order mark, interlinear annotation and tag
@@ -292,6 +288,10 @@ pub(crate) fn is_invisible(c: char) -> bool {
         | '\u{E0000}'..='\u{E007F}')
 }
 
+/// Makes third-party text safe to quote inside the untrusted block: control, invisible and
+/// direction-changing characters go (newlines and tabs stay only when `multiline`), backticks
+/// become apostrophes so no code fence can be opened or closed, and the block's own marker is
+/// broken in any letter case.
 fn neutralise(text: &str, multiline: bool) -> String {
     let mut cleaned: String = text
         .chars()
