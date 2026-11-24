@@ -72,6 +72,35 @@ pub async fn push(worktree: &Path, branch: &str) -> Result<(), String> {
         .map(|_| ())
 }
 
+/// What a push of the worktree's `HEAD` would add to `origin/<branch>`: each changed path with
+/// its `git diff --name-status` letter (a rename counts as a delete and an add).
+pub async fn changes_since_origin(
+    worktree: &Path,
+    branch: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let base = format!("origin/{branch}");
+    let out = git(
+        worktree,
+        &["diff", "--name-status", "--no-renames", "-z", &base, "HEAD"],
+    )
+    .await?;
+    let mut fields = out.split('\0').filter(|field| !field.is_empty());
+    let mut changes = Vec::new();
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
+        changes.push((status.to_string(), path.to_string()));
+    }
+    Ok(changes)
+}
+
+/// How many commits a push of the worktree's `HEAD` would add to `origin/<branch>`.
+pub async fn commits_ahead(worktree: &Path, branch: &str) -> Result<u64, String> {
+    let range = format!("origin/{branch}..HEAD");
+    git(worktree, &["rev-list", "--count", &range])
+        .await?
+        .parse()
+        .map_err(|error| format!("unexpected commit count: {error}"))
+}
+
 /// The commit the worktree is at.
 pub async fn head(worktree: &Path) -> Result<String, String> {
     git(worktree, &["rev-parse", "HEAD"]).await
