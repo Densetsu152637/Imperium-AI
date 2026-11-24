@@ -729,6 +729,62 @@ async fn a_pull_request_a_session_opened_is_bound_to_it_if_it_is_the_origins() {
 }
 
 #[tokio::test]
+async fn a_saved_link_that_is_no_longer_the_origins_is_dropped_on_restore() {
+    let mut world = World::new("").await;
+    let session = world.session();
+    let id = session.id().to_string();
+    world.daemon.watch(&session, Some((REPO.into(), 7)));
+    assert_eq!(world.meta(&id)["pull_request"]["url"], URL);
+    // The remote moves to another repository before the restart.
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(world.folders[0].path())
+        .args([
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/other/repo.git",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    drop(session);
+    let world = world.restart().await;
+    assert_eq!(world.daemon.resume_sessions(), 1);
+    let session = world.daemon.session(&id).expect("the session resumed");
+    assert_eq!(session.status().0, SessionStatus::Idle);
+    assert!(world.daemon.summary(&session).pull_request_url.is_none());
+    assert!(world.meta(&id).get("pull_request").is_none());
+    assert!(world.daemon.pr_monitor().watched().is_empty());
+}
+
+#[tokio::test]
+async fn a_branch_of_a_bound_session_is_not_bound() {
+    let mut world = World::new("").await;
+    let session = world.session();
+    let id = session.id().to_string();
+    world.daemon.watch(&session, Some((REPO.into(), 7)));
+    let mut connection = world.connection();
+    shake(&mut connection).await;
+    let branched = result(
+        call(
+            &mut connection,
+            40,
+            "session.branch",
+            json!({"session_id": id}),
+        )
+        .await,
+    );
+    let branch = branched["session_id"].as_str().unwrap().to_string();
+    assert_ne!(branch, id);
+    assert!(world.meta(&branch).get("pull_request").is_none());
+    let running = world.daemon.session(&branch).expect("the branch runs");
+    assert!(world.daemon.summary(&running).pull_request_url.is_none());
+    // The source keeps its binding.
+    assert_eq!(world.meta(&id)["pull_request"]["url"], URL);
+}
+
+#[tokio::test]
 async fn an_archived_session_keeps_the_link_and_drops_the_binding() {
     let mut world = World::new("").await;
     let session = world.session();
@@ -747,6 +803,14 @@ async fn an_archived_session_keeps_the_link_and_drops_the_binding() {
     let meta = world.meta(&id);
     assert!(meta.get("pull_request").is_none());
     assert_eq!(meta["pull_request_url"], URL);
+    // Switches set afterwards find no binding and write nothing back.
+    assert!(
+        !world
+            .daemon
+            .pr_monitor()
+            .set_switches(&world.daemon, &id, Some(true), Some(true))
+    );
+    assert!(world.meta(&id).get("pull_request").is_none());
 
     drop(session);
     let world = world.restart().await;

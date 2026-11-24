@@ -1207,7 +1207,9 @@ session's record (`<id>.meta.json`, key `pull_request`: the link, the `auto_fix`
 status and on unbind, so a restart brings the session back bound, with its switches and the last
 good status shown at once; the first poll after the restart announces a change only when
 the pull request differs from the saved status. A record without the key (written before this)
-loads as an unbound session, and a record that does not parse is ignored. The switches belong to the binding (`auto_fix` off, `auto_archive_on_close`
+loads as an unbound session, and a record that does not parse is ignored. A restored link is
+checked against the session's `origin` again: one that no longer matches (the record was edited,
+or the remote changed) is dropped from the record and logged. The switches belong to the binding (`auto_fix` off, `auto_archive_on_close`
 as the setting was at bind time) and are inert until stage 7; the archive rule above still reads
 `sessions.auto_archive_on_pr_close`. A pull request opened by `session.review_pull_request` is
 bound to the session that opened it as soon as `gh` reports its link, through the same

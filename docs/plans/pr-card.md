@@ -637,9 +637,12 @@ Each stage is one pull request against `experimental`, with the docs it changes.
     `pull_request` (`{url, auto_fix, auto_archive_on_close, status}`), read leniently (a missing
     key or an unparseable one is no binding), so there is no schema version and no migration.
     `PrMonitor` writes it on bind, unbind, every status change and `set_switches`, and
-    `resume_from_meta` restores it (`PrMonitor::restore`: no announcement, no second origin
-    check, the saved status shown until the first poll; a poll that finds the same status is
-    silent). A binding is per session (`Binding {key, auto_fix, auto_archive_on_close}`); the
+    `resume_from_meta` restores it (`PrMonitor::restore`: no announcement, the saved status shown
+    until the first poll; a poll that finds the same status is silent). Restore runs `check_repo`
+    again and, on a mismatch, unbinds, clears `pull_request` from the record and logs why, so "a
+    binding means the session's own origin" holds after a record edit or `git remote set-url`.
+    The saved switches and status are trusted only because `<data>` is guarded outside tier 0.
+    A binding is per session (`Binding {key, auto_fix, auto_archive_on_close}`); the
     shared cached status stays switch-free and each delivery (`status`, `fresh_status`,
     `refresh`, `pull_requests.changed`) overlays the session's own switches. `set_switches` is
     public for stage 7's `set_monitor`.

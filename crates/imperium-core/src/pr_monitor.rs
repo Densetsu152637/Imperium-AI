@@ -320,8 +320,10 @@ impl PrMonitor {
     }
 
     /// Takes a session's binding back after a restart from what [`Self::save`] wrote. Nothing
-    /// is announced (the session is starting), and the repository is not checked again: the bind
-    /// that made the record did. A record that does not parse is ignored.
+    /// is announced (the session is starting). The repository is checked against the session's
+    /// `origin` again, so a binding always means the session's own repository even after the
+    /// record was edited or the remote changed; a record that fails the check is dropped, with
+    /// its `pull_request` key, and logged. A record that does not parse is ignored.
     pub(crate) fn restore(&self, state: &DaemonState, session: &Session, record: &Value) {
         let Some((repo, number)) = record["url"]
             .as_str()
@@ -329,6 +331,11 @@ impl PrMonitor {
         else {
             return;
         };
+        if let Err(reason) = check_repo(session, &repo) {
+            tracing::warn!(session = %session.id(), %reason, "the saved pull request is not this session's own; it is unbound");
+            state.record_pull_request(session.id(), None);
+            return;
+        }
         let saved = serde_json::from_value::<PrStatus>(record["status"].clone())
             .ok()
             .filter(|s| s.repo.eq_ignore_ascii_case(&repo) && s.number == number);
@@ -858,6 +865,66 @@ pub(crate) fn check_repo(session: &Session, repo: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_rewound_fork_of_a_bound_session_is_not_bound() {
+        let config = "[models]
+default = \"fake:m\"
+[endpoints.fake]
+base_url = \"http://127.0.0.1:9/v1\"
+[workflow]
+enabled = false
+";
+        let settings = imperium_config::Config::from_layers([
+            imperium_config::Layer::defaults(),
+            imperium_config::Layer::new(
+                imperium_config::Source::User("test".into()),
+                config.parse().unwrap(),
+            ),
+        ])
+        .settings()
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec![
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/owner/repo.git",
+            ],
+        ] {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(folder.path())
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let state = DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        let (session, _) = state
+            .create_session(&folder.path().display().to_string(), None)
+            .unwrap();
+        state.watch(&session, Some(("owner/repo".into(), 7)));
+        let meta = |id: &str| -> Value {
+            let path = imperium_config::Paths::under(home.path())
+                .data_dir()
+                .join("sessions")
+                .join(format!("{id}.meta.json"));
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        };
+        assert_eq!(
+            meta(session.id())["pull_request"]["url"],
+            "https://github.com/owner/repo/pull/7"
+        );
+        let fork = state.fork_session(session.id(), 0, None).unwrap();
+        assert!(meta(&fork).get("pull_request").is_none());
+        let running = state.session(&fork).expect("the fork runs");
+        assert!(state.summary(&running).pull_request_url.is_none());
+        assert!(state.pr_monitor().url_of(session.id()).is_some());
+    }
 
     #[test]
     fn pull_request_urls_are_read_strictly() {
