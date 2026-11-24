@@ -411,26 +411,23 @@ fn withheld_reason(state: &DaemonState, dest: &Path) -> Option<String> {
         })
 }
 
-/// `plugins.install`.
-pub(crate) async fn install(
+/// A staged plugin that now sits in `<config>/plugins` with its record.
+struct Placed {
+    name: String,
+    dest: PathBuf,
+    source: InstallSource,
+    /// `name@marketplace`.
+    id: String,
+}
+
+/// Moves a staged plugin into `<config>/plugins` and records it with `origin` and never an
+/// approval. The caller holds the install lock. A failure leaves neither folder nor record.
+fn place(
     state: &DaemonState,
-    params: PluginsInstallParams,
-) -> Result<PluginsInstallResult, String> {
-    let _serial = INSTALLS.lock().await;
-    let staging = Staging::new(state.paths().data_dir())?;
-    let staged = stage(
-        state,
-        &params.id,
-        params.revision.as_deref(),
-        staging.path(),
-    )
-    .await?;
-    if !staged.hash.eq_ignore_ascii_case(params.sha256.trim()) {
-        return Err(format!(
-            "the plugin is not what was inspected (its hash is {}, not {}): inspect it again",
-            staged.hash, params.sha256
-        ));
-    }
+    staged: &Staged,
+    origin: Origin,
+    session_id: Option<&str>,
+) -> Result<Placed, String> {
     let name = check_name(&staged.plugin.name)?;
     let plugins_dir = state.paths().config_dir().join("plugins");
     std::fs::create_dir_all(&plugins_dir)
@@ -458,7 +455,8 @@ pub(crate) async fn install(
         remove_tree(&dest);
         return Err(error);
     }
-    let source = install_source(&staged);
+    let mut source = install_source(staged);
+    source.session_id = session_id.map(str::to_string);
     let id = format!("{name}@{}", staged.located.marketplace);
     let recorded = extension_install::write_source(&dest, &source).and_then(|()| {
         plugin_records::add_record(
@@ -466,7 +464,7 @@ pub(crate) async fn install(
             &dest,
             Record {
                 name: name.clone(),
-                origin: Origin::Marketplace,
+                origin,
                 id: Some(id.clone()),
                 source: Some(staged.source.clone()),
                 commit: staged.commit.clone(),
@@ -480,6 +478,40 @@ pub(crate) async fn install(
         remove_tree(&dest);
         return Err(error);
     }
+    Ok(Placed {
+        name,
+        dest,
+        source,
+        id,
+    })
+}
+
+/// `plugins.install`.
+pub(crate) async fn install(
+    state: &DaemonState,
+    params: PluginsInstallParams,
+) -> Result<PluginsInstallResult, String> {
+    let _serial = INSTALLS.lock().await;
+    let staging = Staging::new(state.paths().data_dir())?;
+    let staged = stage(
+        state,
+        &params.id,
+        params.revision.as_deref(),
+        staging.path(),
+    )
+    .await?;
+    if !staged.hash.eq_ignore_ascii_case(params.sha256.trim()) {
+        return Err(format!(
+            "the plugin is not what was inspected (its hash is {}, not {}): inspect it again",
+            staged.hash, params.sha256
+        ));
+    }
+    let Placed {
+        name,
+        dest,
+        source,
+        id,
+    } = place(state, &staged, Origin::Marketplace, None)?;
     crate::config_changes::plugin_installed(state, &id, &dest, &source, &staged.hash);
     let mut notes = staged.notes.clone();
     if params.approve.is_some() {
@@ -497,6 +529,45 @@ pub(crate) async fn install(
         path: dest.display().to_string(),
         withheld: reason.is_some(),
         reason,
+        notes,
+    })
+}
+
+/// `install_extension` with `kind = "plugin"` and `source = "name@marketplace"`: an agent's install
+/// from a marketplace the user added. Nothing is shown to a person first, so the install is
+/// recorded with `origin = agent` and no approval, and a plugin with hooks or servers is withheld
+/// (and so is not run) until the user approves it in the desktop app, exactly as for an agent's
+/// install from a git URL.
+pub(crate) async fn install_for_agent(
+    state: &DaemonState,
+    id: &str,
+    revision: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<extension_install::Installed, String> {
+    // A record can be written only after the first-start migration.
+    state.migrate_plugins();
+    plugin_records::writable(state.paths())?;
+    let _serial = INSTALLS.lock().await;
+    let staging = Staging::new(state.paths().data_dir())?;
+    let staged = stage(state, id, revision, staging.path()).await?;
+    let Placed {
+        name, dest, source, ..
+    } = place(state, &staged, Origin::Agent, session_id)?;
+    let mut notes = staged.notes.clone();
+    let withheld = withheld_reason(state, &dest);
+    notes.push(match &withheld {
+        Some(_) => "It has hooks or MCP servers, so it is installed withheld and unapproved:                     activate_plugin cannot start it, and only the user can approve it, in the                     Imperium desktop app."
+            .into(),
+        None => "New sessions list its skills and commands; it has no hooks or servers.".into(),
+    });
+    Ok(extension_install::Installed {
+        kind: ExtensionKind::Plugin,
+        name,
+        path: dest,
+        source,
+        // Withheld by the gate, not by `extensions.disabled_plugins`: nothing to take off on undo.
+        disabled: false,
+        sha256: Some(staged.hash),
         notes,
     })
 }

@@ -136,6 +136,10 @@ a git hook, and a plugin's own files are not fetched at all.
   ever cloned (no commit, no count). `built_in` is true for the official name and its pinned
   source only; the pinned source under another name is an ordinary marketplace. A folder is
   read where it lies, so its count and problems are current.
+- Source types: `path` (a folder of the marketplace), `github` and `url` (a whole repository) install;
+  anything else is listed as unsupported and cannot be installed: `git-subdir`, `command`, `npm`, and a
+  `url` with a `path`. In the official marketplace on 2026-11-24 that is 98 `git-subdir`, 4 `url` with
+  `path` and 1 `command` of 317 entries ([plan](plans/plugin-marketplace.md#remaining-gaps)).
 - `plugins.marketplace_refresh {name?}` fetches again (every enabled marketplace without a
   name) and reports the commit before and after and the plugins **added, removed and changed**
   (an entry changed when its canonical JSON did). One that cannot be fetched keeps its last
@@ -192,7 +196,7 @@ load"), and its hook and server counts; folders that hold no plugin are listed a
 `plugins.uninstall {name}` takes a folder name, a recorded name or `name@marketplace` (letter case
 does not matter), moves the folder to `<data>/config-trash/` and removes its record, and journals
 a `config.changes` entry holding the folder's content hash and the record. Its secrets are not
-touched (stage 5). An agent's `install_extension` of a plugin is recorded too (`origin = agent`,
+touched (stage 5). An agent's `install_extension` of a plugin, from a git URL, a folder or `name@marketplace`, is recorded too (`origin = agent`,
 no approval, so one with hooks or servers stays withheld whatever the user turns on); the daemon
 runs the first-start migration first if it has not, and refuses the install if the record file
 cannot be written.
@@ -511,7 +515,7 @@ session's file tools.
 | Tool | Does | Without a rule |
 | --- | --- | --- |
 | `set_model_card(model, card)` | Writes a model's card (a model table id or a local model id; `null` clears it) to the app settings file, as the model dialog does, and applies it at once ([10](10-configuration.md#model-cards)) | Runs |
-| `install_extension(kind, source, revision?, path?)` | Installs a `skill`, `plugin`, or `mod` from a git URL (`https://`, `ssh://`, `git@host:path`, `file://`) at a branch, tag, or commit, or from a folder on this machine (relative to the session's folder); `path` picks a folder inside the source | Runs; the tool notice (and an approval, when a rule asks) names the source |
+| `install_extension(kind, source, revision?, path?)` | Installs a `skill`, `plugin`, or `mod` from a git URL (`https://`, `ssh://`, `git@host:path`, `file://`) at a branch, tag, or commit, or from a folder on this machine (relative to the session's folder); `path` picks a folder inside the source. A `plugin` may instead be `name@marketplace`, a plugin of a [marketplace](#plugin-marketplaces) the user added (see "A marketplace plugin by name", below) | Runs; the tool notice (and an approval, when a rule asks) names the source |
 | `uninstall_extension(kind, name)` | Moves an installed skill, plugin, or mod out of the config folder | Runs for something an agent installed; asks otherwise |
 
 Each tool is its own permission key, so `[permissions]` rules (global or per environment) allow,
@@ -534,14 +538,32 @@ or `<config>/mods/<id>`, never over an existing one, and no install script, buil
 After that, the usual rules apply: skills are listed in the index of new sessions and load when
 an agent first uses them ([lazy loading](#lazy-skills-and-plugins-implemented)); a mod an agent
 installed is opt-in in Settings → Mods, like the bundled ones. Imperium has no extension
-registry yet, so a bare name is refused.
+registry yet, so a bare name is refused (`name@marketplace` is not a bare name: see below).
+
+**A marketplace plugin by name.** `install_extension` with `kind = "plugin"` and `source =
+"name@marketplace"` (a name, an `@`, a marketplace the user added, the official one included;
+when a marketplace of that name is added it wins over a folder of that spelling in the session's
+folder, which `./x@y` reaches instead; the result text says which was used; `path` is refused) installs a plugin of that
+marketplace the way `plugins.install` does: it fetches the plugin into a staging folder, writes
+its marketplace entry beside it, hashes it, and installs it exclusively into
+`<config>/plugins/<name>`. Nothing runs, and no person saw its trust prompt, so the record is
+`origin = agent` with the marketplace's commit and **no approval**: a plugin with hooks or MCP
+servers is **withheld and unapproved** until the user approves it in the desktop app (the gate
+does this; the install does not add it to `extensions.disabled_plugins`, so there is nothing
+for `config.undo` to take off), and one with neither loads at once. The `revision` argument
+applies to a plugin in its own git repository, as for `plugins.inspect`. The change is
+journalled with the session, and the agent is told when the plugin is withheld. An agent cannot
+approve: that needs the desktop app's native dialog and the OS presence check ([who may
+approve](plans/plugin-marketplace.md#who-may-approve)).
 
 **A plugin with hooks or MCP servers installs turned off.** Its hooks are active from a session's
 start, and an agent's `activate_plugin` would start its servers: downloaded code running as the
 user with no approval, which is the same as the install running it. So the install adds the
 plugin to `extensions.disabled_plugins` and tells the agent so. A disabled plugin is not offered
 to sessions, `activate_plugin` cannot start it, and nothing in it runs until the user turns it on
-in Connectors (a setting the daemon reads at start, so it applies after a restart), where its
+in Connectors (a setting the daemon reads at start, so it applies after a restart), and, since the
+load-time gate, is withheld until it is approved in the desktop app (a plugin installed from a git URL
+or folder cannot be approved there yet, roadmap item 60), where its
 source (URL, commit, and the installing session) is shown. A plugin
 with neither (skills and commands only) is listed at once. Agent-installed plugins also never
 read the daemon's environment through `${VAR}` in `.mcp.json` (see [Compatibility](#compatibility-with-existing-formats)),

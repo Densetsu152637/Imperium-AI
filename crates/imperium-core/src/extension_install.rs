@@ -8,7 +8,8 @@
 //! refuses the `ext::` transport; copies skip symbolic links and `.git`. Skills and plugins are
 //! then listed for agents and load on first use; a plugin with hooks or MCP servers is added to
 //! `extensions.disabled_plugins` so neither its hooks nor its servers (which `activate_plugin`
-//! would start unasked) run until the user turns it on in Connectors, and a mod installed by an
+//! would start unasked) run until the plugin is approved in the desktop app (a plugin installed from a git URL or folder
+//! cannot be approved there yet, roadmap item 60), and a mod installed by an
 //! agent shows only after the user turns it on in the desktop app. Whatever the user turns on,
 //! `${VAR}` in an agent-installed plugin's `.mcp.json` never reads the daemon's environment
 //! (see `imperium_extensions::plugins`).
@@ -118,6 +119,20 @@ impl Source {
              extension registry yet; give a git URL or a local folder)"
         ))
     }
+}
+
+/// `source` as a marketplace plugin id (`name@marketplace`), when it is one: not a URL, not
+/// scp-like (no `:`) and no path separator, so `./x@y` is a path. Whether such a marketplace is
+/// added, and so whether it wins over a folder of that spelling, is the caller's to decide.
+pub(crate) fn marketplace_id(source: &str) -> Option<String> {
+    let source = source.trim();
+    let (name, market) = source.rsplit_once('@')?;
+    let plain = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('-')
+            && !part.contains(|c: char| c.is_whitespace() || matches!(c, '/' | '\\' | ':' | '~'))
+    };
+    (plain(name) && plain(market) && !name.contains('@')).then(|| source.to_string())
 }
 
 /// `user@host:path` (git's scp-like syntax), but not a Windows drive (`C:\...`).
@@ -268,7 +283,8 @@ async fn install_in(
         newly_disabled = !was_listed;
         notes.push(format!(
             "It has {has}, so it is installed turned off and activate_plugin cannot start it; \
-             only the user can turn it on, in Connectors."
+             it is withheld until the user approves it in the Imperium desktop app (a plugin \
+             installed from a git URL or folder cannot be approved there yet, roadmap item 60)."
         ));
     } else {
         move_tree(&out, &dest)?;
@@ -879,6 +895,31 @@ mod tests {
         );
         for bad in ["ext::sh -c x", "-u", "some-registry-name", "ftp://x/y", ""] {
             assert!(Source::parse(bad, base.path()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_marketplace_plugin_id_is_told_from_a_url_a_path_and_a_folder() {
+        let id = |source: &str| marketplace_id(source);
+        assert_eq!(id("y@fixture").as_deref(), Some("y@fixture"));
+        assert_eq!(id("  y@fixture ").as_deref(), Some("y@fixture"));
+        // Written as a path, it is a folder.
+        assert_eq!(id("./x@fixture"), None);
+        assert_eq!(id("/x@fixture"), None);
+        for other in [
+            "git@github.com:a/b.git",
+            "https://user@host/a",
+            "a/b@c",
+            "~/b@c",
+            "C:\\x@y",
+            "-x@y",
+            "@fixture",
+            "x@",
+            "a@b@c",
+            "x @y",
+            "plain",
+        ] {
+            assert_eq!(id(other), None, "{other}");
         }
     }
 
