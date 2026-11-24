@@ -64,7 +64,8 @@ builds the release daemon, CLI and desktop app.
   app's own `plugin_approve` from its main window. It answers the native dialog by pressing its
   buttons through AT-SPI, reads the dialog's text, and answers polkit through `pkttyagent`
   registered for the daemon's process, in a terminal of its own. Scenarios: approve with polkit
-  passing (`counted`, the dialog and polkit's prompt naming the plugin); *Cancel* on page 2 of a
+  passing (`counted`; the dialog names the plugin and shows the hook and hash, and polkit's
+  prompt is the action's message); *Cancel* on page 2 of a
   plugin with 91 hooks (pages titled "page i of n", nothing installed); polkit refusing a wrong
   password (installed, withheld, nothing recorded); no authentication agent (`dialog-only`); the
   action file removed while an agent runs (`dialog-only`, polkit never asked); and the app started

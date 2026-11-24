@@ -331,7 +331,9 @@ check ends, off the connection's task. Per OS:
 - Linux: polkit's `CheckAuthorization` over the system bus with `AllowUserInteraction`, for the
   action `org.imperium.plugins.approve` (`auth_self` for any, inactive and active sessions, never
   `_keep`, so every approval asks), with the daemon's own process (pid, start time, uid) as the
-  subject and the plugin id in the prompt (`$(plugin)`). The `.deb` and `.rpm` install the action
+  subject. No details are sent: polkit 0.121 and later refuses details from a caller that is not
+  root or the action's owner, so polkit's prompt cannot name the plugin (the app's dialog just
+  before does). The `.deb` and `.rpm` install the action
   file under `/usr/share/polkit-1/actions` (`apps/desktop/src-tauri/linux/`). Unavailable: no
   system bus or polkit, the action not registered (an AppImage or a source build), or no
   authentication agent for the daemon's process (polkit answers "challenge"), as on a headless

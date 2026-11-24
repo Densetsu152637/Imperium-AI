@@ -4,6 +4,10 @@
 //! install the action file under `/usr/share/polkit-1/actions`; the session's polkit
 //! authentication agent draws the prompt.
 //!
+//! No details go with the request: polkit (0.121 and later) refuses `CheckAuthorization` details
+//! from a caller that is not root or the action's owner, so the prompt cannot name the plugin; the
+//! app's dialog, shown just before, does.
+//!
 //! Unavailable (so the approval is `dialog-only`): no system bus or polkit, the action file not
 //! installed (an AppImage, a source build), or no authentication agent for this process
 //! (headless). Every other "no" is a refusal.
@@ -43,12 +47,13 @@ type ActionDescription = (
 /// What `CheckAuthorization` answers: authorized, challenge, details.
 type AuthorizationResult = (bool, bool, HashMap<String, String>);
 
-/// Asks polkit to authenticate the user for [`ACTION`], naming `plugin` in the prompt.
+/// Asks polkit to authenticate the user for [`ACTION`] before `plugin` is approved.
 pub(super) fn check(plugin: &str, timeout: Duration) -> Presence {
-    check_action(ACTION, plugin, timeout)
+    tracing::info!("asking polkit to authenticate the user before approving {plugin}");
+    check_action(ACTION, timeout)
 }
 
-fn check_action(action: &str, plugin: &str, timeout: Duration) -> Presence {
+fn check_action(action: &str, timeout: Duration) -> Presence {
     let bus = match Connection::system() {
         Ok(bus) => bus,
         Err(error) => return Presence::Unavailable(format!("no system bus: {error}")),
@@ -69,7 +74,7 @@ fn check_action(action: &str, plugin: &str, timeout: Duration) -> Presence {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).expect("the OS random source is available");
     let cancellation = format!("imperium-{}", hex(&bytes));
-    let details = HashMap::from([("plugin".to_string(), plugin.to_string())]);
+    let details: HashMap<String, String> = HashMap::new();
     let (sender, answer) = mpsc::channel();
     let asking = bus.clone();
     let body = (
@@ -180,11 +185,7 @@ mod tests {
     /// never passed; so is a machine without polkit or a system bus. Nothing prompts.
     #[test]
     fn an_action_polkit_does_not_know_is_unavailable() {
-        let answer = check_action(
-            "org.imperium.test.never-installed",
-            "p@m",
-            Duration::from_secs(10),
-        );
+        let answer = check_action("org.imperium.test.never-installed", Duration::from_secs(10));
         println!("polkit check for an unknown action: {answer:?}");
         assert!(matches!(answer, Presence::Unavailable(_)), "{answer:?}");
     }

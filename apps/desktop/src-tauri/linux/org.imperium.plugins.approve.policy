@@ -13,7 +13,7 @@
   <vendor_url>https://github.com/Densetsu152637/Imperium-AI</vendor_url>
   <action id="org.imperium.plugins.approve">
     <description>Approve an Imperium plugin</description>
-    <message>Authentication is required to approve the Imperium plugin $(plugin), so its hooks and servers can run</message>
+    <message>Authentication is required to approve the Imperium plugin shown in Imperium's dialog, so its hooks and servers can run</message>
     <defaults>
       <allow_any>auth_self</allow_any>
       <allow_inactive>auth_self</allow_inactive>

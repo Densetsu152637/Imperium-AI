@@ -477,8 +477,8 @@ def main():
             prompt = agent.text()
             check("org.imperium.plugins.approve" in prompt, f"polkit asked nothing: {prompt}")
             check(
-                f"alpha@{MARKET_NAME}" in prompt,
-                f"polkit's prompt does not name the plugin: {prompt}",
+                "approve the Imperium plugin" in prompt,
+                f"polkit's prompt is not the action's message: {prompt}",
             )
             listed = plugin_list()
             check(listed.get("alpha") == ("on", "counted"), f"plugin list: {listed}")
