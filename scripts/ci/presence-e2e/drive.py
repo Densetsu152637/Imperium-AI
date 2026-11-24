@@ -35,7 +35,7 @@ RELEASE = ROOT / "target" / "release"
 DAEMON = RELEASE / "imperium-core"
 CLI = RELEASE / "imperium"
 APP = RELEASE / "imperium-desktop"
-HOME = LOGS / "home"
+HOME = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "presence-e2e-home"
 MARKET = LOGS / "market"
 MARKET_NAME = "e2e"
 DRIVER = "http://127.0.0.1:4444"
@@ -292,6 +292,8 @@ class Driver:
             log(f"plugin_approve({name!r}, {action!r}) answered {value['ok']}")
             return value["ok"]
 
+        wait.thread = thread
+        wait.result = result
         return wait
 
     def close(self):
@@ -333,10 +335,42 @@ def dialogs():
     return found
 
 
-def next_dialog(seen, limit=60):
-    """Waits for a dialog whose title was not `seen` yet; its title, text and buttons."""
+def describe_screen(name):
+    """What is on the display, for a failure: the accessibility tree's top levels, the X window
+    tree and a screenshot."""
+    lines = []
+    desktop = Atspi.get_desktop(0)
+    desktop.clear_cache()
+    for index in range(desktop.get_child_count()):
+        app = desktop.get_child_at_index(index)
+        if app is None:
+            continue
+        lines.append(f"app {app.get_name()!r}")
+        for position in range(app.get_child_count()):
+            window = app.get_child_at_index(position)
+            if window is not None:
+                lines.append(
+                    f"  {window.get_role_name()} {window.get_name()!r} "
+                    f"children={window.get_child_count()}"
+                )
+    (LOGS / f"atspi-{name}.txt").write_text("
+".join(lines) + "
+")
+    log("accessibility tree:
+" + "
+".join(lines))
+    with open(LOGS / f"xwininfo-{name}.txt", "w") as out:
+        subprocess.run(["xwininfo", "-root", "-tree"], stdout=out, stderr=subprocess.STDOUT)
+    subprocess.run(["import", "-window", "root", str(LOGS / f"screen-{name}.png")], check=False)
+
+
+def next_dialog(seen, call, limit=60):
+    """Waits for a dialog whose title was not `seen` yet; its title, text and buttons. Fails at
+    once when the `plugin_approve` call answered instead."""
     deadline = time.time() + limit
     while time.time() < deadline:
+        if not call.thread.is_alive():
+            raise Failed(f"plugin_approve answered before a dialog was seen: {call.result}")
         for dialog in dialogs():
             title = dialog.get_name()
             if title in seen:
@@ -355,6 +389,7 @@ def next_dialog(seen, limit=60):
             if buttons:
                 return title, text, buttons
         time.sleep(0.5)
+    describe_screen(f"no-dialog-{len(seen)}")
     raise Failed(f"no new approval dialog appeared (seen: {sorted(seen)})")
 
 
@@ -364,13 +399,13 @@ def press(button):
     action.do_action(0)
 
 
-def answer_pages(answers):
+def answer_pages(answers, call):
     """Answers successive dialog pages with `answers` ("Next", "Approve" or "Cancel"); the pages'
     titles and texts."""
     seen = set()
     pages = []
     for answer in answers:
-        title, text, buttons = next_dialog(seen)
+        title, text, buttons = next_dialog(seen, call)
         seen.add(title)
         log(f"dialog page {title!r} offers {sorted(buttons)}; pressing {answer}")
         pages.append((title, text, sorted(buttons)))
@@ -428,7 +463,7 @@ def main():
             nonlocal agent
             agent = Agent(daemon.pid, PASSWORD, "counted")
             wait = driver.start_approve(f"alpha@{MARKET_NAME}", "install")
-            pages = answer_pages(["Approve"])
+            pages = answer_pages(["Approve"], wait)
             title, text, buttons = pages[0]
             check(title == DIALOG_TITLE, f"one page expected, got {title!r}")
             check(f"alpha@{MARKET_NAME}" in text, f"the dialog does not name the plugin: {text}")
@@ -450,7 +485,7 @@ def main():
 
         def cancel_on_page_two():
             wait = driver.start_approve(f"big@{MARKET_NAME}", "install")
-            pages = answer_pages(["Next", "Cancel"])
+            pages = answer_pages(["Next", "Cancel"], wait)
             first, second = pages[0][0], pages[1][0]
             check(" - page 1 of " in first, f"first page title {first!r}")
             check(" - page 2 of " in second, f"second page title {second!r}")
@@ -468,7 +503,7 @@ def main():
             nonlocal agent
             agent = Agent(daemon.pid, "not-the-password", "refused")
             wait = driver.start_approve(f"gamma@{MARKET_NAME}", "install")
-            answer_pages(["Approve"])
+            answer_pages(["Approve"], wait)
             answer = wait()
             check(not answer["approved"] and answer["installed"], f"{answer}")
             check("presence check did not pass" in (answer["reason"] or ""), f"{answer}")
@@ -480,7 +515,7 @@ def main():
 
         def no_agent():
             wait = driver.start_approve(f"delta@{MARKET_NAME}", "install")
-            answer_pages(["Approve"])
+            answer_pages(["Approve"], wait)
             answer = wait()
             check(answer["approved"] and answer["kind"] == "dialog-only", f"{answer}")
             listed = plugin_list()
@@ -493,7 +528,7 @@ def main():
             # dialog-only.
             agent = Agent(daemon.pid, PASSWORD, "no-action-file")
             wait = driver.start_approve(f"epsilon@{MARKET_NAME}", "install")
-            answer_pages(["Approve"])
+            answer_pages(["Approve"], wait)
             answer = wait()
             check(answer["approved"] and answer["kind"] == "dialog-only", f"{answer}")
             check("org.imperium.plugins.approve" not in agent.text(), "polkit was asked")

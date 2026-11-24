@@ -46,6 +46,7 @@ jobs:
         run: >-
           bash scripts/ci/install-linux-deps.sh
           xvfb at-spi2-core python3-gi gir1.2-atspi-2.0 webkit2gtk-driver polkitd pkexec
+          x11-utils imagemagick
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: presence-e2e
