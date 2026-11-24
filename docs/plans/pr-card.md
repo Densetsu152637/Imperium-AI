@@ -83,8 +83,12 @@ Recorded from the root's answers to this plan's first open questions (2026-11-24
 - **D7. `gh` in a session's shell.** The per-environment `github.session_gh` setting exists, off
   by default, as described in the threat model. Reply approvals may be answered from a paired
   phone like push approvals. The collaborator-permission cache lasts 5 minutes.
-- **D8. Wake-turn edits.** `write_file` and `edit_file` are not pre-approved in a wake turn
-  (matching #267's `ask` mode for Fix CI).
+- **D8. Wake-turn edits.** `write_file` and `edit_file` are not pre-approved in a wake turn, and
+  nothing else is. #267 runs Fix CI in `ask` mode **with** `write_file` and `edit_file`
+  pre-approved, so wake turns are deliberately **stricter** than Fix CI. Fix CI keeps its
+  pre-approved edits even after stage 8 moves it onto the wake path, because its worktree
+  belongs to the daemon (nobody works in it) and its push is gated on the measured
+  `origin/<branch>..HEAD` diff.
 
 ## Current state (found on `experimental` at `7518405a`)
 
@@ -194,8 +198,9 @@ the PR touches.
      during the turn. Deny rules and the safety floor still apply. The result: **every file
      write, edit, command and MCP, browser or network tool call asks**; plain reads (glob, grep,
      read_file) run as they do in `ask` mode today. The wake pre-approves nothing, and in
-     particular `write_file` and `edit_file` are **not** pre-approved in a wake turn, which matches
-     #267 running Fix CI in `ask` mode. (Pre-approving edits inside the PR worktree would be
+     particular `write_file` and `edit_file` are **not** pre-approved in a wake turn. That is
+     stricter than #267's Fix CI, which runs in `ask` mode with those two pre-approved (D8).
+     (Pre-approving edits inside the PR worktree would be
      acceptable only together with the N2 checks below, and this plan does not do it.) The
      session's own mode and allowances come back when the turn ends, on error and on cancel.
    - **The owning checkout is checked before a wake (N2).** The daemon wakes the owning session
@@ -206,6 +211,12 @@ the PR touches.
      hooks), are computed against `origin/<branch>..HEAD` with #267's helpers
      `changes_since_origin`, `commits_ahead`, `push_approval` and `ci_config_paths`, so the user
      sees everything that would leave the machine, not only what the wake changed.
+   - **Untrusted text stays in the history.** The capped turn ends, but the comment text stays in
+     the session's history, and the user's **later turns are not capped**: a later prompt runs
+     under the session's own mode and allowances with that text in context. The mitigation is
+     visibility, not a second cap: the card shows "this session handled untrusted comment text"
+     until the user acknowledges it (stage 7), and the wake turn's own work is reviewed at the
+     push and reply approvals.
    - No agent tool changes auto-merge, auto-fix, approvals or config; those are user-surface
      methods only (item 2).
    - The daemon, not the model, commits and pushes. A push goes through the existing approval
@@ -285,9 +296,9 @@ through the same approvals path as a push approval; it cannot enable auto-merge.
 | `pull_requests.changed` (notification) | 3 | `{session_id, status}` on any change, bind and unbind |
 | `pull_requests.auto_merge_challenge` | 6 | `{session_id, url, head_sha, merge_method}` → `{challenge, expires}`; desktop app on the local socket only |
 | `pull_requests.set_auto_merge` | 6 | `{session_id, url, head_sha, enabled, merge_method?, challenge?}` → `PrStatus`; `enabled: true` needs the challenge; `enabled: false` does not and any local caller may send it |
-| `pull_requests.set_monitor` | 7 | `{session_id, url, auto_fix?, auto_archive_on_close?}`; `address_comments` is the same switch as `auto_fix`; refused for a PR the account did not open |
+| `pull_requests.set_monitor` | 7 | `{session_id, url, auto_fix?, auto_archive_on_close?, ack_untrusted?}`; `address_comments` is the same switch as `auto_fix`; refused for a PR the account did not open |
 | `approvals.respond` | 8 | gains an optional `text`: the user's edited reply, posted instead of the proposed one; no new method |
-| `PrStatus` | 3 | `{url, repo, number, title, state, draft, head_sha, base, branch, checks: {passed, failed, pending, failing_names}, review (approved, changes_requested, review_required, none), mergeable (mergeable, conflicting, unknown), merge_state, allowed_methods, auto_fix, auto_merge: {enabled, method?, reason_unavailable?}, auto_archive_on_close, updated_at, error?}` |
+| `PrStatus` | 3 | `{url, repo, number, title, state, draft, head_sha, base, branch, checks: {passed, failed, pending, failing_names}, review (approved, changes_requested, review_required, none), mergeable (mergeable, conflicting, unknown), merge_state, allowed_methods, auto_fix, auto_merge: {enabled, method?, reason_unavailable?}, auto_archive_on_close, untrusted_handled (stage 7), updated_at, error?}` |
 | `autofix.event` | 7 | gains `trigger` (`ci`, `review`, `conflict`) and `comment_ids` |
 | `SessionInfo.pull_request_url` | 4 | a new optional field; the existing `repo#n` watch string keeps its format |
 
@@ -419,8 +430,8 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   denies `gh`'s config folder by default and not with the setting; the sentinel token is absent
   from the journal, notifications and prompts of an auto-fix run. The tests claim nothing about
   tier 0: none asserts that `gh auth token` fails in a tier-0 shell.
-- Risks: users whose only credential is `gh`'s login in the child's config folder lose `gh` inside
-  their own sessions' shells unless they set `github.session_gh`; docs state it.
+- Risks: users whose only credential is `gh`'s login in the child's config folder may lose `gh`
+  where the OS sandbox tier applies, unless they set `github.session_gh`; docs state it.
 - Status: pending
 - Outcome: -
 - Handoff notes: keep this PR free of new behaviour so a regression bisects to it alone.
@@ -544,6 +555,9 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   (d) Daemon-side commit with the existing trailer; a review-triggered push asks even with
   `push = "auto"`; `autofix.event` gains `trigger` and `comment_ids`.
   (e) Attempt counts (every wake counts) and cursors persist across restarts.
+  (f) The card shows "this session handled untrusted comment text" (a `PrStatus` field,
+  `untrusted_handled`) after any wake, until the user acknowledges it (`ack_untrusted` in
+  `pull_requests.set_monitor`).
 - Depends on: stage 6 and pull request #267.
 - Owned paths: `crates/imperium-core/src/autofix.rs` (split into `autofix/ci.rs`, `review.rs`),
   the permission-mode code in `crates/imperium-core/src/permissions.rs` (the cap only),
@@ -556,7 +570,9 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   envelope and the system note; **a session with `run_command` allowed (and one in `full access`
   and one in `auto`) still asks for the command when woken, and gets its mode back afterwards;
   a session with a user-layer and an environment-layer allow rule for `run_command` still asks;
-  a `plan`-mode session stays in plan mode; `write_file` and `edit_file` ask; a dirty owning
+  a `plan`-mode session stays in plan mode; `write_file` and `edit_file` ask; after a wake the
+  card flag `untrusted_handled` is set and stays until acknowledged, and a later user turn is not
+  capped; a dirty owning
   checkout, one on another branch, and one behind or diverged from `origin/<branch>` each fall
   back to D5 (a new unattended session, a notification) and push nothing from the owning
   checkout**; the approval diff covers `origin/<branch>..HEAD` and flags `ci_config_paths`;
@@ -582,8 +598,11 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   exact text (`github.autofix.comment = "ask"`, the default; `"auto"` posts without asking),
   defanged, footer attributed, capped at `comment_replies_per_hour` per PR; the approval shows the
   text and allows an edit.
-  (b) Fix CI moves onto the same wake path, capped mode and approval flow (its log envelope
-  already comes from #267), and drops its pre-approved `run_command`.
+  (b) Fix CI moves onto the same wake path and approval flow (its log envelope already comes
+  from #267). It is **not** moved onto the capped wake mode: it keeps `ask` mode with
+  `write_file` and `edit_file` pre-approved, as #267 has it (D8), because its worktree belongs to
+  the daemon and its push is gated on the measured `origin/<branch>..HEAD` diff; it keeps
+  `run_command` asking. Wake turns of a user's own session stay stricter than Fix CI.
   (c) `github.autofix.budget_usd_per_day`, built on the existing budgets crate with a scope for
   auto-fix wakes, stopping wakes (with an `autofix.event` `stopped`) when spent.
   (d) The **injection corpus test**.
