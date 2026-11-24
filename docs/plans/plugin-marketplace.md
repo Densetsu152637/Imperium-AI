@@ -1531,9 +1531,31 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   (presence prompt), enable, disable for one environment, update (withheld until approved again),
   uninstall, undo.
 - Risks: none beyond stage 8's.
-- Status: pending
-- Outcome:
-- Handoff notes: none yet.
+- Status: done
+- Outcome: `apps/desktop/src/plugins/` gained `TrustView.tsx`, `SecretsForm.tsx` and `trust.ts`, and
+  `InstalledView.tsx` now acts: on/off *For you* or *In* the selected environment, *Approve*, *Update*,
+  *Secrets*, *Uninstall* (opens on Cancel; "also delete saved secrets") with *Undo*; Browse's detail has *Install…*;
+  Connectors' rows say *Needs approval* for a withheld plugin. No protocol change. *Approve* is
+  `invoke("plugin_approve", {name, action})` only; `test/pluginsTrust.test.ts` scans `src/` for the daemon's
+  approval method names, and the app's Rust scan test (`plugin_approval.rs`) now also looks for
+  `approval_challenge` and `PluginsApprove`. Tests: every hook and server of a mocked preview listed with its variable
+  names and launcher flags, the diff of an update (by digest, then by line), the installed version read at its own
+  commit, the command's arguments, the outcome texts, the platform reason, no secret read back, and the allow-list of
+  daemon methods now including install, update, set_enabled, uninstall, config.undo and the secret calls.
+  Choices: the update diff reads the installed version with `plugins.inspect` at its recorded commit and compares
+  lines as text (the previews show the final plugin folder, so a path never makes lines differ), and uses the run digest
+  to say "unchanged" (but when the content hash differs it warns instead: the digest covers command lines, URLs and the names
+  of variables and headers, not the scripts they run or the values of a server's variables and headers; a reorder alone says
+  so); a plugin with no marketplace id (pre-existing or user) cannot be previewed, so its row says so
+  instead of offering *Approve*; the platform reason is Windows by user agent, plus the daemon's own "no approval
+  counts" wording after an answer; the trust view and uninstall notice are in the window, not a separate dialog; an
+  install from the window is for the user, never an environment; the scope chips appear only with a selected
+  environment.
+- Handoff notes: the by-hand check on a signed macOS release candidate and the automated Linux scenario are
+  recorded under the e2e pull request. A folder that did not come from a marketplace still cannot be approved
+  from the window (the daemon has no preview for a folder; owned by [item 60](../12-roadmap.md#next-in-order), not
+  stage 11, whose scope is `install_extension`, docs and close-out); a real `update_available` flag would still replace
+  stage 9's proxy.
 
 ## Stage 11: Agents, docs and close-out
 

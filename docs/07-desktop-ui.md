@@ -1038,15 +1038,14 @@ Plugins window.
 Plugins, or *Manage plugins* in Connectors) is a separate window from Connectors, whose own Installed and Browse
 are for MCP servers. It is the same shared `Dialog` with `Tabs` and a search box, the Connectors cards
 (`.card.interactive`), `--row-h` rows, `Badge`, `Notice`, `EmptyState` and `LoadingState`; its few own rules are
-in `styles/plugins.css`. Escape steps back from a plugin's detail, then closes the window. It installs, enables
-and approves nothing; the install flow is [stage 10 of the marketplace plan](plans/plugin-marketplace.md).
+in `styles/plugins.css`. Escape steps back from the trust view or a plugin's detail, then closes the window.
 
 - **Browse** (the default): cards for what the enabled marketplaces list (`plugins.browse`), with name,
   marketplace, a three-line description, category, component counts (skills, commands, agents, hooks, servers, when
   the marketplace says), and *Installed* or *Update available*. Chips filter by marketplace (when more than one is
   on) and by category; the search matches name, id, description, category, marketplace, author, keywords and tags. A card
   opens the detail: the facts, the source (an external source is shown as its kind and address), the components, and
-  a note that installing is not available yet. *Installed* comes from `plugins.list` for the selected environment;
+  *Install…* (or *Review update…* for one already installed), which opens the trust view. *Installed* comes from `plugins.list` for the selected environment;
   the daemon has no update flag, so *Update available* means the marketplace's commit differs from the one a
   plugin from the marketplace's own repository was installed at, or the last refresh in this window listed it as changed.
 - **Suggested by this project:** above the cards, the selected environment's offers (`plugins.suggestions`): marketplaces
@@ -1060,10 +1059,44 @@ and approves nothing; the install flow is [stage 10 of the marketplace plan](pla
   (removing it turns it off, and a turned-off one has *Turn on*, which adds its source again), each marketplace's source, commit, plugin count and last refresh, refresh per row and
   *Refresh all* with a one-line result each (added, removed, changed, or the error), remove with a confirmation, and
   the problems a marketplace reported.
-- **Installed:** the plugins on this computer for the selected environment (read-only here): *Withheld*, *Off* and *Needs
-  secrets* badges, origin, commit and the reason a plugin is withheld.
+- **Installed:** the plugins on this computer, each row with *Withheld*, *Off*, *Needs secrets* and *Not approved* badges, the
+  approval kind (`counted`, `dialog-only`, `carried-over` or `dev`, spelled out in its tooltip), origin, commit and
+  the reason a plugin is withheld, and: a switch that turns it on or off *For you* or *In* the selected environment (two
+  chips choose which; the list shows that scope's effective state, and says which layer turned a plugin off);
+  *Approve* for a withheld plugin that runs code; *Update*; *Secrets*; and *Uninstall* with a confirmation that opens on
+  *Cancel* and, for a plugin with secrets, the choice to delete them too. An uninstall leaves a notice with *Undo*
+  (`config.undo`). A folder that did not come from a marketplace cannot be previewed, so its row says it cannot be
+  approved from here yet.
 
-The rules and the daemon calls live in `plugins/model.ts`, tested by `test/pluginsModel.test.ts` against a mocked client.
+### Plugin trust view (implemented)
+
+*Install…*, *Update* and *Approve* open the trust view in place of the list (Back or Esc returns, with focus
+moving to Back on the way in). It lists exactly what the daemon's preview says the plugin runs, hooks and servers
+first: every hook's event, matcher and full command line (an HTTP hook's address), every server's command and
+arguments or address with the names of its environment variables, headers and `${VAR}` references, and a
+*LAUNCHER* flag where something fetches more code; then the plugin's source and commit, the marketplace's, the
+content hash, the author, homepage and licence labelled as the plugin's own unverified claims, the text components
+(commands with shell lines flagged as not run by Imperium) and the daemon's notes. For an update it opens with what
+changed in what runs: unchanged (by the run digest) or the added and removed lines, compared as text against the
+installed version read at its own commit; if that cannot be read it says so and the whole list is new.
+
+- **Approve** (*Approve and install*, *Approve update*, *Approve*) invokes the app's `plugin_approve` command with a
+  name, an action and nothing else. The app then shows its own native dialog and the daemon raises the system check;
+  the webview never calls the daemon's approval methods (a test fails if `src/` names them), holds no challenge and
+  cannot count an approval itself. It waits for the answer, which can take minutes, and tells the user what was recorded
+  (`counted`, `dialog-only`, `dev`), that they cancelled (nothing changed), or why not, noting an install that is now
+  withheld.
+- **Install without approving** and **Update without approving** call the daemon's install and update and leave a plugin
+  with code withheld. A plugin with no hooks or servers has nothing to approve and only offers *Install* or *Update*.
+- **Where the platform cannot approve** (Windows before signed releases, or when the answer says no approval counts)
+  *Approve* is replaced by the reason, and installing without approving stays.
+- **Secrets** are write-only: one password field per variable a plugin's servers need, a *Saved* or *Missing* badge, and
+  *Save* and *Delete saved*. A saved value is never shown, echoed or returned to the page, and the field is cleared
+  once the daemon has taken it.
+- Connectors' Installed view marks a plugin the load-time gate withholds with *Needs approval*.
+
+The rules and the daemon calls live in `plugins/model.ts` and `plugins/trust.ts`, tested by `test/pluginsModel.test.ts` and
+`test/pluginsTrust.test.ts` against a mocked client and a mocked command bridge.
 
 ## Settings and persistence (implemented)
 

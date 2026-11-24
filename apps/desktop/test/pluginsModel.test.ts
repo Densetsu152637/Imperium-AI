@@ -230,7 +230,8 @@ test("a failed browse after an add leaves an empty listing and says why", async 
   assert.match(result.browseError ?? "", /unexpected plugins.browse/);
 });
 
-test("the window calls only the allow-listed methods, and nothing that installs, approves, enables or touches secrets", async () => {
+test("the window calls only the allow-listed methods, and none that counts an approval", async () => {
+  const preview = { id: "p@m", sha256: "abc" };
   const { client, calls } = mock({
     "plugins.marketplace_list": { marketplaces: [] },
     "plugins.marketplace_add": market({}),
@@ -240,6 +241,14 @@ test("the window calls only the allow-listed methods, and nothing that installs,
     "plugins.list": { plugins: [], problems: [] },
     "plugins.suggestions": { source_folder: null, trusted: false, muted: false, marketplaces: [], plugins: [] },
     "plugins.dismiss_suggestion": { dismissed: true, muted: false },
+    "plugins.inspect": {},
+    "plugins.install": {},
+    "plugins.update": {},
+    "plugins.set_enabled": {},
+    "plugins.uninstall": { change_id: 1 },
+    "config.undo": {},
+    "plugins.set_secret": {},
+    "plugins.delete_secret": {},
   });
   const api = pluginsApi(client, "e");
   await api.marketplaces();
@@ -251,7 +260,15 @@ test("the window calls only the allow-listed methods, and nothing that installs,
   await api.remove("x");
   await api.dismissOffer("k");
   await api.muteProject("/p");
-  assert.equal(Object.keys(api).length, 9, "every function in pluginsApi was invoked above");
+  await api.inspect("p@m");
+  await api.install(preview);
+  await api.update(preview);
+  await api.setEnabled("p", true);
+  await api.uninstall("p", false);
+  await api.undo(1);
+  await api.setSecret("p", "KEY", "v");
+  await api.deleteSecret("p", "KEY");
+  assert.equal(Object.keys(api).length, 17, "every function in pluginsApi was invoked above");
   const allowed = new Set([
     "plugins.marketplace_list",
     "plugins.browse",
@@ -261,6 +278,29 @@ test("the window calls only the allow-listed methods, and nothing that installs,
     "plugins.marketplace_refresh",
     "plugins.marketplace_remove",
     "plugins.dismiss_suggestion",
+    "plugins.inspect",
+    "plugins.install",
+    "plugins.update",
+    "plugins.set_enabled",
+    "plugins.uninstall",
+    "config.undo",
+    "plugins.set_secret",
+    "plugins.delete_secret",
   ]);
   assert.deepEqual(new Set(calls.map((c) => c.method)), allowed);
+  // Neither of the daemon's two approval methods is among them; the app's own command is the only way.
+  for (const { method } of calls) assert.doesNotMatch(method, /approv/);
+});
+
+test("scope: an environment is named only when the switch or the list is for it", async () => {
+  const { client, calls } = mock({ "plugins.set_enabled": {}, "plugins.list": { plugins: [], problems: [] } });
+  const api = pluginsApi(client, "env1");
+  await api.setEnabled("p", false);
+  assert.deepEqual(calls.at(-1)?.params, { name: "p", enabled: false });
+  await api.setEnabled("p", false, "env1");
+  assert.deepEqual(calls.at(-1)?.params, { name: "p", enabled: false, environment: "env1" });
+  await api.installed(null);
+  assert.deepEqual(calls.at(-1)?.params, {});
+  await api.installed();
+  assert.deepEqual(calls.at(-1)?.params, { environment: "env1" });
 });
