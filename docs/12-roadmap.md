@@ -400,7 +400,7 @@ and `environments.agent_update` (protocol 0.28)
     `session.run_tool`, `session.tool_result`): `imperium mcp-serve --tools` exposes Imperium's
     own tools (`read_file`, `list_dir`, `glob`, `grep`, `memory_search`, `memory_read`,
     `web_search`, `web_fetch`, and with `--allow-write` also `write_file`, `edit_file`,
-    `run_command`, `command_output`, `command_stop`, `memory_remember`) as `imperium_<tool>` MCP
+    `run_command`, `command_output`, `command_stop`, `memory_remember`, `memory_edit`, `memory_forget`) as `imperium_<tool>` MCP
     tools. Every call runs inside an Imperium session, through the checks a model's own call
     goes through (permission rules, safety floor, agent profile and local-files-only lock,
     sandbox, hooks, journal), with no model call and so no budget spent; the session is
@@ -762,7 +762,7 @@ and `environments.agent_update` (protocol 0.28)
 55. **Terminal and file panes** (planned). Claude's desktop app shows a terminal and a file
     viewer beside the conversation; Imperium gets the same two panes. No plan yet.
 <!-- markdownlint-disable-next-line MD029 -->
-57. **Per-environment worktree folder** (planned). An environment can set its own git worktrees
+57. **Per-environment worktree folder** (implemented). An environment can set its own git worktrees
     root folder. Sessions in that environment create and discover their worktrees there instead
     of in the global worktrees folder (`sessions.worktree_dir`, Settings → Sessions;
     [worktrees](14-projects-and-automation.md#worktrees),

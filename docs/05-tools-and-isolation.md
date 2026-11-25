@@ -4,7 +4,7 @@
 
 | Tool group  | Tools                                                     | Notes                                            |
 | ----------- | --------------------------------------------------------- | ------------------------------------------------ |
-| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match unique edits; reads numbered and paged with `offset`/`limit`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
+| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match unique edits; reads numbered, capped at 2,000 lines and a window-sized character budget by default and paged with `offset`/`limit`; `list_dir` capped at 500 entries and paged with `offset`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
 | Execution   | `run_command`, `command_output`, `command_stop` (implemented) | Runs in the project root via `cmd /C` (the line passed verbatim) or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr; `background: true` [returns a process id at once](#background-commands-implemented) |
 | Web         | `web.search`, `web.fetch`                                 | Search providers: SearXNG (self-hosted), Brave, Tavily, Kagi, Exa; pluggable. Pages are [cached](#fetch-cache-and-robotstxt-implemented) and `robots.txt` is honoured |
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
@@ -765,7 +765,7 @@ In every mode, deny rules refuse first and ask rules ask, every time. "Ask, ever
 allow rules and *Always this session* approvals are ignored (tools an unattended session was
 started with pre-approved still run). Plan mode refuses without asking, whatever the rules
 allow, and tells the model to present its plan; it also refuses `start_session` (the session
-started would not be in plan mode) and `memory_remember`. Tools that never ask (searching the
+started would not be in plan mode) and `memory_remember`, `memory_edit` and `memory_forget`. Tools that never ask (searching the
 web or earlier sessions, `ask_user`, delegation) still run, and the app-config tools
 (`set_model_card`, `install_extension`, `uninstall_extension`) count as tools that ask in `ask`
 and `plan`.
@@ -995,12 +995,24 @@ change anything are that mutation and `disablePullRequestAutoMerge`.
   (that read may have been in flight before the user enabled it); a record that outlives its
   auto-merge can only cause one extra, harmless disable. Auto-merge that Imperium did not turn
   on (enabled on GitHub itself, or before this was recorded) has no confirmed head, and the
-  poll leaves it alone. A daemon that was down when someone pushed catches it at its first
-  poll. A session that cannot be watched any more turns it off too: **unbinding** the last
-  session that follows a pull request Imperium enabled turns auto-merge off first (and fails,
-  keeping the binding, when that is not possible), and **deleting or archiving** such a session
-  turns it off best effort, logged. A push by the daemon for a bound branch is refused when
-  GitHub is not available to check.
+  poll leaves it alone, with one exception that fails safe: after someone turns auto-merge off
+  on GitHub the confirmed head is kept, so if it is later turned on again on GitHub at a new
+  head, the poll turns it off. A daemon that was down when someone pushed catches it at its
+  first poll. A session that cannot be watched any more turns it off too: **unbinding** the
+  last session that follows a pull request Imperium enabled turns auto-merge off first (and
+  fails, keeping the binding, when that is not possible). The record is cleared afterwards only
+  if it still holds the head read before that turn-off, so an enable that finished meanwhile
+  (the same session, or another that bound the pull request) keeps the head it recorded.
+  **Deleting, archiving or rebinding** such a session cannot fail the action, so the pull
+  request goes on a list in the data folder (`auto-merge-to-turn-off.json`: repository, number
+  and the confirmed head) before anything is sent. The poller works through it at its next
+  tick and at daemon start, waits longer after each failure (30 s doubling to 15 min), and drops
+  an entry when the turn-off worked, when GitHub says auto-merge is already off or the pull
+  request is no longer open, or when a session follows the pull request again with a
+  confirmation of its own. The first failure in a daemon run is announced to every client as an
+  `autofix.event` with status `failed` ("auto-merge could not be turned off yet ... Imperium
+  will try again"). A push by the daemon for a bound branch is refused when GitHub is not
+  available to check.
 - **Where it is not offered**, with the reason on the card: a draft (GitHub refuses it), a
   repository that does not allow auto-merge, a repository whose merge settings the token cannot
   read (a token without push access gets no `allow_*` flags; that is "cannot be enabled here",
@@ -1037,8 +1049,17 @@ note); a UTF-8 file with invalid bytes and no NUL bytes is read with U+FFFD for 
 (not to rewrite the file from that text: `edit_file` refuses it), a file with NUL bytes (in the
 first 8 KB when the bytes are valid UTF-8, so BOM-less UTF-16 is not shown as garbage) is refused
 as binary, and a folder is refused with a pointer to `list_dir`, in a remote workspace too.
-One read returns at most 100,000 characters (line numbers and notes included); a longer line is
-cut where that ends, with a note to page by `offset` and `limit`. Edits stay UTF-8. `tool.before`
+A read without a `limit` returns at most 2,000 lines and also stops at a character budget sized
+from the calling agent's context window: about an eighth of the window in tokens at 4 characters
+a token (at least 8,000 characters, at most 100,000), or 32,000 characters when the window is not
+known. The engine passes the window to the call (`Invocation::execute_in`); it is not a model-visible
+parameter. The budget ends the read on a whole line, and a note gives the exact offset to continue
+(`[lines 1-19 of 400; stopped at the 8000-character read budget; use offset=20 to read more]`); a
+read that stops short for any reason says the same. A first line past the budget is shown cut, with
+a note to use `grep` for the part needed. A read with an explicit `limit` keeps the 100,000-character
+ceiling (line numbers and notes included). The defaults apply to every model, hosted ones too, and to
+calls through the MCP bridge and the Claude harness (a caller that cannot give the window gets 32,000 characters). `list_dir` returns at most 500 entries
+per call, sorted, with a note (`use offset=500 to see more`); its optional `offset` skips entries. Edits stay UTF-8. `tool.before`
 and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
 (`path`, `offset`, `limit`) whatever spelling the model used. Each reading is checked like any
 other path, and the first that lands inside a folder or grant is used. The OS tier makes every

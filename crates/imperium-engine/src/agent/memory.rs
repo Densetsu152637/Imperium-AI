@@ -181,6 +181,155 @@ impl Agent {
         Ok(format!("saved {} ({})", entry.name, scope.as_str()))
     }
 
+    /// Replaces one exact, unique string in a memory's body, under the scope's write policy
+    /// (the same gate as `memory_remember`). What cannot apply is refused before the user is
+    /// asked, so they never approve an edit that fails.
+    pub(super) async fn memory_edit(&self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            name: String,
+            old_string: String,
+            new_string: String,
+            #[serde(default)]
+            scope: Option<String>,
+        }
+        let args: Args = parse(arguments)?;
+        let memory = self.memory()?;
+        let (scope, alias) = memory_target(memory, &args.name, args.scope.as_deref())?;
+        match (scope, &memory.environment) {
+            (Scope::Environment, Some(environment)) => environment
+                .check_edit(&args.name, &args.old_string, &args.new_string)
+                .map_err(|error| error.to_string())?,
+            _ => memory
+                .store
+                .check_edit(&args.name, &args.old_string, &args.new_string)
+                .map_err(|error| error.to_string())?,
+        }
+        let summary = format!(
+            "edit {} memory {}\n- {}\n+ {}",
+            scope.as_str(),
+            args.name,
+            edit_preview(&args.old_string),
+            edit_preview(&args.new_string)
+        );
+        self.memory_write_gate(memory, scope, "memory_edit", &summary, "edit")
+            .await?;
+        let mut done = match (scope, &memory.environment) {
+            (Scope::Environment, Some(environment)) => {
+                environment
+                    .edit(&args.name, &args.old_string, &args.new_string)
+                    .map_err(|error| error.to_string())?;
+                format!(
+                    "edited {} in this environment's Memory.md (sessions started from now on read it)",
+                    args.name
+                )
+            }
+            _ => {
+                memory
+                    .store
+                    .edit(
+                        &args.name,
+                        &args.old_string,
+                        &args.new_string,
+                        &format!("session {}", self.shared.session_id),
+                    )
+                    .map_err(|error| error.to_string())?;
+                format!("edited {} (global)", args.name)
+            }
+        };
+        self.emit(SessionEvent::MemorySaved {
+            name: args.name,
+            scope: scope.as_str().into(),
+        });
+        if alias {
+            done.push_str(LEGACY_SCOPE_NOTE);
+        }
+        Ok(done)
+    }
+
+    /// Removes a memory under the scope's write policy. Nothing is erased: a global entry moves
+    /// to `<data>/memory/trash/`, an environment section to `Memory.archive.md`.
+    pub(super) async fn memory_forget(&self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            name: String,
+            #[serde(default)]
+            scope: Option<String>,
+        }
+        let args: Args = parse(arguments)?;
+        let memory = self.memory()?;
+        let (scope, alias) = memory_target(memory, &args.name, args.scope.as_deref())?;
+        let summary = format!("forget {} memory {}", scope.as_str(), args.name);
+        self.memory_write_gate(memory, scope, "memory_forget", &summary, "remove")
+            .await?;
+        let mut done = match (scope, &memory.environment) {
+            (Scope::Environment, Some(environment)) => {
+                if !environment
+                    .forget(&args.name)
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err(format!("no memory named {:?}", args.name));
+                }
+                format!(
+                    "forgot {} from this environment's Memory.md (a copy is in Memory.archive.md)",
+                    args.name
+                )
+            }
+            _ => {
+                let moved = memory
+                    .store
+                    .trash(&args.name, scope)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("no memory named {:?}", args.name))?;
+                format!(
+                    "forgot {} (global); the file is kept in memory/trash as {}",
+                    args.name,
+                    moved
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+                )
+            }
+        };
+        self.emit(SessionEvent::Notice {
+            message: format!("Forgot {} memory {}", scope.as_str(), args.name),
+        });
+        if alias {
+            done.push_str(LEGACY_SCOPE_NOTE);
+        }
+        Ok(done)
+    }
+
+    /// The scope's write policy for a change to an existing memory: `off` refuses, `ask` shows
+    /// `summary` to the user, `auto` goes ahead.
+    async fn memory_write_gate(
+        &self,
+        memory: &SessionMemory,
+        scope: Scope,
+        tool: &str,
+        summary: &str,
+        verb: &str,
+    ) -> Result<(), String> {
+        let policy = if scope == Scope::Environment {
+            memory.environment_policy()
+        } else {
+            memory.policy(scope)
+        };
+        match policy {
+            WritePolicy::Off => Err(format!(
+                "changing {} memories is turned off (cannot {verb})",
+                scope.as_str()
+            )),
+            WritePolicy::Ask => {
+                if self.approve(tool, summary).await {
+                    Ok(())
+                } else {
+                    Err(format!("The user declined to {verb} this memory."))
+                }
+            }
+            WritePolicy::Auto => Ok(()),
+        }
+    }
+
     /// Writes a section of the environment's `Memory.md` under the `environment` write policy.
     pub(super) async fn environment_remember(
         &self,
@@ -254,6 +403,28 @@ pub(super) fn search_scopes(scope: Option<&str>) -> Result<(Vec<Scope>, bool), S
     }
 }
 
+/// The scope a change to the memory `name` applies to, and whether `scope` was an old name: the
+/// scope named, or when none is, the environment's section of that name before the global entry.
+fn memory_target(
+    memory: &SessionMemory,
+    name: &str,
+    scope: Option<&str>,
+) -> Result<(Scope, bool), String> {
+    let (wanted, alias) = search_scopes(scope)?;
+    if wanted.contains(&Scope::Environment)
+        && let Some(environment) = &memory.environment
+        && imperium_memory::environment::sections(&environment.read())
+            .iter()
+            .any(|section| section.name == name)
+    {
+        return Ok((Scope::Environment, alias));
+    }
+    if wanted.contains(&Scope::Global) && memory.store.get(name).is_some() {
+        return Ok((Scope::Global, alias));
+    }
+    Err(format!("no memory named {name:?}"))
+}
+
 /// How agents should use memory, with the index of what exists.
 pub(super) fn memory_instructions(memory: &SessionMemory, can_write: bool) -> String {
     let index = memory.store.index(memory.settings.max_index_tokens * 4);
@@ -269,7 +440,9 @@ pub(super) fn memory_instructions(memory: &SessionMemory, can_write: bool) -> St
             " Save a memory with memory_remember when you learn something worth keeping for \
              future sessions: the user's preferences or corrections (type user or feedback, \
              scope global), or a mistake to avoid (type lesson). One fact per memory, with a \
-             short kebab-case name; never save secrets or what the repository already records.",
+             short kebab-case name; never save secrets or what the repository already records. Keep memories current: \
+             memory_edit fixes one passage of a memory, memory_forget removes one that is wrong \
+             or obsolete; do not save a duplicate.",
         );
     }
     if index.is_empty() {
@@ -311,4 +484,18 @@ pub(super) fn memory_instructions(memory: &SessionMemory, can_write: bool) -> St
         );
     }
     text
+}
+
+/// Most characters of an edit's old or new string shown in an approval prompt.
+const EDIT_PREVIEW_CHARS: usize = 2_000;
+
+/// `text` whole, or its first [`EDIT_PREVIEW_CHARS`] characters marked as truncated, so an
+/// approval never silently shows less than what would be written.
+fn edit_preview(text: &str) -> String {
+    let count = text.chars().count();
+    if count <= EDIT_PREVIEW_CHARS {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(EDIT_PREVIEW_CHARS).collect();
+    format!("{kept}… (truncated, {count} characters in all)")
 }

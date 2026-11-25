@@ -28,4 +28,9 @@ permissions?: PermissionSet,
 /**
  * Whether sessions get the project's git worktrees (on when left out).
  */
-project_worktrees?: boolean, };
+project_worktrees?: boolean, 
+/**
+ * Where this environment's sessions put their git worktrees, as `<folder>/<repo>/<branch>`
+ * (an absolute path on this machine). Left out or empty: the global `sessions.worktree_dir`.
+ */
+worktree_dir?: string, };
