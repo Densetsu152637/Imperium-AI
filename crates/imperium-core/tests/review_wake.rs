@@ -1409,7 +1409,7 @@ async fn a_pull_request_from_a_fork_wakes_nothing() {
 
 #[tokio::test]
 async fn a_session_that_was_not_loaded_is_loaded_for_the_wake() {
-    let mut world = World::new(vec![], vec![], "").await;
+    let world = World::new(vec![], vec![], "").await;
     let session = world.new_session();
     let id = session.id().to_string();
     world.arm(&session).await;
