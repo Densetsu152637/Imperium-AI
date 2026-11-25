@@ -736,7 +736,7 @@ impl DaemonState {
             workspace.with_writer_trees(Arc::new(crate::writers::GitWriterTrees::new(
                 &id,
                 &journal_path,
-                self.worktree_dir(),
+                self.worktree_dir_for(options.environment_id.as_deref()),
             )))
         };
         // Remembered sessions on this machine checkpoint their repositories' files before each
@@ -1081,7 +1081,7 @@ impl DaemonState {
                 .clone()
                 .filter(|branch| !branch.trim().is_empty())
                 .unwrap_or_else(|| format!("imperium/{}", &id[..id.len().min(8)]));
-            let dir = self.worktree_dir();
+            let dir = self.worktree_dir_for(Some(&env.id));
             let (used, made) = crate::worktrees::create(&folders, branch.trim(), dir.as_deref())
                 .map_err(CreateError::Worktree)?;
             folders = used;

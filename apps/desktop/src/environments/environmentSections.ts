@@ -58,3 +58,9 @@ export const closeAction = (dirty: boolean, confirming: boolean, fromKey = false
 /** Whether anything in the window is unsaved. */
 export const environmentDirty = (edits: Record<string, boolean>): boolean => Object.values(edits).some(Boolean);
 
+
+/** The worktree folder as typed, trimmed; empty means the environment has none of its own. */
+export const worktreeDirDraft = (saved: string | null | undefined, typed: string): { changed: boolean; value: string } => {
+  const value = typed.trim();
+  return { changed: value !== (saved ?? ""), value };
+};

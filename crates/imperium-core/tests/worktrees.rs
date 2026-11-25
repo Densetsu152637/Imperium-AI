@@ -7,8 +7,9 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
-use imperium_core::{Connection, DaemonState};
+use imperium_core::{Connection, DaemonState, GitWriterTrees};
 use imperium_protocol::jsonrpc::{Outcome, Response};
+use imperium_tools::WriterTrees;
 use serde_json::{Value, json};
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -360,5 +361,132 @@ async fn deleting_a_session_removes_only_its_recorded_worktree() {
         std::fs::read_to_string(theirs.join("work.txt")).unwrap(),
         "uncommitted\n",
         "their worktree is untouched"
+    );
+}
+
+#[tokio::test]
+async fn an_environments_own_worktree_folder_replaces_the_global_one_for_its_sessions() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = repository();
+    let global = tempfile::tempdir().unwrap();
+    let own = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), Some(global.path()));
+    let mut connection = connect(&state);
+    let name = repo.path().canonicalize().unwrap();
+    let name = name.file_name().unwrap().to_owned();
+    let own_dir = own.path().display().to_string();
+    let with_own = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Own", "folders": [repo.path()], "worktree_dir": own_dir}),
+    );
+    assert_eq!(with_own["worktree_dir"], own_dir.as_str());
+    let without = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Plain", "folders": [repo.path()]}),
+    );
+    assert_eq!(without["worktree_dir"], Value::Null);
+
+    // A relative folder is refused.
+    let refused = call_error(
+        &mut connection,
+        "environments.update",
+        json!({"id": with_own["id"], "worktree_dir": "relative/trees"}),
+    );
+    assert!(refused.contains("absolute"), "{refused}");
+
+    // 1. The session of the environment with an override creates its worktree there.
+    let created = call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": with_own["id"], "worktree": true, "worktree_branch": "feature/a"}),
+    );
+    let id = created["session_id"].as_str().unwrap().to_string();
+    let tree = own.path().join(&name).join("feature-a");
+    assert!(same(created["folders"][0].as_str().unwrap(), &tree));
+    assert_eq!(git(&tree, &["branch", "--show-current"]), "feature/a");
+    assert!(
+        !global.path().join(&name).exists(),
+        "nothing is made in the global folder"
+    );
+
+    // 3. Another environment, with no override, still uses the global folder.
+    let other = call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": without["id"], "worktree": true, "worktree_branch": "feature/b"}),
+    );
+    let other_id = other["session_id"].as_str().unwrap().to_string();
+    let other_tree = global.path().join(&name).join("feature-b");
+    assert!(same(other["folders"][0].as_str().unwrap(), &other_tree));
+
+    // 5. A write-access subagent's worktrees go under the override too, and not elsewhere.
+    let journals = tempfile::tempdir().unwrap();
+    let writers = GitWriterTrees::new(
+        "own",
+        &journals.path().join("own.jsonl"),
+        state.worktree_dir_for(with_own["id"].as_str()),
+    );
+    let folders = [repo.path().canonicalize().unwrap()];
+    let writer = writers.start("t1", &folders).unwrap().unwrap();
+    assert!(
+        writer.folders[0]
+            .canonicalize()
+            .unwrap()
+            .starts_with(own.path().canonicalize().unwrap().join(&name)),
+        "{:?}",
+        writer.folders
+    );
+    let plain_writers = GitWriterTrees::new(
+        "plain",
+        &journals.path().join("plain.jsonl"),
+        state.worktree_dir_for(without["id"].as_str()),
+    );
+    let plain_writer = plain_writers.start("t1", &folders).unwrap().unwrap();
+    assert!(
+        plain_writer.folders[0]
+            .canonicalize()
+            .unwrap()
+            .starts_with(global.path().canonicalize().unwrap().join(&name))
+    );
+
+    // 2. After a restart the session is back on its worktree there, and deleting it removes it.
+    drop(connection);
+    drop(state);
+    let state = daemon(home.path(), Some(global.path()));
+    assert_eq!(state.resume_sessions(), 2);
+    let summary = state.summary(&state.session(&id).unwrap());
+    assert!(same(&summary.folders[0], &tree));
+    assert_eq!(summary.worktrees.len(), 1);
+    let mut connection = connect(&state);
+    let deleted = call(
+        &mut connection,
+        "session.delete",
+        json!({"session_id": id, "remove_worktrees": true}),
+    );
+    assert_eq!(deleted["removed_worktrees"].as_array().unwrap().len(), 1);
+    assert!(!tree.exists());
+    assert!(other_tree.exists(), "the other session's worktree stays");
+
+    // 4. Clearing the override falls back to the global folder.
+    let cleared = call(
+        &mut connection,
+        "environments.update",
+        json!({"id": with_own["id"], "worktree_dir": ""}),
+    );
+    assert_eq!(cleared["worktree_dir"], Value::Null);
+    let after = call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": with_own["id"], "worktree": true, "worktree_branch": "feature/c"}),
+    );
+    let fallen_back = global.path().join(&name).join("feature-c");
+    assert!(same(after["folders"][0].as_str().unwrap(), &fallen_back));
+    assert!(!own.path().join(&name).join("feature-c").exists());
+    call(
+        &mut connection,
+        "session.delete",
+        json!({"session_id": other_id, "remove_worktrees": true}),
     );
 }

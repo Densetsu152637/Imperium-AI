@@ -16,6 +16,7 @@ import {
   saveTarget,
   sectionsFor,
   type EnvironmentSectionId,
+  worktreeDirDraft,
 } from "../src/environments/environmentSections.ts";
 
 const ids = (kind: { creating: boolean; builtin: boolean }) => sectionsFor(kind).map((section) => section.id);
@@ -150,4 +151,19 @@ test("the window is built on the shared modal and asks before discarding", () =>
   assert.ok(!source.includes("createPortal"));
   assert.ok(source.includes("Discard changes?"));
   assert.ok(source.includes("if (!event.repeat) requestClose(true)"));
+});
+
+test("the worktrees folder is trimmed, and a change is only what differs from the saved value", () => {
+  assert.deepEqual(worktreeDirDraft(null, ""), { changed: false, value: "" });
+  assert.deepEqual(worktreeDirDraft(undefined, "  /work/trees "), { changed: true, value: "/work/trees" });
+  assert.deepEqual(worktreeDirDraft("/work/trees", "/work/trees"), { changed: false, value: "/work/trees" });
+  // Clearing the saved folder is a change to the empty value, which the daemon reads as "use the global one".
+  assert.deepEqual(worktreeDirDraft("/work/trees", ""), { changed: true, value: "" });
+});
+
+test("the environment window shows and sends the worktrees folder beside the project worktrees switch", () => {
+  const fields = read("panels/EnvironmentRuntimeFields.tsx");
+  assert.ok(fields.indexOf('label="Project worktrees"') < fields.indexOf('label="Worktrees folder"'));
+  const window = read("environments/EnvironmentWindow.tsx");
+  assert.match(window, /worktree_dir: worktreeDir\.trim\(\)/);
 });

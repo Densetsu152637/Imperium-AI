@@ -18,15 +18,15 @@ RPC:
 | Method | Params | Result |
 | --- | --- | --- |
 | `environments.list` | `{}` | `{ environments: EnvironmentInfo[], git: string[] }` (`git`: ids of local environments with a folder inside a git repository, which can start sessions on worktrees; also sent with `environments.changed`) |
-| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent?, pet?, project_worktrees? }` (`persistent_agent` is [deprecated](#persistent-agents-implemented)) | `EnvironmentInfo` |
-| `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent?, pet?, project_worktrees? }` (empty icon/colour/pet clears it; `persistent_agent` is [deprecated](#persistent-agents-implemented): `true` adds the default agent when there are none, `false` removes only that default agent and is refused with an error when the environment has more than one agent or an agent with a role) | `EnvironmentInfo` |
+| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent?, pet?, project_worktrees?, worktree_dir? }` (`persistent_agent` is [deprecated](#persistent-agents-implemented)) | `EnvironmentInfo` |
+| `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent?, pet?, project_worktrees?, worktree_dir? }` (empty icon/colour/pet/worktree_dir clears it; `persistent_agent` is [deprecated](#persistent-agents-implemented): `true` adds the default agent when there are none, `false` removes only that default agent and is refused with an error when the environment has more than one agent or an agent with a role) | `EnvironmentInfo` |
 | `environments.test_runtime` | `{ id }` | `{ ok, message }` |
 | `environments.delete` | `{ id }` | `{}` (folders and running sessions are left alone; Home is refused) |
 | `environments.add_folder` | `{ id, folder }` (an existing absolute folder) | `EnvironmentInfo` |
 | `environments.remove_folder` | `{ id, folder }` | `EnvironmentInfo` |
 
 `EnvironmentInfo` is `{ id, name, icon, color, folders, pinned, runtime, agents, persistent_agent
-(deprecated), agent_session_id (deprecated), pet, project_worktrees, builtin, plugins }`, where `plugins` is `{ enabled, disabled, dismissed_suggestions, muted_suggestion_sources }`, lists of plugin names the environment turns on or off for its sessions (set by `plugins.set_enabled` with `environment`; the last two are the offers the user dismissed and the canonical project folders whose offers are muted, set by `plugins.dismiss_suggestion`; see [06](06-extensibility.md#plugin-marketplaces)), `builtin` marks [Home](#home-implemented), and `project_worktrees` (on unless turned off)
+(deprecated), agent_session_id (deprecated), pet, project_worktrees, worktree_dir, builtin, plugins }`, where `plugins` is `{ enabled, disabled, dismissed_suggestions, muted_suggestion_sources }`, lists of plugin names the environment turns on or off for its sessions (set by `plugins.set_enabled` with `environment`; the last two are the offers the user dismissed and the canonical project folders whose offers are muted, set by `plugins.dismiss_suggestion`; see [06](06-extensibility.md#plugin-marketplaces)), `builtin` marks [Home](#home-implemented), `project_worktrees` (on unless turned off) and `worktree_dir` (the environment's own worktrees folder, or null for the global one)
 opens the folders' [git worktrees](#worktrees) to its sessions, and `pet` is the environment's default pet (an installed pet's id) for the
 [nursery](16-pets.md#imperium-nursery), or none to let the nursery decide; folders first-to-last with the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
 (the full list). `session.create` takes `environment_id`; `project_dir` still works and maps to
@@ -562,7 +562,7 @@ a git repository is replaced by a new worktree of that repository on a new branc
 repository's current `HEAD`. Folders outside git are used as they are; a subfolder of a
 repository becomes the same subfolder of its worktree. Worktrees go in
 `<sessions.worktree_dir>/<repo name>/<branch>` when that setting is set (Settings → Sessions),
-and otherwise inside the repository in `.worktrees/<branch>` (slashes in the branch become
+or in the environment's own folder when it sets one (`worktree_dir`, below), and otherwise inside the repository in `.worktrees/<branch>` (slashes in the branch become
 `-`), which is added to the repository's `.git/info/exclude` so it is never committed. The
 session records its worktrees (`worktrees: [{ folder, path, branch, repo }]` in
 `session.list` and `session.create`, a **Worktree** badge in the app), keeps them when it
@@ -601,6 +601,17 @@ OS-sandbox and container tiers (mounted like further folders). Everything else i
 paths go through the same checks as folders (`..` and links resolved, the deepest folder or
 grant decides, so a read-only grant inside a worktree still makes that part read-only), and
 deny rules still win. The system prompt names the worktrees beside the environment's folders.
+
+**Implemented: a worktree folder per environment** (roadmap item 57). An environment can set its
+own worktrees folder (`worktree_dir`, an absolute path on this machine, in `environments.create`
+and `environments.update`; the *Worktrees folder* field in the environment's window, beside
+*Project worktrees*). Its sessions that start in a worktree, and the worktrees of its
+`access: "write"` subagents, are made in `<worktree_dir>/<repo name>/<branch>` instead of the
+global `sessions.worktree_dir`; they are recorded by path, so a resumed session finds them and
+`session.delete` with `remove_worktrees` removes them there. An empty `worktree_dir` in
+`environments.update` clears the override, and the global setting applies again, as it always
+does to an environment with none. A change applies to sessions started afterwards. A relative
+path is refused.
 
 The **Project worktrees** switch in the environment's window (`project_worktrees: false` in
 `environments.update`) turns this off for sessions started afterwards. A session started on its
