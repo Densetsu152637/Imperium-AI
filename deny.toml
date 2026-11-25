@@ -15,8 +15,32 @@ targets = [
 [advisories]
 version = 2
 yanked = "deny"
-# An advisory is ignored only with a reason and a way back, one entry each.
-ignore = []
+# An advisory is ignored only with a reason, one entry each. The first group was in the workspace
+# before code mode added this check; the second names what the Monty type checker adds.
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0594", reason = "cookie nonces repeat in processes that fork. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2025-0075", reason = "unic-char-range is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2025-0080", reason = "unic-common is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2025-0081", reason = "unic-char-property is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0592", reason = "url: stack overflow on nested blob: URLs. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0403", reason = "zstd-safe. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0367", reason = "zip: reached through tauri-plugin-updater and imperium-local, and also (as zip 8.6.0) through monty-type-checking, which only reads Monty's bundled typeshed archive and extracts nothing; revisit if the worker drops the type checker (code-mode plan F12)." },
+  { id = "RUSTSEC-2026-0368", reason = "zip: reached through tauri-plugin-updater and imperium-local, and also (as zip 8.6.0) through monty-type-checking, which only reads Monty's bundled typeshed archive and extracts nothing; revisit if the worker drops the type checker (code-mode plan F12)." },
+  { id = "RUSTSEC-2026-0369", reason = "zip: reached through tauri-plugin-updater and imperium-local, and also (as zip 8.6.0) through monty-type-checking, which only reads Monty's bundled typeshed archive and extracts nothing; revisit if the worker drops the type checker (code-mode plan F12)." },
+  { id = "RUSTSEC-2026-0429", reason = "zip: reached through tauri-plugin-updater and imperium-local, and also (as zip 8.6.0) through monty-type-checking, which only reads Monty's bundled typeshed archive and extracts nothing; revisit if the worker drops the type checker (code-mode plan F12)." },
+  { id = "RUSTSEC-2026-0545", reason = "zip: reached through tauri-plugin-updater and imperium-local, and also (as zip 8.6.0) through monty-type-checking, which only reads Monty's bundled typeshed archive and extracts nothing; revisit if the worker drops the type checker (code-mode plan F12)." },
+  { id = "RUSTSEC-2026-0548", reason = "zip: reached through tauri-plugin-updater and imperium-local, and also (as zip 8.6.0) through monty-type-checking, which only reads Monty's bundled typeshed archive and extracts nothing; revisit if the worker drops the type checker (code-mode plan F12)." },
+  { id = "RUSTSEC-2026-0546", reason = "zip 8.6.0 via monty-type-checking, which reads only Monty's bundled typeshed archive; revisit if the worker drops the type checker (code-mode plan F12)." },
+  { id = "RUSTSEC-2026-0547", reason = "zip 8.6.0 via monty-type-checking, which reads only Monty's bundled typeshed archive; revisit if the worker drops the type checker (code-mode plan F12)." },
+]
 
 [licenses]
 version = 2
