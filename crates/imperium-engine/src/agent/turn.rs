@@ -535,7 +535,7 @@ impl Agent {
                 let call = match call_repair::vet(call.clone(), checked) {
                     Ok(call) => call,
                     Err(error) => {
-                        let name = call.function.name.clone();
+                        let name = effective_call(&call).function.name.clone();
                         let output = self.tool_finished(&call, &name, false, error, None);
                         self.messages.push(ChatMessage::Tool {
                             tool_call_id: call.id,
