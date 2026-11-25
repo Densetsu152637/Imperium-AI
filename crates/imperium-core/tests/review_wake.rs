@@ -327,7 +327,15 @@ impl World {
         let mut polls = 0;
         loop {
             if seen.events.is_empty() {
-                assert!(polls < 6, "no wake started: {seen:?}");
+                assert!(
+                    polls < 6,
+                    "no wake started: {seen:?}; requests: {:?}",
+                    self.fake
+                        .requests()
+                        .iter()
+                        .map(|r| format!("{} {}", r.path, r.operation.clone().unwrap_or_default()))
+                        .collect::<Vec<_>>()
+                );
                 polls += 1;
                 self.poll().await;
             }
