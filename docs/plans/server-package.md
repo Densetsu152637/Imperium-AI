@@ -1,6 +1,7 @@
 # Plan: server package (Docker Compose)
 
-Revision: 2026-11-26, revision 1; written against `experimental` at `2cb50590` (last updated).
+Revision: 2026-11-26, revision 2 (plan-gate review F1 to F10 and nits folded in); written
+against `experimental` at `2cb50590`, merged with `experimental` at revision 2 (last updated).
 Roadmap [item 63](../12-roadmap.md#next-in-order). Status: planned (no stage started).
 
 Imperium runs today as one daemon per user on a desktop or an SSH host. This plan packages it to
@@ -21,10 +22,11 @@ a real model. "The server job" is the CI job built in
 
 1. **The image is multi-arch, non-root and read-only.** One image index holds `linux/amd64` and
    `linux/arm64`; its default user is not root; the compose service runs with a read-only root
-   filesystem, every capability dropped and `no-new-privileges`. Check: the server job
-   (`docker buildx build --platform linux/amd64,linux/arm64`; `docker inspect` shows a non-zero
-   `User`; a write to `/usr` inside the running container fails), and stage 9's release job
-   inspects the published index.
+   filesystem, every capability dropped and `no-new-privileges`. Check: the server job builds
+   and runs the image on two native legs, `ubuntu-latest` (amd64) and `ubuntu-22.04-arm`
+   (arm64); on each, `docker inspect` shows a non-zero `User`, the stack becomes healthy and a
+   write to `/usr` inside the running container fails. Stage 9's release job inspects the
+   published index for both platforms.
 2. **The stack becomes healthy.** `docker compose up --wait` returns with the daemon healthy, and
    the service has a restart policy. Check: the server job.
 3. **Nothing is published beyond loopback by default.** The base compose file publishes no port
@@ -32,21 +34,26 @@ a real model. "The server job" is the CI job built in
    address. Check: `deploy/server/check-compose.py` in the server job reads
    `docker compose config --format json` for the base file and for every shipped override and
    fails on a published port whose host address is not loopback, on a missing `read_only`,
-   `cap_drop` or `user`, and on a mounted Docker socket.
+   `cap_drop` or `user`, on a mounted Docker socket, and on any change to the `prepare` service's
+   fixed shape ([D2](#d2-the-daemon-in-a-container)).
 4. **The SSH path works into the container.** `imperium remote connect <host> --socket
    --server-dir <dir>` from the runner, through the runner's own `sshd`, reaches the daemon in
    the container and completes `system.handshake`. Check: the server job.
 5. **The TLS path is authenticated and pinned.** With the TLS override, a client with the token
-   and the pin completes the handshake; no token and a wrong token get HTTP 401 and repeated
-   failures are slowed; a client with a wrong pin refuses before sending the token; the listener
-   refuses to start without a token secret. Check: stage 5 and 6 `cargo test`, and the server job.
+   and the pin completes the handshake, even from an address whose failures are being slowed; no
+   token and a wrong token get HTTP 401, and repeated failures only delay those 401 replies; a
+   client with a wrong pin refuses before sending the token; the listener refuses to start
+   without a token secret. Check: stage 5 and 6 `cargo test`, and the server job.
 6. **One headless task runs against the server.** `imperium --remote ci run --headless --json`
    with the fake model server completes, prints a result whose status is success, and the fake
    records the request. Check: the server job.
 7. **Secrets come only from Docker secrets files.** The daemon reads secrets from `/run/secrets`
    read-only; every secret write is refused with `-32010`; no shipped compose file sets a secret
    in `environment` or interpolates one; an agent's command in the default tier cannot read
-   `/run/secrets`, the daemon's data folder or its socket folder. Check: stage 2 `cargo test`,
+   `/run/secrets`, the daemon's data folder, `/run/imperium/endpoint.json` (the local token) or
+   credential files under `HOME` (`~/.ssh/id_*`, `~/.config/gh/hosts.yml`, `~/.git-credentials`),
+   and a connection to the daemon's socket without the token is refused. Check: stage 2 and 3
+   `cargo test`,
    `check-compose.py`, and the server job's scripted `run_command` (see
    [stage 8](#stage-8-ci-server-job)).
 8. **Desktop-only gates stay refused on a server.** On a server daemon,
@@ -89,7 +96,7 @@ These are the design choices this plan makes. Each records why and what was reje
   already makes, picked by `TARGETARCH`. The image then carries the same bits as the CLI archive,
   and arm64 needs no compile under emulation. Rejected: a Rust build stage in the Dockerfile
   (a second release compile per architecture, slow under QEMU). For pull-request CI, stage 8
-  builds the x64 binaries in the job and passes them as the build context.
+  builds each architecture's binaries natively in the job and passes them as the build context.
 - **User.** A user `imperium` with UID and GID `10001`, home `/home/imperium`. `IMPERIUM_HOME`
   is `/var/lib/imperium`, so config, data and cache are `/var/lib/imperium/{config,data,cache}`.
 - **PID 1 is `tini`** (`ENTRYPOINT ["tini", "--", "imperium-core"]`), so model runtimes and
@@ -102,7 +109,8 @@ These are the design choices this plan makes. Each records why and what was reje
   elsewhere once `IMPERIUM_HOME` and `HOME` point at volumes.
 - **Multi-arch.** `linux/amd64` and `linux/arm64`, each built on a native runner
   (`ubuntu-22.04` and `ubuntu-22.04-arm`, the runners the bundles use) and pushed by digest, then
-  joined into one index with `docker buildx imagetools create`.
+  joined into one index with `docker buildx imagetools create`. Pull-request CI also runs both
+  architectures natively ([D8](#d8-testing-in-ci)); nothing is built under QEMU.
 - **Pinned digests.** The base image in the Dockerfile, the llama.cpp and vLLM images in the
   compose overrides, the fake model server's base in CI and every action are pinned by digest or
   commit SHA. The repository's `docker-compose.yml` names the image by version tag; the copy
@@ -113,9 +121,21 @@ These are the design choices this plan makes. Each records why and what was reje
   separate SBOM tool (Syft) uploading a file beside the image, which can drift from the image it
   describes.
 - **Signing.** cosign keyless signing with the workflow's GitHub OIDC identity (Sigstore Fulcio
-  and Rekor), over the index digest; the docs give the `cosign verify` command with
-  `--certificate-identity` pinned to the release workflow and `--certificate-oidc-issuer
-  https://token.actions.githubusercontent.com`. Rejected: a long-lived signing key (a secret to
+  and Rekor), over the index digest. The signing job is in the reusable workflow `image.yml`, so
+  Fulcio's certificate identity is that file at the caller's ref (the `job_workflow_ref` claim),
+  one exact identity per channel:
+  - main release and pre-release:
+    `https://github.com/Densetsu152637/Imperium-AI/.github/workflows/image.yml@refs/tags/vX.Y.Z`
+    (the release's own tag);
+  - experimental:
+    `https://github.com/Densetsu152637/Imperium-AI/.github/workflows/image.yml@refs/heads/experimental`.
+
+  Both with `--certificate-oidc-issuer https://token.actions.githubusercontent.com`; the docs
+  give the exact `cosign verify --certificate-identity <one of the above>` command, never a
+  regular expression wider than one channel. Users verify the **digest** (`image@sha256:...`)
+  and then pull and run that digest; a tag is never pulled again after verifying, since it can
+  move between the two steps. The release's compose file names the digest for that reason.
+  Rejected: a long-lived signing key (a secret to
   guard and rotate), Docker Content Trust (Notary v1, deprecated). GitHub's
   `actions/attest-build-provenance` was considered; BuildKit provenance plus cosign covers the
   same need with tools any registry client understands, so only one is used.
@@ -162,11 +182,16 @@ These are the design choices this plan makes. Each records why and what was reje
   must own the socket). Named volumes are created owned by `10001`, so a one-shot `prepare`
   service runs first (`depends_on: condition: service_completed_successfully`): the same image,
   as root, with every capability dropped except `CHOWN`, `FOWNER` and `DAC_OVERRIDE`,
-  `network_mode: none`, a read-only root, running a fixed script
-  (`/usr/local/lib/imperium/prepare-volumes`) that changes the owner of each mounted volume and
-  of the socket folder only when it differs, never follows a symbolic link (`chown -R -P -h`),
-  and sets the socket folder to `0700`. It runs no Imperium code. With the default UID it
-  changes nothing. Rejected: starting the daemon itself as root and dropping privileges (root in
+  `network_mode: none`, a read-only root, no secrets, running a fixed script
+  (`/usr/local/lib/imperium/prepare-volumes`). For each mounted volume and the socket folder it
+  compares the owner of the mount's root with `IMPERIUM_UID:IMPERIUM_GID` and runs the
+  recursive `chown -R -P -h` (never following a symbolic link) **only when the root's owner
+  differs**, so an ordinary start walks nothing; it then sets the socket folder to `0700`. It
+  runs no Imperium code. With the default UID it changes nothing. `check-compose.py` asserts
+  that `prepare` is the only service running as root (or with no `user`), that its capabilities
+  are exactly `CHOWN`, `FOWNER` and `DAC_OVERRIDE` after `cap_drop: [ALL]`, that it has
+  `network_mode: none`, the fixed command and no `secrets`, and that no shipped override changes
+  any of this. Rejected: starting the daemon itself as root and dropping privileges (root in
   the long-lived process for the length of start-up, and a privilege-dropping path to get right);
   requiring a rebuilt image per UID.
 - **An arbitrary UID has no `/etc/passwd` entry** on a read-only root, which breaks `ssh` and some
@@ -188,7 +213,9 @@ These are the design choices this plan makes. Each records why and what was reje
     `${IMPERIUM_SOCKET_DIR:-./run}`, prepared `0700` and owned by `IMPERIUM_UID`. The daemon keeps
     today's checks there (folder `0700`, socket `0600`, a stale socket replaced, anything else
     refused) and adds two: the folder must be owned by the daemon's UID and not be a symbolic
-    link.
+    link. The daemon cannot see the host side, so the docs require that the **parent** of
+    `./run` (the stack's folder) is not writable by other users: whoever can write the parent can
+    swap the folder before the bind mount is made.
   - In that folder the daemon also writes `endpoint.json` (mode `0600`): the same
     `DaemonEndpoint` as `daemon.json`, with `socket` naming `daemon.sock` relative to the folder.
   - `imperium remote connect <host> --socket --server-dir <host folder>` reads
@@ -211,7 +238,8 @@ These are the design choices this plan makes. Each records why and what was reje
   `api.openai_compatible.allow_lan` does), which the override sets because the container's own
   interface is not the host's.
   - **Token.** The listener requires `Authorization: Bearer <token>` (or the `imperium.token.<t>`
-    subprotocol) on the upgrade, compared in constant time. The token is the Docker secret
+    subprotocol) on the upgrade. Once TLS is up, the token is the **first** thing checked,
+    compared in constant time, before any failure counter is looked at. The token is the Docker secret
     `imperium-remote-token`, at least 32 bytes of random data (shorter is refused), stable across
     restarts and separate from the daemon's per-launch local token. Without it the listener does
     not start and the daemon logs why. Reason for a separate token: the local token changes at
@@ -229,12 +257,21 @@ These are the design choices this plan makes. Each records why and what was reje
     with a matching pin, given when the remote is added. There is no trust on first use: a client
     never records a pin it was not given. A pin survives certificate renewal while the key is
     kept.
-  - **Rate limits and caps.** Per source address: at most 5 failed upgrades a minute, then each
-    further attempt waits double the last delay up to 15 minutes; at most 16 TLS handshakes a
-    second. Overall: at most 64 open connections, 10 s to finish TLS and the upgrade, and a global
-    ceiling of 60 failures a minute. Behind Docker's userland proxy every client may show the same
-    source address, so the per-address limit can act as a global one; the docs say so. The
-    256-bit token makes guessing hopeless; the limits protect the daemon's resources.
+  - **Rate limits and caps, without lockout.** A correct token always connects, whatever the
+    failure counters say: an attacker who knows only the address cannot lock the owner out by
+    failing on purpose, which matters because behind Docker's userland proxy every client may
+    show the same source address. Failures only **delay the 401 reply**: after 5 failures a minute
+    from one address, each further 401 is sent after double the last delay, up to 30 s (the
+    connection is held, then closed); the delay never applies to a request whose token matches.
+    Resources are bounded separately, before authentication:
+    - at most 16 new TLS handshakes a second per address and 64 overall (excess connections are
+      closed at accept);
+    - at most 32 connections that have not yet authenticated, each closed if TLS and the upgrade
+      are not finished within 10 s;
+    - 64 connections in all, of which 16 slots are reserved for authenticated connections, so
+      unauthenticated traffic can never fill the listener.
+
+    The 256-bit token makes guessing hopeless; the limits protect the daemon's resources.
   - **Paths.** The listener serves only `/rpc`. It does not serve the phone web app, `/pair` or
     the OpenAI-compatible API.
   - **What it is not.** A TLS connection is not the local socket, so the calls the daemon takes
@@ -302,19 +339,34 @@ These are the design choices this plan makes. Each records why and what was reje
 **The mechanism: on a server there is no installed-app identity, so these stay refused.** Every
 desktop-only approval is decided by the daemon from what the operating system says about the
 process on the other end of the local socket ([06](../06-extensibility.md#who-may-grant-trust-and-approval-implemented)):
-it must be the `imperium-desktop` installed beside `imperium-core`, then pass the OS presence
-check. In the image none of that can hold, for reasons that do not depend on configuration:
+it must be the `imperium-desktop` installed beside `imperium-core` (`app_identity`), and a
+terminal grant needs a peer whose ancestry the daemon can walk (`peer::may_grant`). In the image
+these cannot hold, for reasons that do not depend on configuration:
 
-- the image ships no `imperium-desktop`, and the read-only root filesystem means none can be put
-  beside `/usr/local/bin/imperium-core` at run time (stage 7's image test asserts the file is
-  absent);
-- there is no desktop session, so the presence check (polkit, Windows Hello, Touch ID) is never
-  available;
-- a connection over the TLS listener has no peer process at all; over the SSH-forwarded socket
-  the peer is `sshd`, which is already refused; through `docker exec` the peer's parent is outside
-  the container's PID namespace (parent PID 0 while not PID 1), which stage 1 adds as a refusal
-  to the ancestry walk on Linux, so the walk fails closed instead of ending early as it does
-  today for a missing parent.
+- **Plugin approval and the auto-merge challenge: no installed app.** The image ships no
+  `imperium-desktop`, and the read-only root filesystem means none can be put beside
+  `/usr/local/bin/imperium-core` at run time (stage 7's image test asserts the file is absent).
+  That absence is the structural barrier. The presence check is **not** one: as
+  [06](../06-extensibility.md#who-may-grant-trust-and-approval-implemented) and `app_identity`'s
+  check 6 say, an unavailable presence check records a `dialog-only` approval rather than
+  refusing, and a container has no presence provider, so it would be "unavailable".
+- **Terminal grants: the ancestry walk cannot be trusted in a nested PID namespace.** Inside a
+  container a process can double-fork so that it is re-parented to `tini` (PID 1), which carries
+  no `IMPERIUM_SPAWNED_BY_DAEMON` mark and has no `sshd` above it in the namespace, so the walk
+  would pass; a rule on the peer's parent PID does not catch that. Stage 1 therefore adds a
+  structural rule in `peer.rs` and `app_identity`: **when the daemon itself runs in a nested PID
+  namespace** (its `/proc/self/status` `NSpid` line has more than one entry), every terminal
+  grant and every app-identity approval is refused. No setting or environment variable changes
+  this rule; it reads only the kernel's own answer. This also covers a daemon run inside
+  distrobox or toolbox on a desktop: grants and approvals are refused there too, and the docs say
+  to run the daemon on the host to approve. The daemon is **not** made a child subreaper to keep
+  re-parented processes in its tree: a daemon-wide subreaper steals agents' commands' exit
+  statuses, as the terminal plan found.
+- **Peers from outside.** A connection over the TLS listener has no peer process at all. Over the
+  SSH-forwarded socket the peer is the host's `sshd`, outside the container's PID namespace, so
+  `SO_PEERCRED` reports PID 0, which the peer lookup already treats as unknown and refuses
+  (fails closed). `docker exec` peers are inside the namespace and are caught by the nested-
+  namespace rule above.
 
 On top of that structural refusal, a **server mode** gives clear errors early and tells clients:
 the setting `daemon.server` (set by the image as `IMPERIUM_DAEMON__SERVER=true`; environment
@@ -326,7 +378,7 @@ off grants nothing, because the structural checks above still fail.
 | Feature | On a server | `feature` |
 | --- | --- | --- |
 | Plugin approval (`plugins.approval_challenge`, `plugins.approve`) | refused | `plugin_approval` |
-| Presence check | never raised (follows from the row above) | n/a |
+| Presence check | never raised: server mode refuses before it, and the missing app and nested namespace refuse without server mode | n/a |
 | Enabling GitHub auto-merge (`pull_requests.auto_merge_challenge`, `set_auto_merge` with `enabled: true`) | refused; disabling still works from any client | `auto_merge_enable` |
 | Terminal grants (`mods.install` `trusted` and `interactive`) | `trusted` is an error, `interactive` is dropped with a note, as when the check fails today | `terminal_grant` |
 | Secret writes, `mcp.login`, `api.token` rotate | refused ([D4](#d4-secrets-backend)) | `secret_write`, `mcp_login` |
@@ -336,7 +388,7 @@ off grants nothing, because the structural checks above still fail.
 **Carried-over approvals keep working.** Plugin approval records already in `<data>` (a data
 folder restored from a desktop machine) are verified as today by the plugin's hash and run
 summary, and count; stage 1 tests that loading a record does not re-run the desktop identity
-check. Nothing on the server creates a new one. Auto-merge already enabled on GitHub stays
+check or the nested-namespace rule (which applies to making approvals, not to reading them). Nothing on the server creates a new one. Auto-merge already enabled on GitHub stays
 enabled, and the poll still turns it off if the head moves.
 
 ### D6. GPU services
@@ -349,7 +401,10 @@ enabled, and the poll still turns it off if the head moves.
   capabilities: [gpu]}]`, the `imperium-models` volume read-only and the model chosen by
   `LLAMACPP_MODEL` or `VLLM_MODEL`. They join an `internal: true` network shared only with the
   daemon, publish no port, and the override registers them in the daemon as endpoints through the
-  environment layer (`IMPERIUM_ENDPOINTS__LLAMACPP__BASE_URL=http://llamacpp:8080/v1`). vLLM gets
+  environment layer (`IMPERIUM_ENDPOINTS__LLAMACPP__BASE_URL=http://llamacpp:8080/v1`, which the
+  loader splits on `__` and lowercases into `endpoints.llamacpp.base_url`, the same table
+  `[endpoints.<id>]` uses; stage 7 checks it with `imperium config explain
+  endpoints.llamacpp.base_url` in the running container). vLLM gets
   `shm_size` instead of `ipc: host`. A CI check fails when the llama.cpp image's ref differs from
   `LLAMA_CPP_REF` or the vLLM tag from `VLLM_DOCKER_IMAGE`.
 - **Trade-off.** These are static endpoints: one model each, loaded at service start, not
@@ -384,17 +439,31 @@ enabled, and the poll still turns it off if the head moves.
   default and today's behaviour, or `landlock`) selects it; the image sets `landlock` and
   `IMPERIUM_ISOLATION__TIER=os`. In the child, before `exec`, the runner sets `no_new_privs` and
   applies a ruleset that allows:
-  - read and execute: `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc`, `/opt`, `/home/imperium`
-    (read-only, so a command cannot plant git or shell settings that the daemon's own
-    processes later read), `/proc`, and `/dev` device files;
+  - read and execute: `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc`, `/opt`, `/proc`, and
+    `/dev` device files;
+  - from `/home/imperium`, read-only and only these named files: `.gitconfig` and
+    `.ssh/known_hosts`. The rest of `HOME` is unreachable, so credentials a user or tool leaves
+    there (`.ssh/id_*`, `.config/gh/hosts.yml`, `.git-credentials`) cannot be read, and nothing
+    can be planted there for the daemon's own processes to read later. `HOME` stays set, and
+    tools that want a writable cache get one through `XDG_CACHE_HOME` in the per-command
+    temporary folder;
   - read and write: the session's folders and writable grants, and a per-command temporary
     folder under `/tmp` (set as `TMPDIR`);
   - nothing else: `/var/lib/imperium` (config, data, cache, TLS key), `/run/secrets` and the
     socket folder are unreachable.
   Landlock also stops a sandboxed process from tracing or reading the memory of the daemon (a
-  process outside its domain). Network: with `isolation.network = false`, Landlock ABI 4 denies
-  TCP `connect` and `bind` (kernel 6.7 or later); UDP is not covered, and the session label says
-  "TCP blocked" rather than "no network". If the kernel lacks Landlock (or the ABI a setting
+  process outside its domain).
+  - **What Landlock does not mediate.** `connect()` to a pathname Unix socket is not an access
+    Landlock checks, and Landlock has no right for walking a folder, so a sandboxed command
+    **can** connect to `/run/imperium/daemon.sock` even though it cannot read the folder's
+    files. Before ABI 6 (kernel 6.12) Landlock does not scope signals or abstract Unix
+    sockets. The daemon's socket is protected by its token, which lives only in files the ruleset
+    hides (`daemon.json`, `endpoint.json`); stage 8 asserts a token-less connect from inside the
+    sandbox is refused. The loopback WebSocket is protected the same way.
+  - **Network.** With `isolation.network = false`, Landlock ABI 4 denies TCP `connect` and `bind`
+    (kernel 6.7 or later). UDP is not covered, so DNS lookups and any UDP traffic, including
+    exfiltration over DNS queries, still work; the session label says "TCP blocked" rather than
+    "no network", and the docs state the residual. If the kernel lacks Landlock (or the ABI a setting
   needs), commands **fail closed** with a message naming the two choices: a host with Landlock,
   or `isolation.tier = "policy"` set knowingly (which the docs describe as giving agents' commands
   every secret).
@@ -404,17 +473,25 @@ enabled, and the poll still turns it off if the head moves.
   bubblewrap's.
 - **`container` (tier 2) is off.** It needs Docker inside the container (Docker-in-Docker, which
   is privileged) or the host's socket (root on the host). Server mode refuses it (D5).
-- **What tier 1 does not confine.** The daemon's own children (MCP servers, hooks, model
-  runtimes) run outside the Landlock domain, as they run outside bubblewrap today; they are
-  user-configured, and a project's own servers start only in `mcp.trusted_projects`. The daemon's
-  git in agent-writable repositories goes through `safe_git` (no hooks, fsmonitor or filters).
+- **Hooks and workspace MCP servers are confined too, on a server.** With `daemon.server` and
+  the Landlock backend, the daemon applies the same ruleset (the session's folders writable,
+  secrets, data, sockets and the rest of `HOME` hidden) to command hooks and to MCP servers whose
+  command starts in a workspace (a trusted project's `.imperium` servers and any server whose
+  working folder is a session's folder). Otherwise a hook or a workspace server would be a
+  tier-1 bypass: a repository could ship one that reads `/run/secrets`. A server that needs a
+  secret gets it through `secret_env` or headers, from the daemon, not by reading the file.
+  Still outside the domain, and documented as such: user-level MCP servers configured in the
+  user's own config (trusted like the daemon), HTTP hooks (they run no process), and model
+  runtimes. The daemon's git in agent-writable repositories goes through `safe_git` (no hooks,
+  fsmonitor or filters).
 
 ### D8. Testing in CI
 
 - **A `server` job in `ci.yml`**, run when `detect.sh` reports `server` changes (`deploy/server/**`,
   `crates/**`, `Cargo.lock`, the workflow), with an always-run gate so a skipped job is not left
-  pending. It builds x64 release binaries, builds the image (and the arm64 image under QEMU,
-  build only), starts the stack, and drives it ([stage 8](#stage-8-ci-server-job)). Docker in a
+  pending. It has two legs, `ubuntu-latest` (amd64) and `ubuntu-22.04-arm` (arm64); each builds
+  that architecture's release binaries natively, builds the image, starts the stack, and drives it
+  ([stage 8](#stage-8-ci-server-job)). No QEMU. Docker in a
   hosted runner is fine; **nothing in this plan needs a local Docker run**, and no local check
   stands in for the job.
 - **The fake model server** is `deploy/server/ci/fake-model.py`: Python's standard library only,
@@ -427,7 +504,7 @@ enabled, and the poll still turns it off if the head moves.
 
 ### D9. Protocol
 
-One minor at merge of [stage 1](#stage-1-server-mode-and-refusals) (0.61 if nothing else lands
+One minor at merge of [stage 1](#stage-1-server-mode-and-refusals) (0.62 if nothing else lands
 first): `HandshakeResult.server` and the `-32010` error. Later stages change files, not the wire:
 `DaemonEndpoint` gains an optional `pin` for recorded remotes. See
 [protocol additions](#protocol-additions).
@@ -452,7 +529,10 @@ Implemented:
   Both are writable; nothing reads a folder of plain files.
 - **Desktop-only gates.** `app_identity` decides plugin approvals and the auto-merge challenge
   from the local-socket peer; `mods.install` grants walk the peer's ancestry and refuse `sshd`
-  and the `IMPERIUM_SPAWNED_BY_DAEMON` mark; a missing parent ends the walk.
+  and the `IMPERIUM_SPAWNED_BY_DAEMON` mark (`crates/imperium-core/src/peer.rs`); a peer the
+  process table does not have (as PID 0 from outside the namespace) is refused, while a missing
+  parent ends the walk and allows. An unavailable presence check records `dialog-only`.
+  Protocol is at 0.61 after the merge with `experimental`, so stage 1 takes 0.62 or later.
 - **Isolation.** Tiers `policy`, `os` (bubblewrap on Linux, Seatbelt on macOS, with masks for
   the daemon's folders) and `container` (`docker run`) in `crates/imperium-tools/src/sandbox.rs`.
 - **Runtimes.** llama.cpp release builds installed into `<data>/runtimes`; vLLM in a managed `uv`
@@ -507,18 +587,26 @@ the internet, a world-readable secret file, a weak token).
 
 1. **Network access without credentials.** Mitigations: nothing is published by default (goal 3);
    the TLS listener needs the override, a non-loopback bind chosen by the operator, and a token
-   secret of at least 256 bits, without which it does not start; the token is checked before the
-   WebSocket upgrade, in constant time; only `/rpc` is served; rate limits and caps bound failed
-   attempts and open connections. The healthcheck uses no network route.
+   secret of at least 256 bits, without which it does not start; the token is checked first once
+   TLS is up, in constant time, before the WebSocket upgrade; only `/rpc` is served; failures
+   delay only their own 401 replies, so an attacker cannot lock the owner out, while handshake
+   rates, a pre-authentication cap, reserved authenticated slots and a 10 s timeout bound
+   resources. The healthcheck uses no network route. Published ports bypass host firewalls such
+   as `ufw` (Docker writes its own iptables rules), so a non-loopback `IMPERIUM_TLS_BIND` is
+   reachable whatever `ufw` says; the docs say so.
 2. **Interception and impersonation.** TLS 1.3 only; clients verify through the platform
    verifier or a pin given at setup, never trust on first use; a pin mismatch stops the client
    before it sends the token. Over SSH, OpenSSH's host-key checking applies and the local end of
    the forward is `0600`.
-3. **Token theft from inside the container.** The remote token, the TLS key, `daemon.json` and
-   the secrets are under `/run/secrets`, `/var/lib/imperium` and `/run/imperium`, which tier 1's
-   Landlock ruleset leaves out of reach of agents' commands; Landlock also blocks tracing the
-   daemon. With tier 0 chosen knowingly, a command can read them all; the docs say so plainly.
-   The daemon's own children (MCP servers, hooks) are not confined (D7).
+3. **Token theft from inside the container.** The remote token, the TLS key, `daemon.json`,
+   `endpoint.json` and the secrets are under `/run/secrets`, `/var/lib/imperium` and
+   `/run/imperium`, which tier 1's Landlock ruleset leaves out of reach of agents' commands, as
+   it does every file under `HOME` but `.gitconfig` and `.ssh/known_hosts`; Landlock also blocks
+   tracing the daemon. A command can still `connect()` to the daemon's socket (Landlock does not
+   mediate it), where the token it cannot read is required. Command hooks and workspace MCP
+   servers get the same ruleset on a server; user-level MCP servers and model runtimes do not
+   (D7). With tier 0 chosen knowingly, a command can read everything; the docs say so plainly.
+   With `isolation.network = false`, UDP and DNS stay open (D7).
 4. **Secrets leaking through configuration.** Secrets are only files under `/run/secrets`; the
    compose files never carry one in `environment`, labels or interpolation (`check-compose.py`);
    environment variables carry backend names and paths only. `docker compose config` output can
@@ -526,25 +614,32 @@ the internet, a world-readable secret file, a weak token).
    it. The directory store opens with `O_NOFOLLOW`, caps size, and never logs a value.
 5. **Writes that would silently land somewhere weaker.** A secret write on a server is refused
    (`-32010`), never written to `secrets.enc`, the data volume or a log.
-6. **Desktop-only approvals obtained on a server.** Refused structurally (no installed app, no
-   presence, peers that are `sshd`, absent, or entered from outside the PID namespace) and by
-   server mode (D5). A derived image that adds a file named `imperium-desktop` still gets no
-   approval: server mode refuses before any check, and the presence check is unavailable.
+6. **Desktop-only approvals obtained on a server.** Refused structurally and by server mode
+   (D5). Structurally: there is no `imperium-desktop` to match; the daemon runs in a nested PID
+   namespace, so every terminal grant and app-identity approval is refused whatever the peer's
+   ancestry looks like (which defeats double-forking to `tini`); a TLS peer has no process; an
+   SSH-forwarded peer reads as PID 0 and fails closed. The presence check is not a barrier: where
+   it is unavailable it would record `dialog-only`. A derived image that adds a file named
+   `imperium-desktop` still gets no approval, because the nested-namespace rule refuses before the
+   app is matched, and server mode refuses before both.
 7. **Host compromise through the container.** Non-root user, every capability dropped,
    `no-new-privileges`, read-only root, default seccomp and AppArmor kept, no Docker socket, no
    privileged mode, no Docker-in-Docker. The `prepare` service is the only root process: no
-   network, three capabilities, a fixed script, no symlink following.
+   network, three capabilities, a fixed script, no secrets, no symlink following, and a recursive
+   walk only when a root's owner differs; `check-compose.py` pins that shape.
 8. **Other local users on the host.** The socket folder is `0700` and the socket `0600`, owned by
    `IMPERIUM_UID`; the daemon refuses a socket folder it does not own or that is a link; secret
    files must be `0400` or `0600` for that UID (the docs give the commands; the daemon warns when
-   a secret file is readable by others, which it can see through `stat`).
+   a secret file is readable by others, which it can see through `stat`). The parent of the
+   host's `./run` must not be writable by other users (D3).
 9. **Model services as a side door.** `llamacpp` and `vllm` publish no port and sit on an
    internal network with only the daemon; they hold no secret. An agent's command in the daemon's
    container can call them, which costs only GPU time, as a local model does on a desktop.
 10. **Supply chain.** Base and service images pinned by digest; actions pinned by SHA; binaries
     from the same build as the release archives; SBOM and provenance attached; the index signed
-    with cosign keyless; Trivy gates the build. Users verify with `cosign verify` before pulling
-    a new tag; the release's compose file pins the digest.
+    with cosign keyless; Trivy gates the build. Users verify a digest with `cosign verify` and the
+    exact per-channel identity of D1, then pull that digest, never the tag again; the release's
+    compose file pins the digest.
 11. **Denial of service.** Connection caps, handshake timeouts and back-off on the TLS listener;
     `pids_limit` and an optional memory limit on the service; `tmpfs` size cap. A restart loses
     no session (journals).
@@ -559,7 +654,7 @@ the internet, a world-readable secret file, a weak token).
 | Error `-32010` `UNAVAILABLE_ON_SERVER` | 1 | `data: {feature, secret?}`, `feature` one of `plugin_approval`, `auto_merge_enable`, `terminal_grant`, `secret_write`, `mcp_login`, `container_tier`, `vllm_docker` |
 | `DaemonEndpoint.pin` (optional string) | 6 | a recorded remote's certificate pin; a file format in `imperium-protocol`, not a wire change |
 
-Stage 1 takes the next protocol minor at its merge (0.61 if no other change lands first) and
+Stage 1 takes the next protocol minor at its merge (0.62 if no other change lands first) and
 updates `PROTOCOL_VERSION`, [02](../02-architecture.md#protocol), the method snapshot and the
 generated TypeScript types. No method is added or removed. The TLS listener speaks the same
 JSON-RPC as the loopback WebSocket.
@@ -578,8 +673,11 @@ Config added (all user layer or environment; none readable from a project's file
 
 ## Assumptions
 
-- Docker Engine 24 or later with Compose v2.24 or later on the server; the NVIDIA Container
-  Toolkit for the GPU overrides.
+- **Docker Engine 28 or later** with Compose v2.24 or later on the server; the NVIDIA Container
+  Toolkit for the GPU overrides. Earlier Engines let other hosts on the LAN reach a port
+  published on `127.0.0.1` (direct routing to the bridge), which would undo goal 3; the docs
+  require 28 and `check-compose.py` cannot check the Engine, so the guide's install steps do.
+  Published ports bypass `ufw` and similar host firewalls on every version.
 - Host kernels with Landlock enabled (Ubuntu 22.04 and later, Debian 12 and later with the
   default LSM list) for tier 1; ABI 4 (kernel 6.7) for `isolation.network = false`. Verified on
   the hosted runner in stage 3; elsewhere it fails closed.
@@ -616,14 +714,14 @@ estimates of changed lines, tests included.
 
 | Stage | Name | Depends on | Estimate |
 | --- | --- | --- | --- |
-| 1 | Server mode and refusals | none | 650 |
+| 1 | Server mode, refusals and the nested-namespace rule | none | 750 |
 | 2 | Read-only directory secrets | 1 | 600 |
-| 3 | Landlock backend for tier 1 | none | 750 |
+| 3 | Landlock backend for tier 1, hooks and workspace MCP servers | none | 850 (split 3a/3b if past 800) |
 | 4 | Socket folder and the SSH path into a container | none | 450 |
-| 5 | TLS listener | 1, 2 | 750 |
+| 5 | TLS listener | 1, 2 | 800 |
 | 6 | Pinned TLS client in the CLI | 5 | 500 |
 | 7 | Image and compose files | 1 to 4 | 600 |
-| 8 | CI server job | 5 to 7 | 650 |
+| 8 | CI server job | 5 to 7 | 750 |
 | 9 | Publishing to GHCR | 7, 8 | 400 |
 | 10 | Desktop app connects to a server | 4 to 6 | 750 |
 | 11 | Docs and close-out | all | 350 |
@@ -635,25 +733,37 @@ estimates of changed lines, tests included.
   `plugins.approval_challenge`, `plugins.approve`, `pull_requests.auto_merge_challenge`,
   `pull_requests.set_auto_merge` (`enabled: true` only), `mods.install` grants,
   `isolation.tier = "container"` (config validation and session start) and Docker-mode vLLM; the
-  Linux ancestry walk refuses a peer whose parent PID is 0 while it is not PID 1; SIGTERM on Unix
-  runs the same shutdown as Ctrl+C. Protocol minor bump.
+  **nested-PID-namespace rule** of D5 on Linux: `peer::may_grant` and `app_identity` refuse every
+  terminal grant and app-identity approval when the daemon's own `NSpid` line has more than one
+  entry, whatever any setting says; SIGTERM on Unix runs the same shutdown as Ctrl+C. Protocol
+  minor bump.
 - Depends on: none.
 - Owned paths: `crates/imperium-protocol/src/{lib.rs,jsonrpc.rs,methods/system.rs}`,
   `packages/protocol/src/generated/`, `crates/imperium-config/src/{settings.rs,registry.rs}`,
-  `crates/imperium-core/src/{main.rs,rpc/*,app_identity/*,mod_install.rs,automerge.rs}`,
+  `crates/imperium-core/src/{main.rs,peer.rs,rpc/*,app_identity/*,mod_install.rs,automerge.rs}`,
   `crates/imperium-local/src/vllm_env.rs`, `crates/imperium-core/tests/server_mode.rs` (new),
   docs 02, 05, 06.
 - Acceptance checks: `cargo test` (CI): with `daemon.server` each refused call returns `-32010`
   and the right `feature`, and nothing is recorded; without it today's behaviour is unchanged
   (existing tests); a `config.toml` setting `daemon.server = false` does not override
   `IMPERIUM_DAEMON__SERVER=true`; a carried-over plugin approval record still counts in server
-  mode; `set_auto_merge` with `enabled: false` still works; a fake peer with parent PID 0 is
-  refused a `trusted` grant; SIGTERM on a test daemon removes `daemon.json` and the socket. The
-  handshake snapshot shows `server`. `cargo clippy` clean.
+  mode; `set_auto_merge` with `enabled: false` still works; SIGTERM on a test daemon removes
+  `daemon.json` and the socket. Namespace rule, through a **test seam**: a pure
+  `nested_pid_namespace(status: &str) -> bool` parser of `/proc/self/status` text and a
+  `NamespaceReader` the grant paths take (the real one reads `/proc/self/status`; tests inject
+  one): an `NSpid` line with one entry allows today's checks to run, two or more entries refuse a
+  `trusted` grant and a plugin approval even for a peer the ancestry walk would accept, a missing
+  or unreadable line refuses (fail closed), and `IMPERIUM_*` variables and every config layer
+  leave the answer unchanged. A peer reported as PID 0 is refused (existing behaviour, now
+  tested). The handshake snapshot shows `server`. `cargo clippy` clean.
 - Status: pending.
 - Outcome:
-- Handoff notes: the refusals sit at the RPC boundary before any challenge is issued, so the
-  existing identity code is untouched.
+- Handoff notes: server mode's refusals sit at the RPC boundary before any challenge is issued.
+  The nested-namespace rule is the one change inside the identity code: it is a guard at the top
+  of `peer::may_grant` and of the app-identity check, evaluated before the walk, and it does not
+  replace the walk. No subreaper is added (it would take agents' commands' exit statuses). On a
+  desktop running the daemon in distrobox or toolbox, grants and approvals are refused after this
+  stage; docs 06 says so.
 
 ## Stage 2: Read-only directory secrets
 
@@ -682,18 +792,27 @@ estimates of changed lines, tests included.
 
 - Objective: `isolation.os_backend = "landlock"` in `Sandbox::Os` on Linux, with the ruleset of
   [D7](#d7-sandbox-tiers-inside-the-container), a per-command `TMPDIR`, TCP denial when the ABI
-  allows it and a fail-closed error otherwise; the session label names the backend. First step:
+  allows it and a fail-closed error otherwise; the session label names the backend. With
+  `daemon.server` and the Landlock backend, the same ruleset is applied to command hooks and to
+  MCP servers started in a workspace (D7). First step:
   a CI probe that Docker's default seccomp profile allows the Landlock calls on the runner (a
   tiny static test binary in `docker run --rm` with the default profile); if not, add
   `deploy/server/seccomp.json` (default plus the three calls) and say so in D7 before going on.
 - Depends on: none (the server image consumes it in stage 7).
 - Owned paths: `crates/imperium-tools/src/{sandbox.rs,sandbox_landlock.rs (new)}`,
   `crates/imperium-tools/Cargo.toml` (`landlock` crate, Linux only),
-  `crates/imperium-config/src/settings.rs`, `.github/workflows/ci.yml` (probe step), docs 05.
-- Acceptance checks: `cargo test -p imperium-tools` on the Linux CI runner: a command can write in
-  the workspace and its `TMPDIR`; reading a file under a stand-in for `/run/secrets`, the data
-  folder and the socket folder fails with permission denied; writing to `$HOME` fails; reading
-  `/proc/<daemon pid>/environ` fails; a `connect` to a loopback port fails with
+  `crates/imperium-config/src/settings.rs`, the spawn points of command hooks
+  (`crates/imperium-extensions/src/lib.rs`) and MCP servers (`crates/imperium-mcp/src/servers.rs`),
+  `.github/workflows/ci.yml` (probe step), docs 05. If the hook and MCP part pushes the stage past
+  about 800 lines it is split into 3a (backend) and 3b (hooks and MCP servers).
+- Acceptance checks: `cargo test -p imperium-tools -p imperium-extensions -p imperium-mcp` on the
+  Linux CI runner: a command can write in the workspace and its `TMPDIR`; reading a file under a
+  stand-in for `/run/secrets`, the data folder and the socket folder (its `endpoint.json`
+  included) fails with permission denied; with a stand-in `HOME` holding `.gitconfig`,
+  `.ssh/known_hosts`, `.ssh/id_ed25519`, `.config/gh/hosts.yml` and `.git-credentials`, only the
+  first two can be read, and writing anywhere in `HOME` fails; reading
+  `/proc/<daemon pid>/environ` fails; a command hook and a workspace MCP server started in server
+  mode get the same denials; a `connect` to a loopback port fails with
   `isolation.network = false` where ABI 4 is present (skipped with a logged reason where not); a
   forced "no Landlock" path fails the command with the documented message and never runs it
   unconfined. bubblewrap's tests unchanged. `cargo clippy` clean.
@@ -737,8 +856,11 @@ estimates of changed lines, tests included.
   shorter than 32 bytes, keeps the listener off with a log line; a non-loopback `listen` without
   `allow_non_loopback` is refused; with a test client: the right token and pin connect and
   handshake; no token and a wrong token get 401 before any frame; the sixth failure in a minute
-  from one address is delayed; the 65th connection is refused; an idle TLS handshake is closed at
-  10 s; TLS 1.2 is refused; any path but `/rpc` is 404 after authentication and 401 before it;
+  from one address gets its 401 late; **while that address is in back-off, a client from it with
+  the correct token connects and completes the handshake within 1 s**; with 32 unauthenticated
+  connections held open, a 33rd unauthenticated one is closed while an authenticated client still
+  connects (the reserved slots); handshakes over the per-address rate are closed at accept; an
+  idle TLS handshake is closed at 10 s; TLS 1.2 is refused; any path but `/rpc` is 404 after authentication and 401 before it;
   the generated key is `0600` and kept across restarts; a desktop-only call over TLS returns
   `-32010` in server mode and is refused as not-local outside it.
 - Status: pending.
@@ -770,18 +892,24 @@ estimates of changed lines, tests included.
 - Objective: `deploy/server/` with the `Dockerfile` ([D1](#d1-image)), the entrypoint (NSS wrapper
   when needed), `prepare-volumes`, `docker-compose.yml` ([D2](#d2-the-daemon-in-a-container)),
   `docker-compose.tls.yml`, `docker-compose.llamacpp.yml`, `docker-compose.vllm.yml`,
-  `docker-compose.gpu.yml`, `secrets/README` (no secrets), `check-compose.py`, and the image's
+  `docker-compose.gpu.yml`, `secrets/README` (no secrets), `check-compose.py` (including the
+  `prepare` shape of D2), and the image's
   environment (`IMPERIUM_HOME`, `IMPERIUM_DAEMON__SERVER`, `IMPERIUM_SECRETS__STORE`,
   `IMPERIUM_ISOLATION__TIER`, `IMPERIUM_ISOLATION__OS_BACKEND`, `IMPERIUM_DAEMON__SOCKET_DIR`,
   `IMPERIUM_WORKSPACES__ROOT`, `IMPERIUM_GITHUB__TOKEN_SOURCE`, `IMPERIUM_NO_DAEMON_SPAWN`).
 - Depends on: stages 1 to 4 (the settings the image sets must exist).
 - Owned paths: `deploy/server/**`, `scripts/ci/detect.sh` (the `server` output),
   `.github/workflows/ci.yml` (a build-only step until stage 8).
-- Acceptance checks: in CI, `docker build` succeeds for x64; `check-compose.py` passes on every
+- Acceptance checks: in CI, `docker build` succeeds natively on `ubuntu-latest` (amd64) and
+  `ubuntu-22.04-arm` (arm64); `check-compose.py` passes on every
   shipped file and fails on fixtures with a public port, a Docker socket mount, a secret in
-  `environment` and a missing `read_only`; `python3 -m pytest deploy/server` covers it;
-  `prepare-volumes` under a test with a symbolic link to a file outside the volume leaves the
-  target's owner unchanged; the image has no `imperium-desktop`; under UID 1001 `id -un` and
+  `environment`, a missing `read_only`, a second root service, an extra capability on `prepare`,
+  `prepare` given a network, a secret or another command, and an override that changes `prepare`;
+  `python3 -m pytest deploy/server` covers it; `prepare-volumes` under a test with a symbolic link
+  to a file outside the volume leaves the target's owner unchanged, and with the roots already
+  owned by the target UID it walks nothing (no recursive `chown` is run);
+  `imperium config explain endpoints.llamacpp.base_url` in the container shows the value from the
+  llama.cpp override's environment variable; the image has no `imperium-desktop`; under UID 1001 `id -un` and
   `ssh -V` work; the llama.cpp and vLLM pins match `runtimes/*.env`. `hadolint` and
   `actionlint` clean.
 - Status: pending.
@@ -791,10 +919,11 @@ estimates of changed lines, tests included.
 
 ## Stage 8: CI server job
 
-- Objective: the `server` job of [D8](#d8-testing-in-ci) and its gate: build x64 release
-  binaries, build the image, build arm64 under QEMU (no run), `docker compose -f
-  docker-compose.yml -f docker-compose.tls.yml -f deploy/server/ci/docker-compose.ci.yml up
-  --wait` with test secrets generated in the job and `IMPERIUM_UID=$(id -u)`, then:
+- Objective: the `server` job of [D8](#d8-testing-in-ci) and its gate. On each leg
+  (`ubuntu-latest` amd64, `ubuntu-22.04-arm` arm64): build that architecture's release binaries,
+  build the image, `docker compose -f docker-compose.yml -f docker-compose.tls.yml -f
+  deploy/server/ci/docker-compose.ci.yml up --wait` with test secrets generated in the job and
+  `IMPERIUM_UID=$(id -u)`, then (steps 6 and 7 on the amd64 leg only):
   1. healthcheck healthy (`docker inspect --format '{{.State.Health.Status}}'`);
   2. start the runner's `sshd` with a throwaway key and run `imperium remote connect localhost
      --socket --server-dir "$PWD/run"` in the background (recorded, stopped at the end);
@@ -803,11 +932,22 @@ estimates of changed lines, tests included.
      token on standard input; `imperium --remote tls ping`; `curl` without a token and with a
      wrong one gets 401; a wrong pin fails;
   4. `imperium --remote ci run --headless --json --task deploy/server/ci/task.json --workspace
-     /workspaces/ci --root-model http://fake-model:8080/v1#fake --permission-mode full`: the
-     fake model's scripted `run_command` runs `cat /run/secrets/imperium-remote-token;
-     cat /var/lib/imperium/data/daemon.json; ls /run/imperium`; the job asserts the run succeeded,
-     the fake recorded the tool result, and the result shows permission denied for all three and
-     contains no token;
+     /workspaces/ci --root-model http://fake-model:8080/v1#fake --permission-mode full`. The
+     CLI checks that `--workspace` is a folder **on the client** before sending it
+     (`crates/imperium-cli/src/eval.rs`, `run`), while the daemon uses the path on the server. So
+     the job creates the same path on both sides: `sudo mkdir -p /workspaces/ci && sudo chown
+     "$(id -u)" /workspaces/ci` on the runner, and the folder in the `imperium-workspaces` volume
+     through `docker compose exec imperium mkdir -p /workspaces/ci`. The CLI's eval code is not
+     changed (another session owns `eval*`); a server-aware workspace check is left for later. The
+     fake model's scripted `run_command` runs, each separately so one failure does not hide the
+     next: `cat /run/secrets/imperium-remote-token`, `cat /var/lib/imperium/data/daemon.json`,
+     `cat /run/imperium/endpoint.json`, `ls /run/imperium`, `cat ~/.ssh/id_ed25519`,
+     `cat ~/.config/gh/hosts.yml`, `cat ~/.git-credentials` (the CI override seeds those three
+     `HOME` files with sentinels before the run, with `docker compose exec imperium` writing as the
+     daemon's user outside any sandbox, so `prepare` keeps its fixed shape), and a token-less
+     WebSocket connect to `/run/imperium/daemon.sock` with `curl --unix-socket`. The job asserts
+     the run succeeded, the fake recorded the tool results, each read shows permission denied,
+     the socket connect gets 401, and no token or sentinel appears anywhere in the result;
   5. call each desktop-only method over both paths and assert `-32010`;
   6. `docker compose config` for the llama.cpp, vLLM and GPU overrides, through
      `check-compose.py`;
@@ -855,7 +995,9 @@ estimates of changed lines, tests included.
   instead of an input on a server.
 - Depends on: stages 4 to 6.
 - Owned paths: `apps/desktop/src-tauri/src/` (server connections), `apps/desktop/src/`
-  (settings page, connection, badge, Plugins window), `apps/desktop/test/`, docs 07.
+  (settings page, connection, badge, Plugins window), `apps/desktop/test/`, docs 07 (which also
+  gains goal 7's list of what agents' commands cannot read on a server, shown in the server's
+  settings page).
 - Acceptance checks: `npm test` and `cargo test` (CI): the forwarder refuses a wrong pin; the
   token never reaches the webview's storage, logs or the remote record; with a handshake of
   `server: true` the hidden controls are absent from the rendered tree; an SSH server's record
@@ -899,12 +1041,14 @@ estimates of changed lines, tests included.
    `X.Y.<run>-experimental`)? This plan assumes yes, since experimental is the channel in use.
 2. Is `ghcr.io/densetsu152637/imperium-server`, public, the name and visibility you want?
    Making the package public is a one-time setting only the owner can change.
-3. Default tier: `os` with Landlock, failing closed where a host lacks it (this plan), or `policy`
-   with a start-up warning that agents' commands can read every secret?
+3. Default tier: `os` with Landlock, failing closed where a host lacks it (this plan, which the
+   plan-gate review accepted now that `HOME` is limited to named files), or `policy` with a
+   start-up warning that agents' commands can read every secret?
 4. A writable store for credentials the daemon itself mints (MCP OAuth tokens), encrypted in the
    data volume with a key from a Docker secret: a later roadmap item, or never on a server?
-5. Agents' commands on a server have no git credentials (the daemon's own pushes do). Should a
-   per-environment opt-in hand them a token or a deploy key from a Docker secret, as
-   `github.session_gh` does on a desktop?
-6. Serve phones through the TLS listener with the existing scoped device tokens, as a follow-up
-   item?
+5. Agents' commands on a server have no git credentials (the daemon's own pushes do). The
+   answer is an **opt-in**: a per-environment setting that hands them a token or a deploy key
+   from a Docker secret, off by default, as `github.session_gh` does on a desktop. Left open:
+   whether it is built in this item (a stage after stage 3) or as a follow-up.
+6. Phones through the TLS listener, with the existing scoped device tokens, are a **follow-up**
+   item after this plan; the lockout-free limits of stage 5 are its prerequisite. Left open: when.
