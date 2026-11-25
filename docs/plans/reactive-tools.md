@@ -1,7 +1,7 @@
 # Plan: reactive tool loading and the knowledge-source rule
 
-Revision: 2026-11-25, revision 2 (plan critic round 1: findings 1 to 10 folded in, and the root's
-answers to the first open questions recorded as [settled decisions](#settled-decisions));
+Revision: 2026-11-25, revision 3 (plan critic round 1: findings 1 to 10; delta review: N1 to N6;
+the root's answers to the first open questions recorded as [settled decisions](#settled-decisions));
 written against `experimental` at `a85f1310`. Roadmap [item 61](../12-roadmap.md#next-in-order).
 Status: planned.
 
@@ -69,9 +69,11 @@ request from a script and records every request body.
    same refusals, hooks and approvals as a direct call, in the same order. A variant's dropped
    tool cannot be found, run or called directly, and each such refusal is reported in the result
    JSON's warnings; a renamed tool cannot be used to bypass a refusal keyed on the engine's name.
-   On mode refuses calls that off mode runs today because the engine does not check what was
-   offered (listed in R4). Check: stage 2, 3 and 4 permission tests, including a renamed
-   `run_command` under a shell-locked profile.
+   A `tool.before` hook sees, rewrites and blocks the inner tool of a `call_tool` exactly as it
+   would a direct call. On mode refuses calls that off mode runs today because the engine does not
+   check what was offered (listed in R4); off mode dispatches exactly as today. Check: stage 2, 3
+   and 4 permission tests, including a renamed `run_command` under a shell-locked profile, hook
+   rewrite and block through `call_tool`, and the off-mode dispatch regression test.
 6. **Off is byte-identical.** With loading off, the tools sent are byte-identical to today's, in
    today's order. Check: stage 2 snapshot test against the list the pre-change code built.
 7. **Evaluations can see and control it.** `--print-prompt` shows the deferred tools; the result
@@ -178,7 +180,7 @@ works with llama.cpp's grammar, reliable for a 4B model, permissions unchanged):
 | Design | Cache cost per load (Qwen3.5 and hosted) | Grammar | Argument checking | Verdict |
 | --- | --- | --- | --- | --- |
 | Append the loaded schema to `tools` (revision 1) | Re-prefill after the changed position: the trailer, the whole system prompt and the whole conversation (hosted: the system prompt and conversation) | Works for loaded tools; a direct call to an unloaded tool cannot be emitted, so revision 1's implicit load was unreachable locally | Per-tool grammar and schema | Rejected |
-| `call_tool` proxy, fixed list | None: only the new result tokens, as for any tool result | Works: `call_tool` is declared; its `arguments` is constrained to a JSON object | The grammar guarantees valid JSON only; the engine checks the arguments against the tool's schema and returns the error with the schema | **Chosen** |
+| `call_tool` proxy, fixed list | None: only the new result tokens, as for any tool result | Works: `call_tool` is declared; its `arguments` is constrained to a JSON object | The grammar guarantees valid JSON only; the tool's own parser accepts or rejects the arguments exactly as for a direct call, and a rejection carries the schema | **Chosen** |
 | Send everything (today) | None | Works | Per-tool | Kept as `off` |
 | Static smaller set (the pilot variant) | None | Works | Per-tool | Rejected for the product (loses tools); possible as a variant (`tools.core`) |
 | Per-message relevance selection | A re-prefill on most turns | Works | Per-tool | Rejected |
@@ -187,7 +189,7 @@ Why the proxy: with tools rendered before the system prompt, appending is the mo
 option (each load repeats the whole conversation's prefill), and the grammar makes direct calls to
 unlisted tools impossible, so a call proxy is the only design in which the list is constant and
 every tool is callable. What it costs: the inner arguments lose grammar-level schema enforcement
-(the engine validates instead, with an error carrying the schema, while the proxy's own `name`
+(the tool's own parser judges them as for a direct call, and a rejection carries the schema, while the proxy's own `name`
 and `arguments` stay grammar-checked), a searched tool's schema sits in the conversation (where
 compaction can remove it, see [R6](#r6-sessions-compaction-subagents-named-agents-forks-and-reviews)),
 and the model writes one extra level of nesting. Revisit (switch to append, or offer both) if
@@ -243,45 +245,68 @@ no finish tool, a turn ends on a reply without calls, and a plan is optional). R
 The **universe** of an agent is the list `tool_specs` builds today for that agent with loading
 off, after every filter (permission profile and shell lock, MCP and plugin allowlists,
 named-agent narrowing, `can_delegate`, `can_ask` and fork state, harness gating), plus activated
-plugins' tools, minus a variant's dropped tools (root only). It is recomputed at each turn
-boundary; the offered list is derived from it but stays fixed (goal 4). Core and deferred tools
-are both in it.
+plugins' tools, minus a variant's dropped tools (root only). The **offered list** is derived from
+it once, at session start, and stays fixed (goal 4); the **universe** is recomputed **at dispatch
+time** for each call, so a plugin another agent of the session activated mid-turn is reachable at
+once and nothing is refused against a stale universe. Core and deferred tools are both in it.
 
 Every call, whether direct, through `call_tool`, or a direct call to a deferred name (possible on
 endpoints that do not constrain names, and in recorded scripts), is dispatched in this order:
 
-1. Unwrap `call_tool` into the inner name and arguments. `tool_search` and `call_tool` themselves
-   are not subject to the launcher's or a fork's refusal; their inner calls are.
+1. **Effective call.** `run_tool` (not `run_tool_once`) turns a `call_tool` call into an
+   **effective call**: a `ToolCall` with the inner name and arguments and the outer call's `id`.
+   Everything after this step, including the hook-rewrite retry in `run_tool` (which today clones
+   the call and re-runs `run_tool_once` with the rewritten arguments), works on the effective call,
+   so a `tool.before` hook sees, rewrites or blocks the inner tool with inner-shaped arguments, and
+   a rewrite stays the same inner tool. The turn loop also uses the effective call: `activates`
+   (an `activate_plugin` round) and `instructions::touched_dir(..., name, ...)` key on the inner
+   name, so `call_tool(read_file)` loads the directory's instruction files as a direct
+   `read_file` does. `call_tool` whose inner name is `call_tool` or `tool_search` is refused
+   ("call it directly"). `tool_search` and `call_tool` themselves are not subject to the
+   launcher's or a fork's refusal; their inner calls are.
 2. Map a variant's renamed name back to the engine's name (root only; [R7](#r7-evaluations)), so
    every later check sees engine names.
 3. Fork refusal (`fork::refusal` on the inner name), launcher refusal (`restricted` on the inner
    name), named-agent refusal, permission-profile refusal, in today's order.
-4. Universe membership: a name outside the universe is refused ("<name> is not one of your
-   tools").
-5. Argument check against the tool's schema for calls through `call_tool` and direct calls to
-   deferred names; on failure the error carries the schema.
-6. Today's dispatch: hooks, approvals, events (with the inner tool's name and arguments), run.
+4. Universe membership, **on mode only**: a name outside the universe as computed now is refused
+   ("<name> is not one of your tools"). In off mode this step is skipped and dispatch is exactly
+   today's.
+5. Today's dispatch: hooks, approvals, events (with the inner tool's name and arguments), and the
+   tool's own argument parsing (`Invocation::parse` in `run_builtin`, each agent tool's `parse`,
+   each provider's own handling), so `call_tool` accepts exactly the arguments a direct call
+   accepts. There is no separate schema validation: when that parsing fails for a call through
+   `call_tool` or a direct call to a deferred name, the error result gets the tool's schema
+   appended, as advice.
 
-The journal and the transcript keep the call as the model made it; `tool_started` and
-`tool_finished` carry the inner tool, so the desktop's tool cards, approvals and hooks show the
-real tool.
+The journal and the transcript keep the call as the model made it (the outer `call_tool`), so the
+history sent back to the model shows the calling form its grammar allows; `tool_started` and
+`tool_finished` carry the effective call, so the desktop's tool cards, approvals and hooks show
+the real tool. Code that reads tool calls back out of messages goes through one helper,
+`effective_call(&ToolCall)` ([R9](#r9-code-that-reads-calls-back-from-messages)).
 
 On mode refuses calls that off mode runs today, because step 4 checks the universe and today's
 dispatch does not check what was offered: `ask_agent` and `list_knowledge_agents` where `can_ask`
 is false or no knowledge agent exists yet, harness tools while their aid is off for the current
 model (after a switch), a tool hidden by a named agent's list that today's arms would still run,
-and a variant's dropped tool. Stage 2 lists each with a test.
+and a variant's dropped tool. Stage 2 lists each with a test, and an off-mode regression test
+shows each still runs when loading is off (for example `ask_agent` with `can_ask` false).
 
 ### R5. `tool_search` and `call_tool` contracts
 
 - `tool_search({ query?: string, names?: [string] })`. `names` (exact names, or
   `mcp__<server>__*`) returns those tools' full schemas; `query` matches words against names and
   descriptions and returns up to five full schemas, then up to ten more as `name: first sentence`
-  lines; neither returns the catalog as `name: first sentence` lines. The result is JSON
-  (`{"tools": [{"name", "description", "parameters"}], "more": [...], "unknown": [...]}`) so the
-  evaluation boundary can rewrite names ([R7](#r7-evaluations)). An unknown name gets up to three
-  close names. It is read-only, needs no approval, and is allowed in plan mode and in a question
-  fork.
+  lines; neither returns the catalog as `name: first sentence` lines. A result holds at most
+  8,000 bytes of full schemas: schemas past the cap become `name: first sentence` lines in
+  `more` ("ask for these by name"). The result is JSON (`{"tools": [{"name", "description",
+  "parameters"}], "more": [...], "unknown": [...]}`) so the evaluation boundary can rewrite names
+  ([R7](#r7-evaluations)). An unknown name gets up to three close names. It is read-only, needs no
+  approval, and is allowed in plan mode and in a question fork.
+- Schemas and descriptions from MCP servers and plugins are outside text, as they are today in
+  the tool block. A malicious description can push its tool up a `query` ranking (ranking
+  poisoning); that adds no capability, since every result tool is already in the universe and
+  every call to it passes R4. Search results are tool results, so the existing untrusted-data
+  framing of tool output applies to them.
 - Its description is fixed when the session starts: one sentence, then the names of the deferred
   **built-in** tools of the agent's universe at that moment, then "and the tools of connected MCP
   servers and activated plugins: search for them". Tools that appear later (a plugin activated, an
@@ -289,17 +314,24 @@ and a variant's dropped tool. Stage 2 lists each with a test.
   the description.
 - `call_tool({ name: string, arguments: object })` runs one tool (R4). Its result is the inner
   tool's result unchanged.
-- In on mode the system prompt carries one sentence, swapped like the harness paragraph
-  (`swap_harness_text`) when the mode changes with the model: "Tools that are not in your tool
-  list are used in two steps: tool_search finds them and shows their parameters, and call_tool
-  runs one by name with those arguments." The base prompt's mentions of `spawn_agent`,
-  `update_plan` and the rest stay; they now name tools reached through `call_tool`.
+- **`activate_plugin` in on mode.** Whether it is offered is decided once, at session start (it
+  is offered when the agent may activate any plugin then), and it stays offered for the whole
+  session; once every plugin is active it answers "already active" with the plugin's tools. Today
+  it disappears from the list after the last activation, which would change the list.
+- **The loader sentence.** In on mode the system prompt carries one sentence: "Tools that are not
+  in your tool list are used in two steps: tool_search finds them and shows their parameters, and
+  call_tool runs one by name with those arguments." It is its own swappable region of the system
+  prompt (a `loader_text` beside `harness_text`, placed with the same `swap_harness_text` and
+  `shift_spans` mechanics, after the base part), independent of attendance and of
+  `can_delegate`, so unattended roots and subagents get it too; it is swapped when the mode
+  changes with the model. The base prompt's mentions of `spawn_agent`, `update_plan` and the rest
+  stay; they now name tools reached through `call_tool`.
 
 ### R6. Sessions, compaction, subagents, named agents, forks and reviews
 
 - **Loaded set.** The engine keeps, per agent, the names whose schemas the model has seen in a
   `tool_search` result or has called through `call_tool`. It drives nothing but compaction and
-  telemetry: `call_tool` does not require a prior search (the argument check of R4 step 5 catches
+  telemetry: `call_tool` does not require a prior search (the tool's own parsing, R4 step 5, catches
   a guess). Each addition emits `tools_loaded { names, via }` (`via`: `search` or `call`),
   journalled.
 - **Resume, and a switch back to local.** The loaded set is rebuilt from the journal's
@@ -308,14 +340,17 @@ and a variant's dropped tool. Stage 2 lists each with a test.
   no longer exists, is no longer in the universe, or belongs to a plugin not (yet) re-activated is
   dropped silently; it comes back if it is searched again or its plugin is activated. The tool
   list itself needs no restoring: it is fixed (goal 4).
-- **Compaction** removes old `tool_search` results with the rest of the summarised turns. After a
-  compaction the engine reattaches, at the top of the first kept user message (as
-  `reattach_state` does for the state block), a `<loaded-tools>` block with the schemas of the
-  loaded tools still in the universe, most recently used first, up to 2,000 tokens; the rest are
-  named only ("search again for their parameters").
+- **Compaction** removes old `tool_search` results with the rest of the summarised turns. Schema
+  text can come from MCP servers and plugins, so it is never put back at user-message trust (not
+  in a user message, not in the state block). After a compaction the engine appends to the
+  summary a list of the loaded tools still in the universe, **names only** with each description
+  cut to its first sentence (at most 120 characters), inside a delimited `<loaded-tools>` block
+  marked as reference data ("tools you used before; search again for their parameters"), at most
+  1,500 bytes, most recently used first. The model gets full schemas again only through a new
+  `tool_search`, whose result has tool-result trust.
 - **Subagents** get the fixed reactive list of their own universe; their loaded set starts with
   the parent's loaded tools that are in their universe, which only affects what a later
-  compaction reattaches.
+  compaction lists.
 - **Named agents** (`spawn_agent` with `agent`, `--agent` roots): a file's `tools` list is
   resolved against the parent's universe, not its offered list (today `named_agent(def, &parent)`
   takes the offered names, which would narrow a named agent to the parent's core), and every
@@ -376,9 +411,32 @@ and a variant's dropped tool. Stage 2 lists each with a test.
 - Breakdown groups change from contiguous ranges to one category per offered tool (a
   `Vec<Category>` beside the specs, kept in step by `narrow_tools`), so no category depends on
   where tools sit. In on mode `tool_search` and `call_tool` count as `tools_builtin`; the schemas
-  inside a `tool_search` result and a reattached `<loaded-tools>` block are labelled per tool with
-  the tool's source category (`tools_builtin`, `tools_mcp`, `tools_plugins`) as spans of that
-  message, the way `load_skill` results count as `skills_loaded`. No new category key.
+  inside a `tool_search` result are labelled per tool with the tool's source category
+  (`tools_builtin`, `tools_mcp`, `tools_plugins`) as spans of that message, the way `load_skill`
+  results count as `skills_loaded`; the names-only `<loaded-tools>` list after a compaction counts
+  under `summary`. No new category key.
+
+### R9. Code that reads calls back from messages
+
+Several places read tool calls back out of the conversation by name. With `call_tool` the stored
+call is the outer one, so each of them goes through one helper, `effective_call(&ToolCall) ->
+Cow<ToolCall>` (the inner name and arguments of a `call_tool`, otherwise the call itself), rather
+than storing the inner call in messages (which would show the model a direct call its grammar
+forbids). Audited on `a85f1310`:
+
+| Place | What it keys on | With the helper |
+| --- | --- | --- |
+| `compact.rs` (about line 219) | Transcript lines `[called <name> with <args>]` for the summariser | The inner name and arguments |
+| `compact.rs` (about line 306) | Call ids to tool names, to label tool results when cutting | The inner name |
+| `knowledge.rs` (about line 282) | Calls and whether they worked, for a knowledge card | The inner name and arguments |
+| `breakdown.rs` (about line 283) | `load_skill` call ids, to count their results as `skills_loaded` | The inner name (`load_skill` is core, but a call through `call_tool` still counts) |
+| `harness.rs` (about line 238) | Whether a result came from `update_state` | The inner name |
+| `turn.rs` (`activates`, `touched_dir`) | `activate_plugin` rounds and directories touched | The effective call (R4 step 1) |
+| Recorder and transcript export | Eval `last_reply`, exported transcripts | Unchanged: they show what the model sent |
+
+Stage 2 adds a test per row that the `call_tool` form gives the same result as the direct form,
+and a source-scan test that no other `function.name` comparison remains in the engine outside the
+helper's callers.
 
 ### K1. The knowledge-source rule: wording and place
 
@@ -491,27 +549,44 @@ Stage 5 follows the build that contains stage 4.
     version paragraph.
   - Config: `HarnessSettings.tool_loading: HarnessMode`, default `Off` in this stage; registry
     entry `harness.tool_loading` ("Reach tools on demand"); the 10 table row.
-  - Engine: `tool_universe()` (today's list and filters, unchanged) and `offered_tools()` (the
-    universe when off; core, `tool_search`, `call_tool` when on); a new `agent/catalog.rs` with
-    the core rule, the fixed `tool_search` description, search, the schema check, and the loaded
-    set; the R4 dispatch order at the top of `run_tool_once`; the on-mode system sentence through
-    `swap_harness_text`; breakdown groups as one category per tool; `activate_plugin` leaves the
-    on-mode list unchanged. Desktop `sessions.ts` and CLI `chat.rs` render `tools_loaded`.
+  - Engine: `tool_universe()` (today's list and filters, unchanged, computed at dispatch time)
+    and `offered_tools()` (the universe when off; core, `tool_search`, `call_tool` when on, fixed
+    at session start); a new `agent/catalog.rs` with the core rule, the fixed `tool_search`
+    description, search and its byte cap, the schema advice on a parse failure, and the loaded
+    set; the effective call in `run_tool` and the turn loop, and the R4 order in
+    `run_tool_once`; `effective_call` and its callers (R9); the loader sentence as its own
+    swappable region; breakdown groups as one category per tool; `activate_plugin` offered for
+    the whole session in on mode. Desktop `sessions.ts` and CLI `chat.rs` render `tools_loaded`.
 - Tests (engine): off-mode snapshot equal to the pre-change list (root, subagent, shell-locked
   profile); the on-mode list is core, `tool_search`, `call_tool`, and byte-identical over calls
   across a plugin activation and an MCP server's list change; `tool_search` by name, by query,
   unknown with close names, and a newly activated plugin's tool found by query; `call_tool` runs a
-  deferred tool with the same events and hooks as a direct call, and a call with bad arguments
-  returns the schema; a direct call to a deferred name runs as `call_tool` would; each R4 refusal
-  for an inner name (profile, named list, outside the universe) and each on-mode-only refusal
-  listed in R4; a shell lock mid-session removes `run_command` from the list (goal 4 exception b)
-  and `call_tool(run_command)` is refused; a model switch local to hosted to local (exception a)
-  swaps the list and the system sentence; fewer than three deferred tools means no loader; the
-  breakdown labels a `tool_search` result's schemas per source category.
-- Depends on: none. Size: about 750 lines; the protocol and config part goes in its own pull
-  request if the stage passes 800.
+  deferred tool with the same events and hooks as a direct call; arguments a direct call accepts
+  (including what the tolerant parsers coerce) are accepted through `call_tool`, and a parse
+  failure returns the tool's own error with the schema appended; a `tool.before` hook rewrites the
+  inner tool's arguments through `call_tool` (the rewrite retry runs the same inner tool) and a
+  hook that blocks the inner tool blocks the call; `call_tool(read_file)` loads the touched
+  directory's instruction files; `call_tool(call_tool)` and `call_tool(tool_search)` are refused; a
+  direct call to a deferred name runs as `call_tool` would; each R4 refusal for an inner name
+  (profile, named list, outside the universe) and each on-mode-only refusal listed in R4; the
+  **off-mode dispatch regression**: with loading off, `ask_agent` with `can_ask` false and the
+  other on-mode-only refusals still run as today, and no universe check happens; a plugin
+  activated by another agent of the session mid-turn is reachable through `call_tool` on the next
+  call (the universe is computed at dispatch); `activate_plugin` stays offered through the last
+  activation and answers "already active", with the list byte-identical before and after; a
+  shell lock mid-session removes `run_command` from the list (goal 4 exception b) and
+  `call_tool(run_command)` is refused; a model switch local to hosted to local (exception a)
+  swaps the list and the loader sentence; the loader sentence is in the system prompt of an
+  unattended root and of a subagent in on mode; fewer than three deferred tools means no loader;
+  a `tool_search` result over 8,000 bytes of schemas spills into `more` lines; the breakdown
+  labels a `tool_search` result's schemas per source category; one test per R9 row that the
+  `call_tool` form reads back like the direct form, and the source-scan test of R9.
+- Depends on: none. Size: about 1,000 lines, so it is two pull requests: 2a, the protocol and
+  config part plus the engine's universe, offered list, `tool_search`, `call_tool` and the
+  dispatch order; 2b, the R9 helper and its callers, the loader sentence and the breakdown.
 - Owned paths: `crates/imperium-protocol/**`, `crates/imperium-config/src/{settings,registry}.rs`,
   `crates/imperium-engine/src/agent/{tools,turn,catalog,prompts}.rs`, `agent.rs`,
+  `crates/imperium-engine/src/{compact,knowledge,breakdown,harness,instructions}.rs`,
   `apps/desktop/src/sessions/sessions.ts`, `crates/imperium-cli/src/chat.rs`,
   `docs/02-architecture.md`, `docs/10-configuration.md`.
 - Risks: a `call_tool` path that skips a check (the R4 tests mirror every direct-call refusal
@@ -521,7 +596,7 @@ Stage 5 follows the build that contains stage 4.
 
 - Objective: R6.
 - Changes: rebuild the loaded set on resume and on a switch back to local (journal events, history
-  calls, re-activated plugins; stale names dropped); the `<loaded-tools>` reattachment after
+  calls, re-activated plugins; stale names dropped); the names-only `<loaded-tools>` list after
   compaction; subagents' starting loaded set; `named_agent` and `into_named_root` resolve against
   the universe and offer the whole list; forks keep the frozen list with `call_tool`'s inner names
   checked by `fork::refusal`; `tool_search` and `call_tool` exempt from the launcher's outer
@@ -529,7 +604,7 @@ Stage 5 follows the build that contains stage 4.
 - Tests: a resumed session sends the same tool list and its loaded set holds the journal's names
   and the tools called in history; replayed names that no longer exist, are no longer permitted,
   or precede their plugin's re-activation are dropped without an error, and the plugin's names
-  return after it is activated again; a compaction reattaches the loaded schemas within the cap;
+  return after it is activated again; a compaction appends the names-only `<loaded-tools>` list to the summary within its 1,500-byte cap and puts no schema text in a user message;
   a subagent inherits a parent's loaded `web_fetch` but not a tool its profile forbids; a named
   agent whose file lists `update_plan` is offered it directly and one with `tools: []` gets none;
   a question fork sends the frozen list byte for byte, runs `tool_search`, and is refused
@@ -646,7 +721,7 @@ Found on `origin/experimental`:
 - **A bypass through the proxy.** Every direct-call refusal has a `call_tool` twin test; the
   dispatch order is one function.
 - **Context growth from searched schemas** (they sit in the conversation). They are counted in the
-  breakdown, capped when reattached after compaction, and usually smaller than the schemas they
+  breakdown, capped at 8,000 bytes per search, not carried past a compaction, and usually smaller than the schemas they
   replace on every call.
 - **Silent narrowing.** Named agents, subagents or variants that resolve against the offered list
   instead of the universe would lose tools; stage 3 and 4 tests guard each path.
