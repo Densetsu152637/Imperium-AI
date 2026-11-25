@@ -89,10 +89,24 @@ fn main() -> ExitCode {
             call_id: 1,
             ..Default::default()
         }))),
+        "print_flood" => loop {
+            // Frames without end, to prove the driver's wall deadline cuts a worker that keeps
+            // writing.
+            if write_frame(&mut io::stdout(), &event(Kind::Print(pb::Print::default()))).is_err() {
+                return ExitCode::FAILURE;
+            }
+        },
         "cwd_empty" => {
-            // The driver starts the worker in an empty folder of its own.
+            // The driver starts the worker in an empty folder of its own, private to the user.
             let empty = std::fs::read_dir(".").is_ok_and(|mut entries| entries.next().is_none());
-            if empty {
+            #[cfg(unix)]
+            let private = {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::metadata(".").is_ok_and(|meta| meta.permissions().mode() & 0o777 == 0o700)
+            };
+            #[cfg(not(unix))]
+            let private = true;
+            if empty && private {
                 send(&event(Kind::Complete(pb::Complete::default())));
             } else {
                 return ExitCode::FAILURE;

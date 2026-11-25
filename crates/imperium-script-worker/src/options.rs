@@ -17,6 +17,8 @@ pub struct Options {
     pub memory_mb: u64,
     /// Test hook: fail the named confinement stage instead of applying it.
     pub force_failure: Option<String>,
+    /// Test hook: skip `close_range` so the fallback descriptor loop runs.
+    pub skip_close_range: bool,
 }
 
 /// An argument the worker does not accept.
@@ -37,6 +39,7 @@ impl Options {
         let mut options = Self {
             memory_mb: DEFAULT_MEMORY_MB,
             force_failure: None,
+            skip_close_range: false,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -61,6 +64,8 @@ impl Options {
                         UsageError("--force-confinement-failure needs a stage".to_owned())
                     })?);
                 }
+                #[cfg(feature = "test-support")]
+                "--skip-close-range" => options.skip_close_range = true,
                 other => return Err(UsageError(format!("unknown argument {other:?}"))),
             }
         }

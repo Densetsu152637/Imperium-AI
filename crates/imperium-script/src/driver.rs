@@ -237,6 +237,7 @@ impl Launcher {
             suspensions: 0,
             finished: false,
             startup: Duration::ZERO,
+            deadline: None,
             _permit: permit,
             _scratch: scratch,
         };
@@ -306,6 +307,8 @@ pub struct ScriptRun {
     suspensions: usize,
     finished: bool,
     startup: Duration,
+    /// The wall deadline of the `next_until` call in progress, so `send` honours it too.
+    deadline: Option<Instant>,
     _permit: OwnedSemaphorePermit,
     /// The worker's working folder, empty, removed when the run is dropped.
     #[cfg(unix)]
@@ -464,6 +467,13 @@ impl ScriptRun {
     /// engine passes the program's wall-clock deadline (plan C5); time the host spends answering
     /// calls between `next` calls is its own to account for.
     pub async fn next_until(&mut self, deadline: Option<Instant>) -> ScriptEvent {
+        self.deadline = deadline;
+        let event = self.next_inner(deadline).await;
+        self.deadline = None;
+        event
+    }
+
+    async fn next_inner(&mut self, deadline: Option<Instant>) -> ScriptEvent {
         if self.finished {
             return ScriptEvent::Done(Err(ScriptError::Misuse(
                 "the program has already ended".to_owned(),
@@ -478,6 +488,11 @@ impl ScriptRun {
         }
         let mut pings = 0_u32;
         loop {
+            // Checked before every read: the timeout in `read_event` polls the read first, so a
+            // worker that keeps writing frames would otherwise still be read after the deadline.
+            if self.past_deadline() {
+                return self.end(Err(ScriptError::WallBudget)).await;
+            }
             let event = match self.read_event(deadline).await {
                 Ok(event) => event,
                 Err(failure) => {
@@ -556,9 +571,11 @@ impl ScriptRun {
                         .send(pb::client_request::Kind::ResumeCall(resume))
                         .await
                     {
-                        let error = ScriptError::Crashed(format!(
-                            "could not answer the interpreter: {err}"
-                        ));
+                        let error = if self.past_deadline() {
+                            ScriptError::WallBudget
+                        } else {
+                            ScriptError::Crashed(format!("could not answer the interpreter: {err}"))
+                        };
                         return self.end(Err(error)).await;
                     }
                 }
@@ -568,9 +585,11 @@ impl ScriptRun {
                         return self.violation("a flood of pings").await;
                     }
                     if let Err(err) = self.send(pb::client_request::Kind::Pong(pb::Pong {})).await {
-                        let error = ScriptError::Crashed(format!(
-                            "could not answer the interpreter: {err}"
-                        ));
+                        let error = if self.past_deadline() {
+                            ScriptError::WallBudget
+                        } else {
+                            ScriptError::Crashed(format!("could not answer the interpreter: {err}"))
+                        };
                         return self.end(Err(error)).await;
                     }
                 }
@@ -752,6 +771,12 @@ impl ScriptRun {
         }
     }
 
+    /// True when the `next_until` call in progress has passed its wall deadline.
+    fn past_deadline(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
     async fn send(&mut self, kind: pb::client_request::Kind) -> io::Result<()> {
         let request = pb::ClientRequest {
             kind: Some(kind),
@@ -759,7 +784,13 @@ impl ScriptRun {
         };
         encode_framed_into(&request, &mut self.send_buf)
             .map_err(|err| io::Error::other(err.to_string()))?;
-        timeout(self.request_timeout, self.stdin.write_all(&self.send_buf))
+        let wait = match self.deadline {
+            Some(deadline) => self
+                .request_timeout
+                .min(deadline.saturating_duration_since(Instant::now())),
+            None => self.request_timeout,
+        };
+        timeout(wait, self.stdin.write_all(&self.send_buf))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the worker stopped reading"))??;
         Ok(())

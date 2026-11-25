@@ -34,6 +34,8 @@ pub struct Settings {
     pub memory_limit_bytes: u64,
     /// Test hook: the stage that must fail instead of being applied (`test-support` builds only).
     pub force_failure: Option<String>,
+    /// Test hook: skip `close_range` so the fallback descriptor loop runs.
+    pub skip_close_range: bool,
 }
 
 impl From<&Options> for Settings {
@@ -44,6 +46,7 @@ impl From<&Options> for Settings {
                 .saturating_mul(2)
                 .saturating_mul(1024 * 1024),
             force_failure: options.force_failure.clone(),
+            skip_close_range: options.skip_close_range,
         }
     }
 }
@@ -89,11 +92,11 @@ pub fn apply(settings: &Settings) -> Result<Report, ConfineError> {
     #[cfg(unix)]
     {
         forced(settings, "fds")?;
-        fds::close_inherited()?;
+        let how = fds::close_inherited(settings.skip_close_range)?;
         let mut report = apply_platform(settings)?;
         report
             .applied
-            .insert(0, "fds: every descriptor above 2 closed".to_owned());
+            .insert(0, format!("fds: every descriptor above 2 closed ({how})"));
         Ok(report)
     }
     #[cfg(not(unix))]
@@ -121,6 +124,7 @@ mod tests {
         let options = Options {
             memory_mb: 256,
             force_failure: None,
+            skip_close_range: false,
         };
         assert_eq!(
             Settings::from(&options).memory_limit_bytes,
@@ -133,6 +137,7 @@ mod tests {
         let settings = Settings {
             memory_limit_bytes: 1,
             force_failure: Some("seccomp".to_owned()),
+            skip_close_range: false,
         };
         assert!(
             forced(&settings, "seccomp")

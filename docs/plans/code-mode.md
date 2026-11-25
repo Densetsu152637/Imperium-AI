@@ -720,7 +720,7 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
   `monty-alloc` allocator, self-confinement on Linux and macOS, the `monty-proto` worker loop);
   `crates/imperium-script` (the `ScriptRunner` trait, the protocol driver with the event allowlist,
   the Windows suspended launch with token, job and labels, the `NO_READ_UP` labelling of the
-  daemon's files, one worker per program with the optional one-ahead spawn, `script_workers`,
+  daemon's files, one worker per program (no one-ahead spawn: dropped, F5), `script_workers`,
   kill-on-drop, and `finish()` with confirmed exit, worker path discovery beside the daemon binary, the
   fail-closed availability check and its reason) and a fake runner for engine tests;
   `scripts/ci/build-desktop.sh` builds the worker with the daemon per target and adds it to
@@ -854,6 +854,9 @@ Review fixes folded into 1a (accepted from the review of #303):
   status; a worker started by the driver finds its working folder empty.
 - **F3, wall budget.** `ScriptRun::next_until(deadline)` and `ScriptError::WallBudget`; a test
   that a silent worker is cut at the deadline, not at the longer `request_timeout`.
+- **F3 follow-up.** The deadline is checked before every read and bounds every write, so a worker
+  that keeps writing frames, or stops reading, is still ended as `WallBudget`; a flood-of-prints
+  test covers it.
 - **Seccomp.** `prlimit64` and `sched_getaffinity` only for pid 0 or the worker's own id.
 - **`--memory-mb`** has a floor of 32.
 - **Driver tests added:** an oversized event frame; a call left unanswered when the next event

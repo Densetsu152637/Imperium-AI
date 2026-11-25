@@ -116,6 +116,39 @@ fn an_inherited_descriptor_is_closed_before_the_worker_is_confined() {
     assert!(seen["confined"].contains("fds:"), "{seen:?}");
 }
 
+/// N1: the fallback loop (what an old kernel or a refused `close_range` gets) closes it too.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn the_fallback_descriptor_loop_closes_an_inherited_descriptor() {
+    let dir = tempfile::tempdir().unwrap();
+    let leaked = std::fs::File::open(dir.path()).unwrap();
+    rustix::io::fcntl_setfd(&leaked, rustix::io::FdFlags::empty()).unwrap();
+    let seen = probe_with(&["--skip-close-range", "1"], Some(&leaked));
+    assert_eq!(seen["inherited_fd_before"], "open", "{seen:?}");
+    assert_eq!(seen["inherited_fd_after"], "closed", "{seen:?}");
+    assert!(seen["confined"].contains("(loop)"), "{seen:?}");
+}
+
+/// N2: the seccomp filter lets `prlimit64` and `sched_getaffinity` ask only about the worker.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_prlimit_and_affinity_are_only_about_the_worker_itself() {
+    let seen = probe(&[]);
+    for key in ["prlimit_other", "prlimit_write", "affinity_other"] {
+        assert!(
+            seen[key].contains("ret=-1") && seen[key].contains("errno=1"),
+            "{key} should be EPERM: {seen:?}"
+        );
+    }
+    assert_eq!(seen["prlimit_self_read"], "ret=0", "{seen:?}");
+    assert_eq!(seen["prlimit_own_pid_read"], "ret=0", "{seen:?}");
+    let affinity: i64 = seen["affinity_self"]
+        .trim_start_matches("ret=")
+        .parse()
+        .unwrap();
+    assert!(affinity > 0, "{seen:?}");
+}
+
 /// F1, fail closed: when the sweep cannot be applied the worker exits before reading a request.
 #[cfg(unix)]
 #[test]

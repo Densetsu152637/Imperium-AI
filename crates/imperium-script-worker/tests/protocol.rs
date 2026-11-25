@@ -131,7 +131,35 @@ async fn the_wall_deadline_cuts_a_wait_shorter_than_the_request_timeout() {
     assert!(is_gone(pid), "the worker is still alive");
 }
 
+/// M1: a worker that never stops writing frames is still cut at the deadline.
 #[tokio::test]
-async fn the_worker_starts_in_an_empty_working_folder() {
+async fn a_worker_that_floods_prints_is_cut_at_the_wall_deadline() {
+    let launcher = Launcher::new(misbehaving_path(), 1).with_args(["print_flood"]);
+    let mut limits = quick_limits();
+    limits.exec = Duration::from_secs(60);
+    let mut run = launcher
+        .start("print(1)", &limits)
+        .await
+        .expect("the test worker starts");
+    let pid = run.pid().unwrap();
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_millis(300);
+    loop {
+        match run.next_until(Some(deadline)).await {
+            ScriptEvent::Print(_) => {}
+            ScriptEvent::Done(Err(ScriptError::WallBudget)) => break,
+            other => panic!("unexpected event {other:?}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "still reading after {:?}",
+            started.elapsed()
+        );
+    }
+    assert!(is_gone(pid), "the worker is still alive");
+}
+
+#[tokio::test]
+async fn the_worker_starts_in_an_empty_private_working_folder() {
     assert_eq!(outcome_of("cwd_empty").await, Ok(()));
 }

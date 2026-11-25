@@ -17,30 +17,33 @@ const FIRST: u32 = 3;
 /// The most descriptors the fallback loop walks. A higher `RLIMIT_NOFILE` fails closed instead.
 const LOOP_CEILING: u64 = 1 << 20;
 
-/// Closes every descriptor from 3 up.
-pub(super) fn close_inherited() -> Result<(), ConfineError> {
-    if close_range() {
-        return Ok(());
+/// Closes every descriptor from 3 up and says how: `close_range` or `loop`. `skip_fast` (a test
+/// hook) goes straight to the loop so CI exercises it on Linux too.
+pub(super) fn close_inherited(skip_fast: bool) -> Result<&'static str, ConfineError> {
+    if !skip_fast && close_range() {
+        return Ok("close_range");
     }
-    close_loop()
+    close_loop()?;
+    Ok("loop")
 }
 
 /// `close_range(3, ~0, 0)`: one call, Linux 5.9 and later. False when the kernel refuses it
 /// (older kernel, or a filter that does not allow it), and the loop takes over.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
 fn close_range() -> bool {
     false
 }
 
-#[cfg(target_os = "linux")]
+// `syscall` reads its variadic arguments as `long`, so they are passed as `c_long` (64-bit only).
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 fn close_range() -> bool {
-    // SAFETY: the system call takes three integers (passed as full words) and no pointer.
+    // SAFETY: the system call takes three integers (passed as `c_long`) and no pointer.
     let status = unsafe {
         libc::syscall(
             libc::SYS_close_range,
-            u64::from(FIRST),
-            u64::from(u32::MAX),
-            0_u64,
+            libc::c_long::from(FIRST),
+            libc::c_long::from(u32::MAX),
+            libc::c_long::from(0_u8),
         )
     };
     status == 0

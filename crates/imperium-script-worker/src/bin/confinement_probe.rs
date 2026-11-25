@@ -71,6 +71,7 @@ fn main() -> ExitCode {
             "--fd" => probe.fd = value.parse().unwrap_or(-1),
             "--memory-mb" => options.memory_mb = value.parse().unwrap_or(256),
             "--force-confinement-failure" => options.force_failure = Some(value),
+            "--skip-close-range" => options.skip_close_range = true,
             _ => {
                 eprintln!("unknown argument {arg}");
                 return ExitCode::from(64);
@@ -118,6 +119,47 @@ fn platform(probe: &Probe) {
         "rlimit_data",
         getrlimit(Resource::Data).current.unwrap_or(u64::MAX),
     );
+
+    // The seccomp filter on `prlimit64` and `sched_getaffinity`: only about the worker itself,
+    // and `prlimit64` only to read.
+    // SAFETY: raw system calls on buffers that live for the call and are large enough.
+    unsafe {
+        let other = i64::from(probe.pid);
+        let mut old = [0_u64; 2];
+        let new = [1_u64 << 40; 2];
+        let mut affinity = [0_u8; 128];
+        let none = std::ptr::null::<u64>();
+        // RLIMIT_DATA is 2 on every Linux architecture the worker supports.
+        let ret = libc::syscall(libc::SYS_prlimit64, other, 2_i64, none, old.as_mut_ptr());
+        report("prlimit_other", format!("ret={ret} errno={}", errno()));
+        let ret = libc::syscall(libc::SYS_prlimit64, 0_i64, 2_i64, none, old.as_mut_ptr());
+        report("prlimit_self_read", format!("ret={ret}"));
+        let own = i64::from(std::process::id());
+        let ret = libc::syscall(libc::SYS_prlimit64, own, 2_i64, none, old.as_mut_ptr());
+        report("prlimit_own_pid_read", format!("ret={ret}"));
+        let ret = libc::syscall(
+            libc::SYS_prlimit64,
+            0_i64,
+            2_i64,
+            new.as_ptr(),
+            std::ptr::null_mut::<u64>(),
+        );
+        report("prlimit_write", format!("ret={ret} errno={}", errno()));
+        let ret = libc::syscall(
+            libc::SYS_sched_getaffinity,
+            other,
+            affinity.len(),
+            affinity.as_mut_ptr(),
+        );
+        report("affinity_other", format!("ret={ret} errno={}", errno()));
+        let ret = libc::syscall(
+            libc::SYS_sched_getaffinity,
+            0_i64,
+            affinity.len(),
+            affinity.as_mut_ptr(),
+        );
+        report("affinity_self", format!("ret={ret}"));
+    }
 
     // SAFETY: raw system calls with arguments that cannot touch memory (a null pointer and zero
     // size for clone3, numbers only otherwise); the point is to see the kernel's answer.
