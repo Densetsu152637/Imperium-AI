@@ -413,7 +413,8 @@ has no code that names `plugins.approve` or `plugins.approval_challenge` (a test
   the others fails in CI.
 - **The flow.** The app connects to the daemon on its **local socket only** (`daemon.socket`;
   with it off, or an endpoint that offers no socket, the approval is refused, never sent over
-  loopback TCP), asks `plugins.inspect` for the plugin's preview, and shows a native dialog
+  loopback TCP), asks `plugins.inspect` for the plugin's preview (`plugins.inspect_folder`, with the folder's name,
+  for a folder that did not come from a marketplace), and shows a native dialog
   (`tauri-plugin-dialog`, a warning, buttons *Approve* and *Cancel*) built only from that
   preview: the plugin id, its source and commit, the content hash, every hook and server command
   line with flagged launchers, each server's environment, header and `${VAR}` names (never values), and the daemon's notes. The plugin's own description is not shown.
@@ -431,8 +432,9 @@ has no code that names `plugins.approve` or `plugins.approval_challenge` (a test
 - **What each action accepts.** *install*: `name@marketplace`, not installed yet. *update*: the
   plugin is installed and the marketplace's content differs. *approve*: the installed copy equals
   what the marketplace offers now (otherwise update first). A plugin with no hook or server has
-  nothing to approve. A plugin that did not come from a marketplace has no preview the daemon
-  can give, so it cannot be approved from the app yet.
+  nothing to approve. A plugin that did not come from a marketplace is named by its folder's
+  name: the app lists it from the daemon's `plugins.list` and asks `plugins.inspect_folder`, and only
+  *approve* is accepted for it (the folder is the content, so there is nothing to install or update).
 - **Environment.** At start the app reads its own environment. If it sets any `WEBVIEW2_*`,
   `DYLD_*`, `LD_PRELOAD`, `LD_LIBRARY_PATH` or `LD_AUDIT` (the daemon's own list,
   `imperium_ipc::refused_variable`, the same function the daemon uses on a peer), `plugin_approve`
@@ -1067,8 +1069,8 @@ in `styles/plugins.css`. Escape steps back from the trust view or a plugin's det
   chips choose which; the list shows that scope's effective state, and says which layer turned a plugin off);
   *Approve* for a withheld plugin that runs code; *Update*; *Secrets*; and *Uninstall* with a confirmation that opens on
   *Cancel* and, for a plugin with secrets, the choice to delete them too. An uninstall leaves a notice with *Undo*
-  (`config.undo`). A folder that did not come from a marketplace cannot be previewed, so its row says it cannot be
-  approved from here yet.
+  (`config.undo`). *Approve* on a folder that did not come from a marketplace opens the trust view with what the daemon read from the
+  folder itself (`plugins.inspect_folder`), and says the approval holds only while its files stay as they are.
 
 ### Plugin trust view (implemented)
 

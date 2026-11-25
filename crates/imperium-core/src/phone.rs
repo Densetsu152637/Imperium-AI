@@ -276,6 +276,8 @@ mod tests {
                 .iter()
                 .all(|method| !method.starts_with("environments."))
         );
+        // A phone never inspects, installs or approves a plugin folder.
+        assert!(allowed.iter().all(|method| !method.starts_with("plugins.")));
         assert!(devices.allowed("not-a-token").is_none());
         // The token itself is never stored.
         let stored = std::fs::read_to_string(dir.path().join("devices.json")).unwrap();

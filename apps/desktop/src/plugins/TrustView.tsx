@@ -154,6 +154,12 @@ export function TrustView({
           runs can still fetch and run more code.
         </Notice>
       )}
+      {preview.source_kind === "folder" && (
+        <Notice tone="info" title="This folder did not come from a marketplace">
+          The list below is read from the folder as it is now. Approval is for exactly these files: if any file changes afterwards, the plugin is
+          withheld again until it is approved again.
+        </Notice>
+      )}
       {diff && <Diff diff={diff} />}
       {preview.launcher && (
         <Notice tone="warn" title="Starts a launcher">

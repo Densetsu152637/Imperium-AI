@@ -11,7 +11,8 @@
 //!    daemon refuses in a peer (it reads no peer environment on Windows); if one is set nothing
 //!    is sent;
 //! 3. the app connects on the local socket, never loopback TCP (`local_socket`), and asks the
-//!    daemon for the plugin's preview (`plugins.inspect`);
+//!    daemon for the plugin's preview (`plugins.inspect`, or `plugins.inspect_folder` for an
+//!    installed folder that did not come from a marketplace);
 //! 4. a native dialog (`tauri-plugin-dialog`) shows what the daemon's preview says the plugin runs
 //!    (`dialog_text`), never text the webview supplied;
 //! 5. on *Approve* the app installs or updates the plugin when asked, requests a challenge for the
@@ -28,8 +29,9 @@ use imperium_client::Client;
 use imperium_config::Paths;
 use imperium_protocol::discovery::{DaemonEndpoint, read_endpoint};
 use imperium_protocol::methods::{
-    Method, Peer, PluginPreview, PluginsApprovalChallenge, PluginsApprovalChallengeParams,
-    PluginsApprove, PluginsApproveParams, PluginsInspect, PluginsInspectParams, PluginsInstall,
+    InstalledPlugin, Method, Peer, PluginPreview, PluginsApprovalChallenge,
+    PluginsApprovalChallengeParams, PluginsApprove, PluginsApproveParams, PluginsInspect,
+    PluginsInspectFolder, PluginsInspectFolderParams, PluginsInspectParams, PluginsInstall,
     PluginsInstallParams, PluginsList, PluginsListParams, PluginsUpdate, PluginsUpdateParams,
 };
 use serde::{Deserialize, Serialize};
@@ -153,6 +155,12 @@ fn inspect_params(id: &str) -> PluginsInspectParams {
     PluginsInspectParams {
         id: id.to_string(),
         revision: None,
+    }
+}
+
+fn inspect_folder_params(name: &str) -> PluginsInspectFolderParams {
+    PluginsInspectFolderParams {
+        name: name.to_string(),
     }
 }
 
@@ -490,33 +498,57 @@ async fn connect(version: String) -> Result<Client, String> {
     }
 }
 
-/// `name@marketplace` for what the webview named: itself when it already is one, else the id
-/// of the installed plugin with that plugin or folder name.
-async fn resolve_id(client: &mut Client, action: Action, name: &str) -> Result<String, String> {
-    if name.contains('@') {
-        return Ok(name.to_string());
+/// What the webview named: a marketplace plugin, by its `name@marketplace`, or an installed
+/// folder that did not come from a marketplace, by the folder's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Target {
+    Marketplace(String),
+    Folder(String),
+}
+
+/// The folder's own name: the last part of the path `plugins.list` shows.
+fn folder_name(plugin: &InstalledPlugin) -> Option<String> {
+    std::path::Path::new(&plugin.folder)
+        .file_name()
+        .map(|folder| folder.to_string_lossy().into_owned())
+}
+
+/// What the webview's `name` means among `plugins`: an id, else a folder name, else a plugin name.
+/// A plugin with an id is previewed from its marketplace; one without (a pre-existing or
+/// unrecorded folder) only by its folder, and only to approve it.
+fn pick_target(action: Action, plugins: &[InstalledPlugin], name: &str) -> Result<Target, String> {
+    let found = plugins
+        .iter()
+        .find(|plugin| plugin.id.as_deref() == Some(name))
+        .or_else(|| {
+            plugins
+                .iter()
+                .find(|plugin| folder_name(plugin).as_deref() == Some(name))
+        })
+        .or_else(|| plugins.iter().find(|plugin| plugin.name == name));
+    match found {
+        Some(plugin) => match (&plugin.id, folder_name(plugin)) {
+            (Some(id), _) => Ok(Target::Marketplace(id.clone())),
+            (None, Some(folder)) if action == Action::Approve => Ok(Target::Folder(folder)),
+            (None, _) => Err(format!(
+                "{name} did not come from a marketplace, so there is nothing to update"
+            )),
+        },
+        None if name.contains('@') => Ok(Target::Marketplace(name.to_string())),
+        None => Err(format!("no plugin {name} is installed")),
     }
+}
+
+async fn resolve_target(client: &mut Client, action: Action, name: &str) -> Result<Target, String> {
     if action == Action::Install {
-        return Err("an install names the plugin as name@marketplace".into());
+        return if name.contains('@') {
+            Ok(Target::Marketplace(name.to_string()))
+        } else {
+            Err("an install names the plugin as name@marketplace".into())
+        };
     }
     let listed = ask::<PluginsList>(client, PluginsListParams::default(), QUICK_TIMEOUT).await?;
-    listed
-        .plugins
-        .iter()
-        .find(|plugin| {
-            plugin.name == name
-                || std::path::Path::new(&plugin.folder)
-                    .file_name()
-                    .is_some_and(|folder| folder.to_string_lossy() == name)
-        })
-        .ok_or_else(|| format!("no plugin {name} is installed"))?
-        .id
-        .clone()
-        .ok_or_else(|| {
-            format!(
-                "{name} did not come from a marketplace, so the daemon has no preview of it to show"
-            )
-        })
+    pick_target(action, &listed.plugins, name)
 }
 
 /// Shows one page as a native box and waits for the answer: *Next* (or *Approve* on the last page)
@@ -551,8 +583,24 @@ async fn flow<R: Runtime>(
     environment: Option<&str>,
 ) -> Result<Outcome, String> {
     let mut client = connect(app.package_info().version.to_string()).await?;
-    let id = resolve_id(&mut client, action, name).await?;
-    let preview = ask::<PluginsInspect>(&mut client, inspect_params(&id), FETCH_TIMEOUT).await?;
+    let (id, preview) = match resolve_target(&mut client, action, name).await? {
+        Target::Marketplace(id) => {
+            let preview =
+                ask::<PluginsInspect>(&mut client, inspect_params(&id), FETCH_TIMEOUT).await?;
+            (id, preview)
+        }
+        // The daemon reads the folder itself and shows its own hash and digest, the ones the
+        // challenge below is bound to.
+        Target::Folder(folder) => {
+            let preview = ask::<PluginsInspectFolder>(
+                &mut client,
+                inspect_folder_params(&folder),
+                FETCH_TIMEOUT,
+            )
+            .await?;
+            (folder, preview)
+        }
+    };
     if preview.id != id {
         return Err(format!(
             "the daemon previewed {} instead of {id}",
@@ -787,6 +835,76 @@ mod tests {
         found.hooks.clear();
         found.servers.clear();
         assert!(check_preview(Action::Update, &found).is_err());
+    }
+
+    fn listed(name: &str, folder: &str, id: Option<&str>) -> InstalledPlugin {
+        InstalledPlugin {
+            name: name.into(),
+            folder: folder.into(),
+            id: id.map(str::to_string),
+            origin: None,
+            source: None,
+            commit: None,
+            approval: None,
+            enabled: true,
+            decided_by: "default".into(),
+            withheld: true,
+            reason: None,
+            hooks: 1,
+            servers: vec![],
+            required_secrets: vec![],
+            missing_secrets: vec![],
+        }
+    }
+
+    #[test]
+    fn a_folder_without_an_id_is_approved_by_its_folder_name() {
+        let plugins = [
+            listed("fmt", "/config/plugins/fmt", Some("fmt@official")),
+            listed("tools", "/config/plugins/my-tools", None),
+        ];
+        let folder = Target::Folder("my-tools".into());
+        assert_eq!(
+            pick_target(Action::Approve, &plugins, "my-tools"),
+            Ok(folder.clone())
+        );
+        // The plugin's name finds the same folder.
+        assert_eq!(pick_target(Action::Approve, &plugins, "tools"), Ok(folder));
+        // A listed plugin with an id is previewed from its marketplace, by folder or id.
+        let market = Target::Marketplace("fmt@official".into());
+        assert_eq!(
+            pick_target(Action::Approve, &plugins, "fmt"),
+            Ok(market.clone())
+        );
+        assert_eq!(
+            pick_target(Action::Update, &plugins, "fmt@official"),
+            Ok(market)
+        );
+        // A folder that did not come from a marketplace has nothing to update, and an unknown
+        // name is refused.
+        let error = pick_target(Action::Update, &plugins, "my-tools").unwrap_err();
+        assert!(error.contains("nothing to update"), "{error}");
+        assert!(pick_target(Action::Approve, &plugins, "missing").is_err());
+        // An id that is not listed is the daemon's to refuse.
+        assert_eq!(
+            pick_target(Action::Approve, &plugins, "other@official"),
+            Ok(Target::Marketplace("other@official".into()))
+        );
+    }
+
+    #[test]
+    fn a_folder_preview_is_approved_as_installed_and_the_requests_carry_its_hash() {
+        let mut found = preview();
+        found.id = "my-tools".into();
+        found.source_kind = "folder".into();
+        found.marketplace = String::new();
+        found.installed = installed(true);
+        assert!(check_preview(Action::Approve, &found).is_ok());
+        assert_eq!(inspect_folder_params("my-tools").name, "my-tools");
+        let challenge = challenge_params("my-tools", &found);
+        assert_eq!(challenge.sha256, found.sha256);
+        assert_eq!(challenge.runs_digest, found.runs_digest);
+        assert!(shown(Action::Approve, &found).contains("Approve my-tools?"));
     }
 
     /// Every page's text, joined.

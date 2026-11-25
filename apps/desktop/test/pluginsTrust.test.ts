@@ -6,18 +6,22 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { PluginPreview } from "@imperium/protocol";
+import type { InstalledPlugin, PluginPreview } from "@imperium/protocol";
 
 import { pluginsApi, type Caller } from "../src/plugins/model.ts";
 import {
+  approvalSource,
   approvePlugin,
   cannotApprove,
   describeOutcome,
   diffRuns,
+  folderName,
   isUpToDate,
   kindLabel,
+  loadFolderTrust,
   loadTrust,
   needsApproval,
+  offersApprove,
   platformReason,
   runLines,
   type Invoke,
@@ -136,6 +140,81 @@ test("Approve invokes the app's plugin_approve with a name, an action and at mos
     { command: "plugin_approve", args: { name: "fmt@official", action: "install" } },
     { command: "plugin_approve", args: { name: "fmt@official", action: "approve", environment: "env1" } },
   ]);
+});
+
+const row = (over: Partial<InstalledPlugin> = {}): InstalledPlugin => ({
+  name: "tools",
+  folder: "/cfg/plugins/my-tools",
+  id: null,
+  origin: null,
+  source: null,
+  commit: null,
+  approval: null,
+  enabled: true,
+  decided_by: "default",
+  withheld: true,
+  reason: "not installed by Imperium: approve to load",
+  hooks: 1,
+  servers: [],
+  required_secrets: [],
+  missing_secrets: [],
+  ...over,
+});
+
+test("a withheld folder with no marketplace id is approved by its folder name, and one with an id by its id", () => {
+  assert.deepEqual(approvalSource(row()), { name: "my-tools", folder: true });
+  assert.deepEqual(approvalSource(row({ folder: "C:\\Users\\me\\plugins\\my-tools\\" })), { name: "my-tools", folder: true });
+  assert.deepEqual(approvalSource(row({ id: "fmt@official" })), { name: "fmt@official", folder: false });
+  assert.equal(folderName("/a/b/c"), "c");
+  assert.equal(folderName(""), "");
+});
+
+test("Approve is offered for a withheld folder that runs code, whether or not it came from a marketplace", () => {
+  assert.ok(offersApprove(row(), null));
+  assert.ok(offersApprove(row({ hooks: 0, servers: ["db"] }), null));
+  assert.ok(offersApprove(row({ id: "fmt@official" }), null));
+  // Not withheld, no code, or a platform that cannot approve.
+  assert.ok(!offersApprove(row({ withheld: false }), null));
+  assert.ok(!offersApprove(row({ hooks: 0 }), null));
+  assert.ok(!offersApprove(row(), "Approvals do not count on Windows."));
+});
+
+test("the trust view for a folder lists what the daemon read from it and compares nothing", async () => {
+  const calls: unknown[] = [];
+  const api = {
+    inspectFolder: async (name: string) => {
+      calls.push(name);
+      return preview({ id: name, marketplace: "", marketplace_source: "", marketplace_commit: null, source_kind: "folder", source: "/cfg/plugins/my-tools", commit: null, installed: { path: "/cfg/plugins/my-tools", recorded_sha256: null, same_content: true } });
+    },
+  };
+  const data = await loadFolderTrust(api, "my-tools");
+  assert.deepEqual(calls, ["my-tools"]);
+  assert.equal(data.diff, null);
+  assert.equal(data.preview.source_kind, "folder");
+  assert.equal(runLines(data.preview).hooks.length, 3);
+  // The installed folder is what is previewed, so it is neither stale nor up to date to update.
+  assert.ok(needsApproval(data.preview) && isUpToDate(data.preview));
+});
+
+test("the approval of a folder goes through the app's own command by folder name", async () => {
+  const calls: { command: string; args: Record<string, unknown> }[] = [];
+  const invoke: Invoke = async (command, args) => {
+    calls.push({ command, args });
+    return { approved: true, kind: "counted", reason: null, cancelled: false, installed: false };
+  };
+  await approvePlugin(invoke, approvalSource(row()).name, "approve");
+  assert.deepEqual(calls, [{ command: "plugin_approve", args: { name: "my-tools", action: "approve" } }]);
+});
+
+test("a mod frame cannot reach the plugin methods", () => {
+  const text = readFileSync(fileURLToPath(new URL("../src/mods/ModFrame.tsx", import.meta.url)), "utf8");
+  const table = /const REQUEST_PERMISSION[^=]*=\s*\{([^}]*)\}/.exec(text);
+  assert.ok(table, "the mod frame's request table is found");
+  const methods = [...table[1]!.matchAll(/"([^"]+)"\s*:/g)].map((match) => match[1]!);
+  assert.ok(methods.length > 0);
+  for (const method of methods) assert.doesNotMatch(method, /plugin/i, method);
+  assert.doesNotMatch(text, /plugins\./);
+  assert.doesNotMatch(text, /inspect_folder|inspectFolder/);
 });
 
 test("the webview never names the daemon's approval methods", () => {

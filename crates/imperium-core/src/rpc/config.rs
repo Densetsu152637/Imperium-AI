@@ -178,6 +178,20 @@ impl Connection {
                     }
                 })
             }
+            // Reads and hashes one folder, so it runs off the connection's thread.
+            PluginsInspectFolder::NAME => {
+                call_later::<PluginsInspectFolder, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            crate::plugin_install::inspect_folder(&state, &params)
+                        })
+                        .await
+                        .map_err(|error| refused(error.to_string()))?
+                        .map_err(refused)
+                    }
+                })
+            }
             PluginsInstall::NAME => {
                 call_later::<PluginsInstall, _>(c.params.take(), c.later, |params| {
                     let state = Arc::clone(&self.state);

@@ -12,7 +12,7 @@ import { Notice } from "../components/Notice";
 import { Switch } from "../components/Switch";
 import { SecretsForm } from "./SecretsForm";
 import { matches, plain } from "./model";
-import { kindLabel } from "./trust";
+import { kindLabel, offersApprove } from "./trust";
 
 export type Scope = "user" | "environment";
 
@@ -125,7 +125,7 @@ export function InstalledView({
                   </span>
                 </div>
                 <div className="connector-row-actions">
-                  {needsApproval && plugin.id && !platformReason && (
+                  {needsApproval && offersApprove(plugin, platformReason) && (
                     <button className="small" disabled={busy !== null} onClick={() => onApprove(plugin)}>
                       <ShieldCheck aria-hidden="true" /> Approve
                     </button>
@@ -157,10 +157,10 @@ export function InstalledView({
                       .join(" · ")}
                   </span>
                   {plugin.reason && <span className="connector-row-source">{plain(plugin.reason)}</span>}
-                  {needsApproval && !plugin.id && (
-                    <Notice tone="info">This folder did not come from a marketplace, so it cannot be previewed or approved from here yet.</Notice>
+                  {needsApproval && !plugin.id && !platformReason && (
+                    <Notice tone="info">This folder did not come from a marketplace. Approve lists exactly what it would run, from the folder as it is now.</Notice>
                   )}
-                  {needsApproval && plugin.id && platformReason && <Notice tone="warn">{plain(platformReason)}</Notice>}
+                  {needsApproval && platformReason && <Notice tone="warn">{plain(platformReason)}</Notice>}
                   {secretsOf === plugin.name && (
                     <SecretsForm
                       plugin={plugin}
