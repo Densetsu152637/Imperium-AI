@@ -1,6 +1,7 @@
 # Plan: terminal and file panes
 
-Revision: 2026-11-26, revision 4 (plan-gate review: F1 to F9, N1 to N5 and R1 to R4 folded in);
+Revision: 2026-11-26, revision 5 (plan-gate review: F1 to F9, N1 to N5, R1 to R4 and S1 to S4 folded
+in);
 written against `experimental` at `3d5db869` (last updated). Roadmap
 [item 55](../12-roadmap.md#next-in-order). Status: planned (no stage started).
 
@@ -65,7 +66,9 @@ OS sandbox and container tiers; a tier-0 command runs as the user and is covered
    deliberately calls `setsid` and leaves the shell's session escapes (as it does from background
    commands, [05](../05-tools-and-isolation.md#background-commands-implemented)). If the daemon
    itself crashes, the Linux supervisor and the Windows Job Object still end the terminal's
-   processes (D5); on macOS the shell and its jobs survive it.
+   processes (D5); on macOS the shell and its jobs survive it. Linux residual: if the supervisor
+   itself is killed with `SIGKILL` (by the user or the OOM killer), its descendants are reparented
+   to init and are not ended.
 7. **The file pane reads only inside the session's folders.** No path, `..`, absolute or UNC
    spelling, symbolic link, junction, Windows stream or device name, special file, other session's
    worktree, and no race that swaps a link in, makes `files.*` return bytes or names from outside
@@ -182,26 +185,50 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     child subreaper would reparent every orphan below it (agents' background commands, MCP
     servers, hooks) to the daemon, leaving zombies or letting a reaper steal exit statuses that
     tokio and std wait for. Instead the PTY's child is the daemon's own executable re-run with a
-    hidden subcommand, `imperium-core pty-supervisor -- <shell> <args>`. The supervisor sets
-    `PR_SET_CHILD_SUBREAPER` on itself (`nix`'s safe `prctl` wrapper), starts the shell as its
-    child on the same terminal (the shell sets up its own process groups for job control), reaps
-    everything that is reparented to it, and when the shell exits, on a signal, or when the daemon
-    dies, sends `SIGHUP` then `SIGKILL` to every remaining descendant (its children in `/proc`,
-    walked recursively) and exits with the shell's code. So a process that calls `setsid` still
-    ends with its terminal on Linux.
-    - **Daemon death: a pipe, not `PR_SET_PDEATHSIG`.** The parent-death signal fires when the
-      forking *thread* exits, so a terminal spawned from a tokio blocking-pool thread would die when
-      that thread is retired. The daemon therefore spawns every terminal from **one dedicated,
-      long-lived spawner thread** (a plain `std::thread` that lives as long as the daemon), and
-      the supervisor learns of the daemon's death from a **lifeline pipe**: the daemon keeps the
-      write end (close-on-exec in every other child), the supervisor polls the read end, and EOF
-      means the daemon is gone. Chosen over `PR_SET_PDEATHSIG` plus a `getppid()` check because a
-      pipe does not depend on which thread forked and has no race between fork and `prctl`.
-    - **Signals.** The supervisor is the PTY's session leader. It catches `SIGHUP` (the master
-      closed), `SIGTERM` and `SIGINT` and runs its kill-all-descendants path; it ignores `SIGTTOU`
-      and `SIGTTIN`; it never reads, writes or changes the terminal itself (the shell owns it). It is about 200 lines and
-    fits stage 1 once the shell choice moves to stage 2a; **chosen over dropping the subreaper**
-    because it closes the Linux gap and also covers a daemon crash.
+    hidden subcommand:
+    `imperium-core pty-supervisor --daemon <pid>:<start time> -- <shell> <args>`. It is about 250 lines and fits stage 1 once the shell choice moves to stage 2a;
+    **chosen over dropping the subreaper** because it closes the Linux `setsid` gap and also covers
+    a daemon crash. All of it uses safe wrappers (`nix`, `rustix`, `signal-hook`), no `pre_exec`.
+    - **Spawner thread.** `PR_SET_PDEATHSIG`-style lifetimes tie a child to the forking *thread*,
+      and a tokio blocking-pool thread is retired at will, so the daemon spawns every terminal from
+      **one dedicated, long-lived spawner thread** (a plain `std::thread` living as long as the
+      daemon), on every OS.
+    - **Daemon death: a pidfd.** `portable-pty` closes inherited descriptors above 2 in the child,
+      so an inherited pipe would never arrive. The daemon's pid and its start time (field 22 of
+      `/proc/<pid>/stat`) are passed in argv; the supervisor opens `pidfd_open(pid)`
+      (`rustix::process::pidfd_open`; Linux 5.3 and later, Ubuntu 22.04 runs 5.15), reads the start
+      time again and exits at once if it differs (the pid was reused), and treats the pidfd turning
+      readable as the daemon's death. Rejected: a daemon-owned Unix socket the supervisor connects
+      to (another socket to secure and name). Stage 1 confirms against the pinned `portable-pty`
+      source that descriptors above 2 are closed and that argv reaches the child unchanged. Before
+      starting the shell the supervisor marks every descriptor it holds above 2 close-on-exec
+      (`/proc/self/fd`, `rustix::io::fcntl_setfd`; the pidfd is close-on-exec already); any pipe
+      the daemon creates for terminals is made with `pipe2(O_CLOEXEC)` in one step.
+    - **Process groups and Ctrl+C.** The supervisor is the PTY's session leader and starts in its
+      foreground group. It starts the shell in a process group of its own
+      (`CommandExt::process_group(0)`, the safe form of `setpgid(0, 0)`) and then, from the
+      supervisor, makes that group the terminal's foreground group (`tcsetpgrp`). This is done in
+      the parent rather than in the child before `exec` because a child-side hook needs `pre_exec`,
+      which is `unsafe`; the brief moment before `tcsetpgrp` is harmless, because a Ctrl+C typed
+      then reaches only the supervisor's group, and the supervisor discards it. An interactive
+      shell then manages the foreground group itself.
+    - **Signals: caught and discarded, never `SIG_IGN`.** An ignored disposition is inherited
+      across `exec`, and a shell that starts with `SIGINT` ignored keeps it ignored for every
+      command it runs, so Ctrl+C would stop working. The supervisor therefore installs
+      do-nothing handlers (handlers reset to the default on `exec`) for `SIGINT`, `SIGQUIT`,
+      `SIGTSTP`, `SIGTTOU` and `SIGTTIN`, and changes no signal mask (a blocked mask is inherited
+      too, which is why `signalfd` is not used). It ends the terminal **only** on `SIGHUP` (the
+      master closed), `SIGTERM` (the daemon's `end`), the daemon's death or the shell's exit. It
+      never reads, writes or changes the terminal after the `tcsetpgrp`.
+    - **One loop.** The supervisor runs a single `poll` over two descriptors and nothing else: the
+      daemon's pidfd, and a self-pipe that `signal-hook` writes for `SIGCHLD`, `SIGHUP` and
+      `SIGTERM`. On `SIGCHLD` it reaps with `waitpid(-1, WNOHANG)` in a loop until nothing is left
+      to reap, noting the shell's status when the shell is reaped; it never blocks anywhere else.
+    - **Kill-all.** It walks `/proc` for its descendants (children by `PPid`, recursively), sends
+      `SIGHUP`, waits up to 2 s while reaping, then repeats the walk and sends `SIGKILL`, and repeats
+      walk, `SIGKILL` and reap until no descendant remains, at most 20 rounds or 5 s, then exits
+      with the shell's code (or 128 plus the signal). The repeat catches a process that forks while
+      it is being killed.
   - **macOS** has no subreaper: a process that deliberately leaves the session escapes
     ([goal 6](#goals)), and if the daemon crashes the shell and its jobs survive it (closing the PTY
     master sends `SIGHUP` to the foreground job only). The spawner-thread rule applies on every
@@ -307,12 +334,17 @@ Each records the choice, the reasons, the rejected options and when to revisit i
   - **Identity at creation, handles opened lazily.** When the daemon creates a session it
     canonicalises each root (a root that is itself a link is resolved once, here) and records its
     file identity (device and inode, or volume serial and file index, through `same-file`) in the
-    session record (`root_ids`). A root's `cap_std::fs::Dir` handle (`Dir::open_ambient_dir`) is
-    opened on the first `files.*` call that needs it, and at that open the service checks that
-    **no component of the canonical path is a link, junction or other reparse point** and that the
-    opened directory's identity equals the recorded one.
-  - **A mismatch** is refused (the pane says the folder was replaced), except when the root is a
-    plain directory (not a link or reparse point) whose canonical path is unchanged: then the new
+    session record (`root_ids`). A root's `cap_std::fs::Dir` handle is opened on the first
+    `files.*` call that needs it, **without following a link at any component**, so the check and
+    the open are one step: on Linux `openat2` on the canonical path with `RESOLVE_NO_SYMLINKS`
+    (`rustix::fs::openat2`), wrapped as a `Dir`; on macOS and Windows a walk from the file system's
+    root, one component at a time, each opened with cap-std's no-follow open (on Windows that opens
+    with `FILE_FLAG_OPEN_REPARSE_POINT`, and a component whose handle is a reparse point, a
+    junction included, is refused). The opened directory's identity must then equal the recorded
+    one.
+  - **A mismatch** is refused (the pane says the folder was replaced), except when the handle was
+    opened by the no-follow walk above and the root is a plain directory whose canonical path is
+    unchanged: then the new
     identity is accepted and re-recorded, which covers FAT and exFAT remounts and SMB shares whose
     file IDs are not stable.
   - **Bounded handles.** Open root handles live in an LRU of **64** directory handles across all
@@ -658,10 +690,12 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   on its own thread while the reader keeps draining, since `ClosePseudoConsole` can block until
   output is read); the exit code. Every spawn goes through one dedicated long-lived spawner
   thread owned by the crate (`Spawner`), never a tokio blocking-pool thread. On Linux, `Spec` is
-  wrapped so the PTY's child is `<current exe> pty-supervisor -- <program> <args>` with the read
-  end of the spawner's lifeline pipe, and the crate provides `supervisor::run(args)` (D5:
-  subreaper, the lifeline pipe, the signal set, reaping, ending every descendant, the shell's exit
-  code). `imperium-core`'s `main` dispatches the hidden `pty-supervisor`
+  wrapped so the PTY's child is
+  `<current exe> pty-supervisor --daemon <pid>:<start time> -- <program> <args>`, and the crate provides `supervisor::run(args)` (D5: subreaper, the pidfd,
+  close-on-exec, the shell's process group and `tcsetpgrp`, the caught signal set, the single
+  `poll` loop, reaping, the repeated kill-all, the shell's exit code). First step of the stage:
+  read the pinned `portable-pty` source and record in the outcome that it closes descriptors above
+  2 and passes argv unchanged. `imperium-core`'s `main` dispatches the hidden `pty-supervisor`
   subcommand to it before anything else starts (no runtime, no logging, no config).
 - Depends on: none.
 - Owned paths: `crates/imperium-pty/**` (new), `crates/imperium-core/src/main.rs` (the hidden
@@ -676,10 +710,17 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   - **Linux supervisor:** a child that calls `setsid` (`setsid sleep 60 &`) is gone after `end`;
     **closing the PTY master** (as a daemon crash would) leaves no `setsid` grandchild; killing
     the test's stand-in for the daemon with `SIGKILL` ends the supervisor, the shell and its jobs
-    (lifeline EOF); **a terminal requested from a short-lived thread that then exits keeps
-    running** (the spawner thread forked it); `SIGTERM` and `SIGINT` to the supervisor end every
-    descendant; no zombie is left under the supervisor while the shell runs; the test binary's own
-    `waitpid` of an unrelated child still gets its status (no daemon-wide reaping);
+    (the pidfd); a wrong start time in argv makes the supervisor exit at once; **a terminal
+    requested from a short-lived thread that then exits keeps running** (the spawner thread forked
+    it); `SIGTERM` to the supervisor ends every descendant; **a fork loop**
+    (`sh -c 'while :; do sleep 60 & done'`) is gone after `end` within the bound; no zombie is left
+    under the supervisor while the shell runs; the test binary's own `waitpid` of an unrelated
+    child still gets its status (no daemon-wide reaping); the shell holds no descriptor above 2
+    (`ls /proc/self/fd` in the shell);
+  - **Ctrl+C:** with the program `sh -c "trap '' INT; sleep 30"`, writing `\x03` leaves the
+    terminal running; `\x03` written right after spawn does not end the terminal; in an
+    interactive `bash -i`, `sleep 30` then `\x03` ends `sleep` and the shell prompts again (the
+    shell did not inherit an ignored `SIGINT`);
   - the exit code is reported through the supervisor; a multi-byte character split across reads
     arrives whole; a 2 MiB burst keeps the last 1 MiB in the ring and reports the drop;
   - every wait is bounded (10 s). `cargo clippy` clean.
@@ -912,8 +953,8 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 - Objective: `files.roots` and `files.read` (protocol minor at merge) in
   `crates/imperium-core/src/files.rs`, under D12 and D13: root identities from
   `Workspace::roots()` and `Workspace::scratch()` recorded in the session record at creation;
-  root `Dir` handles opened lazily into a 64-handle LRU, each open checking the recorded identity
-  and that no path component is a link or reparse point, re-recording the identity of an
+  root `Dir` handles opened lazily into a 64-handle LRU by the no-follow open (`openat2` with
+  `RESOLVE_NO_SYMLINKS` on Linux, a component walk elsewhere), each checking the recorded identity, re-recording the identity of an
   unchanged plain directory; a session's handles closed before archive or delete removes anything
   (refused for a remote runtime or an archived session); the up-front spelling checks; every open through the
   held `Dir`, non-blocking with an `fstat` and regular files only; text reads of at most 1 MiB from
@@ -954,8 +995,8 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 - Size: about 800 lines.
 - Risks: symbolic links on Windows runners need developer mode (use junctions there, and skip only
   the link case with a logged reason, never silently); `cap-std` behaviour on case-insensitive
-  file systems (tested on macOS and Windows); the reparse-point check per component on Windows
-  (through `symlink_metadata`, which reports junctions as links).
+  file systems (tested on macOS and Windows); a root under a linked system folder (macOS `/var` is
+  a link to `/private/var`) is canonicalised at creation, so the walk starts from the real path.
 - Status: pending
 - Outcome: -
 - Handoff notes: `files.read` never applies agent deny rules (D12); the docs say so. Stage 7a is
