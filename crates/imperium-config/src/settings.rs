@@ -680,6 +680,10 @@ pub struct HarnessSettings {
     /// How many of the latest user turns keep their tool results when stale ones are cleared
     /// (at least 1).
     pub clear_after_turns: u32,
+    /// Most read-only file calls (`read_file`, `list_dir`, `glob`, `grep`) of one model step that
+    /// run at the same time; 0 or 1 runs every call one after another. Results always go back
+    /// in call order. Capped at 8.
+    pub parallel_reads: u32,
 }
 
 impl Default for HarnessSettings {
@@ -699,6 +703,7 @@ impl Default for HarnessSettings {
             adaptive_effort: false,
             clear_stale_results: true,
             clear_after_turns: 2,
+            parallel_reads: 4,
         }
     }
 }
