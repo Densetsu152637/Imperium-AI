@@ -8,6 +8,10 @@
 //! answering with `"updated_input"` (the tool's arguments, an object) or `"updated_prompt"`; see
 //! [`Hooks::run_rewriting`]. The caller checks a rewritten call again as if the model had made it.
 //!
+//! A `tool.after` hook may replace the tool's result by answering with `"updated_output"` (a
+//! string, at most [`MAX_OUTPUT_REPLACEMENT_BYTES`]); see [`Hooks::run_rewriting`]. Only the user's
+//! own hooks may; an oversized replacement is refused and the result stays as it was.
+//!
 //! A hook is a command or an HTTP endpoint (`url`): the same JSON is POSTed to it, a 2xx answer
 //! may carry the same `decision`, and anything else is a failure. HTTP hooks come only from the
 //! user's configuration, go to `https` URLs (or `http` on this machine), never follow a
@@ -150,6 +154,7 @@ struct Answer {
     verdict: Verdict,
     updated_input: Option<Value>,
     updated_prompt: Option<String>,
+    updated_output: Option<String>,
 }
 
 impl Answer {
@@ -158,6 +163,7 @@ impl Answer {
             verdict: Verdict::Block(reason),
             updated_input: None,
             updated_prompt: None,
+            updated_output: None,
         }
     }
 }
@@ -171,6 +177,9 @@ pub struct Rewriting {
     pub updated_input: Option<Value>,
     /// For `prompt.submit`: the new prompt. Never set with a block.
     pub updated_prompt: Option<String>,
+    /// For `tool.after`: the tool's new result, after every hook that replaced it, each seeing
+    /// the last one's result as `tool_output`.
+    pub updated_output: Option<String>,
 }
 
 /// Claude Code's names for Imperium's built-in tools, so matchers written for it work.
@@ -265,8 +274,9 @@ impl Hooks {
     }
 
     /// [`Hooks::run`] for `tool.before` and `prompt.submit`, honouring rewrites: a hook that
-    /// answers with `"updated_input"` (an object, for a tool call) or `"updated_prompt"` (a
-    /// string) replaces them, and the hooks after it see the new value. Only hooks that
+    /// answers with `"updated_input"` (an object, for a tool call), `"updated_prompt"` (a
+    /// string) or, for `tool.after`, `"updated_output"` (a string: the tool's result) replaces
+    /// them, and the hooks after it see the new value. Only hooks that
     /// `may_rewrite` count; a block anywhere wins and drops every rewrite. The caller must treat
     /// the result as a new call or message and check it again.
     pub async fn run_rewriting(
@@ -290,6 +300,7 @@ impl Hooks {
     ) -> Rewriting {
         let mut updated_input = None;
         let mut updated_prompt = None;
+        let mut updated_output = None;
         let mut input = payload.clone();
         if let Some(object) = input.as_object_mut() {
             object.insert("hook_event".into(), event.as_str().into());
@@ -316,6 +327,7 @@ impl Hooks {
                         verdict: Verdict::Block(reason),
                         updated_input: None,
                         updated_prompt: None,
+                        updated_output: None,
                     };
                 }
                 Ok(answer) => {
@@ -328,8 +340,13 @@ impl Hooks {
                     let again_prompt = answer.updated_prompt.as_deref().is_some_and(|new| {
                         Some(new) == input.get("prompt").and_then(Value::as_str)
                     });
-                    let again = again_input || again_prompt;
-                    let wants = (answer.updated_input.is_some() || answer.updated_prompt.is_some())
+                    let again_output = answer.updated_output.as_deref().is_some_and(|new| {
+                        Some(new) == input.get("tool_output").and_then(Value::as_str)
+                    });
+                    let again = again_input || again_prompt || again_output;
+                    let wants = (answer.updated_input.is_some()
+                        || answer.updated_prompt.is_some()
+                        || answer.updated_output.is_some())
                         && !again;
                     let allowed = rewriting && hook.may_rewrite;
                     if wants && !allowed {
@@ -357,6 +374,15 @@ impl Hooks {
                         }
                         updated_prompt = Some(new);
                     }
+                    if allowed
+                        && event == HookEvent::ToolAfter
+                        && let Some(new) = answer.updated_output
+                    {
+                        if let Some(object) = input.as_object_mut() {
+                            object.insert("tool_output".into(), new.clone().into());
+                        }
+                        updated_output = Some(new);
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(hook = %hook.describe(), event = event.as_str(), %error, "hook failed");
@@ -367,6 +393,7 @@ impl Hooks {
             verdict: Verdict::Allow,
             updated_input,
             updated_prompt,
+            updated_output,
         }
     }
 }
@@ -417,9 +444,14 @@ async fn run_one(hook: &Hook, input: &Value, cwd: &std::path::Path) -> Result<An
 /// Largest rewritten tool input or prompt that is taken.
 const MAX_REWRITE_BYTES: usize = 1024 * 1024;
 
+/// Largest replacement result a `tool.after` hook may give. A longer one is refused (the result
+/// stays as the tool returned it), not cut: a hook that wants less must send less.
+pub const MAX_OUTPUT_REPLACEMENT_BYTES: usize = 64 * 1024;
+
 /// A hook's answer: `{"decision": "block" | "deny", "reason": "..."}` blocks; anything else
-/// allows, and may carry `"updated_input"` (an object) or `"updated_prompt"` (a string), which a
-/// block never does.
+/// allows, and may carry `"updated_input"` (an object), `"updated_prompt"` (a string) or
+/// `"updated_output"` (a string, at most [`MAX_OUTPUT_REPLACEMENT_BYTES`]), which a block never
+/// does.
 fn answer(text: &str) -> Answer {
     let decision: Option<Value> = serde_json::from_str(text.trim()).ok();
     let blocked = decision
@@ -446,10 +478,26 @@ fn answer(text: &str) -> Answer {
         .and_then(Value::as_str)
         .filter(|prompt| !prompt.trim().is_empty() && prompt.len() <= MAX_REWRITE_BYTES)
         .map(str::to_string);
+    let updated_output = decision
+        .as_ref()
+        .and_then(|d| d.get("updated_output"))
+        .and_then(Value::as_str)
+        .filter(|output| {
+            let fits = output.len() <= MAX_OUTPUT_REPLACEMENT_BYTES;
+            if !fits {
+                tracing::warn!(
+                    bytes = output.len(),
+                    "a replacement tool result was refused: it is over the size limit"
+                );
+            }
+            fits && !output.trim().is_empty()
+        })
+        .map(str::to_string);
     Answer {
         verdict: Verdict::Allow,
         updated_input,
         updated_prompt,
+        updated_output,
     }
 }
 
@@ -979,6 +1027,14 @@ mod tests {
         async fn not_an_object() -> axum::Json<Value> {
             axum::Json(json!({"updated_input": "rm -rf /"}))
         }
+        async fn replace(body: String) -> axum::Json<Value> {
+            let seen: Value = serde_json::from_str(&body).unwrap();
+            let output = seen["tool_output"].as_str().unwrap_or_default();
+            axum::Json(json!({"updated_output": format!("[{output}]")}))
+        }
+        async fn nothing() -> axum::Json<Value> {
+            axum::Json(json!({}))
+        }
         async fn prompt() -> axum::Json<Value> {
             axum::Json(json!({"updated_prompt": "a new prompt"}))
         }
@@ -994,6 +1050,8 @@ mod tests {
             .route("/rewrite", post(rewrite))
             .route("/chain", post(chain))
             .route("/not-an-object", post(not_an_object))
+            .route("/replace", post(replace))
+            .route("/nothing", post(nothing))
             .route("/prompt", post(prompt))
             .route("/slow", post(slow))
             .route("/big", post(big))
@@ -1263,6 +1321,98 @@ X-Injected: 1"
         )
         .unwrap();
         assert!(!hooks[0].may_rewrite);
+    }
+
+    fn after(url: String) -> Hook {
+        http_hook("tool.after", url, None, 5)
+    }
+
+    #[tokio::test]
+    async fn a_tool_after_hook_can_replace_the_result_and_the_next_hook_sees_it() {
+        let (base, _seen) = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let payload = json!({"tool_input": {}, "ok": true, "tool_output": "raw"});
+        let hooks = Hooks::new(vec![
+            after(format!("{base}/replace")),
+            after(format!("{base}/replace")),
+        ]);
+        let outcome = hooks
+            .run_rewriting(
+                HookEvent::ToolAfter,
+                Some("read_file"),
+                &payload,
+                dir.path(),
+            )
+            .await;
+        assert_eq!(outcome.verdict, Verdict::Allow);
+        // Each hook saw the last one's result.
+        assert_eq!(outcome.updated_output.as_deref(), Some("[[raw]]"));
+        assert_eq!(outcome.updated_input, None);
+        // An untrusted hook may not replace.
+        let mut untrusted = after(format!("{base}/replace"));
+        untrusted.may_rewrite = false;
+        let outcome = Hooks::new(vec![untrusted])
+            .run_rewriting(
+                HookEvent::ToolAfter,
+                Some("read_file"),
+                &payload,
+                dir.path(),
+            )
+            .await;
+        assert_eq!(outcome.updated_output, None);
+        // A replacement belongs to tool.after: a tool.before hook that sends one is ignored.
+        let outcome = Hooks::new(vec![before(format!("{base}/replace"))])
+            .run_rewriting(
+                HookEvent::ToolBefore,
+                Some("read_file"),
+                &payload,
+                dir.path(),
+            )
+            .await;
+        assert_eq!(outcome.updated_output, None);
+    }
+
+    #[tokio::test]
+    async fn a_tool_after_hook_that_answers_nothing_leaves_the_result() {
+        let (base, _seen) = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let payload = json!({"tool_input": {}, "ok": true, "tool_output": "raw"});
+        let outcome = Hooks::new(vec![after(format!("{base}/nothing"))])
+            .run_rewriting(
+                HookEvent::ToolAfter,
+                Some("read_file"),
+                &payload,
+                dir.path(),
+            )
+            .await;
+        assert_eq!(outcome.verdict, Verdict::Allow);
+        assert_eq!(outcome.updated_output, None);
+        // A plain observer's answer is no replacement either.
+        let outcome = Hooks::new(vec![after(format!("{base}/observe"))])
+            .run_rewriting(
+                HookEvent::ToolAfter,
+                Some("read_file"),
+                &payload,
+                dir.path(),
+            )
+            .await;
+        assert_eq!(outcome.updated_output, None);
+    }
+
+    #[test]
+    fn an_oversized_replacement_is_refused_not_cut() {
+        let fits = "x".repeat(MAX_OUTPUT_REPLACEMENT_BYTES);
+        let taken = answer(&json!({"updated_output": fits}).to_string());
+        assert_eq!(taken.updated_output.as_deref(), Some(fits.as_str()));
+        let big = "x".repeat(MAX_OUTPUT_REPLACEMENT_BYTES + 1);
+        let refused = answer(&json!({"updated_output": big}).to_string());
+        assert_eq!(refused.updated_output, None);
+        // Not a string, or blank: nothing to replace with.
+        assert_eq!(
+            answer(r#"{"updated_output": {"a": 1}}"#).updated_output,
+            None
+        );
+        assert_eq!(answer(r#"{"updated_output": "  "}"#).updated_output, None);
     }
 
     #[tokio::test]

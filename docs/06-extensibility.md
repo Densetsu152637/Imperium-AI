@@ -621,8 +621,8 @@ Hook events: `session.start`, `session.end`, `prompt.submit`, `turn.start`, `tur
 `model.before`, `model.after`, `compact.before`, `notification`.
 
 - A hook is a command (any executable receiving JSON on stdin) or an HTTP endpoint.
-- `tool.before` and `prompt.submit` hooks can allow, deny, or rewrite
-  ([below](#rewriting-hooks-implemented)); others observe.
+- `tool.before` and `prompt.submit` hooks can allow, deny, or rewrite, and `tool.after` hooks
+  can replace the tool's result ([below](#rewriting-hooks-implemented)); others observe.
 - Hooks run with timeouts. **They are not confined by the isolation tier**: a command hook is
   started through `imperium_tools::shell` with the daemon's whole environment (plus
   `IMPERIUM_PROJECT_DIR` and `CLAUDE_PROJECT_DIR`), as a process of the user, and an HTTP hook is
@@ -673,7 +673,7 @@ tool events also get `tool_name`, and a hook's `matcher` filters tool events and
 | `turn.start` | `session_id`, `prompt` (after commands and `prompt.submit` hooks) |
 | `turn.end` | `session_id` (after the turn's messages are saved) |
 | `tool.before` | `agent_id`, `tool_input` (can block) |
-| `tool.after` | `agent_id`, `tool_input`, `ok`, `tool_output` |
+| `tool.after` | `agent_id`, `tool_input`, `ok`, `tool_output` (cut to 8,000 characters; can replace the result) |
 | `permission.requested` | `agent_id`, `tool`, `summary` (the request is shown to the user at the same time) |
 | `agent.spawn` | the new subagent's task details |
 | `agent.complete` | `task_id`, `ok`, `report` |
@@ -905,6 +905,9 @@ approved with `--yes`, or installed by an agent, stays opt-in in Settings → Mo
 
 ### Rewriting hooks (implemented)
 
+A `tool.after` hook may answer with `{"updated_output": "..."}` to replace the result the model
+reads (see [replacing a result](#replacing-a-tool-result) below).
+
 A `tool.before` hook may answer with `{"updated_input": {...}}` (an object: the tool's new
 arguments, under the schema's names, as the hook received them in `tool_input`), and a
 `prompt.submit` hook with `{"updated_prompt": "..."}`; a command prints it as JSON on stdout
@@ -941,6 +944,28 @@ Several hooks rewrite in order, each seeing the last one's result. The rules:
   `<config>/plugins`, those folders and `<config>/mods` ask first (the folders are guarded by
   their resolved path as well as the one given, so a link or junction does not escape it);
   commands are read, not path-checked, so this is a guard against mistakes, not a boundary.
+
+#### Replacing a tool result
+
+A `tool.after` hook may answer with `{"updated_output": "..."}` (a string) in the same way, and
+the model reads that in place of what the tool returned (a redacted or summarised result, say).
+The call has already run, so nothing is re-checked: the replacement changes only the text the
+model, the transcript and the tool's finish event carry. The rules:
+
+- **Bounded.** A replacement is at most 64 KiB (`MAX_OUTPUT_REPLACEMENT_BYTES`). A longer one is
+  **refused, not cut**: the result stays as the tool returned it and the refusal is logged. A
+  blank or non-string `updated_output` is no replacement. (An HTTP hook's whole answer is also
+  capped at 64 KiB.)
+- **Chained.** Several hooks replace in order, each seeing the last one's result as its
+  `tool_output`. The hooks see the result cut to 8,000 characters, so a hook cannot rely on
+  seeing a long result whole.
+- **Journalled.** A replacement adds a transcript notice (`A hook replaced the result of
+  <tool>`) with the result before and after, each cut to 1,000 characters, like a rewritten call.
+- **Trust.** The same as for rewrites: only hooks from the user's own configuration may replace;
+  a plugin an agent installed may observe and never replace (its answer is ignored and logged),
+  and `updated_output` from any other event is ignored.
+- A hook that answers nothing, fails or times out leaves the result as it was. A `tool.after`
+  hook cannot block: the call has run.
 
 ### Trusted main-context mods (trust implemented, loader not built)
 
