@@ -800,12 +800,14 @@ and `environments.agent_update` (protocol 0.28)
     hash and digest as for any plugin). It is a protocol change, so it follows stage 11.
 <!-- markdownlint-disable-next-line MD029 -->
 61. **Reactive tool loading and the knowledge-source rule** (planned). Agents whose model runs on
-    this machine are offered a small core of file and command tools plus `tool_search`, and load
-    the other tools on demand; loaded tools are appended to the tool list and stay for the
-    session (`harness.tool_loading`, `auto` by default). The base prompts say that settled
+    this machine are offered a fixed core of file and command tools plus `tool_search` (which
+    returns other tools' schemas) and `call_tool` (which runs any of the agent's tools through the
+    usual checks), so the tool list never changes and the prompt cache holds
+    (`harness.tool_loading`; `off` until measured, then `auto`). The base prompts say that settled
     real-world facts, arithmetic and logic may come from the model's own knowledge while facts
-    about the project come from the tools. Both come from the guided-harness pilot, where the tool
-    cut saved 42 to 70 % of prompt tokens and the knowledge note gave the best held-out score
+    about the project come from the tools. Both come from the guided-harness pilot, where a
+    variant that cut the tools and shortened the system prompt saved 42 to 70 % of prompt tokens,
+    and the knowledge note gave the best held-out score
     ([plan](plans/reactive-tools.md), [03](03-agent-engine.md#harness-aids-for-small-models)).
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
