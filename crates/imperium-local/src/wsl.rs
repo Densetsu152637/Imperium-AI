@@ -43,8 +43,10 @@ pub fn decode_output(bytes: &[u8]) -> String {
                 .all(|byte| *byte == 0));
     let text = if utf16 {
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .iter()
+            .step_by(2)
+            .zip(bytes.iter().skip(1).step_by(2))
+            .map(|(low, high)| u16::from_le_bytes([*low, *high]))
             .collect();
         String::from_utf16_lossy(&units)
     } else {
