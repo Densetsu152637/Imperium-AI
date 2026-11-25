@@ -725,6 +725,7 @@ impl DaemonState {
             write_meta(&self.meta_path(&new_id), &meta.to_string())
                 .map_err(|error| error.to_string())?;
             self.resume_from_meta(&new_id, &meta, &new_journal, false)
+                .map(|_| ())
                 .map_err(|error| error.to_string())
         })();
         match made {
