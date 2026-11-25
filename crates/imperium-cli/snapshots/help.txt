@@ -2833,8 +2833,9 @@ Pull requests bound to sessions: what the desktop's pull-request card shows
 Usage: imperium pr [OPTIONS] <COMMAND>
 
 Commands:
-  status  Show the pull request bound to a session, or to each running session when none is named
-  help    Print this message or the help of the given subcommand(s)
+  status     Show the pull request bound to a session, or to each running session when none is named
+  automerge  Show or turn off GitHub's auto-merge for a session's pull request. It cannot be turned on from the command line: only the desktop app does that
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
       --remote <REMOTE>
@@ -2859,19 +2860,113 @@ Options:
   -h, --help
           Print help
 
+===== imperium pr automerge =====
+Show or turn off GitHub's auto-merge for a session's pull request. It cannot be turned on from the command line: only the desktop app does that
+
+Usage: imperium pr automerge [OPTIONS] <COMMAND>
+
+Commands:
+  status  Show whether auto-merge is on for a session's pull request
+  off     Turn auto-merge off for a session's pull request
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium pr automerge status =====
+Show whether auto-merge is on for a session's pull request
+
+Usage: imperium pr automerge status [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>
+          The session's id (see `imperium session list`)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium pr automerge off =====
+Turn auto-merge off for a session's pull request
+
+Usage: imperium pr automerge off [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>
+          The session's id (see `imperium session list`)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium pr automerge help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium pr automerge help [COMMAND]
+
+Commands:
+  status  Show whether auto-merge is on for a session's pull request
+  off     Turn auto-merge off for a session's pull request
+  help    Print this message or the help of the given subcommand(s)
+
+===== imperium pr automerge help status =====
+Show whether auto-merge is on for a session's pull request
+
+Usage: imperium pr automerge help status
+
+===== imperium pr automerge help off =====
+Turn auto-merge off for a session's pull request
+
+Usage: imperium pr automerge help off
+
+===== imperium pr automerge help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium pr automerge help help
+
 ===== imperium pr help =====
 Print this message or the help of the given subcommand(s)
 
 Usage: imperium pr help [COMMAND]
 
 Commands:
-  status  Show the pull request bound to a session, or to each running session when none is named
-  help    Print this message or the help of the given subcommand(s)
+  status     Show the pull request bound to a session, or to each running session when none is named
+  automerge  Show or turn off GitHub's auto-merge for a session's pull request. It cannot be turned on from the command line: only the desktop app does that
+  help       Print this message or the help of the given subcommand(s)
 
 ===== imperium pr help status =====
 Show the pull request bound to a session, or to each running session when none is named
 
 Usage: imperium pr help status
+
+===== imperium pr help automerge =====
+Show or turn off GitHub's auto-merge for a session's pull request. It cannot be turned on from the command line: only the desktop app does that
+
+Usage: imperium pr help automerge [COMMAND]
+
+Commands:
+  status  Show whether auto-merge is on for a session's pull request
+  off     Turn auto-merge off for a session's pull request
+
+===== imperium pr help automerge status =====
+Show whether auto-merge is on for a session's pull request
+
+Usage: imperium pr help automerge status
+
+===== imperium pr help automerge off =====
+Turn auto-merge off for a session's pull request
+
+Usage: imperium pr help automerge off
 
 ===== imperium pr help help =====
 Print this message or the help of the given subcommand(s)

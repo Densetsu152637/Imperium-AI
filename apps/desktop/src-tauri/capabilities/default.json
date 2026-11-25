@@ -24,6 +24,7 @@
     "allow-update-install-now",
     "allow-update-switch-install",
     "allow-plugin-approve",
+    "allow-auto-merge-enable",
     "core:default",
     "dialog:allow-open",
     "notification:default",

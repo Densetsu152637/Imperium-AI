@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod auto_merge;
 mod browser;
 mod daemon;
 mod mod_frames;
@@ -118,6 +119,7 @@ fn main() {
             update::update_install_now,
             update::update_switch_install,
             plugin_approval::plugin_approve,
+            auto_merge::auto_merge_enable,
         ])
         .build(tauri::generate_context!())
         .expect("the Imperium window could not start")

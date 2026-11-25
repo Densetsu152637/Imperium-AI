@@ -767,9 +767,26 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   queue it and leaves merging to the user; Imperium does not merge directly); merge-queue
   branches ignore the method; a push by another writer within one poll interval of enabling is
   outside the guarantee (documented).
-- Status: pending
-- Outcome: -
-- Handoff notes: the docs say plainly that auto-merge lands code unseen.
+- Status: complete
+- Outcome: protocol 0.59 adds `pull_requests.auto_merge_challenge` and `pull_requests.set_auto_merge`.
+  The challenge is a new per-connection store (`crates/imperium-core/src/automerge.rs`) bound to
+  the session, address, head commit and method; the caller check is the 0.56 identification of the
+  installed desktop app (`app_identity`), with `Connection::as_desktop_app_for_tests` (the `testing`
+  feature) standing in for the app in `tests/pr_automerge.rs`. `PrMonitor` re-reads GitHub before
+  enabling (settings, draft state, head, allowed methods) and sends only the two auto-merge
+  mutations; `disable_before_push` turns it off before Fix CI's push and blocks the push if it
+  cannot. `github.automerge.allowed` and `default_method` (user layer; a project's files are never
+  merged as settings). The desktop's Rust shell runs `auto_merge_enable` (native dialog, challenge,
+  enable); the card's switch, `imperium pr automerge status|off`, and the scan tests (CLI command
+  tree and source, mod host allowlist and sources, webview) are in. The challenge result names its
+  expiry `expires_unix_ms`, like `plugins.approval_challenge`'s, where the plan table said
+  `expires`. The agent caller cases are covered by their lack of any path: the bridge's tool
+  schemas name nothing about pull requests or auto-merge, `session.run_tool` refuses the method
+  names, and a hook, plugin server or mod reaches the daemon as a client that is not the
+  installed app.
+- Handoff notes: the docs say plainly that auto-merge lands code unseen. A repository whose
+  `allow_*` flags are missing (a token without push access) reads as "cannot be enabled here" with
+  that reason, never as every method off.
 
 ## Stage 7: Review-comment wake
 

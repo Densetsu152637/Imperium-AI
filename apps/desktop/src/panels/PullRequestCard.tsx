@@ -1,13 +1,17 @@
 // The pull-request card in the session view: the title and link, the state, the check counts with
-// the failing names, the review and conflict state, and the auto-fix and auto-merge switches, which
-// stay off and say why until the stages that build them. The daemon's cache (`pull_requests.status`)
-// and its `pull_requests.changed` notification are the only source. Every string came from GitHub
-// and is drawn as text (`sessions/prCard.ts` cleans it); the link opens in the user's own browser.
+// the failing names, the review and conflict state, and the auto-fix and auto-merge switches. The
+// auto-fix switch stays off and says why until the stage that builds it. The auto-merge switch
+// turns on only through the app's own `auto_merge_enable` command, after a native confirmation
+// that names the method and the branch (`sessions/autoMerge.ts`); turning it off is an ordinary
+// daemon call. The daemon's cache (`pull_requests.status`) and its `pull_requests.changed`
+// notification are the only source. Every string came from GitHub and is drawn as text
+// (`sessions/prCard.ts` cleans it); the link opens in the user's own browser.
 
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight, ExternalLink, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
-import type { PrStatus, PullRequestsChangedParams } from "@imperium/protocol";
+import type { ConfigDescribeResult, PrMergeMethod, PrStatus, PullRequestsChangedParams } from "@imperium/protocol";
 
 import { Badge } from "../components/Badge";
 import { Notice } from "../components/Notice";
@@ -18,7 +22,19 @@ import type { DaemonClient } from "../daemon/client";
 import { message } from "../shared/plainText";
 import { formatAgo } from "../shared/ago";
 import { openExternal } from "../shared/openExternal";
-import { describePr, isFirstRead, nextStatus, parseBindInput, refOfUrl, type PrCardView, type StateIcon } from "../sessions/prCard";
+import { problemOf, turnOffAutoMerge, turnOnAutoMerge } from "../sessions/autoMerge";
+import {
+  autoMergeSettings,
+  DEFAULT_AUTO_MERGE_SETTINGS,
+  describePr,
+  isFirstRead,
+  nextStatus,
+  parseBindInput,
+  refOfUrl,
+  type AutoMergeSettings,
+  type PrCardView,
+  type StateIcon,
+} from "../sessions/prCard";
 
 const STATE_ICONS = {
   open: GitPullRequest,
@@ -38,6 +54,7 @@ type Props = {
 export function PullRequestCard({ sessionId, url, archived, client }: Props) {
   const [status, setStatus] = useState<PrStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<AutoMergeSettings>(DEFAULT_AUTO_MERGE_SETTINGS);
   const bound = Boolean(url) && !archived;
   // Where focus goes when the card changes shape under the user's keys: to the bind link after
   // the binding ends, to the Details toggle after a bind.
@@ -63,6 +80,20 @@ export function PullRequestCard({ sessionId, url, archived, client }: Props) {
       off();
     };
   }, [client, sessionId, bound]);
+
+  // The user's `github.automerge.*` settings: whether auto-merge may be turned on, and the method
+  // to preselect. They change what the card offers, never whether anything is on.
+  useEffect(() => {
+    if (!client || !bound) return;
+    let live = true;
+    client
+      .call<ConfigDescribeResult>("config.describe", {})
+      .then((config) => live && setSettings(autoMergeSettings(config.entries)))
+      .catch(() => live && setSettings(DEFAULT_AUTO_MERGE_SETTINGS));
+    return () => {
+      live = false;
+    };
+  }, [client, bound]);
 
   if (archived) {
     // The binding is gone with the archive; the link stays for the record.
@@ -107,8 +138,10 @@ export function PullRequestCard({ sessionId, url, archived, client }: Props) {
     <Bound
       key={sessionId}
       status={status}
+      settings={settings}
       sessionId={sessionId}
       client={client}
+      onStatus={(changed) => setStatus((shown) => nextStatus(shown, changed, true))}
       focusToggle={focusAfter.current === "details"}
       onFocused={() => (focusAfter.current = null)}
       // The daemon announces the unbind (session.updated) before it answers, so the bind form can
@@ -121,16 +154,21 @@ export function PullRequestCard({ sessionId, url, archived, client }: Props) {
 
 function Bound({
   status,
+  settings,
   sessionId,
   client,
+  onStatus,
   focusToggle,
   onFocused,
   onUnbinding,
   onUnbound,
 }: {
   status: PrStatus;
+  settings: AutoMergeSettings;
   sessionId: string;
   client: DaemonClient | null;
+  /** The daemon's answer to a change this card asked for. */
+  onStatus: (status: PrStatus) => void;
   /** Focus the Details toggle once, as the card has just replaced the bind form. */
   focusToggle: boolean;
   onFocused: () => void;
@@ -144,9 +182,13 @@ function Bound({
     toggle.current?.focus();
     onFocused();
   }, []);
-  const view = describePr(status);
+  const view = describePr(status, settings);
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<PrMergeMethod | null>(null);
+  const [busy, setBusy] = useState(false);
+  // The user's pick while it is still one the repository allows; otherwise the card's own choice.
+  const method = chosen && view.methods.some((option) => option.value === chosen) ? chosen : view.method;
   const detailsId = useId();
   const Icon = STATE_ICONS[view.state.icon];
   const when = formatAgo(status.updated_at);
@@ -161,6 +203,27 @@ function Bound({
     } catch (error) {
       onUnbinding(false);
       setProblem(message(error));
+    }
+  };
+
+  /** The auto-merge switch: off asks the daemon; on asks the app, which asks the user first. */
+  const toggleAutoMerge = async () => {
+    if (!client || busy) return;
+    setProblem(null);
+    setBusy(true);
+    try {
+      if (view.autoMerge.on) {
+        onStatus(await turnOffAutoMerge(client, sessionId, status));
+      } else if (!isTauri()) {
+        setProblem("Auto-merge is turned on only from the desktop app.");
+      } else if (method) {
+        const why = problemOf(await turnOnAutoMerge(invoke, sessionId, status, method));
+        if (why) setProblem(why);
+      }
+    } catch (error) {
+      setProblem(message(error));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -223,7 +286,13 @@ function Bound({
       {open && (
         <div id={detailsId} className="pr-details">
           {view.branches && <p className="muted pr-branches">{view.branches}</p>}
-          <Controls view={view} />
+          <Controls
+            view={view}
+            method={method}
+            onMethod={setChosen}
+            busy={busy || !client}
+            onToggleAutoMerge={() => void toggleAutoMerge()}
+          />
           {problem && <Notice tone="danger">{problem}</Notice>}
           {client && (
             <div className="pr-actions">
@@ -238,8 +307,24 @@ function Bound({
   );
 }
 
-/** The two switches and the method picker: all disabled, each with its reason beside it. */
-function Controls({ view }: { view: PrCardView }) {
+/**
+ * The two switches and the method picker. Auto-fix stays off with its reason beside it. The
+ * auto-merge switch is on when GitHub has the request, can be turned on when nothing says it
+ * cannot (the note beside it says what), and can always be turned off.
+ */
+function Controls({
+  view,
+  method,
+  onMethod,
+  busy,
+  onToggleAutoMerge,
+}: {
+  view: PrCardView;
+  method: PrMergeMethod | null;
+  onMethod: (method: PrMergeMethod) => void;
+  busy: boolean;
+  onToggleAutoMerge: () => void;
+}) {
   const fixId = useId();
   const mergeId = useId();
   return (
@@ -255,12 +340,16 @@ function Controls({ view }: { view: PrCardView }) {
       </div>
       <div className="pr-control">
         <label className="option-row">
-          <Switch checked={view.autoMerge.on} onChange={() => {}} label={`${view.autoMerge.label}. ${view.autoMerge.reason}`} disabled />
+          <Switch
+            checked={view.autoMerge.on}
+            onChange={onToggleAutoMerge}
+            label={`${view.autoMerge.label}. ${view.autoMerge.reason}`}
+            disabled={busy || !(view.autoMerge.canTurnOn || view.autoMerge.canTurnOff)}
+          />
           <span>{view.autoMerge.label}</span>
         </label>
         <p className="muted" id={mergeId}>
-          {view.autoMerge.reason}
-          {view.autoMerge.hint ? ` ${view.autoMerge.hint}` : ""}
+          {view.autoMerge.hint ?? view.autoMerge.reason}
         </p>
         <div className="pr-method">
           <span className="muted" aria-hidden="true">
@@ -268,10 +357,10 @@ function Controls({ view }: { view: PrCardView }) {
           </span>
           <Select
             size="small"
-            value={view.method ?? ""}
+            value={method ?? ""}
             options={view.methods}
-            onChange={() => {}}
-            inert
+            onChange={(value) => onMethod(value as PrMergeMethod)}
+            inert={!view.autoMerge.canTurnOn || busy}
             aria-label="Merge method"
             aria-describedby={mergeId}
             placeholder="Unknown"

@@ -922,6 +922,53 @@ write that passes can be run later by a command that, taken alone, looks harmles
 does not close that gap; a deny or ask rule on the files that matter, the safety floor's
 protected files, and the isolation tiers do.
 
+### Auto-merge: the desktop app alone (implemented)
+
+GitHub's auto-merge merges a pull request as soon as the repository's own required checks and
+reviews pass, with **nobody looking at the code again**. Enabling it lands code unseen, so it is
+the user's switch alone, and only the desktop app can turn it on. Imperium asks GitHub with
+`enablePullRequestAutoMerge` and the chosen method (`squash`, `merge` or `rebase`, one the
+repository allows), pinned to the head commit the user saw (`expectedHeadOid`: GitHub refuses if
+the branch has moved); it never calls a merge endpoint itself. The only calls to GitHub that
+change anything are that mutation and `disablePullRequestAutoMerge`.
+
+- **Turning it on** is `pull_requests.set_auto_merge` with `enabled: true`, which needs the
+  single-use challenge of `pull_requests.auto_merge_challenge`: the same pattern as
+  [plugin approval](06-extensibility.md#plugin-marketplaces) (`plugins.approval_challenge` and
+  `plugins.approve`). The daemon identifies the caller itself, from what the operating system
+  says about the process on the other end of the local socket, and answers only the desktop app
+  installed beside `imperium-core`; the challenge is bound to that connection, the session, the
+  pull request's address, the head commit and the method, lives two minutes and is used up by
+  any answer. The app's Rust shell does it (`auto_merge_enable`): a native dialog, written from
+  the daemon's own status and naming the repository, the branches, the commit and the method,
+  comes first, and the card's webview only triggers it.
+- **Nobody else can.** A paired phone's scopes list neither method. A page reaching the daemon
+  over loopback TCP (a mod's), an agent's command, a hook, a plugin's server and the
+  `imperium` command are not the installed desktop app and get `permission denied`. No agent
+  tool, `session.run_tool` tool, hook action, plugin tool or mod host call turns it on (tests
+  read the tool schemas, the CLI's command tree and the mod host's allowlist). A comment on a
+  pull request is text: it cannot call any of this.
+- **Turning it off** needs no challenge and any local caller may do it: the card, `imperium pr
+  automerge off SESSION`, an agent. There is no enabling command in the CLI: `imperium pr
+  automerge` has only `status` and `off`.
+- **A push turns it off first.** The daemon's own push to a pull request's branch (Fix CI)
+  disables auto-merge before it pushes, and never enables it again; if the daemon cannot read
+  whether it is on, or cannot turn it off, it does not push. The user turns it on again in the
+  desktop app once they have seen the push. A push by *another* writer within one poll interval
+  of enabling is outside the guarantee: GitHub's `expectedHeadOid` check covers the instant of
+  enabling only, and the next poll (at most 60 s while the card is shown, `github.autofix.poll_s`
+  otherwise) shows the new head.
+- **Where it is not offered**, with the reason on the card: a draft (GitHub refuses it), a
+  repository that does not allow auto-merge, a repository whose merge settings the token cannot
+  read (a token without push access gets no `allow_*` flags; that is "cannot be enabled here",
+  never "every method is off"), a branch in a merge queue (which ignores the method), a merged or
+  closed pull request, and `github.automerge.allowed = false`. GitHub also refuses a pull request
+  that can already merge (it will not queue it): the card says so and leaves merging to the user.
+- **Settings** (`[github.automerge]`, [10](10-configuration.md)): `allowed` (default `true`)
+  refuses every request when `false`; `default_method` is the method the card preselects when the
+  repository allows it. Both are read from the user's own config only (a project's `.imperium`
+  files are never merged as settings) and neither turns anything on.
+
 ## Isolation tiers
 
 The UI always shows the active tier for each session and agent.
