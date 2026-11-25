@@ -38,7 +38,7 @@ async fn cold_start_size_and_resident_memory() {
     for _ in 0..15 {
         let mut run = launcher.start("lookup()", &quick_limits()).await.unwrap();
         starts.push(run.startup());
-        assert!(matches!(run.next().await, ScriptEvent::NameLookup(_)));
+        assert!(matches!(run.next().await, ScriptEvent::Call(_)));
         if let Some(kb) = run.pid().and_then(resident_kb) {
             resident.push(kb);
         }
