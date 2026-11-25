@@ -197,3 +197,33 @@ pub fn system32(name: &str) -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
     Path::new(&root).join("System32").join(name)
 }
+
+/// What a stuck process is doing (for a failure message): its status, wait channel and children.
+pub fn describe(pid: Option<u32>) -> String {
+    let Some(pid) = pid else {
+        return "no pid".into();
+    };
+    #[cfg(target_os = "linux")]
+    {
+        let read =
+            |name: &str| std::fs::read_to_string(format!("/proc/{pid}/{name}")).unwrap_or_default();
+        let status: String = read("status")
+            .lines()
+            .filter(|line| {
+                ["State", "PPid", "SigPnd", "SigBlk", "SigIgn", "SigCgt"]
+                    .iter()
+                    .any(|key| line.starts_with(key))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let children = read(&format!("task/{pid}/children"));
+        format!(
+            "pid {pid}: {status}; wchan {}; children [{children}]",
+            read("wchan")
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        format!("pid {pid}")
+    }
+}
