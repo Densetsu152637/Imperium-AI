@@ -119,7 +119,9 @@ impl Agent {
         if self.early_refusal(name, false).is_some() {
             return None;
         }
-        let tool = invocation.as_ref().map_or(name, Invocation::tool_name);
+        let tool = invocation
+            .as_ref()
+            .map_or(name, |invocation| invocation.tool_name());
         let hooks = &self.shared.extensions.hooks;
         if hooks.applies(HookEvent::ToolBefore, Some(tool))
             || hooks.applies(HookEvent::ToolAfter, Some(tool))
