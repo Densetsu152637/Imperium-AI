@@ -751,6 +751,10 @@ fn extract_zip(file: std::fs::File, into: &Path) -> std::io::Result<()> {
         if name.split(['/', '\\']).any(|part| part == "..") {
             return Err(refuse(&name, "contains `..`"));
         }
+        let bytes = name.as_bytes();
+        if name.starts_with(['/', '\\']) || (bytes.len() > 1 && bytes[1] == b':') {
+            return Err(refuse(&name, "path is absolute"));
+        }
         let relative = entry
             .enclosed_name()
             .ok_or_else(|| refuse(&name, "path escapes the destination"))?;
