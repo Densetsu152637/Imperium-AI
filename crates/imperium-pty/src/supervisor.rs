@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use rustix::event::{PollFd, PollFlags, poll};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fd::OwnedFd;
 use rustix::io::Errno;
 use rustix::process::{
@@ -340,7 +340,13 @@ fn supervise(args: impl IntoIterator<Item = OsString>) -> Result<i32, Failure> {
             PollFd::new(&pidfd, PollFlags::IN),
             PollFd::new(&wake, PollFlags::IN),
         ];
-        match poll(&mut fds, None) {
+        // A timeout as well as the self-pipe: a wake-up that goes missing then costs 200 ms, not
+        // the terminal's end.
+        let timeout = Timespec {
+            tv_sec: 0,
+            tv_nsec: 200_000_000,
+        };
+        match poll(&mut fds, Some(&timeout)) {
             Ok(_) => {}
             Err(Errno::INTR) => continue,
             Err(error) => {
