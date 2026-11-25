@@ -1,7 +1,9 @@
 # Plan: server package (Docker Compose)
 
-Revision: 2026-11-26, revision 3 (plan-gate round 2: A1 `pid: host` and A2 pre-auth lockout under a
-shared address, folded in over revision 2's F1 to F10); written against `experimental` at `2cb50590`, merged with `experimental` at revision 2 (last updated).
+Revision: 2026-11-26, revision 4 (plan-gate round 3: B1 confinement of every MCP server and
+hook on a server, B2 deterministic flood tests; over revision 3's A1 and A2 and revision 2's F1
+to F10); written against `experimental` at `2cb50590`, merged with `experimental` at revision 2
+(last updated).
 Roadmap [item 63](../12-roadmap.md#next-in-order). Status: planned (no stage started).
 
 Imperium runs today as one daemon per user on a desktop or an SSH host. This plan packages it to
@@ -285,8 +287,12 @@ These are the design choices this plan makes. Each records why and what was reje
     owner gets past it with probability about `16 / r`; once through, it survives random
     eviction from a full pre-auth pool with probability about `(1 - 1/32)^k`, where `k` (small,
     since at most 16 a second enter) is the number of newcomers during its TLS handshake and
-    upgrade. The CLI and desktop retry a dropped or reset connection with back-off, so at
-    `r = 100` a correct-token client gets in within 30 attempts more than 99 % of the time. A flood from the owner's own (shared) address therefore **degrades service**: it
+    upgrade. With the stated parameters (`r = 100`, at most 16 entering a second, a TLS
+    handshake and upgrade window of at most 0.1 s, so `k <= 2`), per-attempt survival is at
+    least `0.16 * (31/32)^2 = 0.150`. The CLI and desktop retry a dropped or reset connection
+    with back-off, so a correct-token client gets in within 30 attempts more than 99 % of the
+    time (`1 - 0.85^30 > 0.99`). A flood from the owner's own (shared) address therefore
+    **degrades service**: it
     makes lockout probabilistic and costly for the attacker, not impossible. Blocking it outright
     needs a firewall in front of the listener or a private network (the docs recommend an
     overlay such as Tailscale for exposure beyond the LAN). The 256-bit token makes guessing
@@ -507,16 +513,26 @@ enabled, and the poll still turns it off if the head moves.
   bubblewrap's.
 - **`container` (tier 2) is off.** It needs Docker inside the container (Docker-in-Docker, which
   is privileged) or the host's socket (root on the host). Server mode refuses it (D5).
-- **Hooks and workspace MCP servers are confined too, on a server.** With `daemon.server` and
-  the Landlock backend, the daemon applies the same ruleset (the session's folders writable,
-  secrets, data, sockets and the rest of `HOME` hidden) to command hooks and to MCP servers whose
-  command starts in a workspace (a trusted project's `.imperium` servers and any server whose
-  working folder is a session's folder). Otherwise a hook or a workspace server would be a
-  tier-1 bypass: a repository could ship one that reads `/run/secrets`. A server that needs a
-  secret gets it through `secret_env` or headers, from the daemon, not by reading the file.
-  Still outside the domain, and documented as such: user-level MCP servers configured in the
-  user's own config (trusted like the daemon), HTTP hooks (they run no process), and model
-  runtimes. The daemon's git in agent-writable repositories goes through `safe_git` (no hooks,
+- **Every MCP server and command hook is confined on a server, unless the user opts it out.**
+  With `daemon.server` set and `isolation.os_backend = "landlock"`, the daemon applies the same
+  ruleset (the session's folders writable, secrets, data, sockets and the rest of `HOME` hidden)
+  to **every** stdio MCP server and **every** command hook it starts, whatever its origin: a
+  trusted project's `.mcp.json` server (`crates/imperium-core/src/mcp.rs` loads those for
+  projects in `mcp.trusted_projects`), a plugin's server, and the user's own `[mcp.servers]`.
+  The default is inverted on purpose. Which servers are "workspace" ones cannot be decided
+  reliably: a project server's `cwd` can point outside the session's folders or into another
+  session's folder, and a user-level server can run a script that lives in a workspace, where an
+  agent can rewrite it. Any of these left unconfined would be a tier-1 bypass that reads
+  `/run/secrets`. A server that needs a secret gets it through `secret_env` or headers, from the
+  daemon, not by reading the file.
+  - **The only exception is an explicit opt-out by name** in the user's own config:
+    `mcp.unconfined` (a list of server names) and `hooks.unconfined` (a list of hook names),
+    honoured **only from the user layer** (`<config>/config.toml`, and environment variables,
+    which the operator sets). The same keys in a project's `.imperium` files, a `.mcp.json`, an
+    environment's config or a plugin are ignored with a warning. The docs say that an opted-out
+    server can read every secret.
+  - Still outside the domain, documented as such: HTTP MCP servers and HTTP hooks (no process is
+    started), and model runtimes. The daemon's git in agent-writable repositories goes through `safe_git` (no hooks,
   fsmonitor or filters).
 
 ### D8. Testing in CI
@@ -640,9 +656,9 @@ the internet, a world-readable secret file, a weak token).
    `/run/imperium`, which tier 1's Landlock ruleset leaves out of reach of agents' commands, as
    it does every file under `HOME` but `.gitconfig` and `.ssh/known_hosts`; Landlock also blocks
    tracing the daemon. A command can still `connect()` to the daemon's socket (Landlock does not
-   mediate it), where the token it cannot read is required. Command hooks and workspace MCP
-   servers get the same ruleset on a server; user-level MCP servers and model runtimes do not
-   (D7). With tier 0 chosen knowingly, a command can read everything; the docs say so plainly.
+   mediate it), where the token it cannot read is required. Every stdio MCP server and command
+   hook gets the same ruleset on a server, except those the user names in `mcp.unconfined` or
+   `hooks.unconfined` (user layer only); model runtimes do not (D7). With tier 0 chosen knowingly, a command can read everything; the docs say so plainly.
    With `isolation.network = false`, UDP and DNS stay open (D7).
 4. **Secrets leaking through configuration.** Secrets are only files under `/run/secrets`; the
    compose files never carry one in `environment`, labels or interpolation (`check-compose.py`);
@@ -708,6 +724,9 @@ Config added (all user layer or environment; none readable from a project's file
   `secrets.directory` (default `/run/secrets`).
 - `github.token_source` (`gh` default, or `secret`).
 - `isolation.os_backend` (`bwrap` default, or `landlock`).
+- `mcp.unconfined` and `hooks.unconfined` (lists of names, default empty): the only servers and
+  hooks left unconfined on a server; user layer and environment variables only, ignored with a
+  warning anywhere else.
 - `remote.tls.listen` (unset: off), `remote.tls.allow_non_loopback` (default `false`),
   `remote.tls.token_secret` (default `imperium-remote-token`), `remote.tls.cert_secret` and
   `remote.tls.key_secret` (defaults `imperium-tls-cert`, `imperium-tls-key`).
@@ -757,7 +776,7 @@ estimates of changed lines, tests included.
 | --- | --- | --- | --- |
 | 1 | Server mode, refusals and the nested-namespace rule | none | 750 |
 | 2 | Read-only directory secrets | 1 | 600 |
-| 3 | Landlock backend for tier 1, hooks and workspace MCP servers | none (3b: 1) | 850 (split 3a/3b if past 800) |
+| 3 | Landlock backend for tier 1, every MCP server and hook on a server | none (3b: 1) | 850 (split 3a/3b if past 800) |
 | 4 | Socket folder and the SSH path into a container | none | 450 |
 | 5 | TLS listener | 1, 2 | 800 |
 | 6 | Pinned TLS client in the CLI | 5 | 500 |
@@ -839,8 +858,8 @@ estimates of changed lines, tests included.
 - Objective: `isolation.os_backend = "landlock"` in `Sandbox::Os` on Linux, with the ruleset of
   [D7](#d7-sandbox-tiers-inside-the-container), a per-command `TMPDIR`, TCP denial when the ABI
   allows it and a fail-closed error otherwise; the session label names the backend. With
-  `daemon.server` and the Landlock backend, the same ruleset is applied to command hooks and to
-  MCP servers started in a workspace (D7). First step:
+  `daemon.server` and the Landlock backend, the same ruleset is applied to every stdio MCP
+  server and command hook except the user's named opt-outs (D7). First step:
   a CI probe that Docker's default seccomp profile allows the Landlock calls on the runner (a
   tiny static test binary in `docker run --rm` with the default profile); if not, add
   `deploy/server/seccomp.json` (default plus the three calls) and say so in D7 before going on.
@@ -860,21 +879,26 @@ estimates of changed lines, tests included.
   `Launch::Stdio` gains an optional `confine: Option<imperium_tools::Confinement>` (the ruleset
   value `sandbox_landlock` builds, applied in the child before `exec`), and the command-hook
   runner in `imperium-extensions` (which already depends on `imperium-tools`) takes the same
-  value. `imperium-core` fills it where it builds launches and hook invocations: `Some` only when
-  `daemon.server` is set, `isolation.os_backend` is `landlock`, and the server is a **workspace
-  server**, meaning it was loaded from a project's `.imperium` files (the environment layer
-  already records that origin) or its `cwd` resolves inside one of the session's folders; for a
-  hook, when it comes from a project's files or runs in a session's folder. User-level servers
-  and hooks get `None`. The flag is read once per launch from the daemon's settings, never from
-  the server's own config.
+  value. `imperium-core` fills it where it builds launches and hook invocations. When
+  `daemon.server` is set and `isolation.os_backend` is `landlock`, it is `Some` for **every**
+  stdio server and command hook, except a server whose name is in `mcp.unconfined` or a hook
+  whose name is in `hooks.unconfined`, both read from the user layer only (the settings
+  registry marks them user-only, so the environment layer and project files cannot set them).
+  Otherwise it is `None`, as today. No origin or `cwd` test is made. The flag and the lists are
+  read once per launch from the daemon's settings, never from the server's own config.
 - Acceptance checks: `cargo test -p imperium-tools -p imperium-extensions -p imperium-mcp` on the
   Linux CI runner: a command can write in the workspace and its `TMPDIR`; reading a file under a
   stand-in for `/run/secrets`, the data folder and the socket folder (its `endpoint.json`
   included) fails with permission denied; with a stand-in `HOME` holding `.gitconfig`,
   `.ssh/known_hosts`, `.ssh/id_ed25519`, `.config/gh/hosts.yml` and `.git-credentials`, only the
   first two can be read, and writing anywhere in `HOME` fails; reading
-  `/proc/<daemon pid>/environ` fails; a command hook and a workspace MCP server started in server
-  mode get the same denials; a `connect` to a loopback port fails with
+  `/proc/<daemon pid>/environ` fails; in server mode, command hooks and MCP servers get the same
+  denials, covering: a `.mcp.json` server of a trusted project whose `cwd` is outside the
+  session's folders; a user-level server that runs a script living in a workspace; a server
+  whose `cwd` is in another session's folder; a hook from the user's config. A server named in
+  `mcp.unconfined` (and a hook in `hooks.unconfined`) in the user's config is not confined, and
+  the same list in a project's `.imperium` files, in an environment's config or in a plugin is
+  ignored (the server stays confined and a warning is logged); a `connect` to a loopback port fails with
   `isolation.network = false` where ABI 4 is present (skipped with a logged reason where not); a
   forced "no Landlock" path fails the command with the documented message and never runs it
   unconfined. bubblewrap's tests unchanged. `cargo clippy` clean.
@@ -919,15 +943,24 @@ estimates of changed lines, tests included.
   `allow_non_loopback` is refused; with a test client: the right token and pin connect and
   handshake; no token and a wrong token get 401 before any frame; the sixth failure in a minute
   from one address gets its 401 late; **while that address is in back-off, a client from it with
-  the correct token connects and completes the handshake within 1 s**; **with the pre-auth stage
-  flooded** (a test flooder from the same address keeping the pre-auth pool full and opening
-  100 new connections a second, all idle after TLS), a correct-token client from that address
-  connects within 30 attempts and within 60 s, in at least 99 of 100 runs of the scenario (the
-  expected rate is about 16 % an attempt, D3); with 32 unauthenticated
-  connections held open, a 33rd evicts one of them rather than being refused; a flood of failed
-  tokens fills only the tarpit pool (pre-auth slots stay free, its oldest entry is dropped at the
-  17th); a handshake over the per-address rate waits in the queue and completes once the rate
-  allows, and the queue drops its oldest entry when full; an authenticated client still connects
+  the correct token connects and completes the handshake within 1 s**. **Admission is a pure
+  state machine** (`remote_tls::admission`): the rate queue, the pre-auth pool, the tarpit and
+  the reserved slots, driven by an injected clock and a seeded RNG, with no sockets. Its unit
+  tests are deterministic:
+  - a scripted event stream (an attacker from the owner's address at 100 new connections a
+    second keeping the pre-auth pool full, the owner retrying with back-off) admits the owner
+    within 30 attempts on each of 10 fixed seeds;
+  - a closed-form check computes per-attempt survival from the configured parameters (rate 16
+    a second, pool 32, `r = 100`, window 0.1 s) and asserts it is at least 0.15, so a change to
+    a limit that breaks the D3 claim fails the build;
+  - with 32 unauthenticated connections held, a 33rd evicts one rather than being refused;
+  - a flood of failed tokens fills only the tarpit (pre-auth slots stay free, its oldest entry
+    is dropped at the 17th);
+  - a handshake over the per-address rate waits in the queue and is admitted once the rate
+    allows, and the queue drops its oldest entry when full.
+
+  One real-socket smoke test, run once: a flooder with a fixed seed against the listener in
+  process, and a correct-token client connects within 60 s. Further socket-level checks: an authenticated client still connects
   with all unauthenticated slots taken (the reserved slots); an idle TLS handshake is closed at
   10 s; TLS 1.2 is refused; any path but `/rpc` is 404 after authentication and 401 before it;
   the generated key is `0600` and kept across restarts; a desktop-only call over TLS returns
