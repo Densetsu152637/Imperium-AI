@@ -387,6 +387,16 @@ A message sent while you were working on this turn. Take it into account and car
 
 const STEERING_OPEN: &str = "<steering>";
 
+/// Whether `message` is a report about a finished background command
+/// (`<background-notice>`), added by the harness and not a turn of the user's.
+pub(crate) fn is_background_notice(message: &imperium_api::ChatMessage) -> bool {
+    matches!(
+        message,
+        imperium_api::ChatMessage::User { content, .. }
+            if content.starts_with("<background-notice>")
+    )
+}
+
 /// Whether `message` is a steering message added mid-turn (see [`steering_text`]); attachment
 /// text may come before the wrapper.
 pub(crate) fn is_steering_message(message: &imperium_api::ChatMessage) -> bool {

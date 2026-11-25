@@ -22,6 +22,7 @@ mod journal;
 mod knowledge;
 mod launcher;
 mod model;
+mod plan;
 mod queue;
 mod quiet;
 mod replay;

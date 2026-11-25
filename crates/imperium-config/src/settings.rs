@@ -666,6 +666,14 @@ pub struct HarnessSettings {
     /// the threshold is a sixteenth of the agent's context window in tokens (four characters
     /// each), never below this.
     pub result_spill_min_chars: u32,
+    /// When a conversation reaches `context.auto_compact_at`, first replace the results of
+    /// repeatable read-only tool calls (file reads, searches, fetches) from older turns with a
+    /// short stub, and skip the summary when that frees enough room. Nothing changes below the
+    /// compaction threshold.
+    pub clear_stale_results: bool,
+    /// How many of the latest user turns keep their tool results when stale ones are cleared
+    /// (at least 1).
+    pub clear_after_turns: u32,
 }
 
 impl Default for HarnessSettings {
@@ -684,6 +692,8 @@ impl Default for HarnessSettings {
             tool_loading: HarnessMode::Off,
             result_spill: true,
             result_spill_min_chars: 4000,
+            clear_stale_results: true,
+            clear_after_turns: 2,
         }
     }
 }
