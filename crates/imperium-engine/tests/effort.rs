@@ -76,6 +76,12 @@ impl ChatClient for Recorder {
                     r#"{"brief":"think hard","effort":"max"}"#,
                 )],
                 (true, true, 1) => vec![call("c2", "await_tasks", "{}")],
+                (true, false, 0) if last_user.is_some_and(|text| text.contains("browse")) => {
+                    vec![call("b1", "list_dir", r#"{"path":"."}"#)]
+                }
+                (true, false, 0) if last_user.is_some_and(|text| text.contains("broken")) => {
+                    vec![call("b2", "read_file", r#"{"path":"missing.txt"}"#)]
+                }
                 _ => Vec::new(),
             };
             if tool_calls.is_empty() {
@@ -99,6 +105,16 @@ fn start(
     reasoning: Option<bool>,
     model: &str,
     effort: Effort,
+) -> (Session, Arc<Recorder>) {
+    start_with(dir, reasoning, model, effort, Default::default())
+}
+
+fn start_with(
+    dir: &std::path::Path,
+    reasoning: Option<bool>,
+    model: &str,
+    effort: Effort,
+    harness: imperium_config::HarnessSettings,
 ) -> (Session, Arc<Recorder>) {
     let recorder = Arc::new(Recorder::default());
     let mut clients = ChatClients::default();
@@ -148,7 +164,7 @@ fn start(
         attended: true,
         attachments: Default::default(),
         auto_permissions: Default::default(),
-        harness: Default::default(),
+        harness,
         keep_agent_state: false,
         knowledge: Default::default(),
         journal_path: dir.join("journal.jsonl"),
@@ -227,4 +243,36 @@ async fn a_subagent_spawned_with_an_effort_keeps_it() {
     let sub: Vec<_> = calls.iter().filter(|call| !call.root).collect();
     assert_eq!(sub.len(), 1, "{calls:?}");
     assert_eq!(sub[0].effort, Some(Effort::Max));
+}
+
+fn adaptive() -> imperium_config::HarnessSettings {
+    imperium_config::HarnessSettings {
+        adaptive_effort: true,
+        ..Default::default()
+    }
+}
+
+async fn efforts_of(
+    prompt: &str,
+    harness: imperium_config::HarnessSettings,
+) -> Vec<Option<Effort>> {
+    let dir = tempfile::tempdir().unwrap();
+    let (session, recorder) = start_with(dir.path(), Some(true), "plain", Effort::High, harness);
+    turn(&session, prompt).await;
+    let calls = recorder.calls.lock().unwrap();
+    calls.iter().map(|call| call.effort).collect()
+}
+
+#[tokio::test]
+async fn adaptive_effort_is_off_by_default_and_lowers_the_call_after_a_good_tool_result() {
+    let high = Some(Effort::High);
+    let low = Some(Effort::Low);
+    // Off: the session's effort on every call.
+    assert_eq!(efforts_of("browse", Default::default()).await, [high, high]);
+    // On: the first call of the turn keeps it; the call after a tool that worked is low.
+    assert_eq!(efforts_of("browse", adaptive()).await, [high, low]);
+    // After a failed tool call the session's effort comes back.
+    assert_eq!(efforts_of("broken", adaptive()).await, [high, high]);
+    // A turn with no tool is one call at the session's effort.
+    assert_eq!(efforts_of("hello", adaptive()).await, [high]);
 }
