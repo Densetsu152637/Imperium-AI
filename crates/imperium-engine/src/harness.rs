@@ -192,7 +192,7 @@ impl SessionState {
 /// Where the first `open`..`close` block in `content` that stands as a part of its own (at
 /// the start or after a part separator, and at the end or before one) starts and ends: a
 /// pasted tag inside a user's text is not one.
-fn find_block(content: &str, open: &str, close: &str) -> Option<(usize, usize)> {
+pub(crate) fn find_block(content: &str, open: &str, close: &str) -> Option<(usize, usize)> {
     for (start, _) in content.match_indices(open) {
         if start != 0 && !content[..start].ends_with(PART_SEPARATOR) {
             continue;
@@ -282,6 +282,7 @@ pub(crate) fn turns_since_copy(messages: &[ChatMessage]) -> Option<usize> {
                 matches!(message, ChatMessage::User { .. })
                     && !crate::instructions::is_message(message)
                     && !crate::queue::is_steering_message(message)
+                    && !crate::queue::is_background_notice(message)
             })
             .count(),
     )
@@ -628,6 +629,11 @@ mod tests {
 {}",
             crate::queue::steering_text("with a file")
         )));
+        longer.push(ChatMessage::user(
+            "<background-notice>
+A command ended.
+</background-notice>",
+        ));
         assert_eq!(turns_since_copy(&longer), Some(2));
         assert_eq!(turns_since_copy(&[ChatMessage::user("none")]), None);
         assert!(latest_state(&[ChatMessage::user("no block")]).is_empty());
