@@ -6,14 +6,13 @@
 //! came from to `.imperium-source.json` inside it, and moves it into place. Nothing in it runs:
 //! no install script, no build, no hook. Git clones no submodules, skips Git LFS downloads, and
 //! refuses the `ext::` transport; copies skip symbolic links and `.git`. Skills and plugins are
-//! then listed for agents and load on first use; a plugin with hooks or MCP servers is added to
-//! `extensions.disabled_plugins` so neither its hooks nor its servers (which `activate_plugin`
-//! would start unasked) run until the plugin is approved in the desktop app, and a skill or
-//! plugin an agent installed is withheld whole (no skills, commands or agents) until then too,
-//! and a mod installed by an
-//! agent shows only after the user turns it on in the desktop app. Whatever the user turns on,
-//! `${VAR}` in an agent-installed plugin's `.mcp.json` never reads the daemon's environment
-//! (see `imperium_extensions::plugins`).
+//! then withheld, not listed or loaded, until the user approves them in the desktop app (an
+//! install is itself asked about every time, in every permission mode, so it never happens
+//! unasked). A plugin with hooks or MCP servers is also added to `extensions.disabled_plugins`,
+//! so neither its hooks nor its servers (which `activate_plugin` would start unasked) run until
+//! then. A mod installed by an agent shows only after the user turns it on in the desktop app.
+//! Whatever the user turns on, `${VAR}` in an agent-installed plugin's `.mcp.json` never reads
+//! the daemon's environment (see `imperium_extensions::plugins`).
 //!
 //! An uninstall moves the folder aside to `<data>/config-trash/`, so undoing it puts it back.
 

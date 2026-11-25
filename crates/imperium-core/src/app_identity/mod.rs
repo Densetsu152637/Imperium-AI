@@ -214,7 +214,10 @@ pub(crate) fn challenge(
     identify.identify(peer)?;
     let (canon, hash, runs, _) = content_for(asked.subject, asked.folder)?;
     if hash != asked.hash || runs != asked.runs {
-        return Err("the plugin is not what was shown: inspect it again".into());
+        return Err(format!(
+            "the {} is not what was shown: inspect it again",
+            asked.subject.noun()
+        ));
     }
     let (challenge, expires_unix_ms) = challenges.issue(canon, &hash, &runs, asked.now_ms);
     Ok(PluginsApprovalChallengeResult {
@@ -253,7 +256,10 @@ pub(crate) fn redeem(
     // The folder must still hold what the challenge was issued for.
     let (_, hash, runs, name) = content_for(asked.subject, &canon)?;
     if hash != asked.hash || runs != asked.runs {
-        return Err("the plugin changed since the challenge: nothing was recorded".into());
+        return Err(format!(
+            "the {} changed since the challenge: nothing was recorded",
+            asked.subject.noun()
+        ));
     }
     let plugin = match asked.subject {
         Subject::Plugin => plugin_records::record_for(paths, &canon)

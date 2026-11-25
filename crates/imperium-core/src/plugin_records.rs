@@ -693,7 +693,10 @@ fn judge(
     let plugin = parse(folder)?;
     let code = has_code(&plugin);
     let Some(record) = record else {
-        return code.then(|| "not installed by Imperium: approve to load".to_string());
+        // A folder an agent installed (its provenance file names a session) with no record is
+        // withheld too, code or not: the record is what says the user approved it.
+        return (code || plugins::agent_installed(folder))
+            .then(|| "not installed by Imperium: approve to load".to_string());
     };
     let folder_name = folder
         .file_name()
@@ -722,6 +725,13 @@ fn judge(
     match &record.approval {
         None if !code => Some(AGENT_UNAPPROVED.to_string()),
         None => Some("not approved: approve to load".to_string()),
+        // Versions before approvals counted for agent installs carried an approval over for an
+        // agent's plugin without anyone being asked; it does not count, with code or without.
+        Some(approval)
+            if record.origin == Origin::Agent && approval.kind == ApprovalKind::CarriedOver =>
+        {
+            Some(AGENT_CARRIED_OVER.to_string())
+        }
         Some(approval) if !verifier.honours(approval.kind) => {
             Some("its approval does not count here".to_string())
         }
@@ -736,6 +746,10 @@ fn judge(
 /// has hooks or servers.
 pub(crate) const AGENT_UNAPPROVED: &str = "an agent installed it and you have not approved it: approve it in the Imperium desktop app (Plugins, Installed) to load its agents, skills and commands";
 
+/// Why a plugin an agent installed is withheld although an earlier version carried an approval
+/// over for it: nobody was asked.
+pub(crate) const AGENT_CARRIED_OVER: &str = "an agent installed it and an earlier version carried it over without asking you: approve it again in the Imperium desktop app (Plugins, Installed) to load it";
+
 /// What an approval is for: a plugin folder or a skill folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum Subject {
@@ -745,6 +759,14 @@ pub(crate) enum Subject {
 }
 
 impl Subject {
+    /// What an approval's messages call it.
+    pub(crate) fn noun(self) -> &'static str {
+        match self {
+            Subject::Plugin => "plugin",
+            Subject::Skill => "skill",
+        }
+    }
+
     /// The subject a request's `kind` names: a plugin when it is left out or `plugin`, a skill for
     /// `skill`.
     pub(crate) fn parse(kind: Option<&str>) -> Result<Subject, String> {
@@ -832,9 +854,9 @@ fn record_present(paths: &Paths, disabled: &[String]) -> (Store, Vec<String>) {
         }
         let runs = plugins::runs(&plugin).digest();
         let agent = plugins::agent_installed(&folder);
-        // What an agent installed without code is not carried over: it adds agents, skills and
-        // commands to every session and loads only once approved (`judge`).
-        let carried = !disabled.contains(&plugin.name) && (!agent || has_code(&plugin));
+        // What an agent installed is never carried over: it loads only once approved in the
+        // desktop app (`judge`).
+        let carried = !disabled.contains(&plugin.name) && !agent;
         let approval = carried.then(|| Approval {
             hash: seen.hash.clone(),
             runs: runs.clone(),
@@ -1450,24 +1472,71 @@ edited
     }
 
     #[test]
-    fn the_first_start_migration_does_not_carry_over_an_agent_plugin_without_code() {
+    fn the_first_start_migration_does_not_carry_over_an_agent_plugin() {
         let home = home();
         let skills_only = plugin(&home, "skillful", "skillful", false);
         write(
             &skills_only.join(plugins::SOURCE_FILE),
             r#"{"session_id": "s1"}"#,
         );
+        let hooked = plugin(&home, "hooked", "hooked", true);
+        write(
+            &hooked.join(plugins::SOURCE_FILE),
+            r#"{"session_id": "s1"}"#,
+        );
         let own = plugin(&home, "own", "own", false);
         migrate(&home.paths, &[]).unwrap();
-        let reasons = reasons(&home, &ReleaseVerifier);
-        assert_eq!(reasons.len(), 1, "{reasons:?}");
-        assert_eq!(reasons[0].0, "skillful");
+        let mut names: Vec<String> = reasons(&home, &ReleaseVerifier)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["hooked", "skillful"]);
         assert!(record_for(&home.paths, &own).unwrap().approval.is_some());
-        assert!(
-            record_for(&home.paths, &skills_only)
-                .unwrap()
-                .approval
-                .is_none()
+        for folder in [&skills_only, &hooked] {
+            assert!(record_for(&home.paths, folder).unwrap().approval.is_none());
+        }
+    }
+
+    #[test]
+    fn a_carried_over_approval_of_an_agent_plugin_does_not_count() {
+        let home = home();
+        // A store written by an earlier version: agent plugins with a carried-over approval.
+        let none = plugin(&home, "nocode", "nocode", false);
+        let with = plugin(&home, "withcode", "withcode", true);
+        let user = plugin(&home, "usercode", "usercode", true);
+        record(&home, &none, Origin::Agent, Some(ApprovalKind::CarriedOver));
+        record(&home, &with, Origin::Agent, Some(ApprovalKind::CarriedOver));
+        record(&home, &user, Origin::User, Some(ApprovalKind::CarriedOver));
+        for verifier in [&TestVerifier as &dyn ApprovalVerifier, &ReleaseVerifier] {
+            let found = reasons(&home, verifier);
+            let mut names: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
+            names.sort();
+            assert_eq!(names, ["nocode", "withcode"], "{found:?}");
+            assert!(found.iter().all(|(_, reason)| reason == AGENT_CARRIED_OVER));
+        }
+        // Approved in the desktop app (any other kind), they load.
+        record(&home, &none, Origin::Agent, Some(ApprovalKind::Counted));
+        record(&home, &with, Origin::Agent, Some(ApprovalKind::Counted));
+        assert!(withheld(&home).is_empty());
+    }
+
+    #[test]
+    fn an_unrecorded_folder_an_agent_installed_is_withheld_without_code_too() {
+        let home = home();
+        let orphan = plugin(&home, "orphan", "orphan", false);
+        write(
+            &orphan.join(plugins::SOURCE_FILE),
+            r#"{"session_id": "s1"}"#,
+        );
+        plugin(&home, "plain", "plain", false);
+        let found = reasons(&home, &TestVerifier);
+        assert_eq!(
+            found,
+            [(
+                "orphan".to_string(),
+                "not installed by Imperium: approve to load".to_string()
+            )]
         );
     }
 }

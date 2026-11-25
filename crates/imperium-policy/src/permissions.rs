@@ -376,6 +376,7 @@ const FLOOR_PATHS: &[&str] = &[
     // The daemon's records of installed plugins and their approvals, the marker that says the
     // first-start migration ran, and its cache of what each marketplace lists.
     "plugin-installs.json",
+    "skill-installs.json",
     "plugin-migration.json",
     "marketplaces.json",
     // The encrypted secret file used where there is no OS keychain, and its scratch files
@@ -1391,6 +1392,7 @@ mod tests {
             "/floor-plugin-config/plugins/x",
             "/floor-plugin-data/marketplaces/mk/.claude-plugin/marketplace.json",
             "/floor-plugin-data/plugin-installs.json",
+            "/floor-plugin-data/skill-installs.json",
             "/floor-plugin-data/plugin-migration.json",
             "/floor-plugin-data/marketplaces.json",
         ] {
@@ -1405,6 +1407,29 @@ mod tests {
         ] {
             assert!(!safety_floor(CallKind::Edit, &path(open)), "{open}");
         }
+    }
+
+    #[test]
+    fn the_floor_guards_the_whole_config_folder() {
+        protect_dir(std::path::Path::new("/floor-whole-config"));
+        let path = |absolute: &str| Target::Path {
+            absolute: absolute.to_string(),
+            relative: None,
+        };
+        for guarded in [
+            "/floor-whole-config/config.toml",
+            "/floor-whole-config/skills/x/SKILL.md",
+            "/floor-whole-config/agents/a.md",
+            "/floor-whole-config/commands/c.md",
+            "/floor-whole-config/mods/m/mod.json",
+        ] {
+            assert!(safety_floor(CallKind::Edit, &path(guarded)), "{guarded}");
+            assert!(!safety_floor(CallKind::Read, &path(guarded)), "{guarded}");
+        }
+        assert!(!safety_floor(
+            CallKind::Edit,
+            &path("/floor-whole-config-other/x.md")
+        ));
     }
 
     #[test]

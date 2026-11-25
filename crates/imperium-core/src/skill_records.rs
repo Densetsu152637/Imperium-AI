@@ -105,6 +105,18 @@ pub(crate) fn record_for(paths: &Paths, folder: &Path) -> Option<Record> {
     store.skills.get(&*canon.to_string_lossy()).cloned()
 }
 
+/// Removes the record stored under `key`, if there is one. An unreadable store is left as it is.
+pub(crate) fn take_record(paths: &Paths, key: &str) -> Result<(), String> {
+    let _guard = STORE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut store = read_store(paths)?;
+    if store.skills.remove(key).is_some() {
+        plugin_records::write_json(&store_path(paths), &store)?;
+    }
+    Ok(())
+}
+
 /// The digest an approval of a skill is bound to in place of a plugin's run summary: a skill
 /// runs nothing, so it is one constant, and the content hash carries the approval.
 pub(crate) fn runs_digest() -> String {

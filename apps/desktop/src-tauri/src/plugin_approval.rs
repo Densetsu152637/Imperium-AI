@@ -246,10 +246,14 @@ fn check_preview(action: Action, preview: &PluginPreview) -> Result<(), String> 
             preview.id
         )),
         (Action::Approve, None) => Err(format!("{} is not installed", preview.id)),
-        (Action::Approve, Some(installed)) if !installed.same_content => Err(format!(
-            "the installed copy of {} is not what its marketplace offers now: update it first",
-            preview.id
-        )),
+        (Action::Approve, Some(installed))
+            if !installed.same_content && preview.source_kind != "skill" =>
+        {
+            Err(format!(
+                "the installed copy of {} is not what its marketplace offers now: update it first",
+                preview.id
+            ))
+        }
         _ => Ok(()),
     }
 }
@@ -596,6 +600,14 @@ fn pick_target(action: Action, plugins: &[InstalledPlugin], name: &str) -> Resul
     }
     match found {
         Some(plugin) => match (&plugin.id, folder_name(plugin)) {
+            // An agent's `name@marketplace` plugin is approved from its folder, whose preview
+            // carries the hash and digest the load-time gate computes (the marketplace preview
+            // is of what the marketplace offers, and has no code to show for a plugin without).
+            (Some(_), Some(folder))
+                if action == Action::Approve && plugin.origin.as_deref() == Some("agent") =>
+            {
+                Ok(Target::Folder(folder))
+            }
             (Some(id), _) => Ok(Target::Marketplace(id.clone())),
             (None, Some(folder)) if action == Action::Approve => Ok(Target::Folder(folder)),
             (None, _) => Err(format!(
@@ -1428,5 +1440,47 @@ mod tests {
         // A marketplace plugin with no code has nothing to approve.
         found.source_kind = "github".into();
         assert!(check_preview(Action::Approve, &found).is_err());
+    }
+}
+
+#[cfg(test)]
+mod agent_target_tests {
+    use super::*;
+
+    #[test]
+    fn an_agents_marketplace_plugin_is_approved_from_its_folder() {
+        let mut plugin = InstalledPlugin {
+            name: "y".into(),
+            folder: "/config/plugins/y".into(),
+            id: Some("y@fixture".into()),
+            origin: Some("agent".into()),
+            source: None,
+            commit: None,
+            approval: None,
+            enabled: true,
+            decided_by: "default".into(),
+            withheld: true,
+            reason: None,
+            hooks: 0,
+            servers: vec![],
+            required_secrets: vec![],
+            missing_secrets: vec![],
+        };
+        let plugins = [plugin.clone()];
+        assert_eq!(
+            pick_target(Action::Approve, &plugins, "y@fixture"),
+            Ok(Target::Folder("y".into()))
+        );
+        // An update still reads the marketplace.
+        assert_eq!(
+            pick_target(Action::Update, &plugins, "y@fixture"),
+            Ok(Target::Marketplace("y@fixture".into()))
+        );
+        // One the user installed from a marketplace is approved from the marketplace's preview.
+        plugin.origin = Some("marketplace".into());
+        assert_eq!(
+            pick_target(Action::Approve, &[plugin], "y@fixture"),
+            Ok(Target::Marketplace("y@fixture".into()))
+        );
     }
 }

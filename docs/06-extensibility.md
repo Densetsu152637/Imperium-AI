@@ -556,9 +556,22 @@ call, in every permission mode, `auto` and `full` included, past the auto classi
 allow rule or "allow for this session" exists, and no "always allow" rule is offered. A
 `deny` rule (or plan mode) still refuses the call outright. Agents have no other way to add a
 skill, plugin, MCP server, hook, mod or marketplace to the config: `set_model_card` writes a
-model's card only, and the agent file tools never reach the config folder. The question is a
-session approval, which any client connected to the session can answer; it does not count as the
-desktop app's approval, so it is kept apart from the next rule.
+model's card only. What guards the other routes is exact, and less than a wall: the safety floor
+asks before a file tool (`write_file`, `edit_file`) writes anywhere under `<config>` (the whole
+folder: `config.toml`, `skills/`, `agents/`, `commands/`, `mods/`, `plugins/`) and to the
+daemon's approval stores in `<data>` (`plugin-installs.json`, `skill-installs.json`,
+`plugin-migration.json`, `mod-approvals.json`, `marketplaces.json`), always, whatever the mode
+or an allow rule says; a `deny` rule refuses. **Residual:** that is a guard on the file tools
+and on commands the floor recognises, not a boundary. Under the default `policy` isolation tier,
+in `full` mode or with an allow rule, `run_command` runs with the user's own rights, so it can
+still write those paths or reach the daemon's local socket; only the OS and container
+isolation tiers guard them. **Known, unchanged here:** a project's own files are a route too: a
+skill in the project's `.imperium/skills` or `.claude/skills`, an agent in `.claude/agents` (read
+only for a trusted project), and `[mcp.servers]` in a trusted project's `.imperium/config.toml`
+load without this install question, since they are repository content the user chose to trust.
+The question is a session approval, which any client connected to the session can answer; it does
+not count as the desktop app's approval, so it is kept apart from the next rule. The `imperium
+mcp-serve` harness refuses to answer it ([20](20-claude-harness.md)).
 
 **What an agent installs is withheld until the desktop app approves it.** A plugin or skill an
 agent installs is recorded with `origin = agent` and no approval, and the load-time gate (below)
@@ -640,12 +653,17 @@ user, project or plugin skill of the same name. Approving uses `plugins.inspect_
 `<config>/skills/<name>`; the digest an approval is bound to is one constant, since a skill runs
 nothing), so every identity check, the presence check and the Windows check 7 apply unchanged.
 
-**Migration.** The first daemon start with this release does not carry over an approval for a
-plugin an agent installed that has no hooks or servers, and the skill gate withholds every skill
-whose provenance file names a session: both stay withheld until the user approves them in the
-desktop app (Plugins, Installed), with the reason in the session's notices and in
-`plugins.list` and `mcp.list`. A plugin an agent installed that has code and that the user had
-turned on keeps its carried-over approval.
+**Migration.** Nothing an agent installed keeps an approval it did not get from the user in the
+desktop app. The first daemon start with this release does not carry over an approval for any
+plugin an agent installed (`origin = agent`). A store written by an earlier version already
+holds `carried-over` approvals for some agent plugins, with code or without; the gate does not
+honour a `carried-over` approval on an `origin = agent` record (reason: `an agent installed it
+and an earlier version carried it over without asking you`), so those plugins are withheld too. A
+folder an agent installed that has no record at all (its provenance file names a session) is
+withheld, code or not. The skill gate withholds every skill whose provenance file names a
+session. All stay withheld until the user approves them in the desktop app (Plugins, Installed),
+with the reason in the session's notices and in `plugins.list` and `mcp.list`. Uninstalling an
+agent's skill, or undoing its install, removes its record.
 
 **Provenance.** Each install writes `.imperium-source.json` into its folder: `kind` (`git` or
 `path`), `location` (the URL or folder), `revision` (the commit installed) and `requested` (the

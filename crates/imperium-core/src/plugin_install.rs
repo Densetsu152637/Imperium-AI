@@ -671,6 +671,10 @@ fn inspect_skill_folder(
     let text = std::fs::read_to_string(canon.join("SKILL.md")).unwrap_or_default();
     let (fields, body) = imperium_api::markdown::front_matter(&text);
     let mut notes = vec![
+        format!(
+            "The folder is {} and the skill's name in its front matter is {}.",
+            params.name, name
+        ),
         "This is a skill, not a plugin. Approving lets agents list it and load its instructions \
          in every later session. It runs nothing itself, but an agent follows what it says."
             .to_string(),
@@ -707,6 +711,7 @@ fn inspect_skill_folder(
         "Its instructions begin: {}",
         imperium_api::truncate_chars(body.trim(), 1200)
     ));
+    let same_content = record.as_ref().is_some_and(|record| record.hash == sha256);
     Ok(PluginPreview {
         id: params.name.clone(),
         name: name.clone(),
@@ -732,8 +737,8 @@ fn inspect_skill_folder(
         runs_digest,
         installed: Some(PluginInstalled {
             path: shown,
+            same_content,
             recorded_sha256: record.map(|record| record.hash),
-            same_content: true,
         }),
         notes,
     })
@@ -949,9 +954,10 @@ pub(crate) async fn install_for_agent(
     let mut notes = staged.notes.clone();
     let withheld = withheld_reason(state, &dest);
     notes.push(match &withheld {
-        Some(_) => "It has hooks or MCP servers, so it is installed withheld and unapproved:                     activate_plugin cannot start it, and only the user can approve it, in the                     Imperium desktop app."
+        Some(_) => "It is installed withheld and unapproved: it adds no skills, commands or agents to any session, and activate_plugin cannot start its servers, until the user approves it in the Imperium desktop app (Plugins, Installed). Tell the user it is waiting there."
             .into(),
-        None => "New sessions list its skills and commands; it has no hooks or servers.".into(),
+        None => "It is withheld until the user approves it in the Imperium desktop app (Plugins, Installed); tell the user it is waiting there."
+            .into(),
     });
     Ok(extension_install::Installed {
         kind: ExtensionKind::Plugin,

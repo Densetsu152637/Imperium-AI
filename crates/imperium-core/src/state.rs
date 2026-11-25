@@ -182,6 +182,10 @@ struct Placement {
 /// plugin, so a write there is always asked about.
 fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     use imperium_policy::permissions::protect_dir;
+    // The whole config folder: `config.toml`, the user's skills, agents, commands, mods and
+    // plugins are all things the daemon loads and runs or follows, so a write by an agent's file
+    // tool is always asked about, whatever the mode or an allow rule says.
+    protect_dir(paths.config_dir());
     protect_dir(&paths.config_dir().join("mods"));
     protect_dir(&paths.config_dir().join("plugins"));
     // Pinned policy packs: agents read their files as instructions, so a write is always asked.

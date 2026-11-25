@@ -882,6 +882,20 @@ async fn get_transcript(hub: &Hub, args: &Value) -> Result<Value, String> {
     Ok(result)
 }
 
+/// Why the harness may not answer a request for `tool`: installing or removing an extension is the
+/// user's call alone (an agent never installs one without the user's explicit approval), so a
+/// harness driven by another agent cannot give it. `None` for any other tool.
+fn user_only_tool(tool: &Value) -> Option<&'static str> {
+    matches!(
+        tool.as_str(),
+        Some("install_extension" | "uninstall_extension")
+    )
+    .then_some(
+        "this request is an agent installing or removing an extension: only the user can answer \
+         it, in the desktop app or the imperium CLI",
+    )
+}
+
 async fn respond_permission(hub: &Hub, args: &Value) -> Result<Value, String> {
     let session_id = required(args, "session_id")?;
     let request_id = number_arg(args, "request_id").ok_or("request_id is required")?;
@@ -924,6 +938,9 @@ async fn respond_permission(hub: &Hub, args: &Value) -> Result<Value, String> {
              user can answer it, in the desktop app or the imperium CLI"
                 .into(),
         );
+    }
+    if let Some(reason) = user_only_tool(&asked["event"]["tool"]) {
+        return Err(reason.into());
     }
     hub.call(
         "session.respond",
@@ -1643,5 +1660,22 @@ mod tests {
             initialize(&json!({"protocolVersion": "1999"}), None)["protocolVersion"],
             SUPPORTED[0]
         );
+    }
+}
+
+#[cfg(test)]
+mod user_only_tests {
+    use super::*;
+
+    #[test]
+    fn the_harness_does_not_answer_a_request_to_install_or_remove_an_extension() {
+        for tool in ["install_extension", "uninstall_extension"] {
+            let reason = user_only_tool(&json!(tool)).expect(tool);
+            assert!(reason.contains("only the user can answer"), "{reason}");
+        }
+        for tool in ["write_file", "set_model_card", "run_command"] {
+            assert!(user_only_tool(&json!(tool)).is_none(), "{tool}");
+        }
+        assert!(user_only_tool(&Value::Null).is_none());
     }
 }

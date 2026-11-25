@@ -120,7 +120,8 @@ export function TrustView({
   const { hooks, servers } = runLines(preview);
   const approvable = needsApproval(preview);
   const upToDate = action === "update" && isUpToDate(preview);
-  const stale = action === "approve" && !isUpToDate(preview);
+  // A folder or skill is approved as it is (nothing to compare with); a marketplace plugin as the marketplace offers it now.
+  const stale = action === "approve" && !isUpToDate(preview) && preview.source_kind !== "skill";
   const facts: [string, string | null][] = [
     ["Plugin", plain(preview.id)],
     ["Version", plain(preview.version) || null],
