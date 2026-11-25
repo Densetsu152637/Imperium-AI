@@ -71,8 +71,12 @@ pub const FLAGS: &[(&str, &str)] = &[
         "on, off or auto: a small fixed tool list with tool_search and call_tool (default off)",
     ),
     (
+        "result_spill",
+        "true or false: save a tool result too large for the conversation to a file and show a preview and the path (default false, unlike the setting, so baselines stay comparable)",
+    ),
+    (
         "clear_stale_results",
-        "true or false: stub old file reads, searches and fetches before a compaction summary          (default true)",
+        "true or false: stub old file reads, searches and fetches before a compaction summary (default true)",
     ),
     (
         "parallel_reads",
@@ -153,7 +157,7 @@ pub struct RunArgs {
     pub prompt_overlay: Option<PathBuf>,
     /// A loop flag, `key=value`; repeatable. The flags are listed in docs/03-agent-engine.md:
     /// max_steps, effort, auto_compact, auto_compact_at, knowledge, attended, harness, tool_loading,
-    /// clear_stale_results, parallel_reads.
+    /// clear_stale_results, result_spill, parallel_reads.
     #[arg(long = "flag", value_name = "KEY=VALUE")]
     pub flags: Vec<String>,
     /// Answer subagents from this recordings file instead of running them (no model calls for

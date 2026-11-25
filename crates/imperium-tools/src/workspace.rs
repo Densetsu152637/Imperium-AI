@@ -42,6 +42,9 @@ pub struct Workspace {
     worktrees: Option<Arc<ProjectWorktrees>>,
     /// The session's own scratch folder (canonical), which is also one of the writable grants.
     scratch: Option<PathBuf>,
+    /// The folder of the session's saved tool results (canonical): readable even under local
+    /// files only, and never protected, but read-only.
+    results: Option<PathBuf>,
     /// Commands started in the background; clones share them.
     processes: Processes,
     /// Makes writer subagents' worktrees, when the daemon offers them.
@@ -120,6 +123,7 @@ impl Workspace {
             permissions: Permissions::default(),
             worktrees: None,
             scratch: None,
+            results: None,
             processes: Processes::default(),
             writers: None,
             path_map: Vec::new(),
@@ -170,6 +174,7 @@ impl Workspace {
             permissions: Permissions::default(),
             worktrees: None,
             scratch: None,
+            results: None,
             writers: None,
             path_map: Vec::new(),
             processes: Processes::default(),
@@ -347,6 +352,26 @@ impl Workspace {
         }]);
         self.scratch = dir.canonicalize().ok();
         self
+    }
+
+    /// The same workspace with `dir`, the folder its large tool results are saved in, open for
+    /// reading as a grant. Unlike other grants it stays readable under local files only (the
+    /// agent's own output, as the scratch folder is), and is never writable.
+    pub fn with_results_dir(mut self, dir: &Path) -> Self {
+        if self.remote.is_some() {
+            return self;
+        }
+        self = self.with_grants(&[PathGrant {
+            path: dir.display().to_string(),
+            mode: PathMode::Read,
+        }]);
+        self.results = dir.canonicalize().ok();
+        self
+    }
+
+    /// The folder of the session's saved tool results, when it has one.
+    pub fn results_dir(&self) -> Option<&Path> {
+        self.results.as_deref()
     }
 
     /// The session's scratch folder, when it has one.
@@ -732,7 +757,12 @@ impl Workspace {
             .scratch
             .as_deref()
             .is_some_and(|scratch| resolved.starts_with(scratch));
+        let in_results = self
+            .results
+            .as_deref()
+            .is_some_and(|results| resolved.starts_with(results));
         !in_scratch
+            && !in_results
             && self
                 .protected
                 .iter()
@@ -749,6 +779,10 @@ impl Workspace {
                 .scratch
                 .as_deref()
                 .is_some_and(|scratch| resolved.starts_with(scratch))
+            || self
+                .results
+                .as_deref()
+                .is_some_and(|results| resolved.starts_with(results))
     }
 
     /// Whether a canonical path may be written: `None` outside every folder and grant. The
@@ -1430,6 +1464,36 @@ mod tests {
                 "{outside} should be refused for writing"
             );
         }
+    }
+
+    #[test]
+    fn local_files_only_reads_the_sessions_saved_results_but_never_writes_them() {
+        let folder = tempfile::tempdir().unwrap();
+        let results = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let locked = Workspace::new(folder.path())
+            .unwrap()
+            .with_results_dir(results.path())
+            .with_profile(AgentProfile::new(imperium_policy::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
+        let saved = results.path().join("1-grep.txt");
+        std::fs::write(&saved, "output").unwrap();
+        let saved = saved.to_string_lossy().into_owned();
+        assert!(locked.resolve(&saved).is_ok());
+        assert!(locked.resolve_writable(&saved).is_err());
+        // Only that folder: another path outside the folders stays closed.
+        let elsewhere = other.path().join("x.txt");
+        std::fs::write(&elsewhere, "x").unwrap();
+        assert!(matches!(
+            locked.resolve(&elsewhere.to_string_lossy()),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        assert_eq!(
+            locked.results_dir(),
+            results.path().canonicalize().ok().as_deref()
+        );
     }
 
     #[test]
