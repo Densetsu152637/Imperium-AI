@@ -956,7 +956,7 @@ parameter. The budget ends the read on a whole line, and a note gives the exact 
 read that stops short for any reason says the same. A first line past the budget is shown cut, with
 a note to use `grep` for the part needed. A read with an explicit `limit` keeps the 100,000-character
 ceiling (line numbers and notes included). The defaults apply to every model, hosted ones too, and to
-calls through the MCP bridge and the Claude harness (which pass no window, so 32,000 characters). `list_dir` returns at most 500 entries
+calls through the MCP bridge and the Claude harness (a caller that cannot give the window gets 32,000 characters). `list_dir` returns at most 500 entries
 per call, sorted, with a note (`use offset=500 to see more`); its optional `offset` skips entries. Edits stay UTF-8. `tool.before`
 and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
 (`path`, `offset`, `limit`) whatever spelling the model used. Each reading is checked like any
