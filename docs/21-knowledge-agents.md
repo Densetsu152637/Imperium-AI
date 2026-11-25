@@ -415,8 +415,10 @@ design left open, or differs from it:
   ordinary subagents whenever `knowledge.enabled` and the agent is offered the whole list (loading
   off), so keeping the first knowledge agent does not change the tool list and its cached prefix
   (before there is one they answer that there is none); with tool loading on they are in the
-  universe once the session has at least one knowledge agent. A call to them from any agent that may not ask (a chunk or `single_call` agent, a
-  knowledge agent resumed for more work, a fork) is refused.
+  universe once the session has at least one knowledge agent. The two tool definitions cost about
+  450 tokens of every request, which is noticeable in a small or local model's window; turn
+  `knowledge.enabled` off to drop them. A call to them from any agent that may not ask (a chunk
+  or `single_call` agent, a knowledge agent resumed for more work, a fork) is refused.
 - **Frozen prefix.** A subagent notes its system message, the tools it was offered and the reasoning
   effort its request carried (forks use the same effort) at every safe point, in memory; promotion records them with the card. A subagent that finished before a
   daemon restart has none, so it must be resumed once (any follow-up) before it can be kept.

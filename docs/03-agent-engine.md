@@ -110,8 +110,8 @@ loading](#reactive-tool-loading-implemented).
 (escalating to a hosted model, or switching to a local one): the tools offered are chosen each
 turn, and the harness paragraph of the system prompt is rewritten when the model is switched,
 so the prompt never describes tools that are not offered. The paragraph is in the swappable
-tail at the very end of the system message ([stable prompt prefix](#stable-prompt-prefix-implemented)),
-so a switch changes only the end of the prompt (the labelled parts, and with them the context
+tail at the very end of the system message
+([stable prompt prefix](#stable-prompt-prefix-implemented)), so a switch changes only the end of the prompt (the labelled parts, and with them the context
 breakdown, move with the edit).
 
 **When they are on.** Each of `dereference`, `state`, `hints` and `clarify` is `auto`, `on` or
@@ -390,8 +390,8 @@ the rest is by construction:
 - **Test.** `the_system_prompt_and_the_tool_list_only_grow_across_a_sessions_requests`
   (`tests/reactive_tools.rs`) runs a hosted session through a plugin activation, an MCP server
   listing another tool and a kept knowledge agent, and asserts that each root request's system
-  prompt and tool array start with the previous request's; `a_swap_changes_only_the_end_of_the_prompt`
-  covers the tail.
+  prompt and tool array start with the previous request's;
+  `a_swap_changes_only_the_end_of_the_prompt` covers the tail.
 
 **In evaluations** `imperium run` sets the mode with `--flag tool_loading` and reports what the
 loader did; see [harness variants](#harness-variants) and the output keys under

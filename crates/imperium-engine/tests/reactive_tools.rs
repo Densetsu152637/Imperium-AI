@@ -750,7 +750,8 @@ fn tool_values(request: &Seen) -> Vec<Value> {
 async fn the_system_prompt_and_the_tool_list_only_grow_across_a_sessions_requests() {
     let names = Arc::new(Mutex::new(vec!["mcp__shifty__one".to_string()]));
     let root = vec![
-        // Turn one.
+        // Turn one: a question to a knowledge agent that does not exist yet is refused.
+        Some(("ask_agent", json!({"agent": "t9", "question": "q"}))),
         None,
         // Turn two: the plugin is activated.
         Some(("activate_plugin", json!({"name": "words"}))),
@@ -772,7 +773,12 @@ async fn the_system_prompt_and_the_tool_list_only_grow_across_a_sessions_request
         names: Arc::clone(&names),
     })];
     let setup = start(setup).await;
-    turn(&setup.session, "first").await;
+    let first = turn(&setup.session, "first").await;
+    assert!(
+        first.results.len() == 1 && !first.results[0].1.contains("not one of your tools"),
+        "ask_agent was not called and answered: {:?}",
+        first.results
+    );
     // The server now lists another tool.
     names.lock().unwrap().push("mcp__shifty__two".to_string());
     turn(&setup.session, "second").await;
@@ -791,7 +797,7 @@ async fn the_system_prompt_and_the_tool_list_only_grow_across_a_sessions_request
 
     let seen = setup.seen.lock().unwrap().clone();
     let roots: Vec<&Seen> = seen.iter().filter(|request| !request.subagent).collect();
-    assert_eq!(roots.len(), 9, "{seen:?}");
+    assert_eq!(roots.len(), 10, "{seen:?}");
     for (index, pair) in roots.windows(2).enumerate() {
         let (before, after) = (pair[0], pair[1]);
         assert!(
@@ -815,10 +821,10 @@ async fn the_system_prompt_and_the_tool_list_only_grow_across_a_sessions_request
             "{entry} missing from the first list"
         );
     }
-    assert!(!roots[0].offers("mcp__shifty__two") && roots[1].offers("mcp__shifty__two"));
-    assert!(!roots[1].offers(PLUGIN_LOOKUP) && roots[2].offers(PLUGIN_LOOKUP));
-    assert!(roots[8].offers("activate_plugin") && roots[8].offers("ask_agent"));
-    assert!(roots[8].names.len() > roots[0].names.len());
+    assert!(!roots[1].offers("mcp__shifty__two") && roots[2].offers("mcp__shifty__two"));
+    assert!(!roots[2].offers(PLUGIN_LOOKUP) && roots[3].offers(PLUGIN_LOOKUP));
+    assert!(roots[9].offers("activate_plugin") && roots[9].offers("ask_agent"));
+    assert!(roots[9].names.len() > roots[0].names.len());
 }
 
 #[tokio::test]
@@ -1783,7 +1789,7 @@ async fn a_named_agent_whose_file_lists_a_deferred_tool_is_offered_it_directly()
 }
 
 #[tokio::test]
-async fn the_loader_text_is_the_same_in_every_request_and_ends_the_base_prompt() {
+async fn the_loader_text_is_the_same_in_every_request_and_ends_the_system_message() {
     let root = vec![
         Some((
             "call_tool",
@@ -1809,12 +1815,16 @@ async fn the_loader_text_is_the_same_in_every_request_and_ends_the_base_prompt()
         }
         let system = &requests[0].system;
         assert_eq!(system.matches(LOADER_FULL).count(), 1, "{system}");
-        // Its own paragraph at the end of the base part: set off by blank lines, and followed
-        // by nothing or another part.
+        // Its own paragraph at the end of the system message: set off by blank lines, and
+        // followed by nothing or another part (a personality or a named agent's text).
         let at = system.find(LOADER_FULL).unwrap();
         assert!(system[..at].ends_with("\n\n"), "{system}");
         let after = &system[at + LOADER_FULL.len()..];
         assert!(after.is_empty() || after.starts_with("\n\n"), "{after}");
+        if !subagent {
+            // The root has no personality or named-agent text after it.
+            assert!(system.ends_with(LOADER_FULL), "{system}");
+        }
     }
 }
 

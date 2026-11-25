@@ -509,10 +509,13 @@ when an agent first uses it, keeping context and start-up cost low.
   agent's next model call, appended to the end of the list, as
   `mcp__<plugin>_<server>__<tool>`, to every agent of the session. Activation is journalled
   as `extension_loaded` (`kind: plugin`, with the tools it added). A plugin whose servers all
-  fail is not activated and can be tried again. `activate_plugin` stays offered
-  for the whole session (it answers "already active" once every plugin is). With
-  `harness.tool_loading` on the tool list does not change at all, and an activated plugin's tools join the agent's universe at
-  once but are found with `tool_search` and run with `call_tool` instead of appearing in the list
+  fail is not activated and can be tried again. `activate_plugin` stays offered for the whole
+  session (it answers "already active" once every plugin is). Whether it is offered is decided
+  once, when the session first builds its tool list, so a session resumed after every plugin is
+  active lists no `activate_plugin` and its first request misses the provider's prompt cache
+  once. With `harness.tool_loading` on the tool list does not change at all, and an activated
+  plugin's tools join the agent's universe at once but are found with `tool_search` and run with
+  `call_tool` instead of appearing in the list
   ([reactive tool loading](03-agent-engine.md#reactive-tool-loading-implemented)).
 - **Resume.** A resumed session replays its journal: plugins it had activated start again
   before the first turn, and skills an agent had loaded (since its last compaction) are not
