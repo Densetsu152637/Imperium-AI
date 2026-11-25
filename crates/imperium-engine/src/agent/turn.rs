@@ -543,14 +543,22 @@ impl Agent {
                 .iter()
                 .any(|call| effective_call(call).function.name == ACTIVATE_PLUGIN);
             let mut touched: Vec<PathBuf> = Vec::new();
+            let calls = completion.tool_calls;
             // With loading on, other tools are reached through `call_tool`: no names to point at.
             let close: &[String] = if self.reactive() { &[] } else { &offered };
-            for call in completion.tool_calls {
+            // Reads in a row run at the same time (`harness.parallel_reads`), up to the call
+            // this index reaches; each call below still goes through `run_tool` in call order.
+            let mut ahead_until = 0;
+            for (index, call) in calls.iter().enumerate() {
+                if index >= ahead_until {
+                    ahead_until = index + self.prefetch_reads(&calls[index..]).await;
+                }
                 self.last_tool_ok.store(false, Ordering::SeqCst);
-                let output = self.run_tool(&call).await;
+                let output = self.run_tool(call).await;
+                self.forget_prefetched(&call.id);
                 let output = call_repair::with_close_names(
                     &output,
-                    &effective_call(&call).function.name,
+                    &effective_call(call).function.name,
                     close,
                 )
                 .unwrap_or(output);
@@ -560,7 +568,7 @@ impl Agent {
                 // The arguments the call ran with: a hook may have rewritten them.
                 // A call through `call_tool` is the tool it ran.
                 let (dir, searched) = {
-                    let effective = effective_call(&call);
+                    let effective = effective_call(call);
                     let ran_with = lock(&self.ran_rewritten)
                         .clone()
                         .unwrap_or_else(|| effective.function.arguments.clone());
@@ -585,10 +593,11 @@ impl Agent {
                     self.spans.insert(self.messages.len(), parts);
                 }
                 self.messages.push(ChatMessage::Tool {
-                    tool_call_id: call.id,
+                    tool_call_id: call.id.clone(),
                     content: output,
                 });
             }
+            self.clear_prefetched();
             self.load_instruction_files(&touched);
             // A plugin activated in this round offers its tools from the next call.
             if activates {
