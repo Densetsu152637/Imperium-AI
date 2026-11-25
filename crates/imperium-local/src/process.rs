@@ -209,8 +209,14 @@ impl ProcessLauncher {
                 (docker.clone(), args, Some((docker, name)))
             }
             (None, Some((wsl, distro, vllm))) => {
-                let args = crate::wsl::serve_args(&distro, &vllm, port, &spec.args())?;
-                in_wsl = Some((wsl.clone(), distro, crate::wsl::stop_pattern(&vllm, port)));
+                let serve = spec.args();
+                let args = crate::wsl::serve_args(&distro, &vllm, port, &serve)?;
+                let folder = crate::wsl::model_folder(&distro, &serve)?;
+                in_wsl = Some((
+                    wsl.clone(),
+                    distro,
+                    crate::wsl::stop_pattern(&vllm, &folder, port),
+                ));
                 (wsl, args, None)
             }
             (None, None) => {
@@ -534,8 +540,6 @@ impl Drop for ContainerGuard {
     }
 }
 
-/// Whether any slot in a `/slots` reply has a speculative decoding context; `None` when the
-/// reply has no slot with the field.
 /// How long a `vllm` inside WSL2 is given to end after SIGTERM before it is sent SIGKILL.
 const WSL_STOP_GRACE: Duration = Duration::from_secs(10);
 
@@ -666,6 +670,8 @@ impl Drop for WslGuard {
     }
 }
 
+/// Whether any slot in a `/slots` reply has a speculative decoding context; `None` when the
+/// reply has no slot with the field.
 fn speculating_in(slots: &serde_json::Value) -> Option<bool> {
     let flags: Vec<bool> = slots
         .as_array()?
@@ -913,7 +919,7 @@ mod tests {
 
     #[cfg(unix)]
     fn wsl_pattern(port: u16) -> String {
-        crate::wsl::stop_pattern(WSL_PROGRAM, port)
+        crate::wsl::stop_pattern(WSL_PROGRAM, "/mnt/d/AI Models/Qwen", port)
     }
 
     #[cfg(unix)]
@@ -1028,15 +1034,16 @@ mod tests {
         let start = &seen[0];
         assert!(
             start.starts_with(&format!(
-                "-d Ubuntu --exec env VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1 {WSL_PROGRAM} serve /mnt/d/AI Models/Qwen --host 127.0.0.1 "
+                "-d Ubuntu --exec env VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1 VLLM_HOST_IP=127.0.0.1 {WSL_PROGRAM} serve /mnt/d/AI Models/Qwen "
             )),
             "{start}"
         );
         assert!(!start.contains("0.0.0.0"), "{start}");
-        assert!(start.contains(" --port "), "{start}");
+        assert!(start.contains(" --host 127.0.0.1 --port "), "{start}");
         // The failed start ended whatever the relay left inside the distribution.
         assert!(
-            seen.iter().any(|line| line.contains("pkill -TERM -f -- ")),
+            seen.iter().any(|line| line.contains("pkill -TERM -f -- ")
+                && line.contains("serve /mnt/d/AI Models/Qwen .* --port")),
             "{seen:?}"
         );
     }

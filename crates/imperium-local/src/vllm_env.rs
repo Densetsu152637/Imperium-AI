@@ -892,7 +892,7 @@ fn setup_wsl(
         error
     })?
     .into_iter()
-    .find(|line| !line.trim().is_empty())
+    .find(|line| line.trim().starts_with('/'))
     .unwrap_or_default();
     let venv = wsl_venv_path(&home, &plan.version)
         .map_err(|message| setup_error("checking the WSL distribution", message))?;
@@ -2175,6 +2175,9 @@ mod wsl_tests {
             }
             let failing = self.fail.iter().any(|f| line.contains(f));
             if line.ends_with("--exec printenv HOME") && !failing {
+                // `wsl.exe` can print a warning (UTF-16 read as bytes) before the output.
+                on_line("wsl: Failed to translate '\u{fffd}C:/x\u{fffd}'");
+                on_line("");
                 on_line(HOME);
                 return RunResult::Ok;
             }

@@ -1032,25 +1032,31 @@ listed but unavailable, as before; the `problem` text says to run the command.
 - **Launch.** `wsl.exe -d <distro> --exec env VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
   <venv>/bin/vllm serve <model folder> --host 127.0.0.1 --served-model-name ... --port <port>`:
   an argument list, no shell, the folder passed as an argument and not mounted. `env` only sets
-  the two no-telemetry variables, which a Windows environment variable would not reach
-  inside WSL. The daemon supervises `wsl.exe`.
+  the no-telemetry variables and `VLLM_HOST_IP`, which a Windows environment variable would
+  not reach inside WSL; a program path containing `=` is refused, since `env` would read it as
+  an assignment. The daemon supervises `wsl.exe`.
 - **Model folders** are translated by a pure function: `C:\Models\x` becomes `/mnt/c/Models/x`
   (WSL's default automount root; spaces are fine, being one argument), and
   `\\wsl$\<distro>\...` or `\\wsl.localhost\<distro>\...` becomes the path inside the distro
   (refused when it names another distro). Other UNC paths, paths relative to a drive or to the
   current drive, and `..` are refused with a message, and the start fails before anything runs.
-  Reading a model from `/mnt/c` is slow (a 9P file system); a copy inside the distro loads
+  Only drives the distro auto-mounts under `/mnt/<letter>` are reachable: `subst` drives,
+  mapped network drives and a custom `automount.root` in `wsl.conf` are not. Reading a model from `/mnt/c` is slow (a 9P file system); a copy inside the distro loads
   faster (add its `\\wsl$\<distro>\...` folder to `models.folders`).
 - **Networking.** vLLM binds `127.0.0.1` inside WSL2, whatever `runtime.vllm.extra_args` say
-  (`--host` is rewritten), and the daemon connects to the same port on Windows through WSL2's
-  localhost forwarding; it is never bound to `0.0.0.0`. Before a start, `%USERPROFILE%\.wslconfig`
+  (every `--host` argument, abbreviations such as `--hos` included, is dropped and
+  `--host 127.0.0.1` is appended last), and the daemon connects to the same port on Windows
+  through WSL2's localhost forwarding. The HTTP server is never bound to `0.0.0.0`; `env` also
+  sets `VLLM_HOST_IP=127.0.0.1`, so vLLM's internal distributed endpoints do not pick the
+  distro's network address either. Before a start, `%USERPROFILE%\.wslconfig`
   is read: `localhostForwarding=false` (or a `networkingMode` of `bridged`, `virtioproxy` or
   `none`) without mirrored networking makes the start fail at once, naming the setting. If the
   model does not become ready in time, the message points at forwarding too.
 - **Lifetime.** `wsl.exe` is only a relay, and killing it does not reliably end the `vllm`
   behind it, so stopping a model (and a failed or cancelled start, and dropping the server)
   signals the process inside the distro: `pkill -TERM -f` of its own command line (the `vllm`
-  path, `serve` and the port, which no other server of this daemon shares), then `pgrep -f`
+  path, `serve`, the translated model folder and the port, so another model is never matched
+  even on the same port), then `pgrep -f`
   for up to 10 s, then `pkill -KILL -f` if it is still there. A daemon that is killed outright
   leaves the `vllm` running in the distro; `wsl.exe --exec pkill -f vllm` (or `wsl --shutdown`)
   ends it. The server's pid in the resource monitor is `wsl.exe`'s, so its CPU, RAM and GPU
@@ -1060,7 +1066,7 @@ listed but unavailable, as before; the `problem` text says to run the command.
   `runtime.vllm.wsl_distro`, else the default); any other command is a Windows executable, which
   cannot run vLLM, and the models stay unavailable.
 - Docker mode, the native Linux path, and `--version` are unchanged. Tested with a fake command
-  runner and a fake `wsl.exe` (no WSL, `uv`, vLLM or GPU runs in tests); **not yet verified on
+  runner and a fake `wsl.exe` script (unix-only tests; no WSL, `uv`, vLLM or GPU runs in tests); **not yet verified on
   hardware**: the first real setup, localhost forwarding, GPU visibility in the distro, and how
   `pkill` sees vLLM's engine processes are the things to watch.
 

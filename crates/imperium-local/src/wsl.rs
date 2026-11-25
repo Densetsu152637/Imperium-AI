@@ -268,10 +268,11 @@ pub fn command_in_wsl(command: &str) -> Option<(Option<String>, String)> {
 }
 
 /// Whether `path` can be an executable path inside a distro: absolute, no control characters,
-/// no `..`.
+/// no `..`, and no `=` (`env` would read `NAME=value` as an assignment, not a program).
 pub fn valid_linux_path(path: &str) -> bool {
     path.starts_with('/')
         && path.len() <= 512
+        && !path.contains('=')
         && !path.chars().any(char::is_control)
         && !path.split('/').any(|segment| segment == "..")
 }
@@ -305,31 +306,37 @@ pub fn serve_args(
         "env",
         "VLLM_NO_USAGE_STATS=1",
         "DO_NOT_TRACK=1",
+        "VLLM_HOST_IP=127.0.0.1",
         program,
         "serve",
     ]
     .map(String::from)
     .to_vec();
     args.push(windows_to_wsl_path(folder, distro)?);
-    let mut bound = false;
+    // Every `--host` the arguments carry is dropped, the abbreviations argparse accepts
+    // (`--hos`, `--ho`, `--h`) included, and the loopback is appended last.
     let mut rest = rest.iter();
     while let Some(arg) = rest.next() {
-        if arg == "--host" {
-            rest.next();
-            args.extend(["--host".into(), "127.0.0.1".into()]);
-            bound = true;
-        } else if arg.starts_with("--host=") {
-            args.push("--host=127.0.0.1".into());
-            bound = true;
+        let name = arg.split('=').next().unwrap_or("");
+        if name.len() >= 3 && "--host".starts_with(name) {
+            if !arg.contains('=') {
+                rest.next();
+            }
         } else {
             args.push(arg.clone());
         }
     }
-    if !bound {
-        args.extend(["--host".into(), "127.0.0.1".into()]);
-    }
+    args.extend(["--host".into(), "127.0.0.1".into()]);
     args.extend(["--port".into(), port.to_string()]);
     Ok(args)
+}
+
+/// The model folder of `serve_args` as [`serve_args`] passes it, inside `distro`.
+pub fn model_folder(distro: &str, serve_args: &[String]) -> Result<String, String> {
+    match serve_args {
+        [_, folder, ..] => windows_to_wsl_path(folder, distro),
+        _ => Err("no model folder to serve".into()),
+    }
 }
 
 /// `text` with the characters of an extended regular expression escaped.
@@ -345,9 +352,14 @@ fn regex_escape(text: &str) -> String {
 }
 
 /// The `pkill -f` / `pgrep -f` pattern of the server [`serve_args`] started on `port`: its
-/// program, `serve`, and the `--port` it ends with (a port is free for one server at a time).
-pub fn stop_pattern(program: &str, port: u16) -> String {
-    format!("{} serve .* --port {port}$", regex_escape(program))
+/// program, `serve`, its model `folder` (as [`model_folder`] gives it) and the `--port` it ends
+/// with, so a server of another model is never matched, even on the same port.
+pub fn stop_pattern(program: &str, folder: &str, port: u16) -> String {
+    format!(
+        "{} serve {} .* --port {port}$",
+        regex_escape(program),
+        regex_escape(folder)
+    )
 }
 
 /// The arguments of `wsl.exe` that run `command` (a program and its arguments) inside `distro`,
@@ -404,6 +416,12 @@ pub fn parse_wslconfig(text: &str) -> WslConfig {
     config
 }
 
+/// [`parse_wslconfig`] for the bytes of a `.wslconfig`, which may be UTF-8 with a byte order mark
+/// or UTF-16 ([`decode_output`] reads both).
+pub fn parse_wslconfig_bytes(bytes: &[u8]) -> WslConfig {
+    parse_wslconfig(&decode_output(bytes))
+}
+
 /// Why Windows cannot reach a server on WSL2's loopback with this configuration, naming the
 /// setting; `None` when it can (the defaults, or mirrored networking, where `localhost` is shared).
 pub fn forwarding_problem(config: &WslConfig) -> Option<String> {
@@ -432,8 +450,8 @@ pub fn forwarding_problem_here() -> Option<String> {
     #[cfg(windows)]
     {
         let home = std::env::var_os("USERPROFILE")?;
-        let text = std::fs::read_to_string(std::path::Path::new(&home).join(".wslconfig")).ok()?;
-        forwarding_problem(&parse_wslconfig(&text))
+        let bytes = std::fs::read(std::path::Path::new(&home).join(".wslconfig")).ok()?;
+        forwarding_problem(&parse_wslconfig_bytes(&bytes))
     }
     #[cfg(not(windows))]
     {
@@ -726,15 +744,16 @@ mod tests {
                 "env",
                 "VLLM_NO_USAGE_STATS=1",
                 "DO_NOT_TRACK=1",
+                "VLLM_HOST_IP=127.0.0.1",
                 PROGRAM,
                 "serve",
                 "/mnt/d/AI Models/Qwen",
-                "--host",
-                "127.0.0.1",
                 "--served-model-name",
                 "Qwen",
                 "--max-model-len",
                 "8192",
+                "--host",
+                "127.0.0.1",
                 "--port",
                 "41000",
             ]
@@ -760,8 +779,11 @@ mod tests {
         )
         .unwrap();
         assert!(!args.iter().any(|arg| arg.contains("0.0.0.0")), "{args:?}");
-        assert!(args.contains(&"--host=127.0.0.1".to_string()));
         assert!(args.contains(&"--enable-auto-tool-choice".to_string()));
+        assert_eq!(
+            args.iter().filter(|arg| arg.starts_with("--host")).count(),
+            1
+        );
         // No host at all still binds the loopback.
         let bare = serve_args("Ubuntu", PROGRAM, 1, &["serve".into(), r"C:\m".into()]).unwrap();
         assert_eq!(
@@ -787,16 +809,80 @@ mod tests {
     }
 
     #[test]
-    fn the_stop_pattern_names_the_program_and_the_port() {
-        let pattern = stop_pattern("/home/me/.local/venv/bin/vllm", 41000);
+    fn the_stop_pattern_names_the_program_the_folder_and_the_port() {
+        let program = "/home/me/.local/venv/bin/vllm";
+        let pattern = stop_pattern(program, "/mnt/d/AI Models/Qwen", 41000);
         assert_eq!(
             pattern,
-            r"/home/me/\.local/venv/bin/vllm serve .* --port 41000$"
+            r"/home/me/\.local/venv/bin/vllm serve /mnt/d/AI Models/Qwen .* --port 41000$"
         );
         assert_ne!(
             pattern,
-            stop_pattern("/home/me/.local/venv/bin/vllm", 41001)
+            stop_pattern(program, "/mnt/d/AI Models/Qwen", 41001)
         );
+        // Two models on the same port are told apart.
+        assert_ne!(
+            stop_pattern(program, "/mnt/d/a", 41000),
+            stop_pattern(program, "/mnt/d/b", 41000)
+        );
+        assert_eq!(
+            model_folder("Ubuntu", &serve(&[])).unwrap(),
+            "/mnt/d/AI Models/Qwen"
+        );
+    }
+
+    #[test]
+    fn a_program_path_with_an_equals_sign_is_refused() {
+        assert!(!valid_linux_path("/home/a=b/venv/bin/vllm"));
+        assert!(serve_args("Ubuntu", "/home/a=b/vllm", 1, &serve(&[])).is_err());
+    }
+
+    #[test]
+    fn host_abbreviations_are_dropped_and_the_loopback_comes_last() {
+        for host in [
+            "--hos",
+            "--ho",
+            "--h",
+            "--host",
+            "--hos=0.0.0.0",
+            "--host=0.0.0.0",
+        ] {
+            let extra: Vec<&str> = if host.contains('=') {
+                vec![host, "--enable-auto-tool-choice"]
+            } else {
+                vec![host, "0.0.0.0", "--enable-auto-tool-choice"]
+            };
+            let args = serve_args("Ubuntu", PROGRAM, 7, &serve(&extra)).unwrap();
+            assert!(
+                !args.iter().any(|arg| arg.contains("0.0.0.0")),
+                "{host}: {args:?}"
+            );
+            assert_eq!(
+                &args[args.len() - 4..],
+                ["--host", "127.0.0.1", "--port", "7"],
+                "{host}"
+            );
+            assert!(
+                args.contains(&"--enable-auto-tool-choice".to_string()),
+                "{host}"
+            );
+            assert_eq!(args.iter().filter(|a| a.starts_with("--h")).count(), 1);
+        }
+        let args = serve_args("Ubuntu", PROGRAM, 7, &serve(&[])).unwrap();
+        assert!(args.contains(&"VLLM_HOST_IP=127.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn wslconfig_bytes_may_have_a_utf8_mark_or_be_utf16() {
+        let text = "[wsl2]\r\nlocalhostForwarding=false\r\n";
+        let mut utf8 = vec![0xEF, 0xBB, 0xBF];
+        utf8.extend(text.as_bytes());
+        for bytes in [utf8, utf16(text, true), utf16(text, false)] {
+            assert_eq!(
+                parse_wslconfig_bytes(&bytes).localhost_forwarding,
+                Some(false)
+            );
+        }
     }
 
     #[test]
