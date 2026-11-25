@@ -621,6 +621,40 @@ impl DaemonState {
             .cloned()
     }
 
+    /// Copies the tool results session `parent` saved to files into a folder for `child`, so a
+    /// conversation copied from the parent (a branch, a rewind) keeps paths that stay valid
+    /// when the parent is deleted. The copied messages are rewritten with
+    /// [`rewrite_results_prefix`].
+    pub(crate) fn inherit_saved_results(&self, parent: &str, child: &str) -> Result<(), String> {
+        let sessions = self.paths.data_dir().join("sessions");
+        let from = imperium_engine::results_dir(&sessions.join(format!("{parent}.jsonl")));
+        if !from.is_dir() {
+            return Ok(());
+        }
+        let to = imperium_engine::results_dir(&sessions.join(format!("{child}.jsonl")));
+        let copy = || -> std::io::Result<()> {
+            std::fs::create_dir_all(&to)?;
+            for entry in std::fs::read_dir(&from)? {
+                let entry = entry?;
+                if entry.file_type()?.is_file() {
+                    std::fs::copy(entry.path(), to.join(entry.file_name()))?;
+                }
+            }
+            Ok(())
+        };
+        copy().map_err(|error| format!("could not copy the session's saved tool results: {error}"))
+    }
+
+    /// Deletes the folder of the tool results a session saved.
+    pub(crate) fn forget_saved_results(&self, id: &str) {
+        let journal = self
+            .paths
+            .data_dir()
+            .join("sessions")
+            .join(format!("{id}.jsonl"));
+        let _ = std::fs::remove_dir_all(imperium_engine::results_dir(&journal));
+    }
+
     /// Starts a new session from session `id` as it was when its journal was `journal_bytes`
     /// long, with `messages` (its saved root conversation then) as its conversation. Returns the
     /// new session's id; the original is left as it is.
@@ -648,7 +682,16 @@ impl DaemonState {
         let new_id = new_session_id().map_err(|error| error.to_string())?;
         let new_journal = sessions.join(format!("{new_id}.jsonl"));
         std::fs::write(&new_journal, &journal[..cut]).map_err(|error| error.to_string())?;
+        if let Err(error) = self.inherit_saved_results(id, &new_id) {
+            let _ = std::fs::remove_file(&new_journal);
+            self.forget_saved_results(&new_id);
+            return Err(error);
+        }
         if let Some(messages) = messages {
+            let messages = match String::from_utf8(messages) {
+                Ok(text) => rewrite_results_prefix(&text, id, &new_id).into_bytes(),
+                Err(bytes) => bytes.into_bytes(),
+            };
             std::fs::write(imperium_engine::messages_path(&new_journal), messages)
                 .map_err(|error| error.to_string())?;
         }
@@ -671,6 +714,7 @@ impl DaemonState {
             .map_err(|error| error.to_string())?;
         if let Err(error) = self.resume_from_meta(&new_id, &meta, &new_journal, false) {
             let _ = std::fs::remove_file(self.meta_path(&new_id));
+            self.forget_saved_results(&new_id);
             return Err(error.to_string());
         }
         Ok(new_id)
@@ -699,5 +743,25 @@ impl DaemonState {
             .expect("session map lock is never poisoned by a panic while held")
             .get(id)
             .cloned()
+    }
+}
+
+/// `text` (a saved conversation) with the folder of the parent session's saved tool results,
+/// `<parent>.results`, renamed to the child's, whose copy of the files the paths now name.
+pub(super) fn rewrite_results_prefix(text: &str, parent: &str, child: &str) -> String {
+    text.replace(&format!("{parent}.results"), &format!("{child}.results"))
+}
+
+#[cfg(test)]
+mod saved_results_tests {
+    use super::rewrite_results_prefix;
+
+    #[test]
+    fn only_the_parents_results_folder_is_renamed() {
+        let text = r#"saved to /d/sessions/aaaa.results/1-grep.txt; also /d/sessions/aaaa.jsonl and /d/sessions/bbbb.results/x"#;
+        assert_eq!(
+            rewrite_results_prefix(text, "aaaa", "cccc"),
+            r#"saved to /d/sessions/cccc.results/1-grep.txt; also /d/sessions/aaaa.jsonl and /d/sessions/bbbb.results/x"#
+        );
     }
 }

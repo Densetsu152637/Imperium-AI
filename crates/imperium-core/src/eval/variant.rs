@@ -32,10 +32,14 @@ pub(crate) struct LoopFlags {
     /// (`harness.tool_loading`; docs/plans/reactive-tools.md). Unlike `harness`, its default
     /// is `off`, so evaluations run as before unless a run asks for it.
     pub tool_loading: HarnessMode,
+    /// Whether a tool result too large for the conversation is saved to a file
+    /// (`harness.result_spill`). Unlike the setting, its default is `false`, so evaluations
+    /// stay comparable with earlier baselines unless a run asks for it.
+    pub result_spill: bool,
 }
 
 /// The flags and what they do, for error messages.
-const FLAG_NAMES: [&str; 8] = [
+const FLAG_NAMES: [&str; 9] = [
     "max_steps",
     "effort",
     "auto_compact",
@@ -44,6 +48,7 @@ const FLAG_NAMES: [&str; 8] = [
     "attended",
     "harness",
     "tool_loading",
+    "result_spill",
 ];
 
 impl LoopFlags {
@@ -59,6 +64,7 @@ impl LoopFlags {
             attended: false,
             harness: HarnessMode::Auto,
             tool_loading: HarnessMode::Off,
+            result_spill: false,
         };
         for (key, value) in flags {
             let bad = |what: &str| format!("flag {key}={value}: expected {what}");
@@ -108,6 +114,9 @@ impl LoopFlags {
                         "auto" => HarnessMode::Auto,
                         _ => return Err(bad("on, off or auto")),
                     };
+                }
+                "result_spill" => {
+                    parsed.result_spill = value.parse().map_err(|_| bad("true or false"))?;
                 }
                 other => {
                     return Err(format!(

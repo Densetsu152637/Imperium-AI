@@ -327,7 +327,24 @@ last lines, and how many lines were left out. The preview is bounded (half the t
 - **Durable.** The notice, with the path, is what the conversation and its saved copy hold, so a
   resumed session still has a valid path. Archiving keeps the folder; deleting the session
   deletes it. Saved files are not compacted away or cleaned earlier: they are the session's.
+- **Not worth it.** A result whose notice would be more than 70 % of its size stays whole. A
+  result that began with an error keeps its first line ahead of the notice.
+- **The marker.** Every notice starts with (after the error line, if any) the stable string
+  `[spilled tool result]` (`imperium_engine::SPILL_MARKER`). Code that clears or rewrites old
+  tool results must leave a result that contains it alone, as the notice is already short and
+  its path is the only way back to the output.
+- **Agent tools.** The agent-protocol tools (`await_tasks`, `spawn_agent`, `ask_agent`,
+  `delegate_chunks`, `list_agents`, `ask_user`, `update_plan`, and the like) and the memory tools
+  are never saved: their results are other agents' reports, answers or notes.
+- **Local files only.** A session limited to local files may still read its own results folder
+  (read-only, like its scratch folder); no other path outside its folders opens.
+- **Branches and rewinds.** A branched, forked or rewound session gets its own copy of the
+  parent's results folder, and the copied conversation names the copy, so deleting the parent
+  leaves the child's paths valid.
+- **The prompt.** The folder is not named in the system prompt (its path is per session), so the
+  prompt is identical with the setting on or off.
 - **Settings.** `harness.result_spill` (on by default) and `harness.result_spill_min_chars`.
+  Evaluations take the `result_spill` flag instead, default off.
 
 ### Large inputs and `delegate_chunks`
 
@@ -1076,7 +1093,10 @@ max_steps = 30
 true), `attended` (default false), `harness` (`on`, `off`, `auto`; the aids need
 `attended=true`) and `tool_loading` (`on`, `off`, `auto`, default `off`; `auto` is on with
 `--local`: the fixed tool list of `harness.tool_loading`, see
-[the plan](plans/reactive-tools.md), is offered instead of every tool). An unknown flag is an error. The variant id and a `config_hash` (over the
+[the plan](plans/reactive-tools.md), is offered instead of every tool) and `result_spill` (`true`
+or `false`, default `false`: [large tool results](#large-tool-results) saved to a file; unlike
+`harness.result_spill` it is off unless asked for, so evaluations stay comparable with earlier
+baselines). An unknown flag is an error. The variant id and a `config_hash` (over the
 edits, flags and overlay, not the name) are in the output next to the prompt hash.
 
 **Reactive tool loading (roadmap item 61, stages 2a and 2b).** `harness.tool_loading` (`auto`,

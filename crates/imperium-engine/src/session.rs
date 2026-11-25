@@ -290,10 +290,7 @@ impl Session {
             .then(|| crate::spill::results_dir(&config.journal_path))
             .filter(|dir| std::fs::create_dir_all(dir).is_ok());
         if let Some(dir) = &spill_dir {
-            config.workspace = config.workspace.with_grants(&[imperium_api::PathGrant {
-                path: dir.display().to_string(),
-                mode: imperium_api::PathMode::Read,
-            }]);
+            config.workspace = config.workspace.with_results_dir(dir);
         }
         let timed = if config.resume {
             crate::journal::read_timed_events(&config.journal_path)

@@ -54,7 +54,7 @@ pub use session::{
     BridgeError, Session, SessionClosed, SessionConfig, SessionMemory, SessionOptions,
     new_session_id,
 };
-pub use spill::results_dir;
+pub use spill::{SPILL_MARKER, results_dir};
 pub use status::next_attempt;
 pub use title::task_title;
 

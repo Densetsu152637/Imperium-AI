@@ -111,9 +111,19 @@ fn start(
     resume: bool,
     harness: imperium_config::HarnessSettings,
 ) -> Session {
+    start_in(url, Workspace::new(dir).unwrap(), data, resume, harness)
+}
+
+fn start_in(
+    url: &str,
+    workspace: Workspace,
+    data: &Path,
+    resume: bool,
+    harness: imperium_config::HarnessSettings,
+) -> Session {
     Session::spawn(SessionConfig {
         id: "s".into(),
-        workspace: Workspace::new(dir).unwrap(),
+        workspace,
         model: Some(ResolvedModel {
             spec: "fake:m".into(),
             endpoint: Endpoint {
@@ -330,4 +340,49 @@ async fn the_path_in_the_conversation_stays_valid_after_a_restart() {
             .contains("needle line 0400")
     );
     assert_eq!(results_files(data.path()).len(), 1, "no second copy");
+}
+
+#[tokio::test]
+async fn the_system_prompt_is_the_same_with_saving_on_and_off() {
+    let mut prompts = Vec::new();
+    for on in [true, false] {
+        let fake = Arc::new(Fake::default());
+        let url = serve(Arc::clone(&fake)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let harness = imperium_config::HarnessSettings {
+            result_spill: on,
+            ..Default::default()
+        };
+        let session = start(&url, dir.path(), data.path(), false, harness);
+        turn(&session, "search small").await;
+        let first = fake.requests.lock().unwrap()[0].clone();
+        prompts.push((first["messages"][0].clone(), first["tools"].clone()));
+    }
+    assert_eq!(prompts[0], prompts[1]);
+}
+
+#[tokio::test]
+async fn a_session_limited_to_local_files_reads_its_results_back() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    write_files(dir.path());
+    let locked =
+        Workspace::new(dir.path())
+            .unwrap()
+            .with_profile(imperium_policy::AgentProfile::new(
+                imperium_policy::ProfileRules {
+                    local_files_only: true,
+                    ..Default::default()
+                },
+            ));
+    let session = start_in(&url, locked, data.path(), false, Default::default());
+    turn(&session, "search").await;
+
+    let tools = tool_messages(&fake, false);
+    assert_eq!(tools.len(), 2, "{tools:?}");
+    assert!(tools[0].contains("Full output saved to "), "{}", tools[0]);
+    assert!(tools[1].contains("needle line 04"), "{}", tools[1]);
 }

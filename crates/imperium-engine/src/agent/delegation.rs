@@ -553,6 +553,9 @@ impl Agent {
         if output.len() <= threshold || output.chars().count() <= threshold {
             return output;
         }
+        if !spill::worth_saving(dir, &output, threshold) {
+            return output;
+        }
         match spill::save(dir, &name, &output) {
             Ok(path) => spill::notice(&path, &output, threshold),
             Err(error) => {

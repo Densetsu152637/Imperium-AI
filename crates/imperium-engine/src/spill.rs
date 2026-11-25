@@ -25,15 +25,44 @@ const PREVIEW_DIVISOR: usize = 2;
 const MAX_PREVIEW_CHARS: usize = 6_000;
 /// The head holds this many parts of every three of the preview; the tail the rest.
 const HEAD_PARTS: usize = 2;
+/// The first line of the notice that stands in for a saved result: a stable marker, so code
+/// that rewrites or drops old tool results (stale clearing) can recognise one and keep it.
+pub const SPILL_MARKER: &str = "[spilled tool result]";
+/// Most characters of the output's own first line kept ahead of the marker when the output
+/// began with an error.
+const ERROR_LINE_CHARS: usize = 200;
+/// The notice must be at most this many percent of the result, or saving it gains too little
+/// and the result stays whole.
+const MAX_NOTICE_PERCENT: usize = 70;
 /// Tools whose results are never saved: reads that are already bounded to the window (and
 /// would send the agent in a circle on the saved file), workflow context that compaction keeps
-/// verbatim, and the tool lookup the next call needs whole.
-const EXEMPT_TOOLS: [&str; 5] = [
+/// verbatim, the tool lookup the next call needs whole, and the agent-protocol tools, whose
+/// results are other agents' reports, the user's answers, or the agent's own notes.
+const EXEMPT_TOOLS: &[&str] = &[
     "read_file",
     "list_dir",
     "context_load",
     "load_skill",
     "tool_search",
+    "activate_plugin",
+    "update_plan",
+    "update_state",
+    "spawn_agent",
+    "await_tasks",
+    "steer_agent",
+    "queue_agent",
+    "list_agents",
+    "resume_agent",
+    "keep_as_knowledge",
+    "ask_agent",
+    "list_knowledge_agents",
+    "delegate_chunks",
+    "ask_user",
+    "request_clarification",
+    "memory_search",
+    "memory_read",
+    "memory_remember",
+    "memory_edit",
 ];
 
 /// The folder a session's saved results are kept in, beside its journal.
@@ -79,30 +108,67 @@ pub(crate) fn save(dir: &Path, tool: &str, text: &str) -> std::io::Result<PathBu
     Ok(path)
 }
 
-/// The text the conversation keeps in place of a saved result: what happened, where the whole
-/// result is and how to read it, then the first and last lines, bounded in characters.
+/// The text the conversation keeps in place of a saved result: [`SPILL_MARKER`], what happened,
+/// where the whole result is and how to read it, then the first and last lines, bounded in
+/// characters. A result that began with an error keeps that line ahead of the marker.
 pub(crate) fn notice(path: &Path, text: &str, threshold: usize) -> String {
     let budget = (threshold / PREVIEW_DIVISOR).min(MAX_PREVIEW_CHARS);
     let head_budget = budget * HEAD_PARTS / 3;
     let lines: Vec<&str> = text.lines().collect();
     let (head, tail) = split(&lines, head_budget, budget - head_budget);
     let omitted = lines.len() - head.len() - tail.len();
-    let mut out = format!(
-        "This result is large ({} lines, {} characters). Full output saved to {}; read ranges \
-         with read_file (offset and limit are in lines) or search it with grep.\n--- first \
-         lines ---\n{}",
+    let error = text
+        .trim_start()
+        .get(..5)
+        .is_some_and(|start| start.eq_ignore_ascii_case("error"))
+        .then(|| {
+            cut(
+                text.trim_start().lines().next().unwrap_or_default(),
+                ERROR_LINE_CHARS,
+            )
+        });
+    let mut out = error
+        .map(|line| {
+            format!(
+                "{line}
+"
+            )
+        })
+        .unwrap_or_default();
+    out.push_str(&format!(
+        "{SPILL_MARKER} This result is large ({} lines, {} characters). Full output saved to          {}; read ranges with read_file (offset and limit are in lines) or search it with          grep.
+--- first lines ---
+{}",
         lines.len(),
         text.chars().count(),
         path.display(),
-        head.join("\n"),
-    );
+        head.join("
+"),
+    ));
     if omitted > 0 {
-        out.push_str(&format!("\n--- {omitted} lines omitted ---"));
+        out.push_str(&format!(
+            "
+--- {omitted} lines omitted ---"
+        ));
     }
     if !tail.is_empty() {
-        out.push_str(&format!("\n--- last lines ---\n{}", tail.join("\n")));
+        out.push_str(&format!(
+            "
+--- last lines ---
+{}",
+            tail.join(
+                "
+"
+            )
+        ));
     }
     out
+}
+
+/// Whether the notice for `text` is small enough, against the text, to be worth saving it.
+pub(crate) fn worth_saving(dir: &Path, text: &str, threshold: usize) -> bool {
+    let notice = notice(&dir.join(file_name("estimate")), text, threshold);
+    notice.chars().count() * 100 <= text.chars().count() * MAX_NOTICE_PERCENT
 }
 
 /// The leading and trailing lines that fit the budgets (a line too long for what is left is
@@ -167,6 +233,60 @@ mod tests {
         );
         assert_eq!(threshold_chars(None, 4_000), 8_192);
         assert_eq!(threshold_chars(Some(1), 100), 100);
+    }
+
+    #[test]
+    fn agent_protocol_tools_are_exempt() {
+        for tool in [
+            "await_tasks",
+            "ask_agent",
+            "delegate_chunks",
+            "list_agents",
+            "ask_user",
+        ] {
+            assert!(!applies_to(tool), "{tool}");
+        }
+    }
+
+    #[test]
+    fn an_error_stays_visible_and_the_marker_is_stable() {
+        let text = format!(
+            "error: exit 2
+{}",
+            "line
+"
+            .repeat(4_000)
+        );
+        let shown = notice(Path::new("f.txt"), &text, 4_000);
+        assert!(
+            shown.starts_with(
+                "error: exit 2
+[spilled tool result] "
+            ),
+            "{shown}"
+        );
+        let plain = notice(
+            Path::new("f.txt"),
+            &"line
+"
+            .repeat(4_000),
+            4_000,
+        );
+        assert!(plain.starts_with(SPILL_MARKER));
+    }
+
+    #[test]
+    fn a_result_the_notice_would_barely_shorten_is_not_worth_saving() {
+        let dir = Path::new("/data/sessions/x.results");
+        let barely = "x".repeat(4_100);
+        assert!(!worth_saving(dir, &barely, 4_000));
+        assert!(worth_saving(
+            dir,
+            &"line
+"
+            .repeat(20_000),
+            4_000
+        ));
     }
 
     #[test]
