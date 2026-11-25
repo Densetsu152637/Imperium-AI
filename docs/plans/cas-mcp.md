@@ -1,8 +1,8 @@
 # Plan: built-in CAS MCP server (SymPy)
 
-Revision: 2026-11-26, revision 2 (plan-gate review: findings F1 to F11, the goal 2 and setup
-items and the nits folded in, and the four open questions decided); written against
-`experimental` at `ddcff4c9` (last updated). Roadmap [item 62](../12-roadmap.md#next-in-order).
+Revision: 2026-11-26, revision 3 (plan-gate review round 2: R2-1 to R2-5 and the nits folded in;
+revision 2 folded in F1 to F11 and decided the four open questions); written against
+`experimental` at `56ce2da9` (last updated). Roadmap [item 62](../12-roadmap.md#next-in-order).
 Status: planned (no stage started).
 
 Imperium ships a computer algebra system as a built-in [MCP](../05-tools-and-isolation.md#mcp)
@@ -26,7 +26,7 @@ Instead:
   server's own environment, on Windows, Linux and macOS.
 
 Each stage below is one pull request against `experimental` of at most about 800 changed lines
-(eight stages, three with a planned split), with the docs it changes. No stage changes the files
+(nine stages, with stage 2 split into 2a and 2b and three more with a planned split), with the docs it changes. No stage changes the files
 another session owns:
 
 - `crates/imperium-engine/src/agent/{tools.rs,turn.rs,compaction.rs,prompts.rs}` and
@@ -183,7 +183,7 @@ Why agent text cannot reach `eval`, `exec`, `__import__` or attribute access:
    every tool over the corpus.
 5. **Defence in depth: the audit hook is an allow-list.** After a worker has imported SymPy and
    warmed every tool's code path, it installs a `sys.addaudithook` hook, which cannot be removed.
-   - The hook passes only the events in a fixed allow-list, measured in stage 2 and stage 3 from
+   - The hook passes only the events in a fixed allow-list, measured in stages 2a and 3 from
      the corpus over every tool (expected: a handful such as `object.__getattr__` and
      `sys._getframe`). It never allows `compile`, `exec`, `import`, `open`, `os.*`,
      `subprocess.*`, `socket.*` or `ctypes.*`.
@@ -285,11 +285,15 @@ worker lives for one call, process-lifetime limits are per-call limits:
 | Limit (default; user layer may lower, or raise up to the cap) | Linux | macOS | Windows |
 | --- | --- | --- | --- |
 | CPU time, 15 s (cap 120 s) | `RLIMIT_CPU` soft = CPU used after warm-up + limit, hard = soft + 1 s (`SIGXCPU`, then `SIGKILL`) | same | per-worker Job Object `PerProcessUserTimeLimit` = CPU used after warm-up + limit, set by the broker |
-| Memory, 1 GiB (cap 8 GiB) | `RLIMIT_AS` = address space after warm-up + limit | `RLIMIT_AS` is not enforced on macOS: the front polls the worker's `ri_phys_footprint` (`proc_pid_rusage` through `ctypes` on `libproc`) every 50 ms and kills it over the limit | per-worker Job Object `ProcessMemoryLimit` (committed memory) |
+| Memory, 1 GiB (cap 8 GiB) | `RLIMIT_AS` = address space after warm-up + limit | `RLIMIT_AS` is not enforced on macOS: the front polls the worker's `ri_phys_footprint` (`proc_pid_rusage` through `ctypes` on `libproc`) every 50 ms and kills it over the limit | per-worker Job Object `ProcessMemoryLimit` = committed memory after warm-up + limit (the same baseline as Linux) |
 | Wall clock, 20 s (cap 300 s), counted from when the call was received | the front kills the worker | same | the broker terminates the worker's job |
 
 Details:
 
+- **macOS memory overshoot.** Polling is not a hard cap. Between two polls a worker can allocate
+  as fast as the machine allows: about 1 to 2 GiB in 50 ms on current hardware (estimate,
+  measured in stage 2b). So a macOS worker can briefly exceed its limit by that much before it
+  is killed. Stage 2b records the measured worst overshoot, and 05 states the bound.
 - **Core dumps.** Every worker sets `RLIMIT_CORE = 0`.
 - **Hash seed.** `PYTHONHASHSEED=0` is set for every process on every OS, so a call's result does
   not depend on the process.
@@ -299,22 +303,43 @@ Details:
 - **Windows spawning: the broker.** On Windows the front cannot start processes at all (D4: child
   process policy). It asks the broker for a worker, over a pipe the launcher gave it. The broker
   is the `imperium-core confine` launcher, outside the AppContainer.
-  - The broker creates the worker in the same AppContainer, with
-    `PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY` (restricted) and
-    `PROC_THREAD_ATTRIBUTE_JOB_LIST`, so the worker is in its own job, nested in the server's
-    job, from its first instruction.
-  - It hands the worker's pipe ends to the front with `DuplicateHandle`.
-  - Once the worker reports ready, the front sends `arm <pid>`. The broker reads the worker's
-    CPU time with `GetProcessTimes` and sets the job's CPU and memory limits.
+  - **The broker contract (R2-1).** The front is treated as untrusted by the broker.
+    - **Requests.** A request is one of three fixed opcodes: `spawn`, `arm <worker-id>` and
+      `kill <worker-id>`. A message is at most 64 bytes; a longer one, an unknown opcode or any
+      extra field closes the broker pipe, and the server's job is then killed.
+    - **What the broker decides itself.** It builds the worker's command line (the base
+      interpreter, `-I -B -m imperium_cas.worker` and the limits), its environment and its limits
+      from its own launch configuration, which the daemon gave it on its command line. Nothing in
+      a request can name a path, an argument, a variable or a limit value.
+    - **Worker ids.** `spawn` returns a worker id that the broker issued (a counter), plus the
+      worker's PID for information. `arm` and `kill` take only an id that this broker issued for a
+      worker that is still alive; a PID or any other number is refused.
+    - **Creation.** The broker creates the worker in the same AppContainer, with
+      `PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY` (restricted) and
+      `PROC_THREAD_ATTRIBUTE_JOB_LIST`, so the worker is in its own job, nested in the server's
+      job, from its first instruction. The worker's handle list holds only its own pipe ends,
+      never the broker pipe.
+    - **Default limits.** Each worker job is created with conservative limits: the configured
+      CPU limit plus a warm-up allowance, and the configured memory limit plus the measured
+      warm-up memory.
+    - **`arm`.** Sent once the worker reports ready. The broker reads the worker's CPU time with
+      `GetProcessTimes` and its committed memory, then sets the baseline: CPU used + the CPU
+      limit, and memory after warm-up + the memory limit, the same baseline as Linux. `arm` may
+      only lower a limit or set the baseline, never raise one above the default.
+    - **Wall clock.** The broker keeps its own wall clock for each worker, counted from `arm`
+      (or from `spawn` for a worker never armed) and at most the configured cap. When it runs
+      out the broker terminates the worker's job, whatever the front does.
+    - **Hand-over.** The broker hands the worker's pipe ends to the front with
+      `DuplicateHandle`.
   - All of this is in `imperium-ipc` (F1, [D4](#d4-sandbox-a-fixed-allowlist-profile-for-the-cas)).
-    Because the job is assigned at creation, there is no window in which the worker runs
-    unlimited, and the nested-job question is settled by the broker being unconfined (stage 5
-    verifies it).
+    Because the job is assigned at creation with default limits, there is no window in which the
+    worker runs unlimited, and the nested-job question is settled by the broker being unconfined
+    (stage 5 verifies it).
 - **The interpreter's PID.** The front and workers are started with the **base interpreter** of
   the managed Python (`<env>/python/.../python[.exe]`), not the venv's `python`, which on Windows
   is a redirector that starts a second process. The managed environment is reached through a
   `.pth` file (D5).
-  - Stage 2 asserts that a spawned worker's `os.getpid()` equals the PID the spawner holds (with
+  - Stage 2a asserts that a spawned worker's `os.getpid()` equals the PID the spawner holds (with
     the base interpreter on all three OSes). It also asserts the venv redirector does *not* on
     Windows, to document why.
   - Stage 5 asserts the same through the broker.
@@ -333,7 +358,7 @@ Details:
   treats a bigger prefix as `crashed`.
 - **Lazy start.** The spare is started on the first tool call, not when the session starts, so an
   idle session pays only for the front (about 30 MB; estimate). The first call pays SymPy's
-  import time, about 1 s (estimate, measured in stage 2).
+  import time, about 1 s (estimate, measured in stage 2a).
 
 Rejected alternatives:
 
@@ -384,22 +409,37 @@ through `PATH`. It starts from an empty root:
 
 This is stricter than the commands' OS tier, which starts from `--ro-bind / /` with masks.
 
-Inside, the front applies a **Landlock** ruleset before it starts any worker (`landlock.py`, raw
-syscalls through `ctypes`, no agent data). The ruleset handles `LANDLOCK_ACCESS_FS_EXECUTE` and
-allows it only beneath the environment root, so neither the front nor a worker can `execve`
-anything in `/usr/bin` (a shell, `curl`). Workers inherit the ruleset.
+Inside, the front applies a **Landlock** ruleset (`landlock.py`, raw syscalls through `ctypes`,
+no agent data). The ruleset handles `LANDLOCK_ACCESS_FS_EXECUTE` and allows it only beneath the
+environment root, so neither the front nor a worker can `execve` anything in `/usr/bin` (a
+shell, `curl`). Workers inherit the ruleset.
 
+- **Timing (R2-3).** The ruleset is applied by the first statement of `imperium_cas.__main__`,
+  before any other import (the MCP SDK, `pool`) and before stdin is read. `landlock.py` imports
+  only `ctypes`, `os` and `sys`.
+- **Fail closed when available.** The front checks the Landlock ABI first. If the ABI is present
+  but creating the ruleset, adding the rule or `landlock_restrict_self` fails, the front exits
+  with an error before reading stdin. The session then reports the server as failed to start.
 - **Residual.** Where Landlock is unavailable (a kernel before 5.13, or Landlock disabled), the
-  front records it, `mcp.list` reports the CAS as `ready` with the note "Landlock unavailable:
-  programs in /usr can be started inside the sandbox", and a process could still run `/usr`
-  programs. Those would still have no network, no home folder and no daemon socket.
+  front carries on, and a process could still run `/usr` programs. Those would still have no
+  network, no home folder and no daemon socket.
+- **How the note reaches `mcp.list`.** stderr is discarded, so the front reports it in the MCP
+  `initialize` reply. Its `serverInfo` carries `name`, `version` and a `confinement` value
+  (`landlock` or `no-landlock`), and its `instructions` field holds a one-line note: "Landlock
+  unavailable: programs in /usr can be started inside the sandbox". `imperium-mcp` does not read
+  either field today. Stage 7 makes its `initialize` keep the reply's `serverInfo` on the started
+  server; this is a change to `initialize`, not to the spawn path. The daemon stores the
+  `confinement` value in the built-in's status, and `mcp.list` reports the CAS as `ready` with
+  the note in `notes`. Nothing passes `instructions` to the model.
 - **Unavailable.** `available()` returns `Unavailable` with a reason when `bwrap` is missing or
   unsharing fails (for example Ubuntu 24.04's AppArmor restriction of unprivileged user
   namespaces without a `bwrap` profile). The desktop packages declare `bubblewrap` as a
   dependency (`bundle.linux.deb.depends` and `rpm.depends` in `tauri.conf.json`).
 
-**macOS.** `sandbox-exec -p` with a deny-default profile, started with a cleared environment
-plus the minimal one. It allows:
+**macOS.** `/usr/bin/env -i <minimal variables> /usr/bin/sandbox-exec -p <profile> -- <python>
+...`, both by absolute path. `env -i` starts from an empty environment and sets only the minimal
+variables, so the environment really is minimal whatever the launching process had. The profile
+is deny-default and allows:
 
 - `process-exec` and `file-read*` under the environment root;
 - `file-read*` of `/usr/lib`, `/System` and the dyld cache, and of `/dev/null` and
@@ -455,7 +495,9 @@ setup call only these. `windows-sys` is already an `imperium-ipc` dependency, wh
 for Windows, and gains a dependency on `imperium-ipc`, whose only other dependency is `tokio`.
 
 Linux and macOS need no `unsafe` Rust: the launch is `bwrap` or `sandbox-exec` arguments, and
-the Landlock calls are in the Python front.
+the Landlock calls are in the Python front. The Rust probe in stage 4 restricts itself with the
+same execute rule through the safe [`landlock`](https://crates.io/crates/landlock) crate, which
+is a dev-dependency of `imperium-tools` on Linux only (R2-4). No shipped crate gains it.
 
 - **Fail closed (decided).** If the sandbox is unavailable, the server is not started and the
   session gets a notice with the reason. There is no setting that runs the CAS unconfined.
@@ -545,6 +587,10 @@ Also revisit if the `confine (ubuntu-24.04)` job shows `Unavailable` on stock ru
     - our own `UV_CACHE_DIR` (a temporary folder, deleted afterwards), `UV_PYTHON_INSTALL_DIR`
       and `UV_PROJECT_ENVIRONMENT`;
     - `UV_NO_CONFIG=1` and `UV_PYTHON_DOWNLOADS=automatic`;
+    - `UV_PYTHON_INSTALL_REGISTRY=0` and `UV_PYTHON_INSTALL_BIN=0` (R2-2). Without them, `uv`'s
+      managed Python install on Windows registers itself under `HKCU\Software\Python` (PEP 514),
+      and on every OS places `python3.x` executables in uv's bin folder (`~/.local/bin`). Either
+      would make the CAS's interpreter visible to other programs outside `<data>`;
     - from the caller, only the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and
       `NO_PROXY` in both cases), the CA bundle (`SSL_CERT_FILE`, `SSL_CERT_DIR`,
       `UV_NATIVE_TLS`) and index credentials (`UV_INDEX_<NAME>_USERNAME` and `_PASSWORD`);
@@ -608,7 +654,9 @@ Also revisit if the `confine (ubuntu-24.04)` job shows `Unavailable` on stock ru
   - an environment's config file;
   - a trusted project's `.mcp.json`.
 
-  The built-in is still started. Stage 7 tests each source.
+  The built-in is still started. The notice names the source and tells the user to rename the
+  server (an existing `imperium_*` server from before this change is not started until it is
+  renamed). Stage 7 tests each source.
 - **In Connectors.** `mcp.list` reports the built-in as a server entry with a new `builtin` field:
   id, state (`not_set_up`, `setting_up`, `ready`, `failed`, `declined`, `unavailable`), reason,
   notes (such as the Landlock note), size and version. The app shows it in a **Built in** group
@@ -922,7 +970,7 @@ New settings (user layer; a project or environment layer may only turn it off), 
     interpreter.
   - If CPython needs more, the profile grows by the named path, never `/home` or `/etc`
     wholesale.
-- `-I` keeps the base interpreter's own `site-packages`, so `imperium_cas.pth` is read. Stage 2
+- `-I` keeps the base interpreter's own `site-packages`, so `imperium_cas.pth` is read. Stage 2a
   checks this on all three OSes.
 - The pinned `uv` verifies its Python downloads against the checksums it embeds (uv's documented
   behaviour for managed Python). Stage 6 records the `uv` version that does this.
@@ -965,7 +1013,7 @@ Not touched:
 
 - the other session's files listed at the top;
 - `crates/imperium-mcp/src/servers.rs`'s spawn path (a confined launch is a command and arguments
-  with `CLEAN_ENV`).
+  with `CLEAN_ENV`). Stage 7 changes only `initialize`, to keep the reply's `serverInfo`.
 
 ## Related docs
 
@@ -984,8 +1032,9 @@ Not touched:
 Each stage is one pull request against `experimental` with the docs it changes, at most about 800
 changed lines. Dependencies:
 
-- stages 1 to 3 (Python) and stages 4 and 5 (Rust confinement) are independent and can run in
-  parallel;
+- stages 1 to 3 (Python; stage 2 is split into 2a and 2b) and stages 4 and 5 (Rust
+  confinement) are independent and can run in parallel, except that stage 5's `BrokerSpawner`
+  needs 2b;
 - stage 6 needs 1, and 5 for the Windows ACL;
 - stage 7 needs 3 to 6;
 - stage 8 needs 7.
@@ -995,8 +1044,9 @@ Commands are what CI runs; nothing needs a local Rust build.
 ### Stage 1: Sidecar skeleton, parser, guard and the CI jobs
 
 - Objective:
-  - Create `sidecars/cas/`: `pyproject.toml` with `[tool.uv] package = false` and ruff's `S`
-    rules, `uv.lock`, and `.python-version` (exact 3.12.x).
+  - Create `sidecars/cas/`: `pyproject.toml` with `[tool.uv] package = false`, ruff's `S`
+    rules and `[tool.pytest.ini_options] pythonpath = ["src"]` (the package is not installed, so
+    pytest needs `src` on its path), `uv.lock`, and `.python-version` (exact 3.12.x).
   - Write `parse.py` (tokenizer, Unicode table, Pratt parser, caps and the identifier check)
     and `guard.py` (D2's estimates).
   - Write `functions.py`: the frozen table's names and guard classes as data, with no SymPy
@@ -1028,23 +1078,54 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Handoff notes: the media sidecar's job must stay Ubuntu-only. `check-python.sh` with no
   argument keeps its old behaviour.
 
-### Stage 2: Builder, worker, Unix limits and the audit hook
+### Stage 2a: Builder, worker and the audit hook
 
 - Objective:
   - `build.py`: the table builder from the tree to SymPy, with `assume` and the second
     identifier check.
-  - `worker.py`: warm-up, `RLIMIT_CORE = 0`, the allow-list audit hook with `os._exit`, its
-    limits, one call over the capped length-prefixed pipe, then exit.
-  - `pool.py`: the front's side, behind a `Spawner` interface. `PosixSpawner` (subprocess with
-    the base interpreter; macOS footprint polling) and the wall clock, queue deadline,
-    cancellation, and the `limit`, `crashed` and `refused` mapping. `BrokerSpawner` is a stub
-    that stage 5's broker protocol fills.
-  - `landlock.py`: the execute rule, applied by the front before its first spawn.
-  - Measure the warm-up time and memory per OS.
+  - `worker.py`: warm-up, `RLIMIT_CORE = 0` (Unix), the allow-list audit hook with `os._exit`,
+    one call over the capped length-prefixed pipe, then exit. It takes its limits from the
+    command line, but sets none yet (stage 2b).
+  - Measure the warm-up time and memory, and the first audit allow-list, per OS.
 - Depends on: stage 1.
-- Owned paths: `sidecars/cas/src/imperium_cas/{build,worker,pool,landlock,limits_posix,
-  limits_macos}.py`, `sidecars/cas/tests/` (`test_limits.py`, `test_audit_hook.py`,
-  `test_pid.py`, `test_no_string_to_sympy.py`, `workers/{spin,alloc,sleep}.py`).
+- Owned paths: `sidecars/cas/src/imperium_cas/{build,worker,framing}.py`, `sidecars/cas/tests/`
+  (`test_build.py`, `test_worker.py`, `test_audit_hook.py`, `test_pid.py`,
+  `test_no_string_to_sympy.py`).
+- Acceptance checks:
+  - `bash scripts/check-python.sh cas` in the `python-cas` job on the matrix;
+  - `uv run pytest tests/test_build.py tests/test_no_string_to_sympy.py`: every table entry
+    builds; hostile names in `assume`, `variable` and `at` are refused by the builder even when
+    the schema is bypassed; no `str` reaches `sympify` or `parse_expr`;
+  - `uv run pytest tests/test_worker.py`: one call in, one reply out, then exit; an oversized
+    length prefix is refused before any allocation;
+  - `uv run pytest tests/test_audit_hook.py`: inside a worker, `open`, `socket`, `subprocess`,
+    `compile`, `exec` and the import of a new module each end the worker with `REFUSED`, even
+    inside a `try`/`except`;
+  - `uv run pytest tests/test_pid.py`: the base interpreter's spawned PID equals `os.getpid()`,
+    path lines in a `.pth` are read under `-I`, and on Windows the venv redirector's PID differs.
+
+  About 600 lines.
+- Status: pending.
+- Handoff notes: record the measured warm-up time, memory and allow-list in the outcome; stage
+  2b's default limits and stage 5's warm-up allowance use them.
+
+### Stage 2b: Front-side pool, Unix limits and Landlock
+
+- Objective:
+  - `limits_posix.py` and `limits_macos.py`: the worker sets `RLIMIT_CPU` and `RLIMIT_AS` after
+    warm-up; the macOS footprint poll, with the overshoot measured.
+  - `pool.py`: the front's side, behind a `Spawner` interface. `PosixSpawner` (subprocess with
+    the base interpreter) and the wall clock, queue deadline, cancellation, and the `limit`,
+    `crashed` and `refused` mapping. `BrokerSpawner` is a stub that stage 5's broker protocol
+    fills.
+  - `landlock.py` and the first `__main__.py`: the execute rule as the **first statement** of
+    `imperium_cas.__main__`, before any other import and before stdin is read, failing closed
+    when Landlock is present but the ruleset fails. The `confinement` value is kept for stage
+    3's `serverInfo`.
+- Depends on: stage 2a.
+- Owned paths: `sidecars/cas/src/imperium_cas/{pool,landlock,limits_posix,limits_macos,
+  __main__}.py`, `sidecars/cas/tests/` (`test_limits.py`, `test_landlock.py`,
+  `workers/{spin,alloc,sleep}.py`).
 - Acceptance checks:
   - `uv run pytest tests/test_limits.py`, on Linux and macOS:
     - the CPU spin, allocation and sleep test workers each end with `limit` naming their limit
@@ -1053,22 +1134,21 @@ Commands are what CI runs; nothing needs a local Rust build.
     - a normal call succeeds right after;
     - a queued call's wait counts against its deadline;
     - a cancel kills the worker;
-    - an oversized length prefix is refused before any allocation.
-  - `uv run pytest tests/test_audit_hook.py`: inside a worker, `open`, `socket`,
-    `subprocess`, `compile`, `exec` and the import of a new module each end the worker with
-    `REFUSED`, even inside a `try`/`except`.
-  - `uv run pytest tests/test_pid.py` on the matrix: the base interpreter's spawned PID equals
-    `os.getpid()`, `imperium_cas.pth`-style path lines are read under `-I`, and on Windows the
-    venv redirector's PID differs.
-  - `uv run pytest tests/test_no_string_to_sympy.py` over the builder.
-  - `uv run pytest tests/test_landlock.py` on Linux: after the rule, `execve("/bin/sh")` fails
-    and the interpreter can still start itself; it skips with a reason when Landlock is absent.
+    - on macOS, the measured overshoot of the allocation worker is recorded and under the bound
+      that 05 states.
+  - `uv run pytest tests/test_landlock.py` on Linux:
+    - started as `python -I -m imperium_cas` with a stdin that is never written, the process has
+      already applied the ruleset: `/proc/self/status` shows it, through a test hook that reads
+      it before stdin is read;
+    - after the rule, `execve("/bin/sh")` from the front and from a worker is refused with
+      `EACCES`, while the interpreter can still start itself;
+    - with an injected failure of `landlock_restrict_self` while the ABI is present, the process
+      exits with an error before reading stdin;
+    - it skips with a reason when Landlock is absent, and then `confinement` is `no-landlock`.
 
-  About 800 lines.
+  About 650 lines.
 - Status: pending.
-- Handoff notes: on Windows this stage tests only the parts that do not need the broker. The
-  Windows limits are covered by stages 5 and 7. Record the measured warm-up time and memory, and
-  the audit allow-list, in the outcome.
+- Handoff notes: on Windows these tests skip; the Windows limits are covered by stages 5 and 7.
 
 ### Stage 3: MCP front and the eleven tools
 
@@ -1077,18 +1157,23 @@ Commands are what CI runs; nothing needs a local Rust build.
     (identifier patterns included); `tools/call` handed to `pool`.
   - `tools.py` and `format.py`: the eleven tools with D6's outputs, domains and error
     categories.
+  - `serverInfo.confinement` and the Landlock note in `instructions` in the `initialize` reply.
   - Finish the warm-up list and the audit allow-list from the corpus over every tool.
   - Measure the token size of the tool list.
-- Depends on: stage 2.
-- Owned paths: `sidecars/cas/src/imperium_cas/{server,tools,format,__main__}.py` and their
-  tests.
+- Depends on: stage 2b.
+- Owned paths: `sidecars/cas/src/imperium_cas/{server,tools,format}.py`, `__main__.py` (the
+  server call after the Landlock statement; the statement stays first), and their tests.
 - Acceptance checks:
   - `uv run pytest tests/test_tools.py`: per-tool tests, including `equal`'s three outcomes with
     a fixed seed, `unevaluated` integrals, `ConditionSet` results, domains stated on every
     `solve` result, complex-domain inequalities refused, and contradictory assumptions;
   - `uv run pytest tests/test_roundtrip.py`: every result's text re-parses to an equal expression;
   - `uv run pytest tests/test_server.py`: the SDK's in-memory client, and one real stdio
-    subprocess on Linux and macOS;
+    subprocess on Linux and macOS. The package is not installed, and `-I` ignores `PYTHONPATH`,
+    so the path entry comes from a two-line bootstrap passed with `-c`: it puts `src` and the
+    venv's `site-packages` on `sys.path`, then runs `imperium_cas` as `__main__` with `runpy`.
+    The real launch through the `.pth` is covered by stage 7. The test checks
+    `serverInfo.confinement` too;
   - the full hostile corpus through `tools/call` with zero events outside the allow-list;
   - the tool list under the measured token budget.
 
@@ -1112,8 +1197,9 @@ Commands are what CI runs; nothing needs a local Rust build.
   profile in [05](../05-tools-and-isolation.md#isolation-tiers).
 - Depends on: none.
 - Owned paths: `crates/imperium-tools/src/confine/{mod,linux,macos}.rs`,
-  `crates/imperium-tools/tests/confine.rs`, the probe helper, `ci.yml` (`IMPERIUM_REQUIRE_CONFINE`
-  and the new job), `apps/desktop/src-tauri/tauri.conf.json` (the dependency only).
+  `crates/imperium-tools/tests/confine.rs`, the probe helper, `crates/imperium-tools/Cargo.toml`
+  (the `landlock` dev-dependency), `ci.yml` (`IMPERIUM_REQUIRE_CONFINE` and the new job),
+  `apps/desktop/src-tauri/tauri.conf.json` (the dependency only).
 - Acceptance checks:
   - `cargo test -p imperium-tools --test confine` on `ubuntu-22.04` and macOS: every goal 3
     refusal, for the probe and its child; the allowed root is readable; on Linux, with
@@ -1125,9 +1211,10 @@ Commands are what CI runs; nothing needs a local Rust build.
 
   About 650 lines.
 - Status: pending.
-- Handoff notes: the Landlock rule itself is Python (stage 2). The probe here tests the profile
-  with a Rust-side rule of the same shape, built by the probe on itself, so stage 4 does not wait
-  for stage 2.
+- Handoff notes: the production Landlock rule is Python (stage 2b). The probe here restricts
+  itself with a rule of the same shape through the `landlock` crate (a Linux-only dev-dependency
+  of `imperium-tools`; `cargo tree -e normal` shows it in no shipped crate), so stage 4 does not
+  wait for stage 2b.
 
 ### Stage 5: Windows confinement and the broker (`imperium-ipc`)
 
@@ -1142,7 +1229,7 @@ Commands are what CI runs; nothing needs a local Rust build.
     own startup.
   - Fill in `BrokerSpawner` in `pool.py`.
   - Decide and record the nested-job behaviour and the active-process limit from measurement.
-- Depends on: stage 4 (the shared `Profile` API); stage 2 for `BrokerSpawner`.
+- Depends on: stage 4 (the shared `Profile` API); stage 2b for `BrokerSpawner`.
 - Owned paths: `crates/imperium-ipc/src/windows/confine.rs`, `crates/imperium-ipc/src/windows.rs`
   (the declaration), `crates/imperium-ipc/Cargo.toml` (features),
   `crates/imperium-tools/src/confine/windows.rs`, `crates/imperium-tools/Cargo.toml` (the
@@ -1156,8 +1243,19 @@ Commands are what CI runs; nothing needs a local Rust build.
   - `cargo test -p imperium-ipc confine`:
     - a broker-spawned probe reports the PID the broker returned;
     - its CPU spin is stopped by the job at the armed limit plus 1 s;
-    - its allocation fails at the memory limit;
+    - its allocation fails at the memory limit, measured from the post-warm-up baseline;
     - the active-process limit holds.
+  - `cargo test -p imperium-ipc broker` (R2-1):
+    - a `spawn` request carrying a path, an argument or any extra field is refused, and the
+      broker pipe is closed;
+    - a message over 64 bytes, or an unknown opcode, is refused the same way;
+    - `arm` or `kill` with a worker id the broker did not issue, an id of a worker that has
+      exited, or a PID is refused;
+    - `arm` cannot raise a limit above the default;
+    - a worker that is never armed is killed at the default CPU, memory and wall-clock limits;
+    - an armed worker whose front never kills it is killed at the broker's own wall-clock cap;
+    - the worker's handle list does not include the broker pipe: the probe, as a worker, cannot
+      write to it.
   - A test that the launcher refuses an unknown profile and any argument before `--` other than
     `--profile`.
   - `bash scripts/check-rust.sh` (CI). The presence end-to-end job runs too, because
@@ -1190,6 +1288,8 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Acceptance checks: `cargo test -p imperium-local cas_env` and `cargo test -p imperium-cli
   cas` (CI), covering:
   - the exact `uv` arguments, including `--no-build`;
+  - `UV_PYTHON_INSTALL_REGISTRY=0` and `UV_PYTHON_INSTALL_BIN=0` are present in the child
+    environment on every OS (R2-2);
   - the exact child environment: a set `UV_PYTHON_DOWNLOADS_JSON_URL`, `UV_INDEX_URL` or
     `PIP_INDEX_URL` is absent, and a set `HTTPS_PROXY` or `SSL_CERT_FILE` is present (goal 6);
   - the `.pth` content and location;
@@ -1227,11 +1327,17 @@ Commands are what CI runs; nothing needs a local Rust build.
   `crates/imperium-core/src/state/create.rs`, `rpc/` (connectors),
   `crates/imperium-protocol/src/methods/connectors.rs`, `lib.rs` (the minor),
   `packages/protocol/src/generated/`, `crates/imperium-config/src/{settings,registry,
-  mcp_servers}.rs`, `crates/imperium-core/tests/cas_mcp.rs`, `ci.yml` (cache and environment),
+  mcp_servers}.rs`, `crates/imperium-mcp/src/servers.rs` (`initialize` keeps `serverInfo`),
+  `crates/imperium-core/tests/cas_mcp.rs`, `ci.yml` (cache and environment),
   docs 02, 05 and 10.
 - Acceptance checks:
   - `cargo test -p imperium-core --test cas_mcp` on the matrix:
     - goal 4 with the real setup and real confinement;
+    - the real setup leaves the machine unchanged outside `<data>` (R2-2): on Windows the
+      `HKCU\Software\Python` key and its subkeys are the same before and after; on every OS uv's
+      bin folder (`UV_PYTHON_BIN_DIR`, else `~/.local/bin`) has the same entries;
+    - `serverInfo.confinement` reaches the built-in's status, and with `no-landlock` the
+      `mcp.list` note;
     - a CPU trip, a memory trip and a wall-clock trip through the real confined server, each
       followed by a successful call;
     - the worker PID rule on Windows through the broker;
@@ -1246,7 +1352,9 @@ Commands are what CI runs; nothing needs a local Rust build.
     - a disabled built-in is not started;
     - an unavailable sandbox is reported and not started;
     - `imperium_cas` and `imperium_x` are refused with a notice from user config, an environment
-      file and `.mcp.json`, while the built-in still starts;
+      file and `.mcp.json`, while the built-in still starts. The notice names the source and the
+      fix, for example "MCP server imperium_x in .mcp.json is not started: names starting with
+      imperium_ are reserved for Imperium's built-in servers. Rename it, for example to x.";
     - a permission rule on `mcp__imperium_cas__*` applies;
     - the spec carries `CLEAN_ENV`.
   - `cargo test -p imperium-config mcp_servers`: `mcp.save` refuses reserved names.
@@ -1295,7 +1403,7 @@ Commands are what CI runs; nothing needs a local Rust build.
    retries reduce this. The `python-cas` job adds about 3 minutes per OS (estimate), and the
    `confine (ubuntu-24.04)` job one Rust build of `imperium-tools`.
 5. **Per-session memory.** Each session with the CAS has a front, and after the first call a
-   spare worker (about 80 MB; estimate). Stage 2 measures it. If it matters, share a server
+   spare worker (about 80 MB; estimate). Stage 2a measures it. If it matters, share a server
    (non-goal for now) or start the spare only on demand.
 6. **Tool-list size for small models.** Eleven schemas add context to every request. Stage 3
    keeps the descriptions short and measures them. Item 61's `tool_search` can hide them for local
