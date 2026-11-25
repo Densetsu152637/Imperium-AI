@@ -113,9 +113,9 @@ fn a_background_job_dies_with_its_terminal() {
         &["--norc", "--noprofile", "-i"],
         dir.path(),
     ));
-    // `set +H`: bash 3.2 (macOS) takes the `!` of `$!` for history expansion otherwise.
+    // `jobs -p`, not `$!`: bash 3.2 (macOS) takes the `!` of `$!` for history expansion.
     pty.write(
-        b"set +H; sleep 60 & echo JOB:$!:END
+        b"sleep 60 & echo JOB:$(jobs -p):END
 ",
     )
     .unwrap();
