@@ -200,7 +200,7 @@ async fn call(connection: &mut Connection, method: &str, params: Value) -> Respo
 
 async fn shake(connection: &mut Connection, name: &str) {
     let handshake = json!({"client": {"name": name, "version": "0"},
-                           "protocol": {"major": 0, "minor": 59}});
+                           "protocol": {"major": 0, "minor": 60}});
     result(call(connection, "system.handshake", handshake).await);
 }
 

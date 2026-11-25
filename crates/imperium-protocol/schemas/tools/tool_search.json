@@ -1,0 +1,21 @@
+{
+  "description": "Find tools that are not in your tool list and get their parameters; run one with call_tool.",
+  "name": "tool_search",
+  "parameters": {
+    "properties": {
+      "names": {
+        "description": "Exact tool names (or mcp__<server>__* for all of a server's tools) to get the parameters of",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "query": {
+        "description": "Words to match against tool names and descriptions; returns the best matches with their parameters",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "status": "available"
+}

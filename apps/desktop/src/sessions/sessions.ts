@@ -336,6 +336,12 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent, tasks: Record<s
             : `Activated plugin ${event.name} (${event.tools?.length ?? 0} tools)`,
       });
       break;
+    case "tools_loaded":
+      next.push({
+        kind: "notice",
+        message: `${event.via === "search" ? "Looked up tools" : "Ran through call_tool"}: ${event.names.join(", ")}`,
+      });
+      break;
     case "paused":
       next.push({
         kind: "notice",

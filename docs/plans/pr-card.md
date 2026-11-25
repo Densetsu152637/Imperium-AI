@@ -768,7 +768,7 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   branches ignore the method; a push by another writer within one poll interval of enabling is
   outside the guarantee (documented).
 - Status: complete
-- Outcome: protocol 0.59 adds `pull_requests.auto_merge_challenge` and `pull_requests.set_auto_merge`.
+- Outcome: protocol 0.60 adds `pull_requests.auto_merge_challenge` and `pull_requests.set_auto_merge`.
   The challenge is a new per-connection store (`crates/imperium-core/src/automerge.rs`) bound to
   the session, address, head commit and method; the caller check is the 0.56 identification of the
   installed desktop app (`app_identity`), with `Connection::as_desktop_app_for_tests` (the `testing`

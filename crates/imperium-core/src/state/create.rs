@@ -854,6 +854,7 @@ impl DaemonState {
                         state: flags.harness,
                         hints: flags.harness,
                         clarify: flags.harness,
+                        tool_loading: flags.tool_loading,
                         ..imperium_config::HarnessSettings::default()
                     },
                     None => self.settings().harness.clone(),

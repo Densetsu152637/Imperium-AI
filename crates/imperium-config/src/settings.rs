@@ -654,6 +654,12 @@ pub struct HarnessSettings {
     /// Confidence (0 to 1) below which the root agent is told to ask with
     /// `request_clarification` rather than guess.
     pub clarify_below: f64,
+    /// Offer a small fixed tool list (the core file and command tools, `tool_search` and
+    /// `call_tool`) and reach every other tool on demand, instead of sending every tool's
+    /// schema on every call (docs/plans/reactive-tools.md). `auto` is on for an agent whose
+    /// own model runs on this machine. Not yet a user-visible setting: evaluations read it
+    /// through `--flag tool_loading`; it stays `off` by default.
+    pub tool_loading: HarnessMode,
 }
 
 impl Default for HarnessSettings {
@@ -669,6 +675,7 @@ impl Default for HarnessSettings {
             hints: HarnessMode::Auto,
             clarify: HarnessMode::Auto,
             clarify_below: 0.7,
+            tool_loading: HarnessMode::Off,
         }
     }
 }

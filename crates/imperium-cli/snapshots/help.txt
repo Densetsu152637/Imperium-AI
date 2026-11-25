@@ -3759,7 +3759,7 @@ Options:
           A text file appended to the root agent's system prompt, after any variant's edits
 
       --flag <KEY=VALUE>
-          A loop flag, `key=value`; repeatable. The flags are listed in docs/03-agent-engine.md: max_steps, effort, auto_compact, auto_compact_at, knowledge, attended, harness
+          A loop flag, `key=value`; repeatable. The flags are listed in docs/03-agent-engine.md: max_steps, effort, auto_compact, auto_compact_at, knowledge, attended, harness, tool_loading
 
       --subagent-replay <FILE>
           Answer subagents from this recordings file instead of running them (no model calls for subagents). A task file with a `subagent_replay` object is used when this is not given

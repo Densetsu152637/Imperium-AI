@@ -1140,7 +1140,7 @@ anything but the one fix commit, is flagged in that request and always asks, eve
 Only on approval does it push to the
 pull request's branch, as a plain push. It never force-pushes, closes or approves, and requests
 GitHub's auto-merge only on the user's switch, turned on in the desktop app; it never calls a merge
-endpoint. Before it pushes it turns that auto-merge off (see [auto-merge](#auto-merge-implemented-stage-6-protocol-059)).
+endpoint. Before it pushes it turns that auto-merge off (see [auto-merge](#auto-merge-implemented-stage-6-protocol-060)).
 After `max_attempts_per_pr` (default 3) failing commits on one pull request it stops and
 says so. Progress goes to every client as `autofix.event` notifications (`started`,
 `awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, `stopped`); approvals are
@@ -1231,7 +1231,7 @@ session it lists every running session that has a pull request bound. Both read 
 as `\u{..}` (the daemon already strips them, so this is a second line of defence for a terminal).
 Not yet: turning the auto-fix switch on (a later stage).
 
-### Auto-merge (implemented, stage 6, protocol 0.59)
+### Auto-merge (implemented, stage 6, protocol 0.60)
 
 **Auto-merge lands code unseen.** With it on, GitHub merges the pull request the moment the
 repository's own required checks and reviews pass, and nobody looks at the code again. It is the

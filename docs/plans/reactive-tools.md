@@ -557,7 +557,8 @@ Stage 5 follows the build that contains stage 4.
   - Config: `HarnessSettings.tool_loading: HarnessMode`, default `Off`. It stays **hidden** while
     only 2a is merged: 2a adds the field (readable by evaluations through `--flag tool_loading`)
     but no registry entry, settings UI or 10 row, because without 2b's `effective_call` helper the
-    name-keyed code would misread `call_tool` calls. 2b adds the registry entry
+    name-keyed code would misread `call_tool` calls (03 says the engine reads it from `[harness]`
+    if set). 2a ships without the registry entry; 2b adds the registry entry
     `harness.tool_loading` ("Reach tools on demand") and the 10 table row.
   - Engine: `tool_universe()` (today's list and filters, unchanged, computed at dispatch time)
     and `offered_tools()` (the universe when off; core, `tool_search`, `call_tool` when on, fixed
