@@ -1,0 +1,3 @@
+// expect: lex-ok
+// tokens: kw:let ident:s = str[ interp[ ident:x spec:".2" ]interp text:" " interp[ ident:y spec:">6" ]interp text:" " interp[ ident:z spec:"json" ]interp ]str ;!
+let s = "{x:.2} {y:>6} {z:json}"

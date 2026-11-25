@@ -1,0 +1,2 @@
+// expect: lex-error L0002 at 2:1
+"abc

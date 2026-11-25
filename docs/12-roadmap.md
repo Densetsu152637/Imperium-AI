@@ -319,7 +319,9 @@ and `environments.agent_update` (protocol 0.28)
     hardware. The managed vLLM environment is built: `imperium runtime vllm
     setup|status|remove` makes a `uv` virtual environment with a pinned vLLM, or pulls and runs
     the official Docker image, only on the user's command after showing disk and GPU
-    requirements, and the daemon uses it when present ([04](04-models-and-routing.md#runtimes)).
+    requirements, and the daemon uses it when present ([04](04-models-and-routing.md#runtimes)); on native
+    Windows `setup --wsl` makes it inside a WSL2 distribution and the daemon serves `vllm:` models from there
+    ([04](04-models-and-routing.md#vllm-in-wsl2-windows-implemented)).
     Not built: a desktop action for it; GPU utilisation and temperature on Windows
     (`intel_gpu_top` and the engine counters); and checks on real hardware, which the vLLM
     setup, the Windows probes and the AMD and Intel parsers still need.
@@ -796,6 +798,10 @@ and `environments.agent_update` (protocol 0.28)
     version bump; the Imperium harness is then built as the second harness behind this switch.
     The switch and the per-subagent selection are app work; the content of the Imperium harness
     itself is research work.
+    Ratio, the language harnesses are written in, is specified in the separate Ratio repository
+    (pinned by `crates/imperium-ratio/ratio-spec.lock`) and implemented in `crates/imperium-ratio`
+    in stages. Stage 1, the token reader, is in the crate; nothing is wired into the engine yet
+    and there is no switch to select a Ratio harness.
 <!-- markdownlint-disable-next-line MD029 -->
 59. **Windows release signing and per-machine install** (planned). Windows release builds are
     Authenticode-signed (the signing service is still to be chosen,
@@ -865,8 +871,8 @@ and `environments.agent_update` (protocol 0.28)
     container, is off by default.
 
     CI builds the image and starts the compose stack. It checks the healthcheck, a handshake
-    through the remote path, and one `imperium run --headless --json` task against it. No plan
-    yet.
+    through the remote path, and one `imperium run --headless --json` task against it
+    ([plan](plans/server-package.md)).
 
 <!-- markdownlint-disable-next-line MD029 -->
 64. **Consul escalation workflow** (planned). A built-in workflow in which Consul, one of

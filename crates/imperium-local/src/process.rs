@@ -51,6 +51,9 @@ pub struct ProcessLauncher {
     /// ([`crate::vllm_env::scope`]), when the managed environment is Docker's
     /// ([`crate::vllm_env`]); each model then gets a container of its own.
     docker_vllm: Mutex<Option<(PathBuf, String, String)>>,
+    /// `wsl.exe`, the WSL2 distribution and `vllm`'s path inside it, when vLLM runs in WSL2 for a
+    /// Windows daemon ([`crate::wsl`]); each model is then `wsl.exe -d <distro> --exec ...`.
+    wsl_vllm: Mutex<Option<(PathBuf, String, String)>>,
     /// Asked before and after a llama.cpp model loads.
     hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     logs: PathBuf,
@@ -66,6 +69,7 @@ impl ProcessLauncher {
         ProcessLauncher {
             programs: Mutex::new(vec![(LLAMA_CPP.into(), server), (VLLM.into(), vllm)]),
             docker_vllm: Mutex::new(None),
+            wsl_vllm: Mutex::new(None),
             hooks: Mutex::new(None),
             logs,
             slots: None,
@@ -108,6 +112,17 @@ impl ProcessLauncher {
             .docker_vllm
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some((docker, image, scope));
+        self
+    }
+
+    /// Runs vLLM models inside the WSL2 distribution `distro`, with `program` (the path of `vllm`
+    /// inside it), started by `wsl` (`wsl.exe`). The model folder is translated to its WSL path,
+    /// the server listens on `127.0.0.1` inside WSL2 and is reached through WSL2's localhost
+    /// forwarding, and stopping a model kills the `vllm` process inside the distribution
+    /// ([`WslGuard`]), not only `wsl.exe`.
+    pub fn with_wsl_vllm(self, wsl: PathBuf, distro: String, program: String) -> Self {
+        *self.wsl_vllm.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((wsl, distro, program));
         self
     }
 
@@ -166,19 +181,45 @@ impl ProcessLauncher {
                     .clone()
             })
             .flatten();
-        if docker.is_none() {
+        let wsl = (spec.backend.id() == VLLM)
+            .then(|| {
+                self.wsl_vllm
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone()
+            })
+            .flatten();
+        if docker.is_none() && wsl.is_none() {
             spec.backend.check_program(program.as_path())?;
+        }
+        if wsl.is_some()
+            && let Some(problem) = crate::wsl::forwarding_problem_here()
+        {
+            return Err(problem.into());
         }
         let port = free_port()?;
         // A container is named so it can be removed; its client process is what is supervised.
-        let (program, args, container) = match docker {
-            Some((docker, image, scope)) => {
+        // The same goes for a `vllm` inside WSL2: `wsl.exe` is what is supervised.
+        let mut in_wsl = None;
+        let (program, args, container) = match (docker, wsl) {
+            (Some((docker, image, scope)), _) => {
                 let name = crate::vllm_env::fresh_container_name(port);
                 let args =
                     crate::vllm_env::docker_run_args(&image, &name, port, &scope, &spec.args())?;
                 (docker.clone(), args, Some((docker, name)))
             }
-            None => {
+            (None, Some((wsl, distro, vllm))) => {
+                let serve = spec.args();
+                let args = crate::wsl::serve_args(&distro, &vllm, port, &serve)?;
+                let folder = crate::wsl::model_folder(&distro, &serve)?;
+                in_wsl = Some((
+                    wsl.clone(),
+                    distro,
+                    crate::wsl::stop_pattern(&vllm, &folder, port),
+                ));
+                (wsl, args, None)
+            }
+            (None, None) => {
                 let mut args = spec.args();
                 args.extend(["--port".to_string(), port.to_string()]);
                 (program, args, None)
@@ -195,12 +236,19 @@ impl ProcessLauncher {
             .stdout(log.try_clone().map_err(|error| error.to_string())?)
             .stderr(log)
             .kill_on_drop(true);
+        #[cfg(windows)]
+        {
+            if in_wsl.is_some() {
+                // The daemon has no console: `wsl.exe` would open one.
+                command.creation_flags(0x0800_0000);
+            }
+        }
         // The draft model is Imperium's to choose and to count in memory: llama-server must not
         // pick one up from the environment the daemon runs in.
         for variable in crate::backend::scrubbed_env(spec) {
             command.env_remove(&variable);
         }
-        if container.is_none() {
+        if container.is_none() && in_wsl.is_none() {
             library_path(&mut command, program);
         }
         if spec.backend.id() == VLLM {
@@ -219,6 +267,8 @@ impl ProcessLauncher {
         // From here on the container is ours to remove: by `stop`, on a failed start, or when
         // this future is dropped (a cancelled start) or the server is.
         let container = container.map(|(docker, name)| ContainerGuard::new(docker, name));
+        // The same for the `vllm` inside WSL2, which can outlive the `wsl.exe` that started it.
+        let wsl_guard = in_wsl.map(|(wsl, distro, pattern)| WslGuard::new(wsl, distro, pattern));
         let base = format!("http://127.0.0.1:{port}");
         let ready = tokio::time::timeout(LOAD_TIMEOUT, self.wait_ready(&base, &mut child)).await;
         if let (Ok(Ok(())), Some(hooks)) = (&ready, &hooks) {
@@ -227,6 +277,7 @@ impl ProcessLauncher {
         match ready {
             Ok(Ok(())) => Ok(Box::new(ProcessServer {
                 container,
+                wsl: wsl_guard,
                 pid: child.id(),
                 child: Mutex::new(Some(child)),
                 base_url: format!("{base}/v1"),
@@ -234,9 +285,14 @@ impl ProcessLauncher {
                 http: self.http.clone(),
             })),
             Ok(Err(message)) => {
+                if let Some(guard) = &wsl_guard {
+                    guard.remove().await;
+                }
                 let hint = if let Some(guard) = &container {
                     guard.remove().await;
                     "; if the image is missing, run `imperium runtime vllm setup --docker`"
+                } else if wsl_guard.is_some() {
+                    "; if vLLM is not installed there, run `imperium runtime vllm setup --wsl`"
                 } else {
                     ""
                 };
@@ -246,8 +302,16 @@ impl ProcessLauncher {
                 if let Some(guard) = &container {
                     guard.remove().await;
                 }
+                let forwarding = if let Some(guard) = &wsl_guard {
+                    guard.remove().await;
+                    "; if the log shows the server running, Windows is not reaching it: check \
+                     WSL2's localhost forwarding (`localhostForwarding` and `networkingMode` in \
+                     %USERPROFILE%\\.wslconfig)"
+                } else {
+                    ""
+                };
                 Err(LaunchError::timed_out(format!(
-                    "the model did not load within {} s; see {}",
+                    "the model did not load within {} s{forwarding}; see {}",
                     LOAD_TIMEOUT.as_secs(),
                     log_path.display()
                 )))
@@ -284,6 +348,8 @@ impl Launcher for ProcessLauncher {
 struct ProcessServer {
     /// The container of a vLLM model run in Docker; removed by [`Server::stop`] or on drop.
     container: Option<ContainerGuard>,
+    /// The `vllm` process inside WSL2 of a model run there; killed by [`Server::stop`] or on drop.
+    wsl: Option<WslGuard>,
     /// Killed on drop if [`Server::stop`] has not taken it.
     child: Mutex<Option<Child>>,
     /// The process id, for resource readings; kept after [`Server::stop`] takes the child.
@@ -394,6 +460,10 @@ impl Server for ProcessServer {
             if let Some(guard) = &self.container {
                 guard.remove().await;
             }
+            // Killing `wsl.exe` need not end the `vllm` it started inside the distribution.
+            if let Some(guard) = &self.wsl {
+                guard.remove().await;
+            }
         })
     }
 
@@ -467,6 +537,136 @@ impl Drop for ContainerGuard {
                 let _ = child.wait();
             });
         }
+    }
+}
+
+/// How long a `vllm` inside WSL2 is given to end after SIGTERM before it is sent SIGKILL.
+const WSL_STOP_GRACE: Duration = Duration::from_secs(10);
+
+/// A model's `vllm` process inside a WSL2 distribution: ended when this is stopped or dropped
+/// unless [`WslGuard::remove`] already did it. `wsl.exe` is only the relay to it, and killing
+/// the relay does not reliably end what it started, so the process is found by its command line
+/// (the `vllm` path, `serve`, the model folder and the port, so another model is never
+/// matched) and signalled inside the distribution: SIGTERM first (vLLM shuts its engine and
+/// workers down), SIGKILL if it is still there after the grace period. A daemon that is killed
+/// leaves it running; nothing sweeps those yet.
+#[derive(Debug)]
+pub(crate) struct WslGuard {
+    wsl: PathBuf,
+    distro: String,
+    /// The `pkill -f` pattern ([`crate::wsl::stop_pattern`]).
+    pattern: String,
+    grace: Duration,
+    /// Cleared by whoever stops it, so it is stopped once.
+    armed: AtomicBool,
+}
+
+impl WslGuard {
+    pub(crate) fn new(wsl: PathBuf, distro: String, pattern: String) -> Self {
+        Self::with_grace(wsl, distro, pattern, WSL_STOP_GRACE)
+    }
+
+    pub(crate) fn with_grace(
+        wsl: PathBuf,
+        distro: String,
+        pattern: String,
+        grace: Duration,
+    ) -> Self {
+        WslGuard {
+            wsl,
+            distro,
+            pattern,
+            grace,
+            armed: AtomicBool::new(true),
+        }
+    }
+
+    /// `wsl.exe -d <distro> --exec <tool> -f -- <pattern>` for `pkill -TERM`, `pkill -KILL` or
+    /// `pgrep` (success means a match is still running).
+    fn args(&self, tool: &[&str]) -> Vec<String> {
+        let mut command: Vec<&str> = tool.to_vec();
+        command.extend(["-f", "--", self.pattern.as_str()]);
+        crate::wsl::exec_args(&self.distro, &command)
+    }
+
+    async fn run(&self, args: &[String]) -> bool {
+        let mut command = Command::new(&self.wsl);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            command.creation_flags(0x0800_0000);
+        }
+        command.status().await.is_ok_and(|status| status.success())
+    }
+
+    /// Sends SIGTERM, waits up to the grace period for the process to go, then SIGKILL if it did
+    /// not. Failures are not errors (the distribution may be shut down, so nothing runs).
+    pub(crate) async fn remove(&self) {
+        if !self.armed.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let _ = self.run(&self.args(&["pkill", "-TERM"])).await;
+        let deadline = tokio::time::Instant::now() + self.grace;
+        let pgrep = self.args(&["pgrep"]);
+        loop {
+            if !self.run(&pgrep).await {
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        let _ = self.run(&self.args(&["pkill", "-KILL"])).await;
+    }
+}
+
+impl Drop for WslGuard {
+    /// Does the same on a thread of its own and does not wait for it, so dropping never blocks
+    /// the runtime.
+    fn drop(&mut self) {
+        if !self.armed.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let (wsl, term, pgrep, kill, grace) = (
+            self.wsl.clone(),
+            self.args(&["pkill", "-TERM"]),
+            self.args(&["pgrep"]),
+            self.args(&["pkill", "-KILL"]),
+            self.grace,
+        );
+        std::thread::spawn(move || {
+            let run = |args: &[String]| {
+                let mut command = std::process::Command::new(&wsl);
+                command
+                    .args(args)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    command.creation_flags(0x0800_0000);
+                }
+                command.status().is_ok_and(|status| status.success())
+            };
+            run(&term);
+            let deadline = std::time::Instant::now() + grace;
+            loop {
+                if !run(&pgrep) {
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(POLL);
+            }
+            run(&kill);
+        });
     }
 }
 
@@ -625,6 +825,7 @@ mod tests {
     fn server_with(container: Option<ContainerGuard>) -> ProcessServer {
         ProcessServer {
             container,
+            wsl: None,
             pid: None,
             child: Mutex::new(None),
             base_url: String::new(),
@@ -690,5 +891,197 @@ mod tests {
     #[tokio::test]
     async fn a_server_without_a_container_has_nothing_to_remove() {
         server_with(None).stop().await;
+    }
+
+    /// A `wsl.exe` that appends its arguments to `log` and answers `pgrep` with the exit status
+    /// in `pgrep_status` (0: still running, 1: gone).
+    #[cfg(unix)]
+    fn fake_wsl(dir: &Path, log: &Path, pgrep_status: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let status = dir.join("pgrep_status");
+        std::fs::write(&status, pgrep_status).unwrap();
+        let path = dir.join("wsl.exe");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> {}\ncase \"$*\" in *\" pgrep \"*) exit $(cat {});; esac\n",
+                log.display(),
+                status.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    const WSL_PROGRAM: &str = "/home/me/.local/share/imperium/runtimes/vllm/0.11.0/venv/bin/vllm";
+
+    #[cfg(unix)]
+    fn wsl_pattern(port: u16) -> String {
+        crate::wsl::stop_pattern(WSL_PROGRAM, "/mnt/d/AI Models/Qwen", port)
+    }
+
+    #[cfg(unix)]
+    fn wsl_server(guard: WslGuard) -> ProcessServer {
+        ProcessServer {
+            wsl: Some(guard),
+            ..server_with(None)
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopping_a_wsl_server_ends_the_process_inside_the_distro_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let wsl = fake_wsl(dir.path(), &log, "1");
+        let pattern = wsl_pattern(41000);
+        let server = wsl_server(WslGuard::new(wsl, "Ubuntu".into(), pattern.clone()));
+        server.stop().await;
+        // SIGTERM, then a look: nothing is left, so no SIGKILL.
+        assert_eq!(
+            lines(&log),
+            vec![
+                format!("-d Ubuntu --exec pkill -TERM -f -- {pattern}"),
+                format!("-d Ubuntu --exec pgrep -f -- {pattern}"),
+            ]
+        );
+        server.stop().await;
+        drop(server);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(lines(&log).len(), 2, "stopped once");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_wsl_process_that_survives_sigterm_is_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let wsl = fake_wsl(dir.path(), &log, "0");
+        let pattern = wsl_pattern(41001);
+        let guard = WslGuard::with_grace(wsl, "Ubuntu".into(), pattern.clone(), Duration::ZERO);
+        wsl_server(guard).stop().await;
+        assert_eq!(
+            lines(&log),
+            vec![
+                format!("-d Ubuntu --exec pkill -TERM -f -- {pattern}"),
+                format!("-d Ubuntu --exec pgrep -f -- {pattern}"),
+                format!("-d Ubuntu --exec pkill -KILL -f -- {pattern}"),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_wsl_server_that_was_never_stopped_ends_its_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let wsl = fake_wsl(dir.path(), &log, "1");
+        let pattern = wsl_pattern(41002);
+        drop(wsl_server(WslGuard::new(
+            wsl,
+            "Ubuntu".into(),
+            pattern.clone(),
+        )));
+        assert_eq!(
+            wait_for_lines(&log, 2),
+            vec![
+                format!("-d Ubuntu --exec pkill -TERM -f -- {pattern}"),
+                format!("-d Ubuntu --exec pgrep -f -- {pattern}"),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_wsl_start_runs_wsl_with_exec_and_a_translated_folder_and_cleans_up_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let wsl = fake_wsl(dir.path(), &log, "1");
+        let launcher = ProcessLauncher::new(
+            PathBuf::from("llama-server"),
+            PathBuf::from("vllm"),
+            dir.path().join("logs"),
+        )
+        .with_wsl_vllm(wsl, "Ubuntu".into(), WSL_PROGRAM.into());
+        let spec = LaunchSpec {
+            draft: None,
+            backend: Arc::new(crate::backend::Vllm::default()),
+            format: crate::scan::Format::Safetensors,
+            gpu_memory_utilization: 0.5,
+            model_id: "qwen".into(),
+            model_path: PathBuf::from(r"D:\AI Models\Qwen"),
+            mmproj: None,
+            context: 4096,
+            pool_tokens: 4096,
+            slots: 2,
+            gpu_layers: 0,
+            cpu_only: false,
+            cache_type_k: "f16".into(),
+            cache_type_v: "f16".into(),
+            flash_attn: "auto".into(),
+            cache_ram_mb: 0,
+            slot_save_path: None,
+            // An attempt to open the server to the network is rewritten.
+            extra_args: vec!["--host".into(), "0.0.0.0".into()],
+        };
+        // The fake exits at once, which is a server that died while loading.
+        let error = launcher.launch(&spec).await.err().unwrap();
+        assert!(error.message.contains("exited while loading"), "{error}");
+        assert!(error.message.contains("setup --wsl"), "{error}");
+        let seen = lines(&log);
+        let start = &seen[0];
+        assert!(
+            start.starts_with(&format!(
+                "-d Ubuntu --exec env VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1 VLLM_HOST_IP=127.0.0.1 {WSL_PROGRAM} serve /mnt/d/AI Models/Qwen "
+            )),
+            "{start}"
+        );
+        assert!(!start.contains("0.0.0.0"), "{start}");
+        assert!(start.contains(" --host 127.0.0.1 --port "), "{start}");
+        // The failed start ended whatever the relay left inside the distribution.
+        assert!(
+            seen.iter().any(|line| line.contains("pkill -TERM -f -- ")
+                && line.contains("serve /mnt/d/AI Models/Qwen .* --port")),
+            "{seen:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_wsl_start_with_a_network_folder_is_refused_before_anything_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let wsl = fake_wsl(dir.path(), &log, "1");
+        let launcher = ProcessLauncher::new(
+            PathBuf::from("llama-server"),
+            PathBuf::from("vllm"),
+            dir.path().join("logs"),
+        )
+        .with_wsl_vllm(wsl, "Ubuntu".into(), WSL_PROGRAM.into());
+        let spec = LaunchSpec {
+            draft: None,
+            backend: Arc::new(crate::backend::Vllm::default()),
+            format: crate::scan::Format::Safetensors,
+            gpu_memory_utilization: 0.5,
+            model_id: "nas".into(),
+            model_path: PathBuf::from(r"\\nas\models\Qwen"),
+            mmproj: None,
+            context: 4096,
+            pool_tokens: 4096,
+            slots: 1,
+            gpu_layers: 0,
+            cpu_only: false,
+            cache_type_k: "f16".into(),
+            cache_type_v: "f16".into(),
+            flash_attn: "auto".into(),
+            cache_ram_mb: 0,
+            slot_save_path: None,
+            extra_args: Vec::new(),
+        };
+        let error = launcher.launch(&spec).await.err().unwrap();
+        assert!(error.message.contains("network path"), "{error}");
+        assert!(lines(&log).is_empty());
     }
 }

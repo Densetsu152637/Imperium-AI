@@ -47,13 +47,16 @@ impl Agent {
     /// loading on this is its universe, which calls are checked against; it is worked out
     /// again each time it is asked for.
     pub(super) fn tool_universe(&self) -> (Vec<ToolSpec>, Vec<Category>) {
-        self.build_universe(self.reactive())
+        self.build_universe(!self.reactive())
     }
 
-    /// [`Agent::tool_universe`]; `keep_activation` keeps `activate_plugin` listed after the
-    /// last plugin is active (loading on, where the offered list must not change).
-    pub(super) fn build_universe(&self, keep_activation: bool) -> (Vec<ToolSpec>, Vec<Category>) {
-        let (specs, groups) = self.universe_before_edits(keep_activation);
+    /// [`Agent::tool_universe`]; `listed` says the universe is the list the model is offered
+    /// (loading off), which must not gain or lose a tool within a session: the questions to
+    /// knowledge agents are then listed whenever knowledge agents are on, not only once one
+    /// exists. With loading on the offered list is the fixed one, and the universe has them
+    /// when there is someone to ask.
+    pub(super) fn build_universe(&self, listed: bool) -> (Vec<ToolSpec>, Vec<Category>) {
+        let (specs, groups) = self.universe_before_edits(listed);
         // A variant's dropped tools leave the root's universe (and so its list and searches).
         let Some(editing) = self
             .shared
@@ -71,10 +74,7 @@ impl Agent {
     }
 
     /// [`Agent::build_universe`] before a variant's drops.
-    pub(super) fn universe_before_edits(
-        &self,
-        keep_activation: bool,
-    ) -> (Vec<ToolSpec>, Vec<Category>) {
+    pub(super) fn universe_before_edits(&self, listed: bool) -> (Vec<ToolSpec>, Vec<Category>) {
         if self.single_call {
             return (Vec::new(), Vec::new());
         }
@@ -85,32 +85,32 @@ impl Agent {
         if !profile.allows_shell() {
             tools.retain(|tool| !SHELL_TOOLS.contains(&tool.name.as_str()));
         }
-        let mcp_start = tools.len();
+        // The outside tools (MCP servers', activated plugins') come last, MCP first, so a
+        // server that connects or lists more tools and a plugin that is activated add to the
+        // end of the list and leave the prefix before them as it was.
+        let mut outside = Vec::new();
         for provider in self.providers(ToolGroup::External) {
-            tools.extend(
+            outside.extend(
                 provider
                     .specs()
                     .into_iter()
                     .filter(|tool| profile.allows_mcp(provider.server_of(&tool.name).as_deref())),
             );
         }
-        let mcp = mcp_start..tools.len();
+        let mcp_count = outside.len();
         let lazy = &self.shared.extensions.plugins;
-        tools.extend(lazy.specs().into_iter().filter(|tool| {
+        outside.extend(lazy.specs().into_iter().filter(|tool| {
             lazy.plugin_of(&tool.name)
                 .is_some_and(|plugin| profile.allows_plugin(&plugin))
         }));
-        let plugins = mcp.end..tools.len();
         tools.push(update_plan_spec());
         if !self.shared.extensions.skills.is_empty() {
             tools.push(load_skill_spec());
         }
-        if lazy
-            .plugins()
-            .iter()
-            .any(|plugin| !lazy.is_active(&plugin.name) && profile.allows_plugin(&plugin.name))
-            || (keep_activation && self.plugin_loader() && profile.allows_any_plugin())
-        {
+        // Offered for the whole session when the agent could activate a plugin at its start
+        // (decided once), so it does not leave the list after the last activation: it then
+        // answers "already active".
+        if self.plugin_loader() && profile.allows_any_plugin() {
             tools.push(activate_plugin_spec());
         }
         if self.shared.context.is_some() {
@@ -154,23 +154,27 @@ impl Agent {
                 tools.push(update_state_spec());
             }
         }
-        // Questions are offered while the session has a knowledge agent to ask.
+        // Questions to knowledge agents. In the list the model is offered they are always
+        // there while knowledge agents are on, so the list does not change when the first one
+        // is kept; before there is one, they answer that there is none.
         if self.can_ask
             && self.fork.is_none()
             && self.shared.knowledge.enabled()
-            && !self.shared.agents.knowledge_cards().is_empty()
+            && (listed || !self.shared.agents.knowledge_cards().is_empty())
         {
             tools.extend([list_knowledge_agents_spec(), ask_agent_spec()]);
         }
+        let outside_start = tools.len();
+        tools.extend(outside);
         // One category per tool, in step with the list.
         let groups: Vec<Category> = (0..tools.len())
             .map(|index| {
-                if mcp.contains(&index) {
-                    Category::ToolsMcp
-                } else if plugins.contains(&index) {
-                    Category::ToolsPlugins
-                } else {
+                if index < outside_start {
                     Category::ToolsBuiltin
+                } else if index < outside_start + mcp_count {
+                    Category::ToolsMcp
+                } else {
+                    Category::ToolsPlugins
                 }
             })
             .collect();
@@ -776,6 +780,57 @@ impl Agent {
         format!("(A hook rewrote this call's arguments before it ran.)\n{output}")
     }
 
+    /// What `run_tool_once` checks before a call is looked at any further, in this order: a
+    /// question's fork may read and search and nothing else (checked here, where a call is
+    /// dispatched, so the tool list it was given and its cached prefix stay as they were); a turn
+    /// the daemon limits (an initiative review) may use only the tools it lists; a named agent's
+    /// tool list; the shell lock and the agent's permission profile; a variant's dropped tools;
+    /// and, with loading on, the agent's tools as they are now (the offered list says nothing of
+    /// what may be called). Returns the text the model is told when one refuses the call. With
+    /// `announce` false it only looks: it neither stops processes under the shell lock nor
+    /// reports a dropped tool's call to the watcher (the parallel reads' eligibility check).
+    pub(super) fn early_refusal(&self, name: &str, announce: bool) -> Option<String> {
+        if self.fork.is_some()
+            && let Some(why) = fork::refusal(name)
+        {
+            return Some(why);
+        }
+        if let Some(why) = self
+            .shared
+            .launcher
+            .as_ref()
+            .and_then(|launcher| launcher.restricted(name))
+        {
+            return Some(format!("error: {why}"));
+        }
+        if let Some(why) = self.named_refusal(name) {
+            return Some(format!("error: {why}"));
+        }
+        if announce {
+            self.enforce_lock();
+        }
+        if let Some(why) = self.profile_refusal(name) {
+            return Some(format!(
+                "This agent's permission profile does not allow this: {why}. {name} was not run."
+            ));
+        }
+        if announce {
+            if let Some(why) = self.dropped_refusal(name) {
+                return Some(format!("error: {why}"));
+            }
+        } else if self.is_dropped(name) {
+            return Some(format!(
+                "error: {name} is not one of your tools; it was not run"
+            ));
+        }
+        if self.reactive() && !self.in_universe(name) {
+            return Some(format!(
+                "error: {name} is not one of your tools; it was not run"
+            ));
+        }
+        None
+    }
+
     pub(super) async fn run_tool_once(&mut self, call: &ToolCall) -> String {
         // A variant's renamed tool is the engine's again before any check looks at the name
         // (the shell lock, a fork's and a launcher's lists, the named agent's tools).
@@ -806,51 +861,8 @@ impl Agent {
             };
             return self.tool_finished(call, name, ok, output, Some(started));
         }
-        // A question's fork may read and search, and nothing else: checked here, where a call
-        // is dispatched, so the tool list it was given (and its cached prefix) stays as it was.
-        if self.fork.is_some()
-            && let Some(why) = fork::refusal(name)
-        {
-            return self.tool_finished(call, name, false, why, None);
-        }
-        // A turn the daemon limits (an initiative review) may use only the tools it lists.
-        if let Some(why) = self
-            .shared
-            .launcher
-            .as_ref()
-            .and_then(|launcher| launcher.restricted(name))
-        {
-            return self.tool_finished(call, name, false, format!("error: {why}"), None);
-        }
-        if let Some(why) = self.named_refusal(name) {
-            return self.tool_finished(call, name, false, format!("error: {why}"), None);
-        }
-        self.enforce_lock();
-        if let Some(why) = self.profile_refusal(name) {
-            return self.tool_finished(
-                call,
-                name,
-                false,
-                format!(
-                    "This agent's permission profile does not allow this: {why}. {name} was not run."
-                ),
-                None,
-            );
-        }
-        // With loading on, the offered list says nothing of what may be called, so a call is
-        // checked against the agent's tools as they are now. With it off the call runs as it
-        // always has.
-        if let Some(why) = self.dropped_refusal(name) {
-            return self.tool_finished(call, name, false, format!("error: {why}"), None);
-        }
-        if self.reactive() && !self.in_universe(name) {
-            return self.tool_finished(
-                call,
-                name,
-                false,
-                format!("error: {name} is not one of your tools; it was not run"),
-                None,
-            );
+        if let Some(refusal) = self.early_refusal(name, true) {
+            return self.tool_finished(call, name, false, refusal, None);
         }
         let tool = match name {
             "update_plan" => AgentTool::UpdatePlan,
@@ -1041,6 +1053,9 @@ impl Agent {
             return finish(false, missing);
         }
         if let Decision::Ask { sticky } = decision {
+            // A read run ahead while the judge let it run is not used once it asks (a rule or
+            // the mode changed): it is read again after the approval.
+            self.forget_prefetched(&call.id);
             // In auto mode a classifier may settle a call that would ask; what it leaves
             // open (or a floored call) is asked as before, with its reason.
             let gate = self
@@ -1066,8 +1081,9 @@ impl Agent {
             }
         }
         let started = self.tool_started(call, tool, summary);
-        let window = self.expected_window();
-        let (ok, output) = match invocation.execute_in(&self.workspace, window).await {
+        // A read that ran with the others of its step already has its output.
+        let (result, started) = self.read_result(call, &invocation, started).await;
+        let (ok, output) = match result {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };

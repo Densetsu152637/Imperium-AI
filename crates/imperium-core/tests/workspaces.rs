@@ -887,3 +887,42 @@ async fn the_sweep_does_not_follow_junctions() {
     assert!(behind_sessions.path().join(hex).is_dir());
     assert!(behind_env.path().join("sessions").join(hex).is_dir());
 }
+
+#[tokio::test]
+async fn saved_tool_results_outlive_archiving_and_go_with_the_deleted_session() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), "http://127.0.0.1:9/v1");
+    let env = environment(&state, "Work", project.path());
+    let (session, _events) = state
+        .create_in_environment(&env, None, SessionOptions::default())
+        .unwrap();
+    let id = session.id().to_string();
+    drop(session);
+
+    // The session's folder for large tool results is made with it, beside its journal.
+    let results = home
+        .path()
+        .join("data")
+        .join("sessions")
+        .join(format!("{id}.results"));
+    assert!(
+        results.is_dir(),
+        "{} is made with the session",
+        results.display()
+    );
+    let saved = results.join("1-grep.txt");
+    std::fs::write(&saved, "the whole output").unwrap();
+
+    // Archiving deletes the scratch folder but keeps what the conversation points at.
+    state.archive(&id).unwrap();
+    assert!(
+        saved.is_file(),
+        "an archived session keeps its saved results"
+    );
+    state.unarchive(&id).unwrap();
+    assert!(saved.is_file());
+
+    state.delete_session(&id, false).unwrap();
+    assert!(!results.exists(), "deleting the session deletes them");
+}

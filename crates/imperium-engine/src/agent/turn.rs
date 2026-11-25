@@ -543,24 +543,32 @@ impl Agent {
                 .iter()
                 .any(|call| effective_call(call).function.name == ACTIVATE_PLUGIN);
             let mut touched: Vec<PathBuf> = Vec::new();
+            let calls = completion.tool_calls;
             // With loading on, other tools are reached through `call_tool`: no names to point at.
             let close: &[String] = if self.reactive() { &[] } else { &offered };
-            for call in completion.tool_calls {
+            // Reads in a row run at the same time (`harness.parallel_reads`), up to the call
+            // this index reaches; each call below still goes through `run_tool` in call order.
+            let mut ahead_until = 0;
+            for (index, call) in calls.iter().enumerate() {
+                if index >= ahead_until {
+                    ahead_until = index + self.prefetch_reads(&calls[index..]).await;
+                }
                 self.last_tool_ok.store(false, Ordering::SeqCst);
-                let output = self.run_tool(&call).await;
+                let output = self.run_tool(call).await;
+                self.forget_prefetched(&call.id);
                 let output = call_repair::with_close_names(
                     &output,
-                    &effective_call(&call).function.name,
+                    &effective_call(call).function.name,
                     close,
                 )
                 .unwrap_or(output);
-                let output = self.guard_input(output, window);
+                let output = self.guard_result(call, output, window);
                 // Only a call that worked counts as opening the directory: not one that was
                 // denied, refused by a hook, or failed.
                 // The arguments the call ran with: a hook may have rewritten them.
                 // A call through `call_tool` is the tool it ran.
                 let (dir, searched) = {
-                    let effective = effective_call(&call);
+                    let effective = effective_call(call);
                     let ran_with = lock(&self.ran_rewritten)
                         .clone()
                         .unwrap_or_else(|| effective.function.arguments.clone());
@@ -585,10 +593,11 @@ impl Agent {
                     self.spans.insert(self.messages.len(), parts);
                 }
                 self.messages.push(ChatMessage::Tool {
-                    tool_call_id: call.id,
+                    tool_call_id: call.id.clone(),
                     content: output,
                 });
             }
+            self.clear_prefetched();
             self.load_instruction_files(&touched);
             // A plugin activated in this round offers its tools from the next call.
             if activates {
@@ -839,7 +848,8 @@ impl Agent {
 
     /// Rewrites the harness paragraph of the system prompt for the model the agent has now. The
     /// `auto` settings follow the model (local or hosted), and the tools offered do at every
-    /// turn; the prompt is rewritten here so it never describes tools that are not offered.
+    /// turn; the prompt is rewritten here so it never describes tools that are not offered. The
+    /// paragraph is in the tail of the system message, so the text before it is untouched.
     pub(super) fn refresh_harness_text(&mut self) {
         if !self.can_delegate || self.single_call {
             return;
@@ -852,43 +862,49 @@ impl Agent {
         if text == self.harness_text {
             return;
         }
-        let old = std::mem::replace(&mut self.harness_text, text.clone());
-        self.swap_prompt_text(&old, &text);
+        self.harness_text = text;
+        self.set_tail();
     }
 
     /// Rewrites the loader sentence of the system prompt: present while reactive tool loading
     /// is on for this agent, whatever its attendance or role (an unattended root and a subagent
-    /// get it too), and taken out when the mode changes with the model.
+    /// get it too), and taken out when the mode changes with the model. It is in the tail of
+    /// the system message, after the harness paragraph.
     pub(super) fn refresh_loader_text(&mut self) {
         let text = self.loader_prompt();
         if text == self.loader_text {
             return;
         }
-        let old = std::mem::replace(&mut self.loader_text, text.clone());
-        self.swap_prompt_text(&old, &text);
+        self.loader_text = text;
+        self.set_tail();
     }
 
-    /// Replaces the paragraph `old` of the system prompt's base part with `new`; either may be
-    /// empty, and a new one goes at the end of the base part.
-    fn swap_prompt_text(&mut self, old: &str, new: &str) {
-        // Where the base part of the system prompt ends, which is where a new paragraph goes.
-        let base_end = self
-            .spans
-            .get(&0)
-            .and_then(|spans| {
-                spans
-                    .iter()
-                    .find(|(category, _)| *category == Category::SystemBase)
-                    .map(|(_, range)| range.end)
-            })
-            .unwrap_or(usize::MAX);
-        if let Some(ChatMessage::System { content }) = self.messages.first_mut() {
-            let (updated, at, delta) = swap_harness_text(content, old, new, base_end);
-            *content = updated;
-            // The labelled parts stay exact: what follows the edit moves by what it added.
-            if let Some(spans) = self.spans.get_mut(&0) {
-                shift_spans(spans, at, delta);
-            }
+    /// Takes the swappable tail off the system message: back to its fixed part.
+    pub(super) fn cut_tail(&mut self) {
+        let fixed = self.fixed_len;
+        if let (Some(ChatMessage::System { content }), Some(spans)) =
+            (self.messages.first_mut(), self.spans.get_mut(&0))
+        {
+            retail(content, spans, fixed, &[]);
+        }
+    }
+
+    /// Puts the swappable tail at the end of the system message: the harness paragraph and the
+    /// loader sentence, whichever are present. Both depend on the model, so they come last: a
+    /// swap changes only the end of the message, and every byte before it (the base prompt, the
+    /// indexes, the project's instructions) stays what a provider's prompt cache or a local
+    /// runtime's slot already holds.
+    pub(super) fn set_tail(&mut self) {
+        let fixed = self.fixed_len;
+        if let (Some(ChatMessage::System { content }), Some(spans)) =
+            (self.messages.first_mut(), self.spans.get_mut(&0))
+        {
+            retail(
+                content,
+                spans,
+                fixed,
+                &[&self.harness_text, &self.loader_text],
+            );
         }
     }
 
