@@ -129,6 +129,34 @@ async fn fake_model(log: Log, hold: Hold) -> String {
                         _ => text_body("Done."),
                     }
                 } else if said.starts_with("Initiative review for the environment")
+                    && said.contains("You are Reactive")
+                {
+                    // Reaches every tool through the call proxy: records, then tries to write.
+                    match tools_since {
+                        0 => call_body(
+                            "call_tool",
+                            json!({"name": "suggest_work", "arguments": {
+                                "title": "Improve the timeline",
+                                "prompt": "Improve my timeline",
+                                "reason": "the roadmap lists it as next",
+                                "source": SOURCE,
+                            }}),
+                        ),
+                        1 => call_body(
+                            "call_tool",
+                            json!({"name": "work_digest", "arguments": {
+                                "summary": "Two roadmap items are left.",
+                                "items": [{"text": "Timeline", "source": SOURCE}],
+                            }}),
+                        ),
+                        2 => call_body(
+                            "call_tool",
+                            json!({"name": "write_file", "arguments": {
+                                "path": "stolen.txt", "content": "x"}}),
+                        ),
+                        _ => text_body("Recorded."),
+                    }
+                } else if said.starts_with("Initiative review for the environment")
                     && said.contains("You are Chaser")
                 {
                     // Starts a session whose report will carry an instruction.
@@ -1797,5 +1825,86 @@ async fn a_session_started_from_a_suggestion_keeps_the_agents_permission_profile
     assert!(
         !tools.iter().any(|tool| tool == "run_command"),
         "a session started from a locked agent's suggestion has commands: {tools:?}"
+    );
+}
+
+/// The names in a request's `tools`, in order, and the array as sent.
+fn offered(body: &Value) -> (Vec<String>, String) {
+    let names = body["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+        .collect();
+    (names, body["tools"].to_string())
+}
+
+#[tokio::test]
+async fn a_review_with_loading_on_records_through_the_proxy_and_is_refused_the_rest() {
+    // Loading on, as a local model gets with `auto`: the agent has the fixed reactive list.
+    let fixture = fixture(Initiative::Off, "[harness]\ntool_loading = \"on\"\n").await;
+    let agent = add_agent(&fixture, "Reactive", Initiative::Suggest);
+    assert_eq!(
+        fixture.daemon.initiative_tick().await,
+        vec![agent.id.clone()]
+    );
+
+    // `call_tool(suggest_work)` and `call_tool(work_digest)` ran; `call_tool(write_file)` got
+    // the review's message and wrote nothing.
+    let state = initiative_state(&fixture, &agent.id);
+    assert_eq!(state["suggestions"].as_array().unwrap().len(), 1, "{state}");
+    assert_eq!(state["digest"]["items"][0]["source"], SOURCE, "{state}");
+    let results = fixture.tool_results();
+    assert!(
+        results.iter().any(
+            |result| result.contains("write_file is not available during an initiative review")
+        ),
+        "{results:?}"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|result| !result.contains("suggest_work is not available")
+                && !result.contains("work_digest is not available")),
+        "{results:?}"
+    );
+    assert!(!fixture._folder.path().join("stolen.txt").exists());
+
+    // The list the review turn was sent is the list of the agent's ordinary turns.
+    let session = fixture.daemon.project_agents().agent(&agent.id).unwrap();
+    session.send("hello there".into()).unwrap();
+    until("the agent to answer an ordinary message", || {
+        fixture.log.lock().unwrap().iter().any(|body| {
+            body["messages"]
+                .as_array()
+                .and_then(|messages| messages.last())
+                .is_some_and(|last| content(last) == "hello there")
+        })
+    })
+    .await;
+    let log = fixture.log.lock().unwrap().clone();
+    let first_of = |is: &dyn Fn(&str) -> bool| {
+        log.iter()
+            .find(|body| {
+                body["messages"]
+                    .as_array()
+                    .and_then(|messages| messages.last())
+                    .is_some_and(|last| is(&content(last)))
+            })
+            .map(offered)
+            .unwrap()
+    };
+    let (review_names, review_list) =
+        first_of(&|text| text.starts_with("Initiative review for the environment"));
+    let (_, ordinary_list) = first_of(&|text| text == "hello there");
+    assert_eq!(review_list, ordinary_list);
+    assert!(
+        review_names.iter().any(|name| name == "tool_search")
+            && review_names.iter().any(|name| name == "call_tool"),
+        "{review_names:?}"
+    );
+    assert!(
+        !review_names.iter().any(|name| name == "suggest_work"),
+        "{review_names:?}"
     );
 }
