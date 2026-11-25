@@ -1387,8 +1387,8 @@ mod tests {
     }
 
     /// R9 of the plan: every reader of a call's name or arguments goes through
-    /// `effective_call`. The scan covers every source file of the engine except the three that
-    /// dispatch the unwrapped call (`catalog.rs`, `tools.rs`) or translate the outer call's names (`tool_edits.rs`) and test modules: a read of
+    /// `effective_call`. The scan covers every source file of the engine except the ones that
+    /// dispatch the unwrapped call (`catalog.rs`, `tools.rs`, `parallel.rs`, which runs only direct file reads) or translate the outer call's names (`tool_edits.rs`) and test modules: a read of
     /// `<value>.function.name` or `.function.arguments` must be on a value bound from
     /// `effective_call(..)` (a `let <value> = effective_call(..)` just above) or on the same
     /// line as the call. The one stored-text reader that counts the call as it was sent is
@@ -1399,7 +1399,12 @@ mod tests {
         let mut files = Vec::new();
         sources(&base, &base, &mut files);
         assert!(files.len() > 20, "{} files", files.len());
-        let allowed = ["agent/catalog.rs", "agent/tools.rs", "tool_edits.rs"];
+        let allowed = [
+            "agent/catalog.rs",
+            "agent/parallel.rs",
+            "agent/tools.rs",
+            "tool_edits.rs",
+        ];
         // Counts what the model was sent, so reads the stored call as it is.
         let as_sent = [
             "parts.push((Category::Assistant, &call.function.name));",
