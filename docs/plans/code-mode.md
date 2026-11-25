@@ -1,6 +1,6 @@
 # Plan: programmatic tool calling (code mode)
 
-Revision: 2026-11-26, revision 2 (the root's answers recorded as [settled decisions](#settled-decisions); plan critique pending); written against `experimental`
+Revision: 2026-11-26, revision 3 (plan critic round 1: findings F1 to F12, all accepted, with the root's decisions on F3 and F4; the root's answers recorded as [settled decisions](#settled-decisions)); written against `experimental`
 at `1c066512`. Roadmap [item 65](../12-roadmap.md#next-in-order); Imperium-Research roadmap R2.8.
 Status: planned.
 
@@ -61,8 +61,10 @@ worker" is the shipped interpreter binary, which CI builds.
 
 1. **A script reaches tools only through dispatch.** With the real worker, a program can't read a
    file, read an environment variable, open a socket, start a process or load a module except by
-   calling a bound tool. Check: stage 1 worker tests (`open()`, `os.environ`, `socket`,
-   `subprocess`, `__import__`, `import os` each fail; `print(open("Cargo.toml").read())` raises).
+   calling a bound tool. If the OS confinement of [C1](#c1-the-runtime-monty-a-python-subset-interpreter-written-in-rust)
+   cannot be applied, no program runs at all. Check: stage 1 worker tests (`open()`,
+   `os.environ`, `os.getenv`, `socket`, `subprocess`, `__import__`, `import os` each fail;
+   `print(open("Cargo.toml").read())` raises), the confinement tests, and the fail-closed test.
 2. **Every inner call is a real call.** An inner call passes the fork, launcher, named-agent,
    permission-profile and universe refusals, `tool.before` and `tool.after` hooks (including
    rewrite and block), the permission rules and safety floor, auto mode's classifier, approval, and
@@ -80,8 +82,10 @@ worker" is the shipped interpreter binary, which CI builds.
    tests.
 5. **Code mode never widens permissions.** Nothing a program can do is unavailable to the same
    agent as a sequence of direct calls. Tools that act on the agent's own conversation or wait on
-   people or agents are refused inside programs ([C4](#c4-what-a-program-can-call)). Check: stage 2
-   refusal tests; the stage 3 fork, review and named-agent tests.
+   people or agents are refused inside programs ([C4](#c4-what-a-program-can-call)), and the
+   refusal is enforced on every call the worker reports, not only when a name is looked up (the
+   worker is untrusted). Check: stage 2 refusal tests, including a fake runner that sends a call
+   for `spawn_agent` it never looked up; the stage 3 fork, review and named-agent tests.
 6. **Off is byte-identical.** With `harness.code_mode` off, the tools, prompts and dispatch are
    byte-identical to today's. Check: the stage 2 snapshot test, against the item 61 off-mode
    snapshot.
@@ -153,7 +157,7 @@ startup latency and binary size; (g) supply-chain risk.
 
 | Option | (a) 4B writes it | (b, c) Confinement | (d) Limits | (e) Host calls | (f) Cost | (g) Supply chain | Verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Monty** (`pydantic/monty`, Rust; worker processes from `monty-pool`) | Python, the language small models write best; a documented subset (no generators, no `del`, no method decorators, no third-party packages; has `json`, `re`, `csv`, `math`, `statistics`, `collections`, `datetime`, f-strings, comprehensions, `try`) | Language-level: the VM implements no file, network, environment or process operation; same on every OS | Memory (worker allocator), execution time (paused while the host answers), recursion, suspensions | The program **suspends** at each host call and the host resumes it with the result: no callback into the engine, no thread bridging | Under 1 ms per program from a warm pool, 5 ms for a new pool (vendor figures, to be measured in stage 1) | MIT and Python-2.0.1 (bundled CPython stdlib parts); pure Rust, no C; young (first release 2025-12-31, 22 versions, 1.7.0 on 2026-11-24); security advisory programme and bounty | **Chosen** |
+| **Monty** (`pydantic/monty`, Rust; in an Imperium-owned worker process) | Python, the language small models write best; a documented subset (no generators, no `del`, no method decorators, no third-party packages; has `json`, `re`, `csv`, `math`, `statistics`, `collections`, `datetime`, f-strings, comprehensions, `try`) | Language-level: the VM implements no file, network, environment or process operation; same on every OS | Memory (worker allocator), execution time (paused while the host answers), recursion, suspensions | The program **suspends** at each host call and the host resumes it with the result: no callback into the engine, no thread bridging | Vendor figures: under 1 ms from a warm pooled worker, 5 ms for a new pool; Imperium starts a fresh confined worker per program, so its cold start is measured in stage 1 (A4) | MIT and Python-2.0.1 (bundled CPython stdlib parts); pure Rust, no C; young (first release 2025-12-31, 22 versions, 1.7.0 on 2026-11-24); security advisory programme and bounty | **Chosen** |
 | Monty in-process (`monty` crate in the daemon) | As above | Language-level holds, but a stack overflow or allocator abort kills the daemon | Memory limit needs `monty-alloc` as the daemon's global allocator | As above | Lowest | As above | Rejected: one bad program would take every session down |
 | CPython script under the command sandbox (`run_command python3 ...`) | Full Python | Windows has no OS tier, so a program would run with the user's rights; tier 0 elsewhere too | OS limits only | Needs an IPC channel from the subprocess back to the daemon for every tool, a new attack surface | 30 to 200 ms per start; needs Python installed (not on stock Windows) | The user's Python | Rejected: (b), (c) and (e) fail |
 | QuickJS (`rquickjs`) | JavaScript, written less reliably than Python by small models | Language-level; C engine, a history of memory-safety bugs | Memory and interrupt handler | Async bindings need careful bridging | Small, fast | C code compiled per target | Rejected: (a) and memory safety |
@@ -170,30 +174,71 @@ per-call state stays sound. What it costs: a young, fast-moving dependency, a Py
 model will sometimes step outside of (errors come back as normal Python tracebacks the model can
 fix), and a second shipped binary.
 
-**Run it in worker processes (`monty-pool`), not in the daemon.** The pool's workers are the
-`monty subprocess` binary of `monty-runtime`. Imperium ships it as a sidecar named
-`imperium-script`, built in CI from an exact pinned version with `--no-default-features` (the
-worker alone, no CLI or telemetry). A crashed worker kills only itself, the pool replaces it, and
-a `Checkout` dropped mid-program kills its worker. The worker's memory limit is real there
-(`monty-alloc` is its global allocator).
+**Run it in an Imperium-owned worker process, one per program, not in the daemon** (root
+decision on F4). The worker is a small binary crate in Imperium's own workspace,
+`crates/imperium-script-worker`, so its dependencies sit under Imperium's `Cargo.lock` and are
+built and checked with everything else. It depends on `monty` and `monty-proto` (feature
+`worker`, whose `Worker` state machine is the interpreter loop upstream's own `monty subprocess`
+wraps in about 190 lines) and on `monty-alloc` as its global allocator, so the memory limit is
+real. It reads framed `monty-proto` requests on stdin and writes events on stdout. Stage 1
+measures the binary with and without `monty-type-checking`, which the `worker` feature pulls in;
+if the type checker adds more than 5 MB or 20 MB of resident memory and cannot be left out
+through a feature, the worker drives `monty::MontyRun` directly instead of `monty_proto::worker`,
+keeping the same framing (F12). It ships as the sidecar `imperium-script`.
 
-**Defence in depth around the worker** (stage 1): the worker starts with an empty environment, an
-empty temporary working folder and no inherited handles. On Linux it runs under bubblewrap with
-`--unshare-all` (no network) and a read-only, empty root apart from its own binary. On macOS it
-runs under a Seatbelt profile that denies network and file writes. On Windows it runs in a Job
-Object with a memory limit, kill-on-close and an active-process limit of 1. Whether `monty-pool`
-can start a worker through a wrapper command is checked in stage 1 (assumption A1). If it cannot,
-the worker binary applies the confinement to itself at start: on Linux a seccomp filter and
-`unshare`, on macOS `sandbox_init`, on Windows the job. The language-level sandbox is the
-boundary; the OS layer limits damage if it breaks.
+The daemon side (`crates/imperium-script`) drives the protocol directly with `monty-proto`'s frame
+types. It does not use `monty-pool`: the pool's spawn and reuse rules cannot express the Windows
+launch below or one worker per program, and driving the protocol ourselves keeps every event in
+one place ([C3](#c3-where-the-interpreter-runs-and-how-the-engine-drives-it)).
 
-**Pinning.** The worker and the `monty-pool` crate are pinned to the same exact version, chosen
-at least 14 days after its release, and recorded in `runtimes/monty.env` beside the llama.cpp
-pin. The worker is built with `cargo install --locked --version =<pin> monty-runtime`, so it uses
-upstream's lockfile, and the CI log records the hash of each built binary. Updates are deliberate
-pull requests that rerun the stage 1 escape tests. Monty's MSRV (1.98) is above the workspace's
-1.89: the new crate sets `rust-version = "1.98"`, and the workspace value moves to 1.98 (CI builds
-with stable and 1.99.1).
+**One fresh worker per program** (F5): a worker serves exactly one program and is killed when it
+ends, whatever the outcome, so nothing a program did can reach the next one. To hide start-up
+cost, the daemon may keep **one** confined worker spawned ahead and idle (never fed), which the
+next program takes; it is still used once. Stage 1 measures cold start (A4).
+
+**OS confinement, applied before the worker reads any program** (root decision on F3, F4, F10):
+
+- **Linux.** The worker confines itself at start: `PR_SET_NO_NEW_PRIVS`, then a seccomp-bpf
+  allowlist (reads and writes on its two pipes, memory management, futexes, clocks, signals
+  needed by the runtime, exit), so `open`, `openat`, `socket`, `connect`, `execve`, `clone` of a
+  new process and `ptrace` fail. Landlock (no file access at all) is applied as well where the
+  kernel has it. Memory is capped with `RLIMIT_DATA` (not `RLIMIT_AS`, which large virtual
+  reservations trip) at twice `script_memory_mb`, and with the cgroup v2 memory controller when
+  the daemon runs in a delegated cgroup. Namespaces are not required, so the worker does not
+  depend on unprivileged user namespaces (restricted by AppArmor on Ubuntu 24.04).
+- **macOS.** The worker calls `sandbox_init` with a profile that denies network, process
+  creation, file writes and **file reads except its own binary and the system libraries and
+  dyld cache it loads**, then sets `RLIMIT_DATA`.
+- **Windows.** The daemon launches the worker **suspended**, with a restricted token
+  (`CreateRestrictedToken`: privileged groups disabled, all privileges removed) at **Low**
+  integrity, assigns it to a Job Object (memory limit at twice `script_memory_mb`,
+  active-process limit 1, kill-on-job-close, UI restrictions), and only then resumes it. Its
+  environment is empty, its working folder an empty low-integrity folder, and it inherits no
+  handles except its pipes. So that a low-integrity process cannot read the daemon's secrets, the
+  daemon sets a **`NO_READ_UP` mandatory label at Medium integrity** on `daemon.json`,
+  `devices.json`, the `remotes/` folder, `secrets.key`, `secrets.enc`, `secrets.lock` and the
+  session journals (and the `.results/` folders beside them), when it starts and when it creates
+  them. Its named pipe keeps the default Medium label (`NO_WRITE_UP`), so a low-integrity
+  process cannot connect.
+- Everywhere: empty environment, no inherited handles beyond the pipes, empty working folder.
+
+**Fail closed.** If any part of a platform's confinement cannot be applied (seccomp unavailable,
+`sandbox_init` fails, the token, label or job call fails), the worker exits before reading a
+program, or the daemon refuses to start it. Code mode is then **unavailable**: `run_script` is not
+offered, and the setting shows why ("code mode needs seccomp, which this kernel does not offer").
+Nothing runs with less confinement than this plan states.
+
+**Pinning and supply chain** (F9). `monty`, `monty-proto`, `monty-types` and `monty-alloc` are
+exact pins (`=x.y.z`) in the worker crate, all at one Monty release, recorded in
+`runtimes/monty.env`. Cargo verifies every crates.io checksum against Imperium's `Cargo.lock`. A
+release is adopted at least 14 days after publication, except a **security fix**, which is
+adopted as soon as the stage 4 escape suite passes on it. Updates are deliberate pull requests
+that rerun the escape suite. Imperium has no `cargo-deny` or `cargo-audit` today: stage 1 adds a
+`deny.toml` (advisories, licences including Python-2.0 for Monty's bundled stdlib, and sources
+limited to crates.io) to CI, and a weekly scheduled workflow that runs the advisory check and
+lists new GitHub security advisories for `pydantic/monty`, opening an issue when one appears.
+Monty's MSRV (1.98) is above the workspace's 1.89: the workspace `rust-version` moves to 1.98
+(CI builds with stable and 1.99.1).
 
 Revisit: if a Monty sandbox escape is published and not fixed within a release, switch the worker
 to Monty's WebAssembly runtime under wasmtime (same language, stronger boundary). If stage 6 shows
@@ -237,8 +282,11 @@ WebAssembly sandbox.
   The value of the final expression is not shown: Python programs print what they mean to
   return, and a second channel is something the model would have to learn.
 - **Its own call.** `run_script` is an agent tool. It runs `tool.before` with
-  `{"code": ...}` (a policy hook can block or rewrite a program; a rewrite runs the new program
-  through the same checks) and `tool.after` with the result. It needs no approval of its own: the
+  `{"code": ...}` and `tool.after` with the result. A hook on `run_script` gates the program **as
+  a whole** (block it, or rewrite the code, which then runs through the same checks); it does not
+  see or govern the calls the program makes. Those reach hooks one by one as their own tools, with
+  `parent_call_id` and `"from_program": true` added to the hook payload (F11), so a policy hook
+  can treat calls from programs differently. It needs no approval of its own: the
   program has no capability, and every call it makes is judged. It is allowed in plan mode (its
   inner writes are refused by plan mode as direct ones are).
 - **Rejected:** a second, "result" return channel (one rule is easier for a small model); per-tool
@@ -249,38 +297,73 @@ WebAssembly sandbox.
 
 ### C3. Where the interpreter runs, and how the engine drives it
 
-- **Crate.** A new `crates/imperium-script` owns the pool, the worker path, confinement and
-  limits behind a trait the engine uses:
+- **Crates.** `crates/imperium-script` (daemon side) owns worker launch and confinement on
+  Windows, the protocol driver, limits and the event allowlist, behind a trait the engine uses:
   `ScriptRunner::start(code, limits) -> ScriptRun`, where `ScriptRun::next()` yields `Print(text)`,
-  `NameLookup(name)`, `Call { name, args, kwargs }`, or `Done(Result<(), ScriptError>)`. Its
+  `NameLookup(name)`, `Call { function, args, kwargs }` or `Done(Result<(), ScriptError>)`. Its
   answers are `resume_value`, `resume_name(Option<HostFunction>)` and `resume_error(message)`.
-  Dropping a `ScriptRun` kills its worker. `imperium-engine` depends on the trait only, and tests
-  use a fake runner that replays scripted events. `imperium-core` builds the Monty
-  implementation and passes it in through the session's shared state, as it passes tool
-  providers.
-- **Pool.** One pool per daemon, created on the first program, `min_processes` 0 until then and 1
-  afterwards, `max_processes` 4, idle workers stopped after 5 minutes, and all workers stopped
-  when the daemon exits (process cleanup). A program waits for a free worker. The pool is the
-  daemon's, not the session's, because workers hold no session state: each program is a fresh
-  checkout and is never reused after a limit fires (Monty's guidance).
+  Dropping a `ScriptRun` kills its worker and waits for the OS to confirm the exit.
+  `imperium-engine` depends on the trait only, and tests use a fake runner that replays scripted
+  events, including events a real worker would never send. `imperium-core` builds the real
+  runner and passes it in through the session's shared state, as it passes tool providers.
+  `crates/imperium-script-worker` is the worker binary (C1).
+- **Workers.** One per program (C1). At most `script_workers` (default 8) run at once across the
+  daemon; a program that finds none free waits, and that wait counts against its wall budget.
+  Workers are stopped when the daemon exits (process cleanup), and a test checks no worker
+  outlives its program.
+- **Events from the worker** (F7). At the pinned version a worker can send `Print`,
+  `FunctionCall`, `OsCall`, `NameLookup`, `ResolveFutures`, `Complete`, `Error`, `TypingError`,
+  `DumpResult`, `Ok`, `FatalError`, `ShutdownDump`, `Ping`, `SessionRefused` and `StreamedCalls`.
+  The driver accepts only: `Print`; `FunctionCall` (C4's checks); `NameLookup` (C2's resolver);
+  `OsCall`, always answered with an error (`OSError: not available in programs`), never with a
+  value; `Ping` (answered with `Pong`); `Ok` only as the reply to `Configure`; and the
+  turn-ending `Complete`, `Error`, `FatalError` and `SessionRefused`. Every other kind, any kind
+  added by a later version (unknown `oneof` tags), and any event out of order is a protocol
+  violation: the worker is killed and the program fails with "the interpreter misbehaved". The
+  host sends only `Configure`, `Feed`, `ResumeCall`, `ResumeNameLookup`, `AbortFeed`, `Shutdown`
+  and `Pong`; never `InstallDependencies`, `Dump` or `Load`. `Configure` never carries a
+  `MountSpec`, an `OSAccess` handler or external modules, type checking is off, the clock is the
+  real one, `random` is seeded from the outer call id, and `max_total_sleep` is 1 s.
 - **The driver** (`agent/script.rs`, engine). It runs inside `run_tool_once`'s `run_script` arm,
   on the agent's task:
-  1. Start the program with the limits (C5).
-  2. Loop on `next()`. On `NameLookup`, resolve through C4. On `Call`, check the stop flag and the
-     call budget, build an inner `ToolCall` with id `<outer id>:<n>` (1-based) and the JSON
-     arguments, run it through `self.run_tool(&inner)` (the whole path of a direct call), record
-     the outcome, and resume with the text or the error. On `Print`, append to the bounded buffer.
-  3. On `Done`, assemble the result (C2) and return it through `tool_finished` for the outer call.
-- **Inner calls are sequential.** The dispatch takes `&mut self` and keeps per-call state on the
-  agent, and `run_tool` clears and reads that state per call, so one inner call at a time is
-  sound. Async host functions are not offered to the program (`asyncio.gather` over tools
-  suspends on each call in turn). Revisit with R2.9 (concurrent read-only calls).
-- **`run_tool` re-entry.** The inner call goes through `run_tool`, not `run_tool_once`, so a
-  `call_tool`-shaped inner call is unwrapped and a hook rewrite retries the same inner tool. The
-  outer call's rewrite state is saved before the program starts and restored after, so an inner
-  rewrite cannot leak into the outer `run_script` result (`ran_rewritten` and `rewritten_from`
-  are per call). The turn loop reads `ran_rewritten` after `run_tool` returns: for `run_script` it
-  must see the outer call's state, which a stage 2 test asserts.
+  1. Save the agent's per-call state (below), set `in_program`, and start the program with the
+     limits (C5).
+  2. Loop on `next()`:
+     - `NameLookup(name)`: resolve through C2 and C4. A callable tool gets a host function whose
+       identity the driver records in a **handle table** (function name to engine tool name).
+     - `Call { function, .. }` (F1): the worker is untrusted, so the driver trusts nothing it
+       says. The function must be in the handle table; otherwise the call is refused as
+       "not a function this program was given". Then the stop flag and the call budget are
+       checked, an inner `ToolCall` is built with id `<outer id>:<n>` (1-based), and it runs
+       through `self.run_tool(&inner)` (the whole path of a direct call). Inside, after
+       `unwrap_call`, `run_tool_once` checks the **effective** name against the script-refused
+       set and the universe whenever `in_program` is set, before every other check. So a
+       lookup-free call, a forged handle, a `call_tool` wrapper or a tool that left the universe
+       since its lookup are all refused at dispatch. The driver then resumes with the text, or with
+       the error.
+     - `Print`: append to the bounded buffer.
+  3. On `Done`, restore the saved state, clear `in_program`, assemble the result (C2) and return
+     it through `tool_finished` for the outer call.
+- **Per-call state around inner calls** (F2). `run_tool` and the turn loop keep per-call state on
+  the agent: `pending_rewrite`, `rewritten_from`, `ran_rewritten`, `call_started`,
+  `call_args_failed` and `last_tool_ok`. The driver saves all six and clears them before the
+  first inner call, lets each inner `run_tool` set and read them as a direct call does, reads
+  `ran_rewritten` and `last_tool_ok` after each inner call itself (to collect touched directories,
+  C6), and restores the saved values before the outer `tool_finished`. So an outer rewrite (a
+  hook rewrote the program) and an inner rewrite are both honoured and neither shows in the
+  other's result. Schema advice (item 61) for an inner call is added to the error the program
+  sees, but the tool is not added to `schema_seen`, because the model never saw that text.
+- **Inner calls are sequential.** The dispatch takes `&mut self`, so one inner call at a time is
+  sound. No async host functions are offered (`asyncio.gather` over tools suspends on each call
+  in turn; `ResolveFutures` and `StreamedCalls` are protocol violations). Revisit with R2.9.
+- **Waiting on approvals** (F8). A worker whose program waits on an approval stays alive and idle
+  (its execution clock is paused) and holds one of the `script_workers` slots. It is not freed
+  and later restored: that would mean loading a snapshot, which Monty says to trust only from a
+  trusted producer, and the worker is not one. The starvation this allows (eight programs all
+  waiting on approvals block a ninth) is bounded by the slot count and by each program's wall
+  budget, and the desktop shows the waiting approvals. The driver's per-turn worker timeout
+  (`request_timeout`, below) runs only while the worker is executing, never while the host is
+  answering.
 
 ### C4. What a program can call
 
@@ -307,19 +390,30 @@ tools (reads and writes), `run_command` (foreground and background) with `comman
 activated plugins' tools.
 
 A refused name resolves to a function that raises `RuntimeError("<name> cannot be called from a
-program; call it directly")`, so the model learns why. Every other check (fork, launcher,
-named-agent list, profile, universe at call time, permission rules, hooks, approvals) happens in
-`run_tool` as for a direct call. The resolver's universe check only decides which names exist.
+program; call it directly")`, so the model learns why. That is only for the model's benefit: the
+same set and the universe are checked again at dispatch on every call (C3, F1). Every other check
+(fork, launcher, named-agent list, profile, permission rules, hooks, approvals) happens in
+`run_tool` as for a direct call.
 
 **Approvals inside a program.** An inner call that asks blocks the program like a direct call
 blocks the turn. The interpreter's time budget is paused while the host answers (Monty's feed
 clock), and the wall-clock budget excludes time spent waiting for the user (C5). The approval
-summary is prefixed "From a program: " so the person knows the call came from code. In an
-unattended session, pre-approved tools run and a floored call waits, as today. In a headless run
-nobody answers, so the call is denied, the program gets `RuntimeError("The user denied this
-action.")`, and it can carry on. In auto mode the classifier judges each inner call. Its input
-also carries the program's code (cut to 4,000 characters) as data, so it can judge a write or
-command against what the program is for.
+summary is prefixed "From a program: " so the person knows the call came from code. It composes
+with the MCP bridge's marker (`bridge::SUMMARY_PREFIX`) by going after it; programs are not
+offered through the bridge (C8), and a test pins the order should that change. In an unattended
+session, pre-approved tools run and a floored call waits, as today. In a headless run nobody
+answers, so the call is denied, the program gets `RuntimeError("The user denied this action.")`,
+and it can carry on.
+
+**Auto mode is stricter for inner calls** (F6). Inside a program, values from earlier tool
+results can flow into a later call's arguments without the model ever reading them (a path or
+URL taken from a file, a command built from a search result). So in auto mode an inner call of
+kind Execute or Edit, or a provider or MCP call that reaches the network, is **not** settled by
+the classifier: it is decided as in `default` mode (a rule or a session allowance, otherwise the
+user is asked; headless, denied). Inner reads are classified as direct ones are, and the
+classifier's input then also carries the program's code (cut to 4,000 characters) as data.
+Why not classify them: the classifier sees the code and the final arguments, but not where an
+argument's value came from, and that is exactly what an injection controls.
 
 ### C5. Budgets and cancellation
 
@@ -329,8 +423,10 @@ New `[harness]` keys, defaults chosen for a small local model; all are per progr
 | --- | --- | --- |
 | `script_calls` | 40 inner tool calls | Engine counts calls; Monty's `max_suspensions` set to calls plus name lookups as a backstop |
 | `script_exec_secs` | 10 s of interpreter time | Monty `max_feed_duration` (paused during host calls) |
-| `script_wall_secs` | 300 s, excluding time waiting on approvals | Engine deadline, checked between events and as a timeout around the worker's next event |
-| `script_memory_mb` | 256 MB | Monty `max_memory` in the worker, plus the OS limit (job or rlimit) at 2× as backstop |
+| `script_wall_secs` | 300 s, excluding time waiting on approvals | Engine deadline, checked between events |
+| (fixed) `request_timeout` | `script_exec_secs` + 5 s per worker turn | Driver timeout from each request it sends to the worker's next event; a worker that does not answer is killed (F8) |
+| `script_memory_mb` | 256 MB | Monty `max_memory` in the worker, plus the OS limit at twice this as backstop (job on Windows, `RLIMIT_DATA` and cgroups on Unix, F10) |
+| `script_workers` | 8 workers at once, daemon-wide | `imperium-script` (C3) |
 | `script_output_chars` | 6,000 | Engine print buffer (C2) |
 | `script_code_chars` | 20,000 | Engine refuses longer programs before starting a worker (compilation is not charged to the time budget) |
 | (fixed) inner result size | 4 MB | Engine raises `RuntimeError` instead of passing a larger text into the program |
@@ -340,8 +436,8 @@ New `[harness]` keys, defaults chosen for a small local model; all are per progr
   session was stopped; the program did not finish". This matches `Session::stop`: a tool call in
   flight finishes, nothing new starts.
 - **Turn cancellation and errors.** Dropping the outer future drops the `ScriptRun`, which kills
-  the worker. A crashed worker returns "the program's interpreter stopped unexpectedly", and the
-  pool replaces the worker.
+  the worker. A crashed worker returns "the program's interpreter stopped unexpectedly". Every
+  worker is used once, so there is nothing to replace.
 - **Max steps.** A program is one tool call in the turn's step count: 40 inner calls cost the
   turn nothing in `max_steps`. The call budget bounds them instead.
 
@@ -411,44 +507,44 @@ boundaries as `tool_loading` does. The default is `off` until stage 6, then `aut
 
 | Threat | Mitigation | Residual risk |
 | --- | --- | --- |
-| Sandbox escape from the interpreter (VM bug) | Monty's language-level sandbox; the worker process, not the daemon; empty environment and working folder; OS confinement per platform (C1); pinned version, escape tests on every update | A memory-safety bug in Monty plus a confinement gap. Weakest on Windows: see [below](#windows-confinement-mitigation-and-accepted-risk) |
-| Capability through the bindings | Every inner call is `run_tool`: same refusals, rules, hooks, approvals as direct calls; script-refused set (C4) | A program chains read-then-send in one model step (read a secret, `web_fetch` a URL with it in the query). Today the model can do the same in two steps; code mode removes the pause between them, not a check. Auto mode sees the code; the desktop shows each inner call live |
-| Prompt injection from tool results into the program | Results are values in variables; they never become code unless the program evaluates them. `eval` and `exec` are made unavailable in programs (A2), so text from a tool cannot run as code. The printed output enters the context as a tool result with the existing untrusted-data framing | The model reads injected text that the program printed, as with any tool result |
-| Resource exhaustion | C5 budgets; memory limit in the worker plus an OS limit; pool size cap (4 workers); code length cap; output cap | Many sessions at once queue for workers (bounded wait inside the wall budget) |
-| Secrets | Worker environment cleared, so no `GH_TOKEN`, API keys or daemon token; no file access except through `read_file`, whose path checks hide the daemon's files as today; the worker runs outside the OS tier's hidden paths list only because it has no file access at all | None beyond the tools' own rules |
-| Network | None inside the interpreter; Linux and macOS confinement also deny it at the OS level; web tools go through their own rules | Windows has no OS-level network block for the worker: accepted, [below](#windows-confinement-mitigation-and-accepted-risk) |
+| Sandbox escape from the interpreter (VM bug) | Monty's language-level sandbox; a separate worker process per program; OS confinement applied before any program is read, failing closed (C1); pinned versions under Imperium's lock, escape suite on every update | Linux and macOS: an escaped worker can do little beyond its pipes (no file opens or reads, no network, no processes). Windows: see [below](#windows-confinement-mitigation-and-accepted-risk) |
+| A lying worker (forged calls, unknown events) | The driver trusts no worker output: every call must use a handle it issued and is re-checked against the script-refused set and universe at dispatch (C3, F1); events outside the allowlist kill the worker (F7) | None beyond the dispatch rules |
+| Capability through the bindings | Every inner call is `run_tool`: same refusals, rules, hooks, approvals as direct calls; script-refused set (C4) | A program chains read-then-send in one model step (read a secret, `web_fetch` a URL with it in the query). Today the model can do the same in two steps; code mode removes the pause between them, not a check. Auto mode does not settle inner sends, writes or commands (C4); the desktop shows each inner call live |
+| Prompt injection from tool results | **The control is per-call dispatch**: whatever a program does, each call it makes is judged on its own name and actual arguments by the same rules, hooks and approvals as a direct call, and the stricter auto-mode rule for inner sends, writes and commands (C4). Removing `eval` and `exec` (A2) is hygiene, not a boundary: without them a program can still pass tool output on as data. The printed output enters the context as a tool result with the existing untrusted-data framing | **Data to arguments**: a value from one result (an injected URL, path or command) can become a later call's argument without the model reading it. Each such call is still judged, and in auto mode it is asked rather than classified, but a person approving it sees only the final arguments. The tests that a renamed or aliased tool cannot bypass a refusal stay (stage 2, stage 5) |
+| Resource exhaustion | C5 budgets; memory limit in the worker plus an OS limit; at most `script_workers` workers; code length cap; output cap; `request_timeout` | Many programs at once queue for workers, bounded by each wall budget |
+| Secrets | Worker environment cleared, so no `GH_TOKEN`, API keys or daemon token; no file access on Linux and macOS; on Windows `NO_READ_UP` labels on the daemon's secrets and journals; files reach the program only through `read_file` and its path checks | Windows: user files without the label are readable after an escape (below) |
+| Network | None inside the interpreter; Linux and macOS confinement deny it; web tools go through their own rules | Windows: an escaped worker can open connections (below) |
 | Denial through approvals | A program that asks 40 times is bounded by `script_calls`, and a denial is an ordinary error the program sees | The user sees up to 40 prompts. Approve-for-session works as today |
 
 #### Windows confinement: mitigation and accepted risk
 
-Windows has no equivalent of bubblewrap or Seatbelt that an unprivileged process can apply to a
-child without new infrastructure (05 lists AppContainer as not yet done). The worker gets, in
-stage 1:
+Mitigation (C1, root decision on F3): a restricted, Low-integrity token, so the worker cannot
+write the user's files, registry or medium-integrity processes; a Job Object (memory,
+one process, kill on close, UI limits); an empty environment and folder; and `NO_READ_UP` Medium
+labels on `daemon.json`, `devices.json`, `remotes/`, `secrets.key`, `secrets.enc`,
+`secrets.lock`, the session journals and their `.results/` folders, so a Low process cannot read
+the daemon's token, its secret store or other sessions' transcripts. The daemon's named pipe keeps
+its Medium `NO_WRITE_UP` label, so a Low process cannot connect, and the loopback listener needs
+the token it cannot read.
 
-- a **restricted, low-integrity token** (`CreateRestrictedToken` with privileged groups disabled
-  and all privileges removed, integrity level Low): under Windows' mandatory integrity control
-  the worker cannot write to the user's files, the user's registry hive or medium-integrity
-  processes, even if code runs in it;
-- a **Job Object**: memory limit (twice `script_memory_mb`), active-process limit 1 (no child
-  processes), kill-on-job-close, and UI restrictions (no clipboard, no desktop switching);
-- an **empty environment**, an empty low-integrity working folder, and no inherited handles
-  except the pool's pipes.
-
-What remains, accepted: a worker whose sandbox is escaped could still **read** files the user can
-read, and **open network connections**. Rationale:
+What remains: an escape from the language-level sandbox on Windows is a **user-level read
+compromise**. The escaped code could read any file the user can read that carries no label (the
+user's documents, SSH keys, browser profiles, other tools' tokens) and send it over the network,
+and it could use CPU and memory up to the job's limits. It cannot write the user's files, start
+processes, read the daemon's token or secret store, or drive the daemon. The risk is accepted
+because:
 
 1. An escape needs a memory-safety bug in Monty's VM followed by native code execution. Monty has
    no C dependencies and no FFI, implements no file, network or process operation, and has a
-   private-disclosure and bounty programme; the stage 4 escape suite and the pin-update rule
-   (rerun on every version) test the boundary directly.
-2. The worker holds no secrets: its environment is empty and the daemon's token file is read only
-   by the daemon. Reading user files is what `read_file` already does under path checks, so the
-   new exposure is reads outside the workspace and network use, not writes or persistence.
+   private-disclosure and bounty programme. The stage 4 escape suite and the update rule test the
+   boundary directly.
+2. Without an escape the program has no capability at all, so the residual applies only to a
+   chained exploit, not to ordinary misbehaviour or injected text.
 3. The mode is off by default until stage 4 passes (S2), then on only for local models (S1).
-4. Stage 1 tests that the token and job apply (a worker write to the user's profile fails; a
-   second process cannot start).
+4. Stage 1 tests the token, the job and the labels (below), and the worker fails closed when any
+   of them cannot be applied.
 
-Revisit (move to an AppContainer profile with no network capability, or to Monty's WebAssembly
+Revisit (an AppContainer profile with no network or file capabilities, or Monty's WebAssembly
 runtime under wasmtime on Windows) if the stage 4 review finds a practical escape, if a Monty
 escape advisory is published, or when 05's AppContainer work lands for commands.
 
@@ -482,18 +578,24 @@ retraining Emperor or Consul to write programs.
 
 Each is checked in stage 1 and its outcome recorded in this plan before stage 2 starts.
 
-- **A1.** `monty-pool`'s subprocess config can start the worker through a wrapper (program plus
-  arguments) or pre-spawn hook, so confinement can wrap it. If not, the worker confines itself
-  (C1).
+- **A1.** The worker's confinement is applied in the order C1 gives on each OS: seccomp and
+  Landlock before the first read from stdin on Linux, `sandbox_init` before it on macOS, and on
+  Windows the job and token before the suspended process resumes. The seccomp allowlist fits the
+  `monty-proto` worker loop (no file opens after start, including for time zones: the `worker`
+  feature bundles the tz database). If a needed system call is found, it is added only if it opens
+  nothing.
 - **A2.** `eval` and `exec` can be removed from a program's builtins (a Monty option or a name
   policy). If not, the engine refuses a program whose source uses either name outside a string
   literal, before it starts (a token scan with Monty's parser, or a conservative regex), and the
-  refusal says why.
-- **A3.** A Windows Job Object memory limit and active-process limit work on the worker without
-  breaking the pool's pipes. No file or network confinement is planned on Windows beyond the
-  language level (AppContainer is item-level work elsewhere in 05).
-- **A4.** Startup from a warm pool is under 20 ms and the worker binary under 15 MB on each
-  target. If either fails by more than 2×, stage 1 records it and the setting description says so.
+  refusal says why. This is hygiene (C9), not a boundary.
+- **A3.** On Windows, `CreateProcessAsUserW` with a restricted Low token derived from the daemon's
+  own token, created suspended and assigned to the job before it resumes, works for an
+  unprivileged user and keeps the stdio pipes; `SetSecurityInfo` with a `NO_READ_UP` Medium label
+  works on files the daemon owns.
+- **A4.** A fresh confined worker starts and answers its first `Configure` in under 50 ms on each
+  OS (cold start, F5), and the binary is under 20 MB, with and without `monty-type-checking` (F12).
+  Stage 1 records the measurements here. If cold start fails by more than 2×, the one-ahead
+  spawned worker (C1) is turned on; if size fails, the type checker is left out.
 - **A5.** Qwen3.5-4B writes short Python programs that stay inside Monty's subset often enough.
   Stage 6 measures syntax, `NotImplementedError` and `NameError` rates.
 - **A6.** The guided-harness pilot's failures on aggregation are reachable by code: the knowledge
@@ -502,13 +604,13 @@ Each is checked in stage 1 and its outcome recorded in this plan before stage 2 
 
 ## Relevant paths
 
-`crates/imperium-script/` (new), `crates/imperium-engine/src/agent/{script,tools,turn,catalog,prompts,fork}.rs`,
+`crates/imperium-script/` and `crates/imperium-script-worker/` (new), `deny.toml` (new), `crates/imperium-engine/src/agent/{script,tools,turn,catalog,prompts,fork}.rs`,
 `crates/imperium-engine/src/{agent.rs,session.rs,spill.rs}`, `crates/imperium-engine/src/agent/auto.rs`,
 `crates/imperium-protocol/src/{tools,session,lib}.rs`, `crates/imperium-protocol/schemas/`,
 `crates/imperium-config/src/{settings,registry}.rs`, `crates/imperium-core/src/{eval.rs,eval/variant.rs,state/create.rs}`,
-`crates/imperium-core/src/` (pool construction), `crates/imperium-cli/src/{eval.rs,eval/,chat.rs}`,
+`crates/imperium-core/src/` (runner construction, file labels), `crates/imperium-cli/src/{eval.rs,eval/,chat.rs}`,
 `crates/imperium-cli/tests/headless_eval.rs`, `apps/desktop/src/sessions/`, `apps/desktop/src/panels/SessionPanel.tsx`,
-`scripts/ci/build-desktop.sh`, `.github/workflows/{ci,build}.yml`, `runtimes/monty.env` (new).
+`scripts/ci/build-desktop.sh`, `.github/workflows/{ci,build,advisories}.yml`, `runtimes/monty.env` (new).
 
 ## Related docs
 
@@ -530,35 +632,63 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
 
 ## Stage 1: The interpreter worker and `imperium-script`
 
-- Objective: C1 and C3's crate, with the worker built and shipped on every target; A1 to A4
-  settled and recorded here.
-- Changes: `runtimes/monty.env` (pinned version); `crates/imperium-script` with the
-  `ScriptRunner` trait, the Monty pool implementation (limits, confinement wrapper or
-  self-confinement, worker path discovery beside the daemon binary, idle shutdown, stop on drop),
-  and a fake runner for engine tests; `scripts/ci/build-worker.sh` (`cargo install --locked
-  --version =<pin> --no-default-features monty-runtime` per target into a staging folder, the macOS
-  universal build with `lipo`, the binary renamed `imperium-script[.exe]` and its SHA-256 logged);
-  `build-desktop.sh` adds it to `externalBin`; the CLI package and the server image (item 63, if
-  merged) carry it; a CI job builds the worker once per OS and exports `IMPERIUM_SCRIPT_WORKER` for
-  the tests; workspace `rust-version` 1.98.
-- Tests (`crates/imperium-script/tests/`, real worker, all three OSes): a program prints;
-  suspends at a host call and resumes with the value; a name lookup resolves to a host function
-  and an unknown name raises `NameError`; `open()`, `import os`, `os.environ`, `socket`,
-  `subprocess`, `__import__` and (per A2) `eval`/`exec` fail; `while True: pass` ends on the time
-  budget; `x = [0] * 10**9` ends on the memory budget; more suspensions than allowed abort with an
-  uncatchable error; dropping a run mid-program leaves no worker process (checked by PID); a
-  killed worker is reported as crashed and the next program runs; the pool stops its workers on
-  shutdown; the worker's environment is empty; on Windows the worker runs at low integrity (a
-  write to the user's profile fails) and its job refuses a second process. A measurement test logs warm and cold start and
-  binary size (A4).
+- Objective: C1 and C3's crates, with the worker built and shipped on every target, confined on
+  each OS, and failing closed; A1 to A4 settled and recorded here.
+- Changes: `runtimes/monty.env` (pinned versions); `crates/imperium-script-worker` (the binary:
+  `monty-alloc` allocator, self-confinement on Linux and macOS, the `monty-proto` worker loop);
+  `crates/imperium-script` (the `ScriptRunner` trait, the protocol driver with the event allowlist,
+  the Windows suspended launch with token, job and labels, the `NO_READ_UP` labelling of the
+  daemon's files, one worker per program with the optional one-ahead spawn, `script_workers`,
+  kill-on-drop with confirmed exit, worker path discovery beside the daemon binary, the
+  fail-closed availability check and its reason) and a fake runner for engine tests;
+  `scripts/ci/build-desktop.sh` builds the worker with the daemon per target and adds it to
+  `externalBin` as `imperium-script`; the CLI package and the server image (item 63, if merged)
+  carry it; `deny.toml` and a `cargo deny check` CI job; the weekly advisory workflow; workspace
+  `rust-version` 1.98.
+- Tests (`crates/imperium-script/tests/`, real worker, all three OSes unless marked):
+  - Interpreter: a program prints; suspends at a host call and resumes with the value; a name
+    lookup resolves to a host function and an unknown name raises `NameError`; `open()`,
+    `import os`, `os.environ`, `os.getenv("PATH")`, `socket`, `subprocess`, `__import__` and (per
+    A2) `eval`/`exec` fail, and the `OsCall` behind `open()` and `os.getenv` is answered with an
+    error by the driver.
+  - Limits: `while True: pass` ends on the time budget; `x = [0] * 10**9` ends on the memory
+    budget; more suspensions than allowed abort with an uncatchable error; `time.sleep(5)` is
+    refused past the sleep budget; a worker that stops answering is killed at `request_timeout`.
+  - Protocol: a test worker build (`cfg(test)` feature) that sends `ResolveFutures`,
+    `StreamedCalls`, `DumpResult` and an unknown tag each gets killed and the program fails as a
+    protocol violation.
+  - Processes (F4, F5): two programs run in workers with different PIDs; dropping a run
+    mid-program leaves no worker process (PID checked after the confirmed exit); a killed worker
+    is reported as crashed and the next program runs; shutdown stops every worker; the worker's
+    environment is empty; a long simulated approval (the host holds a `FunctionCall` for 20 s,
+    beyond `request_timeout`) then resumes and the program completes (F8).
+  - Confinement, Linux: the worker cannot `open` a file it would otherwise read, cannot create a
+    socket, cannot `execve`; `RLIMIT_DATA` is set.
+  - Confinement, macOS: the worker cannot read a file in the user's home folder or the daemon's
+    data folder, cannot connect to a loopback port, cannot spawn a process.
+  - Confinement, Windows: the worker runs at Low integrity with no privileges; a write to the
+    user's profile fails; a read of a file labelled `NO_READ_UP` (a fixture standing in for
+    `daemon.json` and `secrets.enc`) fails; it cannot open the daemon's named pipe; its job
+    refuses a second process; the daemon's real `daemon.json`, `secrets.*` and a journal carry
+    the label after start.
+  - Fail closed (F10): with confinement forced to fail (a test hook on each OS), no program runs,
+    `run_script` is reported unavailable, and the reason names what failed.
+  - Measurements (A4, F12): cold start, binary size and resident memory with and without
+    `monty-type-checking`, logged and recorded in this plan.
 - Docs: 05 gains *Programs (`run_script`)*, with the interpreter and confinement subsection
   (implemented part only); 11 lists the worker build; 13 gains the next free decision number (C1).
-- Depends on: none. Size: about 600 lines plus CI.
-- Owned paths: `crates/imperium-script/**`, `Cargo.toml`, `Cargo.lock`, `runtimes/monty.env`,
-  `scripts/ci/build-worker.sh`, `scripts/ci/build-desktop.sh`, `.github/workflows/{ci,build}.yml`,
+- Depends on: none. Size: about 1,100 lines plus CI, so two pull requests: 1a (worker crate,
+  protocol driver, event allowlist, Linux and macOS confinement, supply-chain checks and their
+  tests) and 1b (the Windows launch, job, token and labels, the fail-closed check, bundling, and
+  the measurements).
+- Owned paths: `crates/imperium-script/**`, `crates/imperium-script-worker/**`, `Cargo.toml`,
+  `Cargo.lock`, `deny.toml`, `runtimes/monty.env`, `crates/imperium-core/src/` (labelling the
+  daemon's files at start), `scripts/ci/build-desktop.sh`,
+  `.github/workflows/{ci,build,advisories}.yml`,
   `docs/05-tools-and-isolation.md`, `docs/11-ci-cd.md`, `docs/13-decisions.md`, this plan.
-- Risks: a target where the pinned version does not build (Windows arm64 is the likeliest); then
-  code mode is unavailable on that target and the setting says so, rather than blocking the stage.
+- Risks: a target where the pinned version does not build (Windows arm64 is the likeliest), or
+  where confinement cannot be applied; then code mode is unavailable on that target and the
+  setting says so (fail closed), rather than blocking the stage.
 
 ## Stage 2: The tool, the driver and dispatch
 
@@ -570,24 +700,40 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
   - Config: `HarnessSettings.code_mode: HarnessMode` (default `Off`) and the C5 budget keys.
   - Engine: `agent/script.rs` (the driver, resolver, callable set, script-refused set, argument
     mapping, output assembly, summary line, stop and budget checks); the `run_script` arm in
-    `run_tool_once` with `tool.before`/`tool.after` on the code; inner call ids and
-    `parent_call_id`; saving and restoring the outer rewrite state; touched directories returned
-    to the turn loop; `run_script` in the offered list per C7 (core when reactive); the code-mode
-    sentence as its own prompt region; the "From a program: " approval prefix; auto mode's input
-    carries the code; `run_script` in `spill::EXEMPT_TOOLS` (if R2.5 is merged).
+    `run_tool_once` with `tool.before`/`tool.after` on the code; the handle table and the
+    `in_program` check on the effective name in `run_tool_once`; inner call ids and
+    `parent_call_id`; `parent_call_id` and `from_program` in inner hook payloads; saving, clearing
+    and restoring the six per-call fields; schema advice kept out of `schema_seen` for inner
+    calls; touched directories collected by the driver; `run_script` in the offered list per C7 (core when reactive); the code-mode
+    sentence as its own prompt region; the "From a program: " approval prefix after the bridge
+    marker; auto mode deciding inner Execute, Edit and network calls as `default` mode, and its
+    input for inner reads carrying the code; `run_script` in `spill::EXEMPT_TOOLS` (if R2.5 is merged).
 - Tests (engine, fake runner unless marked):
   - Off mode: the tool list and prompts equal the item 61 off-mode snapshot (goal 6).
   - Dispatch twins (goal 2), each a copy of an existing direct-call test through a program: a
     profile refusal; a named-agent refusal; a universe refusal (reactive on); a permission-rule
     refusal; plan mode refusing an inner `write_file`; a `tool.before` hook that blocks an inner
     call (the program sees `RuntimeError`) and one that rewrites it (the same tool runs with the
-    new arguments, and the outer `run_script` result carries no rewrite note); approval asked for
-    an inner `run_command` with the prefixed summary, then allowed, then denied; auto mode's
-    classifier input contains the code; pre-approved tools in an unattended session run without
-    asking.
+    new arguments, and the outer `run_script` result carries no rewrite note); an inner hook
+    payload carries `parent_call_id` and `from_program`; approval asked for an inner
+    `run_command` with the prefixed summary, then allowed, then denied; the prefix composed with
+    the bridge marker in that order; in auto mode an inner `run_command`, `write_file` and
+    `web_fetch` are asked (headless: denied) rather than classified, while an inner `read_file`
+    is classified with the code in the classifier's input; pre-approved tools in an unattended
+    session run without asking.
+  - Untrusted worker (F1, fake runner): a `Call` for `spawn_agent` with no prior lookup is refused
+    and `spawn_agent` never runs; a `Call` naming a handle that was never issued is refused; a
+    `Call` through a handle for `call_tool` whose inner name is `ask_user` is refused after
+    unwrapping; a tool looked up, then removed from the universe (profile change), then called is
+    refused at dispatch.
+  - Per-call state (F2): a `tool.before` hook rewrites the program, and inside it a second hook
+    rewrites an inner call; the inner call runs rewritten, the outer result has exactly one
+    rewrite note (the program's) and the summary line none; after the program the turn loop sees
+    the outer call's `ran_rewritten` and `last_tool_ok`; an inner failed call with schema advice
+    leaves `schema_seen` unchanged.
   - Each script-refused tool raises with the "call it directly" message and never reaches
     dispatch; an unknown name raises `NameError`; `tool("mcp-style.name", ...)` calls a provider
-    tool with a dotted name.
+    tool with a dotted name; a renamed or aliased spelling of a refused tool is still refused.
   - Arguments: keyword, single dict, positional mapped to `required`, and a wrong type raising
     `TypeError` with the parameter list; arguments a direct call's tolerant parser accepts are
     accepted.
@@ -602,7 +748,8 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
   - Instruction files: an inner `read_file` in a folder with `AGENTS.md` loads it after the
     program.
   - Real worker (CI job with `IMPERIUM_SCRIPT_WORKER`): a program that greps a fixture, filters
-    rows and prints a count gives the right number, with the inner calls in events.
+    rows and prints a count gives the right number, with the inner calls in events; a program
+    whose inner `write_file` waits 20 s on an approval, then is allowed, completes (F8).
 - Docs: 03 gains *Programs (code mode)* (C2 to C7 as built); 05 *Programs* gains the binding and
   dispatch rules; 02 protocol version paragraph.
 - Depends on: stage 1. Size: about 1,000 lines, so two pull requests: 2a (protocol, config,
@@ -649,6 +796,9 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
 - Work: a security reviewer (not the implementer) reviews the worker confinement on each OS, the
   dispatch twins, the resolver, the budgets and the approval prefix, and tries an escape suite.
   Findings are fixed in this stage's pull request.
+- Pass criteria (recorded in this plan; S2): no open finding that lets a program reach a file,
+  the network, a process or a refused tool except through dispatch; the Windows accepted risk
+  re-read and confirmed by the reviewer; the fail-closed paths exercised on each OS.
 - Changes: fixes; `crates/imperium-script/tests/escape.rs` with the reviewer's escape attempts
   as regression tests (introspection through `__class__`/`__subclasses__`, `type()` tricks,
   `locals()`, huge string formatting, deep nesting in source, recursion, unicode name tricks,
@@ -748,12 +898,19 @@ adds a sidecar; root checks the `Experimental` run for that merge and that the r
 
 ## Risks across stages
 
-- **A young dependency.** Monty is 11 months old with 22 releases. Pinning, a 14-day minimum age,
-  the escape suite on every update, the worker process boundary and OS confinement contain the
-  risk. The WebAssembly runtime is the fallback.
-- **Windows confinement.** A low-integrity restricted token and a job object stop writes, child
-  processes and memory abuse; file reads and network use after an escape are an accepted risk
-  ([C9](#windows-confinement-mitigation-and-accepted-risk)), restated in 05.
+- **A young dependency.** Monty is 11 months old with 22 releases. Exact pins under Imperium's
+  lock, a 14-day minimum age (security fixes excepted once the escape suite passes),
+  `cargo deny`, the weekly advisory check, the escape suite on every update, one worker process
+  per program and fail-closed OS confinement contain the risk. The WebAssembly runtime is the
+  fallback.
+- **Windows confinement.** A Low-integrity restricted token, a job object and `NO_READ_UP`
+  labels on the daemon's files stop writes, child processes, memory abuse and access to the
+  daemon's secrets; reads of unlabelled user files and network use after an escape are a
+  user-level read compromise, accepted with its rationale
+  ([C9](#windows-confinement-mitigation-and-accepted-risk)) and restated in 05.
+- **Seccomp allowlist drift.** A Monty or Rust standard library update can need a new system
+  call; the worker then fails closed and CI's confinement tests fail, rather than the allowlist
+  being widened silently.
 - **A check skipped for inner calls.** Inner calls go through `run_tool` itself, and every
   direct-call refusal has a program twin test.
 - **The small model writes programs badly.** Stage 6 measures it before any default changes.
