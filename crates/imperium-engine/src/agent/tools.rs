@@ -776,6 +776,57 @@ impl Agent {
         format!("(A hook rewrote this call's arguments before it ran.)\n{output}")
     }
 
+    /// What `run_tool_once` checks before a call is looked at any further, in this order: a
+    /// question's fork may read and search and nothing else (checked here, where a call is
+    /// dispatched, so the tool list it was given and its cached prefix stay as they were); a turn
+    /// the daemon limits (an initiative review) may use only the tools it lists; a named agent's
+    /// tool list; the shell lock and the agent's permission profile; a variant's dropped tools;
+    /// and, with loading on, the agent's tools as they are now (the offered list says nothing of
+    /// what may be called). Returns the text the model is told when one refuses the call. With
+    /// `announce` false it only looks: it neither stops processes under the shell lock nor
+    /// reports a dropped tool's call to the watcher (the parallel reads' eligibility check).
+    pub(super) fn early_refusal(&self, name: &str, announce: bool) -> Option<String> {
+        if self.fork.is_some()
+            && let Some(why) = fork::refusal(name)
+        {
+            return Some(why);
+        }
+        if let Some(why) = self
+            .shared
+            .launcher
+            .as_ref()
+            .and_then(|launcher| launcher.restricted(name))
+        {
+            return Some(format!("error: {why}"));
+        }
+        if let Some(why) = self.named_refusal(name) {
+            return Some(format!("error: {why}"));
+        }
+        if announce {
+            self.enforce_lock();
+        }
+        if let Some(why) = self.profile_refusal(name) {
+            return Some(format!(
+                "This agent's permission profile does not allow this: {why}. {name} was not run."
+            ));
+        }
+        if announce {
+            if let Some(why) = self.dropped_refusal(name) {
+                return Some(format!("error: {why}"));
+            }
+        } else if self.is_dropped(name) {
+            return Some(format!(
+                "error: {name} is not one of your tools; it was not run"
+            ));
+        }
+        if self.reactive() && !self.in_universe(name) {
+            return Some(format!(
+                "error: {name} is not one of your tools; it was not run"
+            ));
+        }
+        None
+    }
+
     pub(super) async fn run_tool_once(&mut self, call: &ToolCall) -> String {
         // A variant's renamed tool is the engine's again before any check looks at the name
         // (the shell lock, a fork's and a launcher's lists, the named agent's tools).
@@ -806,51 +857,8 @@ impl Agent {
             };
             return self.tool_finished(call, name, ok, output, Some(started));
         }
-        // A question's fork may read and search, and nothing else: checked here, where a call
-        // is dispatched, so the tool list it was given (and its cached prefix) stays as it was.
-        if self.fork.is_some()
-            && let Some(why) = fork::refusal(name)
-        {
-            return self.tool_finished(call, name, false, why, None);
-        }
-        // A turn the daemon limits (an initiative review) may use only the tools it lists.
-        if let Some(why) = self
-            .shared
-            .launcher
-            .as_ref()
-            .and_then(|launcher| launcher.restricted(name))
-        {
-            return self.tool_finished(call, name, false, format!("error: {why}"), None);
-        }
-        if let Some(why) = self.named_refusal(name) {
-            return self.tool_finished(call, name, false, format!("error: {why}"), None);
-        }
-        self.enforce_lock();
-        if let Some(why) = self.profile_refusal(name) {
-            return self.tool_finished(
-                call,
-                name,
-                false,
-                format!(
-                    "This agent's permission profile does not allow this: {why}. {name} was not run."
-                ),
-                None,
-            );
-        }
-        // With loading on, the offered list says nothing of what may be called, so a call is
-        // checked against the agent's tools as they are now. With it off the call runs as it
-        // always has.
-        if let Some(why) = self.dropped_refusal(name) {
-            return self.tool_finished(call, name, false, format!("error: {why}"), None);
-        }
-        if self.reactive() && !self.in_universe(name) {
-            return self.tool_finished(
-                call,
-                name,
-                false,
-                format!("error: {name} is not one of your tools; it was not run"),
-                None,
-            );
+        if let Some(refusal) = self.early_refusal(name, true) {
+            return self.tool_finished(call, name, false, refusal, None);
         }
         let tool = match name {
             "update_plan" => AgentTool::UpdatePlan,
@@ -1041,6 +1049,9 @@ impl Agent {
             return finish(false, missing);
         }
         if let Decision::Ask { sticky } = decision {
+            // A read run ahead while the judge let it run is not used once it asks (a rule or
+            // the mode changed): it is read again after the approval.
+            self.forget_prefetched(&call.id);
             // In auto mode a classifier may settle a call that would ask; what it leaves
             // open (or a floored call) is asked as before, with its reason.
             let gate = self
@@ -1066,8 +1077,9 @@ impl Agent {
             }
         }
         let started = self.tool_started(call, tool, summary);
-        let window = self.expected_window();
-        let (ok, output) = match invocation.execute_in(&self.workspace, window).await {
+        // A read that ran with the others of its step already has its output.
+        let (result, started) = self.read_result(call, &invocation, started).await;
+        let (ok, output) = match result {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };

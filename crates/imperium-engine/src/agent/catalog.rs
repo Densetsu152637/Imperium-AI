@@ -1387,7 +1387,7 @@ mod tests {
     }
 
     /// R9 of the plan: every reader of a call's name or arguments goes through
-    /// `effective_call`. The scan covers every source file of the engine except the three that
+    /// `effective_call`. The scan covers every source file of the engine except the ones that
     /// dispatch the unwrapped call (`catalog.rs`, `tools.rs`) or translate the outer call's names (`tool_edits.rs`) and test modules: a read of
     /// `<value>.function.name` or `.function.arguments` must be on a value bound from
     /// `effective_call(..)` (a `let <value> = effective_call(..)` just above) or on the same

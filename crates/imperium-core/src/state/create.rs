@@ -857,6 +857,7 @@ impl DaemonState {
                         tool_loading: flags.tool_loading,
                         result_spill: flags.result_spill,
                         clear_stale_results: flags.clear_stale_results,
+                        parallel_reads: flags.parallel_reads,
                         ..imperium_config::HarnessSettings::default()
                     },
                     None => self.settings().harness.clone(),
@@ -895,6 +896,7 @@ impl DaemonState {
                     .map(|eval| eval.run.tool_edits())
                     .unwrap_or_default(),
                 tool_watch: eval.as_ref().map(|eval| eval.run.tool_watch()),
+                ..imperium_engine::SessionOptions::default()
             },
         )
         .map_err(|error| CreateError::Start(error.to_string()))?;

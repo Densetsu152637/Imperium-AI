@@ -37,6 +37,10 @@ pub(crate) struct LoopFlags {
     /// Whether stale tool results are stubbed before a compaction summary
     /// (`harness.clear_stale_results`); default on, as in a session.
     pub clear_stale_results: bool,
+    /// Most read-only calls of one step that run at the same time
+    /// (`harness.parallel_reads`). Unlike a session's, its default is 0 (one after another), so
+    /// evaluations run as before unless a run asks for it.
+    pub parallel_reads: u32,
 }
 
 /// The flags and what they do, for error messages.
@@ -51,6 +55,7 @@ const FLAG_NAMES: [&str; 10] = [
     "tool_loading",
     "result_spill",
     "clear_stale_results",
+    "parallel_reads",
 ];
 
 impl LoopFlags {
@@ -68,6 +73,7 @@ impl LoopFlags {
             tool_loading: HarnessMode::Off,
             result_spill: false,
             clear_stale_results: true,
+            parallel_reads: 0,
         };
         for (key, value) in flags {
             let bad = |what: &str| format!("flag {key}={value}: expected {what}");
@@ -123,6 +129,13 @@ impl LoopFlags {
                 }
                 "clear_stale_results" => {
                     parsed.clear_stale_results = value.parse().map_err(|_| bad("true or false"))?;
+                }
+                "parallel_reads" => {
+                    parsed.parallel_reads = value
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|reads| *reads <= 8)
+                        .ok_or_else(|| bad("a whole number from 0 to 8"))?;
                 }
                 other => {
                     return Err(format!(

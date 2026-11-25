@@ -20,8 +20,9 @@
    and the two loader tools, see [reactive tool loading](#reactive-tool-loading-implemented)),
    and conversation.
 2. Call the model (streaming). Record tokens, latency, throughput, and cost as they arrive.
-3. Execute tool calls. Independent calls run concurrently; each passes through hooks and
-   permission checks ([06](06-extensibility.md#hooks)).
+3. Execute tool calls. Each passes through hooks and permission checks
+   ([06](06-extensibility.md#hooks)), in call order; a run of file reads in one step reads
+   at the same time ([parallel reads](#parallel-reads-implemented)).
 4. Append results; repeat until the model ends its turn, the budget is exhausted, or the task
    is cancelled.
 
@@ -231,6 +232,52 @@ the client (`crates/imperium-engine/src/agent/call_repair.rs`), without a model 
   arguments stay an empty object, and valid arguments are untouched. The repair runs on every
   model's calls, hosted ones included, before the assistant message is stored, so the history
   keeps the repaired arguments.
+
+## Parallel reads (implemented)
+
+When a model step makes several tool calls, the file reads among them read at the same time
+instead of one after another (`harness.parallel_reads`, default 4, at most 8; 0 or 1 turns it
+off). Only the reading is concurrent: the calls still go through `run_tool` one by one in call
+order, so the permission judge, `tool.before`/`tool.after` hooks, approvals, events and the
+tool messages sent back to the model are what they were. A run with the setting off sends the
+same messages, provided the files do not change meanwhile: only a read that is still running when
+a file changes (a command or another agent writing at that moment) could see a different state
+than in a sequential run.
+
+- **Which calls.** The built-in `read_file`, `list_dir`, `glob` and `grep`
+  (`Invocation::is_file_read`; `command_output` and `command_stop` count as reads for
+  permissions but depend on or stop a running process, so they stay in order). A call joins a
+  run only when the permission judge lets it run without asking (`CallKind::Read` and
+  `Decision::Run`), no `tool.before` or `tool.after` hook matches its tool, and none of the
+  checks `run_tool_once` makes first (`early_refusal`, shared with the run check: a fork's, a launcher's, the agent's tool list, permission
+  profile and dropped tools) would refuse it. Provider tools (`web_fetch`, MCP, browser), memory
+  tools and `tool_search` are not run ahead: their kind is `Other`, which carries no read-only
+  promise.
+- **Runs, not steps.** The loop looks at the calls from its current position and takes the
+  maximal run of such reads (two or more, with distinct call ids). Anything else (a write, a
+  command, a spawn, a read that asks, a hooked read) ends the run and runs in its place, so a
+  read after a write still sees the write. After that call the loop looks for the next run.
+- **Execution.** The run reads with at most `parallel_reads` reads in flight and keeps each
+  output by call id. Each call then runs through `run_tool` in order and takes its kept output
+  where it would have read the file; if the call it runs is not the one the output was kept for
+  (its arguments differ), the kept output is dropped and the call reads again. A read that was
+  run ahead and then refused (a rule changed meanwhile) leaves nothing visible: its output is
+  discarded. A read that asks when its turn comes (a rule or the permission mode changed since
+  the run) drops its kept output and reads the file again after the approval.
+- **Events.** `tool_started` and `tool_finished` stay in call order, once per call id, as for
+  sequential calls; the reported duration is how long the read took. Nothing is announced before
+  its turn.
+- **Stopping.** If the session is stopped while a run is reading, the reads still running are
+  dropped and their calls are read again in call order when their turns come, exactly as a
+  sequential run would (a stop does not end the loop's tool round, so no result changes). Reads
+  that already finished keep their output. A `glob` or `grep` already walking the tree on the
+  blocking pool cannot be aborted: it finishes in the background and its result is discarded.
+  The same happens to a read whose task panicked. A session already stopped when the run would
+  start runs its calls as before.
+- **Budgets.** Tokens, steps and cost are counted as before: only the results the model sees
+  count, and they are the same.
+- **Evals.** A session's default is 4, but an eval run's is 0 so comparisons are not changed
+  unless the run sets the `parallel_reads` flag ([flags](#harness-variants)).
 
 ## Reactive tool loading (implemented)
 
@@ -950,7 +997,9 @@ outside the session's folders or one a permission rule guards is reported and no
 
 - **Stop:** `session.control` with `action: "stop"` emits `work_stopped` from the root. The
   root and every subagent (including `delegate_chunks` agents) halt at their next safe point,
-  before their next model call. A tool call in flight finishes first. A model request in
+  before their next model call. A tool call in flight finishes first (reads running together in a
+  [parallel run](#parallel-reads-implemented) are dropped and read again in order, with the
+  same results). A model request in
   flight is cancelled (a notice says so) and sent again on resume. While halted, an agent
   holds no local-model slot: it is asleep to the runtime (`waiting`), which may swap the model
   out and save the slot. `hold_while_stopped` in the engine is the single place where an
@@ -1263,12 +1312,15 @@ true), `attended` (default false), `harness` (`on`, `off`, `auto`; the aids need
 `attended=true`), `tool_loading` (`on`, `off`, `auto`, default `off`; `auto` is on with
 `--local`: the fixed tool list of `harness.tool_loading`, see
 [reactive tool loading](#reactive-tool-loading-implemented), is offered instead of every
-tool), `clear_stale_results` (default true: `harness.clear_stale_results`, for A/B runs) and
+tool), `clear_stale_results` (default true: `harness.clear_stale_results`, for A/B runs),
 `result_spill` (`true` or `false`, default `false`: [large tool results](#large-tool-results)
 saved to a file; unlike `harness.result_spill` it is off unless asked for, so evaluations stay
-comparable with earlier baselines). An unknown flag is an error. The variant id and a
-`config_hash` (over the edits, flags and overlay, not the name) are in the output next to the
-prompt hash.
+comparable with earlier baselines) and
+`parallel_reads` (0 to 8, default 0 for evals: `harness.parallel_reads`, see
+[parallel reads](#parallel-reads-implemented); unlike a session's default of 4, off unless a run
+asks for it). An
+unknown flag is an error. The variant id and a `config_hash` (over the edits, flags and overlay,
+not the name) are in the output next to the prompt hash.
 
 **Tool edits are made by the engine, at its model boundary**, for the root agent only (a
 subagent's tools are never edited). Drops take a tool out of the root's universe, so it is not in

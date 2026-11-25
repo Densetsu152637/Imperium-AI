@@ -136,6 +136,8 @@ pub struct SessionOptions {
     pub tool_edits: imperium_protocol::methods::ToolEdits,
     /// Told what the root agent's tools are and which of them it reaches on demand.
     pub tool_watch: Option<Arc<dyn crate::ToolWatch>>,
+    /// Held by every read a step runs ahead together before it reads (tests only).
+    pub read_gate: Option<Arc<dyn crate::ReadGate>>,
 }
 
 /// The answer to a model switch or a compaction.
@@ -360,6 +362,7 @@ impl Session {
                 root_agent: options.root_agent,
                 tool_edits: options.tool_edits,
                 tool_watch: options.tool_watch,
+                read_gate: options.read_gate,
             },
             Arc::clone(&model),
         ));
@@ -928,6 +931,8 @@ pub(crate) struct Shared {
     pub knowledge: crate::knowledge::Knowledge,
     /// Answers subagents from recordings (an evaluation harness), when set.
     pub replay: Option<Arc<dyn crate::SubagentReplay>>,
+    /// Held by every read of a parallel run before it reads (tests only).
+    pub read_gate: Option<Arc<dyn crate::ReadGate>>,
     /// The variant's edits of the root agent's tools, when an evaluation sets any or watches.
     pub tool_edits: Option<crate::tool_edits::ToolEditing>,
     /// Whether the files-before-the-turn checkpoint is taken: `false` while it is being taken
@@ -1030,6 +1035,7 @@ struct Started {
     root_agent: Option<imperium_extensions::AgentDef>,
     tool_edits: imperium_protocol::methods::ToolEdits,
     tool_watch: Option<Arc<dyn crate::ToolWatch>>,
+    read_gate: Option<Arc<dyn crate::ReadGate>>,
 }
 
 /// The root agent's task: one turn at a time, in message order, while
@@ -1051,6 +1057,7 @@ async fn run(
         root_agent,
         tool_edits,
         tool_watch,
+        read_gate,
     } = started;
     let checkpoints = config.checkpoints.clone();
     for message in config.notices {
@@ -1116,6 +1123,7 @@ async fn run(
         effort,
         knowledge: crate::knowledge::Knowledge::new(config.knowledge),
         replay,
+        read_gate,
         tool_edits: (tool_watch.is_some()
             || tool_edits != imperium_protocol::methods::ToolEdits::default())
         .then(|| crate::tool_edits::ToolEditing::new(tool_edits, tool_watch)),
