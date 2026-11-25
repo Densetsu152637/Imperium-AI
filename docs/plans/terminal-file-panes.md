@@ -729,8 +729,52 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   `portable-pty` uses `unsafe` internally (a dependency, allowed; the workspace's own crates stay
   `forbid(unsafe_code)`, so `prctl` goes through `nix`'s safe wrappers); the supervisor must stay
   tiny, because it runs for every Linux terminal.
-- Status: in review (PR open; every check runs in CI, nothing was built locally)
-- Outcome: see below, written with the PR.
+- Status: in review (PR #307; every check runs in CI, nothing was built locally)
+- Outcome:
+  - **`portable-pty` 0.9.0, read from source:** the Unix spawn closes every descriptor above 2 in
+    the child (`close_random_fds`, in the `pre_exec` hook, before `exec`), resets `SIGCHLD`,
+    `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGTERM` and `SIGALRM` to their defaults, clears the signal
+    mask, makes the child a session leader (`setsid`) and sets the PTY as its controlling terminal
+    (`TIOCSCTTY`). Argv reaches the program unchanged: `Command::new(<resolved path>)` with
+    `arg0` set to `argv[0]` and `args(argv[1..])`, no shell wrapping and no login rewriting for an
+    explicit program. Two traps, both handled: the environment starts as a copy of the parent's
+    and `SHELL` is always set (so the spawn calls `env_clear` and passes the whole environment),
+    and a working folder that does not exist falls back to `$HOME` silently (so `Pty::spawn`
+    checks the folder). On Windows it creates the ConPTY with `PSEUDOCONSOLE_INHERIT_CURSOR`,
+    passes no handle list, no job list and `bInheritHandles = 0`; the pseudo console sends a
+    cursor-position request (`ESC [ 6 n`) and **holds the shell back until it is answered**, so
+    the daemon's relay must deliver it to the emulator (xterm.js answers) and the tests answer it.
+  - **Decisions:** the supervisor's own `pidfd_open` check is repeated in `Pty::spawn` so the
+    refusal is a typed `SpawnError::MissingSyscall` before anything starts; the supervisor still
+    fails closed on its own (exit 121). `openat2` belongs to stage 6a, whose notes now say so. The
+    explicit sweep of `/proc/self/fd` with `fcntl_setfd` is **not done**: it needs a
+    `BorrowedFd` from a raw number, which is `unsafe`. Everything the supervisor opens is
+    close-on-exec by construction (std and rustix always set it), `portable-pty` has already
+    closed the inherited descriptors, and a test lists the shell's descriptors. Pid reuse in the
+    kill-all is **closed, not accepted**: each target is signalled through a pidfd opened after
+    the walk, only if the start time read from `/proc` still equals the walk's (a pidfd cannot
+    follow a pid to another process). The by-session sweep after the supervisor exits accepts
+    that its session id is a pid that is free once reaped. On Windows the Job Object needs no
+    unsafe code (`win32job`, as `processes.rs` does), so nothing was added to `imperium-ipc`.
+    The supervisor's wait uses `rustix::process::wait` (any child): `waitpid(None)` waits for the
+    caller's process group only. `getsid` is not used on Linux: `rustix` panics on the 0 the kernel
+    reports for a session outside the pid namespace, so the sweep reads `/proc`.
+  - **Stage notes:** SIGCONT to the shell's group follows `tcsetpgrp` (test: handover delayed
+    800 ms, `bash -i` and `python3 -q` reach a prompt); `tcsetpgrp` is called once, only after
+    `tcgetpgrp` shows the supervisor's own group in the foreground (trace test); a refused
+    `pidfd_open` fails closed twice (forced in the supervisor, and in `Pty::spawn`); pid reuse as
+    above (unit test with a wrong start time).
+  - **Known window:** a Ctrl+C that reaches the supervisor between its `exec` and the handlers
+    being installed (milliseconds) has the default action and ends it; the test sends the Ctrl+C
+    once the supervisor reports its handlers in place. The supervisor's poll also wakes every
+    200 ms, a net under the self-pipe.
+  - **Acceptance mapping** (`cargo test -p imperium-pty`): `tests/pty.rs` (all OSes: echo round
+    trip, size and resize, working folder, background job, exit code, split character, 2 MiB
+    burst, input queue bound, short-lived thread, bad requests) and the unit tests of `ring.rs`;
+    `tests/supervisor.rs` (Linux: setsid job, master closed, `SIGKILL` of the stand-in daemon,
+    wrong start time, `SIGTERM`, fork loop, no zombie, unrelated `waitpid`, no descriptor above 2,
+    the three Ctrl+C checks, the late handover, the `tcsetpgrp` trace, the missing `pidfd_open`);
+    `tests/missing_syscall.rs`.
 - Handoff notes: the crate knows nothing of sessions or protocol; the shell choice and
   environment are stage 2a's. Changing `Cargo.lock` runs the presence end-to-end job (detect
   lists it); expect it.
