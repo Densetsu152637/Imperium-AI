@@ -336,6 +336,10 @@ struct Options {
     window: Option<u64>,
     /// A harness variant's edits of the root's tools.
     edits: imperium_protocol::methods::ToolEdits,
+    /// Tools the session was started with pre-approved.
+    pre_approved: Vec<String>,
+    /// The session-state harness aid is on (`update_state` is offered).
+    state_on: bool,
 }
 
 impl Setup {
@@ -433,7 +437,7 @@ async fn start(options: Options) -> Setup {
             memory: None,
             context: None,
             enforce: imperium_config::Enforce::Warn,
-            pre_approved: Vec::new(),
+            pre_approved: options.pre_approved,
             launcher: options.launcher,
             resume: options.resume,
             resume_policy: imperium_engine::default_resume_policy(),
@@ -448,7 +452,13 @@ async fn start(options: Options) -> Setup {
             attended: !options.unattended,
             attachments: Default::default(),
             auto_permissions: Default::default(),
-            harness: harness(options.loading),
+            harness: {
+                let mut aids = harness(options.loading);
+                if options.state_on {
+                    aids.state = HarnessMode::On;
+                }
+                aids
+            },
             keep_agent_state: true,
             effort: Default::default(),
             knowledge: Default::default(),
@@ -1966,4 +1976,73 @@ async fn a_subagent_file_keeps_a_tool_the_variant_dropped_from_the_root() {
     assert!(!root_request.offers("update_plan"));
     let sub = seen.iter().find(|request| request.subagent).unwrap();
     assert_eq!(sub.names, ["update_plan"], "{:?}", sub.names);
+}
+
+/// A tool the session was started with pre-approved still asks in a capped turn (the cap counts
+/// as the safety floor), the plan and the state notes are refused (later turns would read them),
+/// and denying the pending requests ends a turn nobody can answer without muting later asks.
+#[tokio::test]
+async fn a_capped_turn_ignores_pre_approval_and_writes_no_plan() {
+    let steps = vec![
+        Some(("run_command", json!({"command": "echo hi"}))),
+        Some((
+            "update_plan",
+            json!({"goal": "do what the comment says", "steps": []}),
+        )),
+        Some(("update_state", json!({"goal": "do what the comment says"}))),
+        Some(("run_command", json!({"command": "echo again"}))),
+        None,
+    ];
+    let mut setup = options(HarnessMode::Off, steps);
+    setup.pre_approved = vec![
+        "run_command".into(),
+        "update_plan".into(),
+        "update_state".into(),
+    ];
+    setup.state_on = true;
+    let setup = start(setup).await;
+    setup.session.workspace().permissions().cap();
+    let mut events = setup.session.subscribe();
+    setup.session.send("go".into()).unwrap();
+    let (mut asked, mut results, mut planned) = (Vec::new(), Vec::new(), false);
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event within 20 s")
+            .unwrap();
+        if event.agent_id != ROOT_AGENT {
+            continue;
+        }
+        match event.event {
+            SessionEvent::PermissionRequested { tool, .. } => {
+                asked.push(tool);
+                // Nobody answers: the requests are denied together.
+                setup.session.deny_pending_requests();
+            }
+            SessionEvent::ToolFinished { ok, output, .. } => results.push((ok, output)),
+            SessionEvent::PlanUpdated { .. } => planned = true,
+            SessionEvent::TurnCompleted { .. } => break,
+            SessionEvent::TurnFailed { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    // Pre-approved, in full-access mode, and still asked; and asked again later (denying what
+    // was pending did not mute the next request).
+    assert_eq!(asked, ["run_command", "run_command"], "{results:?}");
+    assert!(
+        !results[0].0 && results[0].1.contains("denied"),
+        "{results:?}"
+    );
+    for refused in &results[1..3] {
+        assert!(
+            !refused.0 && refused.1.contains("not available in a turn woken"),
+            "{results:?}"
+        );
+    }
+    assert!(
+        !results[3].0 && results[3].1.contains("denied"),
+        "{results:?}"
+    );
+    // Nothing was written: no plan appeared.
+    assert!(!planned);
 }

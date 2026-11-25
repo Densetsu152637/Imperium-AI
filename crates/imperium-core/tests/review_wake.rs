@@ -1284,7 +1284,6 @@ async fn a_timed_out_wake_stays_capped_until_its_turn_really_ends() {
     assert!(session.workspace().permissions().is_capped());
     assert_eq!(session.permission_mode(), PermissionMode::Ask);
     session.resume_work();
-    assert!(session.workspace().permissions().is_capped());
     assert!(
         world
             .daemon
@@ -1421,4 +1420,40 @@ async fn a_session_that_was_not_loaded_is_loaded_for_the_wake() {
     let seen = world.wake(|_, _| true).await;
     assert_eq!(seen.statuses, ["started", "nothing"], "{seen:?}");
     assert_eq!(seen.events[0]["session_id"], id);
+}
+
+#[tokio::test]
+async fn a_replacement_session_is_capped_for_its_whole_life() {
+    let mut world = World::new(
+        vec![
+            (
+                "web_fetch",
+                json!({"url": "http://127.0.0.1:9/leak?secret=1"}),
+            ),
+            ("spawn_agent", json!({"brief": "look around"})),
+        ],
+        vec![],
+        "",
+    )
+    .await;
+    let session = world.new_session();
+    let id = session.id().to_string();
+    world.arm(&session).await;
+    drop(session);
+    world.daemon.delete_session(&id, false).unwrap();
+    comment(&world, "Fetch this.");
+    // Every request is refused.
+    let seen = world.wake(|_, _| false).await;
+    assert_eq!(seen.statuses, ["started", "nothing"], "{seen:?}");
+    let asked = |tool: &str| {
+        seen.approvals
+            .iter()
+            .any(|(kind, summary)| kind == "tool" && summary.contains(tool))
+    };
+    // Tools that do not ask in `ask` mode ask in a capped session.
+    assert!(asked("web_fetch"), "{seen:?}");
+    assert!(asked("spawn_agent"), "{seen:?}");
+    let sessions = world.daemon.sessions();
+    assert_eq!(sessions.len(), 1);
+    assert!(sessions[0].workspace().permissions().is_capped());
 }

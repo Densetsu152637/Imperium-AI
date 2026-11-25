@@ -83,6 +83,13 @@ impl SharedMode {
         self.1.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// Starts a cap only when none is held, as one step: false when another holder has one.
+    pub fn try_cap(&self) -> bool {
+        self.1
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
     pub fn uncap(&self) {
         let mut current = self.1.load(Ordering::SeqCst);
         while current > 0 {
@@ -197,6 +204,7 @@ impl Permissions {
         let rule = self.evaluate(tool, target);
         let floored = floor_override.unwrap_or_else(|| safety_floor(kind, target));
         let mut decision = decide_call(self.mode(), kind, rule, floored);
+        let mut floored = floored;
         // A capped turn asks for everything but a read, whatever the tool's default is (web
         // search and fetch, browser, MCP and extension tools on an allow list, ...) and
         // whatever rules, session approvals or pre-approval say. Deny rules and plan mode
@@ -206,6 +214,9 @@ impl Permissions {
             && matches!(decision, Decision::Run | Decision::Ask { .. })
         {
             decision = Decision::Ask { sticky: false };
+            // Like the safety floor: a tool the session was started with pre-approved, and the
+            // auto-mode classifier, do not settle it.
+            floored = true;
         }
         Judgement {
             decision,
@@ -226,6 +237,11 @@ impl Permissions {
 
     pub fn uncap(&self) {
         self.mode.uncap();
+    }
+
+    /// Like [`Self::cap`], but only when no cap is held; whether it was taken.
+    pub fn try_cap(&self) -> bool {
+        self.mode.try_cap()
     }
 
     /// Changes the session's permission mode from its agents' next calls on.
@@ -1518,6 +1534,11 @@ mod tests {
             permissions.cap();
             permissions.cap();
             assert_eq!(judge(&permissions), ASK_EVERY_TIME, "{tool}");
+            // Floored, so a pre-approved tool is asked about too.
+            assert!(
+                permissions.judge(tool, &Target::Other, kind, None).floored,
+                "{tool}"
+            );
             permissions.uncap();
             assert!(permissions.is_capped());
             permissions.uncap();

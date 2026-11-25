@@ -6,8 +6,10 @@
 //!   cached for five minutes); everyone else's comments are counted on the card and wake nothing;
 //! - the text reaches the session only inside the untrusted-data envelope Fix CI uses for logs,
 //!   built here by the daemon, never by the model;
-//! - the woken turn runs capped (`ask`, or `plan` when the session is in it), nothing is
-//!   pre-approved, and the session's own mode comes back when the turn ends;
+//! - the woken turn runs capped: the mode is the stricter of the session's and `ask`, and every
+//!   call that is not a read asks (`Permissions::cap`), nothing is pre-approved, and the
+//!   session's own mode comes back when the turn and its subagents end; a replacement session
+//!   is capped for its whole life (`SessionOptions::capped`);
 //! - the owning checkout is checked first (on the pull request's branch, not behind or diverged
 //!   from `origin/<branch>`, clean); when it fails, or the session is deleted or archived, a new
 //!   unattended session works in the pull request's own worktree instead;
@@ -916,12 +918,13 @@ async fn owner_turn(
             let settled = settle_agents(session, Some(timeout)).await;
             if !settled {
                 session.stop();
+                session.deny_pending_requests();
                 hold(
                     Arc::clone(state),
                     Arc::clone(session),
                     cap,
                     events,
-                    id,
+                    (id, prompt.to_string()),
                     started,
                 );
                 return Owned::Failed(
@@ -939,12 +942,13 @@ async fn owner_turn(
         Err(_) => {
             // Stopping pauses the turn; it would go on uncapped if the cap were lifted now.
             session.stop();
+            session.deny_pending_requests();
             hold(
                 Arc::clone(state),
                 Arc::clone(session),
                 cap,
                 events,
-                id,
+                (id, prompt.to_string()),
                 started,
             );
             Owned::Failed(format!(
@@ -970,12 +974,14 @@ fn hold(
     session: Arc<Session>,
     cap: crate::permissions::TurnCap,
     mut events: broadcast::Receiver<AgentEvent>,
-    id: String,
+    (id, prompt): (String, String),
     mut started: bool,
 ) {
     tokio::spawn(async move {
-        if started {
-            let (mut reply, prompt) = (String::new(), String::new());
+        // A message that never started is taken out of the queue; if it has just started, its
+        // turn is followed to its end like one that had.
+        if started || session.remove_queued(None, &id).is_err() {
+            let mut reply = String::new();
             let _ = follow(
                 None,
                 &session,
@@ -987,9 +993,6 @@ fn hold(
                 &|| {},
             )
             .await;
-        } else {
-            // The message never started: take it out of the queue if it is still there.
-            let _ = session.remove_queued(None, &id);
         }
         settle_agents(&session, None).await;
         drop(cap);
@@ -1078,12 +1081,19 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
                         // pre-approved, so every edit and command waits for the user.
                         permission_mode: Some(imperium_api::PermissionMode::Ask),
                         unattended: true,
+                        // Every call that is not a read asks, for the session's whole life.
+                        capped: true,
                         ..crate::SessionOptions::default()
                     },
                     WAKE_TIMEOUT,
                 )
                 .await;
             if !ok {
+                // Nobody answers its requests any more: a late "allow" must not run a call
+                // in a session already reported as failed.
+                if let Some(worker) = session_id.as_deref().and_then(|id| state.session(id)) {
+                    worker.deny_pending_requests();
+                }
                 say("failed", session_id, summary);
                 return;
             }

@@ -952,6 +952,22 @@ impl Agent {
         // memory, loading plugins), whatever the tool's own policy says. The call is already
         // the effective one (`call_tool` is unwrapped). Planning and state notes stay in the
         // conversation, and the other agent tools only read or wait, so they run.
+        // The plan and the state notes are read again at the top of later turns (and after a
+        // compaction), where they would be trusted: a turn woken by text other people wrote
+        // writes neither, so nothing it plants outlives it.
+        if self.workspace.permissions().is_capped()
+            && matches!(tool, AgentTool::UpdatePlan | AgentTool::UpdateState)
+        {
+            return self.tool_finished(
+                call,
+                name,
+                false,
+                format!(
+                    "error: {name} is not available in a turn woken by review comments, because what it writes is read again in later turns; put the plan in your reply instead. It was not run."
+                ),
+                None,
+            );
+        }
         if self.workspace.permissions().is_capped()
             && matches!(
                 tool,

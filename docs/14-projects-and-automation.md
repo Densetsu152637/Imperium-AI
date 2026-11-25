@@ -1314,7 +1314,11 @@ can comment, so nothing in it is trusted:
   wake counts only from the start of its own turn. It is held until the turn and its subagents
   are over, and after a timeout or a stop until the turn really ends. The session's mode
   comes back afterwards; the user's later messages are not capped. A question the model asks the
-  user waits for the user, within the turn's time limit.
+  user waits for the user, within the turn's time limit. A wake that times out stops the session,
+  denies the requests still waiting (the daemon reports the wake as failed, so a late "allow"
+  must not run anything), and leaves the session capped until the user resumes it and the turn
+  finishes, or cancels it; a replacement session whose wake fails has its pending requests
+  denied the same way.
 - **Where it runs.** In the owning session's folder (loaded from its record if it is not running),
   only if that session is bound to this pull request now and its `origin` is the repository (the
   ledger file is not trusted to name an owner), and the folder is on the pull request's

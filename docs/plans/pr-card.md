@@ -201,8 +201,10 @@ the PR touches.
      (`Permissions::cap`): **every call that is not a read asks, every time, with no exception**
      (file writes and edits, commands, web, browser, MCP and extension tools, `activate_plugin`,
      `spawn_agent`, `start_session`, memory writes, also through `call_tool`); plain reads (glob,
-     grep, read_file, memory reads) run. `update_plan` and `update_state` write only the agent's
-     own notes in the conversation and run. The cap is applied before the wake message is sent,
+     grep, read_file, memory reads) run. `update_plan` and `update_state` are refused (they are
+     re-read at the top of later turns, where they would be trusted). A session started for a
+     wake is capped for its whole life, and the cap also counts as the safety floor, so
+     pre-approved tools ask too. The cap is applied before the wake message is sent,
      the session is checked again then, and the wake is recognised by its own turn's start; it
      is held until the turn and its subagents end, and after a timeout or a stop until the turn
      really ends. The wake pre-approves nothing, and in

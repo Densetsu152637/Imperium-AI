@@ -785,9 +785,13 @@ outside the conversation: `spawn_agent`, `start_session`, `steer_agent`, `queue_
 `resume_agent`, `keep_as_knowledge`, `ask_agent`, `delegate_chunks`, `memory_remember`,
 `memory_edit` and `memory_forget`, also when reached through `call_tool`. Deny rules still refuse
 and plan mode still refuses. Reads (`read_file`, `list_dir`, `glob`, `grep`, `memory_search`,
-`memory_read`) run. `update_plan` and `update_state` only write the agent's own working notes,
-which live in the conversation and persist nowhere else, so they run; `await_tasks`,
+`memory_read`) run. `update_plan` and `update_state` are **refused** ("not available in a turn
+woken by review comments"): what they write is read again at the top of later turns and after a
+compaction, where it would be trusted, so nothing a capped turn plants outlives it; `await_tasks`,
 `list_agents`, `list_knowledge_agents`, `load_skill`, `context_load` and `ask_user` read or wait.
+The cap also counts as the safety floor, so a tool the session was started with pre-approved still
+asks. A session the daemon starts for a wake (a deleted or archived owner, or a failed checkout) is
+capped for its whole life (`SessionOptions::capped`, kept in its record).
 The session's rules and approvals are untouched, and the session's own mode comes back when
 the turn **and its subagents** are over. Subagents share the session's permissions, so the cap
 is held until none is working (a paused one is cancelled). If the turn does not end in time the

@@ -112,6 +112,7 @@ impl DaemonState {
                 background: meta["background"].as_bool().unwrap_or(false),
                 // Stays unattended after a restart even when its pre-approved tools are gone.
                 unattended: recorded_unattended(meta),
+                capped: meta["capped"].as_bool().unwrap_or(false),
                 run_now: meta["run_now"].as_bool().unwrap_or(false),
                 // A branch asking for a worktree of its own gets a new one.
                 worktree,

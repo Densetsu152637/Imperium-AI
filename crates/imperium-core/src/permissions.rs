@@ -555,10 +555,10 @@ pub(crate) struct TurnCap {
 impl TurnCap {
     pub(crate) fn apply(session: &std::sync::Arc<imperium_engine::Session>) -> Option<Self> {
         let permissions = session.workspace().permissions();
-        if permissions.is_capped() {
+        // One step, so two wakes cannot both pass and one save the other's capped mode.
+        if !permissions.try_cap() {
             return None;
         }
-        permissions.cap();
         let original = session.permission_mode();
         let capped = capped_mode(original);
         session.set_permission_mode(capped);
