@@ -344,6 +344,37 @@ fn walk(root: &Path, prefix: &str, stamps: &mut Vec<Stamp>) -> Result<Option<Str
     Ok(None)
 }
 
+/// Opens `path` for reading without following a link at its last part: `O_NOFOLLOW` on Unix, and on
+/// Windows the reparse point itself (which is then refused), so a file swapped for a link after the
+/// walk is an error rather than a read of what it points to.
+fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[allow(clippy::cast_possible_wrap)]
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // `O_NOFOLLOW` on macOS and the BSDs.
+        options.custom_flags(0x0100);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_OPEN_REPARSE_POINT: open the link itself, not its target.
+        options.custom_flags(0x0020_0000);
+    }
+    let file = options.open(path)?;
+    if is_link(&file.metadata()?) {
+        return Err(std::io::Error::other("it is a link"));
+    }
+    Ok(file)
+}
+
 /// The hash of the files `stamps` lists, each read once; a file whose length changed while it
 /// was read is an error.
 fn hash_files(root: &Path, stamps: &[Stamp]) -> Result<String, String> {
@@ -351,7 +382,7 @@ fn hash_files(root: &Path, stamps: &[Stamp]) -> Result<String, String> {
     let mut buffer = vec![0u8; 64 * 1024];
     for (relative, _, _) in stamps {
         let fail = |error: std::io::Error| format!("{relative}: {error}");
-        let mut file = std::fs::File::open(root.join(relative)).map_err(fail)?;
+        let mut file = open_nofollow(&root.join(relative)).map_err(fail)?;
         let length = file.metadata().map_err(fail)?.len();
         digest.update(relative.as_bytes());
         digest.update([0u8]);
@@ -499,6 +530,14 @@ pub(crate) fn record_approval(
 /// The plugin folder `folder`, canonical, with its content hash and run-summary digest as they
 /// are now, and the plugin it holds. A folder that is or holds a link has no hash to approve.
 pub(crate) fn content(folder: &Path) -> Result<(PathBuf, String, String, plugins::Plugin), String> {
+    // The folder itself must not be a link or junction: canonicalising it would follow the link and
+    // hash, and approve, whatever it points to.
+    if std::fs::symlink_metadata(folder).is_ok_and(|meta| is_link(&meta)) {
+        return Err(format!(
+            "{} is a link or junction: it is not approved",
+            folder.display()
+        ));
+    }
     let canon = folder
         .canonicalize()
         .map_err(|error| format!("{}: {error}", folder.display()))?;
@@ -1319,5 +1358,19 @@ mod tests {
         eprintln!("1,000 files: first look {hashing:?}, cached look {cached:?}");
         assert_eq!(first.hash, second.hash);
         assert!(hashing < Duration::from_secs(30), "{hashing:?}");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_file_swapped_for_a_link_is_not_followed_when_it_is_hashed() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        std::fs::write(&target, "secret").unwrap();
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(open_nofollow(&link).is_err());
+        assert!(open_nofollow(&target).is_ok());
+        // `hash_files` is handed a list that names the link, as when a file is swapped after the walk.
+        let stamps = vec![("link.txt".to_string(), 6, None)];
+        assert!(hash_files(dir.path(), &stamps).is_err());
     }
 }

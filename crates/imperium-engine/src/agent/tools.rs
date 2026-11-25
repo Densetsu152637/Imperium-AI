@@ -32,7 +32,13 @@ impl Agent {
     pub(super) fn offered_tools(&self) -> (Vec<ToolSpec>, Vec<(Category, String)>) {
         self.enforce_lock();
         let (specs, groups) = self.tool_offered();
-        let texts = tool_texts(&specs, &groups);
+        // The variant's edits change what the model reads, so the accounting counts the tools
+        // as sent (the engine keeps its own names in `specs`).
+        let texts = match self.shown_tools(&specs) {
+            Some(shown) => tool_texts(&shown, &groups),
+            None => tool_texts(&specs, &groups),
+        };
+        self.report_catalog(&specs);
         (specs, texts)
     }
 
@@ -47,6 +53,28 @@ impl Agent {
     /// [`Agent::tool_universe`]; `keep_activation` keeps `activate_plugin` listed after the
     /// last plugin is active (loading on, where the offered list must not change).
     pub(super) fn build_universe(&self, keep_activation: bool) -> (Vec<ToolSpec>, Vec<Category>) {
+        let (specs, groups) = self.universe_before_edits(keep_activation);
+        // A variant's dropped tools leave the root's universe (and so its list and searches).
+        let Some(editing) = self
+            .shared
+            .tool_edits
+            .as_ref()
+            .filter(|editing| self.id == ROOT_AGENT && !editing.drops().is_empty())
+        else {
+            return (specs, groups);
+        };
+        specs
+            .into_iter()
+            .zip(groups)
+            .filter(|(spec, _)| !editing.dropped(&spec.name))
+            .unzip()
+    }
+
+    /// [`Agent::build_universe`] before a variant's drops.
+    pub(super) fn universe_before_edits(
+        &self,
+        keep_activation: bool,
+    ) -> (Vec<ToolSpec>, Vec<Category>) {
         if self.single_call {
             return (Vec::new(), Vec::new());
         }
@@ -99,7 +127,11 @@ impl Agent {
         if self.shared.memory.is_some() {
             tools.extend([memory_search_spec(), memory_read_spec()]);
             if self.can_delegate {
-                tools.push(memory_remember_spec());
+                tools.extend([
+                    memory_remember_spec(),
+                    memory_edit_spec(),
+                    memory_forget_spec(),
+                ]);
             }
         }
         if self.can_delegate {
@@ -398,12 +430,21 @@ impl Agent {
             ));
         }
         match self.shared.extensions.plugins.activate(&args.name).await? {
-            Activation::AlreadyActive { tools } => Ok(format!(
-                "Plugin {} is already active. Its tools: {}",
-                args.name,
-                tools.join(", ")
-            )),
+            Activation::AlreadyActive { tools } => {
+                // The model now knows the names, which a later compaction lists.
+                if self.reactive() {
+                    self.add_loaded(tools.iter().cloned());
+                }
+                Ok(format!(
+                    "Plugin {} is already active. Its tools: {}",
+                    args.name,
+                    tools.join(", ")
+                ))
+            }
             Activation::Started { tools, failed } => {
+                if self.reactive() {
+                    self.add_loaded(tools.iter().cloned());
+                }
                 self.emit(SessionEvent::ExtensionLoaded {
                     kind: ExtensionKind::Plugin,
                     name: args.name.clone(),
@@ -704,6 +745,7 @@ impl Agent {
         };
         self.call_started.store(false, Ordering::SeqCst);
         self.call_args_failed.store(false, Ordering::SeqCst);
+        self.report_call(&effective.function.name, proxied);
         let output = self.run_effective(&effective).await;
         self.with_schema_advice(&effective, proxied, output)
     }
@@ -735,6 +777,18 @@ impl Agent {
     }
 
     pub(super) async fn run_tool_once(&mut self, call: &ToolCall) -> String {
+        // A variant's renamed tool is the engine's again before any check looks at the name
+        // (the shell lock, a fork's and a launcher's lists, the named agent's tools).
+        let engine_call;
+        let call = match self.engine_name(&call.function.name) {
+            Some(name) => {
+                let mut mapped = call.clone();
+                mapped.function.name = name;
+                engine_call = mapped;
+                &engine_call
+            }
+            None => call,
+        };
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
         // The files as they were before the turn are being recorded beside the model call; no
@@ -786,6 +840,9 @@ impl Agent {
         // With loading on, the offered list says nothing of what may be called, so a call is
         // checked against the agent's tools as they are now. With it off the call runs as it
         // always has.
+        if let Some(why) = self.dropped_refusal(name) {
+            return self.tool_finished(call, name, false, format!("error: {why}"), None);
+        }
         if self.reactive() && !self.in_universe(name) {
             return self.tool_finished(
                 call,
@@ -833,6 +890,12 @@ impl Agent {
             "memory_remember" if self.shared.memory.is_some() && self.can_delegate => {
                 AgentTool::MemoryRemember
             }
+            "memory_edit" if self.shared.memory.is_some() && self.can_delegate => {
+                AgentTool::MemoryEdit
+            }
+            "memory_forget" if self.shared.memory.is_some() && self.can_delegate => {
+                AgentTool::MemoryForget
+            }
             _ => {
                 return match self.provider_for(name) {
                     Some(provider) => self.run_provider(provider.as_ref(), call).await,
@@ -862,6 +925,8 @@ impl Agent {
             AgentTool::MemorySearch => "search memory",
             AgentTool::MemoryRead => "read a memory",
             AgentTool::MemoryRemember => "save a memory",
+            AgentTool::MemoryEdit => "edit a memory",
+            AgentTool::MemoryForget => "forget a memory",
         };
         // Plan mode only reads: starting a session (which would not be in plan mode) or saving
         // a memory changes things.
@@ -871,8 +936,13 @@ impl Agent {
                 .launcher
                 .as_ref()
                 .is_some_and(|launcher| launcher.allows_start_in_plan_mode());
-        if matches!(tool, AgentTool::StartSession | AgentTool::MemoryRemember)
-            && !start_allowed
+        if matches!(
+            tool,
+            AgentTool::StartSession
+                | AgentTool::MemoryRemember
+                | AgentTool::MemoryEdit
+                | AgentTool::MemoryForget
+        ) && !start_allowed
             && self.workspace.permissions().mode() == PermissionMode::Plan
         {
             return self.tool_finished(call, name, false, refused(Refusal::Plan, summary), None);
@@ -900,6 +970,8 @@ impl Agent {
             AgentTool::MemorySearch => self.memory_search(arguments),
             AgentTool::MemoryRead => self.memory_read(arguments),
             AgentTool::MemoryRemember => self.memory_remember(arguments).await,
+            AgentTool::MemoryEdit => self.memory_edit(arguments).await,
+            AgentTool::MemoryForget => self.memory_forget(arguments).await,
         };
         let (ok, output) = match result {
             Ok(output) => (true, output),
@@ -994,7 +1066,8 @@ impl Agent {
             }
         }
         let started = self.tool_started(call, tool, summary);
-        let (ok, output) = match invocation.execute(&self.workspace).await {
+        let window = self.expected_window();
+        let (ok, output) = match invocation.execute_in(&self.workspace, window).await {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
@@ -1026,6 +1099,7 @@ impl Agent {
             .filter(|step| step.status == StepStatus::Done)
             .count();
         let summary = format!("plan updated: {done} of {} steps done", plan.steps.len());
+        *lock(&self.plan) = Some(plan.clone());
         self.emit(SessionEvent::PlanUpdated { plan });
         Ok(summary)
     }
@@ -1047,6 +1121,8 @@ pub(super) enum AgentTool {
     MemorySearch,
     MemoryRead,
     MemoryRemember,
+    MemoryEdit,
+    MemoryForget,
     ContextLoad,
     StartSession,
     ListAgents,

@@ -39,6 +39,8 @@ pub const WRITE_TOOLS: &[&str] = &[
     "command_output",
     "command_stop",
     "memory_remember",
+    "memory_edit",
+    "memory_forget",
 ];
 
 /// What a bridged call's permission request summary starts with. The request is the user's to
@@ -69,6 +71,8 @@ pub fn tools() -> Vec<BridgeTool> {
         crate::agent::memory_search_spec(),
         crate::agent::memory_read_spec(),
         crate::agent::memory_remember_spec(),
+        crate::agent::memory_edit_spec(),
+        crate::agent::memory_forget_spec(),
     ]);
     for definition in [contract::web_search(), contract::web_fetch()] {
         specs.push(imperium_api::ToolSpec {
@@ -270,6 +274,10 @@ mod tests {
         assert!(check("write_file", false).is_err());
         assert!(check("run_command", false).is_err());
         assert!(check("write_file", true).is_ok());
+        for name in ["memory_remember", "memory_edit", "memory_forget"] {
+            assert!(check(name, false).is_err(), "{name}");
+            assert!(check(name, true).is_ok(), "{name}");
+        }
         // Delegation, questions to the user and the like are never bridged.
         for name in ["spawn_agent", "ask_user", "start_session", "update_plan"] {
             assert!(check(name, true).is_err(), "{name}");

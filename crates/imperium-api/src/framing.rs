@@ -32,8 +32,9 @@ pub fn defuse_tool_frame(text: &str) -> String {
 
 /// The tags the harness and the rest of the conversation's framing use; text that names one is
 /// defused before it goes into a block, so a tool result cannot close or open one.
-pub const HARNESS_TAGS: [&str; 12] = [
+pub const HARNESS_TAGS: [&str; 15] = [
     "session-state",
+    "current-plan",
     "ambiguity-hints",
     "resolved-request",
     "original-message",
@@ -45,6 +46,8 @@ pub const HARNESS_TAGS: [&str; 12] = [
     "workflow-instructions",
     "attachments",
     "steering",
+    "background-notice",
+    "loaded-tools",
 ];
 
 /// `text` with the harness's tag names defused (`<tag` becomes `< tag`), so text from a tool

@@ -55,6 +55,12 @@ impl Agent {
         if tokens < trigger {
             return;
         }
+        // Old results of repeatable tools are cheaper to give up than the conversation is to
+        // summarise: when stubbing them gets the conversation well under the trigger, that is
+        // all that happens.
+        if self.clear_stale_results(tokens, trigger) {
+            return;
+        }
         // What compaction cannot shrink: the system prompt, the tools, and the carried context.
         let fixed = estimate_tokens(&serde_json::to_string(&self.messages[0]).unwrap_or_default())
             + tools
@@ -100,6 +106,40 @@ impl Agent {
                 });
             }
         }
+    }
+
+    /// Replaces the results of repeatable tools from older turns with stubs
+    /// ([`compact::stale_results`]) when that brings a conversation of `tokens` under
+    /// `BELOW_TRIGGER_PERCENT` of `trigger`, the same room a summary aims for. Otherwise the
+    /// conversation is left as it was (the summary reads the full results). Only runs when a
+    /// compaction is due, so the prompt prefix a provider or local model has cached is not
+    /// rewritten on every call. Returns whether it cleared.
+    fn clear_stale_results(&mut self, tokens: u64, trigger: u64) -> bool {
+        if !self.shared.harness.clear_stale_results {
+            return false;
+        }
+        let keep = self.shared.harness.clear_after_turns.max(1) as usize;
+        let stale = compact::stale_results(&self.messages, keep);
+        let freed: u64 = stale.iter().map(|result| result.freed_tokens).sum();
+        let after = tokens.saturating_sub(freed);
+        if stale.is_empty() || after >= trigger * compact::BELOW_TRIGGER_PERCENT / 100 {
+            return false;
+        }
+        for result in &stale {
+            if let ChatMessage::Tool { content, .. } = &mut self.messages[result.index] {
+                *content = result.stub.clone();
+            }
+        }
+        self.last_reported = None;
+        self.last_call = None;
+        self.checkpoint();
+        self.emit(SessionEvent::Notice {
+            message: format!(
+                "cleared {} old tool results (about {freed} tokens) instead of summarising the conversation; the calls stay, and a result can be fetched again",
+                stale.len()
+            ),
+        });
+        true
     }
 
     /// Switches this agent to `target` from its next turn, without loading or calling it: the
@@ -178,6 +218,15 @@ impl Agent {
         self.fit_pending = false;
         self.previous = None;
         Ok(Some(fit))
+    }
+
+    /// The context window this agent's model is expected to have: the model table's, else (for a
+    /// local model) what the runtime would start it with.
+    pub(super) fn expected_window(&self) -> Option<u64> {
+        self.model.context_window.or_else(|| {
+            self.local_models()
+                .and_then(|local| local.planned_context(&self.model.model))
+        })
     }
 
     /// The conversation estimated against the window this agent's model is expected to have,
@@ -275,7 +324,12 @@ impl Agent {
         // The system prompt and the tools stay whatever happens, with at least a short summary.
         // Workflow context loaded so far is carried over verbatim, so it is part of the base.
         let pinned_all = compact::pinned_context(&self.messages, &self.spans, self.messages.len());
-        let pinned_tokens = estimate_tokens(&pinned_all);
+        // The plan is put back after the summary too, so it is part of the base as well.
+        let plan_tokens = lock(&self.plan)
+            .as_ref()
+            .and_then(crate::plan::block)
+            .map_or(0, |block| estimate_tokens(&block));
+        let pinned_tokens = estimate_tokens(&pinned_all) + plan_tokens;
         let base = before.fixed + before.messages[0] + compact::MESSAGE_FORMATTING + pinned_tokens;
         if base + compact::MIN_SUMMARY_TOKENS > budget {
             return Err(SwitchError::TooLarge {
@@ -302,6 +356,8 @@ impl Agent {
         }
         let free = aim.saturating_sub(base);
         let allowance = (free / 3).clamp(compact::MIN_SUMMARY_TOKENS, compact::MAX_SUMMARY_TOKENS);
+        // The tools looked up so far, as names, for the model to search again.
+        let loaded = self.loaded_tools_block();
         let mut cut = compact::choose_cut(
             &self.messages,
             &before,
@@ -313,13 +369,14 @@ impl Agent {
         });
         let (mut summary, mut summary_model) = self.summarise(target, cut, allowance).await?;
         for _ in 0..compact::MAX_ATTEMPTS {
-            let block = compact::summary_block(&summary);
+            let block = compact::summary_block(&summary, &loaded);
             let pinned = compact::pinned_context(&self.messages, &self.spans, cut);
             let (mut messages, mut spans) =
                 compact::rebuild(&self.messages, &self.spans, cut, &block, &pinned);
             if self.can_delegate {
                 reattach_state(&mut messages, &mut spans, &self.state);
             }
+            crate::plan::reattach(&mut messages, &mut spans, lock(&self.plan).as_ref());
             let after = self
                 .measure_for(target, &messages, &spans, &tools, scale)
                 .await?;
@@ -330,6 +387,8 @@ impl Agent {
                 self.spans = spans;
                 self.last_reported = None;
                 self.last_call = None;
+                // The earlier `tool_search` results are gone: parameters are advised again.
+                self.forget_schemas();
                 self.emit(SessionEvent::ContextCompacted {
                     model: target.spec.clone(),
                     before_tokens,

@@ -27,7 +27,9 @@ per-device scope editing.
 - Approve or deny queued permission requests from [project agents](14-projects-and-automation.md#project-agent).
 - Receive notifications: session finished, approval needed, schedule failed, budget reached.
 - View artefacts (files, diffs, images, audio). Not in scope: running models on the phone, or
-  editing large codebases on the phone.
+  editing large codebases on the phone. The desktop's Files and Terminal panels are not offered to
+  a phone: a paired phone cannot read a session's folders through `files.*` or use a terminal
+  ([plan](plans/terminal-file-panes.md), decision D8).
 
 ## Pairing
 

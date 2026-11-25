@@ -62,6 +62,9 @@ pub struct Workspace {
     /// The environment keeps `gh`'s login in its commands (`github.session_gh`): the GitHub
     /// variables are not dropped and the OS sandbox does not hide `gh`'s config folder.
     session_gh: bool,
+    /// The agent whose tool calls this workspace handle runs, so a background command it starts
+    /// is reported to it (unset for the session's own workspace).
+    owner: Option<String>,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -124,6 +127,7 @@ impl Workspace {
             protected: Vec::new(),
             read_only: false,
             session_gh: false,
+            owner: None,
         })
     }
 
@@ -173,6 +177,7 @@ impl Workspace {
             protected: Vec::new(),
             read_only: false,
             session_gh: false,
+            owner: None,
         })
     }
 
@@ -479,6 +484,20 @@ impl Workspace {
             session_gh: on,
             ..self
         }
+    }
+
+    /// The same workspace for the agent `owner`: a background command started through it is
+    /// reported to that agent (clones share the process table).
+    pub fn with_owner(&self, owner: &str) -> Self {
+        Workspace {
+            owner: Some(owner.to_string()),
+            ..self.clone()
+        }
+    }
+
+    /// The agent a background command started through this workspace belongs to, if any.
+    pub fn owner(&self) -> Option<&str> {
+        self.owner.as_deref()
     }
 
     /// Whether commands keep `gh`'s login ([`Workspace::with_session_gh`]).

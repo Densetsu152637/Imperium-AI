@@ -288,6 +288,7 @@ impl Agent {
                 return self.pause_turn(total, step - 1, &reply);
             }
             self.take_steering().await;
+            self.take_background_notices();
             // A compaction is a model call too: a used-up budget stops it, and the turn.
             if let Some(message) = self.budget_stop().await {
                 self.emit(SessionEvent::TurnFailed {
@@ -325,13 +326,17 @@ impl Agent {
                     }
                 };
                 let queue_wait = lease.as_ref().map(|lease| lease.waited);
+                // A variant's edits of the root's tools: what the model reads is renamed and
+                // redescribed; the engine's own messages and list keep the engine's names.
+                let shown_tools = self.shown_tools(&tools);
+                let shown_messages = self.shown_messages();
                 let request = ChatRequest {
                     model: &self.model.model,
-                    messages: &self.messages,
-                    tools: &tools,
+                    messages: shown_messages.as_deref().unwrap_or(&self.messages),
+                    tools: shown_tools.as_deref().unwrap_or(&tools),
                     slot: lease.as_ref().and_then(|lease| lease.slot),
                     max_tokens: lease.as_ref().and_then(|lease| lease.max_tokens),
-                    effort: self.request_effort(),
+                    effort: self.call_effort(),
                 };
                 let capped = request.max_tokens.is_some();
                 let started = Instant::now();
@@ -413,7 +418,7 @@ impl Agent {
                 waits += 1;
                 self.emit(SessionEvent::Resumed {});
             };
-            let completion = match result {
+            let mut completion = match result {
                 Ok(completion) => completion,
                 Err(error) => {
                     let message = error.to_string();
@@ -423,7 +428,27 @@ impl Agent {
                     return self.outcome(message, false, total);
                 }
             };
+            // The model's names for a variant's renamed tools become the engine's again before
+            // anything is stored.
+            self.engine_calls(&mut completion.tool_calls);
             let usage = completion.usage.unwrap_or_default();
+            // A local model's call that the server left in the text becomes a call.
+            let offered: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+            if self.model.local
+                && !self.single_call
+                && completion.tool_calls.is_empty()
+                && let Some((calls, text)) = call_repair::from_content(&completion.text, &offered)
+            {
+                completion.tool_calls = calls;
+                completion.text = text;
+            }
+            // Arguments are repaired before the call is stored, so the history keeps the
+            // repaired form (for hosted models as well).
+            completion.tool_calls = completion
+                .tool_calls
+                .into_iter()
+                .map(call_repair::vet)
+                .collect();
             // The pool admits calls by the estimate: a prompt above it overcommits the pool.
             if self.model.local && usage.prompt_tokens > u64::from(estimate) {
                 tracing::warn!(
@@ -518,9 +543,17 @@ impl Agent {
                 .iter()
                 .any(|call| effective_call(call).function.name == ACTIVATE_PLUGIN);
             let mut touched: Vec<PathBuf> = Vec::new();
+            // With loading on, other tools are reached through `call_tool`: no names to point at.
+            let close: &[String] = if self.reactive() { &[] } else { &offered };
             for call in completion.tool_calls {
                 self.last_tool_ok.store(false, Ordering::SeqCst);
                 let output = self.run_tool(&call).await;
+                let output = call_repair::with_close_names(
+                    &output,
+                    &effective_call(&call).function.name,
+                    close,
+                )
+                .unwrap_or(output);
                 let output = self.guard_input(output, window);
                 // Only a call that worked counts as opening the directory: not one that was
                 // denied, refused by a hook, or failed.

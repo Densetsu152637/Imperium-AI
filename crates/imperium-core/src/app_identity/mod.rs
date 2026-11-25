@@ -724,4 +724,353 @@ mod tests {
         assert!(ReleaseVerifier.may_write(ApprovalKind::Counted));
         assert!(ReleaseVerifier.may_write(ApprovalKind::DialogOnly));
     }
+    // ---- A folder that did not come from a marketplace (`plugins.inspect_folder`) ----
+
+    fn state_of(home: &Home) -> Arc<crate::DaemonState> {
+        let settings = imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+            .settings()
+            .unwrap();
+        crate::DaemonState::new(home.paths.clone(), settings, None)
+    }
+
+    fn folder_params(name: &str) -> imperium_protocol::methods::PluginsInspectFolderParams {
+        imperium_protocol::methods::PluginsInspectFolderParams { name: name.into() }
+    }
+
+    /// A symbolic link or junction `link` to the folder `target`, or false where the OS or the
+    /// account does not allow one.
+    fn link_dir(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(target, link).is_ok()
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (target, link);
+            false
+        }
+    }
+
+    /// The challenge and the approval for what `plugins.inspect_folder` shows of `name`, with the
+    /// test verifier and a presence check that passes.
+    fn approve_inspected(
+        home: &Home,
+        state: &crate::DaemonState,
+        name: &str,
+    ) -> PluginsApproveResult {
+        let preview = crate::plugin_install::inspect_folder(state, &folder_params(name)).unwrap();
+        let asked = Asked {
+            folder: &home.folder,
+            hash: &preview.sha256,
+            runs: &preview.runs_digest,
+            now_ms: 0,
+        };
+        let peer = Peer::test_peer();
+        let mut challenges = Challenges::default();
+        let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
+        approve(
+            &home.paths,
+            &LocalPeer,
+            &TestVerifier,
+            &Answers::new(Presence::Passed),
+            Some(&peer),
+            &mut challenges,
+            &asked,
+            &issued.challenge,
+        )
+    }
+
+    #[test]
+    fn a_folder_is_inspected_with_the_hash_and_digest_the_gate_computes() {
+        let home = home();
+        let state = state_of(&home);
+        let preview = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        let (hash, runs) = content(&home);
+        assert_eq!(preview.sha256, hash);
+        assert_eq!(preview.runs_digest, runs);
+        assert_eq!(preview.id, "p");
+        assert_eq!(preview.name, "p");
+        assert_eq!(preview.source_kind, "folder");
+        assert!(preview.marketplace.is_empty());
+        assert_eq!(preview.hooks.len(), 1);
+        assert!(preview.hooks[0].command.contains("true"));
+        assert!(preview.installed.as_ref().is_some_and(|i| i.same_content));
+        assert!(preview.notes.iter().any(|note| note.contains("no record")));
+        // The gate withholds this very folder, for want of a record.
+        let gate = plugin_records::gate(&home.paths, &TestVerifier);
+        assert_eq!(gate.withheld.len(), 1);
+        assert!(
+            gate.withheld[0]
+                .reason
+                .contains("not installed by Imperium")
+        );
+        // Inspecting changed nothing.
+        assert!(plugin_records::record_for(&home.paths, &home.folder).is_none());
+    }
+
+    #[test]
+    fn only_the_exact_name_of_an_installed_folder_is_inspected() {
+        let home = home();
+        let state = state_of(&home);
+        let absolute = home.folder.display().to_string();
+        let names = [
+            "",
+            ".",
+            "..",
+            "../p",
+            "p/..",
+            "p/",
+            "./p",
+            "a/b",
+            "a\\b",
+            "..\\p",
+            "/p",
+            "\\p",
+            "C:\\p",
+            "C:p",
+            "p:stream",
+            "p.",
+            "p ",
+            "con",
+            "NUL",
+            "aux.txt",
+            "Com1",
+            "lpt9.log",
+            "CONIN$",
+            "p\0",
+            "p\n",
+            "p*",
+            // Not an installed folder, or not this folder's exact name.
+            "missing",
+            "P",
+            "p@marketplace",
+            "p2",
+            absolute.as_str(),
+        ];
+        for name in names {
+            let error = crate::plugin_install::inspect_folder(&state, &folder_params(name))
+                .expect_err(&format!("{name:?} was accepted"));
+            assert!(!error.is_empty(), "{name:?}");
+        }
+        crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_leaves_the_plugins_folder_is_not_inspected() {
+        let home = home();
+        let state = state_of(&home);
+        // A real plugin outside `<config>/plugins`, and a link to it inside.
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere");
+        std::fs::create_dir_all(target.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            target.join(".claude-plugin/plugin.json"),
+            r#"{"name":"elsewhere"}"#,
+        )
+        .unwrap();
+        let link = home.paths.config_dir().join("plugins/escape");
+        if !link_dir(&target, &link) {
+            eprintln!("skipped: this account cannot make a symbolic link");
+            return;
+        }
+        let error =
+            crate::plugin_install::inspect_folder(&state, &folder_params("escape")).unwrap_err();
+        assert!(error.contains("link"), "{error}");
+    }
+
+    #[test]
+    fn an_unrecorded_folder_is_approved_through_the_challenge_and_then_loads() {
+        let home = home();
+        let state = state_of(&home);
+        let result = approve_inspected(&home, &state, "p");
+        if cfg!(windows) {
+            // Check 7: this unsigned test build counts nothing on Windows, whatever the verifier.
+            assert!(!result.approved);
+            let gate = plugin_records::gate(&home.paths, &TestVerifier);
+            assert_eq!(gate.withheld.len(), 1);
+            return;
+        }
+        assert!(result.approved, "{:?}", result.reason);
+        let gate = plugin_records::gate(&home.paths, &TestVerifier);
+        assert!(gate.withheld.is_empty(), "{:?}", gate.withheld);
+        assert_eq!(gate.allowed.len(), 1);
+        // The record binds exactly what the inspection showed.
+        let preview = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        let record = plugin_records::record_for(&home.paths, &home.folder).unwrap();
+        let approval = record.approval.unwrap();
+        assert_eq!(approval.hash, preview.sha256);
+        assert_eq!(approval.runs, preview.runs_digest);
+        assert!(preview.notes.iter().all(|note| !note.contains("no record")));
+    }
+
+    #[test]
+    fn a_change_after_the_challenge_or_the_approval_voids_it() {
+        let home = home();
+        let state = state_of(&home);
+        let preview = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        let asked = Asked {
+            folder: &home.folder,
+            hash: &preview.sha256,
+            runs: &preview.runs_digest,
+            now_ms: 0,
+        };
+        let peer = Peer::test_peer();
+        let mut challenges = Challenges::default();
+        let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
+        // Any file at all, not only the ones a hook names.
+        std::fs::write(home.folder.join("notes.txt"), "added after the challenge").unwrap();
+        let result = approve(
+            &home.paths,
+            &LocalPeer,
+            &TestVerifier,
+            &Answers::new(Presence::Passed),
+            Some(&peer),
+            &mut challenges,
+            &asked,
+            &issued.challenge,
+        );
+        assert!(!result.approved);
+        assert!(plugin_records::record_for(&home.paths, &home.folder).is_none());
+        std::fs::remove_file(home.folder.join("notes.txt")).unwrap();
+        if cfg!(windows) {
+            return;
+        }
+        // An approval that was recorded stops counting once any file changes.
+        assert!(approve_inspected(&home, &state, "p").approved);
+        assert!(
+            plugin_records::gate(&home.paths, &TestVerifier)
+                .withheld
+                .is_empty()
+        );
+        std::fs::write(home.folder.join("notes.txt"), "added after the approval").unwrap();
+        let gate = plugin_records::gate(&home.paths, &TestVerifier);
+        assert_eq!(gate.withheld.len(), 1);
+        assert!(gate.withheld[0].reason.contains("changed"));
+    }
+    /// A copy of `home`'s plugin folder under another name.
+    fn copy_plugin(home: &Home, name: &str) -> PathBuf {
+        let copy = home.paths.config_dir().join("plugins").join(name);
+        for relative in [".claude-plugin/plugin.json", "hooks/hooks.json"] {
+            let target = copy.join(relative);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::copy(home.folder.join(relative), target).unwrap();
+        }
+        copy
+    }
+
+    #[test]
+    fn an_approval_names_the_exact_folder_not_one_that_looks_like_it() {
+        let home = home();
+        let state = state_of(&home);
+        let spaced = copy_plugin(&home, " p");
+        // The preview refuses a name with white space around it.
+        assert!(crate::plugin_install::inspect_folder(&state, &folder_params(" p")).is_err());
+        assert!(crate::plugin_install::inspect_folder(&state, &folder_params("p ")).is_err());
+        // The approval of the folder " p" (identical content to "p") lands on " p", never on "p".
+        let found = crate::plugin_install::resolve_for_approval(&state, " p").unwrap();
+        assert_eq!(found, spaced.canonicalize().unwrap());
+        let plain = crate::plugin_install::resolve_for_approval(&state, "p").unwrap();
+        assert_eq!(plain, home.folder.canonicalize().unwrap());
+        let (hash, runs) = content(&home);
+        let asked = Asked {
+            folder: &found,
+            hash: &hash,
+            runs: &runs,
+            now_ms: 0,
+        };
+        let peer = Peer::test_peer();
+        let mut challenges = Challenges::default();
+        let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
+        let result = approve(
+            &home.paths,
+            &LocalPeer,
+            &TestVerifier,
+            &Answers::new(Presence::Passed),
+            Some(&peer),
+            &mut challenges,
+            &asked,
+            &issued.challenge,
+        );
+        if cfg!(windows) {
+            assert!(!result.approved);
+            return;
+        }
+        assert!(result.approved, "{:?}", result.reason);
+        assert!(plugin_records::record_for(&home.paths, &spaced).is_some());
+        assert!(plugin_records::record_for(&home.paths, &home.folder).is_none());
+    }
+
+    #[test]
+    fn a_hook_that_runs_from_dot_git_is_flagged_because_the_hash_leaves_it_out() {
+        for text in [
+            "sh /x/p/.git/hooks/h.sh",
+            "C:\\x\\.git\\h.bat",
+            "cat /x/.git",
+            "\"/x/.git\"",
+        ] {
+            assert!(crate::plugin_install::mentions_dot_git(text), "{text}");
+        }
+        for text in [
+            "true",
+            "/x/.github/h.sh",
+            "/x/a.git/h",
+            "/x/.gitignore",
+            "git status",
+        ] {
+            assert!(!crate::plugin_install::mentions_dot_git(text), "{text}");
+        }
+        let home = home();
+        let state = state_of(&home);
+        let clean = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        assert!(clean.notes.iter().all(|note| !note.contains(".git")));
+        std::fs::write(
+            home.folder.join("hooks/hooks.json"),
+            r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"sh ${CLAUDE_PLUGIN_ROOT}/.git/h.sh"}]}]}}"#,
+        )
+        .unwrap();
+        let flagged = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        assert!(
+            flagged
+                .notes
+                .iter()
+                .any(|note| note.contains("WARNING") && note.contains(".git"))
+        );
+        // The exclusion the warning is about: a file under the top-level `.git` is not hashed.
+        std::fs::create_dir_all(home.folder.join(".git")).unwrap();
+        std::fs::write(home.folder.join(".git/h.sh"), "one").unwrap();
+        let first = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        std::fs::write(home.folder.join(".git/h.sh"), "two").unwrap();
+        let second = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        assert_eq!(first.sha256, second.sha256);
+    }
+
+    #[test]
+    fn a_folder_swapped_for_a_link_is_neither_hashed_nor_approved() {
+        let home = home();
+        let state = state_of(&home);
+        let moved = home.paths.config_dir().join("moved-away");
+        std::fs::rename(&home.folder, &moved).unwrap();
+        if !link_dir(&moved, &home.folder) {
+            eprintln!("skipped: this account cannot make a symbolic link");
+            return;
+        }
+        let error = plugin_records::content(&home.folder).unwrap_err();
+        assert!(error.contains("link"), "{error}");
+        assert!(crate::plugin_install::inspect_folder(&state, &folder_params("p")).is_err());
+        let error = plugin_records::record_approval(
+            &home.paths,
+            &TestVerifier,
+            &home.folder,
+            ApprovalKind::Counted,
+            "x",
+            "y",
+        )
+        .unwrap_err();
+        assert!(error.contains("link"), "{error}");
+        assert!(crate::plugin_install::resolve_for_approval(&state, "p").is_err());
+    }
 }

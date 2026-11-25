@@ -11,8 +11,8 @@ scope, term-based search (inverse document frequency weighted by name, descripti
 and a redaction check that refuses entries that look like keys or tokens. Every agent's
 instructions carry the index of global entries (within `max_index_tokens`) and the environment's
 `Memory.md`; agents have `memory_search` and `memory_read`, and the root also has
-`memory_remember`, which follows the scope's write policy (`ask` shows the entry in a
-permission prompt). With `recall`, the best matches for each message are placed before it in
+`memory_remember`, `memory_edit` and `memory_forget`, which follow the scope's write policy
+(`ask` shows the entry, edit or removal in a permission prompt; see [editing and forgetting](#editing-and-forgetting-implemented)). With `recall`, the best matches for each message are placed before it in
 a `<relevant-memories>` block marked as data (within `max_recall_tokens`), and the session
 reports `memory_used` and `memory_saved` events. `imperium memory list/search/show/forget`
 works on the folders directly. Earlier sessions are searchable too, by clients and agents
@@ -189,6 +189,44 @@ Use pnpm for installs and scripts. **Why:** the user's workspaces rely on pnpm w
 - **Links:** `[[name]]` links between entries form a small graph that retrieval can follow.
 - **Index:** each scope has an `INDEX.md`, one line per entry, regenerated automatically.
 
+## Editing and forgetting (implemented)
+
+`memory_remember` saves or replaces a whole memory. To keep a note current without rewriting it,
+the root agent also has two tools (item R2.11 of the research roadmap):
+
+- **`memory_edit(name, old_string, new_string, scope?)`** replaces exactly one occurrence of
+  `old_string` in the memory's body, with the rules of `edit_file`: the string must match exactly
+  and be unique (none, several, an empty string, or a replacement equal to it is refused with a
+  message saying which), so the model reads the memory first and quotes what it changes. Nothing
+  else changes: a global entry keeps its description, type and `created` date (`source` becomes
+  the editing session, as it does when `memory_remember` replaces an entry), and the index is
+  rewritten; an environment section keeps its description line, and the rest of `Memory.md`,
+  including what the user wrote by hand, is untouched. The limits of `memory_remember` hold for
+  the result (body at most 2,000 characters for an environment section, file at most 24,000, no
+  text that looks like a secret), and an environment edit may not change how `Memory.md`
+  divides into sections (a second-level heading line or an unclosed code fence in the new text is
+  refused). The entries carry no `updated` date; `created` is the date of first save.
+- **`memory_forget(name, scope?)`** removes a memory that is wrong or obsolete, **without erasing
+  it**: a global entry moves to `<data>/memory/trash/<name>.<date>.md` (a number is added when
+  that file exists, so earlier copies are never overwritten) and the index is rewritten; an
+  environment section is appended to `Memory.archive.md` beside `Memory.md`, with a comment
+  saying it was removed by `memory_forget`, and then taken out of `Memory.md`. Neither place is
+  read into agents' instructions; the user moves a file back to restore it. (`imperium memory
+  forget` is the user's own command and still deletes the file.)
+
+`scope` is optional on both: left out, the environment's section of that name is used before the
+global entry, as `memory_read` does.
+
+**Permissions** are those of `memory_remember`, per scope: `memory.write.global` and
+`memory.write.environment` (`ask` by default, `auto`, `off`; `off` refuses both tools), and plan
+mode refuses them without asking. Under `ask` the prompt shows the string removed and the one
+added (an edit; each in full, or its first 2,000 characters marked "truncated"), or the name and scope (a removal). An edit that cannot apply (no such memory, the
+string missing or not unique, a limit broken) is refused **before** the user is asked, so they
+never approve one that fails. **Subagents cannot edit or forget**, as they cannot save: like
+`memory_remember`, the tools are offered to the root agent only (a subagent reads, and proposes a
+change through its report). Both are also offered by the MCP bridge with `--allow-write`, and
+`memory_edit` reports a `memory_saved` event, and `memory_forget` a notice ("Forgot ... memory ...").
+
 ## How agents use memory
 
 1. **Always in context (small):** the index lines of the global entries, within a token budget
@@ -206,7 +244,9 @@ Use pnpm for installs and scripts. **Why:** the user's workspaces rely on pnpm w
    events), so the user can see why an agent behaved as it did.
 
 Subagents can search and read memory in their parent's scopes; they propose new memories
-through their parent rather than writing directly.
+through their parent rather than writing directly. `memory_search` says to check memory before
+re-deriving a fact it may already hold, and the root's instructions tell it to correct a memory
+with `memory_edit` or retire it with `memory_forget` instead of saving a near-copy.
 
 ## Session search (implemented)
 
@@ -320,7 +360,8 @@ max_pointer_tokens = 800       # budget for documentation pointers per manifest
 
 ## How memory is written
 
-- Tools: `memory.remember` (new entry), `memory.update`, `memory.forget`.
+- Tools: `memory_remember` (new entry or replace), `memory_edit` and `memory_forget`
+  ([implemented](#editing-and-forgetting-implemented)).
 - **Write policy per scope** (`memory.write.global`, `memory.write.environment`; both `ask` by default): `auto` (save immediately), `ask` (the
   agent proposes, the user approves in the desktop or phone app, with the entry shown), or
   `off`.

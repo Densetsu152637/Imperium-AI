@@ -17,6 +17,7 @@ use imperium_api::{
 use imperium_config::{HarnessMode, HarnessSettings};
 use imperium_engine::{
     ChatClient, ChatClients, LaunchFuture, ResolvedModel, Session, SessionConfig, SessionLauncher,
+    SessionOptions,
 };
 use imperium_extensions::{ConfiguredHook, Sources};
 use imperium_mcp::{Launch, McpTools, ServerSpec};
@@ -238,6 +239,8 @@ struct Seen {
     last_result: Option<String>,
     /// The system prompt as sent.
     system: String,
+    /// The user messages as sent.
+    users: Vec<String>,
 }
 
 impl Seen {
@@ -274,6 +277,13 @@ async fn model(root: Vec<Step>, sub: Vec<Step>, seen: Arc<Mutex<Vec<Seen>>>) -> 
                         .as_str()
                         .unwrap_or_default()
                         .to_string(),
+                    users: body["messages"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|message| message["role"] == "user")
+                        .filter_map(|message| message["content"].as_str().map(str::to_string))
+                        .collect(),
                     last_result: body["messages"]
                         .as_array()
                         .into_iter()
@@ -319,6 +329,22 @@ struct Options {
     extra: Vec<Arc<dyn ToolProvider>>,
     /// No person reads the session's turns.
     unattended: bool,
+    /// The folders (project, config) of an earlier session to continue in, with `resume`.
+    folders: Option<(tempfile::TempDir, tempfile::TempDir)>,
+    resume: bool,
+    /// The model's context window.
+    window: Option<u64>,
+    /// A harness variant's edits of the root's tools.
+    edits: imperium_protocol::methods::ToolEdits,
+}
+
+impl Setup {
+    /// Ends the session and keeps its folders for a session that continues it.
+    async fn finish(self) -> (tempfile::TempDir, tempfile::TempDir) {
+        drop(self.session);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        (self.project, self.config)
+    }
 }
 
 fn options(loading: HarnessMode, root: Vec<Step>) -> Options {
@@ -331,7 +357,7 @@ fn options(loading: HarnessMode, root: Vec<Step>) -> Options {
 
 struct Setup {
     project: tempfile::TempDir,
-    _config: tempfile::TempDir,
+    config: tempfile::TempDir,
     session: Session,
     profile: AgentProfile,
     seen: Arc<Mutex<Vec<Seen>>>,
@@ -340,8 +366,10 @@ struct Setup {
 /// A session in a new project folder with servers `alpha` and `beta`, the plugin `words`, the
 /// built-in `web_fetch` and `flaky`, and every call approved (full mode).
 async fn start(options: Options) -> Setup {
-    let config = tempfile::tempdir().unwrap();
-    let project = tempfile::tempdir().unwrap();
+    let (project, config) = match options.folders {
+        Some(folders) => folders,
+        None => (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()),
+    };
     write_plugin(config.path(), &mcp_server("words").await);
     for (name, text) in &options.agents {
         let path = config.path().join("agents").join(name);
@@ -378,57 +406,63 @@ async fn start(options: Options) -> Setup {
     let mut providers: Vec<Arc<dyn ToolProvider>> =
         vec![Arc::new(mcp), Arc::new(Fetcher), Arc::new(Flaky)];
     providers.extend(options.extra);
-    let session = Session::spawn(SessionConfig {
-        id: "reactive".into(),
-        workspace,
-        model: Some(ResolvedModel {
-            spec: "fake:model".into(),
-            endpoint: Endpoint {
-                base_url: url,
-                api_key: None,
-            },
-            model: "model".into(),
-            pricing: None,
-            local: false,
-            context_window: None,
-            kind: "openai".into(),
-            reasoning: None,
-        }),
-        catalog: Vec::new(),
-        routing: imperium_config::RoutingSettings::default(),
-        clients: Default::default(),
-        local: None,
-        tools: providers,
-        notices: Vec::new(),
-        extensions,
-        memory: None,
-        context: None,
-        enforce: imperium_config::Enforce::Warn,
-        pre_approved: Vec::new(),
-        launcher: options.launcher,
-        resume: false,
-        resume_policy: imperium_engine::default_resume_policy(),
-        instructions: None,
-        personality: None,
-        max_steps: 20,
-        background: None,
-        checkpoints: None,
-        budget_gate: None,
-        auto_compact: false,
-        auto_compact_at: None,
-        attended: !options.unattended,
-        attachments: Default::default(),
-        auto_permissions: Default::default(),
-        harness: harness(options.loading),
-        keep_agent_state: true,
-        effort: Default::default(),
-        knowledge: Default::default(),
-        journal_path: project.path().join(".journal.jsonl"),
-    })
+    let session = Session::spawn_with(
+        SessionConfig {
+            id: "reactive".into(),
+            workspace,
+            model: Some(ResolvedModel {
+                spec: "fake:model".into(),
+                endpoint: Endpoint {
+                    base_url: url,
+                    api_key: None,
+                },
+                model: "model".into(),
+                pricing: None,
+                local: false,
+                context_window: options.window,
+                kind: "openai".into(),
+                reasoning: None,
+            }),
+            catalog: Vec::new(),
+            routing: imperium_config::RoutingSettings::default(),
+            clients: Default::default(),
+            local: None,
+            tools: providers,
+            notices: Vec::new(),
+            extensions,
+            memory: None,
+            context: None,
+            enforce: imperium_config::Enforce::Warn,
+            pre_approved: Vec::new(),
+            launcher: options.launcher,
+            resume: options.resume,
+            resume_policy: imperium_engine::default_resume_policy(),
+            instructions: None,
+            personality: None,
+            max_steps: 20,
+            background: None,
+            checkpoints: None,
+            budget_gate: None,
+            auto_compact: false,
+            auto_compact_at: None,
+            attended: !options.unattended,
+            attachments: Default::default(),
+            auto_permissions: Default::default(),
+            harness: harness(options.loading),
+            keep_agent_state: true,
+            effort: Default::default(),
+            knowledge: Default::default(),
+            journal_path: project.path().join(".journal.jsonl"),
+        },
+        SessionOptions {
+            tool_edits: options.edits,
+            ..SessionOptions::default()
+        },
+    )
     .unwrap();
     Setup {
         project,
-        _config: config,
+        config,
         session,
         profile,
         seen,
@@ -1471,4 +1505,394 @@ async fn auto_follows_the_model_between_turns_and_the_list_returns_byte_for_byte
         ],
         [0, 1, 0, 1]
     );
+}
+
+// Stage 3 (docs/plans/reactive-tools.md): sessions, compaction, subagents and named agents.
+
+/// The whole sentence the loader adds to the system prompt.
+const LOADER_FULL: &str = "Tools that are not in your tool list are used in two steps: tool_search finds them and shows their parameters, and call_tool runs one by name with those arguments.";
+
+/// The `<loaded-tools>` block in the latest request that carries one.
+fn loaded_block(seen: &[Seen]) -> Option<String> {
+    let text = seen
+        .iter()
+        .rev()
+        .flat_map(|request| request.users.iter().rev())
+        .find(|user| user.contains("<loaded-tools>"))?;
+    let start = text.find("<loaded-tools>")?;
+    let end = text.find("</loaded-tools>")? + "</loaded-tools>".len();
+    Some(text[start..end].to_string())
+}
+
+/// A session with loading on that runs three turns, the first as `first` says, and ends.
+/// Returns its folders.
+async fn three_turns(first: Vec<Step>) -> (tempfile::TempDir, tempfile::TempDir) {
+    let mut setup = options(HarnessMode::On, first);
+    setup.window = Some(100_000);
+    let setup = start(setup).await;
+    for text in ["one", "two", "three"] {
+        turn(&setup.session, text).await;
+    }
+    setup.finish().await
+}
+
+/// Continues the session in `folders`, runs one turn first when `script` is not empty, compacts,
+/// asks one more question and returns what the model was sent.
+async fn resume_and_compact(
+    folders: (tempfile::TempDir, tempfile::TempDir),
+    script: Vec<Step>,
+) -> Vec<Seen> {
+    let mut setup = options(HarnessMode::On, script.clone());
+    setup.window = Some(100_000);
+    setup.folders = Some(folders);
+    setup.resume = true;
+    let setup = start(setup).await;
+    if !script.is_empty() {
+        turn(&setup.session, "activate").await;
+    }
+    setup.session.compact().await.expect("a compaction");
+    turn(&setup.session, "after").await;
+    setup.seen.lock().unwrap().clone()
+}
+
+/// Removes the journal's records of plugin activations, as if the plugin were never activated.
+fn forget_activations(project: &Path) {
+    let path = project.join(".journal.jsonl");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.contains("\"extension_loaded\""))
+        .collect();
+    std::fs::write(&path, kept.join("\n") + "\n").unwrap();
+}
+
+#[tokio::test]
+async fn a_resumed_session_lists_what_it_had_loaded_when_it_compacts() {
+    let folders = three_turns(vec![
+        Some(("tool_search", json!({"names": ["update_plan"]}))),
+        Some(("call_tool", json!({"name": "web_fetch", "arguments": {}}))),
+        None,
+    ])
+    .await;
+    let seen = resume_and_compact(folders, Vec::new()).await;
+    let block = loaded_block(&seen).expect("a loaded-tools block after the compaction");
+    assert!(block.len() <= 1_500, "{} bytes", block.len());
+    assert!(block.contains("- update_plan: "), "{block}");
+    assert!(block.contains("- web_fetch: Fetch a page."), "{block}");
+    // Most recently used first.
+    assert!(
+        block.find("web_fetch") < block.find("update_plan"),
+        "{block}"
+    );
+    // Tools it never looked up are not listed, and no schema reaches a user message.
+    assert!(!block.contains("spawn_agent"), "{block}");
+    let after = seen.last().unwrap();
+    assert!(
+        after
+            .users
+            .iter()
+            .all(|user| !user.contains("\"parameters\"")),
+        "{:?}",
+        after.users
+    );
+}
+
+#[tokio::test]
+async fn a_resumed_plugin_and_its_tools_are_listed_by_name_only() {
+    let folders = three_turns(vec![
+        Some(("activate_plugin", json!({"name": "words"}))),
+        Some(("call_tool", json!({"name": PLUGIN_LOOKUP, "arguments": {}}))),
+        None,
+    ])
+    .await;
+    let seen = resume_and_compact(folders, Vec::new()).await;
+    let block = loaded_block(&seen).expect("a block");
+    assert!(block.contains(&format!("- {PLUGIN_LOOKUP}\n")), "{block}");
+    // The server's own description of the tool is outside text and never put back.
+    assert!(!block.contains("Look up a word"), "{block}");
+}
+
+#[tokio::test]
+async fn replayed_names_of_a_plugin_that_is_not_active_are_dropped_until_it_is_activated() {
+    let plugin_turns = || {
+        vec![
+            Some(("activate_plugin", json!({"name": "words"}))),
+            Some(("call_tool", json!({"name": PLUGIN_LOOKUP, "arguments": {}}))),
+            None,
+        ]
+    };
+    // The journal no longer shows the activation, so the plugin does not start again.
+    let folders = three_turns(plugin_turns()).await;
+    forget_activations(folders.0.path());
+    let seen = resume_and_compact(folders, Vec::new()).await;
+    let block = loaded_block(&seen);
+    assert!(
+        block
+            .as_deref()
+            .is_none_or(|text| !text.contains(PLUGIN_LOOKUP)),
+        "{block:?}"
+    );
+    // Activated again, its names are back.
+    let folders = three_turns(plugin_turns()).await;
+    forget_activations(folders.0.path());
+    let seen = resume_and_compact(
+        folders,
+        vec![Some(("activate_plugin", json!({"name": "words"}))), None],
+    )
+    .await;
+    let block = loaded_block(&seen).expect("a block");
+    assert!(block.contains(PLUGIN_LOOKUP), "{block}");
+}
+
+#[tokio::test]
+async fn a_failure_after_a_compaction_tells_where_to_get_the_parameters_again() {
+    let fail = Some(("call_tool", json!({"name": "flaky", "arguments": {}})));
+    // One request each: the failing call and the end of turn one, turns two and three, the
+    // summary, then the failing call again and the end of turn four.
+    let root = vec![fail.clone(), None, None, None, None, fail, None];
+    let mut setup = options(HarnessMode::On, root);
+    setup.window = Some(100_000);
+    let setup = start(setup).await;
+    for text in ["one", "two", "three"] {
+        turn(&setup.session, text).await;
+    }
+    setup.session.compact().await.expect("a compaction");
+    turn(&setup.session, "four").await;
+    let seen = setup.seen.lock().unwrap().clone();
+    let advice = "The parameters of flaky";
+    assert!(seen[1].last_result.as_deref().unwrap().contains(advice));
+    let after = seen[6].last_result.as_deref().unwrap();
+    assert!(
+        after.contains("error: boom") && after.contains(advice),
+        "{after}"
+    );
+    let block = loaded_block(&seen).expect("a block");
+    assert!(block.contains("- flaky: A tool that fails."), "{block}");
+}
+
+#[tokio::test]
+async fn a_named_agent_whose_file_lists_a_deferred_tool_is_offered_it_directly() {
+    let file = "---\nname: planner\ndescription: Plans.\ntools: update_plan\n---\nPlan.\n";
+    let root = vec![
+        Some((
+            "call_tool",
+            json!({"name": "spawn_agent", "arguments": {"brief": "plan", "agent": "planner"}}),
+        )),
+        Some(("call_tool", json!({"name": "await_tasks", "arguments": {}}))),
+        None,
+    ];
+    let mut setup = options(HarnessMode::On, root);
+    setup.agents = vec![("planner.md", file.to_string())];
+    let setup = start(setup).await;
+    let done = turn(&setup.session, "delegate").await;
+    assert!(done.results[0].0, "{:?}", done.results);
+    let seen = setup.seen.lock().unwrap().clone();
+    let sub = seen.iter().find(|request| request.subagent).unwrap();
+    // It is not core and the root does not offer it, yet the file's list is offered whole.
+    assert_eq!(sub.names, ["update_plan"], "{:?}", sub.names);
+    assert!(!sub.system.contains(LOADER_FULL));
+}
+
+#[tokio::test]
+async fn the_loader_text_is_the_same_in_every_request_and_ends_the_base_prompt() {
+    let root = vec![
+        Some((
+            "call_tool",
+            json!({"name": "spawn_agent", "arguments": {"brief": "look"}}),
+        )),
+        Some(("tool_search", json!({"names": ["update_plan"]}))),
+        Some(("call_tool", json!({"name": "await_tasks", "arguments": {}}))),
+        None,
+    ];
+    let mut setup = options(HarnessMode::On, root);
+    setup.sub = vec![Some(("tool_search", json!({"query": "web"}))), None];
+    let setup = start(setup).await;
+    turn(&setup.session, "delegate").await;
+    let seen = setup.seen.lock().unwrap().clone();
+    for subagent in [false, true] {
+        let requests: Vec<&Seen> = seen
+            .iter()
+            .filter(|request| request.subagent == subagent)
+            .collect();
+        assert!(requests.len() >= 2, "{requests:?}");
+        for request in &requests {
+            assert_eq!(request.system, requests[0].system, "subagent={subagent}");
+        }
+        let system = &requests[0].system;
+        assert_eq!(system.matches(LOADER_FULL).count(), 1, "{system}");
+        // Its own paragraph at the end of the base part: set off by blank lines, and followed
+        // by nothing or another part.
+        let at = system.find(LOADER_FULL).unwrap();
+        assert!(system[..at].ends_with("\n\n"), "{system}");
+        let after = &system[at + LOADER_FULL.len()..];
+        assert!(after.is_empty() || after.starts_with("\n\n"), "{after}");
+    }
+}
+
+/// Answers its first call with `call_tool(write_file, ...)` and every later call with "done",
+/// recording the tools it was offered.
+#[derive(Debug, Default)]
+struct WritesThroughProxy {
+    calls: AtomicUsize,
+    tools: Mutex<Vec<String>>,
+}
+
+impl ChatClient for WritesThroughProxy {
+    fn stream<'a>(
+        &'a self,
+        request: ChatRequest<'a>,
+        _on_text: &'a mut (dyn FnMut(&str) + Send),
+    ) -> ChatFuture<'a> {
+        Box::pin(async move {
+            let wires: Vec<Value> = request.tools.iter().map(ToolSpec::to_wire).collect();
+            self.tools
+                .lock()
+                .unwrap()
+                .push(Value::Array(wires).to_string());
+            let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+            let tool_calls = if first {
+                vec![imperium_api::ToolCall {
+                    id: "call0".into(),
+                    kind: "function".into(),
+                    function: imperium_api::FunctionCall {
+                        name: "call_tool".into(),
+                        arguments: json!({"name": "write_file",
+                            "arguments": {"path": "x.txt", "content": "c"}})
+                        .to_string(),
+                    },
+                }]
+            } else {
+                Vec::new()
+            };
+            Ok(Completion {
+                text: if first { String::new() } else { "done".into() },
+                tool_calls,
+                usage: Some(Usage {
+                    prompt_tokens: 100,
+                    completion_tokens: 1,
+                    cached_tokens: 0,
+                }),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            })
+        })
+    }
+}
+
+/// An initiative review on a local model with `auto`: the list is the fixed one, and the inner
+/// tool of `call_tool` is still held to the review's limits.
+#[tokio::test]
+async fn a_review_on_a_local_model_with_auto_is_offered_the_loaders_and_refused_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(WritesThroughProxy::default());
+    let mut clients = ChatClients::default();
+    let shared = Arc::clone(&recorder);
+    clients.register("scripted", move |_http, _endpoint| {
+        Arc::clone(&shared) as Arc<dyn ChatClient>
+    });
+    let local: Arc<dyn LocalModels> = Arc::new(Runtime);
+    let session = Session::spawn(SessionConfig {
+        id: "auto-review".into(),
+        workspace: Workspace::new(dir.path()).unwrap(),
+        model: Some(scripted("llamacpp:m", true)),
+        catalog: Vec::new(),
+        clients,
+        routing: imperium_config::RoutingSettings::default(),
+        local: Some(local),
+        tools: Vec::new(),
+        notices: Vec::new(),
+        extensions: Default::default(),
+        memory: None,
+        context: None,
+        enforce: imperium_config::Enforce::Warn,
+        pre_approved: Vec::new(),
+        launcher: Some(Arc::new(Review)),
+        resume: false,
+        resume_policy: imperium_engine::default_resume_policy(),
+        instructions: None,
+        personality: None,
+        max_steps: 5,
+        background: None,
+        checkpoints: None,
+        budget_gate: None,
+        auto_compact: false,
+        auto_compact_at: None,
+        attended: true,
+        attachments: Default::default(),
+        auto_permissions: Default::default(),
+        harness: harness(HarnessMode::Auto),
+        keep_agent_state: true,
+        effort: Default::default(),
+        knowledge: Default::default(),
+        journal_path: dir.path().join("journal.jsonl"),
+    })
+    .unwrap();
+    session
+        .workspace()
+        .permissions()
+        .set_mode(PermissionMode::Full);
+    let done = turn(&session, "review").await;
+    let sent = recorder.tools.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(names(&sent[0]).ends_with(&["tool_search".to_string(), "call_tool".to_string()]));
+    assert_eq!(sent[0], sent[1]);
+    let (ok, output) = &done.results[0];
+    assert!(
+        !ok && output.contains("this turn only reads and suggests"),
+        "{:?}",
+        done.results
+    );
+    assert!(!dir.path().join("x.txt").exists());
+}
+
+/// A variant renames `run_command` to `sh` and the profile locks the shell: the renamed tool
+/// is the engine's again before the lock is checked, so neither form of call gets through.
+#[tokio::test]
+async fn a_renamed_run_command_is_refused_under_a_shell_lock() {
+    let root = vec![
+        Some((
+            "call_tool",
+            json!({"name": "sh", "arguments": {"command": "echo hi > ran.txt"}}),
+        )),
+        Some(("sh", json!({"command": "echo hi > ran.txt"}))),
+        None,
+    ];
+    let mut setup = options(HarnessMode::On, root);
+    setup.profile = locked();
+    setup.edits.rename =
+        std::collections::BTreeMap::from([("run_command".to_string(), "sh".to_string())]);
+    let setup = start(setup).await;
+    let done = turn(&setup.session, "run it").await;
+    assert_eq!(done.results.len(), 2, "{:?}", done.results);
+    assert!(refused_by_profile(&done.results[0]), "{:?}", done.results);
+    assert!(refused_by_profile(&done.results[1]), "{:?}", done.results);
+    assert!(!setup.project.path().join("ran.txt").exists());
+    // The shell tool is out of the list the model reads, under either name.
+    let seen = setup.seen.lock().unwrap().clone();
+    assert!(!seen[0].offers("run_command") && !seen[0].offers("sh"));
+}
+
+/// A variant's drops are the root's alone: a subagent's agent file may still list the tool.
+#[tokio::test]
+async fn a_subagent_file_keeps_a_tool_the_variant_dropped_from_the_root() {
+    let file = "---\nname: planner\ndescription: Plans.\ntools: update_plan\n---\nPlan.\n";
+    let root = vec![
+        Some((
+            "call_tool",
+            json!({"name": "spawn_agent", "arguments": {"brief": "plan", "agent": "planner"}}),
+        )),
+        Some(("call_tool", json!({"name": "await_tasks", "arguments": {}}))),
+        None,
+    ];
+    let mut setup = options(HarnessMode::On, root);
+    setup.agents = vec![("planner.md", file.to_string())];
+    setup.edits.drop = vec!["update_plan".to_string()];
+    let setup = start(setup).await;
+    let done = turn(&setup.session, "delegate").await;
+    assert!(done.results[0].0, "{:?}", done.results);
+    let seen = setup.seen.lock().unwrap().clone();
+    let root_request = seen.iter().find(|request| !request.subagent).unwrap();
+    assert!(!root_request.offers("update_plan"));
+    let sub = seen.iter().find(|request| request.subagent).unwrap();
+    assert_eq!(sub.names, ["update_plan"], "{:?}", sub.names);
 }

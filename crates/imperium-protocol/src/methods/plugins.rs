@@ -186,7 +186,7 @@ pub struct PluginsBrowseResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PluginListing {
-    // `name@marketplace`.
+    // `name@marketplace`; the folder's name for `plugins.inspect_folder`.
     pub id: String,
     pub name: String,
     pub marketplace: String,
@@ -243,6 +243,32 @@ pub struct PluginsInspectParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub revision: Option<String>,
+}
+
+/// `plugins.inspect_folder`: says exactly what the plugin folder installed under `name` would run,
+/// read from the folder itself: the same `PluginPreview` as `plugins.inspect`, with the content hash
+/// and run-summary digest the load-time gate computes for that folder, which is what
+/// `plugins.approval_challenge` and `plugins.approve` bind. It is for a folder that did not come
+/// from a marketplace (a pre-existing or unrecorded one) and has no `name@marketplace` to inspect:
+/// `id` is the folder's name, `marketplace` and `marketplace_source` are empty, `source_kind` is
+/// `folder` and `source` the folder's path. `name` is exactly the name of one folder of
+/// `<config>/plugins`: a path, a separator, `..`, a reserved device name, a plugin name or an id
+/// that is not that, a link, and a folder that resolves outside `<config>/plugins` are refused.
+/// Nothing in the folder runs. A paired phone cannot call it.
+#[derive(Debug)]
+pub struct PluginsInspectFolder;
+
+impl Method for PluginsInspectFolder {
+    const NAME: &'static str = "plugins.inspect_folder";
+    type Params = PluginsInspectFolderParams;
+    type Result = PluginPreview;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginsInspectFolderParams {
+    // The installed folder's name, as `plugins.list` shows it at the end of `folder`.
+    pub name: String,
 }
 
 /// What `plugins.inspect` found: what the trust prompt shows before a plugin is installed.

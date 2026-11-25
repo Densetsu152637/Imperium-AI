@@ -19,7 +19,7 @@ use imperium_policy::permissions::{CallKind, Decision, Judgement, Refusal, Targe
 use imperium_policy::{SHELL_TOOLS, ToolSource};
 use imperium_protocol::patterns;
 use imperium_protocol::session::{
-    AgentStatus, Attachment, ContextItem, ContextPointer, ExtensionKind, PauseCause,
+    AgentEvent, AgentStatus, Attachment, ContextItem, ContextPointer, ExtensionKind, PauseCause,
     PermissionDecision, Plan, PlanStep, Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
     ToolLoadVia,
 };
@@ -39,9 +39,13 @@ use imperium_protocol::methods::{Compaction, ContextFit};
 
 mod attachments;
 mod auto;
+mod background;
+mod call_repair;
 mod catalog;
 mod compaction;
 mod delegation;
+mod edits;
+mod effort_policy;
 mod fork;
 mod memory;
 mod prompts;
@@ -52,8 +56,8 @@ mod turn;
 
 pub(crate) use auto::AutoGuard;
 use auto::{AutoGate, builtin_input, provider_input};
-pub(crate) use catalog::effective_call;
 use catalog::*;
+pub(crate) use catalog::{CALL_TOOL, TOOL_SEARCH, effective_call, first_sentence};
 #[cfg(test)]
 pub(crate) use catalog::{test_call, test_proxied};
 use delegation::*;
@@ -63,7 +67,10 @@ use memory::*;
 use prompts::*;
 use sampling::*;
 use specs::*;
-pub(crate) use specs::{memory_read_spec, memory_remember_spec, memory_search_spec};
+pub(crate) use specs::{
+    memory_edit_spec, memory_forget_spec, memory_read_spec, memory_remember_spec,
+    memory_search_spec,
+};
 pub(crate) use tools::shown;
 use tools::*;
 pub(crate) use turn::effective_window;
@@ -229,6 +236,9 @@ pub(crate) struct Agent {
     /// The root agent's structured state (see [`harness`]); read back from the conversation
     /// when it is restored.
     state: SessionState,
+    /// The latest plan the agent set with `update_plan`, carried across a compaction (see
+    /// [`crate::plan`]); read back from the conversation when it is restored.
+    plan: Mutex<Option<Plan>>,
     /// The harness paragraph in the system prompt, for the model the agent has now: it is
     /// rewritten when the model is switched, so the prompt and the tools offered always agree.
     harness_text: String,
@@ -261,6 +271,12 @@ pub(crate) struct Agent {
     /// The tools whose parameters this agent has seen in a `tool_search` result or that it
     /// ran through `call_tool`.
     loaded_tools: Mutex<Vec<String>>,
+    /// The tools whose parameters the model has seen first-hand since the last compaction
+    /// (searched, run through `call_tool`, or already advised): schema advice is given once
+    /// per tool, and again after a compaction removed the earlier result.
+    schema_seen: Mutex<HashSet<String>>,
+    /// The tools already reported in a `tools_loaded` event (once per tool and agent).
+    reported_tools: Mutex<HashSet<String>>,
     /// Whether the call in flight got as far as running (it started), and whether its
     /// arguments were judged and rejected before that; both are false for a call a refusal
     /// stopped. Set by [`Agent::tool_started`] and the argument checks, read by
@@ -292,6 +308,8 @@ impl Agent {
         workspace: Workspace,
         writer_note: Option<&str>,
     ) -> Self {
+        // Its background commands are reported to it.
+        let workspace = workspace.with_owner(&id);
         let root = workspace.root_display();
         let mut system = if can_delegate {
             root_prompt(&root, shared.knowledge.enabled())
@@ -467,6 +485,7 @@ impl Agent {
             rewritten_from: Mutex::new(None),
             ran_rewritten: Mutex::new(None),
             state: SessionState::default(),
+            plan: Mutex::new(None),
             harness_text: String::new(),
             loader_text: String::new(),
             can_ask: true,
@@ -479,6 +498,8 @@ impl Agent {
             plugin_loader: std::sync::OnceLock::new(),
             search_text: std::sync::OnceLock::new(),
             loaded_tools: Mutex::new(Vec::new()),
+            schema_seen: Mutex::new(HashSet::new()),
+            reported_tools: Mutex::new(HashSet::new()),
             call_started: std::sync::atomic::AtomicBool::new(false),
             call_args_failed: std::sync::atomic::AtomicBool::new(false),
         }
@@ -554,6 +575,21 @@ impl Agent {
         self.model
             .reasons(self.shared.local.as_deref())
             .then(|| self.effort.unwrap_or_else(|| self.shared.effort.get()))
+    }
+
+    /// The effort the next call of the turn loop carries: [`Agent::request_effort`], lowered
+    /// by `harness.adaptive_effort` after a tool result that worked.
+    fn call_effort(&self) -> Option<Effort> {
+        let session = self.request_effort()?;
+        let after_ok = effort_policy::follows_ok_tool(
+            &self.messages,
+            self.last_tool_ok.load(Ordering::SeqCst),
+        );
+        Some(effort_policy::call_effort(
+            self.shared.harness.adaptive_effort,
+            session,
+            after_ok,
+        ))
     }
 
     /// The model this agent calls.
@@ -650,6 +686,7 @@ impl Agent {
         if self.can_delegate {
             self.state = harness::latest_state(&self.messages);
         }
+        *lock(&self.plan) = crate::plan::latest_plan(&self.messages);
     }
 
     fn emit(&self, event: SessionEvent) {

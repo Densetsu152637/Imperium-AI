@@ -39,7 +39,7 @@ import {
   type Offers,
   type Reloaded,
 } from "./model";
-import { approvePlugin, cannotApprove, describeOutcome, loadTrust, platformReason, type ApproveAction, type Told, type TrustData } from "./trust";
+import { approvalSource, approvePlugin, cannotApprove, describeOutcome, loadFolderTrust, loadTrust, platformReason, type ApproveAction, type Told, type TrustData } from "./trust";
 
 export type PluginsTab = "installed" | "browse" | "marketplaces";
 
@@ -242,13 +242,14 @@ export function PluginsWindow({
       () => setOffers((current) => current && mutedOffers(current)),
     );
 
-  const openTrust = async (action: ApproveAction, id: string, name: string, commit: string | null) => {
+  /** Opens the trust view: `id` is `name@marketplace`, or, for `folder`, the name of an installed folder that did not come from a marketplace. */
+  const openTrust = async (action: ApproveAction, id: string, name: string, commit: string | null, folder = false) => {
     const token = generation.current;
     setTold(null);
     setError(null);
     setTrust({ action, id, name, data: null });
     try {
-      const data = await loadTrust(api!, action, id, commit);
+      const data = folder ? await loadFolderTrust(api!, id) : await loadTrust(api!, action, id, commit);
       if (generation.current === token) setTrust((current) => (current && current.id === id ? { ...current, data } : current));
     } catch (failure) {
       if (generation.current !== token) return;
@@ -448,7 +449,10 @@ export function PluginsWindow({
         busy={busy}
         platformReason={blocked ?? platformReason(navigator.userAgent)}
         onToggle={(p, enabled) => void toggle(p, enabled)}
-        onApprove={(p) => void openTrust("approve", p.id!, p.name, null)}
+        onApprove={(p) => {
+          const source = approvalSource(p);
+          void openTrust("approve", source.name, p.name, null, source.folder);
+        }}
         onUpdate={(p) => void openTrust("update", p.id!, p.name, p.commit)}
         onUninstall={(p, deleteSecrets) => void uninstall(p, deleteSecrets)}
         onSetSecret={(p, variable, value) => secret(p, () => api!.setSecret(p.name, variable, value), `Saved ${plain(variable)} for ${plain(p.name)}.`)}

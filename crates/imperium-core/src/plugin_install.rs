@@ -22,10 +22,10 @@ use imperium_extensions::marketplace::Source as PluginSource;
 use imperium_extensions::plugins::{self, Plugin, inside};
 use imperium_protocol::methods::{
     InstallSource, InstalledPlugin, PluginHookRun, PluginInstalled, PluginPreview, PluginServerRun,
-    PluginsDeleteSecretParams, PluginsInspectParams, PluginsInstallParams, PluginsInstallResult,
-    PluginsListResult, PluginsSecretResult, PluginsSetEnabledParams, PluginsSetEnabledResult,
-    PluginsSetSecretParams, PluginsUninstallParams, PluginsUninstallResult, PluginsUpdateParams,
-    PluginsUpdateResult,
+    PluginsDeleteSecretParams, PluginsInspectFolderParams, PluginsInspectParams,
+    PluginsInstallParams, PluginsInstallResult, PluginsListResult, PluginsSecretResult,
+    PluginsSetEnabledParams, PluginsSetEnabledResult, PluginsSetSecretParams,
+    PluginsUninstallParams, PluginsUninstallResult, PluginsUpdateParams, PluginsUpdateResult,
 };
 
 use crate::extension_install::{self, ExtensionKind, Staging, check_name, move_tree, remove_tree};
@@ -254,13 +254,27 @@ fn commands_with_shell(folders: &[PathBuf]) -> Vec<String> {
     found
 }
 
-fn preview(state: &DaemonState, staged: &Staged, installed_at: &Path) -> PluginPreview {
-    let plugin = &staged.plugin;
+/// What a plugin would run and hold, as the trust prompt lists it.
+struct Contents {
+    hooks: Vec<PluginHookRun>,
+    servers: Vec<PluginServerRun>,
+    launcher: bool,
+    skills: Vec<String>,
+    commands: Vec<String>,
+    agents: Vec<String>,
+    commands_with_shell: Vec<String>,
+    /// The digest of what the plugin would run, which an approval is bound to.
+    runs_digest: String,
+}
+
+/// Reads what `plugin` would run and hold, with `${CLAUDE_PLUGIN_ROOT}` shown as `installed_at`.
+/// Shared by an inspection of a marketplace plugin and of an installed folder.
+fn contents(plugin: &Plugin, installed_at: &Path) -> Contents {
     let runs = plugins::runs(plugin);
-    // The summary expands `${CLAUDE_PLUGIN_ROOT}` to the staging folder; show where it will be.
-    let staging_root = plugin.root.display().to_string();
+    // The summary expands `${CLAUDE_PLUGIN_ROOT}` to where the plugin was read; show where it will be.
+    let read_at = plugin.root.display().to_string();
     let there = installed_at.display().to_string();
-    let show = |text: &str| text.replace(&staging_root, &there);
+    let show = |text: &str| text.replace(&read_at, &there);
     let mut command_dirs = vec![plugin.commands_dir()];
     command_dirs.extend(plugin.extra_commands.iter().cloned());
     let mut agent_dirs = vec![plugin.agents_dir()];
@@ -271,34 +285,7 @@ fn preview(state: &DaemonState, staged: &Staged, installed_at: &Path) -> PluginP
         names.dedup();
         names
     };
-    let installed = installed_at.is_dir().then(|| {
-        let record = plugin_records::record_for(state.paths(), installed_at);
-        let same = installed_at
-            .canonicalize()
-            .ok()
-            .and_then(|canon| plugin_records::look(&canon).ok())
-            .is_some_and(|seen| seen.hash == staged.hash);
-        PluginInstalled {
-            path: there.clone(),
-            recorded_sha256: record.map(|record| record.hash),
-            same_content: same,
-        }
-    });
-    let author = plugin.author.as_ref().map(|author| author.name.clone());
-    PluginPreview {
-        id: format!("{}@{}", plugin.name, staged.located.marketplace),
-        name: plugin.name.clone(),
-        marketplace: staged.located.marketplace.clone(),
-        marketplace_source: staged.located.source.clone(),
-        marketplace_commit: staged.located.commit.clone(),
-        source_kind: staged.source_kind.to_string(),
-        source: staged.source.clone(),
-        commit: staged.commit.clone(),
-        description: plugin.description.clone(),
-        version: plugin.version.clone(),
-        author,
-        homepage: plugin.homepage.clone(),
-        license: plugin.license.clone(),
+    Contents {
         hooks: runs
             .hooks
             .iter()
@@ -330,8 +317,60 @@ fn preview(state: &DaemonState, staged: &Staged, installed_at: &Path) -> PluginP
         commands: collect(&command_dirs, true),
         agents: collect(&agent_dirs, true),
         commands_with_shell: commands_with_shell(&command_dirs),
-        sha256: staged.hash.clone(),
         runs_digest: runs.digest(),
+    }
+}
+
+fn preview(state: &DaemonState, staged: &Staged, installed_at: &Path) -> PluginPreview {
+    let plugin = &staged.plugin;
+    let there = installed_at.display().to_string();
+    let installed = installed_at.is_dir().then(|| {
+        let record = plugin_records::record_for(state.paths(), installed_at);
+        let same = installed_at
+            .canonicalize()
+            .ok()
+            .and_then(|canon| plugin_records::look(&canon).ok())
+            .is_some_and(|seen| seen.hash == staged.hash);
+        PluginInstalled {
+            path: there.clone(),
+            recorded_sha256: record.map(|record| record.hash),
+            same_content: same,
+        }
+    });
+    let author = plugin.author.as_ref().map(|author| author.name.clone());
+    let Contents {
+        hooks,
+        servers,
+        launcher,
+        skills,
+        commands,
+        agents,
+        commands_with_shell,
+        runs_digest,
+    } = contents(plugin, installed_at);
+    PluginPreview {
+        id: format!("{}@{}", plugin.name, staged.located.marketplace),
+        name: plugin.name.clone(),
+        marketplace: staged.located.marketplace.clone(),
+        marketplace_source: staged.located.source.clone(),
+        marketplace_commit: staged.located.commit.clone(),
+        source_kind: staged.source_kind.to_string(),
+        source: staged.source.clone(),
+        commit: staged.commit.clone(),
+        description: plugin.description.clone(),
+        version: plugin.version.clone(),
+        author,
+        homepage: plugin.homepage.clone(),
+        license: plugin.license.clone(),
+        hooks,
+        servers,
+        launcher,
+        skills,
+        commands,
+        agents,
+        commands_with_shell,
+        sha256: staged.hash.clone(),
+        runs_digest,
         installed,
         notes: staged.notes.clone(),
     }
@@ -356,6 +395,247 @@ pub(crate) async fn inspect(
         .join("plugins")
         .join(&staged.plugin.name);
     Ok(preview(state, &staged, &dest))
+}
+
+/// Windows device names, which name a device whatever extension follows (`con.txt`).
+const DEVICE_NAMES: &[&str] = &[
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "COM0",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "LPT0",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
+    "COM\u{b9}",
+    "COM\u{b2}",
+    "COM\u{b3}",
+    "LPT\u{b9}",
+    "LPT\u{b2}",
+    "LPT\u{b3}",
+    "CONIN$",
+    "CONOUT$",
+];
+
+/// Whether `name` is one plain folder name: not empty, one path component that is not `.` or `..`
+/// and holds no separator, drive or stream marker (`:`), wildcard or control character, does not
+/// end in a dot or space (Windows drops them) and is not a Windows device name.
+fn check_folder_name(name: &str) -> Result<(), String> {
+    let refuse = |why: &str| {
+        Err(format!(
+            "{name:?} is not the name of a plugin folder: {why}"
+        ))
+    };
+    if name.is_empty() || name.len() > 255 {
+        return refuse("it is empty or too long");
+    }
+    if name != name.trim() {
+        return refuse("it starts or ends with white space");
+    }
+    if name == "." || name.contains("..") {
+        return refuse("it names a parent or the folder itself");
+    }
+    if name.chars().any(|c| {
+        c.is_control()
+            || matches!(
+                c,
+                '/' | '\\' | '@' | ':' | '<' | '>' | '"' | '|' | '?' | '*'
+            )
+    }) {
+        return refuse("it holds a path separator or another character a folder name cannot have");
+    }
+    if name.ends_with('.') || name.ends_with(' ') {
+        return refuse("it ends in a dot or a space");
+    }
+    let stem = name.split('.').next().unwrap_or_default().trim_end();
+    if DEVICE_NAMES
+        .iter()
+        .any(|device| device.eq_ignore_ascii_case(stem))
+    {
+        return refuse("it is a reserved device name");
+    }
+    let mut parts = Path::new(name).components();
+    match (parts.next(), parts.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(()),
+        _ => refuse("it is not one relative name"),
+    }
+}
+
+/// The installed plugin folder named exactly `name`, canonical. The name must be one plain folder
+/// name (`check_folder_name`) and exactly that of an entry of `<config>/plugins`: a path, a plugin
+/// name or an id never resolves. A link, or a folder that resolves outside `<config>/plugins`, is
+/// refused rather than followed.
+fn folder_named(state: &DaemonState, name: &str) -> Result<PathBuf, String> {
+    check_folder_name(name)?;
+    exact_folder(state, name)?
+        .ok_or_else(|| format!("no plugin folder named {name:?} is installed"))
+}
+
+/// The folder an approval is asked for. A `name` that is exactly the name of an entry of
+/// `<config>/plugins` (compared byte for byte, not trimmed or case-folded) is that folder, and
+/// nothing else; a link is refused, not followed. Any other `name` is looked up as `resolve` does
+/// (a plugin name or `name@marketplace`), and the folder it finds must not be a link either.
+pub(crate) fn resolve_for_approval(state: &DaemonState, name: &str) -> Result<PathBuf, String> {
+    if let Some(exact) = exact_folder(state, name)? {
+        return Ok(exact);
+    }
+    let found = resolve(state, name)?;
+    if std::fs::symlink_metadata(&found).is_ok_and(|meta| plugin_records::is_link(&meta)) {
+        return Err(format!(
+            "{name:?} is a link: a plugin folder that is a link is not approved"
+        ));
+    }
+    Ok(found)
+}
+
+/// The canonical folder of the entry of `<config>/plugins` named exactly `name`, if there is one.
+fn exact_folder(state: &DaemonState, name: &str) -> Result<Option<PathBuf>, String> {
+    let dir = state.paths().config_dir().join("plugins");
+    let missing = || format!("no plugin folder named {name:?} is installed");
+    let Ok(root) = dir.canonicalize() else {
+        return Ok(None);
+    };
+    let Some(entry) = std::fs::read_dir(&dir)
+        .map_err(|_| missing())?
+        .flatten()
+        .find(|entry| entry.file_name().to_str() == Some(name))
+    else {
+        return Ok(None);
+    };
+    let path = entry.path();
+    let meta = std::fs::symlink_metadata(&path).map_err(|_| missing())?;
+    if plugin_records::is_link(&meta) {
+        return Err(format!(
+            "{name:?} is a link: a plugin folder that is a link is not inspected or approved"
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(missing());
+    }
+    let canon = path.canonicalize().map_err(|_| missing())?;
+    if canon.parent() != Some(root.as_path()) {
+        return Err(format!(
+            "{name:?} does not resolve to a folder of {}",
+            dir.display()
+        ));
+    }
+    Ok(Some(canon))
+}
+
+/// Whether `text` names a path under a `.git` folder (`x/.git/hooks/h.sh`, `x\.git`), which the
+/// content hash leaves out when it is the plugin folder's own top-level `.git`.
+pub(crate) fn mentions_dot_git(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.match_indices(".git").any(|(at, _)| {
+        let before = lower[..at].chars().next_back();
+        let after = lower[at + 4..].chars().next();
+        matches!(before, Some('/' | '\\'))
+            && after.is_none_or(|c| matches!(c, '/' | '\\' | '"' | '\'') || c.is_whitespace())
+    })
+}
+
+/// `plugins.inspect_folder`: what the installed plugin folder `name` would run, read from the
+/// folder itself with the gate's own hash and run digest (`plugin_records::content`), so an
+/// approval of exactly these values is the one the gate honours. Nothing in it runs.
+pub(crate) fn inspect_folder(
+    state: &DaemonState,
+    params: &PluginsInspectFolderParams,
+) -> Result<PluginPreview, String> {
+    let folder = folder_named(state, &params.name)?;
+    let (canon, sha256, _, plugin) = plugin_records::content(&folder)?;
+    // The folder read is the folder named, and it is still that folder, not a link, now that it was
+    // hashed.
+    if canon != folder || folder_named(state, &params.name)? != canon {
+        return Err(format!("{:?} changed while it was read", params.name));
+    }
+    let record = plugin_records::record_for(state.paths(), &canon);
+    let shown = extension_install::display_path(&canon);
+    let shown_at = PathBuf::from(&shown);
+    let Contents {
+        hooks,
+        servers,
+        launcher,
+        skills,
+        commands,
+        agents,
+        commands_with_shell,
+        runs_digest,
+    } = contents(&plugin, &shown_at);
+    let mut notes = Vec::new();
+    // The hash leaves out the folder's own top-level `.git` and `.imperium-source.json`: a hook or
+    // server that runs from `.git` can change without the approval being voided.
+    let runs_from_git = hooks
+        .iter()
+        .flat_map(|hook| std::iter::once(&hook.command).chain(hook.url.iter()))
+        .chain(servers.iter().flat_map(|server| {
+            server
+                .command
+                .iter()
+                .chain(server.args.iter())
+                .chain(server.url.iter())
+        }))
+        .any(|text| mentions_dot_git(text));
+    if runs_from_git {
+        notes.push(
+            "WARNING: a hook or server runs a path under .git, which the content hash does not cover: changing it will not withhold this plugin again"
+                .to_string(),
+        );
+    }
+    match &record {
+        None => notes.push(
+            "Imperium has no record of this folder: it was not installed by Imperium".to_string(),
+        ),
+        Some(record) if record.hash != sha256 => {
+            notes.push("its content changed since Imperium recorded it".to_string());
+        }
+        Some(_) => {}
+    }
+    Ok(PluginPreview {
+        id: params.name.clone(),
+        name: plugin.name.clone(),
+        marketplace: String::new(),
+        marketplace_source: String::new(),
+        marketplace_commit: None,
+        source_kind: "folder".into(),
+        source: shown.clone(),
+        commit: record.as_ref().and_then(|record| record.commit.clone()),
+        description: plugin.description.clone(),
+        version: plugin.version.clone(),
+        author: plugin.author.as_ref().map(|author| author.name.clone()),
+        homepage: plugin.homepage.clone(),
+        license: plugin.license.clone(),
+        hooks,
+        servers,
+        launcher,
+        skills,
+        commands,
+        agents,
+        commands_with_shell,
+        sha256,
+        runs_digest,
+        installed: Some(PluginInstalled {
+            path: shown,
+            recorded_sha256: record.map(|record| record.hash),
+            same_content: true,
+        }),
+        notes,
+    })
 }
 
 /// Creates the install folder exclusively: anything already there (a folder that appeared since
