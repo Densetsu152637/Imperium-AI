@@ -543,8 +543,11 @@ turn. The desktop shows it in the session's *Context and outputs* section
   needed]`. The call and its arguments stay, and so do the order and the pairing of every tool
   call with its result. These stay whole: the results of the latest turns, loaded skills and
   workflow references (`load_skill`, `context_load`), error results, command output, subagent
-  reports, `tool_search` schemas, state and plan results, and any result under 400 characters.
-  Instruction and mid-turn steering messages do not count as turns. If the stubs bring the
+  reports, `tool_search` schemas, state and plan results, any result under 400 characters, and
+  any result that points at content kept elsewhere (an input stored as an artefact, a large
+  result saved to a file). A stub keeps the call's search terms, path, URL and read range.
+  Instruction messages, mid-turn steering messages and background-command notices do not count
+  as turns. If the stubs bring the
   conversation under 80% of the trigger (what a summary aims for) by the same estimate, they
   are kept, nothing is summarised, and one notice says how many results were cleared; if not,
   the conversation is left whole for the summary to read. The setting is
@@ -1076,9 +1079,10 @@ max_steps = 30
 `--prompt-overlay <file>` appends a file's text last. The flags are `max_steps` (default 50),
 `effort`, `auto_compact` (default false), `auto_compact_at` (0 to 1), `knowledge` (default
 true), `attended` (default false), `harness` (`on`, `off`, `auto`; the aids need
-`attended=true`) and `tool_loading` (`on`, `off`, `auto`, default `off`; `auto` is on with
+`attended=true`), `tool_loading` (`on`, `off`, `auto`, default `off`; `auto` is on with
 `--local`: the fixed tool list of `harness.tool_loading`, see
-[the plan](plans/reactive-tools.md), is offered instead of every tool). An unknown flag is an error. The variant id and a `config_hash` (over the
+[the plan](plans/reactive-tools.md), is offered instead of every tool) and
+`clear_stale_results` (default true: `harness.clear_stale_results`, for A/B runs). An unknown flag is an error. The variant id and a `config_hash` (over the
 edits, flags and overlay, not the name) are in the output next to the prompt hash.
 
 **Reactive tool loading (roadmap item 61, stages 2a and 2b).** `harness.tool_loading` (`auto`,

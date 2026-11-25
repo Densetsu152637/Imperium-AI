@@ -324,7 +324,12 @@ impl Agent {
         // The system prompt and the tools stay whatever happens, with at least a short summary.
         // Workflow context loaded so far is carried over verbatim, so it is part of the base.
         let pinned_all = compact::pinned_context(&self.messages, &self.spans, self.messages.len());
-        let pinned_tokens = estimate_tokens(&pinned_all);
+        // The plan is put back after the summary too, so it is part of the base as well.
+        let plan_tokens = lock(&self.plan)
+            .as_ref()
+            .and_then(crate::plan::block)
+            .map_or(0, |block| estimate_tokens(&block));
+        let pinned_tokens = estimate_tokens(&pinned_all) + plan_tokens;
         let base = before.fixed + before.messages[0] + compact::MESSAGE_FORMATTING + pinned_tokens;
         if base + compact::MIN_SUMMARY_TOKENS > budget {
             return Err(SwitchError::TooLarge {

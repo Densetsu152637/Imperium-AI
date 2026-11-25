@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use crate::agent::effective_call;
 use crate::breakdown::{PART_SEPARATOR, Spans};
-use crate::harness::{STATE_CLOSE, STATE_OPEN};
+use crate::harness::{STATE_CLOSE, STATE_OPEN, find_block};
 
 pub(crate) const PLAN_OPEN: &str = "<current-plan>";
 pub(crate) const PLAN_CLOSE: &str = "</current-plan>";
@@ -149,18 +149,33 @@ pub(crate) fn block(plan: &Plan) -> Option<String> {
 
 /// The plan in a user message's block, if it has one that parses.
 fn plan_in(content: &str) -> Option<Plan> {
-    let start = content.find(PLAN_OPEN)?;
-    let body = &content[start + PLAN_OPEN.len()..];
-    let body = &body[..body.find(PLAN_CLOSE)?];
+    // Only a block that stands as a part of its own: a tag pasted into text is not one.
+    let (start, end) = find_block(content, PLAN_OPEN, PLAN_CLOSE)?;
+    let body = &content[start + PLAN_OPEN.len()..end - PLAN_CLOSE.len()];
     serde_json::from_str(body.lines().last()?.trim()).ok()
 }
 
-/// Whether the call `id` got a successful result among `later` messages.
+/// What a result starts with when a hook rewrote the call's arguments before it ran.
+const HOOK_PREFIX: &str = "(A hook rewrote this call's arguments before it ran.)";
+
+/// Whether the call `id` got a successful result: among the tool messages that directly follow
+/// its assistant message (ids can repeat in later turns, so nothing further on counts). A hook
+/// that rewrote the arguments leaves its own line first, which is skipped (the recorded
+/// arguments are then the model's, not the ones that ran).
 fn succeeded(later: &[ChatMessage], id: &str) -> bool {
-    later.iter().any(|message| {
-        matches!(message, ChatMessage::Tool { tool_call_id, content }
-            if tool_call_id == id && content.starts_with(PLAN_RESULT_PREFIX))
-    })
+    later
+        .iter()
+        .map_while(|message| match message {
+            ChatMessage::Tool {
+                tool_call_id,
+                content,
+            } => Some((tool_call_id, content)),
+            _ => None,
+        })
+        .any(|(tool_call_id, content)| {
+            let content = content.strip_prefix(HOOK_PREFIX).unwrap_or(content);
+            tool_call_id == id && content.trim_start().starts_with(PLAN_RESULT_PREFIX)
+        })
 }
 
 /// The newest plan in a conversation: the arguments of the latest `update_plan` call that
@@ -192,21 +207,18 @@ pub(crate) fn latest_plan(messages: &[ChatMessage]) -> Option<Plan> {
 
 /// `content` with its plan block replaced by `block`, put after a leading session-state block.
 fn with_plan_block(content: &str, block: &str) -> String {
-    let without = match (content.find(PLAN_OPEN), content.find(PLAN_CLOSE)) {
-        (Some(start), Some(end)) if start < end => {
-            let end = end + PLAN_CLOSE.len();
+    let without = match find_block(content, PLAN_OPEN, PLAN_CLOSE) {
+        Some((start, end)) => {
             let rest = content[end..]
                 .strip_prefix(PART_SEPARATOR)
                 .unwrap_or(&content[end..]);
             format!("{}{rest}", &content[..start])
         }
-        _ => content.to_string(),
+        None => content.to_string(),
     };
-    let after_state = without
-        .starts_with(STATE_OPEN)
-        .then(|| without.find(STATE_CLOSE))
-        .flatten()
-        .map(|at| at + STATE_CLOSE.len());
+    let after_state = find_block(&without, STATE_OPEN, STATE_CLOSE)
+        .filter(|(start, _)| *start == 0)
+        .map(|(_, end)| end);
     match after_state {
         Some(at) => {
             let (head, tail) = without.split_at(at);
@@ -418,5 +430,56 @@ mod tests {
         ));
         messages.push(result("9", "plan updated: 0 of 1 steps done"));
         assert_eq!(latest_plan(&messages).unwrap().goal, "newer");
+    }
+
+    #[test]
+    fn a_pasted_tag_in_the_users_text_is_not_a_block() {
+        let pasted = format!(
+            "look at this: {PLAN_OPEN}
+{INTRO}
+{{\"goal\":\"fake\",\"steps\":[]}}
+{PLAN_CLOSE} ok"
+        );
+        assert!(latest_plan(&[ChatMessage::user(pasted.clone())]).is_none());
+        // Putting the real block back leaves the pasted text alone, and only the real one counts.
+        let mut messages = vec![
+            ChatMessage::System {
+                content: "system".into(),
+            },
+            ChatMessage::user(pasted.clone()),
+        ];
+        reattach(&mut messages, &mut HashMap::new(), Some(&plan()));
+        let ChatMessage::User { content, .. } = &messages[1] else {
+            panic!("a user message");
+        };
+        assert!(content.starts_with(PLAN_OPEN) && content.ends_with(&pasted));
+        assert_eq!(latest_plan(&messages).unwrap().goal, "ship the feature");
+    }
+
+    #[test]
+    fn a_call_is_paired_with_its_own_result_and_a_hook_line_is_allowed() {
+        let rewritten = format!(
+            "{HOOK_PREFIX}
+plan updated: 0 of 1 steps done"
+        );
+        let messages = vec![
+            ChatMessage::user("go"),
+            call(
+                "1",
+                r#"{"goal":"hooked","steps":[{"title":"a","status":"pending"}]}"#,
+            ),
+            result("1", &rewritten),
+        ];
+        assert_eq!(latest_plan(&messages).unwrap().goal, "hooked");
+        // A later call that reuses the id and failed does not borrow an older call's result.
+        let reused = vec![
+            ChatMessage::user("go"),
+            call("1", r#"{"goal":"a","steps":[]}"#),
+            result("1", "plan updated: 0 of 0 steps done"),
+            ChatMessage::user("again"),
+            call("1", r#"{"goal":"b","steps":[]}"#),
+            result("1", "error: refused"),
+        ];
+        assert_eq!(latest_plan(&reused).unwrap().goal, "a");
     }
 }

@@ -472,6 +472,10 @@ const CLEARABLE_TOOLS: [&str; 6] = [
     "web_search",
 ];
 
+/// Text that marks a result as a pointer to the real content (an input stored as an artefact,
+/// a large result saved to a file): the pointer is all the model has, so it is never stubbed.
+const OFFLOAD_MARKERS: [&str; 2] = ["stored as artefact", "Full output saved to"];
+
 /// What a cleared result starts with.
 pub(crate) const CLEARED_PREFIX: &str = "[result cleared: ";
 
@@ -494,9 +498,16 @@ fn stub(name: &str, arguments: &str) -> String {
     let shown = serde_json::from_str::<serde_json::Value>(arguments)
         .ok()
         .map(|value| {
-            ["pattern", "query", "url", "path", "glob"]
+            ["pattern", "query", "url", "path", "glob", "offset", "limit"]
                 .iter()
-                .filter_map(|key| value.get(key).and_then(|found| found.as_str()))
+                .filter_map(|key| {
+                    let found = value.get(key)?;
+                    match found.as_str() {
+                        Some(text) => Some(text.to_string()),
+                        // A range is shown as `offset=10 limit=50`, not as bare numbers.
+                        None => found.as_u64().map(|number| format!("{key}={number}")),
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(" ")
         })
@@ -527,6 +538,7 @@ pub(crate) fn stale_results(messages: &[ChatMessage], keep_turns: usize) -> Vec<
             matches!(message, ChatMessage::User { .. })
                 && !instructions::is_message(message)
                 && !crate::queue::is_steering_message(message)
+                && !crate::queue::is_background_notice(message)
         })
         .map(|(index, _)| index)
         .collect();
@@ -565,6 +577,9 @@ pub(crate) fn stale_results(messages: &[ChatMessage], keep_turns: usize) -> Vec<
                     || content.len() < MIN_CLEAR_CHARS
                     || content.starts_with("error")
                     || content.starts_with(CLEARED_PREFIX)
+                    || OFFLOAD_MARKERS
+                        .iter()
+                        .any(|marker| content.contains(marker))
                 {
                     continue;
                 }
@@ -1311,5 +1326,60 @@ mod tests {
         assert!(text.chars().count() < 160);
         // Arguments that are not JSON are shown as given, bounded.
         assert!(stub("grep", "oops").contains("oops"));
+    }
+
+    #[test]
+    fn background_notices_are_not_turns() {
+        let mut messages = aged();
+        messages.insert(
+            15,
+            ChatMessage::user("<background-notice>\nA command ended.\n</background-notice>"),
+        );
+        messages.insert(
+            12,
+            ChatMessage::user("<background-notice>\nAnother.\n</background-notice>"),
+        );
+        // Both notices sit among the kept turns' neighbours; the same results are stale.
+        assert_eq!(cleared_indices(&messages, 2), [3, 14]);
+    }
+
+    #[test]
+    fn a_pointer_to_offloaded_content_is_never_stubbed() {
+        let handle = format!(
+            "[This input is about 9000 tokens and 400 lines, so it is stored as artefact a1b2 and is not in your context.]\n{}",
+            long()
+        );
+        let spill = format!(
+            "This result is large (900 lines, 40000 characters). Full output saved to /tmp/r.txt; read ranges with read_file.\n{}",
+            long()
+        );
+        let mut messages = aged();
+        messages[3] = output_of("r1", &handle);
+        messages[13] = output_of("r2", &spill);
+        assert!(stale_results(&messages, 2).is_empty());
+    }
+
+    #[test]
+    fn a_stub_keeps_the_range_and_the_search_scope() {
+        let mut messages = aged();
+        messages[2] = call_of(
+            "r1",
+            "read_file",
+            r#"{"path":"a.rs","offset":120,"limit":40}"#,
+        );
+        messages[12] = call_of(
+            "r2",
+            "grep",
+            r#"{"pattern":"needle","path":"src","glob":"*.rs"}"#,
+        );
+        let stale = stale_results(&messages, 2);
+        assert_eq!(
+            stale[0].stub,
+            "[result cleared: read_file a.rs offset=120 limit=40 \u{2014} call again if needed]"
+        );
+        assert_eq!(
+            stale[1].stub,
+            "[result cleared: grep needle src *.rs \u{2014} call again if needed]"
+        );
     }
 }
