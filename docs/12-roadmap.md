@@ -760,7 +760,12 @@ and `environments.agent_update` (protocol 0.28)
     ([plan](plans/pr-card.md), [14](14-projects-and-automation.md#github-auto-fix)).
 <!-- markdownlint-disable-next-line MD029 -->
 55. **Terminal and file panes** (planned). Claude's desktop app shows a terminal and a file
-    viewer beside the conversation; Imperium gets the same two panes. No plan yet.
+    viewer beside the conversation; Imperium gets the same two panes: a Terminal panel whose
+    shells run in the session's working folder, owned by the daemon and usable only from the
+    desktop app (agents, mods, pages and a paired phone cannot open, read or type into one), and
+    a read-only Files panel confined to the session's folders, opened at a line from links in the
+    transcript and from the Review panel. Every check runs in CI, including browser checks
+    against a fake daemon ([plan](plans/terminal-file-panes.md)).
 <!-- markdownlint-disable-next-line MD029 -->
 57. **Per-environment worktree folder** (implemented). An environment can set its own git worktrees
     root folder. Sessions in that environment create and discover their worktrees there instead
