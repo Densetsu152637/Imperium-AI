@@ -546,10 +546,10 @@ const WSL_STOP_GRACE: Duration = Duration::from_secs(10);
 /// A model's `vllm` process inside a WSL2 distribution: ended when this is stopped or dropped
 /// unless [`WslGuard::remove`] already did it. `wsl.exe` is only the relay to it, and killing
 /// the relay does not reliably end what it started, so the process is found by its command line
-/// (the `vllm` path, `serve` and the port, which is this server's alone) and signalled inside
-/// the distribution: SIGTERM first (vLLM shuts its engine and workers down), SIGKILL if it is
-/// still there after the grace period. A daemon that is killed leaves it running; nothing sweeps
-/// those yet.
+/// (the `vllm` path, `serve`, the model folder and the port, so another model is never
+/// matched) and signalled inside the distribution: SIGTERM first (vLLM shuts its engine and
+/// workers down), SIGKILL if it is still there after the grace period. A daemon that is killed
+/// leaves it running; nothing sweeps those yet.
 #[derive(Debug)]
 pub(crate) struct WslGuard {
     wsl: PathBuf,
