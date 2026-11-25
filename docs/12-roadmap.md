@@ -833,7 +833,7 @@ and `environments.agent_update` (protocol 0.28)
     CPU-time, memory and wall-clock limits, so a runaway simplification is stopped rather than
     hanging the session. CI: the [`python` job](11-ci-cd.md) also runs for `sidecars/cas/`
     (ruff and pytest over the tools, the parser's refusals and the limits), and a daemon test
-    drives one tool call through the MCP client. No plan yet.
+    drives one tool call through the MCP client ([plan](plans/cas-mcp.md)).
 <!-- markdownlint-disable-next-line MD029 -->
 63. **Server package (Docker Compose)** (planned). Imperium can be self-hosted on a server and
     run there. The release workflow builds and publishes a container image of `imperium-core`
