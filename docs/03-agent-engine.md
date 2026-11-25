@@ -208,9 +208,9 @@ because it is static; the engine offers them only as described above.
 
 Roadmap [item 61](12-roadmap.md#next-in-order); the design and its reasons are in
 [the plan](plans/reactive-tools.md). Every model call used to carry every tool schema the agent
-may use: 21 tools and 14,283 bytes of tool JSON for a headless root, a floor of about 4,500
+may use: 21 tools and 14,375 bytes of tool JSON for a headless root, a floor of about 4,500
 prompt tokens on each call of a small local model. With `harness.tool_loading` on, an agent is
-offered a small **fixed** list instead (5,236 bytes in the same run) and reaches every other
+offered a small **fixed** list instead (5,328 bytes in the same run) and reaches every other
 tool on demand. The setting is `auto`, `on` or `off` in `[harness]`
 ([10](10-configuration.md)); `auto` is on for an agent whose own model runs on this machine and
 follows the model at turn boundaries. It is `off` by default until the measurement of plan

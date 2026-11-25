@@ -55,11 +55,10 @@ request from a script and records every request body.
    bytes: 40 % of the 14,261 bytes the same request carries with loading off (the 3,997 bytes of
    the seven core tools leave 1,700 bytes for the two loader tools). Re-measured at stage 4 from
    the tool definitions on this branch (the compact JSON of the `tools` array, brackets and commas
-   included): 14,283 bytes off (the 14,261 above is the sum of the 21 tools) and **5,236 bytes
-   on**, 36.7 % of it: the seven core tools 3,997 bytes, `tool_search` 807 bytes with the names
+   included): 14,375 bytes off after R2.6 (14,283 and 14,261 before it; the 14,261 above is the sum of the 21 tools) and **5,328 bytes
+   on**, 37.1 % of it: the seven core tools 4,089 bytes (3,997 before R2.6), `tool_search` 807 bytes with the names
    of the 14 deferred built-in tools in its description, `call_tool` 422 bytes. The bound stays
-   at 5,700 bytes, which leaves 464 bytes for the read and list schemas that the file-tool work
-   (R2.6) grows. Check: the eval-facing test
+   at 5,700 bytes, which leaves 372 bytes of headroom. Check: the eval-facing test
    of [stage 4](#stage-4-evaluation-surface-and-the-eval-facing-test).
 3. **Every tool stays reachable.** A tool outside the core is found with `tool_search` (which
    returns its schema) and run with `call_tool`, in the same turn, with the same result as a
