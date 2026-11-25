@@ -1,0 +1,463 @@
+/* The Settings sections' content: rows, swatches, permissions and budget editors, shortcuts.
+   One left edge: the dialog body's padding (--dialog-gutter, dialog.css) is the only horizontal
+   inset, so every label, description, control and table starts at the same x as the dialog title.
+   Nothing here adds padding, margin or an indent on the left. */
+
+/* ---- Rows: label and description on top, the control under them, all flush left ---- */
+.settings-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) 0;
+}
+
+/* A sub-setting belongs to the row above it: closer to it, but on the same edge. */
+.settings-row.sub {
+  padding-top: 0;
+}
+
+.settings-row-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: calc(640 * var(--px));
+  text-align: left;
+}
+
+.settings-row-label {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-ui);
+  color: var(--text);
+}
+
+.settings-row-description {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--text-muted);
+}
+
+.settings-row-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--sp-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Full-width content under a setting (a status line, a log). */
+.settings-row-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: 0 0 var(--sp-3);
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+}
+
+.settings-row-note > p {
+  margin: 0;
+}
+
+.settings-row-note .daemon-log {
+  align-self: stretch;
+}
+
+/* A titled group inside a section (benchmark results, hosted models, permission rules). */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-2);
+  padding: var(--sp-3) 0;
+}
+
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.settings-subhead {
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Plain muted lines (a fault, "No budgets yet") read at the size of the rows around them. */
+.settings-window .dialog-body > p.muted,
+.settings-section > p.muted:not(.permissions-hint) {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+}
+
+.settings-window .dialog-body > p.muted {
+  padding: var(--sp-2) 0;
+}
+
+/* ---- Controls in a row: one look (the shared field) and a fixed width ---- */
+.settings-row-control .field,
+.settings-row-control button.select {
+  width: min(100%, var(--settings-control-w));
+}
+
+.settings-row-control .field.numeric,
+.settings-row-control .field.budget-number,
+.settings-row-control input[type="number"].field {
+  width: var(--settings-number-w);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-row-control textarea.field {
+  resize: vertical;
+}
+
+.field-with-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+}
+
+.settings-row-control .field-with-action .field {
+  flex: 1 1 var(--settings-control-w);
+  width: auto;
+  min-width: 0;
+}
+
+.settings-row .slider {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.settings-row .slider input[type="range"] {
+  width: calc(200 * var(--px));
+}
+
+.settings-row .slider output {
+  min-width: calc(56 * var(--px));
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+/* Accent colours as a row of swatches; the chosen one is ringed. */
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.swatches .swatch {
+  flex: none;
+  width: var(--settings-swatch);
+  height: var(--settings-swatch);
+  min-height: 0;
+  padding: 0;
+  border-radius: var(--radius-full);
+  border: 2px solid color-mix(in srgb, var(--swatch) 70%, var(--text));
+  background: var(--swatch);
+}
+
+.swatches .swatch:hover:not(:disabled) {
+  background: var(--swatch);
+  border-color: var(--text);
+}
+
+/* The chosen swatch has a ring of the surface and then the text colour, so the focus outline stays free. */
+.swatches .swatch.selected {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--text);
+}
+
+.swatches .swatch:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 5px;
+}
+
+/* A link-sized button beside a label: 24 px tall to hit, with negative margins so the label's line does not grow. */
+.reset-link {
+  min-height: var(--control-h-sm);
+  margin-block: calc(-1 * var(--sp-1));
+  padding: 0 var(--sp-1);
+  vertical-align: middle;
+  font-size: var(--fs-xs);
+  color: var(--accent-text);
+}
+
+.settings-row-label .badge {
+  margin-left: var(--sp-1);
+  vertical-align: middle;
+}
+
+/* ---- Tables: Keyboard and the benchmark. The shared .table, with its first column on the edge ---- */
+.settings-table-scroll {
+  overflow-x: auto;
+}
+
+.table.settings-table th:first-child,
+.table.settings-table td:first-child {
+  padding-left: 0;
+}
+
+.table.settings-table th:last-child,
+.table.settings-table td:last-child {
+  padding-right: 0;
+}
+
+.settings-table tbody th {
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-weight: var(--fw-regular);
+  text-align: left;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.settings-table td {
+  color: var(--text);
+}
+
+/* Keyboard: the action, its chord, then Change and Reset. The gap before the buttons is --sp-3
+   from the chord cell and --sp-3 from the buttons cell: 24 px between a chord and Change. */
+.shortcuts-table td {
+  vertical-align: top;
+}
+
+.shortcut-action {
+  padding-right: var(--sp-4);
+}
+
+.shortcut-action > span {
+  display: block;
+}
+
+.shortcut-action > span + span {
+  margin-top: var(--sp-1);
+}
+
+.shortcut-keys {
+  white-space: nowrap;
+}
+
+.shortcut-status {
+  display: block;
+  margin-top: var(--sp-1);
+  max-width: calc(220 * var(--px));
+  font-size: var(--fs-xs);
+  line-height: var(--lh-ui);
+  color: var(--text-muted);
+  white-space: normal;
+}
+
+.shortcut-status:empty {
+  display: none;
+}
+
+.shortcut-buttons {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.shortcut-buttons button + button {
+  margin-left: var(--sp-2);
+}
+
+.shortcut-fixed-keys {
+  white-space: nowrap;
+}
+
+.shortcut-alternative + .shortcut-alternative {
+  margin-left: var(--sp-1);
+}
+
+.shortcut-or {
+  margin-right: var(--sp-1);
+  color: var(--text-subtle);
+}
+
+/* ---- Permissions: path grants and rules (Settings → Permissions and the environment window) ---- */
+.permissions-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.permissions-hint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+}
+
+.permission-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.permission-presets .chip:disabled[aria-pressed="true"] {
+  opacity: 1;
+}
+
+/* The lists sit on the edge: no inset, no well behind them. */
+.permission-list.environment-folders {
+  gap: var(--sp-1);
+}
+
+.permission-list.environment-folders li {
+  flex-wrap: wrap;
+  padding: var(--sp-1) 0;
+  background: transparent;
+}
+
+.permission-list.environment-folders li.muted {
+  padding: var(--sp-1) 0;
+}
+
+.permissions-editor .runtime-row {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.permissions-editor .runtime-row > .field {
+  flex: 1 1 calc(220 * var(--px));
+  width: auto;
+  min-width: 0;
+}
+
+.permission-rule .permission-tool {
+  flex: 0 1 calc(160 * var(--px));
+  min-width: calc(96 * var(--px));
+}
+
+.permission-rule .permission-pattern {
+  flex: 1 1 calc(200 * var(--px));
+  min-width: calc(128 * var(--px));
+}
+
+.permissions-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+/* ---- Budgets: the editor (Settings → Budgets), the Usage panel, and the mark beside the context meter ---- */
+.budgets-editor {
+  margin-top: var(--sp-3);
+}
+
+/* One budget: its fields in rows under a hairline, flush on the edge (no box, so its fields line up with every other row). */
+.budget-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+}
+
+.budget-card-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.budget-card-row .budget-name,
+.budget-card-row .budget-target {
+  flex: 1 1 calc(192 * var(--px));
+  min-width: calc(128 * var(--px));
+}
+
+.budget-limit {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  flex: 1 1 calc(160 * var(--px));
+  font-size: var(--fs-sm);
+}
+
+.budget-limit > span {
+  flex: none;
+  white-space: nowrap;
+}
+
+.budget-limit input {
+  align-self: stretch;
+  min-width: calc(80 * var(--px));
+}
+
+/* In a budget, each limit has a line of its own, so every input box starts on the edge. */
+.budget-card-row > .budget-limit {
+  flex: 1 1 100%;
+}
+
+.budget-card-row > .budget-limit input {
+  max-width: var(--settings-control-w);
+}
+
+/* Alone in a row, a limit is as wide as any other field. */
+.settings-row-control > .budget-limit {
+  flex: 0 1 var(--settings-control-w);
+}
+
+.settings-row-control > .budget-limit input {
+  width: var(--settings-control-w);
+  max-width: 100%;
+}
+
+.budget-card-status {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+/* ---- Dynamic states stay on the edge ---- */
+.settings-section > ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-window .dialog-body .empty-state,
+.settings-window .dialog-body .loading-state {
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: var(--sp-2) 0;
+  text-align: left;
+}
+
+.settings-window .dialog-body .empty-state-body {
+  max-width: none;
+}
+
+.settings-window .dialog-body .notice-box + .notice-box {
+  margin-top: var(--sp-2);
+}
+
+.settings-row-control code,
+.api-token {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

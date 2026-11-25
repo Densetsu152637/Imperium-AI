@@ -1,0 +1,100 @@
+{
+  "tools": [
+    {
+      "name": "spawn_agent",
+      "status": "available"
+    },
+    {
+      "name": "await_tasks",
+      "status": "available"
+    },
+    {
+      "name": "steer_agent",
+      "status": "available"
+    },
+    {
+      "name": "queue_agent",
+      "status": "available"
+    },
+    {
+      "name": "list_agents",
+      "status": "available"
+    },
+    {
+      "name": "resume_agent",
+      "status": "available"
+    },
+    {
+      "name": "list_knowledge_agents",
+      "status": "available"
+    },
+    {
+      "name": "ask_agent",
+      "status": "available"
+    },
+    {
+      "name": "keep_as_knowledge",
+      "status": "available"
+    },
+    {
+      "name": "update_plan",
+      "status": "available"
+    },
+    {
+      "name": "web_search",
+      "status": "available"
+    },
+    {
+      "name": "web_fetch",
+      "status": "available"
+    },
+    {
+      "name": "suggest_local_model",
+      "status": "available"
+    },
+    {
+      "name": "delegate_chunks",
+      "status": "available"
+    },
+    {
+      "name": "ask_user",
+      "status": "available"
+    },
+    {
+      "name": "request_clarification",
+      "status": "available"
+    },
+    {
+      "name": "update_state",
+      "status": "available"
+    },
+    {
+      "name": "search_sessions",
+      "status": "available"
+    },
+    {
+      "name": "list_models",
+      "status": "available"
+    },
+    {
+      "name": "set_model_card",
+      "status": "available"
+    },
+    {
+      "name": "install_extension",
+      "status": "available"
+    },
+    {
+      "name": "uninstall_extension",
+      "status": "available"
+    },
+    {
+      "name": "tool_search",
+      "status": "available"
+    },
+    {
+      "name": "call_tool",
+      "status": "available"
+    }
+  ]
+}

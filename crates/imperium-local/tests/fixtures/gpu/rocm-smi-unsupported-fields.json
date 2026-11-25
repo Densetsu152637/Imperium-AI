@@ -1,0 +1,14 @@
+{
+	"card0": {
+		"Card Series": "AMD Instinct MI210",
+		"Card Model": "0x740f",
+		"GPU use (%)": "N/A",
+		"Temperature (Sensor edge) (C)": "N/A",
+		"Temperature (Sensor junction) (C)": "41.0",
+		"VRAM Total Memory (B)": "68702699520",
+		"VRAM Total Used Memory (B)": "N/A"
+	},
+	"system": {
+		"Driver version": "6.2.4"
+	}
+}

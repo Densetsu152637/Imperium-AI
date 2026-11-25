@@ -1,0 +1,1 @@
+{"adapters":[{"Name":"Intel(R) Arc(TM) A750 Graphics","PNPDeviceID":"PCI\\VEN_8086&DEV_56A1&SUBSYS_10201849&REV_08\\6&1B2C3D4E&0&00000010","AdapterRAM":4293918720,"DriverVersion":"31.0.101.5186"}],"memory":[],"adapter_memory":[{"Name":"luid_0x00000000_0x00009F31_phys_0","DedicatedUsage":734003200}],"process_memory":[]}

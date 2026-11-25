@@ -30,8 +30,13 @@ pub struct AgentEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum SessionEvent {
-    /// The agent started working on a user message.
-    TurnStarted { text: String },
+    /// The agent started working on a user message, with the files attached to it.
+    TurnStarted {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(as = "Option<Vec<Attachment>>", optional)]
+        attachments: Vec<Attachment>,
+    },
     /// A fragment of the agent's reply.
     TextDelta { text: String },
     /// A tool call is about to run (after any approval).
@@ -39,6 +44,11 @@ pub enum SessionEvent {
         call_id: String,
         tool: String,
         summary: String,
+        /// The call's JSON arguments as the model wrote them, truncated for display; absent in
+        /// history recorded before arguments were sent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        arguments: Option<String>,
     },
     /// A tool call needs the user's approval; answer with `session.respond`.
     PermissionRequested {
@@ -46,12 +56,26 @@ pub enum SessionEvent {
         request_id: u64,
         tool: String,
         summary: String,
+        /// The rule "always allow" would add (`permissions.add_rule`), when there is a sensible
+        /// one: the command and its subcommand, the file's folder, or the whole tool.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        suggested_rule: Option<crate::permissions::PermissionRule>,
     },
     /// A tool call finished, failed, or was denied. `output` is truncated for display.
     ToolFinished {
         call_id: String,
         ok: bool,
         output: String,
+        /// The tool's name; absent in history recorded before it was sent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        tool: Option<String>,
+        /// Time from `tool_started` to the end; absent when the call never started (denied,
+        /// invalid or blocked).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, type = "number")]
+        duration_ms: Option<u64>,
     },
     /// One model call finished; emitted after every call, so a turn can have several.
     ModelCallCompleted {
@@ -59,6 +83,10 @@ pub enum SessionEvent {
         usage: TokenUsage,
         #[ts(type = "number")]
         duration_ms: u64,
+        /// Time the call waited for a slot on a local model before it started, which
+        /// `duration_ms` leaves out; absent for hosted models.
+        #[ts(type = "number | null")]
+        queue_wait_ms: Option<u64>,
         /// Time to the first streamed text; absent when the call produced no text.
         #[ts(type = "number | null")]
         time_to_first_token_ms: Option<u64>,
@@ -93,6 +121,14 @@ pub enum SessionEvent {
         task_id: String,
         brief: String,
         model: String,
+        /// A short name for the task (3 to 6 words), from the delegator or derived from the
+        /// brief; shown instead of the task id. Empty in journals written before titles.
+        #[serde(default)]
+        title: String,
+        /// When it happened, in milliseconds since the Unix epoch; absent in older journals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        at_ms: Option<u64>,
     },
     /// A subagent finished; its parent receives `report` when it awaits the task.
     TaskFinished {
@@ -102,6 +138,36 @@ pub enum SessionEvent {
         report: String,
         usage: TokenUsage,
         cost_usd: Option<f64>,
+        /// When it happened, in milliseconds since the Unix epoch; absent in older journals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        at_ms: Option<u64>,
+    },
+    /// A subagent stopped at its next safe point because the user steered the root agent (an
+    /// in-flight tool call finished first; an in-flight model request was cancelled). Its
+    /// conversation is saved up to that point, so `resume_agent` / `session.agent_resume`
+    /// continues it, and `resume_agent` with `cancel` / `session.agent_cancel` ends it.
+    TaskPaused {
+        task_id: String,
+        /// What it had done so far, and any messages queued for it that were not delivered.
+        progress: String,
+        /// When it happened, in milliseconds since the Unix epoch; absent in older journals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        at_ms: Option<u64>,
+    },
+    /// A finished subagent was given a follow-up (`resume_agent`, or `session.agent_resume`)
+    /// and works again with its earlier conversation; `task_finished` follows as for a new
+    /// task. Emitted by the agent that resumed it (`root`).
+    TaskResumed {
+        task_id: String,
+        /// The follow-up message.
+        text: String,
+        model: String,
+        /// When it happened, in milliseconds since the Unix epoch; absent in older journals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        at_ms: Option<u64>,
     },
     /// The agent finished the turn.
     TurnCompleted {
@@ -128,22 +194,83 @@ pub enum SessionEvent {
     },
     /// The agent loaded workflow or documentation references.
     ContextLoaded { references: Vec<String> },
+    /// A skill's instructions entered this agent's conversation, or a plugin's tools were
+    /// activated for the session, on first use. A resumed session replays these to restore
+    /// what was loaded: its activated plugins start again, and skills an agent already has are
+    /// not loaded twice.
+    ExtensionLoaded {
+        kind: ExtensionKind,
+        name: String,
+        /// For a plugin: the tools it added (`mcp__<server>__<tool>`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(as = "Option<Vec<String>>", optional)]
+        tools: Vec<String>,
+    },
+    /// With reactive tool loading on, the agent looked up tools it is not offered directly
+    /// (`via: search`: a `tool_search` result showed their parameters) or ran one through
+    /// `call_tool` (`via: call`). Reported once per tool and agent; only names, never the
+    /// schemas, which are outside text.
+    ToolsLoaded {
+        names: Vec<String>,
+        via: ToolLoadVia,
+    },
     /// The agent's browser after an action: page, title, and a JPEG screenshot (base64), so
-    /// clients can mirror it.
+    /// clients can mirror it. `tab` is the tab the page belongs to and `tabs` lists every open
+    /// tab, so a client keeps one mirror per tab; both are absent from a daemon older than
+    /// protocol 0.35.
     BrowserView {
         url: String,
         title: String,
         screenshot: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        tab: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(as = "Option<Vec<crate::methods::BrowserTab>>", optional)]
+        tabs: Vec<crate::methods::BrowserTab>,
     },
-    /// A model call hit a usage or rate limit; the turn waits until `until_unix_ms` (or until
-    /// resumed early), following the session's resume policy.
+    /// Who drives the session's browser changed: the user took it over (`user` true; the
+    /// agent's browser tools are refused meanwhile) or gave it back.
+    BrowserControl { user: bool },
+    /// The live preview changed: `url` is the loopback page the Preview panel shows, or
+    /// absent once it is closed; `command` is the process the session started to serve it.
+    PreviewChanged {
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        command: Option<String>,
+    },
+    /// The session waits: a model call hit a usage or rate limit (the turn waits until
+    /// `until_unix_ms`, or until resumed early, following the session's resume policy), or
+    /// background work is giving way to the user (`until_unix_ms` is 0; it resumes when the
+    /// machine is quiet or when the user says to run it now).
     Paused {
         #[ts(type = "number")]
         until_unix_ms: u64,
         reason: String,
+        /// Why it waits; older journals have no cause and mean a usage limit.
+        #[serde(default)]
+        cause: PauseCause,
+    },
+    /// A model call of `agent_id` waits for local model `model`, and why; sent when the reason
+    /// changes while it waits (not for waits under half a second). The call starts without a
+    /// further event.
+    LocalModelWaiting {
+        agent_id: String,
+        model: String,
+        reason: LocalWaitReason,
     },
     /// The wait ended and the turn continues.
     Resumed {},
+    /// The user stopped the session (`session.control` `stop`): the root and every subagent
+    /// halt at their next safe point (a tool call in flight finishes, a model request in
+    /// flight is cancelled and is sent again on resume), their state is kept, local models may
+    /// release their slots, and queued messages wait. The status is `paused` until
+    /// `work_resumed`; a restart keeps it stopped. Emitted by the root.
+    WorkStopped {},
+    /// The user resumed a stopped session (`session.control` `resume`): every agent goes on
+    /// from where it halted, and queued messages run. Emitted by the root.
+    WorkResumed {},
     /// The session's status changed. `detail` names what it watches, such as `owner/repo#12`.
     StatusChanged {
         status: SessionStatus,
@@ -156,6 +283,244 @@ pub enum SessionEvent {
         kind: String,
         prompt: String,
     },
+    /// The agent's conversation was compacted to fit `model`'s context window: the system
+    /// prompt and the most recent turns were kept verbatim and the older messages replaced by a
+    /// summary that `summary_model` wrote.
+    ContextCompacted {
+        /// The model whose window the conversation was fitted to.
+        model: String,
+        /// The conversation's size for `model` before and after, counted by `method`.
+        #[ts(type = "number")]
+        before_tokens: u64,
+        #[ts(type = "number")]
+        after_tokens: u64,
+        /// Messages replaced by the summary.
+        summarised_messages: u32,
+        /// The tokens the conversation may use: the window less room for the reply.
+        #[ts(type = "number")]
+        budget: u64,
+        #[ts(type = "number | null")]
+        context_window: Option<u64>,
+        method: TokenCountMethod,
+        summary_model: String,
+        /// The compaction carried workflow context (loaded skills, workflow references) over
+        /// verbatim, so a skill an agent loaded is still loaded. Absent in journals written
+        /// before that, whose compactions summarised them.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        kept_context: bool,
+    },
+    /// The session's model changed; turns from now on use `to`. `compacted` says whether the
+    /// conversation was compacted first (a `context_compacted` event precedes this one). `from`
+    /// is empty when the session had no model before.
+    ModelChanged {
+        from: String,
+        to: String,
+        compacted: bool,
+    },
+    /// A message arrived while the agent was busy and waits for it: a queued message runs as
+    /// the agent's next turn, a steering one joins its running turn at the next safe point.
+    /// `queue_changed` follows with the whole queue.
+    MessageQueued {
+        id: String,
+        text: String,
+        steer: bool,
+    },
+    /// The agent's queue after a message was queued, edited, removed, delivered, or joined the
+    /// running turn. The latest one is the queue; a resumed session restores it.
+    QueueChanged { messages: Vec<QueuedMessage> },
+    /// A steering message joined the running turn: the model reads it, as a user message
+    /// marked as steering, on its next call. The turn goes on. Subagents the root agent was
+    /// running were paused for it (`task_paused`), and `paused` lists them; the root reads
+    /// their status with the message and decides whether to resume, re-brief, or cancel them.
+    Steered {
+        id: String,
+        text: String,
+        #[serde(default)]
+        paused: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(as = "Option<Vec<Attachment>>", optional)]
+        attachments: Vec<Attachment>,
+    },
+    /// The daemon offers to download a local model better suited to what the session needs.
+    /// Nothing is downloaded unless the user accepts with `session.suggestion_respond`.
+    ModelSuggestion {
+        /// Names the suggestion in `session.suggestion_respond` and `model_suggestion_update`.
+        id: String,
+        /// `local` (a general local model), `vision`, `tools`, `code`, or `context`.
+        need: String,
+        /// The Hugging Face repository, `owner/name`.
+        repo: String,
+        /// The GGUF quantisation chosen to fit this machine.
+        quant: String,
+        /// What the session can switch to once it is downloaded, such as `llamacpp:Qwen3-4B-Q4_K_M`.
+        model: String,
+        /// The download's size, a vision projector included.
+        #[ts(type = "number")]
+        size_bytes: u64,
+        /// How it would load here: `gpu`, `partial` (split with system memory), or `cpu`.
+        #[ts(type = "\"gpu\" | \"partial\" | \"cpu\"")]
+        fit: String,
+        /// Why it is suggested, in words for the user.
+        reason: String,
+        /// The multimodal projector is downloaded too.
+        mmproj: bool,
+    },
+    /// What became of a model suggestion.
+    ModelSuggestionUpdate {
+        id: String,
+        /// `downloading` (with `job_id`; follow `models.download_progress`), `ready` (with
+        /// `model`; switch with `session.control` `set_model`), `failed` or `cancelled` (with
+        /// `message`), `dismissed` (not now), or `disabled` (don't ask again: suggestions are
+        /// off).
+        #[ts(
+            type = "\"downloading\" | \"ready\" | \"failed\" | \"cancelled\" | \"dismissed\" | \"disabled\""
+        )]
+        state: String,
+        job_id: Option<String>,
+        model: Option<String>,
+        message: Option<String>,
+    },
+    /// The agent paused to ask the user a batch of questions; answer with `session.answer`.
+    /// Subagents already running keep going meanwhile.
+    QuestionsAsked {
+        #[ts(type = "number")]
+        request_id: u64,
+        questions: Vec<Question>,
+    },
+    /// A batch of questions was answered, from any client, so the rest can close it.
+    QuestionsAnswered {
+        #[ts(type = "number")]
+        request_id: u64,
+    },
+    /// The agent started summarising older messages to fit `model`'s context window; the
+    /// agent waits until `context_compacted` (or, on failure, the turn's failure or a notice).
+    /// For the root this can come before the turn's `turn_started`, since a message is fitted
+    /// before it is added.
+    CompactionStarted { model: String },
+    /// An agent became a knowledge agent (with its card), the card changed (a question was
+    /// asked or answered, its sources went stale), or it was retired (`retired`, no card).
+    /// Emitted under the knowledge agent's id; a replayed journal rebuilds the cards from these.
+    KnowledgeChanged {
+        agent_id: String,
+        card: Option<Box<KnowledgeCard>>,
+        retired: bool,
+    },
+    /// An agent asked a knowledge agent a question (`ask_agent`). `text` is clipped to 2,000
+    /// characters. Emitted under the asker's id.
+    QuestionAsked {
+        question_id: String,
+        from: String,
+        to: String,
+        text: String,
+        #[ts(type = "number")]
+        at_ms: u64,
+    },
+    /// A question ended. `answer` is clipped to 2,000 characters (the asker got the whole
+    /// reply, up to 8,000); `usage` and `cost_usd` are what answering cost the knowledge agent,
+    /// and `cached_ratio` the share of the prompt the provider or runtime reported as cached.
+    /// Emitted under the asker's id.
+    QuestionAnswered {
+        question_id: String,
+        outcome: QuestionOutcome,
+        answer: String,
+        degraded: bool,
+        untrusted_web: bool,
+        untrusted_tools: bool,
+        usage: TokenUsage,
+        cost_usd: Option<f64>,
+        cached_ratio: Option<f64>,
+        #[ts(type = "number")]
+        at_ms: u64,
+    },
+}
+
+/// A message waiting for an agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QueuedMessage {
+    /// `q1`, `q2`, ...: unique in the session.
+    pub id: String,
+    pub text: String,
+    /// Joins the agent's running turn at its next safe point instead of waiting for the turn
+    /// to end; when no turn is running it starts one.
+    pub steer: bool,
+    /// Files attached to the message (`session.attach`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<Attachment>>", optional)]
+    pub attachments: Vec<Attachment>,
+}
+
+/// A file attached to a user message: staged with `session.attach`, then sent with
+/// `session.send`. Text files are inlined into the message (up to a limit, with a truncation
+/// marker), a PDF's text is extracted, an image goes to the model as an image when the
+/// session's model has vision, and anything else is a path the agent can read with its tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Attachment {
+    /// `a<time>-<n>`: unique in the session.
+    pub id: String,
+    /// The file name shown, such as `report.pdf`.
+    pub name: String,
+    pub kind: AttachmentKind,
+    /// The media type, such as `image/png`.
+    pub mime: String,
+    #[ts(type = "number")]
+    pub size: u64,
+    /// Where the file is: inside one of the session's folders or path grants, or in the
+    /// session's attachments folder under the data directory (`copied`).
+    pub path: String,
+    /// The file was copied into the session's attachments folder (pasted, uploaded, or dropped
+    /// from outside the session's folders).
+    #[serde(default)]
+    pub copied: bool,
+    /// Images (an image, or a PDF's embedded page images) go to the model as images. Set by
+    /// the daemon when the message is sent, from whether the session's model has vision;
+    /// without it an image is a path reference.
+    #[serde(default)]
+    pub vision: bool,
+    /// A small `data:image/...` thumbnail for transcripts (at most 64 KiB), made by the client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preview: Option<String>,
+}
+
+/// What an attachment is, which decides how the model receives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AttachmentKind {
+    /// PNG, JPEG, GIF, or WebP.
+    Image,
+    Pdf,
+    /// UTF-8 text: inlined into the message.
+    Text,
+    /// Anything else: a path the agent reads with its tools.
+    File,
+}
+
+/// How `session.send` delivers a message.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SendMode {
+    /// Start a turn now when the agent is idle; otherwise wait in its queue and run as a new
+    /// turn after the current one, in order.
+    #[default]
+    Queue,
+    /// Join the running turn after its current model response and tool calls, before the next
+    /// model call, without cancelling it. Like `queue` when no turn is running.
+    Steer,
+}
+
+/// One question for the user, with the answer the agent suggests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Question {
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    pub recommended: String,
 }
 
 /// An instruction file or section in a context manifest.
@@ -192,14 +557,37 @@ pub struct TokenUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ContextCategory {
-    /// A stable id: `system_base`, `system_skills`, `system_memory`, `system_citations`,
-    /// `system_project`, `tools_builtin`, `tools_mcp`, `manifest`, `memories`, `user`,
-    /// `assistant`, `tool_results`, or `overhead`. Clients show unknown keys by their label.
+    /// A stable id: `system_base`, `system_skills` (the skill and plugin index),
+    /// `skills_loaded` (skill instructions loaded on use, or eagerly), `system_memory`,
+    /// `system_citations`, `system_project`, `tools_builtin`, `tools_mcp`, `tools_plugins`
+    /// (tools of activated plugins), `summary` (a compacted conversation's
+    /// summary), `manifest`, `memories`, `user`, `assistant`, `tool_results`, or `overhead`.
+    /// Clients show unknown keys by their label.
     pub key: String,
     pub label: String,
     /// Only `overhead` can be negative.
     #[ts(type = "number")]
     pub tokens: i64,
+}
+
+/// What an `extension_loaded` event loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ExtensionKind {
+    Skill,
+    Plugin,
+}
+
+/// How a `tools_loaded` event came about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ToolLoadVia {
+    /// A `tool_search` result showed the tools' parameters.
+    Search,
+    /// The tools were run through `call_tool`.
+    Call,
 }
 
 /// How a context breakdown was counted.
@@ -218,19 +606,198 @@ pub enum TokenCountMethod {
     Estimated,
 }
 
+/// Where an agent stands, in `session.agents`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentStatus {
+    /// Working on a turn.
+    Running,
+    /// Finished its last turn; a subagent can be resumed with a follow-up.
+    Idle,
+    /// Its last turn failed; a subagent can still be resumed.
+    Failed,
+    /// The daemon stopped while it was working; it can be resumed from where it was saved.
+    Interrupted,
+    /// Paused at a safe point for a steering message to the root agent; it can be resumed
+    /// from where it was saved, or cancelled.
+    Paused,
+}
+
+/// An agent of a session and its kept state, from `session.agents`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentSummary {
+    /// `root`, or a subagent's task id (`t1`, ...).
+    pub agent_id: String,
+    /// The agent that started it; `None` for the root.
+    pub parent: Option<String>,
+    /// The workflow role it loads files for: `root`, `leaf`, or what its delegator asked.
+    pub role: String,
+    /// A short name for lists: the title it was spawned with (or one derived from its brief).
+    pub title: String,
+    /// Its brief (empty for the root).
+    pub task: String,
+    /// The model spec it last ran on.
+    pub model: String,
+    /// Served by a local runtime, which it takes a slot on for each turn.
+    pub local: bool,
+    pub status: AgentStatus,
+    /// Its conversation is kept, so `resume_agent` / `session.agent_resume` can continue it.
+    /// Always false for the root, which is continued by sending the session a message.
+    pub resumable: bool,
+    /// Turns it has run (the brief and every follow-up).
+    pub turns: u32,
+    /// Messages in its kept conversation.
+    pub messages: u32,
+    /// Every model call it made, across turns.
+    pub usage: TokenUsage,
+    pub cost_usd: Option<f64>,
+    /// Its latest plan, when it kept one.
+    pub plan: Option<Plan>,
+    /// Its latest report (a subagent's final reply), truncated.
+    pub last_report: Option<String>,
+    /// When its state last changed, in milliseconds since the Unix epoch.
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+    // Set while the agent is kept as a knowledge agent (protocol 0.38).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub knowledge: Option<KnowledgeCard>,
+}
+
+// A knowledge agent's card (docs/21-knowledge-agents.md): an idle subagent kept so other agents
+// can ask it questions instead of reading what it read again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct KnowledgeCard {
+    pub agent_id: String,
+    pub title: String,
+    pub model: String,
+    pub local: bool,
+    // What the promoter said it knows about.
+    pub topic: String,
+    // What the agent read, newest first, at most 50; `more_sources` counts the rest.
+    pub sources: Vec<KnowledgeSource>,
+    pub more_sources: u32,
+    pub untrusted: KnowledgeUntrusted,
+    // The kept conversation's size and the model's window, in tokens.
+    #[ts(type = "number")]
+    pub context_tokens: u64,
+    #[ts(type = "number | null")]
+    pub context_window: Option<u64>,
+    // What one question is expected to cost; absent when it cannot be told.
+    pub est_question_cost: Option<QuestionCost>,
+    // The share of the latest fork's prompt that was reported as cached.
+    pub last_cached_ratio: Option<f64>,
+    // Answers given so far, and what they cost.
+    pub questions: u32,
+    pub usage: TokenUsage,
+    pub cost_usd: Option<f64>,
+    pub status: KnowledgeStatus,
+    // Questions waiting for a free answer slot.
+    pub queued: u32,
+    // The share of the file sources that changed since they were read.
+    pub stale_fraction: f64,
+}
+
+// One thing a knowledge agent read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct KnowledgeSource {
+    pub kind: KnowledgeSourceKind,
+    // A path, a search pattern, or a URL.
+    pub target: String,
+    // For a file: its size and modified time when it was read.
+    #[ts(type = "number | null")]
+    pub size: Option<u64>,
+    #[ts(type = "number | null")]
+    pub modified_ms: Option<u64>,
+    // The file changed since it was read (checked at each question).
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum KnowledgeSourceKind {
+    File,
+    Dir,
+    Search,
+    Url,
+}
+
+// Where outside material may be in a knowledge agent's context: `web` for web search and fetch
+// results (or a browser tool's), `tools` for MCP and plugin tool results.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct KnowledgeUntrusted {
+    pub web: bool,
+    pub tools: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QuestionCost {
+    #[ts(type = "number")]
+    pub tokens: u64,
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum KnowledgeStatus {
+    Ready,
+    // Forks are answering questions.
+    Answering,
+    // Resumed for more work: questions wait until its turn finishes.
+    Busy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum QuestionOutcome {
+    Answered,
+    Timeout,
+    Cancelled,
+    Refused,
+    Failed,
+}
+
 /// A goal and the steps toward it, kept by an agent with the `update_plan` tool.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Plan {
     pub goal: String,
     pub steps: Vec<PlanStep>,
+    /// Gaps the agent filled itself, each with the value it chose.
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    /// Decisions left to the user, or that cannot be researched.
+    #[serde(default)]
+    pub open_questions: Vec<String>,
 }
 
+/// One stage of a plan. Everything after `status` is optional so plans saved before those
+/// fields existed still load.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PlanStep {
     pub title: String,
     pub status: StepStatus,
+    /// Titles of the steps that must finish first.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// Who does the step: the agent itself, or a subagent and its tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub owner: Option<String>,
+    /// The check that shows the step is done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub acceptance: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -260,21 +827,144 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn attachment() -> Attachment {
+        Attachment {
+            id: "a1".into(),
+            name: "shot.png".into(),
+            kind: AttachmentKind::Image,
+            mime: "image/png".into(),
+            size: 42,
+            path: "/data/attachments/s1/a1-shot.png".into(),
+            copied: true,
+            vision: true,
+            preview: Some("data:image/jpeg;base64,AA==".into()),
+        }
+    }
+
+    #[test]
+    fn attachments_round_trip_and_older_events_still_read() {
+        let started = SessionEvent::TurnStarted {
+            text: "look".into(),
+            attachments: vec![attachment()],
+        };
+        let wire = serde_json::to_value(&started).unwrap();
+        assert_eq!(wire["attachments"][0]["kind"], "image");
+        assert_eq!(
+            serde_json::from_value::<SessionEvent>(wire).unwrap(),
+            started
+        );
+        // A message without attachments serialises as before, and journals written before
+        // attachments existed still read.
+        let plain = SessionEvent::TurnStarted {
+            text: "hi".into(),
+            attachments: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            json!({"type": "turn_started", "text": "hi"})
+        );
+        let old: QueuedMessage =
+            serde_json::from_value(json!({"id": "q1", "text": "hi", "steer": false})).unwrap();
+        assert!(old.attachments.is_empty());
+        let minimal: Attachment = serde_json::from_value(json!({
+            "id": "a2", "name": "notes.txt", "kind": "text", "mime": "text/plain",
+            "size": 3, "path": "/p/notes.txt"
+        }))
+        .unwrap();
+        assert!(!minimal.copied && !minimal.vision && minimal.preview.is_none());
+    }
+
+    #[test]
+    fn send_params_carry_attachments() {
+        let params = crate::methods::SessionSendParams {
+            session_id: "s1".into(),
+            text: String::new(),
+            mode: None,
+            agent_id: None,
+            confirm_budget: None,
+            attachments: vec![attachment()],
+        };
+        let wire = serde_json::to_value(&params).unwrap();
+        assert_eq!(wire["attachments"][0]["id"], "a1");
+        assert_eq!(
+            serde_json::from_value::<crate::methods::SessionSendParams>(wire).unwrap(),
+            params
+        );
+        let bare: crate::methods::SessionSendParams =
+            serde_json::from_value(json!({"session_id": "s1", "text": "hi"})).unwrap();
+        assert!(bare.attachments.is_empty());
+    }
+
     #[test]
     fn events_are_tagged_by_type() {
         let event = SessionEvent::PermissionRequested {
             request_id: 3,
             tool: "write_file".into(),
             summary: "write a.txt".into(),
+            suggested_rule: None,
         };
         assert_eq!(
             serde_json::to_value(&event).unwrap(),
             json!({"type":"permission_requested","request_id":3,"tool":"write_file","summary":"write a.txt"})
         );
+        let suggested = SessionEvent::PermissionRequested {
+            request_id: 4,
+            tool: "run_command".into(),
+            summary: "run `cargo test`".into(),
+            suggested_rule: Some(crate::permissions::PermissionRule {
+                tool: "run_command".into(),
+                pattern: "cargo test".into(),
+                action: crate::permissions::RuleAction::Allow,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&suggested).unwrap()["suggested_rule"],
+            json!({"tool":"run_command","pattern":"cargo test","action":"allow"})
+        );
         assert_eq!(
             serde_json::to_value(PermissionDecision::AllowForSession).unwrap(),
             json!("allow_for_session")
         );
+    }
+
+    #[test]
+    fn plans_round_trip_with_their_stage_details() {
+        let plan = Plan {
+            goal: "ship".into(),
+            steps: vec![
+                PlanStep {
+                    title: "research".into(),
+                    status: StepStatus::Done,
+                    depends_on: vec![],
+                    owner: Some("subagent, standard".into()),
+                    acceptance: Some("three sources cited".into()),
+                },
+                PlanStep {
+                    title: "build".into(),
+                    status: StepStatus::InProgress,
+                    depends_on: vec!["research".into()],
+                    owner: None,
+                    acceptance: None,
+                },
+            ],
+            assumptions: vec!["Rust 1.80".into()],
+            open_questions: vec!["Which licence?".into()],
+        };
+        let value = serde_json::to_value(&plan).unwrap();
+        assert_eq!(value["steps"][1]["depends_on"], json!(["research"]));
+        assert!(value["steps"][1].get("owner").is_none());
+        assert_eq!(serde_json::from_value::<Plan>(value).unwrap(), plan);
+    }
+
+    #[test]
+    fn plans_saved_without_stage_details_still_load() {
+        let plan: Plan = serde_json::from_value(
+            json!({"goal": "g", "steps": [{"title": "t", "status": "pending"}]}),
+        )
+        .unwrap();
+        assert!(plan.assumptions.is_empty() && plan.open_questions.is_empty());
+        let step = &plan.steps[0];
+        assert!(step.depends_on.is_empty() && step.owner.is_none() && step.acceptance.is_none());
     }
 
     #[test]
@@ -299,6 +989,44 @@ mod tests {
     }
 }
 
+/// Why a model call waits for a local model ([`SessionEvent::LocalModelWaiting`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum LocalWaitReason {
+    /// The model is being loaded (or restarted) for it.
+    Loading,
+    /// The model restarts with a larger KV pool once the calls running on it are done.
+    GrowingPool,
+    /// The model's KV pool is full of other calls' reservations.
+    KvRoom,
+    /// Every slot of the model is busy.
+    Slot,
+    /// Another model is in the way: its calls come first, or it must unload to make room.
+    OtherModel,
+    /// Waiting for room on the GPU (models in the way finish their calls and are swapped out)
+    /// rather than running on the CPU.
+    MakingRoom,
+    /// Saving the contexts of agents on a model swapped out for this call.
+    SavingContext,
+    /// Restoring this agent's own context, saved while it waited.
+    RestoringContext,
+}
+
+/// Why a session is [`SessionEvent::Paused`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PauseCause {
+    /// A provider's usage limit.
+    #[default]
+    UsageLimit,
+    /// Background work paused at a step boundary because the machine got busy.
+    Load,
+    /// Background work that has not started, waiting for a quiet machine.
+    Deferred,
+}
+
 /// What a session is doing, as clients show it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -310,8 +1038,10 @@ pub enum SessionStatus {
     Working,
     /// Waiting on the user: a permission request, or a turn that failed.
     NeedsAttention,
-    /// Waiting for a usage limit to reset.
+    /// Waiting for a usage limit to reset, or (background work) for a quiet machine.
     Paused,
+    /// A message is waiting, but the session has no model yet; it runs once one is set.
+    NeedsModel,
     /// Idle, watching a pull request's checks so failures are fixed reactively.
     Watching,
     /// Its pull request merged.

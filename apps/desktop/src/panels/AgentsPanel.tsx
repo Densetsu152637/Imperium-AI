@@ -1,44 +1,147 @@
-// Delegated tasks: each subagent's model, status, cost, activity, and report.
+// Delegated tasks as a compact list: one line per subagent with its status, title, and how long
+// it has run (its task id, model, and cost on hover). Choosing one opens its log in the main
+// session panel (AgentView), where it can be messaged and steered. A subagent paused by a
+// steering message to the root offers Resume and Cancel in its menu too.
 
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { BookOpen, CircleX, PanelTop, Play } from "lucide-react";
+import { useEffect, useState } from "react";
 
-import { formatCost, type SessionState } from "../sessions";
+import { RESUME_TEXT, formatElapsed, taskElapsed } from "../sessions/agentView";
+import { Badge } from "../components/Badge";
+import { EmptyState } from "../components/EmptyState";
+import { Menu, type MenuItem } from "../components/Menu";
+import { canKeep, rowNote } from "../sessions/knowledge";
+import { modelName, useModelNames } from "../models/modelNames";
+import type { KnowledgeCard } from "@imperium/protocol";
 
-export function AgentsPanel({ session }: { session: SessionState | null }) {
+import { formatCost, type SessionState, type TaskState } from "../sessions/sessions";
+import { isStopped, shownTaskStatus } from "../sessions/stop";
+
+
+type Actions = {
+  /** Opens the subagent's log in the main panel. */
+  onOpen?: (taskId: string) => void;
+  /** Gives a finished or paused subagent a follow-up (`session.agent_resume`). */
+  onResume?: (taskId: string, text: string) => Promise<unknown>;
+  /** Ends a paused subagent (`session.agent_cancel`). */
+  onCancel?: (taskId: string) => Promise<unknown>;
+  /** Makes a knowledge agent an ordinary subagent again (`session.agent_knowledge`). */
+  onRetire?: (taskId: string) => Promise<unknown>;
+};
+
+/** The current time, every second while `ticking`: running subagents' elapsed times count up. */
+export function useNow(ticking: boolean): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!ticking) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [ticking]);
+  return now;
+}
+
+export function AgentsPanel({
+  session,
+  openAgent = null,
+  onOpen,
+  onResume,
+  onCancel,
+  onRetire,
+}: {
+  session: SessionState | null;
+  /** The subagent whose log the main panel shows, if any. */
+  openAgent?: string | null;
+} & Actions) {
   const tasks = session ? Object.values(session.tasks) : [];
+  const now = useNow(tasks.some((task) => task.status === "running"));
   if (tasks.length === 0) {
-    return <p className="empty">Subagents appear here when the agent delegates work.</p>;
+    return <EmptyState className="compact" title="No subagents" body="Subagents appear here when the agent delegates work." />;
   }
+  const archived = session?.summary.archived ?? false;
+  // While the session is stopped its running subagents are halted: shown as paused.
+  const stopped = session ? isStopped(session) : false;
   return (
-    <ul className="tasks">
+    <ul className="list agent-list" aria-label="Subagents">
       {tasks.map((task) => (
-        <li key={task.taskId}>
-          <details open={task.status === "running"}>
-            <summary>
-              <span className={`badge ${task.status}`}>{task.status}</span> <strong>{task.taskId}</strong>{" "}
-              <span className="muted">
-                {task.model} · {formatCost(task.costUsd)}
-              </span>
-              <span className="brief">{task.brief}</span>
-            </summary>
-            <ul className="task-activity">
-              {task.entries
-                .filter((entry) => entry.kind === "tool")
-                .map((entry, index) => (
-                  <li key={index} className={entry.ok === false ? "failed" : undefined}>
-                    {entry.ok === null ? "…" : entry.ok ? "✓" : "✗"} {entry.summary}
-                  </li>
-                ))}
-            </ul>
-            {task.report && (
-              <div className="task-report prose">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{task.report}</ReactMarkdown>
-              </div>
-            )}
-          </details>
-        </li>
+        <AgentRow
+          key={task.taskId}
+          task={task}
+          now={now}
+          stopped={stopped}
+          open={task.taskId === openAgent}
+          card={session?.knowledge?.cards[task.taskId]}
+          onOpen={onOpen}
+          onResume={archived ? undefined : onResume}
+          onCancel={archived ? undefined : onCancel}
+          onRetire={archived ? undefined : onRetire}
+        />
       ))}
     </ul>
+  );
+}
+
+function AgentRow({
+  task,
+  now,
+  stopped,
+  open,
+  onOpen,
+  onResume,
+  onCancel,
+  onRetire,
+  card,
+}: { task: TaskState; now: number; stopped: boolean; open: boolean; card?: KnowledgeCard } & Actions) {
+  const aliases = useModelNames();
+  const status = shownTaskStatus(task.status, stopped);
+  const elapsed = taskElapsed(task, now);
+  const paused = task.status === "paused";
+  const note = rowNote(card);
+  const hover = [
+    `${task.title} (${task.taskId})`,
+    `${status} · ${modelName(aliases, task.model)} · ${formatCost(task.costUsd)}`,
+    stopped && task.status === "running" ? "Halted while the session is stopped" : "",
+    note ? `Knowledge agent: ${note.title}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const items: MenuItem[] = [
+    { label: "Open log", icon: PanelTop, onSelect: () => onOpen?.(task.taskId), disabled: !onOpen },
+  ];
+  if (paused && onResume) {
+    items.push({ label: "Resume", icon: Play, onSelect: () => void onResume(task.taskId, RESUME_TEXT).catch(() => {}) });
+  }
+  if (paused && onCancel) {
+    items.push({ label: "Cancel", icon: CircleX, danger: true, onSelect: () => void onCancel(task.taskId).catch(() => {}) });
+  }
+  if (canKeep(task.status, card) && onOpen) {
+    items.push({ label: "Keep as knowledge…", icon: BookOpen, onSelect: () => onOpen(task.taskId) });
+  }
+  if (card && onRetire) {
+    items.push({ label: "Retire knowledge agent", icon: CircleX, onSelect: () => void onRetire(task.taskId).catch(() => {}) });
+  }
+  return (
+    <li>
+      <div className="row nav-row agent-row">
+        <button
+          type="button"
+          className={`row-main agent-row-main${open ? " selected" : ""}`}
+          aria-current={open ? "true" : undefined}
+          title={hover}
+          onClick={() => onOpen?.(task.taskId)}
+          disabled={!onOpen}
+        >
+          <span className={`status-dot task-${status}`} role="img" aria-label={status} />
+          <span className="name">{task.title}</span>
+          {note && (
+            <Badge tone="accent" className="knowledge" title={note.title}>
+              {note.badge}
+            </Badge>
+          )}
+          {elapsed !== null && <span className="agent-elapsed">{formatElapsed(elapsed)}</span>}
+        </button>
+        <Menu label={`More for ${task.title}`} items={items} />
+      </div>
+    </li>
   );
 }

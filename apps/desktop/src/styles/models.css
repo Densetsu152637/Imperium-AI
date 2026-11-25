@@ -1,0 +1,604 @@
+/* Models: the model and local model panels, the first-run setup cards and downloads. Panels
+   are narrow columns (about 300 px at 1024 wide), so nothing here has a fixed minimum width:
+   controls shrink and wrap, and tables drop columns by container width instead of clipping.
+   The tables use the shared `.table`; primitives.css loads after this file and wins ties, so
+   rules that must beat it are scoped under `.models`. */
+
+/* ---- Toolbars ---- */
+.models-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.models .models-toolbar input.field {
+  flex: 1 1 calc(120 * var(--px));
+  width: auto;
+  min-width: 0;
+  font-size: var(--fs-md);
+}
+
+.models .models-toolbar > .muted {
+  min-width: 0;
+}
+
+.models .models-toolbar button.small,
+.models .local-model-table button.small {
+  min-height: var(--control-h-sm);
+}
+
+/* Local models: Rescan and Configure, small and to the side. */
+.local-models-toolbar {
+  justify-content: flex-end;
+  gap: var(--sp-1);
+}
+
+/* ---- Tables ---- */
+.models .table {
+  font-size: var(--fs-sm);
+}
+
+.models .table th button.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--control-h-sm);
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+}
+
+.models .table th button.sort:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+
+.models .table th button.sort .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.models .table tr.unusable {
+  opacity: 0.55;
+}
+
+tr.model-hidden {
+  opacity: 0.5;
+}
+
+tr.model-hidden.unusable {
+  opacity: 0.35;
+}
+
+.models .table td.model-id-cell,
+.models .table td.model-tags {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.models .table td.model-id-cell .badge {
+  margin-left: var(--sp-1);
+}
+
+.models .table td.model-tags {
+  color: var(--text-muted);
+}
+
+.models .table td.model-price {
+  white-space: nowrap;
+}
+
+.models .table td.model-marks-cell {
+  text-align: right;
+}
+
+/* Where and which tier, shown under the name when those columns are hidden. */
+.models .model-sub {
+  display: none;
+}
+
+.model-marks {
+  display: inline-flex;
+  gap: var(--sp-1);
+  white-space: nowrap;
+}
+
+.model-marks button.model-mark {
+  color: var(--text-muted);
+}
+
+.model-marks button.model-mark.on {
+  color: var(--accent-text);
+}
+
+.model-marks button.model-mark.favourite.on svg {
+  fill: currentColor;
+}
+
+/* The favourite and hide toggles of a model row: shown on hover or focus, and while set. */
+.model-marks button.model-mark:not(.on) {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+tr:hover .model-marks button.model-mark,
+tr:focus-within .model-marks button.model-mark {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .model-marks button.model-mark:not(.on) {
+    opacity: 1;
+  }
+}
+
+tr.model-hidden-group td {
+  padding-top: var(--sp-2);
+}
+
+tr.model-hidden-group button {
+  color: var(--text-muted);
+}
+
+/* Narrower panels drop columns before anything clips: Tags first, then Where and Tier, which move to a line under the name. */
+@container (max-width: 44rem) {
+  .models .models-table th:nth-child(5),
+  .models .models-table td:nth-child(5) {
+    display: none;
+  }
+
+  .models .model-sub.sub-tags {
+    display: block;
+  }
+}
+
+@container (max-width: 36rem) {
+  .models .models-table th:nth-child(2),
+  .models .models-table td:nth-child(2),
+  .models .models-table th:nth-child(3),
+  .models .models-table td:nth-child(3) {
+    display: none;
+  }
+
+  .models .model-sub.sub-where {
+    display: block;
+  }
+
+  /* What is left (name, price, toggles) shares the width: tight padding, and the price header may wrap. */
+  .models .models-table th,
+  .models .models-table td {
+    padding-inline: var(--sp-1);
+  }
+
+  .models .models-table th {
+    white-space: normal;
+  }
+}
+
+/* ---- Local models ---- */
+.local-models .update-warning {
+  color: var(--warn);
+}
+
+.local-models .badge {
+  white-space: nowrap;
+}
+
+.local-models .setup-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* Sections of the Local models panel: folders, the runtime, then the models. */
+.local-models .section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.local-models .section-head h3 {
+  flex: 1;
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.runtime-card .candidates,
+.skipped ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runtime-card .candidates li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.local-models .card.runtime-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-4) 0;
+  padding: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.local-models .card.runtime-card.attention {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
+.runtime-card p {
+  margin: 0;
+}
+
+.runtime-card .runtime-path code {
+  display: block;
+}
+
+.runtime-card code,
+.skipped code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+}
+
+.runtime-card .models-toolbar {
+  margin: 0;
+}
+
+.runtime-install progress {
+  width: 100%;
+}
+
+.runtime-card .runtime-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-1) var(--sp-2);
+  margin: 0;
+}
+
+.runtime-card .runtime-facts dt {
+  color: var(--text-muted);
+}
+
+.runtime-card .runtime-facts dd {
+  margin: 0;
+}
+
+.runtime-card .runtime-update,
+.runtime-card .runtime-candidates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.runtime-card .runtime-update p {
+  flex: 1 1 100%;
+}
+
+.runtime-card .runtime-candidates button.select {
+  flex: 1 1 calc(120 * var(--px));
+  min-width: 0;
+}
+
+.runtime-card .runtime-output {
+  max-height: calc(150 * var(--px));
+  margin: 0;
+  overflow: auto;
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+}
+
+.local-model-table .model-name {
+  min-width: 0;
+  white-space: normal;
+}
+
+.local-model-table .model-id {
+  display: block;
+  color: var(--text);
+  font-weight: var(--fw-medium);
+  word-break: break-all;
+}
+
+/* The fit and the quantisation, size and context show under a model's name when their columns are hidden. */
+.local-model-table .fit-inline,
+.local-model-table .spec-inline {
+  display: none;
+}
+
+@container (max-width: 52rem) {
+  .local-model-table .fit-inline {
+    display: inline;
+  }
+
+  .local-model-table th:nth-child(5),
+  .local-model-table td:nth-child(5) {
+    display: none;
+  }
+}
+
+.local-model-table .model-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+}
+
+.local-model-table td.model-actions {
+  white-space: nowrap;
+}
+
+.local-model-table td.model-fit .badge {
+  white-space: normal;
+  text-align: left;
+}
+
+.local-model-table .model-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+}
+
+.local-model-table .default-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.local-model-table .default-mark svg,
+.local-model-table .model-actions svg {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.local-model-table tr.model-note td {
+  white-space: normal;
+  border-bottom-style: dashed;
+}
+
+.local-model-table tr.model-note .notice-box {
+  font-size: var(--fs-sm);
+}
+
+.local-models details.skipped {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.local-models details.skipped li {
+  display: block;
+  margin: var(--sp-1) 0;
+}
+
+/* Narrow panel: each model is a block (name and facts, then its actions) instead of clipped columns. */
+@container (max-width: 44rem) {
+  .local-model-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .local-model-table,
+  .local-model-table tbody {
+    display: block;
+  }
+
+  .local-model-table tr {
+    display: block;
+    padding: var(--sp-2) 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .local-model-table tr.model-note {
+    padding: 0 0 var(--sp-2);
+  }
+
+  .models .table.local-model-table td {
+    display: block;
+    padding: 0 var(--sp-1);
+    border: 0;
+  }
+
+  .models .table.local-model-table td:nth-child(2),
+  .models .table.local-model-table td:nth-child(3),
+  .models .table.local-model-table td:nth-child(4),
+  .models .table.local-model-table td:nth-child(5) {
+    display: none;
+  }
+
+  .local-model-table .spec-inline {
+    display: inline;
+  }
+
+  .models .table.local-model-table td.model-actions {
+    padding-top: var(--sp-1);
+  }
+
+  .local-model-table .model-actions-row {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
+
+/* ---- First-run setup: three cards, each with one large action, then the endpoint form ---- */
+.model-setup {
+  margin-bottom: var(--sp-4);
+}
+
+.model-setup h3 {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.model-setup p {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.setup-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(200 * var(--px))), 1fr));
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.model-setup .card.setup-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.setup-icon {
+  width: var(--icon-lg);
+  height: var(--icon-lg);
+  color: var(--accent-text);
+}
+
+.setup-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+}
+
+.setup-text strong {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.model-setup button.setup-action {
+  width: 100%;
+  min-height: var(--control-h-lg);
+}
+
+.model-setup .setup-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.endpoint-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(180 * var(--px))), 1fr));
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.endpoint-form p,
+.endpoint-form .notice-box {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.endpoint-form button {
+  justify-self: start;
+}
+
+.new-session-view .model-setup {
+  width: min(100%, calc(690 * var(--px)));
+  margin: 0 auto var(--sp-4);
+}
+
+/* ---- Download from Hugging Face: the same toolbar look, with progress in words and bars ---- */
+.hf-download {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+
+.hf-download h3 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.hf-download .models-toolbar {
+  margin: 0;
+}
+
+.hf-download .field-label {
+  flex-basis: 100%;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.hf-download .models-toolbar button.select {
+  flex: 1 1 calc(120 * var(--px));
+  min-width: 0;
+}
+
+.hf-download .check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-muted);
+}
+
+.hf-download p {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.downloads {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+
+.download-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.download-head span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download progress {
+  width: 100%;
+  height: calc(6 * var(--px));
+  margin: var(--sp-1) 0;
+  accent-color: var(--accent);
+}
+
+.download p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

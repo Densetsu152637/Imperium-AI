@@ -1,0 +1,454 @@
+/* Design tokens (docs/07-desktop-ui.md, Theming). Every length derives from one unit, --px (one CSS pixel
+   at 100 % UI scale), so --ui-scale zooms everything; spacing, row and control heights also
+   multiply by --space-scale (density). Pixel values in comments are at 100 % and comfortable
+   density. Colours are semantic: components never use a raw value. UI mods inherit --bg, --panel,
+   --fg, --muted, --border, --accent, --ok, --danger, --space and --radius (see mods/ModFrame.tsx),
+   so those names stay. Accents are defined per theme at the end of the file and selected with
+   data-accent on the root element (settings.ts). Every custom property set at :root lives in this file;
+   a rule may still set its own local ones (a row's --branch-depth, a swatch's --swatch). */
+
+/* The reading column's width. Registered as a length so it resolves once, on .session, and every
+   element in the column inherits the same pixels: a bare `90ch` would differ with each element's own
+   font size, and the transcript, tool rows, composer and footer would not share an edge. */
+@property --col-max {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 720px;
+}
+
+:root {
+  /* The user's scales */
+  --ui-scale: 1;
+  --prose-scale: 1;
+  --code-scale: 1;
+  --space-scale: 1;
+  --prose-max: 90ch;
+
+  --px: calc(1rem / 15); /* 1px at 100 %; html is calc(15px * var(--ui-scale)) */
+
+  /* Type: six sizes, three weights, three line heights */
+  --font-ui: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-code: "Cascadia Code", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --fs-xs: calc(11 * var(--px)); /* badges, captions, keyboard hints */
+  --fs-sm: calc(12 * var(--px)); /* secondary text, meta, table cells */
+  --fs-md: calc(13 * var(--px)); /* controls, rows, labels: the UI default */
+  --fs-base: calc(15 * var(--px)); /* transcript prose (times --prose-scale) */
+  --fs-lg: calc(17 * var(--px)); /* section and panel titles */
+  --fs-xl: calc(21 * var(--px)); /* dialog titles, empty-state headings */
+  --fs-root: calc(15px * var(--ui-scale)); /* the root element: 1rem, so rem lengths follow the UI scale */
+  --fs-prose: calc(var(--fs-base) * var(--prose-scale)); /* transcript prose: the reading size times the user's prose scale */
+  --fs-code: calc(var(--fs-md) * var(--code-scale)); /* code: the UI size times the user's code scale */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --lh-tight: 1.25;
+  --lh-ui: 1.4;
+  --lh-prose: 1.6;
+  --tracking-caps: 0.06em; /* the only letter-spacing: small uppercase group labels */
+
+  /* Spacing: true 4px steps */
+  --sp-1: calc(4 * var(--px) * var(--space-scale));
+  --sp-2: calc(8 * var(--px) * var(--space-scale));
+  --sp-3: calc(12 * var(--px) * var(--space-scale));
+  --sp-4: calc(16 * var(--px) * var(--space-scale));
+  --sp-5: calc(24 * var(--px) * var(--space-scale));
+  --sp-6: calc(32 * var(--px) * var(--space-scale));
+  --sp-8: calc(48 * var(--px) * var(--space-scale));
+  --space: var(--sp-2);
+
+  /* Sizes: controls and rows share heights; every height has a 24px floor at any density */
+  --size-floor: calc(24 * var(--px));
+  --control-h-sm: var(--size-floor);
+  --control-h: max(var(--size-floor), calc(30 * var(--px) * var(--space-scale)));
+  --control-h-lg: max(var(--size-floor), calc(40 * var(--px) * var(--space-scale)));
+  --row-h: var(--control-h);
+  --control-pad: calc(11 * var(--px));
+  --control-pad-sm: calc(8 * var(--px));
+  --icon-sm: calc(13 * var(--px));
+  --icon: calc(16 * var(--px));
+  --icon-lg: calc(19 * var(--px));
+  --panel-header-h: calc(var(--control-h) + var(--sp-2)); /* one height for every panel header; follows density like a control */
+  --dialog-gutter: var(--sp-5); /* the one left edge of a dialog: header, notice, body and footer */
+  --settings-control-w: calc(320 * var(--px)); /* a text field, select or text area in a Settings row */
+  --settings-number-w: calc(144 * var(--px));
+  --settings-swatch: calc(28 * var(--px));
+  --environment-control-w: calc(360 * var(--px)); /* a text field or select in the environment window */
+  --palette-w: calc(640 * var(--px));
+  --palette-top: 12vh;
+  --session-gutter-wide: var(--sp-4);
+  --session-gutter-narrow: var(--sp-3);
+  /* Minimum column widths (layout/fold.ts repeats them; test/fold.test.ts checks they agree) */
+  --col-min-sidebar: calc(220 * var(--px));
+  --col-min-session: calc(360 * var(--px));
+  --col-min-side: calc(280 * var(--px));
+  --sheet-w: calc(340 * var(--px)); /* a sheet: the sidebar or a side panel moved to the window's edge */
+
+  /* Radii: scale with the UI scale, not with density */
+  --radius-xs: calc(4 * var(--px)); /* badges, keyboard keys, inline code */
+  --radius-sm: calc(6 * var(--px)); /* buttons, inputs, selects, menu items */
+  --radius: calc(8 * var(--px)); /* cards, rows, menus, popovers, message bubbles */
+  --radius-lg: calc(12 * var(--px)); /* dialogs, the composer */
+  --radius-full: 999px; /* pills, switches, avatars */
+
+  /* Motion */
+  --dur-fast: 120ms; /* hover, press, colour */
+  --dur-base: 180ms; /* menus, popovers, sheets, folding a panel */
+  --dur-slow: 260ms; /* dialogs */
+  --dur-pulse: 1400ms; /* the breathing dots: working, connecting, recording */
+  --dur-spin: 1200ms; /* the wait line's spinner */
+  --dur-spin-fast: 900ms; /* the small .spin spinner */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  /* Layers */
+  --z-raised: 1;
+  --z-sticky: 10;
+  --z-overlay: 1000;
+  --z-popover: 1100;
+  --z-tour: 2000;
+  /* Inside the workspace: dividers, then drop lines, then the editor's column edges; a sheet sits above its scrim (--z-sticky) */
+  --z-divider: 2;
+  --z-drop: 3;
+  --z-edge: 4;
+  --z-sheet: 11;
+
+  /* Surfaces */
+  --bg: #0b0c0e;
+  --surface: #121418;
+  --surface-raised: #1a1d22;
+  --surface-sunken: #0e1013;
+  --surface-hover: rgb(255 255 255 / 0.04);
+  --surface-active: rgb(255 255 255 / 0.07);
+  --surface-raised-hover: color-mix(in srgb, var(--surface-raised), var(--text) 7%); /* a raised control under the pointer */
+  --surface-overlay: color-mix(in srgb, var(--surface-raised), var(--text) 4%); /* floating surfaces: one step lighter in dark, so a shadow is not the only cue */
+
+  /* Borders */
+  --border: rgb(255 255 255 / 0.08);
+  --border-strong: rgb(255 255 255 / 0.14);
+  --border-control: #6a717b; /* edges of inputs, selects, checkboxes, switches */
+  --scrollbar: rgb(255 255 255 / 0.2);
+
+  /* Text */
+  --text: #e7e9ec;
+  --text-muted: #a0a6ae;
+  --text-subtle: #959ca5;
+
+  /* Status */
+  --danger: #f2766b;
+  --danger-soft: rgb(242 118 107 / 0.14);
+  --ok: #58c98a;
+  --ok-soft: rgb(88 201 138 / 0.14);
+  --warn: #e3b25a;
+  --warn-soft: rgb(227 178 90 / 0.14);
+
+  /* Elevation: floating things only; dark mode also lightens the surface one step per level */
+  --elev-1: 0 1px 2px rgb(0 0 0 / 0.3);
+  --elev-2: 0 4px 12px rgb(0 0 0 / 0.4), 0 1px 3px rgb(0 0 0 / 0.25);
+  --elev-3: 0 16px 40px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.3);
+  --scrim: rgb(0 0 0 / 0.55);
+
+  /* The one chrome gradient, on the title-bar wordmark */
+  --wordmark: linear-gradient(180deg, #f6f7f9 0%, #b8bdc5 62%, #dcdfe3 100%);
+
+  /* Context breakdown categories: a separate data-visualisation set, exempt from the one-accent rule */
+  --ctx-system: #4f8fd6;
+  --ctx-system-2: #79aae3;
+  --ctx-system-3: #a3c4ec;
+  --ctx-system-4: #3a6fae;
+  --ctx-system-5: #2b5689;
+  --ctx-tools: #a77fd8;
+  --ctx-tools-2: #cbaaf0;
+  --ctx-summary: #5cc1b4;
+  --ctx-manifest: #e3b25a;
+  --ctx-memories: #c98d3f;
+  --ctx-attachments: #d9779b;
+  --ctx-user: var(--accent);
+  --ctx-assistant: var(--ok);
+  --ctx-results: var(--text-muted);
+  --ctx-overhead: #6b717b;
+
+  /* Aliases: the names mods read (docs/06-extensibility.md), kept for good */
+  --panel: var(--surface);
+  --fg: var(--text);
+  --muted: var(--text-muted);
+
+  color-scheme: dark;
+}
+
+/* Light surfaces: data-theme is set from Settings → Appearance → Theme (settings.ts), which
+   follows the operating system until a theme is chosen. */
+:root[data-theme="light"] {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-sunken: #eef0f2;
+  --surface-hover: rgb(17 24 39 / 0.04);
+  --surface-active: rgb(17 24 39 / 0.07);
+  --surface-overlay: var(--surface-raised);
+
+  --border: rgb(17 24 39 / 0.09);
+  --border-strong: rgb(17 24 39 / 0.16);
+  --border-control: #80868f;
+  --scrollbar: rgb(17 24 39 / 0.22);
+
+  --text: #16181b;
+  --text-muted: #545a63;
+  --text-subtle: #5a6069;
+
+  --danger: #b42318;
+  --danger-soft: rgb(180 35 24 / 0.1);
+  --ok: #18794e;
+  --ok-soft: rgb(24 121 78 / 0.1);
+  --warn: #8a5a00;
+  --warn-soft: rgb(138 90 0 / 0.1);
+
+  --elev-1: 0 1px 2px rgb(16 24 40 / 0.06);
+  --elev-2: 0 4px 12px rgb(16 24 40 / 0.08), 0 1px 3px rgb(16 24 40 / 0.06);
+  --elev-3: 0 16px 40px rgb(16 24 40 / 0.14), 0 2px 8px rgb(16 24 40 / 0.06);
+  --scrim: rgb(10 12 15 / 0.45);
+
+  --wordmark: linear-gradient(180deg, #3c414a 0%, #16181c 100%);
+
+  --ctx-system: #2f6db3;
+  --ctx-system-2: #5a8fcf;
+  --ctx-system-3: #8db2e0;
+  --ctx-system-4: #1f528c;
+  --ctx-system-5: #143a66;
+  --ctx-tools: #7a4fb3;
+  --ctx-tools-2: #a888d6;
+  --ctx-summary: #1f7a6e;
+  --ctx-manifest: #b07f1f;
+  --ctx-memories: #8a5a14;
+  --ctx-attachments: #a3416a;
+  --ctx-overhead: #8a909a;
+
+  color-scheme: light;
+}
+
+/* Accents, dark: the base, its hover, a 12 % wash, ink for text on it, accent as text, and the
+   focus ring. Cyan is the default until settings.ts sets data-accent. */
+:root,
+:root[data-accent="cyan"] {
+  --accent: #1fb2c8;
+  --accent-hover: #45c6d8;
+  --accent-soft: rgb(31 178 200 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #5fd0e0;
+  --focus: #5fd0e0;
+}
+
+:root[data-accent="teal"] {
+  --accent: #22b39a;
+  --accent-hover: #4ccab4;
+  --accent-soft: rgb(34 179 154 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #22b39a;
+  --focus: #22b39a;
+}
+
+:root[data-accent="green"] {
+  --accent: #3fbf7f;
+  --accent-hover: #62d39a;
+  --accent-soft: rgb(63 191 127 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #3fbf7f;
+  --focus: #3fbf7f;
+}
+
+:root[data-accent="lime"] {
+  --accent: #9cc43a;
+  --accent-hover: #b5d965;
+  --accent-soft: rgb(156 196 58 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #9cc43a;
+  --focus: #9cc43a;
+}
+
+:root[data-accent="amber"] {
+  --accent: #e0a33a;
+  --accent-hover: #f0bd5f;
+  --accent-soft: rgb(224 163 58 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #e0a33a;
+  --focus: #e0a33a;
+}
+
+:root[data-accent="orange"] {
+  --accent: #e57a3c;
+  --accent-hover: #f09763;
+  --accent-soft: rgb(229 122 60 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #e78247;
+  --focus: #e78247;
+}
+
+:root[data-accent="rose"] {
+  --accent: #e0607e;
+  --accent-hover: #ec8399;
+  --accent-soft: rgb(224 96 126 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #e57992;
+  --focus: #e57992;
+}
+
+:root[data-accent="magenta"] {
+  --accent: #cf62c4;
+  --accent-hover: #de86d5;
+  --accent-soft: rgb(207 98 196 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #d67acd;
+  --focus: #d67acd;
+}
+
+:root[data-accent="violet"] {
+  --accent: #9b7cf0;
+  --accent-hover: #b49cf5;
+  --accent-soft: rgb(155 124 240 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #a78cf2;
+  --focus: #a78cf2;
+}
+
+:root[data-accent="indigo"] {
+  --accent: #6f7bea;
+  --accent-hover: #939cf2;
+  --accent-soft: rgb(111 123 234 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #8b94ee;
+  --focus: #8b94ee;
+}
+
+:root[data-accent="blue"] {
+  --accent: #3d8fe0;
+  --accent-hover: #66a9ec;
+  --accent-soft: rgb(61 143 224 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #5aa0e5;
+  --focus: #5aa0e5;
+}
+
+:root[data-accent="silver"] {
+  --accent: #b9b3a7;
+  --accent-hover: #d9d4ca;
+  --accent-soft: rgb(185 179 167 / 0.12);
+  --accent-ink: #03161a;
+  --accent-text: #b9b3a7;
+  --focus: #b9b3a7;
+}
+
+/* Accents, light: fills darkened until white ink reaches 5.2:1, accent text until 6.6:1, a 10 % wash. */
+:root[data-theme="light"],
+:root[data-theme="light"][data-accent="cyan"] {
+  --accent: #0a7186;
+  --accent-hover: #086477;
+  --accent-soft: rgb(10 113 134 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #086276;
+  --focus: #0a7186;
+}
+
+:root[data-theme="light"][data-accent="teal"] {
+  --accent: #177a69;
+  --accent-hover: #157061;
+  --accent-soft: rgb(23 122 105 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #146859;
+  --focus: #177a69;
+}
+
+:root[data-theme="light"][data-accent="green"] {
+  --accent: #287a51;
+  --accent-hover: #25714b;
+  --accent-soft: rgb(40 122 81 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #226946;
+  --focus: #287a51;
+}
+
+:root[data-theme="light"][data-accent="lime"] {
+  --accent: #5d7523;
+  --accent-hover: #556b20;
+  --accent-soft: rgb(93 117 35 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #4f631e;
+  --focus: #5d7523;
+}
+
+:root[data-theme="light"][data-accent="amber"] {
+  --accent: #906317;
+  --accent-hover: #865c15;
+  --accent-soft: rgb(144 99 23 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #7c5514;
+  --focus: #906317;
+}
+
+:root[data-theme="light"][data-accent="orange"] {
+  --accent: #b15018;
+  --accent-hover: #a24916;
+  --accent-soft: rgb(177 80 24 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #974414;
+  --focus: #b15018;
+}
+
+:root[data-theme="light"][data-accent="rose"] {
+  --accent: #cd284f;
+  --accent-hover: #be2549;
+  --accent-soft: rgb(205 40 79 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #b02244;
+  --focus: #cd284f;
+}
+
+:root[data-theme="light"][data-accent="magenta"] {
+  --accent: #b337a6;
+  --accent-hover: #a53399;
+  --accent-soft: rgb(179 55 166 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #9a2f8e;
+  --focus: #b337a6;
+}
+
+:root[data-theme="light"][data-accent="violet"] {
+  --accent: #764cea;
+  --accent-hover: #6c3fe9;
+  --accent-soft: rgb(118 76 234 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #6333e7;
+  --focus: #764cea;
+}
+
+:root[data-theme="light"][data-accent="indigo"] {
+  --accent: #4f5de5;
+  --accent-hover: #4352e3;
+  --accent-soft: rgb(79 93 229 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #3747e1;
+  --focus: #4f5de5;
+}
+
+:root[data-theme="light"][data-accent="blue"] {
+  --accent: #1e6ebe;
+  --accent-hover: #1c65af;
+  --accent-soft: rgb(30 110 190 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #1a5ea2;
+  --focus: #1e6ebe;
+}
+
+:root[data-theme="light"][data-accent="silver"] {
+  --accent: #736c5c;
+  --accent-hover: #6a6355;
+  --accent-soft: rgb(115 108 92 / 0.1);
+  --accent-ink: #ffffff;
+  --accent-text: #625c4e;
+  --focus: #736c5c;
+}
+
+/* A dialog is a full-screen sheet below 600 px (dialog.css), and its gutter tightens with it. */
+@media (max-width: 600px) {
+  :root {
+    --dialog-gutter: var(--sp-4);
+  }
+}

@@ -8,13 +8,16 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
+use futures_util::StreamExt;
+use imperium_api::LocalModels;
+use imperium_api::Pricing;
 use imperium_config::{LlamaCppSettings, Location, Preference, RoutingSettings, Tier};
-use imperium_core::{CatalogModel, LocalModels, ResolvedModel, Session, SessionConfig};
+use imperium_engine::{CatalogModel, ResolvedModel, Session, SessionConfig};
 use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
 use imperium_local::scan::LocalModel;
 use imperium_local::supervisor::{LaunchFuture, LaunchSpec, Launcher, Server, Supervisor};
-use imperium_models::{Endpoint, Pricing};
+use imperium_models::Endpoint;
 use imperium_protocol::session::SessionEvent;
 use imperium_tools::Workspace;
 
@@ -29,6 +32,25 @@ fn sse(chunk: serde_json::Value) -> String {
 
 fn text(text: &str) -> String {
     sse(serde_json::json!({"choices":[{"delta":{"content":text}}]}))
+}
+
+/// A reply whose text is generated over 150 ms, as a real server streams it: the first token,
+/// then the rest. A call that streams for under 100 ms is not recorded as the model's speed.
+fn generated(first: &str, rest: &str) -> axum::body::Body {
+    let first = format!(
+        "data: {}
+
+",
+        serde_json::json!({"choices":[{"delta":{"content":first}}]})
+    );
+    let rest = text(rest);
+    let parts =
+        futures_util::stream::iter([(first, Duration::ZERO), (rest, Duration::from_millis(150))])
+            .then(|(part, pause)| async move {
+                tokio::time::sleep(pause).await;
+                Ok::<_, std::convert::Infallible>(part)
+            });
+    axum::body::Body::from_stream(parts)
 }
 
 fn tool(name: &str, arguments: &str) -> String {
@@ -49,13 +71,13 @@ async fn serve(root_script: bool, sub_calls: Arc<AtomicUsize>) -> String {
                 let system = body["messages"][0]["content"].as_str().unwrap_or_default();
                 let body = if !root_script || system.contains("subagent") {
                     sub_calls.fetch_add(1, Ordering::SeqCst);
-                    text("report")
+                    generated("re", "port")
                 } else {
-                    match root_calls.fetch_add(1, Ordering::SeqCst) {
+                    axum::body::Body::from(match root_calls.fetch_add(1, Ordering::SeqCst) {
                         0 | 2 => tool("spawn_agent", r#"{"brief":"summarise the docs"}"#),
                         1 | 3 => tool("await_tasks", "{}"),
                         _ => text("All done."),
-                    }
+                    })
                 };
                 ([("content-type", "text/event-stream")], body)
             }
@@ -106,6 +128,7 @@ fn supervisor(launcher: Arc<FakeLlama>, vram_gib: u64) -> Arc<Supervisor> {
             ..GgufInfo::default()
         },
         mmproj: None,
+        repo: None,
         format: imperium_local::scan::Format::Gguf,
     };
     let hardware = Hardware {
@@ -121,15 +144,30 @@ fn supervisor(launcher: Arc<FakeLlama>, vram_gib: u64) -> Arc<Supervisor> {
         cpu_cores: 4,
         unified_memory: false,
         overridden: true,
+        vram_overridden: false,
     };
     let settings = LlamaCppSettings {
         backend: "auto".into(),
         custom_path: None,
+        find_existing: true,
+        auto_install: false,
+        update_external: "off".into(),
         idle_unload_s: 900,
-        context: 4096,
+        context: 4096.into(),
         parallel: 1,
         cache_type: "f16".into(),
+        slots: Some(1),
+        pool_tokens: None,
+        flash_attn: "auto".into(),
+        max_output_tokens: 8192,
+        models: Default::default(),
         ram_headroom_mb: 0,
+        cache_ram_mb: 0,
+        swap_cache_mb: 0,
+        min_residency_s: 30,
+        max_swaps_per_min: 6,
+        swap_gain: 2.0,
+        max_wait_s: 600,
         extra_args: Vec::new(),
     };
     Supervisor::start(
@@ -160,6 +198,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         local: false,
         context_window: None,
         kind: "openai".into(),
+        reasoning: None,
     };
     let catalog = vec![
         CatalogModel {
@@ -175,10 +214,13 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
                 local: true,
                 context_window: None,
                 kind: "openai".into(),
+                reasoning: None,
             },
             tier: Tier::Standard,
             location: Location::Local,
             tags: Vec::new(),
+            named_only: false,
+            cpu_lane: false,
         },
         CatalogModel {
             id: "big".into(),
@@ -186,6 +228,8 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
             tier: Tier::Strong,
             location: Location::Cloud,
             tags: Vec::new(),
+            named_only: false,
+            cpu_lane: false,
         },
     ];
     let dir = tempfile::tempdir().unwrap();
@@ -193,7 +237,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
     let session = Session::spawn(SessionConfig {
         id: "routing".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: hosted("cloud:root"),
+        model: Some(hosted("cloud:root")),
         catalog,
         clients: Default::default(),
         routing: RoutingSettings {
@@ -210,9 +254,28 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 10,
+        background: None,
+        checkpoints: None,
+        budget_gate: None,
+        auto_compact: false,
+        auto_compact_at: None,
+        attended: true,
+        attachments: Default::default(),
+        auto_permissions: Default::default(),
+        harness: imperium_config::HarnessSettings {
+            dereference: imperium_config::HarnessMode::Off,
+            state: imperium_config::HarnessMode::Off,
+            hints: imperium_config::HarnessMode::Off,
+            clarify: imperium_config::HarnessMode::Off,
+            ..Default::default()
+        },
+        keep_agent_state: true,
+        effort: Default::default(),
+        knowledge: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();
@@ -251,4 +314,16 @@ async fn delegation_falls_back_to_hosted_when_memory_is_short() {
     let models = delegate(supervisor(Arc::clone(&launcher), 1)).await;
     assert_eq!(models, ["cloud:big", "cloud:big"]);
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn cpu_lane_speed_of_delegated_local_calls_is_measured() {
+    let launcher = Arc::new(FakeLlama::default());
+    let local = supervisor(Arc::clone(&launcher), 8);
+    assert_eq!(local.tokens_per_s("small"), None);
+    delegate(Arc::clone(&local)).await;
+    // Each subagent call generated 5 tokens; the agent loop reported them with how long it
+    // took, so the supervisor knows the model's speed (what `models.local` lists).
+    let rate = local.tokens_per_s("small").expect("a measured speed");
+    assert!(rate > 0.0 && rate.is_finite(), "{rate}");
 }

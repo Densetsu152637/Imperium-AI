@@ -1,0 +1,459 @@
+/* The sidebar: environment and session rows, session search, groups, archived sessions and project icons. */
+
+/* Lists: rows that tint on hover; the current one sits on the accent wash. Every navigation row is
+   --row-h tall at every density, with its leading mark (a project tile or a status dot) in one
+   --nav-lead column, so session rows line up with environment rows. */
+.list {
+  --nav-lead: calc(20 * var(--px));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: calc(2 * var(--px));
+}
+
+.list button {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-1) var(--sp-2);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.list button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: transparent;
+}
+
+.list button:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.list button.selected,
+.list button.selected:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.list .name {
+  font-weight: var(--fw-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list .detail {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Project icons: a glyph on a coloured tile (the glyph colour is set with the tile's, from the TSX) */
+.project-icon {
+  --tile: calc(26 * var(--px) * var(--space-scale));
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--tile);
+  height: var(--tile);
+  border-radius: var(--radius-sm);
+}
+
+.project-icon.small {
+  --tile: calc(20 * var(--px));
+  border-radius: var(--radius-xs);
+}
+
+.project-icon svg {
+  width: 62%;
+  height: 62%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* A list row: the main button, with the "more" menu laid over its right end. */
+.list .row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.list .row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Environment and session rows: a leading mark, the title, a pin mark, and (sessions) how long ago. */
+.list button.nav-row-main {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--row-h);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+}
+
+.nav-row-main .name {
+  flex: 1;
+  min-width: 0;
+  font-weight: var(--fw-regular);
+}
+
+.nav-row-main.selected .name {
+  font-weight: var(--fw-medium);
+}
+
+.nav-row-main .project-icon {
+  --tile: var(--nav-lead);
+  border-radius: var(--radius-xs);
+}
+
+/* Session rows: a status dot centred in the leading column, the title, and how long ago; the rest
+   is in the tooltip. */
+.session-row-main > .status-dot {
+  margin-inline: calc((var(--nav-lead) - 0.45rem) / 2);
+}
+
+.session-ago {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.session-rename {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+.pin-mark {
+  flex: none;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  color: var(--accent-text);
+  transform: rotate(35deg);
+}
+
+/* The "more" menu: hidden until the row is hovered or holds focus (always shown on touch screens),
+   and it takes the place of the time or the pin mark while it shows. */
+.list button.row-menu-button {
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  padding: 0;
+  flex: none;
+  flex-direction: row;
+  justify-content: center;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.list .nav-row .row-menu-button {
+  position: absolute;
+  inset-block: 0;
+  right: var(--sp-1);
+  margin-block: auto;
+}
+
+.list .row:hover .row-menu-button,
+.list .row:focus-within .row-menu-button,
+.list button.row-menu-button.open {
+  opacity: 1;
+}
+
+.list button.row-menu-button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.list .row:hover .session-ago,
+.list .row:focus-within .session-ago,
+.list .row:has(.row-menu-button.open) .session-ago,
+.environments .row:hover .pin-mark,
+.environments .row:focus-within .pin-mark,
+.environments .row:has(.row-menu-button.open) .pin-mark {
+  visibility: hidden;
+}
+
+@media (hover: none) {
+  .list button.row-menu-button {
+    opacity: 1;
+  }
+
+  .list .session-row .session-ago {
+    display: none;
+  }
+}
+
+/* Session search: a box above the sessions; its results replace the list while a query is entered. */
+.session-search {
+  margin: 0 0 var(--sp-2);
+}
+
+.session-search-box {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--control-h);
+  padding: 0 var(--sp-1) 0 var(--sp-2);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+
+.session-search-box:hover {
+  border-color: var(--text-subtle);
+}
+
+.session-search-box:has(input:focus-visible) {
+  border-color: var(--focus);
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+}
+
+.session-search-box .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  flex: none;
+  color: var(--text-muted);
+}
+
+.session-search-box input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--fs-md);
+}
+
+/* The box draws the ring (.session-search-box:has(input:focus-visible) above). */
+.session-search-box input:focus-visible {
+  outline: none;
+}
+
+/* The clear button is ours; the engine's own would be a second one. */
+.session-search-box input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.session-search-results {
+  margin-top: var(--sp-2);
+}
+
+.session-search-results .search-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-1);
+  padding-block: var(--sp-2);
+  text-align: left;
+}
+
+.search-snippet {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--text);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.search-snippet mark {
+  background: var(--accent-soft);
+  color: inherit;
+  border-radius: var(--radius-xs);
+  padding: 0 calc(1 * var(--px));
+}
+
+/* Sessions: a sort control, then the sessions, under headings when grouped. */
+.sessions-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.sessions-toolbar .sessions-scope {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+button.select.sessions-sort {
+  min-width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  width: auto;
+  font-size: var(--fs-sm);
+  border-color: var(--border);
+}
+
+.session-group + .session-group {
+  margin-top: var(--sp-2);
+}
+
+.session-group-label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: var(--control-h-sm);
+  margin: 0;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--text-muted);
+}
+
+.session-group-count {
+  font-weight: var(--fw-medium);
+  color: var(--text-subtle);
+}
+
+/* The list fills the panel so Archived can sit at its foot, apart from active sessions. */
+.sessions {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* Archived sessions: a collapsed group pinned to the bottom of the panel, with at least a gap
+   above it when the active list is long enough to reach it. */
+.archived-sessions {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-1);
+}
+
+.sessions > :has(+ .archived-sessions) {
+  margin-bottom: var(--sp-2);
+}
+
+.sessions > .session-group + .archived-sessions {
+  margin-top: auto;
+}
+
+.archived-sessions > summary {
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--radius-sm);
+}
+
+.archived-sessions > summary:hover {
+  background: var(--surface-hover);
+}
+
+.archived-sessions > summary::-webkit-details-marker {
+  display: none;
+}
+
+.archived-sessions > summary .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.archived-sessions .row-main {
+  opacity: 0.75;
+}
+
+/* An archived session's transcript: what it is, and the way back. */
+.archived-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex: none;
+  width: calc(100% - var(--session-gutter, var(--sp-5)) * 2);
+  max-width: var(--prose-max);
+  margin: 0 auto var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--text-muted);
+}
+
+/* Sessions list: global, or one environment's with a way back */
+.sessions-scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  margin: 0 0 var(--sp-2);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.sessions-scope .back {
+  height: var(--control-h-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+}
+
+.sessions-scope .back:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.scope-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.scope-name > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list .row-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.list .row-meta .badge {
+  flex: none;
+}
+
+/* Narrow panels: session rows drop the project/model line, the limits stack. */
+@container (max-width: 16rem) {
+  .list .row-meta .detail {
+    display: none;
+  }
+}
+
+.list li.branch-row > .session-row {
+  margin-left: calc(var(--branch-depth, 1) * var(--sp-3));
+  border-left: 1px solid var(--border);
+}

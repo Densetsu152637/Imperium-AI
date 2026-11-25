@@ -1,0 +1,203 @@
+/* Base: the page, element defaults (buttons, links, focus, code), global motion and the keyframes. */
+
+html {
+  font-size: var(--fs-root);
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Buttons: flat, a hairline edge; .primary fills with the accent, .ghost is bare. */
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: calc(var(--space) * 0.5) calc(var(--space) * 1.5);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface-raised-hover);
+  border-color: var(--border-strong);
+}
+
+button:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-ink);
+  font-weight: var(--fw-medium);
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: transparent;
+}
+
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+button.ghost:hover:not(:disabled),
+button.ghost[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Inside an input the ring sits on its edge, which also takes the focus colour. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline-offset: 0;
+}
+
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+/* A slider's track is 16 px; its row is the target, so it is as tall as the smallest control. */
+input[type="range"] {
+  min-height: var(--control-h-sm);
+}
+
+::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+code {
+  font-family: var(--font-code);
+  font-size: var(--fs-code);
+}
+
+pre {
+  font-family: var(--font-code);
+  font-size: var(--fs-code);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+button.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+@keyframes status-dot-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Motion */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Reduced motion, from the operating system or Settings → Appearance → Reduce motion (the
+   .reduce-motion class on the root): nothing animates or transitions and nothing scrolls smoothly.
+   Elements settle in their final state at once: every keyframe here only animates *from* a resting
+   state, so with the animation gone they simply appear. State changes that move something (a
+   switch's knob, a chevron's turn) become instant jumps. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  scroll-behavior: auto !important;
+  animation: none !important;
+  transition: none !important;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}

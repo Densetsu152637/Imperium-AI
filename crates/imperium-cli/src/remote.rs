@@ -1,4 +1,4 @@
-//! Remote projects over SSH: `imperium remote connect <host>` finds (or starts) `imperiumd` on
+//! Remote projects over SSH: `imperium remote connect <host>` finds (or starts) `imperium-core` on
 //! the host, forwards its loopback port through SSH, and records the forwarded endpoint so
 //! `imperium --remote <name> ...` talks to the remote daemon, which owns the host's files,
 //! processes, models, and GPUs. Keys stay in the user's SSH agent; nothing is stored but the
@@ -39,6 +39,30 @@ pub fn forward_args(destination: &str, local: u16, remote: u16) -> Vec<String> {
         "ServerAliveInterval=30".into(),
         "-L".into(),
         format!("127.0.0.1:{local}:127.0.0.1:{remote}"),
+        destination.into(),
+    ]
+}
+
+/// `ssh` arguments that forward the Unix socket `local` on this machine to the daemon's socket
+/// `remote` on the host. OpenSSH creates `local` itself: the mask keeps it to this user, and the
+/// unlink option replaces one left by an earlier forward that died.
+pub fn socket_forward_args(
+    destination: &str,
+    local: &std::path::Path,
+    remote: &str,
+) -> Vec<String> {
+    vec![
+        "-N".into(),
+        "-o".into(),
+        "ExitOnForwardFailure=yes".into(),
+        "-o".into(),
+        "ServerAliveInterval=30".into(),
+        "-o".into(),
+        "StreamLocalBindMask=0177".into(),
+        "-o".into(),
+        "StreamLocalBindUnlink=yes".into(),
+        "-L".into(),
+        format!("{}:{remote}", local.display()),
         destination.into(),
     ]
 }
@@ -100,33 +124,66 @@ pub fn connect(
     destination: &str,
     name: Option<String>,
     local_port: Option<u16>,
+    over_socket: bool,
 ) -> anyhow::Result<()> {
     let name = name.unwrap_or_else(|| destination.replace(['@', ':', '/', '\\'], "_"));
     let remote = remote_endpoint(destination)?;
-    let remote_port = port_of(&remote.url)
-        .with_context(|| format!("unexpected remote daemon URL {}", remote.url))?;
-    let local = match local_port {
-        Some(port) => port,
-        None => free_port()?,
-    };
     let paths = Paths::from_env()?;
     let file = endpoint_file(&paths, &name);
-    let forwarded = DaemonEndpoint {
-        url: format!("ws://127.0.0.1:{local}/rpc"),
-        ..remote
+    let (forwarded, args) = if over_socket {
+        let remote_socket = match remote.socket.clone() {
+            Some(socket) if socket.starts_with('/') => socket,
+            Some(_) => bail!(
+                "{destination} listens on a Windows named pipe, which SSH cannot forward; \
+                 connect without --socket"
+            ),
+            None => bail!(
+                "{destination} has no local socket; set daemon.socket = true there and restart its daemon, \
+                 or check its log for why the socket could not open"
+            ),
+        };
+        if cfg!(windows) {
+            bail!("--socket needs a Unix machine on this side; connect without it");
+        }
+        let local = file.with_extension("sock");
+        let args = socket_forward_args(destination, &local, &remote_socket);
+        // No URL: the client reaches the daemon through the forwarded socket alone.
+        let forwarded = DaemonEndpoint {
+            url: String::new(),
+            socket: Some(local.display().to_string()),
+            ..remote
+        };
+        (forwarded, args)
+    } else {
+        let remote_port = port_of(&remote.url)
+            .with_context(|| format!("unexpected remote daemon URL {}", remote.url))?;
+        let local = match local_port {
+            Some(port) => port,
+            None => free_port()?,
+        };
+        let forwarded = DaemonEndpoint {
+            url: format!("ws://127.0.0.1:{local}/rpc"),
+            // The remote's socket path means nothing on this machine.
+            socket: None,
+            ..remote
+        };
+        (forwarded, forward_args(destination, local, remote_port))
     };
     write_private(&file, &serde_json::to_string_pretty(&forwarded)?)?;
     let mut tunnel = Command::new("ssh")
-        .args(forward_args(destination, local, remote_port))
+        .args(args)
         .spawn()
         .context("could not start the SSH forward")?;
     println!(
-        "connected to imperiumd on {destination} (protocol {}); use `imperium --remote {name} ...`. \
+        "connected to imperium-core on {destination} (protocol {}); use `imperium --remote {name} ...`. \
          Press Ctrl+C to disconnect.",
         forwarded.protocol
     );
     let status = tunnel.wait();
     let _ = std::fs::remove_file(&file);
+    if over_socket {
+        let _ = std::fs::remove_file(file.with_extension("sock"));
+    }
     let status = status.context("the SSH forward failed")?;
     if !status.success() {
         bail!("the SSH forward to {destination} ended: {status}");
@@ -143,16 +200,16 @@ pub fn print_endpoint() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `imperium daemon start`: starts `imperiumd` in the background and waits for it to listen.
+/// `imperium daemon start`: starts `imperium-core` in the background and waits for it to listen.
 pub fn start_daemon() -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let endpoint_file = paths.daemon_endpoint_file();
     if endpoint_file.is_file() {
-        println!("imperiumd is already running");
+        println!("imperium-core is already running");
         return Ok(());
     }
     let exe = std::env::current_exe()?;
-    let daemon = exe.with_file_name(format!("imperiumd{}", std::env::consts::EXE_SUFFIX));
+    let daemon = exe.with_file_name(format!("imperium-core{}", std::env::consts::EXE_SUFFIX));
     Command::new(&daemon)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -162,12 +219,12 @@ pub fn start_daemon() -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if endpoint_file.is_file() {
-            println!("imperiumd started");
+            println!("imperium-core started");
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    bail!("imperiumd did not start within 15 s")
+    bail!("imperium-core did not start within 15 s")
 }
 
 #[cfg(test)]
@@ -182,6 +239,22 @@ mod tests {
         assert_eq!(
             args,
             "-N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L 127.0.0.1:40000:127.0.0.1:52011 gpu-box"
+        );
+    }
+
+    #[test]
+    fn socket_forwards_stay_private_and_replace_a_dead_one() {
+        let args = socket_forward_args(
+            "gpu-box",
+            std::path::Path::new("/home/me/remotes/gpu-box.sock"),
+            "/home/me/.local/share/imperium/ipc/daemon.sock",
+        )
+        .join(" ");
+        assert_eq!(
+            args,
+            "-N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+             -o StreamLocalBindMask=0177 -o StreamLocalBindUnlink=yes \
+             -L /home/me/remotes/gpu-box.sock:/home/me/.local/share/imperium/ipc/daemon.sock gpu-box"
         );
     }
 }

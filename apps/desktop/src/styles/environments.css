@@ -1,0 +1,449 @@
+/* The environment window, drawn inside the shared Dialog: its sections (Field layout, one left edge), the icon and colour pickers, folder and agent rows at --row-h, the danger notice, the agent initiative block and the knowledge card. The dialog, fields, notices, badges, empty states and icon buttons are shared components (primitives.css, dialog.css). */
+
+/* ---- Notices between the header and the body, on the dialog's gutter ---- */
+.settings-content > .environment-notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-3) var(--dialog-gutter) 0;
+}
+
+.environment-notice-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* ---- A section: stacked fields, rows and lists on one left edge ---- */
+.environment-section {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-4);
+  padding-top: var(--sp-2);
+}
+
+.environment-section[hidden] {
+  display: none;
+}
+
+/* The gap is the spacing; a settings row inside adds none of its own. */
+.environment-section > .settings-row,
+.environment-section > .settings-row-note {
+  padding: 0;
+}
+
+.environment-section > .field-stack {
+  max-width: var(--environment-control-w);
+}
+
+.environment-section > p,
+.environment-hint,
+.environment-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--text-muted);
+}
+
+.environment-subhead {
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.environment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.environment-actions.start {
+  justify-content: flex-start;
+}
+
+.environment-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.environment-inline > input {
+  flex: 1 1 calc(180 * var(--px));
+  min-width: 0;
+}
+
+/* ---- Icon and colour pickers ---- */
+.environment-icon-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.environment-icon-choices {
+  display: flex;
+  align-self: stretch;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.environment-preview {
+  display: inline-flex;
+  flex: none;
+}
+
+.environment-preview .project-icon {
+  --tile: calc(48 * var(--px));
+  border-radius: var(--radius);
+}
+
+.environment-icon-search {
+  max-width: calc(256 * var(--px));
+}
+
+/* Icon and colour choices share one look: rounded-square tiles in a grid. */
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(36 * var(--px)), 1fr));
+  gap: var(--sp-2);
+}
+
+.icon-choices {
+  max-height: calc(200 * var(--px));
+  overflow-y: auto;
+  padding: calc(2 * var(--px));
+}
+
+.tile-grid-empty {
+  grid-column: 1 / -1;
+  margin: var(--sp-2) 0;
+  font-size: var(--fs-sm);
+}
+
+button.tile-choice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 0;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+button.tile-choice .lucide {
+  width: var(--icon);
+  height: var(--icon);
+}
+
+button.tile-choice:hover:not(:disabled) {
+  border-color: var(--text-muted);
+}
+
+button.tile-choice[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* The chosen colour carries a double ring, a shape cue as well as a colour one. */
+button.colour-choice {
+  border-color: var(--border-strong);
+}
+
+button.colour-choice:hover:not(:disabled) {
+  border-color: var(--text);
+}
+
+button.colour-choice[aria-checked="true"] {
+  border-color: var(--text);
+  box-shadow:
+    0 0 0 calc(2 * var(--px)) var(--surface),
+    0 0 0 calc(4 * var(--px)) var(--text);
+}
+
+/* ---- Rows: folders and agents, each at least --row-h tall ---- */
+.environment-list,
+.environment-folders {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-md);
+}
+
+/* The permission editor's lists share the class `environment-folders` and keep their own, plain rows. */
+.environment-folders > li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.environment-list > li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  min-height: var(--row-h);
+  padding: 0 var(--sp-1) 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.environment-list .folder-path,
+.environment-folders .folder-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.environment-list .agent-name {
+  flex: none;
+  font-weight: var(--fw-semibold);
+}
+
+.environment-list .agent-role {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.environment-list > li > .badge {
+  flex: none;
+}
+
+.environment-folders button.icon-only {
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+}
+
+.environment-delete-confirm {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: auto;
+  font-size: var(--fs-sm);
+}
+
+.working-folder-path {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+}
+
+/* ---- The configuration file report ---- */
+.environment-config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+}
+
+.environment-config-lines {
+  margin: 0;
+  padding-left: var(--sp-4);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.environment-config-lines.refused {
+  color: var(--text-muted);
+}
+
+/* ---- An agent's initiative, in its edit view ---- */
+.agent-initiative {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+.agent-initiative > .field-stack {
+  max-width: var(--environment-control-w);
+}
+
+.agent-initiative-line {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.agent-suggestions,
+.agent-suggestions-done,
+.agent-digest ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+
+.agent-suggestions > li.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+}
+
+.agent-suggestion-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.agent-digest {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.agent-digest p {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+/* The runtime rows of the permissions editor (Settings and the environment window). */
+.runtime-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space);
+}
+
+/* Buttons that sit in a settings row's control column (the daemon and update controls use it too). */
+.settings-row-control .row-actions {
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ---- The knowledge card of a subagent's view ---- */
+.knowledge {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-md);
+}
+
+.knowledge-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.knowledge-topic {
+  flex: 1;
+  min-width: 0;
+  font-weight: var(--fw-medium);
+}
+
+.knowledge-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+}
+
+.knowledge-facts > div {
+  display: contents;
+}
+
+.knowledge-facts dt {
+  color: var(--text-muted);
+}
+
+.knowledge-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-sources ul {
+  margin: var(--sp-1) 0 0;
+  padding-left: var(--sp-4);
+}
+
+.knowledge-sources li.stale {
+  color: var(--warn);
+}
+
+.knowledge-questions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.knowledge-questions-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.knowledge-question-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.knowledge-question-text {
+  margin: var(--sp-1) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-answer {
+  margin: var(--sp-1) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding-left: var(--sp-3);
+  border-left: calc(2 * var(--px)) solid var(--border-strong);
+}
+
+.knowledge-ask,
+.knowledge-keep {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-2);
+}
+
+.knowledge-ask input {
+  flex: 1;
+  min-width: 0;
+}
+
+.knowledge-keep-field {
+  flex: 1;
+}

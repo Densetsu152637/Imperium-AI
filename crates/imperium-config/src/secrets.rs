@@ -21,6 +21,14 @@ impl SecretName {
     }
 }
 
+impl SecretName {
+    /// For names fixed in code, which are known to be valid.
+    pub(crate) fn from_valid(name: &str) -> Self {
+        debug_assert!(name.parse::<SecretName>().is_ok(), "{name}");
+        SecretName(name.to_string())
+    }
+}
+
 impl FromStr for SecretName {
     type Err = SecretError;
 
@@ -46,6 +54,12 @@ impl<'de> serde::Deserialize<'de> for SecretName {
     }
 }
 
+impl serde::Serialize for SecretName {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
 impl fmt::Display for SecretName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -62,6 +76,21 @@ pub enum SecretError {
     EmptyValue,
     #[error("keychain error: {0}")]
     Keychain(#[from] keyring::Error),
+    #[error("encrypted secret file: {0}")]
+    File(String),
+}
+
+impl SecretError {
+    /// Whether this means the OS has no usable keychain (no Secret Service on headless Linux,
+    /// a locked or unreachable store) rather than a problem with one secret.
+    pub fn is_keychain_unavailable(&self) -> bool {
+        matches!(
+            self,
+            SecretError::Keychain(
+                keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_)
+            )
+        )
+    }
 }
 
 /// Stores or replaces a secret in the OS keychain.

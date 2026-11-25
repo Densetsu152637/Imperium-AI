@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The macOS release app's entitlements. It asks for none: the hardened runtime then keeps dyld from
+  honouring DYLD_* variables and keeps library validation on, which is part of what lets the daemon
+  trust the app's native approval dialog. Never add
+  com.apple.security.cs.allow-dyld-environment-variables, com.apple.security.cs.disable-library-validation,
+  com.apple.security.get-task-allow or com.apple.security.cs.debugger:
+  scripts/ci/check-entitlements.py fails the build (Build workflow) when any of them appears.
+-->
+<plist version="1.0">
+<dict/>
+</plist>

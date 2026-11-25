@@ -2,8 +2,10 @@
 //! system memory:
 //!
 //! ```text
-//! required = weights + kv_bytes_per_token × context × slots + runtime_overhead
+//! required = weights + kv_bytes_per_token × pool_tokens + runtime_overhead
 //! ```
+
+use imperium_config::ModelLaunch;
 
 use crate::hardware::Hardware;
 use crate::scan::LocalModel;
@@ -11,7 +13,7 @@ use crate::scan::LocalModel;
 /// Compute buffers and runtime state llama.cpp needs beyond weights and KV cache.
 pub const RUNTIME_OVERHEAD_BYTES: u64 = 512 * 1024 * 1024;
 /// Assumed when a header lacks what the KV estimate needs: a fifth of the weights.
-const UNKNOWN_KV_FRACTION: f64 = 0.2;
+pub(crate) const UNKNOWN_KV_FRACTION: f64 = 0.2;
 /// Layers assumed for a model whose header has not been read (one not downloaded yet), so a
 /// GPU and RAM split can still be estimated.
 const ASSUMED_LAYERS: u32 = 32;
@@ -49,23 +51,45 @@ pub struct Placement {
     pub required_bytes: u64,
 }
 
+/// The memory of a draft model loaded beside a model for speculative decoding. The planner does
+/// not choose its split between GPU and RAM: `draft_gpu_layers` and the CPU lane do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DraftMemory {
+    /// Weights, KV cache and compute buffers of the draft; 0 when there is no draft.
+    pub bytes: u64,
+    /// The part of `bytes` kept in RAM: all of it on the CPU lane or with `draft_gpu_layers = 0`,
+    /// the share of layers left off the GPU with a partial `draft_gpu_layers`, else 0.
+    pub ram_bytes: u64,
+}
+
 /// What loading a model needs at a given context and slot count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Footprint {
     pub weights_bytes: u64,
     pub kv_bytes: u64,
     pub layers: Option<u32>,
+    /// Most layers the settings let the GPU take.
+    pub max_gpu_layers: Option<u32>,
+    /// The draft model that runs beside it, if one is used.
+    pub draft: DraftMemory,
+    /// Compute buffers and runtime state beyond weights and KV cache: [`RUNTIME_OVERHEAD_BYTES`],
+    /// moved by [`Footprint::calibrated`] when measured memory has shown the estimate off.
+    pub overhead_bytes: u64,
 }
 
 impl Footprint {
-    pub fn of(model: &LocalModel, context: u32, slots: u32, cache_type: &str) -> Self {
-        let tokens = u64::from(context) * u64::from(slots.max(1));
+    /// What `model` needs started with `launch`: the KV cache is one pool of `pool_tokens`,
+    /// whatever the slots.
+    pub fn of(model: &LocalModel, launch: &ModelLaunch) -> Self {
         let kv_bytes = model
             .info
-            .kv_bytes_per_token(cache_element_bytes(cache_type))
+            .kv_bytes_per_token_kv(
+                cache_element_bytes(&launch.cache_type_k),
+                cache_element_bytes(&launch.cache_type_v),
+            )
             .map_or(
                 (model.size_bytes as f64 * UNKNOWN_KV_FRACTION) as u64,
-                |per_token| per_token * tokens,
+                |per_token| per_token * u64::from(launch.pool_tokens),
             );
         Footprint {
             weights_bytes: model.size_bytes,
@@ -74,7 +98,15 @@ impl Footprint {
                 .info
                 .block_count
                 .and_then(|layers| u32::try_from(layers).ok()),
+            max_gpu_layers: launch.max_gpu_layers,
+            draft: DraftMemory::default(),
+            overhead_bytes: RUNTIME_OVERHEAD_BYTES,
         }
+    }
+
+    /// The same footprint with a draft model's memory added.
+    pub fn with_draft(self, draft: DraftMemory) -> Self {
+        Footprint { draft, ..self }
     }
 
     /// An estimate from the weights' size alone, for a model not on disk yet: the KV cache as
@@ -84,18 +116,51 @@ impl Footprint {
             weights_bytes,
             kv_bytes: (weights_bytes as f64 * UNKNOWN_KV_FRACTION) as u64,
             layers: Some(ASSUMED_LAYERS),
+            max_gpu_layers: None,
+            draft: DraftMemory::default(),
+            overhead_bytes: RUNTIME_OVERHEAD_BYTES,
+        }
+    }
+
+    /// The same footprint with its runtime overhead moved by `factor_permille` of the model's
+    /// fixed memory (weights plus overhead; 1000 is the static estimate). The KV cache and the
+    /// draft are left as computed, so the correction does not move with the pool the model is
+    /// sized to. The factor is bounded by [`crate::calibration::clamp_factor`] and the overhead
+    /// never falls below half the static one, so a model is not planned much tighter than the
+    /// static estimate whatever was measured.
+    pub fn calibrated(self, factor_permille: u32) -> Self {
+        let factor = u128::from(crate::calibration::clamp_factor(factor_permille));
+        let base = u128::from(self.weights_bytes) + u128::from(self.overhead_bytes);
+        let target = base * factor / 1000;
+        let overhead = if target >= base {
+            u128::from(self.overhead_bytes) + (target - base)
+        } else {
+            (u128::from(self.overhead_bytes) - (base - target).min(u128::from(self.overhead_bytes)))
+                .max(u128::from(RUNTIME_OVERHEAD_BYTES / 2))
+        };
+        Footprint {
+            overhead_bytes: u64::try_from(overhead).unwrap_or(u64::MAX),
+            ..self
         }
     }
 
     pub fn required_bytes(&self) -> u64 {
-        self.weights_bytes + self.kv_bytes + RUNTIME_OVERHEAD_BYTES
+        self.weights_bytes + self.kv_bytes + self.overhead_bytes + self.draft.bytes
     }
+}
+
+/// MiB of host memory for llama.cpp's prompt cache (`--cache-ram`): what the setting asks for,
+/// capped to the RAM left in `budget` after the model at `placement`.
+pub fn prompt_cache_mb(requested_mb: u64, placement: &Placement, budget: Budget) -> u64 {
+    let free_mb = budget.ram_bytes.saturating_sub(placement.ram_bytes) / (1024 * 1024);
+    requested_mb.min(free_mb)
 }
 
 /// Bytes per KV cache element for llama.cpp's `--cache-type-k/v` values.
 pub fn cache_element_bytes(cache_type: &str) -> f64 {
     match cache_type {
         "f32" => 4.0,
+        "bf16" => 2.0,
         "q8_0" => 34.0 / 32.0,
         "q5_0" | "q5_1" => 22.0 / 32.0,
         "q4_0" | "q4_1" | "iq4_nl" => 18.0 / 32.0,
@@ -120,6 +185,20 @@ pub fn place_on_gpu(footprint: Footprint, budget: Budget) -> Option<Placement> {
     })
 }
 
+/// Places a model on the CPU lane (`placement = "cpu"`): no GPU layers, and its weights, KV
+/// cache and runtime state all in system RAM, even when VRAM is free. `None` when the RAM left
+/// in `budget` cannot hold it.
+pub fn place_on_cpu(footprint: Footprint, budget: Budget) -> Option<Placement> {
+    let required = footprint.required_bytes();
+    (required <= budget.ram_bytes).then_some(Placement {
+        gpu_layers: 0,
+        all_layers_on_gpu: false,
+        vram_bytes: 0,
+        ram_bytes: required,
+        required_bytes: required,
+    })
+}
+
 /// Places a model: entirely on the GPU if it fits, otherwise as many layers as fit with the rest
 /// in system memory, otherwise `None`.
 pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
@@ -133,34 +212,47 @@ pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
             required_bytes: required,
         });
     }
-    if required <= budget.vram_bytes {
+    let capped = match (footprint.max_gpu_layers, footprint.layers) {
+        (Some(cap), Some(layers)) => cap < layers,
+        _ => false,
+    };
+    // A draft kept in RAM leaves the GPU's share of the requirement and takes RAM instead.
+    let draft_in_ram = footprint.draft.ram_bytes.min(footprint.draft.bytes);
+    let gpu_required = required - draft_in_ram;
+    if gpu_required <= budget.vram_bytes && draft_in_ram <= budget.ram_bytes && !capped {
         return Some(Placement {
             gpu_layers: u32::MAX,
             all_layers_on_gpu: true,
-            vram_bytes: required,
-            ram_bytes: 0,
+            vram_bytes: gpu_required,
+            ram_bytes: draft_in_ram,
             required_bytes: required,
         });
     }
     // Partial offload needs a layer count to split by.
     let layers = footprint.layers?.max(1);
     let per_layer = (footprint.weights_bytes + footprint.kv_bytes).div_ceil(u64::from(layers));
-    let gpu_room = budget.vram_bytes.saturating_sub(RUNTIME_OVERHEAD_BYTES);
+    // A draft on the GPU is not split: it comes off the room the main model's layers share.
+    let draft_on_gpu = footprint.draft.bytes - draft_in_ram;
+    let gpu_room = budget
+        .vram_bytes
+        .saturating_sub(footprint.overhead_bytes + draft_on_gpu);
     let gpu_layers = u32::try_from(gpu_room / per_layer.max(1))
         .unwrap_or(u32::MAX)
-        .min(layers - 1);
+        .min(layers - 1)
+        .min(footprint.max_gpu_layers.unwrap_or(u32::MAX));
     let vram = if gpu_layers == 0 {
-        0
+        draft_on_gpu
     } else {
-        u64::from(gpu_layers) * per_layer + RUNTIME_OVERHEAD_BYTES
+        u64::from(gpu_layers) * per_layer + footprint.overhead_bytes + draft_on_gpu
     };
     let ram = u64::from(layers - gpu_layers) * per_layer
         + if gpu_layers == 0 {
-            RUNTIME_OVERHEAD_BYTES
+            footprint.overhead_bytes
         } else {
             0
-        };
-    (ram <= budget.ram_bytes).then_some(Placement {
+        }
+        + draft_in_ram;
+    (ram <= budget.ram_bytes && vram <= budget.vram_bytes).then_some(Placement {
         gpu_layers,
         all_layers_on_gpu: false,
         vram_bytes: vram,
@@ -169,11 +261,123 @@ pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
     })
 }
 
+/// Whether a model fits in memory now, for agents choosing a model (`list_models`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fit {
+    /// Loaded already.
+    Loaded,
+    /// Fits beside the loaded models.
+    Fits,
+    /// Fits once loaded models nobody is using are unloaded (a swap).
+    AfterUnloadingIdle,
+    /// Does not fit while the models in use stay loaded, or not at all on this machine.
+    DoesNotFit,
+}
+
+impl Fit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Fit::Loaded => "loaded",
+            Fit::Fits => "fits_now",
+            Fit::AfterUnloadingIdle => "fits_after_unloading_idle",
+            Fit::DoesNotFit => "does_not_fit",
+        }
+    }
+}
+
+/// Memory a loaded model holds, and whether it is idle: no call on it or waiting for it, and
+/// no agent mid-turn on it, so it may be unloaded for another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    pub vram_bytes: u64,
+    pub ram_bytes: u64,
+    pub idle: bool,
+}
+
+/// Whether a model that is not loaded fits beside the loaded models in `held` (the other
+/// models), or once the idle ones are unloaded, with `place` the model's placer. Returns the
+/// placement it would get, when it fits. Nothing is loaded or unloaded.
+pub fn fit_beside(
+    held: &[Held],
+    budget: Budget,
+    place: impl Fn(Budget) -> Option<Placement>,
+) -> (Fit, Option<Placement>) {
+    let left = |models: &mut dyn Iterator<Item = &Held>| {
+        let (vram, ram) = models.fold((0, 0), |(vram, ram), held| {
+            (vram + held.vram_bytes, ram + held.ram_bytes)
+        });
+        Budget {
+            vram_bytes: budget.vram_bytes.saturating_sub(vram),
+            ram_bytes: budget.ram_bytes.saturating_sub(ram),
+            unified: budget.unified,
+        }
+    };
+    if let Some(placement) = place(left(&mut held.iter())) {
+        return (Fit::Fits, Some(placement));
+    }
+    if held.iter().any(|held| held.idle)
+        && let Some(placement) = place(left(&mut held.iter().filter(|held| !held.idle)))
+    {
+        return (Fit::AfterUnloadingIdle, Some(placement));
+    }
+    (Fit::DoesNotFit, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn fit_beside_counts_what_is_loaded_and_what_could_be_unloaded() {
+        let budget = Budget {
+            vram_bytes: 8 * GIB,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        // Needs 5 GiB of VRAM and nothing else.
+        let place = |left: Budget| {
+            (left.vram_bytes >= 5 * GIB).then_some(Placement {
+                gpu_layers: u32::MAX,
+                all_layers_on_gpu: true,
+                vram_bytes: 5 * GIB,
+                ram_bytes: 0,
+                required_bytes: 5 * GIB,
+            })
+        };
+        let held = |gib: u64, idle: bool| Held {
+            vram_bytes: gib * GIB,
+            ram_bytes: 0,
+            idle,
+        };
+        assert_eq!(fit_beside(&[], budget, place).0, Fit::Fits);
+        assert_eq!(fit_beside(&[held(2, false)], budget, place).0, Fit::Fits);
+        // 4 GiB held: fits only once the idle model goes.
+        let (fit, placement) = fit_beside(&[held(4, true)], budget, place);
+        assert_eq!(fit, Fit::AfterUnloadingIdle);
+        assert!(placement.is_some_and(|p| p.all_layers_on_gpu));
+        assert_eq!(
+            fit_beside(&[held(2, true), held(2, false)], budget, place).0,
+            Fit::AfterUnloadingIdle
+        );
+        // A model in use is never counted as free.
+        assert_eq!(
+            fit_beside(&[held(4, false)], budget, place),
+            (Fit::DoesNotFit, None)
+        );
+        assert_eq!(
+            fit_beside(&[held(2, true), held(4, false)], budget, place).0,
+            Fit::DoesNotFit
+        );
+        // Too large for the machine at all.
+        let never = |_: Budget| None;
+        assert_eq!(fit_beside(&[], budget, never).0, Fit::DoesNotFit);
+        assert_eq!(
+            Fit::AfterUnloadingIdle.as_str(),
+            "fits_after_unloading_idle"
+        );
+    }
 
     /// A 32-layer model with 4 GiB of weights and 1 GiB of KV cache.
     fn footprint() -> Footprint {
@@ -181,7 +385,46 @@ mod tests {
             weights_bytes: 4 * GIB,
             kv_bytes: GIB,
             layers: Some(32),
+            max_gpu_layers: None,
+            draft: DraftMemory::default(),
+            overhead_bytes: RUNTIME_OVERHEAD_BYTES,
         }
+    }
+
+    #[test]
+    fn calibration_moves_only_the_overhead_and_within_bounds() {
+        let base = footprint();
+        assert_eq!(base.calibrated(1000), base);
+        // 10% over on 4 GiB of weights and 512 MiB of overhead.
+        let over = base.calibrated(1100);
+        assert_eq!(over.weights_bytes, base.weights_bytes);
+        assert_eq!(over.kv_bytes, base.kv_bytes);
+        assert_eq!(
+            over.overhead_bytes,
+            RUNTIME_OVERHEAD_BYTES + (4 * GIB + RUNTIME_OVERHEAD_BYTES) / 10
+        );
+        // Wild factors are held to the bounds.
+        let capped = base.calibrated(100_000);
+        assert_eq!(capped.overhead_bytes, base.calibrated(1500).overhead_bytes);
+        let floored = base.calibrated(1);
+        assert_eq!(floored.overhead_bytes, base.calibrated(950).overhead_bytes);
+        // Planning never goes much below the static estimate: the overhead keeps half at least.
+        assert!(floored.overhead_bytes >= RUNTIME_OVERHEAD_BYTES / 2);
+        assert!(floored.required_bytes() * 100 >= base.required_bytes() * 93);
+    }
+
+    #[test]
+    fn a_calibrated_footprint_reserves_more_room() {
+        let budget = Budget {
+            vram_bytes: 5 * GIB + RUNTIME_OVERHEAD_BYTES + 100 * 1024 * 1024,
+            ram_bytes: 32 * GIB,
+            unified: false,
+        };
+        let plain = place(footprint(), budget).expect("fits");
+        assert!(plain.all_layers_on_gpu);
+        // Measured 30% over: the same model no longer fits entirely on this GPU.
+        let tight = place(footprint().calibrated(1300), budget).expect("fits partly");
+        assert!(!tight.all_layers_on_gpu);
     }
 
     #[test]
@@ -233,6 +476,34 @@ mod tests {
     }
 
     #[test]
+    fn cpu_lane_placement_takes_only_ram_even_when_vram_is_free() {
+        let budget = Budget {
+            vram_bytes: 24 * GIB,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        let placement = place_on_cpu(footprint(), budget).unwrap();
+        assert_eq!(placement.gpu_layers, 0);
+        assert!(!placement.all_layers_on_gpu);
+        assert_eq!(placement.vram_bytes, 0);
+        assert_eq!(placement.ram_bytes, 5 * GIB + RUNTIME_OVERHEAD_BYTES);
+        // The ordinary planner would have put the same model on the GPU.
+        assert!(place(footprint(), budget).unwrap().all_layers_on_gpu);
+        // It does not spill to VRAM: with the RAM short it is not placed at all.
+        let short = Budget {
+            ram_bytes: 5 * GIB,
+            ..budget
+        };
+        assert_eq!(place_on_cpu(footprint(), short), None);
+        // Unified memory is one pool of RAM, and the model is still served on the CPU.
+        let unified = Budget {
+            unified: true,
+            ..budget
+        };
+        assert_eq!(place_on_cpu(footprint(), unified).unwrap().gpu_layers, 0);
+    }
+
+    #[test]
     fn gpu_only_placement_never_spills_to_ram() {
         let short = Budget {
             vram_bytes: 3 * GIB,
@@ -258,6 +529,188 @@ mod tests {
         };
         let placement = place(estimate, budget).unwrap();
         assert!(placement.gpu_layers > 0 && !placement.all_layers_on_gpu);
+    }
+
+    #[test]
+    fn the_prompt_cache_takes_what_the_setting_asks_within_the_ram_left() {
+        let budget = Budget {
+            vram_bytes: 8 * GIB,
+            ram_bytes: 10 * GIB,
+            unified: false,
+        };
+        let on_gpu = place(footprint(), budget).unwrap();
+        assert_eq!(prompt_cache_mb(8192, &on_gpu, budget), 8192);
+        assert_eq!(prompt_cache_mb(0, &on_gpu, budget), 0);
+        // A model that spills into RAM leaves less: 10 GiB less 4 GiB of the model.
+        let split = Placement {
+            ram_bytes: 4 * GIB,
+            ..on_gpu
+        };
+        assert_eq!(prompt_cache_mb(8192, &split, budget), 6144);
+        let full = Placement {
+            ram_bytes: 12 * GIB,
+            ..on_gpu
+        };
+        assert_eq!(prompt_cache_mb(8192, &full, budget), 0);
+    }
+
+    fn kv_model() -> LocalModel {
+        LocalModel {
+            id: "m".into(),
+            path: std::path::PathBuf::from("m.gguf"),
+            parts: 1,
+            size_bytes: 4 * GIB,
+            info: crate::gguf::GgufInfo {
+                block_count: Some(32),
+                embedding_length: Some(4096),
+                head_count: Some(32),
+                head_count_kv: Some(8),
+                ..crate::gguf::GgufInfo::default()
+            },
+            mmproj: None,
+            repo: None,
+            format: crate::scan::Format::Gguf,
+        }
+    }
+
+    fn launch(slots: u32, pool_tokens: u32, k: &str, v: &str) -> ModelLaunch {
+        ModelLaunch {
+            context: 4096,
+            context_auto: false,
+            pool_tokens,
+            pool_fixed: true,
+            pool_clamped: false,
+            pool_max: pool_tokens,
+            slots,
+            cache_type_k: k.into(),
+            cache_type_v: v.into(),
+            flash_attn: "auto".into(),
+            max_gpu_layers: None,
+            max_wait_s: 600,
+            max_output_tokens: 8192,
+            extra_args: Vec::new(),
+            draft: None,
+        }
+    }
+
+    #[test]
+    fn the_kv_cache_is_one_pool_whatever_the_slots() {
+        let model = kv_model();
+        let kv = |slots, pool, k, v| Footprint::of(&model, &launch(slots, pool, k, v)).kv_bytes;
+        // 32 layers x 8 KV heads x (128 + 128) x 2 bytes = 128 KiB a token.
+        assert_eq!(kv(1, 16384, "f16", "f16"), 16384 * 131_072);
+        assert_eq!(kv(1, 16384, "f16", "f16"), kv(16, 16384, "f16", "f16"));
+        assert_eq!(kv(4, 32768, "f16", "f16"), 2 * kv(4, 16384, "f16", "f16"));
+        // K at q8_0 with V at f16 lies between the two uniform types.
+        let mixed = kv(4, 16384, "q8_0", "f16");
+        assert!(kv(4, 16384, "q8_0", "q8_0") < mixed && mixed < kv(4, 16384, "f16", "f16"));
+    }
+
+    #[test]
+    fn a_gpu_layer_cap_leaves_the_rest_in_ram() {
+        let budget = Budget {
+            vram_bytes: 24 * GIB,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        let capped = Footprint {
+            max_gpu_layers: Some(8),
+            ..footprint()
+        };
+        let placement = place(capped, budget).unwrap();
+        assert_eq!(placement.gpu_layers, 8);
+        assert!(!placement.all_layers_on_gpu);
+        // 5 GiB over 32 layers = 160 MiB a layer; the 24 layers left stay in RAM.
+        assert_eq!(placement.ram_bytes, 24 * 160 * 1024 * 1024);
+    }
+
+    #[test]
+    fn a_draft_model_counts_in_the_memory_a_model_needs() {
+        let draft = DraftMemory {
+            bytes: GIB,
+            ram_bytes: 0,
+        };
+        let with = footprint().with_draft(draft);
+        assert_eq!(with.required_bytes(), footprint().required_bytes() + GIB);
+        // On the GPU it takes VRAM beside the model.
+        let roomy = Budget {
+            vram_bytes: 8 * GIB,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        let placement = place(with, roomy).unwrap();
+        assert!(placement.all_layers_on_gpu);
+        assert_eq!(placement.vram_bytes, 6 * GIB + RUNTIME_OVERHEAD_BYTES);
+        // Kept in RAM it takes RAM and leaves the VRAM the model alone needs.
+        let in_ram = place(
+            footprint().with_draft(DraftMemory {
+                ram_bytes: GIB,
+                ..draft
+            }),
+            roomy,
+        )
+        .unwrap();
+        assert_eq!(in_ram.vram_bytes, 5 * GIB + RUNTIME_OVERHEAD_BYTES);
+        assert_eq!(in_ram.ram_bytes, GIB);
+        // A model that fits alone on this GPU no longer does with the draft beside it: its
+        // layers are pushed to RAM instead.
+        let tight = Budget {
+            vram_bytes: 5 * GIB + RUNTIME_OVERHEAD_BYTES,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        assert!(place(footprint(), tight).unwrap().all_layers_on_gpu);
+        let pushed = place(with, tight).unwrap();
+        assert!(!pushed.all_layers_on_gpu);
+        assert!(pushed.vram_bytes <= tight.vram_bytes);
+        // Nothing is placed when not even RAM holds the draft too.
+        let short = Budget {
+            vram_bytes: 0,
+            ram_bytes: 6 * GIB + RUNTIME_OVERHEAD_BYTES - 1,
+            unified: false,
+        };
+        assert_eq!(place(with, short), None);
+        assert!(place(footprint(), short).is_some());
+    }
+
+    #[test]
+    fn a_draft_larger_than_the_vram_left_is_not_placed_on_it() {
+        // 2 GiB of VRAM cannot hold a 3 GiB draft, whatever the model's layers do.
+        let budget = Budget {
+            vram_bytes: 2 * GIB,
+            ram_bytes: 64 * GIB,
+            unified: false,
+        };
+        let big_draft = DraftMemory {
+            bytes: 3 * GIB,
+            ram_bytes: 0,
+        };
+        assert_eq!(place(footprint().with_draft(big_draft), budget), None);
+        // The same draft held in RAM is fine, and the model's layers use the VRAM.
+        let in_ram = DraftMemory {
+            ram_bytes: 3 * GIB,
+            ..big_draft
+        };
+        let placement = place(footprint().with_draft(in_ram), budget).unwrap();
+        assert!(placement.vram_bytes <= budget.vram_bytes);
+        assert!(placement.ram_bytes >= 3 * GIB);
+    }
+
+    #[test]
+    fn a_draft_split_between_gpu_and_ram_takes_both() {
+        let budget = Budget {
+            vram_bytes: 24 * GIB,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        let split = DraftMemory {
+            bytes: 2 * GIB,
+            ram_bytes: GIB,
+        };
+        let placement = place(footprint().with_draft(split), budget).unwrap();
+        assert!(placement.all_layers_on_gpu);
+        assert_eq!(placement.vram_bytes, 5 * GIB + RUNTIME_OVERHEAD_BYTES + GIB);
+        assert_eq!(placement.ram_bytes, GIB);
     }
 
     #[test]

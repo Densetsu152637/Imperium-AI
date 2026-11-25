@@ -1,0 +1,74 @@
+/* The first-run suggestion of the house models, and the model download suggestion in a conversation. */
+
+/* Both are a .card: a title at --fs-lg with a dismiss tool, a model table, one primary action. */
+.house-models,
+.model-suggestion {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.house-models {
+  margin-bottom: var(--sp-4);
+}
+
+.house-models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.house-models h3,
+.model-suggestion h3 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  overflow-wrap: anywhere;
+}
+
+.house-models p,
+.model-suggestion p {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.house-model-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+}
+
+.house-model-text .muted {
+  font-size: var(--fs-sm);
+}
+
+.house-model-table td.house-model-action {
+  text-align: right;
+}
+
+.model-suggestion progress {
+  width: 100%;
+}
+
+.model-suggestion-table td {
+  overflow-wrap: anywhere;
+}
+
+.model-suggestion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* Sizes and quantisations stay on one line; the model name and the sentence-like cells wrap. */
+.model-suggestion-table td.num,
+.model-suggestion-table td:nth-child(2) {
+  white-space: nowrap;
+}
+
+/* In a narrow column the unavailable badge wraps instead of widening the table. */
+.house-model-table .badge {
+  white-space: normal;
+  text-align: left;
+}

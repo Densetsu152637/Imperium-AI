@@ -49,13 +49,21 @@ jobs:
             bundles: app,dmg
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    env:
+      # Pinned, and exported so rust-toolchain.toml's "stable" does not override it. Rust 1.100
+      # (stable from 13 Nov 2026) moved a build script's OUT_DIR to build/<package>/<hash>/out;
+      # tauri-build 2.6.3 finds the target directory by going three parents up from OUT_DIR, lands
+      # on release/build, and then deletes release/build/imperium-core, which is the daemon crate's
+      # build directory (EISDIR on Linux, EPERM on macOS). Move to a toolchain without that layout
+      # change until tauri-build handles it, and keep the "bundle check" workflow passing.
+      RUSTUP_TOOLCHAIN: 1.99.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: stable
+          toolchain: 1.99.1
           targets: ${{ matrix.rust_targets }}
       - if: runner.os == 'Linux'
         run: bash scripts/ci/install-linux-deps.sh
@@ -68,6 +76,25 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Plugin approvals rest on the hardened runtime: the release app must not be allowed DYLD_*
+      # variables, unsigned libraries or a WebKit inspector (docs/06-extensibility.md, "Who may
+      # approve a plugin"). The fixture is deliberately bad: the check must fail on it, and name
+      # all three.
+      - name: Check macOS release entitlements
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python3 scripts/ci/check-entitlements.py --config apps/desktop/src-tauri/tauri.conf.json
+          if out="$(python3 scripts/ci/check-entitlements.py scripts/ci/fixtures/bad-entitlements.plist 2>&1)"; then
+            echo "::error::the entitlements check accepted the deliberately bad fixture"
+            exit 1
+          fi
+          for key in allow-dyld-environment-variables disable-library-validation get-task-allow; do
+            if ! grep -q "$key" <<<"$out"; then
+              echo "::error::the entitlements check did not name $key for the bad fixture"
+              exit 1
+            fi
+          done
       - name: Build desktop bundles
         shell: bash
         env:
@@ -83,6 +110,11 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/ci/build-desktop.sh "$TAURI_TARGET" "$BUNDLES" "$VERSION"
+      # The presence check of plugin approvals needs polkit's action file from the .deb and .rpm.
+      - name: Check the Linux packages carry the polkit action
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/ci/check-linux-packages.sh
       - name: Package CLI
         shell: bash
         env:

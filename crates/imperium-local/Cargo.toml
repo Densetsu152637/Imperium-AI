@@ -10,9 +10,10 @@ description = "Local models for Imperium: GGUF discovery, hardware probe, memory
 [dependencies]
 flate2 = "1.1.11"
 futures-util = "0.3.34"
-imperium-api = { version = "0.1.0", path = "../imperium-api" }
-imperium-config = { version = "0.1.0", path = "../imperium-config" }
-reqwest = { version = "0.13.5", features = ["stream"] }
+imperium-api = { version = "0.2.0", path = "../imperium-api" }
+imperium-config = { version = "0.2.0", path = "../imperium-config" }
+reqwest = { version = "0.13.5", features = ["json", "stream"] }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
@@ -20,15 +21,16 @@ tar = "0.4.46"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt", "sync", "time", "process", "macros", "net", "fs", "io-util"] }
 tracing = "0.1.44"
+zip = { version = "4.6.1", default-features = false, features = ["deflate-flate2"] }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 axum = "0.8.9"
-imperium-core = { path = "../imperium-core" }
+imperium-engine = { path = "../imperium-engine" }
 imperium-models = { path = "../imperium-models" }
 imperium-protocol = { path = "../imperium-protocol" }
 imperium-tools = { path = "../imperium-tools" }
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "test-util"] }

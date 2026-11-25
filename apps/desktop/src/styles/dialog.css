@@ -1,0 +1,435 @@
+/* The dialog shell (Settings, the environment window, the model editor), its navigation column, and every floating thing: menus, select lists, tooltips. */
+
+/* ---- Popovers: menus, select lists and tooltips share one look ---- */
+.row-menu,
+.select-list,
+.tooltip {
+  position: fixed;
+  margin: 0;
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--elev-2);
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+  color: var(--text);
+}
+
+.row-menu,
+.select-list {
+  z-index: var(--z-popover);
+  padding: var(--sp-1);
+  list-style: none;
+  overflow-y: auto;
+  animation: pop-in var(--dur-base) var(--ease-standard);
+}
+
+.row-menu.above,
+.select-list.above {
+  transform: translateY(-100%);
+  animation: none;
+}
+
+/* The list holds focus while open; its active item is the focus indicator. */
+.row-menu:focus,
+.select-list:focus {
+  outline: none;
+}
+
+.row-menu {
+  min-width: calc(160 * var(--px));
+}
+
+.row-menu-item,
+.select-option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--row-h);
+  padding: 0 var(--sp-3) 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.row-menu-item {
+  max-width: calc(420 * var(--px));
+}
+
+.row-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row-menu-item .lucide,
+.row-menu-spacer {
+  width: var(--icon);
+  height: var(--icon);
+  flex: none;
+  color: var(--text-muted);
+}
+
+.row-menu-shortcut {
+  margin-left: var(--sp-4);
+}
+
+.row-menu-separator {
+  height: 1px;
+  margin: var(--sp-1) calc(-1 * var(--sp-1));
+  background: var(--border);
+}
+
+.row-menu-item.active,
+.select-option.active {
+  background: var(--surface-hover);
+}
+
+.row-menu:focus-visible .row-menu-item.active,
+.select-list:focus-visible .select-option.active {
+  background: var(--accent-soft);
+}
+
+.row-menu-item.danger,
+.row-menu-item.danger .lucide {
+  color: var(--danger);
+}
+
+.row-menu-item[aria-disabled="true"],
+.select-option[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.select-option {
+  align-items: flex-start;
+  padding-block: var(--sp-1);
+}
+
+.select-option[aria-selected="true"] {
+  font-weight: var(--fw-medium);
+}
+
+.select-option.dimmed {
+  opacity: 0.6;
+}
+
+.select-group {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.select-check {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  width: var(--icon);
+  min-height: calc(var(--row-h) - 2 * var(--sp-1));
+  color: var(--accent-text);
+}
+
+.select-option-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: calc(var(--row-h) - 2 * var(--sp-1));
+}
+
+.select-option-description {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* A tooltip does not take the pointer's attention, but it can be hovered so it does not vanish under it. */
+.tooltip-anchor {
+  display: contents;
+}
+
+.tooltip {
+  z-index: var(--z-popover);
+  max-width: calc(280 * var(--px));
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  animation: fade-in var(--dur-fast) var(--ease-standard);
+}
+
+/* ---- The dialog ---- */
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-5);
+  background: var(--scrim);
+  animation: fade-in var(--dur-fast) var(--ease-standard);
+}
+
+.settings-window {
+  display: grid;
+  grid-template-columns: calc(240 * var(--px)) minmax(0, 1fr);
+  width: min(calc(930 * var(--px)), 100%);
+  height: min(calc(630 * var(--px)), 100%);
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-3);
+  animation: rise-in var(--dur-slow) var(--ease-standard);
+}
+
+/* The window takes focus from script when it has nothing focusable to give it to; a ring round the whole dialog would say nothing. */
+.settings-window:focus {
+  outline: none;
+}
+
+.settings-window.no-nav {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-content-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-height: calc(var(--control-h) + var(--sp-4));
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--dialog-gutter);
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-content-header h2 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+/* A notice or an error between the header and the body sits on the same edge as both. */
+.settings-content > .error,
+.settings-content > .notice-box,
+.settings-content > .settings-notice {
+  margin: var(--sp-3) var(--dialog-gutter) 0;
+}
+
+/* The body (settings.css names it .settings-rows too; this rule is the more specific). */
+.settings-window .dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-2) var(--dialog-gutter) var(--sp-5);
+}
+
+/* Actions under the body (Cancel, Apply, Save), for editors that do not save as they change. */
+.settings-footer {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--sp-3) var(--dialog-gutter);
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+
+.settings-footer .muted,
+.settings-footer .error {
+  margin-right: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- The navigation column: every row one height, one inset, icons in one column ---- */
+.settings-nav {
+  --nav-inset: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-height: 0;
+  padding: var(--sp-3);
+  overflow-y: auto;
+  background: var(--surface-sunken);
+  border-right: 1px solid var(--border);
+}
+
+.settings-search {
+  margin-bottom: var(--sp-2);
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: var(--sp-3);
+}
+
+.settings-group-label {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--nav-inset);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* .settings-nav in front lifts these above the global button and icon-button rules. */
+.settings-nav .settings-nav-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: var(--sp-2);
+  width: 100%;
+  min-width: 0;
+  height: var(--row-h);
+  padding: 0 var(--nav-inset);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-md);
+  line-height: var(--lh-ui);
+  text-align: left;
+}
+
+/* A row with badges under its label is two lines; the icon and label still sit on the first. */
+.settings-nav .settings-nav-item.has-badges {
+  height: auto;
+  min-height: var(--row-h);
+  padding-bottom: var(--sp-1);
+}
+
+.settings-nav .settings-nav-item > .lucide {
+  flex: none;
+  width: var(--icon);
+  height: var(--icon);
+  margin-block: calc((var(--row-h) - var(--icon)) / 2 - 1px);
+  color: var(--text-muted);
+}
+
+.settings-nav .settings-nav-item:hover:not(:disabled, .active) {
+  background: var(--surface-hover);
+  border-color: transparent;
+}
+
+.settings-nav .settings-nav-item.active,
+.settings-nav .settings-nav-item.active:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.settings-nav .settings-nav-item.active > .lucide {
+  color: var(--accent-text);
+}
+
+/* The text column fills the row so every label starts at the same edge, however long it is. */
+.settings-nav-item-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  min-width: 0;
+  text-align: left;
+}
+
+.settings-nav-item-label {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  min-height: calc(var(--row-h) - 2px);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.settings-nav-item.dimmed {
+  opacity: 0.55;
+}
+
+.settings-nav-empty {
+  display: flex;
+  align-items: center;
+  min-height: var(--row-h);
+  padding: 0 var(--nav-inset);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.settings-search input {
+  font-size: var(--fs-md);
+}
+
+/* ---- Narrow: the navigation stacks above the body, and under 600 px the dialog is a full-screen sheet ---- */
+@media (max-width: 720px) {
+  .settings-window {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    max-height: 10rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .settings-nav .settings-nav-item {
+    width: auto;
+  }
+}
+
+@media (max-width: 600px) {
+  .settings-backdrop {
+    padding: 0;
+  }
+
+  .settings-window {
+    width: 100%;
+    height: 100%;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    animation-name: sheet-up;
+  }
+}
+
+@keyframes sheet-up {
+  from {
+    opacity: 0;
+    transform: translateY(var(--sp-4));
+  }
+}

@@ -1,0 +1,38 @@
+{
+	"card0": {
+		"Device Name": "Navi 31 [Radeon RX 7900 XT/7900 XTX]",
+		"Device ID": "0x744c",
+		"Device Rev": "0xcc",
+		"Subsystem ID": "0x240e",
+		"GUID": "47385",
+		"Unique ID": "0x2f5c2b9a1e3d7a10",
+		"VBIOS version": "113-D70201-00A",
+		"Temperature (Sensor edge) (C)": "38.0",
+		"Temperature (Sensor junction) (C)": "40.0",
+		"Temperature (Sensor memory) (C)": "46.0",
+		"Average Graphics Package Power (W)": "27.0",
+		"GPU use (%)": "3",
+		"GFX Activity": "14260390",
+		"Card Series": "Navi 31 [Radeon RX 7900 XT/7900 XTX]",
+		"Card Model": "0x744c",
+		"Card Vendor": "Advanced Micro Devices, Inc. [AMD/ATI]",
+		"Card SKU": "D7020100",
+		"Node ID": "1",
+		"VRAM Total Memory (B)": "25753026560",
+		"VRAM Total Used Memory (B)": "598671360"
+	},
+	"card1": {
+		"Device Name": "Raphael",
+		"Device ID": "0x164e",
+		"Temperature (Sensor edge) (C)": "35.0",
+		"GPU use (%)": "0",
+		"Card Series": "Raphael",
+		"Card Model": "0x164e",
+		"Card Vendor": "Advanced Micro Devices, Inc. [AMD/ATI]",
+		"VRAM Total Memory (B)": "536870912",
+		"VRAM Total Used Memory (B)": "36999168"
+	},
+	"system": {
+		"Driver version": "6.8.5"
+	}
+}

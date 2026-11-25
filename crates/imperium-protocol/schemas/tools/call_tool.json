@@ -1,0 +1,22 @@
+{
+  "description": "Run a tool that is not in your tool list, by name, with the arguments its parameters (from tool_search) describe.",
+  "name": "call_tool",
+  "parameters": {
+    "properties": {
+      "arguments": {
+        "description": "The tool's arguments, as its parameters describe them",
+        "type": "object"
+      },
+      "name": {
+        "description": "The tool's exact name",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "arguments"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

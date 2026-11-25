@@ -531,7 +531,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// The Pixel Clawd pet bundled in the repository.
-    pub fn bundled() -> PathBuf {
+    pub(crate) fn bundled() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pets/pixel-clawd")
     }
 

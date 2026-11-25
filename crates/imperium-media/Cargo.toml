@@ -9,10 +9,13 @@ description = "Media tools for Imperium agents: images (OpenAI-compatible or Com
 
 [dependencies]
 base64 = "0.23.1"
-imperium-api = { version = "0.1.0", path = "../imperium-api" }
+imperium-api = { version = "0.2.0", path = "../imperium-api" }
+imperium-protocol = { version = "0.2.0", path = "../imperium-protocol" }
+pdf-extract = "0.12.1"
 reqwest = { version = "0.13.5", features = ["json", "multipart", "query"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.11.1"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["time"] }
 

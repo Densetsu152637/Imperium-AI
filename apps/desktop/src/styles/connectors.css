@@ -1,0 +1,430 @@
+/* The Connectors window, drawn inside the shared Dialog: the tab and search toolbar, the card directory, the installed rows and the connector forms. The window itself, tabs, fields, badges, notices and empty states are shared components (primitives.css, dialog.css). */
+
+/* ---- Toolbar: Tabs on the left, search on the right, between the header and the body ---- */
+.connectors-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.connectors-title .lucide {
+  width: var(--icon);
+  height: var(--icon);
+}
+
+.connectors-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-2) var(--sp-4);
+  padding: var(--sp-2) var(--dialog-gutter) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.connectors-toolbar .tabs-list {
+  border-bottom: none;
+}
+
+.connectors-toolbar .search-field {
+  flex: 1 1 calc(180 * var(--px));
+  max-width: calc(320 * var(--px));
+  margin-bottom: var(--sp-2);
+}
+
+.connectors-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-top: var(--sp-3);
+}
+
+.connectors-body:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: calc(-2 * var(--px));
+}
+
+.connectors-notice {
+  margin-bottom: var(--sp-2);
+}
+
+.connectors-note,
+.connectors-footnote {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-ui);
+  color: var(--text-muted);
+}
+
+.connectors-footnote {
+  margin-top: var(--sp-2);
+}
+
+/* ---- Browse: an even grid of cards, the foot of each pinned to its bottom edge ---- */
+.connector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(264 * var(--px)), 1fr));
+  gap: var(--sp-3);
+}
+
+.connector-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.connector-card.custom {
+  border-style: dashed;
+  background: transparent;
+}
+
+.connector-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.connector-card-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.connector-card-title h3 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+.connector-card-publisher {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.connector-card-description {
+  flex: 1;
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  line-height: var(--lh-ui);
+}
+
+.connector-card-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.connector-card-gap {
+  flex: 1;
+}
+
+/* ---- Icon tiles ---- */
+.connector-icon {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: calc(36 * var(--px));
+  height: calc(36 * var(--px));
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.connector-icon .lucide {
+  width: var(--icon);
+  height: var(--icon);
+}
+
+.connector-icon.small {
+  width: var(--size-floor);
+  height: var(--size-floor);
+  border-radius: var(--radius-sm);
+}
+
+.connector-icon.small .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.connector-icon.large {
+  width: calc(44 * var(--px));
+  height: calc(44 * var(--px));
+}
+
+.connector-icon.large .lucide {
+  width: var(--icon-lg);
+  height: var(--icon-lg);
+}
+
+/* ---- Installed: sections of rows ---- */
+.connectors-section + .connectors-section {
+  margin-top: var(--sp-4);
+}
+
+.connectors-section h3 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.connectors-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--row-h);
+  margin-bottom: var(--sp-1);
+}
+
+.connector-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* One row: the first line is --row-h tall like a sidebar row (icon, name and status, actions); detail lines sit under the name. */
+.connector-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(var(--row-h), auto) auto;
+  column-gap: var(--sp-3);
+  align-items: center;
+  padding: var(--sp-1) var(--sp-3);
+}
+
+.connector-row + .connector-row {
+  border-top: 1px solid var(--border);
+}
+
+.connector-row[data-enabled="false"] .connector-icon,
+.connector-row[data-enabled="false"] .connector-row-title {
+  opacity: 0.6;
+}
+
+.connector-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-md);
+}
+
+.connector-row-counts {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.connector-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.connector-row-actions .switch {
+  margin-left: var(--sp-2);
+}
+
+.connector-row-detail {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding-bottom: var(--sp-1);
+}
+
+.connector-row-detail:empty {
+  display: none;
+}
+
+.connector-row-where {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.connector-row-source {
+  display: block;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.connector-row-notice .lucide {
+  display: inline;
+  vertical-align: calc(-2 * var(--px));
+}
+
+.connector-notice-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.connector-tools {
+  font-size: var(--fs-sm);
+}
+
+.connector-tools summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.connector-tools ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.connector-tools code {
+  padding: calc(1 * var(--px)) var(--sp-2);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  font-size: var(--fs-xs);
+}
+
+.connector-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  font-size: var(--fs-md);
+}
+
+.skill-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(300 * var(--px)), 1fr));
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skill-list li {
+  display: flex;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-md);
+}
+
+.skill-list li > .lucide {
+  flex: none;
+  width: var(--icon);
+  height: var(--icon);
+  margin-top: calc(2 * var(--px));
+  color: var(--accent-text);
+}
+
+.skill-description {
+  margin: calc(2 * var(--px)) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* ---- Connector forms (Field supplies label, hint and error) ---- */
+.connector-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: calc(640 * var(--px));
+}
+
+.connector-form .back {
+  align-self: flex-start;
+  margin-left: calc(-1 * var(--sp-2));
+}
+
+.connector-form-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.connector-form-head h3 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+.connector-form-subtitle {
+  margin-top: calc(2 * var(--px));
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* Pairs sit side by side and stack on their own when the sheet is narrow, with no media query. */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(220 * var(--px)), 1fr));
+  gap: var(--sp-4);
+}
+
+.connector-form .field-stack > button.select,
+.connector-form .field-stack > .field {
+  width: 100%;
+}
+
+.connector-form .field-hint .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  vertical-align: calc(-2 * var(--px));
+}
+
+.secret-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.add-secret {
+  align-self: flex-start;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  align-self: flex-start;
+  font-size: var(--fs-md);
+}
+
+.connector-runs {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.connector-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}

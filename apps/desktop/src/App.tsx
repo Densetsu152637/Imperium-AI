@@ -1,69 +1,324 @@
-// Connects to the daemon and arranges the default view: Projects and Sessions stacked on the
+// Connects to the daemon and arranges the default view: Environments and Sessions stacked on the
 // left, the session spanning the middle, agents, models, and telemetry stacked on the right.
+// The workspace is always shown: while the daemon is away, a banner offers to start or reach it
+// and the lists show what was last known, and the layout reopens as the user left it.
+// Any panel can be detached into a window of its own, which runs this same component with
+// `?panel=<id>`: it connects to the daemon itself but shows only that panel. The main window
+// owns the layout and the list of detached panels; see panelWindows.ts.
 
+import { Check, PanelLeft, PanelRight, Plug, Plus, Puzzle, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
+  Attachment,
+  EnvironmentInfo,
+  EnvironmentListResult,
   ApprovalInfo,
   ApprovalListResult,
+  BudgetAlert,
+  BudgetsResult,
   PermissionDecision,
+  PermissionRule,
   ResumePolicy,
+  SendMode,
   SessionControlParams,
+  SessionAgentAskParams,
+  SessionAgentCancelParams,
+  SessionAgentKnowledgeParams,
+  SessionAgentResumeParams,
+  SessionSendParams,
+  BuiltinCommand,
   SessionControlResult,
+  SessionCreateParams,
+  SessionBranchParams,
+  SessionBranchResult,
+  SessionCompareParams,
+  SessionCompareResult,
+  SessionComparePickParams,
   SessionCreateResult,
+  InitiativeNotice,
   SessionEventParams,
+  DownloadJob,
   LocalModelListResult,
+  RuntimeInstallJob,
+  ModelResidency,
   ModListResult,
-  PetListResult,
-  PetStateInfo,
+  ModelConfigResult,
   ModelListResult,
+  ModelSetConfigParams,
   SessionListResult,
   SessionSummary,
   SessionSubscribeResult,
 } from "@imperium/protocol";
 
 import { DaemonClient, type DaemonConnection } from "./daemon/client";
-import { findDaemon, insideTauri, pickFolder, rememberDevConnection } from "./daemon/connection";
-import { Columns } from "./layout/Columns";
-import { ProjectsPanel, SessionsPanel } from "./panels/NavigationPanels";
+import { findDaemon, rememberDevConnection } from "./daemon/connection";
+import { addColumn, reconcile, removeColumn, sameArrangement, visibleColumns, type Arrangement, type DropTarget } from "./layout/arrangement";
+import { classifyColumns, foldColumns, isNarrow } from "./layout/fold";
+import { Columns, type PanelSpec } from "./layout/Columns";
+import { SheetBehaviour, SheetScrim } from "./layout/Sheet";
+import { useLayoutWidth } from "./layout/useWidth";
+import { PanelWindow } from "./layout/PanelWindow";
+import { getLayout, resetLayout, updateLayout, type DetachedPanel } from "./layout/state";
+import { applyMove, panelMoves } from "./layout/moves";
+import { activeModules, canHost, dropPanel, sameModules, type Modules } from "./layout/placement";
+import { makePreset, missingMods, parsePreset, presetFileName, presetText, type LayoutPreset } from "./layout/presets";
+import { activeShape, clearOverride, DEFAULT_SHAPE, editShape, hasOverride, saveOverride, type Shapes } from "./layout/shapes";
+import { downloadNotice, initiativeNotice, sessionNotice, updateNotice } from "./shared/attention";
+import { budgetNotice, budgetStop } from "./models/budgets";
+import { focusMainWindow, notify, onNoticeOpened } from "./shared/notify";
+import {
+  EnvironmentsPanel,
+  SessionSortSelect,
+  SessionsPanel,
+  environmentOf,
+  type EnvironmentActions,
+  type SessionSort,
+} from "./panels/NavigationPanels";
+import { exportSession, saveTextFile } from "./sessions/exportSession";
 import { SessionPanel } from "./panels/SessionPanel";
+import { ComparePanel } from "./panels/ComparePanel";
+import { branchRun, comparisonMembers, comparisonOpen } from "./sessions/branches";
+import type { Effort, PermissionMode } from "./panels/ModelSelect";
+import { NewSessionPanel, type NewSessionOptions } from "./panels/NewSessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
+import { ReviewPanel } from "./panels/ReviewPanel";
+import { AgentView } from "./panels/AgentView";
+import { agentDelivery, finishedMeanwhile, followUpText } from "./sessions/agentView";
+import { queueParams, type QueueChange } from "./sessions/queue";
+import { builtinParams } from "./sessions/slash";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
 import { BrowserPanel } from "./panels/BrowserPanel";
-import { PetPanel } from "./panels/PetPanel";
+import { PreviewPanel } from "./panels/PreviewPanel";
 import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
-import { normalizeProject, useProjectIcons } from "./projectIcons";
-import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
-import { applySettings, loadSettings, saveSettings, type DisplaySettings } from "./settings";
-import { SettingsMenu } from "./SettingsMenu";
-import { UpdateControl, useUpdates } from "./UpdateControl";
+import { ResourcesPanel } from "./panels/ResourcesPanel";
+import { UsagePanel } from "./panels/UsagePanel";
+import { cleanName } from "./sessions/agents";
+import { environmentById } from "./environments/byId";
+import { useEnvironments } from "./environments/useEnvironments";
+import { projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./environments/projectIcons";
+import {
+  applyEvent,
+  DEFAULT_RESUME_POLICY,
+  markAnswered,
+  markQuestionsAnswered,
+  markSent,
+  newSession,
+  sessionTitle,
+  snapshotSessions,
+  updateSent,
+  type SessionState,
+} from "./sessions/sessions";
+import {
+  applySettings,
+  ChangeSettingsContext,
+  loadSettings,
+  modEnabled,
+  resolvedTheme,
+  saveSettings,
+  SettingsContext,
+  type AppSettings,
+  type ChangeSettings,
+} from "./settings/settings";
+import { SettingsWindow } from "./settings/SettingsWindow";
+import type { LayoutNotice } from "./settings/LayoutRows";
+import { PANELS_ICON, SETTINGS_SECTIONS } from "./settings/sections";
+import { appCommands } from "./commands/appCommands";
+import { formatShortcut } from "./commands/registry";
+import { bindingFor } from "./settings/shortcuts";
+import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
+import { splashDone } from "./shared/boot";
+import { Tour } from "./tour/Tour";
+import { useTour } from "./tour/useTour";
+import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./shared/panelWindows";
+import { ConnectorsWindow } from "./connectors/ConnectorsWindow";
+import { PluginsWindow } from "./plugins/PluginsWindow";
+import { EnvironmentWindow } from "./environments/EnvironmentWindow";
+import { setDoc, subscribeDoc } from "./shared/store";
+import { useDaemon } from "./shared/DaemonControl";
+import { ModelConfigDialog } from "./models/ModelConfigDialog";
+import { setModelAliases } from "./models/modelNames";
+import { applyResidency, type Residency } from "./sessions/waits";
+import { hiddenSpecs } from "./models/modelPrefs";
+import { UpdateControl, useUpdates } from "./shared/UpdateControl";
+import type { Cache } from "./shared/cache";
+import { ConnectionBanner, type Status } from "./shared/ConnectionBanner";
+import { useSessionStore } from "./sessions/useSessionStore";
+import { useLaunchFocus, useWindows } from "./shared/useWindows";
+import { Badge } from "./components/Badge";
+import { IconButton } from "./components/IconButton";
+import { Menu } from "./components/Menu";
 
-type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
+let migrating: Promise<EnvironmentInfo[]> | null = null;
+
+/** Lists the environments. The first time, each project folder known from before environments
+ * (opened here, or used by a session) becomes an environment of its own, keeping its icon. */
+function migrateProjects(client: DaemonClient, sessionFolders: string[], icons: ProjectIcons): Promise<EnvironmentInfo[]> {
+  const list = async () => (await client.call<EnvironmentListResult>("environments.list")).environments;
+  if (getLayout().environmentsMigrated) return list();
+  // React's development double-mount connects twice; migrate once.
+  migrating ??= (async () => {
+    const envs = await list();
+    const layout = getLayout();
+    const folders = [...layout.folders, ...(layout.project ? [layout.project] : []), ...sessionFolders];
+    for (const folder of folders) {
+      if (envs.some((env) => env.folders[0] && sameFolder(env.folders[0], folder))) continue;
+      const choice = icons.iconFor(folder);
+      try {
+        envs.push(
+          await client.call<EnvironmentInfo>("environments.create", {
+            // A folder name with a character the daemon refuses is cleaned, not left behind.
+            name: cleanName(projectName(folder), "Project"),
+            icon: choice.icon,
+            color: choice.color,
+            folders: [folder],
+          }),
+        );
+      } catch (error) {
+        // A folder that no longer exists is left behind.
+        console.warn(`could not make ${folder} an environment`, error);
+      }
+    }
+    updateLayout({ environmentsMigrated: true });
+    return envs;
+  })().finally(() => {
+    migrating = null;
+  });
+  return migrating;
+}
 
 export function App() {
+  const [settings, setSettings] = useState<AppSettings>(loadSettings);
+  const saved = useMemo(() => getLayout(), []);
+  // The panel this window shows alone; null in the main window.
+  const detachedId = useMemo(detachedPanelId, []);
+  const isDetached = detachedId !== null;
+  // A detached window follows the main window's selection, so it always restores it.
+  const restore = settings.restoreSession || isDetached;
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
-  const [sessions, setSessions] = useState<Record<string, SessionState>>({});
-  const [extraProjects, setExtraProjects] = useState<string[]>([]);
-  // The project new sessions start in, and whether the Sessions list shows only its sessions.
-  const [project, setProject] = useState<string | null>(null);
-  const [projectView, setProjectView] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [settings, setSettings] = useState<DisplaySettings>(loadSettings);
-  const [showSettings, setShowSettings] = useState(false);
+  const {
+    sessions,
+    setSessions,
+    sessionsRef,
+    selected,
+    setSelected,
+    setAgentView,
+    compareView,
+    setCompareView,
+    prefill,
+    setPrefill,
+    allSessions,
+    session,
+    openAgent,
+    viewedTask,
+  } = useSessionStore(restore ? saved.session : null);
+  const {
+    environments,
+    setEnvironments,
+    envId,
+    setEnvId,
+    envIdRef,
+    envView,
+    setEnvView,
+    gitEnvironments,
+    setGitEnvironments,
+    environment,
+    icons,
+  } = useEnvironments(restore ? saved.environment : null, restore && saved.projectView);
+  const [sessionSort, setSessionSort] = useState<SessionSort>(saved.sessionSort);
+  /** The global layout (which panels sit where, which are closed, which are modules) and the environments' own (shapes.ts). */
+  const [shapes, setShapes] = useState<Shapes>({
+    global: { arrangement: saved.arrangement, hidden: saved.hidden, modules: saved.modules },
+    overrides: saved.overrides,
+  });
+  // What applies to the selected environment: its own layout when it has one, else the global one.
+  const shape = activeShape(shapes, envId);
+  const { arrangement, hidden, modules } = shape;
+  const projectLayout = hasOverride(shapes, envId);
+  /** Panel edits go to the selected environment's own layout when it has one, else the global layout. */
+  const setArrangement = (next: Arrangement | null) => setShapes((all) => editShape(all, envIdRef.current, { arrangement: next }));
+  const setHidden = (update: (all: string[]) => string[]) =>
+    setShapes((all) => editShape(all, envIdRef.current, { hidden: update(activeShape(all, envIdRef.current).hidden) }));
+  const [detached, setDetached] = useState<Record<string, DetachedPanel>>(saved.detached);
+  // Panels whose windows this session has opened, so each opens once.
+  const opened = useRef(new Set<string>());
+  const {
+    envWindow,
+    setEnvWindow,
+    editingLayout,
+    setEditingLayout,
+    showSettings,
+    setShowSettings,
+    settingsRequest,
+    setSettingsRequest,
+    modelDialog,
+    setModelDialog,
+    showConnectors,
+    setShowConnectors,
+    showPlugins,
+    setShowPlugins,
+  } = useWindows(isDetached, settings.shortcuts);
+  // Below 600 px one column shows at a time (layout/fold.ts), and the panel editor is off.
+  const layoutWidth = useLayoutWidth(settings.uiScale);
+  const narrow = isNarrow(layoutWidth);
+  /** What is open over the workspace: the sidebar, or a panel from a column the window has no room for. */
+  const [sheet, setSheet] = useState<{ kind: "nav" } | { kind: "panel"; id: string } | null>(null);
+  const sidebarButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (narrow && editingLayout) setEditingLayout(false);
+  }, [narrow, editingLayout, setEditingLayout]);
+  /** What the last preset export or import did, shown in Settings → Panels. */
+  const [presetNotice, setPresetNotice] = useState<LayoutNotice | null>(null);
+  /** A preset file that was read and is valid, waiting for the user to confirm replacing the layout. */
+  const [pendingPreset, setPendingPreset] = useState<LayoutPreset | null>(null);
   const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
+  // Every view shows a model by its alias (modelNames.ts).
+  useEffect(() => setModelAliases(modelTable?.models ?? [], localModels?.models ?? []), [modelTable, localModels]);
   const [mods, setMods] = useState<ModListResult | null>(null);
+  /** llama.cpp being installed (`runtime.install_progress`), named in a waiting agent's status line. */
+  const [runtimeInstall, setRuntimeInstall] = useState<RuntimeInstallJob | null>(null);
+  /** The latest `model.residency` move made for each local model, which a waiting agent's status line words. */
+  const [residency, setResidency] = useState<Residency>({});
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
-  const [pets, setPets] = useState<PetListResult | null>(null);
-  const [petState, setPetState] = useState<PetStateInfo | null>(null);
+  /** Where each budget stands (`budgets.get`, then `budgets.changed`), for the session's indicator. */
+  const [budgets, setBudgets] = useState<BudgetsResult | null>(null);
   const modBus = useMemo(() => new ModBus(), []);
-  const icons = useProjectIcons();
+  // The latest settings and sessions, for the daemon's notification handler (set up once per connection).
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  // Downloads already announced, so repeated progress reports for a finished one stay quiet.
+  const announcedDownloads = useRef(new Set<string>());
+  // Icons chosen per folder before environments, carried over when folders become environments.
+  const folderIcons = useProjectIcons();
+  const folderIconsRef = useRef(folderIcons);
+  folderIconsRef.current = folderIcons;
 
   useEffect(() => applySettings(settings), [settings]);
+
+  // The panels have rendered (child effects run first), so the loading screen can fade out.
+  useEffect(() => splashDone(), []);
+  // Keys such as Ctrl+, and Ctrl+K only reach the window once the document has focus.
+  const appRoot = useRef<HTMLDivElement>(null);
+  useLaunchFocus(appRoot);
+
+  // Settings changed in another window apply here too.
+  useEffect(() => subscribeDoc("settings", () => setSettings(loadSettings())), []);
+
+  // A detached window follows the main window's selected environment and session.
+  useEffect(() => {
+    if (!isDetached) return;
+    return subscribeDoc("layout", () => {
+      const next = getLayout();
+      setEnvId(next.environment);
+      setEnvView(next.projectView);
+      setSelected(next.session);
+    });
+  }, [isDetached]);
 
   // Each connection attempt gets a generation; a superseded attempt (React's development
   // double-mount, a retry) closes its own client instead of adding a second listener.
@@ -79,7 +334,7 @@ export function App() {
     current.current = null;
     setStatus({ kind: "connecting" });
     try {
-      const target = connection ?? (await findDaemon());
+      const target = connection ?? (await findDaemon(!isDetached && loadSettings().autoStartDaemon));
       if (!target) {
         setStatus({ kind: "failed", message: "Enter the daemon's URL and token to connect." });
         return;
@@ -100,13 +355,46 @@ export function App() {
             : all,
         );
       client.onNotification((notification) => {
-        if (notification.method === "pet.state") {
-          setPetState(notification.params as PetStateInfo);
-          return;
-        }
         if (notification.method === "approval.requested") {
           const approval = notification.params as ApprovalInfo;
+          if (!isDetached) {
+            void notify({ kind: "approval", title: "Approval needed", body: approval.summary }, settingsRef.current);
+          }
           setApprovals((all) => [...all.filter((a) => a.id !== approval.id), approval]);
+          return;
+        }
+        if (notification.method === "budgets.changed") {
+          setBudgets(notification.params as BudgetsResult);
+          return;
+        }
+        if (notification.method === "initiative.notice") {
+          if (!isDetached) void notify(initiativeNotice(notification.params as InitiativeNotice), settingsRef.current);
+          return;
+        }
+        if (notification.method === "budgets.alert") {
+          if (!isDetached) void notify(budgetNotice(notification.params as BudgetAlert), settingsRef.current);
+          return;
+        }
+        if (notification.method === "environments.changed") {
+          const listing = notification.params as EnvironmentListResult;
+          setEnvironments(listing.environments);
+          setGitEnvironments(listing.git ?? []);
+          return;
+        }
+        if (notification.method === "session.deleted") {
+          const { session_id } = notification.params as { session_id: string };
+          known.current.delete(session_id);
+          setSessions((all) => {
+            const { [session_id]: _gone, ...rest } = all;
+            return rest;
+          });
+          return;
+        }
+        if (notification.method === "session.updated") {
+          const summary = notification.params as SessionSummary;
+          setSessions((all) =>
+            all[summary.session_id] ? { ...all, [summary.session_id]: { ...all[summary.session_id], summary } } : all,
+          );
           return;
         }
         if (notification.method === "session.created") {
@@ -127,20 +415,48 @@ export function App() {
             });
             setSessions((all) => ({
               ...all,
-              [summary.session_id]: history.reduce(applyEvent, newSession(summary, Date.now())),
+              [summary.session_id]: history.reduce((state, event) => applyEvent(state, event), newSession(summary, Date.now())),
             }));
           }, 500);
+          return;
+        }
+        if (notification.method === "runtime.install_progress") {
+          setRuntimeInstall(notification.params as RuntimeInstallJob);
+          return;
+        }
+        if (notification.method === "model.residency") {
+          const move = notification.params as ModelResidency;
+          setResidency((all) => applyResidency(all, move, Date.now()));
+          return;
+        }
+        if (notification.method === "models.download_progress") {
+          const job = notification.params as DownloadJob;
+          const notice = downloadNotice(job);
+          if (notice && !isDetached && !announcedDownloads.current.has(job.job_id)) {
+            announcedDownloads.current.add(job.job_id);
+            void notify(notice, settingsRef.current);
+          }
           return;
         }
         if (notification.method !== "session.event") return;
         const params = notification.params as SessionEventParams;
         modBus.emit(params);
+        const session = sessionsRef.current[params.session_id];
+        const notice =
+          !isDetached && session
+            ? sessionNotice(params.session_id, sessionTitle(session), params.agent_id, params.event)
+            : null;
+        if (notice) void notify(notice, settingsRef.current);
         if (pending) pending.push(params);
         else apply(params);
       });
       client.onClose(() => {
-        if (attempt === generation.current) setStatus({ kind: "failed", message: "Lost the connection to imperiumd." });
+        if (attempt === generation.current) setStatus({ kind: "failed", message: "Lost the connection to imperium-core." });
       });
+      // The models first, so notices in restored histories name models by their aliases.
+      const table = await client.call<ModelListResult>("models.list");
+      const local = await client.call<LocalModelListResult>("models.local");
+      setModelAliases(table.models, local.models);
       const { sessions: running } = await client.call<SessionListResult>("session.list");
       const restored = await Promise.all(
         running.map(async (summary, index) => {
@@ -148,24 +464,49 @@ export function App() {
             session_id: summary.session_id,
           });
           // Restored sessions keep the daemon's order (later ones first) until they change here.
-          return [summary.session_id, history.reduce(applyEvent, newSession(summary, index))] as const;
+          return [summary.session_id, history.reduce((state, event) => applyEvent(state, event), newSession(summary, index))] as const;
         }),
       );
       known.current = new Set(restored.map(([id]) => id));
       setSessions(Object.fromEntries(restored));
-      setModelTable(await client.call<ModelListResult>("models.list"));
-      setLocalModels(await client.call<LocalModelListResult>("models.local"));
+      setModelTable(table);
+      setLocalModels(local);
       setMods(await client.call<ModListResult>("mods.list"));
       setApprovals((await client.call<ApprovalListResult>("approvals.list")).approvals);
-      const petList = await client.call<PetListResult>("pet.list");
-      setPets(petList);
-      setPetState((current) => current ?? petList.state);
+      // Older daemons have no budgets.
+      client
+        .call<BudgetsResult>("budgets.get", {})
+        .then((result) => attempt === generation.current && setBudgets(result))
+        .catch(() => {});
       const queued = pending;
       pending = null;
       queued.forEach(apply);
-      setProject((selected) => {
-        const first = restored[0]?.[1].summary.project_dir;
-        return selected ?? (first ? normalizeProject(first) : null);
+      const envs = await migrateProjects(
+        client,
+        restored.map(([, s]) => s.summary.project_dir),
+        folderIconsRef.current,
+      );
+      if (attempt !== generation.current) return;
+      setEnvironments(envs);
+      // Which environments can start on worktrees; older daemons do not say.
+      client
+        .call<EnvironmentListResult>("environments.list")
+        .then((listing) => attempt === generation.current && setGitEnvironments(listing.git ?? []))
+        .catch(() => {});
+      // Keep the selected environment if it still exists; else the one the saved project folder
+      // became, the first restored session's, or the first there is.
+      setEnvId((selected) => {
+        if (selected && envs.some((env) => env.id === selected)) return selected;
+        const layout = getLayout();
+        const byFolder = (folder: string | null | undefined) =>
+          folder ? envs.find((env) => env.folders[0] && sameFolder(env.folders[0], folder))?.id : undefined;
+        const firstSession = restored[0]?.[1];
+        return (
+          (loadSettings().restoreSession ? byFolder(layout.project) : undefined) ??
+          (firstSession ? environmentOf(firstSession, envs)?.id : undefined) ??
+          envs[0]?.id ??
+          null
+        );
       });
       setStatus({ kind: "connected", client });
     } catch (error) {
@@ -173,7 +514,32 @@ export function App() {
         setStatus({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
       }
     }
-  }, [modBus]);
+  }, [modBus, isDetached]);
+  const daemon = useDaemon(() => void connect(), status.kind === "connected", !isDetached);
+
+  // Remember the selection, the arrangement, closed panels, and detached windows. Only the main
+  // window writes the layout.
+  useEffect(() => {
+    if (isDetached) return;
+    updateLayout({
+      environment: envId,
+      session: selected,
+      projectView: envView,
+      arrangement: shapes.global.arrangement,
+      hidden: shapes.global.hidden,
+      modules: shapes.global.modules,
+      overrides: shapes.overrides,
+      detached,
+      sessionSort,
+    });
+  }, [isDetached, envId, selected, envView, shapes, detached, sessionSort]);
+
+  // Remember the sessions as last seen, for the next time the daemon is away.
+  useEffect(() => {
+    if (status.kind !== "connected" || isDetached) return;
+    const summaries = Object.values(sessions).map((s) => s.summary);
+    setDoc<Cache>("cache", { sessions: summaries, environments, savedAt: Date.now() });
+  }, [sessions, environments, status.kind, isDetached]);
 
   useEffect(() => {
     void connect();
@@ -184,19 +550,35 @@ export function App() {
     };
   }, [connect]);
 
-  const projects = useMemo(
-    () =>
-      [
-        ...new Set([...Object.values(sessions).map((s) => s.summary.project_dir), ...extraProjects].map(normalizeProject)),
-      ].sort(),
-    [sessions, extraProjects],
-  );
-  const allSessions = useMemo(() => Object.values(sessions), [sessions]);
-  const session = selected ? (sessions[selected] ?? null) : null;
   const client = status.kind === "connected" ? status.client : null;
 
-  const report = (error: unknown) =>
-    window.alert(error instanceof Error ? error.message : String(error));
+  // The daemon keeps a copy of the hidden models (`models.hidden`), so agents' list_models
+  // leaves them out too. Only the main window writes it, and only when it differs.
+  const hiddenKey = hiddenSpecs(settings.modelMarks).join("\n");
+  useEffect(() => {
+    if (!client || isDetached) return;
+    const hidden = hiddenKey === "" ? [] : hiddenKey.split("\n");
+    let live = true;
+    client
+      .call<ModelConfigResult>("models.config")
+      .then((config) => {
+        if (!live || [...(config.hidden ?? [])].sort().join("\n") === hiddenKey) return;
+        const params: ModelSetConfigParams = { local: [], table: [], hidden, disabled: null, dry_run: false };
+        return client.call("models.set_config", params);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [client, isDetached, hiddenKey]);
+
+  const modHost = useMemo(
+    () => ({ sessions: snapshotSessions(allSessions, environments), selected, client }),
+    [allSessions, environments, selected, client],
+  );
+
+  const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  const report = (error: unknown) => window.alert(message(error));
 
   const respondToApproval = (id: number, approve: boolean) => {
     client
@@ -208,43 +590,354 @@ export function App() {
     client?.call<LocalModelListResult>("models.local").then(setLocalModels, report);
   };
 
-  const openFolder = async () => {
-    const folder = await pickFolder();
-    if (!folder) return;
-    setExtraProjects((all) => [...all, normalizeProject(folder)]);
-    showProject(normalizeProject(folder));
+  const refreshModels = () => {
+    client?.call<ModelListResult>("models.list").then(setModelTable, report);
+    refreshLocalModels();
   };
 
-  const showProject = (next: string) => {
-    setProject(normalizeProject(next));
-    setProjectView(true);
+  /** Puts a changed environment in the list (the daemon's notice may arrive later). */
+  const replaceEnvironment = (env: EnvironmentInfo) =>
+    setEnvironments((all) => (all.some((e) => e.id === env.id) ? all.map((e) => (e.id === env.id ? env : e)) : [...all, env]));
+
+  const envActions: EnvironmentActions = {
+    onEdit: (id) => setEnvWindow({ id }),
+    onSetPinned: (env, pinned) => {
+      client?.call<EnvironmentInfo>("environments.update", { id: env.id, pinned }).then(replaceEnvironment, report);
+    },
+    onDelete: (id) => setEnvWindow({ id, confirmDelete: true }),
   };
 
-  const startSession = async () => {
-    if (!client || !project) return;
-    try {
-      const created = await client.call<SessionCreateResult>("session.create", { project_dir: project });
-      known.current.add(created.session_id);
-      // The rest of the summary arrives with the daemon's session.created notice.
-      const summary: SessionSummary = {
-        session_id: created.session_id,
-        project_dir: project,
-        model: created.model,
-        isolation: created.isolation,
-        title: "",
-        status: "idle",
-        status_detail: null,
-        resume_policy: DEFAULT_RESUME_POLICY,
-      };
-      setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
-      setSelected(created.session_id);
-    } catch (error) {
-      report(error);
+  const setSessionPinned = (sessionId: string, pinned: boolean) => {
+    control(sessionId, { action: "set_pinned", pinned }).then(
+      () =>
+        setSessions((all) =>
+          all[sessionId] ? { ...all, [sessionId]: { ...all[sessionId], summary: { ...all[sessionId].summary, pinned } } } : all,
+        ),
+      report,
+    );
+  };
+
+  /** Renames a session; `session.updated` brings the title it keeps (generated again when cleared). */
+  const renameSession = (sessionId: string, title: string) => {
+    if (title)
+      setSessions((all) =>
+        all[sessionId] ? { ...all, [sessionId]: { ...all[sessionId], summary: { ...all[sessionId].summary, title } } } : all,
+      );
+    control(sessionId, { action: "rename", title }).catch(report);
+  };
+
+  /** Archives a session, or resumes an archived one (which this window then follows afresh). */
+  const setSessionArchived = (sessionId: string, archived: boolean) => {
+    if (!archived) known.current.delete(sessionId);
+    control(sessionId, { action: archived ? "archive" : "unarchive" }).catch(report);
+  };
+
+  /** Saves a session's transcript as Markdown or JSON through the save dialog (a download in a browser). */
+  const exportSessionTranscript = (sessionId: string, format: "markdown" | "json") => {
+    if (!client) return;
+    exportSession(client, sessionId, format).catch(report);
+  };
+
+  const showEnvironment = (id: string) => {
+    setEnvId(id);
+    setEnvView(true);
+  };
+
+  /** Whether the model `spec` (a table id or `<endpoint>:<model>`) can reason, from the model rows. */
+  const modelReasons = (spec: string): boolean =>
+    (modelTable?.models ?? []).some((row) => (row.spec === spec || row.id === spec) && row.reasoning) ||
+    (localModels?.models ?? []).some((row) => `${row.runtime}:${row.id}` === spec && row.reasoning);
+
+  /** Creates a session from the new-session composer and sends its first message; rejects with the daemon's reason. */
+  const createSession = async ({ environmentId, model, worktree, subfolder, readOnly, text }: NewSessionOptions) => {
+    const env = environmentById(environments, environmentId);
+    if (!client || !env) throw new Error("Not connected to imperium-core.");
+    const params: SessionCreateParams = {
+      environment_id: env.id,
+      ...(model ? { model } : {}),
+      ...(worktree ? { worktree: true } : {}),
+      ...(subfolder ? { subfolder } : {}),
+      ...(readOnly ? { read_only: true } : {}),
+    };
+    const created = await client.call<SessionCreateResult>("session.create", params);
+    known.current.add(created.session_id);
+    // The rest of the summary arrives with the daemon's session.created notice.
+    const summary: SessionSummary = {
+      session_id: created.session_id,
+      project_dir: created.folders[0] ?? env.folders[0],
+      environment_id: created.environment_id,
+      folders: created.folders,
+      model: created.model,
+      isolation: created.isolation,
+      title: "",
+      status: "idle",
+      status_detail: null,
+      resume_policy: DEFAULT_RESUME_POLICY,
+      background: false,
+      hold: null,
+      persistent: false,
+      archived: false,
+      archived_at: null,
+      created_at: Date.now(),
+      worktrees: created.worktrees,
+      pinned: false,
+      read_only: readOnly,
+      // Until the daemon's summary arrives: what the model rows say about the model.
+      reasoning: created.model !== null && modelReasons(created.model),
+    };
+    setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
+    setSelected(created.session_id);
+    setEnvId(env.id);
+    if (text) {
+      const send: SessionSendParams = { session_id: created.session_id, text, mode: "queue" };
+      void sendWithBudget(client, send);
     }
   };
 
-  const send = (text: string) => {
-    if (client && selected) client.call("session.send", { session_id: selected, text }).catch(report);
+  /**
+   * Follows a session the daemon made from another (a branch): subscribes to it and lists it at
+   * once, with the summary the source implies until the daemon's own arrives.
+   */
+  const adoptBranch = async (
+    daemon: DaemonClient,
+    sessionId: string,
+    from: SessionSummary,
+    at: number,
+    extra: Partial<SessionSummary> = {},
+  ) => {
+    known.current.add(sessionId);
+    const summary: SessionSummary = {
+      ...from,
+      session_id: sessionId,
+      title: `${from.title} (branch)`,
+      status: "idle",
+      status_detail: null,
+      hold: null,
+      pinned: false,
+      archived: false,
+      archived_at: null,
+      created_at: Date.now(),
+      branched_from: { session_id: from.session_id, at },
+      comparison_id: undefined,
+      ...extra,
+    };
+    const { history } = await daemon.call<SessionSubscribeResult>("session.subscribe", { session_id: sessionId });
+    setSessions((all) => ({
+      ...all,
+      [sessionId]: history.reduce((state, event) => applyEvent(state, event), newSession(summary, Date.now())),
+    }));
+  };
+
+  /** Branches the selected session at a history event and continues in the branch. */
+  const branchFrom = (at: number) => {
+    const source = selected ? sessionsRef.current[selected] : null;
+    if (!client || !source) return;
+    const params: SessionBranchParams = { session_id: source.summary.session_id, at, worktree: false };
+    void (async () => {
+      const made = await client.call<SessionBranchResult>("session.branch", params);
+      await adoptBranch(client, made.session_id, source.summary, at);
+      setCompareView(null);
+      setSelected(made.session_id);
+      // Branched at a message of the user's: it comes back to the composer to edit.
+      if (made.prompt) setPrefill({ sessionId: made.session_id, text: made.prompt, nonce: Date.now() });
+    })().catch(report);
+  };
+
+  /** Sends one message to a branch of the selected session on each model, and shows the replies side by side. */
+  const compareModels = async (models: string[], message: string) => {
+    const source = selected ? sessionsRef.current[selected] : null;
+    if (!client || !source) throw new Error("Not connected to imperium-core.");
+    const params: SessionCompareParams = { session_id: source.summary.session_id, message, models };
+    const made = await client.call<SessionCompareResult>("session.compare", params);
+    const at = Math.max(0, source.eventCount - 1);
+    for (const branch of made.branches) {
+      await adoptBranch(client, branch.session_id, source.summary, at, {
+        model: branch.model,
+        comparison_id: made.comparison_id,
+        title: `${source.summary.title} · ${branch.model}`,
+      });
+    }
+    setCompareView(made.comparison_id);
+  };
+
+  /** Keeps one branch of a comparison and archives the others, then continues in it. */
+  const keepBranch = (comparisonId: string, sessionId: string) => {
+    if (!client) return;
+    const params: SessionComparePickParams = { comparison_id: comparisonId, session_id: sessionId };
+    client
+      .call("session.compare_pick", params)
+      .then(() => {
+        setCompareView(null);
+        setSelected(sessionId);
+      })
+      .catch(report);
+  };
+
+  /** Opens the new-session composer in the middle panel. */
+  const newSessionView = () => setSelected(null);
+
+  /** Sends a message: it starts a turn, waits in the queue while one runs, or (steer) joins it. */
+  const send = (text: string, mode: SendMode, attachments: Attachment[] = []) => {
+    if (!client || !selected) return;
+    const params: SessionSendParams = {
+      session_id: selected,
+      text,
+      mode,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
+    void sendWithBudget(client, params);
+  };
+
+  /** A slash command (`/init`, `/code-review`, `/security-review`): the daemon sends its built-in prompt as a user turn. */
+  const runBuiltin = (command: BuiltinCommand, args: string) => {
+    if (!client || !selected) return;
+    const params = builtinParams(selected, command, args);
+    client.call("session.builtin", params).catch((error: unknown) => {
+      const stop = budgetStop(error);
+      // A used-up budget that asks first: go ahead only when the user confirms.
+      if (stop?.action === "ask" && window.confirm(stop.message)) {
+        client.call("session.builtin", { ...params, confirm_budget: true }).catch(report);
+      } else if (!stop || stop.action === "block") {
+        report(error);
+      }
+    });
+  };
+
+  /** Changes one session's state here, if it is listed. */
+  const changeSession = (id: string, change: (session: SessionState) => SessionState) =>
+    setSessions((all) => (all[id] ? { ...all, [id]: change(all[id]) } : all));
+
+  /**
+   * Sends a message. One that starts a turn gets a status line under it until the agent's
+   * first output (waits.ts); when a used-up budget asks first, that line asks instead and
+   * [`answerBudget`] sends it again confirmed or drops it. A blocking budget is reported.
+   */
+  const sendWithBudget = async (daemon: DaemonClient, params: SessionSendParams) => {
+    const id = params.session_id;
+    const current = sessionsRef.current[id];
+    // A message for a busy session waits in the queue, which shows it; a new session is idle.
+    const starts = params.mode !== "steer" && (!current || !current.busy);
+    if (starts) changeSession(id, (session) => markSent(session, params.text));
+    try {
+      await daemon.call("session.send", params);
+    } catch (error) {
+      const stop = budgetStop(error);
+      if (stop?.action === "ask") {
+        changeSession(id, (session) => updateSent(session.sent ? session : markSent(session, params.text), stop.message));
+        return;
+      }
+      changeSession(id, (session) => updateSent(session, undefined));
+      if (!stop || stop.action === "block") report(error);
+    }
+  };
+
+  /** Answers the selected session's budget question: send the waiting message anyway, or drop it. */
+  const answerBudget = (confirm: boolean) => {
+    const id = selected;
+    const sent = id ? sessions[id]?.sent : null;
+    if (!client || !id || !sent) return;
+    if (!confirm) {
+      changeSession(id, (session) => updateSent(session, undefined));
+      return;
+    }
+    changeSession(id, (session) => updateSent(session, null));
+    const params: SessionSendParams = { session_id: id, text: sent.text, mode: "queue", confirm_budget: true };
+    client.call("session.send", params).catch((error: unknown) => {
+      changeSession(id, (session) => updateSent(session, undefined));
+      report(error);
+    });
+  };
+
+  /**
+   * Edits, removes, or steers a queued message. Every window, detached panels included, follows
+   * the daemon's `queue_changed`, so the change shows in all of them; a refused change (editing a
+   * message that is steering, or one already delivered) is reported.
+   */
+  const changeQueued = (id: string, change: QueueChange) => {
+    if (!client || !selected) return;
+    client.call("session.queue", queueParams(selected, id, change)).catch(report);
+  };
+
+  /** Opens a subagent's log in the main panel (`null`: back to the session's transcript). */
+  const showAgent = (agentId: string | null) =>
+    setAgentView(agentId && selected ? { sessionId: selected, agentId } : null);
+
+  /**
+   * Messages a subagent from its view. While it runs this is `session.send` with its
+   * `agent_id`: queued for its next turn, or steering its running turn, as for the root. A
+   * finished or paused subagent gets the message as a follow-up (`session.agent_resume`); so
+   * does one that finished between the click and the call.
+   */
+  const sendToAgent = (agentId: string, text: string, mode: SendMode, attachments: Attachment[]) => {
+    if (!client || !selected) return;
+    const task = sessionsRef.current[selected]?.tasks[agentId];
+    if (!task) return;
+    const followUp = () => resumeAgent(agentId, followUpText(text, attachments)).catch(() => {});
+    const delivery = agentDelivery(task.status, mode);
+    if (delivery.kind === "resume") {
+      void followUp();
+      return;
+    }
+    const params: SessionSendParams = {
+      session_id: selected,
+      text,
+      mode: delivery.mode,
+      agent_id: agentId,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
+    client.call("session.send", params).catch((error: unknown) => {
+      if (finishedMeanwhile(error)) void followUp();
+      else report(error);
+    });
+  };
+
+  /** Edits, removes, or steers a message waiting for a running subagent. */
+  const changeAgentQueued = (agentId: string, id: string, change: QueueChange) => {
+    if (!client || !selected) return;
+    client.call("session.queue", queueParams(selected, id, change, agentId)).catch(report);
+  };
+
+  /** Ends a paused subagent without resuming it; it reports through `task_finished`. */
+  const cancelAgent = (agentId: string): Promise<unknown> => {
+    if (!client || !selected) return Promise.reject(new Error("Not connected to imperium-core."));
+    const params: SessionAgentCancelParams = { session_id: selected, agent_id: agentId };
+    return client.call("session.agent_cancel", params).catch((error: unknown) => {
+      report(error);
+      throw error;
+    });
+  };
+
+  /** Gives a finished subagent a follow-up; it reports through `task_resumed` and `task_finished`. */
+  const resumeAgent = (agentId: string, text: string): Promise<unknown> => {
+    if (!client || !selected) return Promise.reject(new Error("Not connected to imperium-core."));
+    const params: SessionAgentResumeParams = { session_id: selected, agent_id: agentId, text };
+    return client.call("session.agent_resume", params).catch((error: unknown) => {
+      report(error);
+      throw error;
+    });
+  };
+
+  /** Keeps a finished subagent as a knowledge agent, or (`topic` null) retires one. */
+  const keepAgent = (agentId: string, topic: string | null): Promise<unknown> => {
+    if (!client || !selected) return Promise.reject(new Error("Not connected to imperium-core."));
+    const params: SessionAgentKnowledgeParams =
+      topic === null
+        ? { session_id: selected, agent_id: agentId, retire: true }
+        : { session_id: selected, agent_id: agentId, topic, retire: false };
+    return client.call("session.agent_knowledge", params).catch((error: unknown) => {
+      report(error);
+      throw error;
+    });
+  };
+
+  /** Asks a knowledge agent a question as the user; the question and its answer arrive as events. */
+  const askAgent = (agentId: string, question: string): Promise<unknown> => {
+    if (!client || !selected) return Promise.reject(new Error("Not connected to imperium-core."));
+    const params: SessionAgentAskParams = { session_id: selected, agent_id: agentId, question };
+    return client.call("session.agent_ask", params).catch((error: unknown) => {
+      report(error);
+      throw error;
+    });
   };
 
   const respond = (requestId: number, decision: PermissionDecision) => {
@@ -253,14 +946,34 @@ export function App() {
     client.call("session.respond", { session_id: selected, request_id: requestId, decision }).catch(report);
   };
 
+  /** "Always allow": saves the suggested rule (in the session's environment), then allows the request. */
+  const alwaysAllow = (requestId: number, rule: PermissionRule) => {
+    if (!client || !selected) return;
+    const sessionId = selected;
+    client
+      .call("permissions.add_rule", { session_id: sessionId, rule })
+      .then(() => {
+        setSessions((all) => ({ ...all, [sessionId]: markAnswered(all[sessionId], requestId) }));
+        return client.call("session.respond", { session_id: sessionId, request_id: requestId, decision: "allow" });
+      })
+      .catch(report);
+  };
+
+  const answer = (requestId: number, answers: string[]) => {
+    if (!client || !selected) return;
+    setSessions((all) => ({ ...all, [selected]: markQuestionsAnswered(all[selected], requestId) }));
+    client.call("session.answer", { session_id: selected, request_id: requestId, answers }).catch(report);
+  };
+
   const control = (sessionId: string, params: Partial<Omit<SessionControlParams, "session_id">>) => {
-    if (!client) return Promise.reject(new Error("Not connected to imperiumd."));
+    if (!client) return Promise.reject(new Error("Not connected to imperium-core."));
     const full: SessionControlParams = {
       session_id: sessionId,
       action: "set_resume_policy",
       resume_policy: null,
       repo: null,
       pull_request: null,
+      model: null,
       ...params,
     };
     return client.call<SessionControlResult>("session.control", full);
@@ -283,22 +996,624 @@ export function App() {
     if (selected) control(selected, { action: "resume_now" }).catch(report);
   };
 
-  const selectSession = (sessionId: string) => {
-    setSelected(sessionId);
-    // New sessions start in the project the user is working in.
-    const dir = sessions[sessionId]?.summary.project_dir;
-    if (dir) setProject(normalizeProject(dir));
+  /** Stops all of the selected session's work, or resumes it; the status follows `status_changed`. */
+  const stopSession = (stop: boolean) => {
+    if (selected) control(selected, { action: stop ? "stop" : "resume" }).catch(report);
   };
 
-  const updateSettings = (next: DisplaySettings) => {
+  /** Switches the selected session's model without loading it; the next message loads it and
+   * compacts the conversation first if it does not fit.
+   * Rejects with the daemon's reason, which the model selector shows beside itself. */
+  const setModel = async (model: string): Promise<SessionControlResult> => {
+    if (!selected) throw new Error("No session is open.");
+    const id = selected;
+    const result = await control(id, { action: "set_model", model });
+    const now = result.model ?? model;
+    const reasoning = result.reasoning ?? false;
+    setSessions((all) => (all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, model: now, reasoning } } } : all));
+    return result;
+  };
+
+  /** Sets the selected session's reasoning effort from its agents' next model calls on.
+   * Rejects with the daemon's reason, which the effort selector shows beside itself. */
+  const setEffort = async (effort: Effort): Promise<SessionControlResult> => {
+    if (!selected) throw new Error("No session is open.");
+    const id = selected;
+    const result = await control(id, { action: "set_effort", effort });
+    const now = result.effort ?? effort;
+    setSessions((all) => (all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, effort: now } } } : all));
+    return result;
+  };
+
+  /** Sets the selected session's permission mode from its agents' next calls on.
+   * Rejects with the daemon's reason, which the mode selector shows beside itself. */
+  const setPermissionMode = async (mode: PermissionMode): Promise<SessionControlResult> => {
+    if (!selected) throw new Error("No session is open.");
+    const id = selected;
+    const result = await control(id, { action: "set_permission_mode", permission_mode: mode });
+    const now = result.permission_mode ?? mode;
+    setSessions((all) =>
+      all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, permission_mode: now } } } : all,
+    );
+    return result;
+  };
+
+  // The session search hit to scroll to, until another session is chosen.
+  const [searchFocus, setSearchFocus] = useState<{ sessionId: string; index: number; nonce: number } | null>(null);
+  const selectSession = (sessionId: string) => {
+    setSearchFocus(null);
+    setCompareView(null);
+    setSelected(sessionId);
+    // New sessions start in the environment the user is working in.
+    const picked = sessions[sessionId];
+    const env = picked ? environmentOf(picked, environments) : null;
+    if (env) setEnvId(env.id);
+  };
+
+  const openSearchHit = (sessionId: string, index: number) => {
+    selectSession(sessionId);
+    setSearchFocus({ sessionId, index, nonce: Date.now() });
+  };
+
+  const updateSettings = (next: AppSettings) => {
     setSettings(next);
     saveSettings(next);
   };
+  // For panels that change a setting of their own (model favourites and hidden models).
+  const changeSettings: ChangeSettings = (change) =>
+    setSettings((current) => {
+      const next = change(current);
+      saveSettings(next);
+      return next;
+    });
+  // An approval waiting is never held up by the tour (useTour).
+  const approvalsWaiting = approvals.length > 0;
+  const { touring, tourAuto, startTour, endTour } = useTour({
+    settings,
+    isDetached,
+    connected: !!client,
+    approvalsWaiting,
+    changeSettings,
+    closeWindows: () => {
+      setShowSettings(false);
+      setShowConnectors(false);
+      setShowPlugins(false);
+    },
+  });
+
+  // Approvals, finished and failed turns, and downloads notify from the daemon's notification
+  // handler above; an update notifies once its build has downloaded.
+  const announcedUpdate = useRef<string | null>(null);
+  const readyVersion = updates?.status.state === "ready" ? updates.status.version : null;
+  useEffect(() => {
+    if (isDetached || !readyVersion || announcedUpdate.current === readyVersion) return;
+    announcedUpdate.current = readyVersion;
+    void notify(updateNotice(readyVersion), settingsRef.current);
+  }, [readyVersion, isDetached]);
+
+  // Answering a notification brings the main window forward on the session it was about.
+  const selectSessionRef = useRef(selectSession);
+  selectSessionRef.current = selectSession;
+  useEffect(() => {
+    if (isDetached) return;
+    return onNoticeOpened((notice) => {
+      void focusMainWindow();
+      if (notice.sessionId && sessionsRef.current[notice.sessionId]) selectSessionRef.current(notice.sessionId);
+    });
+  }, [isDetached]);
+
+  // Panels from enabled mods, by the side they dock on (the right unless they ask for the left).
+  const modPanels = (side: "left" | "right"): PanelSpec[] =>
+    (mods?.mods ?? []).filter((mod) => modEnabled(settings, mod)).flatMap((mod) =>
+      mod.panels
+        .filter((panel) => (panel.slot === "sidebar.left" ? "left" : "right") === side)
+        .map((panel) => ({
+          id: `mod:${mod.id}:${panel.id}`,
+          title: panel.title,
+          body: <ModFrame mod={mod} panelId={panel.id} bus={modBus} host={modHost} />,
+        })),
+    );
+
+  // Every panel the app has, in the order they are laid out. The main window docks the ones not
+  // closed or detached; a detached window shows just its own.
+  const leftPanels: PanelSpec[] = [
+    {
+      id: "projects",
+      title: "Environments",
+      actions: (
+        <IconButton
+          icon={Plus}
+          size="sm"
+          className="panel-tool"
+          onClick={() => setEnvWindow({ id: null })}
+          disabled={!client}
+          label="New environment"
+          tooltip={client ? undefined : "New environment: not connected to imperium-core"}
+        />
+      ),
+      body: (
+        <EnvironmentsPanel
+          environments={environments}
+          selected={envId}
+          connected={!!client}
+          onSelect={(next) => {
+            showEnvironment(next);
+            setSelected(null);
+          }}
+          actions={envActions}
+        />
+      ),
+    },
+    {
+      id: "sessions",
+      title: "Sessions",
+      actions: (
+        <>
+          <SessionSortSelect sort={sessionSort} onSort={setSessionSort} />
+          <IconButton
+            icon={Plus}
+            size="sm"
+            className="panel-tool"
+            onClick={newSessionView}
+            disabled={!client}
+            label="New session"
+            tooltip={client ? "New session: choose its options and write the first message in the middle panel" : "New session: not connected to imperium-core"}
+          />
+        </>
+      ),
+      body: (
+        <SessionsPanel
+          sessions={allSessions}
+          environments={environments}
+          scope={envView ? environment : null}
+          selected={selected}
+          sort={sessionSort}
+          onSelect={selectSession}
+          onSetPinned={setSessionPinned}
+          onSetArchived={setSessionArchived}
+          onRename={renameSession}
+          onExport={exportSessionTranscript}
+          onShowEnvironment={showEnvironment}
+          onShowAll={() => setEnvView(false)}
+          client={client}
+          onOpenHit={openSearchHit}
+        />
+      ),
+    },
+    ...modPanels("left"),
+  ];
+  const approvalsPanel: PanelSpec = {
+    id: "approvals",
+    title: `Approvals (${approvals.length})`,
+    body: <ApprovalsPanel approvals={approvals} onRespond={respondToApproval} />,
+  };
+  const sessionPanel: PanelSpec = {
+    id: "session",
+    title: "Session",
+    body: compareView && comparisonMembers(allSessions, compareView).length > 0 ? (
+      (() => {
+        const members = comparisonMembers(allSessions, compareView);
+        const message =
+          members
+            .flatMap((member) => member.entries.filter((entry) => entry.kind === "user"))
+            .map((entry) => (entry.kind === "user" ? entry.text : ""))
+            .at(-1) ?? "";
+        return (
+          <ComparePanel
+            message={message}
+            columns={members.map((member) => ({ ...branchRun(member, message), title: sessionTitle(member) }))}
+            open={comparisonOpen(members)}
+            onKeep={(id) => keepBranch(compareView, id)}
+            onOpen={selectSession}
+            onBack={() => setCompareView(null)}
+          />
+        );
+      })()
+    ) : session && viewedTask ? (
+      <AgentView
+        key={`${session.summary.session_id}/${viewedTask.taskId}`}
+        session={session}
+        task={viewedTask}
+        onBack={() => showAgent(null)}
+        onSend={(text, mode, attachments) => sendToAgent(viewedTask.taskId, text, mode, attachments)}
+        onChangeQueued={(id, change) => changeAgentQueued(viewedTask.taskId, id, change)}
+        onRespond={respond}
+        onAlwaysAllow={alwaysAllow}
+        onAnswer={answer}
+        onResume={client ? resumeAgent : undefined}
+        onCancel={client ? cancelAgent : undefined}
+        onKeep={client ? keepAgent : undefined}
+        onRetire={client ? (agentId) => keepAgent(agentId, null) : undefined}
+        onAsk={client ? askAgent : undefined}
+        onStop={client ? () => stopSession(true) : undefined}
+        client={client}
+        runtimeInstall={runtimeInstall}
+        residency={residency}
+      />
+    ) : session ? (
+      <SessionPanel
+        session={session}
+        icons={icons}
+        onSend={send}
+        onCommand={runBuiltin}
+        onChangeQueued={changeQueued}
+        onRespond={respond}
+        onAlwaysAllow={alwaysAllow}
+        onAnswer={answer}
+        onSetResumePolicy={setResumePolicy}
+        onResumeNow={resumeNow}
+        onStop={stopSession}
+        models={modelTable?.models ?? []}
+        localModels={localModels?.models ?? []}
+        localRuntime={localModels?.runtime ?? null}
+        onOpenLocalModels={() => togglePanel("local-models", true)}
+        onSetModel={setModel}
+        onSetEffort={setEffort}
+        onSetPermissionMode={setPermissionMode}
+        client={client}
+        onUnarchive={() => setSessionArchived(session.summary.session_id, false)}
+        budgets={budgets?.status ?? []}
+        focusEvent={searchFocus?.sessionId === session.summary.session_id ? searchFocus : null}
+        runtimeInstall={runtimeInstall}
+        residency={residency}
+        onBudget={answerBudget}
+        onOpenAgent={showAgent}
+        onBranch={client ? branchFrom : undefined}
+        onCompare={client ? compareModels : undefined}
+        onOpenSession={selectSession}
+        onViewComparison={() => setCompareView(session.summary.comparison_id ?? null)}
+        prefill={prefill && prefill.sessionId === session.summary.session_id ? prefill : null}
+        titleOf={(id) => (sessionsRef.current[id] ? sessionTitle(sessionsRef.current[id]) : null)}
+      />
+    ) : (
+      <NewSessionPanel
+        environments={environments}
+        gitEnvironments={gitEnvironments}
+        environmentId={envId}
+        onSelectEnvironment={setEnvId}
+        models={modelTable?.models ?? []}
+        localModels={localModels?.models ?? []}
+        defaultModel={localModels ? (localModels.default_model ?? null) : undefined}
+        modelsLoaded={modelTable !== null && localModels !== null}
+        client={client}
+        onCreate={createSession}
+        onModelsChanged={refreshModels}
+        onOpenLocalModels={() => togglePanel("local-models", true)}
+      />
+    ),
+  };
+  const rightPanels: PanelSpec[] = [
+    {
+      id: "agents",
+      title: "Agents",
+      body: (
+        <AgentsPanel
+          session={session}
+          openAgent={viewedTask ? openAgent : null}
+          onOpen={selected ? (agentId) => showAgent(agentId === openAgent ? null : agentId) : undefined}
+          onResume={client && selected ? resumeAgent : undefined}
+          onCancel={client && selected ? cancelAgent : undefined}
+          onRetire={client && selected ? (agentId) => keepAgent(agentId, null) : undefined}
+        />
+      ),
+    },
+    {
+      id: "review",
+      title: "Review",
+      body: <ReviewPanel session={session} client={client} onOpenSession={selectSession} />,
+    },
+    { id: "models", title: "Models", body: <ModelsPanel table={modelTable} onConfigure={() => setModelDialog({ tab: "table" })} /> },
+    {
+      id: "local-models",
+      title: "Local models",
+      body: (
+        <LocalModelsPanel
+          listing={localModels}
+          onRefresh={refreshLocalModels}
+          client={client}
+          onConfigure={(id) => setModelDialog({ tab: "local", id })}
+        />
+      ),
+    },
+    { id: "telemetry", title: "Telemetry", body: <TelemetryPanel sessions={allSessions} models={modelTable?.models ?? []} /> },
+    { id: "resources", title: "Resources", body: <ResourcesPanel client={client} /> },
+    { id: "usage", title: "Usage", body: <UsagePanel client={client} /> },
+    { id: "preview", title: "Preview", body: <PreviewPanel session={session} /> },
+    { id: "browser", title: "Browser", body: <BrowserPanel session={session} client={client} /> },
+    ...modPanels("right"),
+  ];
+  // Approvals appear in the main window only while something waits, but a detached one stays.
+  const everyPanel = [...leftPanels, approvalsPanel, sessionPanel, ...rightPanels];
+  const findPanel = (id: string) => everyPanel.find((panel) => panel.id === id);
+
+  const newColumnId = () => `column-${Date.now().toString(36)}`;
+  const closePanel = (id: string) => setHidden((all) => (all.includes(id) ? all : [...all, id]));
+  const togglePanel = (id: string, open: boolean) =>
+    setHidden((all) => (open ? all.filter((panel) => panel !== id) : all.includes(id) ? all : [...all, id]));
+
+  // The default arrangement: environments and sessions on the left, the session in the middle,
+  // the rest on the right. The saved one (from the panel editor) wins, with new panels added.
+  const defaultArrangement: Arrangement = [
+    { id: "left", panels: [...leftPanels.map((panel) => panel.id), approvalsPanel.id] },
+    { id: "main", panels: [sessionPanel.id] },
+    { id: "right", panels: rightPanels.map((panel) => panel.id) },
+  ];
+  const layoutColumns = reconcile(arrangement, defaultArrangement);
+  /** Modules are the panels mods contribute; built-in panels host them and are never modules themselves. */
+  const isModule = (id: string) => id.startsWith("mod:");
+  /** Whether a panel is on screen in the main window: it exists, is not closed or in a window, and approvals have something to show. */
+  const onScreen = (id: string) =>
+    findPanel(id) !== undefined && !hidden.includes(id) && !detached[id] && (id !== approvalsPanel.id || approvals.length > 0);
+  /** The modules drawn inside their hosts now: a module whose host is closed or in a window shows in its own column place instead. */
+  const hostedNow = activeModules(
+    modules,
+    (host) => onScreen(host) && canHost(host, "mod:", isModule),
+    (module) => onScreen(module) && isModule(module),
+  );
+  const hostedIds = new Set(Object.values(hostedNow).flat());
+
+  /** Keeps the placement a drop or a menu move produced; a panel sent to a window opens it. */
+  const commitPlacement = (result: { arrangement: Arrangement; modules: Modules; openWindow: boolean }, panel: string) => {
+    const changedArrangement = !sameArrangement(result.arrangement, layoutColumns);
+    const changedModules = !sameModules(result.modules, modules);
+    if (changedArrangement || changedModules) {
+      setShapes((all) => editShape(all, envIdRef.current, { arrangement: result.arrangement, modules: result.modules }));
+    }
+    if (result.openWindow) detach(panel);
+  };
+  /** The keyboard alternatives to dragging `id`: its ⋯ menu's *Move…* entries (layout/moves.ts). */
+  const movesOf = (id: string) =>
+    panelMoves({ placement: { arrangement: layoutColumns, modules: hostedNow }, panel: id, shown: onScreen, title: (other) => findPanel(other)?.title ?? other, isModule }).map(
+      (move) => ({
+        label: move.label,
+        onSelect: () => commitPlacement(applyMove({ arrangement: layoutColumns, modules }, id, move, newColumnId, isModule), id),
+      }),
+    );
+  /** A panel as the workspace draws it: it can be moved, closed (not the session) and detached. */
+  const decorate = (panel: PanelSpec): PanelSpec => ({
+    ...panel,
+    onClose: panel.id === sessionPanel.id ? undefined : () => closePanel(panel.id),
+    onDetach: () => detach(panel.id),
+    moves: movesOf(panel.id),
+    module: isModule(panel.id),
+    host: !isModule(panel.id) && panel.id !== sessionPanel.id,
+    hosted: (hostedNow[panel.id] ?? []).flatMap((id) => {
+      const spec = findPanel(id);
+      return spec ? [{ ...spec, onClose: () => closePanel(id), onDetach: () => detach(id), moves: movesOf(id) }] : [];
+    }),
+  });
+  /** Leaves out closed, detached and hosted panels and lets the rest be moved, closed or detached. */
+  const visible = (panels: PanelSpec[]) => panels.filter((panel) => onScreen(panel.id) && !hostedIds.has(panel.id)).map(decorate);
+
+  /** Moves a panel to its own window (the effect above opens it). */
+  const detach = (id: string) => setDetached((all) => (all[id] ? all : { ...all, [id]: { pinned: false } }));
+  const forget = (id: string) => {
+    opened.current.delete(id);
+    setDetached(({ [id]: _gone, ...rest }) => rest);
+  };
+  /** Docks a panel from the main window, which also closes its window. */
+  const dock = (id: string) => {
+    emitPanelEvent({ kind: "close", id });
+    forget(id);
+  };
+
+  // The command palette's commands, run with the handlers above. A panel window's own copy of
+  // the layout state goes stale, so it reads where panels are from the shared layout.
+  useRegisterCommands("app", () => {
+    const layout = isDetached ? getLayout() : { hidden, detached };
+    return appCommands({
+      connected: !!client,
+      sessions: allSessions.map((s) => ({
+        id: s.summary.session_id,
+        title: sessionTitle(s),
+        environment: environmentOf(s, environments)?.name ?? null,
+        archived: s.summary.archived,
+        pinned: s.summary.pinned,
+      })),
+      current: session && {
+        id: session.summary.session_id,
+        title: sessionTitle(session),
+        model: session.summary.model,
+        archived: session.summary.archived,
+        pinned: session.summary.pinned,
+      },
+      environments,
+      models: modelTable?.models ?? [],
+      localModels: localModels?.models ?? [],
+      modelMarks: settings.modelMarks,
+      panels: [...PANELS.filter((p) => p.id !== "approvals" || approvals.length > 0), { id: "session", title: "Session" }, ...[...leftPanels, ...rightPanels].filter((p) => p.id.startsWith("mod:"))].map((p) => ({
+        id: p.id,
+        title: p.title,
+        state: layout.detached[p.id] ? "detached" : layout.hidden.includes(p.id) ? "closed" : "docked",
+        closable: p.id !== "session",
+      })),
+      settingsSections: SETTINGS_SECTIONS,
+      theme: resolvedTheme(settings.theme),
+      canCheckUpdates: !!updates,
+      newSession: (environmentId) => {
+        if (environmentId) setEnvId(environmentId);
+        newSessionView();
+      },
+      newEnvironment: () => setEnvWindow({ id: null }),
+      showEnvironment: (id) => {
+        showEnvironment(id);
+        setSelected(null);
+      },
+      editEnvironment: envActions.onEdit,
+      selectSession,
+      setPinned: setSessionPinned,
+      setArchived: setSessionArchived,
+      compact: (id) => void control(id, { action: "compact" }).catch(report),
+      setModel: (spec) => void setModel(spec).catch(report),
+      openSettings: (section) => {
+        setSettingsRequest(section ? { section } : null);
+        setShowSettings(true);
+      },
+      openConnectors: () => setShowConnectors(true),
+      openPlugins: () => setShowPlugins(true),
+      configureModels: () => setModelDialog({ tab: "local" }),
+      openPanel: (id) => {
+        const spec = findPanel(id);
+        if (detached[id] && spec) void openPanelWindow(id, spec.title, detached[id], () => forget(id));
+        else togglePanel(id, true);
+      },
+      closePanel,
+      detachPanel: detach,
+      dockPanel: dock,
+      toggleTheme: () => updateSettings({ ...settings, theme: resolvedTheme(settings.theme) === "dark" ? "light" : "dark" }),
+      checkUpdates: () => updates?.check(),
+      startTour,
+    });
+  });
+
+  // Open the windows of detached panels: at startup, once their panel exists, and on detaching.
+  useEffect(() => {
+    if (isDetached) return;
+    for (const id of Object.keys(detached)) {
+      const spec = findPanel(id);
+      if (opened.current.has(id) || !spec) continue;
+      opened.current.add(id);
+      void openPanelWindow(id, spec.title, detached[id], () => forget(id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detached, mods]);
+
+  // What the user does in a panel window: pin it, move it, dock it.
+  useEffect(() => {
+    if (isDetached) return;
+    return listenPanelEvents((event) => {
+      if (event.kind === "dock") forget(event.id);
+      else if (event.kind === "pinned" || event.kind === "bounds") {
+        setDetached((all) => {
+          const current = all[event.id];
+          if (!current) return all;
+          return { ...all, [event.id]: event.kind === "pinned" ? { ...current, pinned: event.pinned } : { ...current, bounds: event.bounds } };
+        });
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (detachedId !== null) {
+    return (
+      <SettingsContext.Provider value={settings}>
+      <ChangeSettingsContext.Provider value={changeSettings}>
+        <div className="app app-panel" ref={appRoot} tabIndex={-1}>
+          {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={null} />}
+          <PanelWindow id={detachedId} panel={findPanel(detachedId) ?? null} />
+          <CommandPalette detached />
+        </div>
+      </ChangeSettingsContext.Provider>
+      </SettingsContext.Provider>
+    );
+  }
+
+  const shownPanels = new Map<string, PanelSpec>(
+    visible([...leftPanels, ...(approvals.length > 0 ? [approvalsPanel] : []), ...rightPanels]).map((panel) => [panel.id, panel]),
+  );
+  if (!detached[sessionPanel.id]) {
+    shownPanels.set(sessionPanel.id, { ...decorate(sessionPanel), span: true });
+  }
+  const columns = visibleColumns(layoutColumns, (id) => shownPanels.get(id), editingLayout);
+  // The columns the window can show; the panel editor shows them all, to drag between.
+  const fold = editingLayout
+    ? { narrow: false, shown: columns.map((column) => column.id), folded: [] as string[] }
+    : foldColumns(layoutWidth, classifyColumns(columns.map((column) => ({ id: column.id, span: column.panels.some((panel) => panel.span) }))));
+  const sessionColumn = columns.findIndex((column) => column.panels.some((panel) => panel.span));
+  const foldedColumns = columns.filter((column) => fold.folded.includes(column.id));
+  // Below 600 px the columns left of the session are the sidebar; every other folded panel is in "More panels".
+  // (One column: the first one left of the session; another one's panels are in More panels.)
+  const navColumns = fold.narrow ? foldedColumns.filter((column) => columns.indexOf(column) < sessionColumn).slice(0, 1) : [];
+  const morePanels = foldedColumns.filter((column) => !navColumns.includes(column)).flatMap((column) => column.panels);
+  const navPanels = navColumns.flatMap((column) => column.panels);
+  const openSheet = sheet?.kind === "nav" ? (navPanels.length > 0 ? sheet : null) : sheet && morePanels.some((panel) => panel.id === sheet.id) ? sheet : null;
+  // A sheet whose columns came back (the window widened) or went (its panel was closed) is forgotten, not reopened later.
+  if (sheet && !openSheet) setSheet(null);
+  const sheetPanel = openSheet?.kind === "panel" ? morePanels.find((panel) => panel.id === openSheet.id) : undefined;
+  /** The folded column that is open as a sheet, and from where (Columns moves that cell to the window's edge). */
+  const closeSheet = () => setSheet(null);
+  const sheetColumn =
+    openSheet?.kind === "nav"
+      ? { column: navColumns[0].id, label: "Sidebar", heading: "Sidebar", side: "left" as const, full: false, onClose: closeSheet }
+      : sheetPanel
+        ? {
+            column: columns.find((column) => column.panels.some((panel) => panel.id === sheetPanel.id))?.id ?? "",
+            panel: sheetPanel.id,
+            label: sheetPanel.title,
+            heading: "More panels",
+            side: "right" as const,
+            full: narrow,
+            onClose: closeSheet,
+          }
+        : undefined;
+  /** Keeps an arrangement the editor changed; an unchanged one is not written. */
+  const arrange = (next: Arrangement) => {
+    if (!sameArrangement(next, layoutColumns)) setArrangement(next);
+  };
+  const installedMods = (mods?.mods ?? []).map((mod) => mod.id);
+  const environmentName = environmentById(environments, envId)?.name ?? null;
+  /** *Export layout preset*: the layout that applies here, as a JSON file through the save dialog. */
+  const exportPreset = () => {
+    const preset = makePreset(shape, projectLayout && environmentName ? `${environmentName} layout` : "Layout", installedMods);
+    saveTextFile(presetFileName(preset), presetText(preset)).then(
+      (saved) => saved && setPresetNotice({ kind: "ok", text: `Saved “${preset.name}”.` }),
+      (error: unknown) => setPresetNotice({ kind: "error", text: `Could not save the preset: ${error instanceof Error ? error.message : String(error)}` }),
+    );
+  };
+  /** *Import layout preset*: a valid file waits for the user's confirmation; an invalid one is refused with a reason. */
+  const importPreset = (text: string) => {
+    const result = parsePreset(text);
+    if (!result.ok) {
+      setPendingPreset(null);
+      setPresetNotice({ kind: "error", text: result.error });
+      return;
+    }
+    setPresetNotice(null);
+    setPendingPreset(result.preset);
+  };
+  /** The confirmed preset replaces the layout that applies here (the environment's own when it has one). */
+  const applyPendingPreset = () => {
+    const preset = pendingPreset;
+    if (!preset) return;
+    setPendingPreset(null);
+    setShapes((all) => editShape(all, envIdRef.current, preset.shape));
+    const missing = missingMods(preset, installedMods);
+    setPresetNotice({
+      kind: "ok",
+      text:
+        `Applied “${preset.name}”.` +
+        (missing.length > 0 ? ` Its panels from ${missing.join(", ")} appear once ${missing.length === 1 ? "that mod is" : "those mods are"} installed and enabled.` : ""),
+    });
+  };
+  /** A panel dropped in the editor: from a column or from its own window (which docks it first). */
+  const dropInEditor = (panel: string, target: DropTarget) => {
+    if (detached[panel]) dock(panel);
+    commitPlacement(dropPanel({ arrangement: layoutColumns, modules }, panel, target, editingLayout, newColumnId, isModule), panel);
+  };
 
   return (
-    <div className="app">
+    <SettingsContext.Provider value={settings}>
+      <ChangeSettingsContext.Provider value={changeSettings}>
+    <div className="app" ref={appRoot} tabIndex={-1} data-narrow={narrow ? "" : undefined}>
       <header className="titlebar">
+        {navPanels.length > 0 && (
+          <IconButton
+            icon={PanelLeft}
+            ref={sidebarButton}
+            className="sidebar-toggle"
+            onClick={() => setSheet(openSheet?.kind === "nav" ? null : { kind: "nav" })}
+            aria-expanded={openSheet?.kind === "nav"}
+            data-attention={approvalsWaiting ? "" : undefined}
+            label={approvalsWaiting ? "Sidebar (approvals waiting)" : "Sidebar"}
+            tooltip="Environments and sessions"
+          />
+        )}
         <strong className="brand">Imperium</strong>
+        {projectLayout && (
+          <Badge tone="accent" title={`${environmentName ?? "This environment"} uses its own layout; Settings → Panels switches back to the global one`}>
+            Project layout
+          </Badge>
+        )}
         <span className="muted connection" data-state={status.kind}>
           {status.kind === "connected"
             ? `${status.client.daemon?.daemon.name} ${status.client.daemon?.daemon.version}`
@@ -308,177 +1623,207 @@ export function App() {
         </span>
         <span className="spacer" />
         <UpdateControl updates={updates} onOpen={() => setShowSettings(true)} />
-        <button className="ghost" onClick={() => setShowSettings((open) => !open)} aria-expanded={showSettings}>
-          Settings
-        </button>
-      </header>
-      {showSettings && (
-        <SettingsMenu settings={settings} onChange={updateSettings} updates={updates} onClose={() => setShowSettings(false)} />
-      )}
-      {status.kind === "failed" ? (
-        <ConnectScreen message={status.message} onConnect={connect} />
-      ) : (
-        <main className="workspace">
-          <Columns
-            initial={[0.2, 0.55, 0.25]}
-            columns={[
-              {
-                id: "left",
-                mode: "stack",
-                panels: [
-                  {
-                    id: "projects",
-                    title: "Projects",
-                    actions: <button onClick={openFolder}>Open folder</button>,
-                    body: (
-                      <ProjectsPanel
-                        projects={projects}
-                        selected={project}
-                        icons={icons}
-                        onSelect={(next) => {
-                          showProject(next);
-                          setSelected(null);
-                        }}
-                      />
-                    ),
-                  },
-                  {
-                    id: "sessions",
-                    title: "Sessions",
-                    actions: (
-                      <button
-                        onClick={startSession}
-                        disabled={!project || !client}
-                        title={project ? `New session in ${project}` : "Select a project first"}
-                      >
-                        New session
-                      </button>
-                    ),
-                    body: (
-                      <SessionsPanel
-                        sessions={allSessions}
-                        project={projectView ? project : null}
-                        selected={selected}
-                        icons={icons}
-                        onSelect={selectSession}
-                        onShowProject={showProject}
-                        onShowAll={() => setProjectView(false)}
-                      />
-                    ),
-                  },
-                  {
-                    id: "pet",
-                    title: pets?.pets.find((p) => p.id === pets.selected)?.display_name ?? "Pet",
-                    body: (
-                      <PetPanel
-                        client={client}
-                        pet={pets?.pets.find((p) => p.id === pets.selected) ?? null}
-                        state={petState}
-                      />
-                    ),
-                  },
-                  ...(approvals.length > 0
-                    ? [
-                        {
-                          id: "approvals",
-                          title: `Approvals (${approvals.length})`,
-                          body: <ApprovalsPanel approvals={approvals} onRespond={respondToApproval} />,
-                        },
-                      ]
-                    : []),
-                ],
-              },
-              {
-                id: "main",
-                mode: "span",
-                panel: {
-                  id: "session",
-                  title: "Session",
-                  body: (
-                    <SessionPanel
-                      session={session}
-                      icons={icons}
-                      onSend={send}
-                      onRespond={respond}
-                      onSetResumePolicy={setResumePolicy}
-                      onResumeNow={resumeNow}
-                    />
-                  ),
-                },
-              },
-              {
-                id: "right",
-                mode: "stack",
-                panels: [
-                  { id: "agents", title: "Agents", body: <AgentsPanel session={session} /> },
-                  { id: "models", title: "Models", body: <ModelsPanel table={modelTable} /> },
-                  {
-                    id: "local-models",
-                    title: "Local models",
-                    body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} client={client} />,
-                  },
-                  { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
-                  { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },
-                  ...(mods?.mods ?? []).flatMap((mod) =>
-                    mod.panels.map((panel) => ({
-                      id: `mod:${mod.id}:${panel.id}`,
-                      title: panel.title,
-                      body: <ModFrame mod={mod} panelId={panel.id} bus={modBus} />,
-                    })),
-                  ),
-                ],
-              },
-            ]}
+        {morePanels.length > 0 && (
+          <Menu
+            label="More panels"
+            icon={PanelRight}
+            className="more-panels"
+            text={narrow ? undefined : "More panels"}
+            items={morePanels.map((panel) => ({ label: panel.title, onSelect: () => setSheet({ kind: "panel", id: panel.id }) }))}
           />
-        </main>
+        )}
+        <div className="titlebar-tools">
+          <IconButton
+            icon={Plug}
+            onClick={() => setShowConnectors((open) => !open)}
+            aria-expanded={showConnectors}
+            label="Connectors"
+            tooltip="Connectors: MCP servers, plugins, and skills"
+          />
+          <IconButton
+            icon={Puzzle}
+            onClick={() => setShowPlugins((open) => !open)}
+            aria-expanded={showPlugins}
+            label="Plugins"
+            tooltip="Plugins: marketplaces and what they list"
+          />
+          <IconButton
+            icon={PANELS_ICON}
+            className="layout-toggle"
+            onClick={() => setEditingLayout((editing) => !editing)}
+            aria-pressed={editingLayout}
+            disabled={narrow}
+            data-tour="layout"
+            label="Edit layout"
+            tooltip={narrow ? "Editing the layout needs a window at least 600 px wide" : editingLayout ? "Done editing the layout (Esc)" : "Edit layout"}
+          />
+          <IconButton
+            icon={Settings}
+            onClick={() => setShowSettings((open) => !open)}
+            aria-expanded={showSettings}
+            data-tour="settings"
+            label="Settings"
+            tooltip={`Settings (${formatShortcut(bindingFor(settings.shortcuts, "settings.toggle"))})`}
+          />
+        </div>
+      </header>
+      {showConnectors && (
+        <ConnectorsWindow
+          client={client}
+          onClose={() => setShowConnectors(false)}
+          onManagePlugins={() => {
+            setShowConnectors(false);
+            setShowPlugins(true);
+          }}
+        />
       )}
+      {showPlugins && <PluginsWindow client={client} environment={envId} environmentName={environmentName} onClose={() => setShowPlugins(false)} />}
+      {showSettings && (
+        <SettingsWindow
+          settings={settings}
+          onChange={updateSettings}
+          updates={updates}
+          daemon={daemon}
+          client={client}
+          mods={mods}
+          panels={PANELS}
+          hidden={hidden}
+          detached={Object.keys(detached)}
+          onTogglePanel={togglePanel}
+          onDock={dock}
+          onOpenConnectors={() => {
+            setShowSettings(false);
+            setShowConnectors(true);
+          }}
+          onOpenPlugins={() => {
+            setShowSettings(false);
+            setShowPlugins(true);
+          }}
+          onOpenModels={() => {
+            setShowSettings(false);
+            setModelDialog({ tab: "local" });
+          }}
+          onStartTour={startTour}
+          onModelsChanged={refreshModels}
+          onResetLayout={() => {
+            // The layout that applies here goes back to the default: the global one, or this environment's own.
+            const next = editShape(shapes, envId, DEFAULT_SHAPE);
+            resetLayout({ arrangement: next.global.arrangement, hidden: next.global.hidden, modules: next.global.modules, overrides: next.overrides });
+            window.location.reload();
+          }}
+          layoutControls={{
+            environment: environmentName,
+            projectLayout,
+            notice: presetNotice,
+            pending: pendingPreset && {
+              name: pendingPreset.name,
+              replaces: projectLayout && environmentName ? `${environmentName}'s project layout` : "the global layout",
+              missingMods: missingMods(pendingPreset, installedMods),
+            },
+            onConfirmImport: applyPendingPreset,
+            onCancelImport: () => setPendingPreset(null),
+            onSaveProjectLayout: () => setShapes((all) => saveOverride(all, envIdRef.current)),
+            onUseGlobalLayout: () => setShapes((all) => clearOverride(all, envIdRef.current)),
+            onExport: exportPreset,
+            onImport: importPreset,
+          }}
+          onClose={() => setShowSettings(false)}
+          request={settingsRequest}
+        />
+      )}
+      <CommandPalette detached={false} />
+      {touring && <Tour hold={approvalsWaiting && tourAuto} onEnd={endTour} />}
+      {modelDialog && (
+        <ModelConfigDialog client={client} target={modelDialog} onClose={() => setModelDialog(null)} onSaved={refreshModels} />
+      )}
+      {envWindow && (envWindow.id === null || environments.some((env) => env.id === envWindow.id)) && (
+        <EnvironmentWindow
+          key={envWindow.id ?? "new"}
+          environment={environmentById(environments, envWindow.id)}
+          client={client}
+          confirmDelete={envWindow.confirmDelete}
+          onSaved={(env) => {
+            const isNew = !environments.some((e) => e.id === env.id);
+            replaceEnvironment(env);
+            if (isNew) showEnvironment(env.id);
+          }}
+          onDeleted={(id) => {
+            setEnvironments((all) => all.filter((env) => env.id !== id));
+            setEnvId((current) => (current === id ? null : current));
+          }}
+          onClose={() => setEnvWindow(null)}
+          onOpenSession={selectSession}
+        />
+      )}
+      {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={daemon} />}
+      {editingLayout && (
+        <div className="layout-editor-bar" role="region" aria-label="Layout editor">
+          <span className="muted">
+            Drag a panel by its header to move it: to a column's edge for a new column, onto the middle of another panel to show a mod's panel inside it, or
+            out to a window. The ⋯ menu's Move entries do the same from the keyboard.
+          </span>
+          {envId && !projectLayout && (
+            <button className="ghost small" onClick={() => setShapes((all) => saveOverride(all, envIdRef.current))}>
+              Save as project layout
+            </button>
+          )}
+          {projectLayout && (
+            <button className="ghost small" onClick={() => setShapes((all) => clearOverride(all, envIdRef.current))}>
+              Use global layout
+            </button>
+          )}
+          <button className="ghost small" onClick={() => arrange(addColumn(layoutColumns, editingLayout, newColumnId))}>
+            <Plus aria-hidden="true" /> Column
+          </button>
+          <button className="primary small" onClick={() => setEditingLayout(false)}>
+            <Check aria-hidden="true" /> Done
+          </button>
+        </div>
+      )}
+      <main
+        className={`workspace${editingLayout ? " editing-layout" : ""}`}
+        // Choosing a session ends the sidebar sheet's job; picking an environment only filters the sessions beside it.
+        onClick={(event) => openSheet?.kind === "nav" && (event.target as HTMLElement).closest("[data-sheet] .session-row-main") && closeSheet()}
+      >
+        <Columns
+          initial={arrangement === null && columns.length === 3 ? [0.2, 0.55, 0.25] : undefined}
+          columns={columns}
+          editing={editingLayout}
+          away={fold.folded}
+          sheet={sheetColumn}
+          windows={Object.keys(detached).flatMap((id) => {
+            const spec = findPanel(id);
+            return spec ? [{ id, title: spec.title }] : [];
+          })}
+          onDrop={dropInEditor}
+          onDock={dock}
+          onRemoveColumn={(column) => arrange(removeColumn(layoutColumns, column, (id) => shownPanels.has(id), editingLayout))}
+        />
+        {sheetColumn && (
+          <>
+            <SheetScrim onClose={closeSheet} />
+            <SheetBehaviour onClose={closeSheet} returnFocus={openSheet?.kind === "nav" ? sidebarButton : undefined} id={openSheet?.kind === "nav" ? "nav" : sheetPanel?.id} />
+          </>
+        )}
+      </main>
     </div>
+    </ChangeSettingsContext.Provider>
+      </SettingsContext.Provider>
   );
 }
 
-function ConnectScreen({ message, onConnect }: { message: string; onConnect: (connection?: DaemonConnection) => void }) {
-  const [url, setUrl] = useState("");
-  const [token, setToken] = useState("");
-  return (
-    <div className="connect">
-      <div className="connect-card">
-        <h1>Not connected to imperiumd</h1>
-        <p>{message}</p>
-        <p className="muted">
-          Start the daemon with <code>imperiumd</code>
-          {insideTauri() ? ", then retry." : ". In a browser, paste the url and token from its daemon.json."}
-        </p>
-        {!insideTauri() && (
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              onConnect({ url: url.trim(), token: token.trim() });
-            }}
-          >
-            <input
-              aria-label="Daemon URL"
-              placeholder="ws://127.0.0.1:port/rpc"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-            <input
-              aria-label="Token"
-              placeholder="token"
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-            />
-            <button type="submit" className="primary">
-              Connect
-            </button>
-          </form>
-        )}
-        {insideTauri() && (
-          <button className="primary" onClick={() => onConnect()}>
-            Retry
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
+/** Panels the user can close and reopen from Settings → Panels. */
+const PANELS: { id: string; title: string }[] = [
+  { id: "projects", title: "Environments" },
+  { id: "sessions", title: "Sessions" },
+  { id: "approvals", title: "Approvals" },
+  { id: "agents", title: "Agents" },
+  { id: "review", title: "Review" },
+  { id: "models", title: "Models" },
+  { id: "local-models", title: "Local models" },
+  { id: "telemetry", title: "Telemetry" },
+  { id: "resources", title: "Resources" },
+  { id: "usage", title: "Usage" },
+  { id: "preview", title: "Preview" },
+  { id: "browser", title: "Browser" },
+];

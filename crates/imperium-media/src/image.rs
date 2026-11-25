@@ -5,7 +5,6 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use serde_json::{Value, json};
@@ -193,9 +192,7 @@ async fn comfyui_image(
     prompt: &str,
     (width, height): (u32, u32),
 ) -> Result<Vec<u8>, MediaError> {
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs() % 1_000_000_007);
+    let seed = imperium_api::time::unix_secs() % 1_000_000_007;
     let quoted =
         serde_json::to_string(prompt).map_err(|error| MediaError::Service(error.to_string()))?;
     let filled = workflow

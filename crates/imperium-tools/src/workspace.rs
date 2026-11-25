@@ -1,29 +1,456 @@
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
-use crate::{Sandbox, ToolError};
+use crate::processes::Processes;
+use crate::project_worktrees::ProjectWorktrees;
+use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
+use crate::writer_trees::{WriterHandle, WriterStart};
+use crate::{Sandbox, ToolError, WriterTrees};
+use imperium_api::{PathGrant, PathMode};
+use imperium_policy::AgentProfile;
+use imperium_policy::permissions::{Permissions, Target, expand_home};
 
-/// The folder an agent works in. Paths given to tools resolve inside it and may not escape it,
-/// including through `..` or symbolic links.
+/// The folders an agent works in: an environment's folders, the first of which is the working
+/// directory (the root). Relative paths given to tools resolve against the root; absolute paths
+/// may name anything inside any of the folders. Nothing may escape them, including through `..`
+/// or symbolic links.
+///
+/// Path grants open further paths outside the folders, read-only or writable (global package
+/// caches and toolchains, for example). Where a folder and a grant both cover a path, the
+/// deepest one decides, so a read-only grant inside a folder makes that part read-only.
+///
+/// With [`Workspace::with_project_worktrees`], the git worktrees of the folders' repositories
+/// count as folders too (discovered from git's records, and looked up again when a path falls
+/// outside everything else, so new ones are covered).
+///
+/// A remote workspace's folders are paths inside a runtime ([`Remote`]); its tools run there
+/// through a [`Runner`], and paths are checked as written (after resolving `.` and `..`), since
+/// links inside the runtime cannot be followed from here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     root: PathBuf,
+    /// Further folders the agent may use, canonical and distinct from the root and each other.
+    extra: Vec<PathBuf>,
+    /// Paths outside the folders the tools may also use.
+    grants: Vec<GrantedPath>,
     sandbox: Sandbox,
+    remote: Option<RemoteFolders>,
+    /// The permission rules the session's calls are checked against.
+    permissions: Permissions,
+    /// The folders' repositories' worktrees, when they are open too.
+    worktrees: Option<Arc<ProjectWorktrees>>,
+    /// The session's own scratch folder (canonical), which is also one of the writable grants.
+    scratch: Option<PathBuf>,
+    /// Commands started in the background; clones share them.
+    processes: Processes,
+    /// Makes writer subagents' worktrees, when the daemon offers them.
+    writers: Option<WriterHandle>,
+    /// For a writer subagent's workspace: each worktree folder (canonical) and the delegator's
+    /// folder it stands in for, so permission rules written for the delegator's paths match.
+    path_map: Vec<(PathBuf, PathBuf)>,
+    /// The persistent agent's profile, when the session belongs to one: it can only narrow what
+    /// the workspace allows (see [`AgentProfile`]).
+    profile: AgentProfile,
+    /// Folders an agent limited to local files may not touch even when a folder of the
+    /// environment contains them (the daemon's configuration and data folders), canonical.
+    protected: Vec<PathBuf>,
+    /// The folders are a read-only mount: nothing in them can be written, edited or deleted,
+    /// and commands run only where the isolation tier can keep them from writing there.
+    /// Writable grants (the scratch folder, attachments) stay writable.
+    read_only: bool,
+    /// The environment keeps `gh`'s login in its commands (`github.session_gh`): the GitHub
+    /// variables are not dropped and the OS sandbox does not hide `gh`'s config folder.
+    session_gh: bool,
 }
+
+/// A path outside the workspace's folders that the tools may use: canonical on this machine,
+/// or an absolute POSIX path inside a remote runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantedPath {
+    pub path: PathBuf,
+    pub writable: bool,
+}
+
+impl GrantedPath {
+    /// The path as people write it, without Windows' verbatim prefix.
+    pub fn display_path(&self) -> String {
+        plain(&self.path)
+    }
+
+    /// The grant as people read it, such as `/home/me/.cargo (read-only)`.
+    pub fn describe(&self) -> String {
+        format!(
+            "{}{}",
+            plain(&self.path),
+            if self.writable { "" } else { " (read-only)" }
+        )
+    }
+}
+
+/// A remote workspace's runtime and folders (POSIX paths inside it, the root first).
+#[derive(Debug, Clone)]
+pub(crate) struct RemoteFolders {
+    pub target: Remote,
+    pub folders: Vec<String>,
+    pub runner: Arc<dyn Runner>,
+}
+
+impl PartialEq for RemoteFolders {
+    fn eq(&self, other: &Self) -> bool {
+        self.target == other.target && self.folders == other.folders
+    }
+}
+
+impl Eq for RemoteFolders {}
 
 impl Workspace {
     /// `root` must be an existing directory.
     pub fn new(root: &Path) -> std::io::Result<Self> {
-        let root = root.canonicalize()?;
-        if !root.is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotADirectory,
-                format!("{} is not a directory", root.display()),
-            ));
-        }
+        let root = existing_dir(root)?;
         Ok(Workspace {
             root,
+            extra: Vec::new(),
+            grants: Vec::new(),
             sandbox: Sandbox::Policy,
+            remote: None,
+            permissions: Permissions::default(),
+            worktrees: None,
+            scratch: None,
+            processes: Processes::default(),
+            writers: None,
+            path_map: Vec::new(),
+            profile: AgentProfile::default(),
+            protected: Vec::new(),
+            read_only: false,
+            session_gh: false,
         })
+    }
+
+    /// A workspace inside a remote runtime. `folders` are absolute POSIX paths there, the
+    /// working directory first (for WSL, Windows paths are translated to `/mnt/<drive>/…`).
+    /// Nothing is checked on the runtime itself: a missing folder fails the tool that uses it.
+    pub fn remote(
+        target: Remote,
+        folders: &[String],
+        runner: Arc<dyn Runner>,
+    ) -> Result<Self, ToolError> {
+        let mut checked: Vec<String> = Vec::new();
+        for folder in folders {
+            let written = match target {
+                Remote::Wsl { .. } => wsl_path(folder),
+                _ => folder.trim().to_string(),
+            };
+            let folder = normalize_posix(&written).ok_or_else(|| {
+                ToolError::Invalid(format!(
+                    "{written} is not an absolute path inside the runtime"
+                ))
+            })?;
+            if !checked.contains(&folder) {
+                checked.push(folder);
+            }
+        }
+        let Some(first) = checked.first() else {
+            return Err(ToolError::Invalid("the workspace has no folder".into()));
+        };
+        Ok(Workspace {
+            root: PathBuf::from(first),
+            extra: Vec::new(),
+            grants: Vec::new(),
+            sandbox: Sandbox::Policy,
+            remote: Some(RemoteFolders {
+                target,
+                folders: checked,
+                runner,
+            }),
+            permissions: Permissions::default(),
+            worktrees: None,
+            scratch: None,
+            writers: None,
+            path_map: Vec::new(),
+            processes: Processes::default(),
+            profile: AgentProfile::default(),
+            protected: Vec::new(),
+            read_only: false,
+            session_gh: false,
+        })
+    }
+
+    /// The runtime a remote workspace's tools run in.
+    pub fn runtime(&self) -> Option<&Remote> {
+        self.remote.as_ref().map(|remote| &remote.target)
+    }
+
+    pub(crate) fn remote_folders(&self) -> Option<&RemoteFolders> {
+        self.remote.as_ref()
+    }
+
+    /// Where the session's commands run, such as `tier 0 · folder policy` or `runtime · WSL
+    /// Ubuntu`.
+    pub fn isolation_label(&self) -> String {
+        match &self.remote {
+            Some(remote) => remote.target.label(),
+            None => self.sandbox.label(),
+        }
+    }
+
+    /// A local folder to run local helpers (hooks) in: the root, or for a remote workspace the
+    /// system's temporary folder, since its root is not on this machine.
+    pub fn local_dir(&self) -> PathBuf {
+        match &self.remote {
+            Some(_) => std::env::temp_dir(),
+            None => self.root.clone(),
+        }
+    }
+
+    /// Resolves a path for a remote workspace (relative to the root, or absolute inside any
+    /// folder) to an absolute POSIX path inside the runtime.
+    /// `write` refuses a path covered by a read-only grant.
+    pub(crate) fn resolve_remote(&self, path: &str, write: bool) -> Result<String, ToolError> {
+        let Some(remote) = &self.remote else {
+            return Err(ToolError::Io("not a remote workspace".into()));
+        };
+        let resolved = self
+            .locate_remote(path)
+            .ok_or_else(|| ToolError::OutsideWorkspace(path.into()))?;
+        let inside = |folder: &str| {
+            folder == "/"
+                || resolved == folder
+                || resolved
+                    .strip_prefix(folder)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        };
+        // The deepest folder or grant containing the path decides whether it is writable.
+        let folders_writable = !self.read_only;
+        if self.read_only && remote.folders.iter().any(|folder| inside(folder)) {
+            return if write {
+                Err(ToolError::ReadOnly(path.into()))
+            } else {
+                Ok(resolved)
+            };
+        }
+        let covering =
+            remote
+                .folders
+                .iter()
+                .map(|folder| (folder.as_str(), folders_writable, false))
+                .chain(self.grants.iter().filter_map(|grant| {
+                    grant.path.to_str().map(|path| (path, grant.writable, true))
+                }))
+                .filter(|(folder, _, _)| inside(folder))
+                .max_by_key(|(folder, _, grant)| (folder.len(), *grant));
+        // Local files only keeps to the folders themselves: no grant opens anything more.
+        let outside_folders = self.profile.local_files_only()
+            && !remote.folders.iter().any(|folder| inside(folder.as_str()));
+        match covering {
+            None => Err(ToolError::OutsideWorkspace(path.into())),
+            Some(_) if outside_folders => Err(ToolError::OutsideWorkspace(path.into())),
+            Some((_, false, _)) if write => Err(ToolError::ReadOnly(path.into())),
+            Some(_) => Ok(resolved),
+        }
+    }
+
+    /// A remote path as an absolute POSIX path inside the runtime, unchecked.
+    fn locate_remote(&self, path: &str) -> Option<String> {
+        let remote = self.remote.as_ref()?;
+        let written = match remote.target {
+            Remote::Wsl { .. } => wsl_path(path),
+            _ => path.trim().to_string(),
+        };
+        let joined = if written.starts_with('/') {
+            written
+        } else {
+            format!("{}/{written}", remote.folders[0])
+        };
+        normalize_posix(&joined)
+    }
+
+    /// A remote path for display: relative to the root, else in full.
+    pub(crate) fn display_remote(&self, path: &str) -> String {
+        let root = self.root_display();
+        if path == root {
+            return ".".into();
+        }
+        match path
+            .strip_prefix(root.as_str())
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
+            Some(relative) => relative.to_string(),
+            None => path.to_string(),
+        }
+    }
+
+    /// The same workspace with further folders the agent may use. Each must be an existing
+    /// directory; one already covered (the root, or a folder given twice) is skipped.
+    pub fn with_folders<P: AsRef<Path>>(
+        mut self,
+        folders: impl IntoIterator<Item = P>,
+    ) -> std::io::Result<Self> {
+        for folder in folders {
+            let folder = existing_dir(folder.as_ref())?;
+            if folder != self.root && !self.extra.contains(&folder) {
+                self.extra.push(folder);
+            }
+        }
+        Ok(self)
+    }
+
+    /// The same workspace with paths outside its folders opened by `grants`. `~` means the home
+    /// folder on this machine. A grant whose path does not exist, or one already given, is
+    /// skipped (so list the environment's grants before the global ones to let them win). For a
+    /// remote workspace, grants are absolute paths inside the runtime (Windows paths are
+    /// translated for WSL); `~` cannot be expanded there, so such grants are skipped.
+    pub fn with_grants(mut self, grants: &[PathGrant]) -> Self {
+        for grant in grants {
+            let writable = grant.mode == PathMode::ReadWrite;
+            let path = match &self.remote {
+                Some(remote) => {
+                    if grant.path.trim().starts_with('~') {
+                        continue;
+                    }
+                    let written = match remote.target {
+                        Remote::Wsl { .. } => wsl_path(&grant.path),
+                        _ => grant.path.trim().to_string(),
+                    };
+                    match normalize_posix(&written) {
+                        Some(path) => PathBuf::from(path),
+                        None => continue,
+                    }
+                }
+                None => match Path::new(&expand_home(&grant.path)).canonicalize() {
+                    Ok(path) => path,
+                    Err(_) => continue,
+                },
+            };
+            if !self.grants.iter().any(|known| known.path == path) {
+                self.grants.push(GrantedPath { path, writable });
+            }
+        }
+        self
+    }
+
+    /// The same workspace with `dir`, the session's scratch folder, open for reading and
+    /// writing as a grant (so the permission rules, deny rules and the safety floor apply to it
+    /// like to any other path). A folder that does not exist, or a remote workspace, gets none.
+    pub fn with_scratch(mut self, dir: &Path) -> Self {
+        if self.remote.is_some() {
+            return self;
+        }
+        self = self.with_grants(&[PathGrant {
+            path: dir.display().to_string(),
+            mode: PathMode::ReadWrite,
+        }]);
+        self.scratch = dir.canonicalize().ok();
+        self
+    }
+
+    /// The session's scratch folder, when it has one.
+    pub fn scratch(&self) -> Option<&Path> {
+        self.scratch.as_deref()
+    }
+
+    /// The same workspace with the git worktrees of its folders' repositories open as folders
+    /// too: the main checkout and every linked worktree, at the same place inside each as the
+    /// folder is in its own (a folder below the repository's top opens that subfolder of each).
+    /// They are as writable as the folders. Local workspaces only; a remote one is unchanged.
+    pub fn with_project_worktrees(mut self) -> Self {
+        if self.remote.is_none() {
+            self.worktrees = ProjectWorktrees::discover(&self.roots()).map(Arc::new);
+        }
+        self
+    }
+
+    /// The project worktrees open beyond the folders (those not already inside one), looked up
+    /// afresh. Empty unless [`Workspace::with_project_worktrees`] found a repository.
+    pub fn project_worktrees(&self) -> Vec<PathBuf> {
+        if let Some(worktrees) = &self.worktrees {
+            worktrees.refresh();
+        }
+        self.extra_worktrees()
+    }
+
+    /// The project worktrees as last found, without those inside a folder.
+    fn extra_worktrees(&self) -> Vec<PathBuf> {
+        let Some(worktrees) = &self.worktrees else {
+            return Vec::new();
+        };
+        let roots = self.roots();
+        worktrees
+            .known()
+            .into_iter()
+            .filter(|tree| !roots.iter().any(|root| tree.starts_with(root)))
+            .collect()
+    }
+
+    /// The folders commands may use: the folders, then the project worktrees (looked up
+    /// afresh).
+    pub fn command_roots(&self) -> Vec<PathBuf> {
+        self.roots()
+            .into_iter()
+            .map(Path::to_path_buf)
+            .chain(self.project_worktrees())
+            .collect()
+    }
+
+    /// The same workspace with `writers` making worktrees for parallel writer subagents. Local
+    /// workspaces only; a remote one is unchanged.
+    pub fn with_writer_trees(mut self, writers: Arc<dyn WriterTrees>) -> Self {
+        if self.remote.is_none() {
+            self.writers = Some(WriterHandle(writers));
+        }
+        self
+    }
+
+    /// Makes and finishes writer subagents' worktrees, when this workspace has them.
+    pub fn writer_trees(&self) -> Option<Arc<dyn WriterTrees>> {
+        self.writers.as_ref().map(|handle| Arc::clone(&handle.0))
+    }
+
+    /// The same workspace with other folders (the first is the working directory; each must be
+    /// an existing directory) and nothing else of its own: the grants, sandbox, permissions and
+    /// background commands stay, but the project worktrees do not open, the scratch folder is
+    /// no longer marked as the agent's own (it is shared), and the copy cannot make worktrees.
+    pub fn with_roots<P: AsRef<Path>>(&self, folders: &[P]) -> std::io::Result<Self> {
+        let Some((first, rest)) = folders.split_first() else {
+            return Err(std::io::Error::other("a workspace needs a folder"));
+        };
+        let mut moved = Workspace {
+            root: existing_dir(first.as_ref())?,
+            extra: Vec::new(),
+            worktrees: None,
+            writers: None,
+            scratch: None,
+            path_map: Vec::new(),
+            ..self.clone()
+        };
+        moved = moved.with_folders(rest)?;
+        Ok(moved)
+    }
+
+    /// The workspace of a writer subagent on `start`'s folders: [`Workspace::with_roots`], and
+    /// permission rules see a path in a worktree as the same path in the delegator's folder it
+    /// stands in for.
+    pub fn with_writer_folders(&self, start: &WriterStart) -> std::io::Result<Self> {
+        let mut moved = self.with_roots(&start.folders)?;
+        for (tree, parent) in start.folders.iter().zip(&start.parents) {
+            if let (Ok(tree), Ok(parent)) = (tree.canonicalize(), parent.canonicalize())
+                && tree != parent
+            {
+                moved.path_map.push((tree, parent));
+            }
+        }
+        Ok(moved)
+    }
+
+    /// `full` as the delegator's folders have it, for a writer's worktree path; any other path
+    /// as it is.
+    fn parent_equivalent(&self, full: &Path) -> PathBuf {
+        for (tree, parent) in &self.path_map {
+            if let Ok(rest) = full.strip_prefix(tree) {
+                return parent.join(rest);
+            }
+        }
+        full.to_path_buf()
     }
 
     /// The same workspace with commands run under `sandbox`.
@@ -31,68 +458,532 @@ impl Workspace {
         Workspace { sandbox, ..self }
     }
 
+    /// The same workspace with its folders (and the project worktrees) mounted read-only: the
+    /// file tools refuse to write, edit or delete anything in them, and commands run only under
+    /// a tier that can keep them from writing there (the OS sandbox and the container tier
+    /// mount the folders read-only; tier 0 cannot, so its commands are refused). Grants keep
+    /// their own mode, so the scratch folder stays writable. Copies made with
+    /// [`Workspace::with_roots`] stay read-only.
+    pub fn with_read_only(self) -> Self {
+        Workspace {
+            read_only: true,
+            ..self
+        }
+    }
+
+    /// The same workspace whose commands keep `gh`'s login (`github.session_gh` is set for the
+    /// session's environment); by default `GH_TOKEN`, `GITHUB_TOKEN` and `GH_CONFIG_DIR` are
+    /// dropped from a command's environment and the OS sandbox hides `gh`'s config folder.
+    pub fn with_session_gh(self, on: bool) -> Self {
+        Workspace {
+            session_gh: on,
+            ..self
+        }
+    }
+
+    /// Whether commands keep `gh`'s login ([`Workspace::with_session_gh`]).
+    pub fn session_gh(&self) -> bool {
+        self.session_gh
+    }
+
+    /// Whether the folders are a read-only mount ([`Workspace::with_read_only`]).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// The same workspace with calls checked against `permissions`.
+    pub fn with_permissions(self, permissions: Permissions) -> Self {
+        Workspace {
+            permissions,
+            ..self
+        }
+    }
+
+    /// The permission rules calls in this workspace are checked against.
+    pub fn permissions(&self) -> &Permissions {
+        &self.permissions
+    }
+
+    /// The same workspace for a persistent agent's session: under `profile`, which only narrows
+    /// what the folders, grants and rules allow. Local files only confines file tools to the
+    /// folders and the scratch folder.
+    pub fn with_profile(self, profile: AgentProfile) -> Self {
+        Workspace { profile, ..self }
+    }
+
+    /// The same workspace with folders an agent limited to local files may not use, such as the
+    /// daemon's configuration and data folders: they hold settings, secrets and other sessions,
+    /// and an environment's folder may contain them. The session's scratch folder is exempt.
+    pub fn with_protected_folders<P: AsRef<Path>>(
+        mut self,
+        folders: impl IntoIterator<Item = P>,
+    ) -> Self {
+        for folder in folders {
+            if let Ok(folder) = folder.as_ref().canonicalize()
+                && !self.protected.contains(&folder)
+            {
+                self.protected.push(folder);
+            }
+        }
+        self
+    }
+
+    /// The agent profile the session's calls are limited by (unrestricted unless set).
+    pub fn profile(&self) -> &AgentProfile {
+        &self.profile
+    }
+
+    /// The paths outside the folders the tools may also use.
+    pub fn grants(&self) -> &[GrantedPath] {
+        &self.grants
+    }
+
+    /// What a file tool's `path` names, for matching rule patterns: the absolute path (with
+    /// `/` separators) and, inside the working directory, the relative one. The path need not
+    /// be inside the workspace.
+    pub fn rule_target(&self, path: &str) -> Target {
+        if self.remote.is_some() {
+            let absolute = self
+                .locate_remote(path)
+                .unwrap_or_else(|| path.trim().to_string());
+            let root = self.root_display();
+            let relative = if absolute == root {
+                Some(".".to_string())
+            } else {
+                absolute
+                    .strip_prefix(root.as_str())
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .map(str::to_string)
+            };
+            return Target::Path { absolute, relative };
+        }
+        let full = self
+            .locate(path)
+            .unwrap_or_else(|| self.root.join(path.trim()));
+        let relative = full.strip_prefix(&self.root).ok().map(|rest| {
+            let shown = rest.to_string_lossy().replace('\\', "/");
+            if shown.is_empty() { ".".into() } else { shown }
+        });
+        Target::Path {
+            absolute: plain(&self.parent_equivalent(&full)).replace('\\', "/"),
+            relative,
+        }
+    }
+
+    /// [`Workspace::rule_target`] for a path already resolved on this machine (as the search
+    /// tools find them), without resolving it again.
+    pub(crate) fn rule_target_resolved(&self, full: &Path) -> Target {
+        let relative = full.strip_prefix(&self.root).ok().map(|rest| {
+            let shown = rest.to_string_lossy().replace('\\', "/");
+            if shown.is_empty() { ".".into() } else { shown }
+        });
+        Target::Path {
+            absolute: plain(&self.parent_equivalent(full)).replace('\\', "/"),
+            relative,
+        }
+    }
+
+    /// The session's background processes (`run_command` with `background`).
+    pub fn processes(&self) -> &Processes {
+        &self.processes
+    }
+
+    /// The working directory: the first folder.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Every folder the agent may use, the root first.
+    pub fn roots(&self) -> Vec<&Path> {
+        std::iter::once(self.root.as_path())
+            .chain(self.extra.iter().map(PathBuf::as_path))
+            .collect()
+    }
+
+    /// Every folder as people write them, the root first.
+    pub fn folders_display(&self) -> Vec<String> {
+        if let Some(remote) = &self.remote {
+            return remote.folders.clone();
+        }
+        self.roots().into_iter().map(plain).collect()
     }
 
     pub fn sandbox(&self) -> &Sandbox {
         &self.sandbox
     }
 
-    /// Resolves a path (relative to the root, or absolute inside it) to an absolute path inside
-    /// the workspace. The path itself need not exist yet; its nearest existing ancestor must
-    /// lie inside the workspace after resolving symbolic links.
+    /// Resolves a path to read (relative to the root, or absolute inside any folder or grant) to
+    /// an absolute path inside the workspace. The path itself need not exist yet; its nearest
+    /// existing ancestor must lie inside one of the folders or grants after resolving symbolic
+    /// links.
     pub fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {
+        self.resolve_for(path, false)
+    }
+
+    /// Like [`Workspace::resolve`], for a path to write, edit, or delete: a path a read-only
+    /// grant covers is refused.
+    pub fn resolve_writable(&self, path: &str) -> Result<PathBuf, ToolError> {
+        self.resolve_for(path, true)
+    }
+
+    fn resolve_for(&self, path: &str, write: bool) -> Result<PathBuf, ToolError> {
+        if self.remote.is_some() {
+            return self.resolve_remote(path, write).map(PathBuf::from);
+        }
+        let mut resolved = self.locate_checked(path)?;
+        // Outside everything known: a worktree may have been added since the last look.
+        if resolved
+            .as_ref()
+            .is_none_or(|found| self.writable(found).is_none())
+            && self
+                .worktrees
+                .as_ref()
+                .is_some_and(|worktrees| worktrees.refresh())
+        {
+            resolved = self.locate_checked(path)?;
+        }
+        let resolved = resolved.ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+        // Local files only keeps to the folders and the scratch folder, however the path is
+        // spelled and whatever grants or project worktrees would also open it.
+        if self.profile.local_files_only()
+            && (!self.in_local_scope(&resolved)
+                || (cfg!(windows) && has_stream_name(&resolved))
+                || self.in_protected_folder(&resolved)
+                || (write && self.is_configuration_file(&resolved)))
+        {
+            return Err(ToolError::OutsideWorkspace(path.to_string()));
+        }
+        match self.writable(&resolved) {
+            None => Err(ToolError::OutsideWorkspace(path.to_string())),
+            Some(false) if write => Err(ToolError::ReadOnly(path.to_string())),
+            Some(_) => Ok(resolved),
+        }
+    }
+
+    /// Whether a canonical path is a file that configures what the daemon does with an
+    /// environment's folder: its own `.imperium/config.toml` and `config.local.toml`, and a
+    /// project's `.mcp.json`. An agent limited to local files may not write them (it could
+    /// start servers or load plugin hooks in the next session), also when they do not exist yet.
+    fn is_configuration_file(&self, resolved: &Path) -> bool {
+        // By name first: file systems on Windows and macOS ignore case, Windows drops trailing
+        // dots and spaces and takes `name:stream` for a stream of `name`, so none of these
+        // spellings may get past a comparison of the exact bytes. Over-matching on a file system
+        // that tells them apart is harmless.
+        let by_name = self.roots().into_iter().any(|root| {
+            let Ok(relative) = resolved.strip_prefix(root) else {
+                return false;
+            };
+            let parts: Vec<String> = relative
+                .components()
+                .map(|part| {
+                    let name = part.as_os_str().to_string_lossy();
+                    let name = name.split(':').next().unwrap_or_default();
+                    name.trim_end_matches(['.', ' ']).to_string()
+                })
+                .collect();
+            let name = parts.join("/");
+            // Folded both ways: some file systems fold `ſ` to `S` and `ı` to `I`, which
+            // lowercasing alone does not undo.
+            CONFIGURATION_FILES.iter().any(|file| {
+                name.to_lowercase() == *file || name.to_uppercase() == file.to_uppercase()
+            })
+        });
+        by_name
+            || self.roots().into_iter().any(|root| {
+                CONFIGURATION_FILES.iter().any(|name| {
+                    let file = root.join(name);
+                    // Where the file really is, also through a linked `.imperium` folder.
+                    let real = file.canonicalize().unwrap_or_else(|_| {
+                        match (
+                            file.parent().and_then(|dir| dir.canonicalize().ok()),
+                            file.file_name(),
+                        ) {
+                            (Some(dir), Some(name)) => dir.join(name),
+                            _ => file.clone(),
+                        }
+                    });
+                    resolved == real
+                })
+            })
+    }
+
+    /// Whether a canonical path is inside a protected folder (and not in the scratch folder).
+    fn in_protected_folder(&self, resolved: &Path) -> bool {
+        let in_scratch = self
+            .scratch
+            .as_deref()
+            .is_some_and(|scratch| resolved.starts_with(scratch));
+        !in_scratch
+            && self
+                .protected
+                .iter()
+                .any(|folder| resolved.starts_with(folder))
+    }
+
+    /// Whether a canonical path is inside one of the folders or the scratch folder, the only
+    /// places an agent limited to local files may use.
+    fn in_local_scope(&self, resolved: &Path) -> bool {
+        self.roots()
+            .into_iter()
+            .any(|root| resolved.starts_with(root))
+            || self
+                .scratch
+                .as_deref()
+                .is_some_and(|scratch| resolved.starts_with(scratch))
+    }
+
+    /// Whether a canonical path may be written: `None` outside every folder and grant. The
+    /// deepest folder or grant containing it decides (a grant wins over a folder at the same
+    /// depth). Project worktrees count as folders.
+    fn writable(&self, resolved: &Path) -> Option<bool> {
+        let worktrees = self.extra_worktrees();
+        // A read-only mount wins over a writable grant inside (or around) it.
+        if self.read_only
+            && self
+                .roots()
+                .into_iter()
+                .chain(worktrees.iter().map(PathBuf::as_path))
+                .any(|root| resolved.starts_with(root))
+        {
+            return Some(false);
+        }
+        self.roots()
+            .into_iter()
+            .chain(worktrees.iter().map(PathBuf::as_path))
+            .map(|root| (root, !self.read_only, false))
+            .chain(
+                self.grants
+                    .iter()
+                    .map(|grant| (grant.path.as_path(), grant.writable, true)),
+            )
+            .filter(|(base, _, _)| resolved.starts_with(base))
+            .max_by_key(|(base, _, grant)| (base.components().count(), *grant))
+            .map(|(_, writable, _)| writable)
+    }
+
+    /// The absolute path `path` names on this machine (symbolic links resolved for the part
+    /// that exists), wherever it is; `None` when it cannot be worked out.
+    fn locate(&self, path: &str) -> Option<PathBuf> {
+        self.locate_checked(path).ok().flatten()
+    }
+
+    /// Tries each way of reading what the model wrote ([`spellings`]) and keeps the first that
+    /// lands inside a folder or grant, else the first reading. Every reading is checked the same
+    /// way, so the looser spellings open nothing the exact one would not.
+    fn locate_checked(&self, path: &str) -> Result<Option<PathBuf>, ToolError> {
+        let mut first = None;
+        for spelling in spellings(path) {
+            let located = self.locate_one(&spelling);
+            if let Ok(Some(resolved)) = &located
+                && self.writable(resolved).is_some()
+            {
+                return located;
+            }
+            first.get_or_insert(located);
+        }
+        first.unwrap_or(Ok(None))
+    }
+
+    fn locate_one(&self, path: &str) -> Result<Option<PathBuf>, ToolError> {
         let candidate = self.root.join(path);
         let mut existing = candidate.as_path();
         let mut missing = Vec::new();
         while !existing.exists() {
-            let name = existing
-                .file_name()
-                .ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+            let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+                return Ok(None);
+            };
             missing.push(name.to_owned());
-            existing = existing
-                .parent()
-                .ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+            existing = parent;
         }
         let mut resolved = existing
             .canonicalize()
             .map_err(|error| ToolError::Io(format!("{path}: {error}")))?;
-        if !resolved.starts_with(&self.root) {
-            return Err(ToolError::OutsideWorkspace(path.to_string()));
-        }
         for name in missing.into_iter().rev() {
             if Path::new(&name)
                 .components()
                 .any(|c| !matches!(c, Component::Normal(_)))
             {
-                return Err(ToolError::OutsideWorkspace(path.to_string()));
+                return Ok(None);
             }
+            let Some(name) = creatable_name(name) else {
+                return Ok(None);
+            };
             resolved.push(name);
         }
-        Ok(resolved)
+        Ok(Some(resolved))
     }
 
     /// The root as people write it: without Windows' `\\?\` verbatim prefix on drive paths.
     pub fn root_display(&self) -> String {
-        let shown = self.root.display().to_string();
-        match shown.strip_prefix(r"\\?\") {
-            Some(rest) if !rest.starts_with("UNC") => rest.to_string(),
-            _ => shown,
+        if let Some(remote) = &self.remote {
+            return remote.folders[0].clone();
         }
+        plain(&self.root)
     }
 
     /// A path for display to the model and user: relative to the root, with `/` separators.
+    /// Paths in the other folders are shown in full, since that is how the agent names them.
     pub fn display(&self, path: &Path) -> String {
-        let relative = path.strip_prefix(&self.root).unwrap_or(path);
-        let shown = relative.to_string_lossy().replace('\\', "/");
-        if shown.is_empty() { ".".into() } else { shown }
+        match path.strip_prefix(&self.root) {
+            Ok(relative) => {
+                let shown = relative.to_string_lossy().replace('\\', "/");
+                if shown.is_empty() { ".".into() } else { shown }
+            }
+            Err(_) => plain(path).replace('\\', "/"),
+        }
+    }
+}
+
+/// Whether a component of a path has a `:` (on Windows the start of an alternate data stream).
+fn has_stream_name(path: &Path) -> bool {
+    path.components()
+        .any(|part| matches!(part, Component::Normal(name) if name.to_string_lossy().contains(':')))
+}
+
+/// Files, relative to a folder of an environment, that configure what the daemon starts there.
+const CONFIGURATION_FILES: [&str; 3] = [
+    ".imperium/config.toml",
+    ".imperium/config.local.toml",
+    ".mcp.json",
+];
+
+fn existing_dir(path: &Path) -> std::io::Result<PathBuf> {
+    let path = path.canonicalize()?;
+    if !path.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            format!("{} is not a directory", path.display()),
+        ));
+    }
+    Ok(path)
+}
+
+/// The name a not-yet-existing path component gets when it is created. Win32 drops trailing
+/// dots and spaces from a name, so `key.pem.` creates `key.pem`; resolving it that way lets
+/// rule patterns, containment, and the write all see the same file. `None` when nothing is
+/// left (`...`, a lone space) or when the name has a `:`, which on NTFS names an alternate
+/// data stream (`key.pem::$DATA` and `key.pem:x` write to `key.pem`) that no rule pattern for
+/// the file would match.
+fn creatable_name(name: OsString) -> Option<OsString> {
+    if !cfg!(windows) {
+        return Some(name);
+    }
+    let Some(text) = name.to_str() else {
+        return Some(name);
+    };
+    if text.contains(':') {
+        return None;
+    }
+    match without_trailing_dots_and_spaces(text) {
+        "" => None,
+        trimmed if trimmed.len() == text.len() => Some(name),
+        trimmed => Some(trimmed.into()),
+    }
+}
+
+fn without_trailing_dots_and_spaces(name: &str) -> &str {
+    name.trim_end_matches(['.', ' '])
+}
+
+/// The ways to read a path a model wrote for this machine, the likeliest first: as written
+/// without surrounding whitespace, quotes, or a `file://` scheme, then (on Windows) a Git Bash
+/// (`/d/…`), WSL (`/mnt/d/…`), or URL-style (`/D:/…`) path as the drive path it names.
+fn spellings(path: &str) -> Vec<String> {
+    let mut written = path.trim();
+    for quote in ['"', '\'', '`'] {
+        if written.len() >= 2 && written.starts_with(quote) && written.ends_with(quote) {
+            written = written[1..written.len() - 1].trim();
+            break;
+        }
+    }
+    if let Some(rest) = written.strip_prefix("file://") {
+        written = rest;
+    }
+    let mut found = vec![written.to_string()];
+    if cfg!(windows) {
+        found.extend(drive_path(written));
+        if let Some(tidy) = tidy_drive_path(written)
+            && !found.contains(&tidy)
+        {
+            found.push(tidy);
+        }
+    }
+    found
+}
+
+/// A Windows drive path written with stray separators or colons after the drive
+/// (`D:\://Git-Worktrees\x`, `D://x`, `D:\\x`) as the plain `D:/…` path it was meant to be;
+/// `None` when it is not a drive path or already plain. Small models write these often.
+fn tidy_drive_path(written: &str) -> Option<String> {
+    let mut chars = written.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    let rest = chars.as_str().strip_prefix(':')?;
+    // `D:file` is relative to the drive's current folder, not a spelling of `D:/file`.
+    if !rest.starts_with(['\\', '/']) {
+        return None;
+    }
+    let tail = rest.trim_start_matches(['\\', '/', ':']);
+    let tidy = format!("{}:/{tail}", letter.to_ascii_uppercase());
+    (tidy != written).then_some(tidy)
+}
+
+/// A POSIX-style spelling of a Windows drive path (`/d/x`, `/mnt/d/x`, `/D:/x`) as `D:/x`.
+fn drive_path(written: &str) -> Option<String> {
+    let rest = written.strip_prefix('/')?;
+    let rest = rest.strip_prefix("mnt/").unwrap_or(rest);
+    let mut chars = rest.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    let tail = chars.as_str();
+    let tail = tail.strip_prefix(':').unwrap_or(tail);
+    if !(tail.is_empty() || tail.starts_with('/') || tail.starts_with('\\')) {
+        return None;
+    }
+    Some(format!(
+        "{}:/{}",
+        letter.to_ascii_uppercase(),
+        tail.get(1..).unwrap_or("")
+    ))
+}
+
+/// A path as people write it: without Windows' `\\?\` verbatim prefix on drive paths.
+pub fn plain(path: &Path) -> String {
+    let shown = path.display().to_string();
+    match shown.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC") => rest.to_string(),
+        _ => shown,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drive_paths_with_stray_separators_are_tidied() {
+        for (written, tidy) in [
+            (r"D:\://Git-Worktrees\x", r"D:/Git-Worktrees\x"),
+            ("D://Git Repositories/a.txt", "D:/Git Repositories/a.txt"),
+            (r"d:\\Git\a.txt", r"D:/Git\a.txt"),
+        ] {
+            assert_eq!(tidy_drive_path(written).as_deref(), Some(tidy), "{written}");
+        }
+        for plain in ["D:/Git/a.txt", "D:file", "src/a.txt", "/d/x", "D:"] {
+            assert_eq!(tidy_drive_path(plain), None, "{plain}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_mangled_drive_path_still_resolves_inside_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let real = plain(&dir.path().canonicalize().unwrap());
+        let (drive, rest) = real.split_at(2);
+        let mangled = format!(r"{drive}\://{}/a.txt", rest.trim_start_matches('\\'));
+        let full = workspace.resolve(&mangled).unwrap();
+        assert_eq!(workspace.display(&full), "a.txt");
+    }
 
     #[test]
     fn paths_resolve_inside_and_are_refused_outside() {
@@ -122,5 +1013,634 @@ mod tests {
             workspace.resolve(&absolute),
             Err(ToolError::OutsideWorkspace(_))
         ));
+    }
+
+    #[test]
+    fn trailing_dots_and_spaces_are_dropped_from_names_win32_would_drop_them_from() {
+        assert_eq!(without_trailing_dots_and_spaces("key.pem."), "key.pem");
+        assert_eq!(without_trailing_dots_and_spaces("key.pem . "), "key.pem");
+        assert_eq!(without_trailing_dots_and_spaces(".env"), ".env");
+        assert_eq!(without_trailing_dots_and_spaces("..."), "");
+        assert_eq!(
+            creatable_name("key.pem.".into()),
+            if cfg!(windows) {
+                Some("key.pem".into())
+            } else {
+                Some("key.pem.".into())
+            }
+        );
+        assert_eq!(creatable_name(" ".into()).is_none(), cfg!(windows));
+        for stream in ["key.pem::$DATA", "key.pem:foo", ":x"] {
+            assert_eq!(creatable_name(stream.into()).is_none(), cfg!(windows));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_new_name_with_a_trailing_dot_or_space_matches_the_rule_for_the_real_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let plain = workspace.rule_target("key.pem");
+        for evasion in ["key.pem.", "key.pem ", "key.pem. .", "sub./key.pem"] {
+            let target = workspace.rule_target(evasion);
+            if evasion.starts_with("sub") {
+                let Target::Path { relative, .. } = target else {
+                    panic!("a path target");
+                };
+                assert_eq!(relative.as_deref(), Some("sub/key.pem"));
+                continue;
+            }
+            assert_eq!(target, plain, "{evasion} is the same file as key.pem");
+            assert_eq!(
+                workspace.resolve_writable(evasion).unwrap(),
+                workspace.resolve_writable("key.pem").unwrap()
+            );
+        }
+        assert!(workspace.resolve_writable("...").is_err());
+        for stream in ["key.pem::$DATA", "key.pem:foo", "sub/key.pem:foo"] {
+            assert!(
+                workspace.resolve_writable(stream).is_err(),
+                "{stream} is a stream of key.pem"
+            );
+        }
+    }
+
+    #[test]
+    fn a_folder_with_spaces_resolves_however_the_model_spells_it() {
+        let base = tempfile::tempdir().unwrap();
+        let project = base.path().join("Git Repositories").join("Imperium AI");
+        std::fs::create_dir_all(project.join("docs")).unwrap();
+        let workspace = Workspace::new(&project).unwrap();
+        let root = workspace.root().to_path_buf();
+        let written = project.display().to_string();
+        let forward = written.replace('\\', "/");
+        let mut spellings = vec![
+            ".".to_string(),
+            written.clone(),
+            forward.clone(),
+            workspace.root_display(),
+            format!("\"{written}\""),
+            format!("'{forward}'"),
+            format!("  {written}\n"),
+            format!("file://{forward}"),
+        ];
+        if cfg!(windows) {
+            let drive = written[..1].to_lowercase();
+            let rest = &forward[2..];
+            spellings.push(format!("/{drive}{rest}"));
+            spellings.push(format!("/mnt/{drive}{rest}"));
+            spellings.push(format!("/{}:{rest}", &written[..1]));
+            spellings.push(format!("file:///{forward}"));
+        }
+        for spelling in &spellings {
+            assert_eq!(workspace.resolve(spelling).unwrap(), root, "{spelling:?}");
+        }
+        assert_eq!(
+            workspace.resolve(&format!("\"{forward}/docs\"")).unwrap(),
+            root.join("docs")
+        );
+        // A looser spelling of a path outside is still refused.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let outside = elsewhere.path().display().to_string();
+        assert!(matches!(
+            workspace.resolve(&format!("\"{outside}\"")),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+    }
+
+    #[test]
+    fn posix_spellings_of_drive_paths() {
+        assert_eq!(
+            drive_path("/d/Git Repositories/x").as_deref(),
+            Some("D:/Git Repositories/x")
+        );
+        assert_eq!(drive_path("/mnt/c/Users").as_deref(), Some("C:/Users"));
+        assert_eq!(drive_path("/D:/x").as_deref(), Some("D:/x"));
+        assert_eq!(drive_path("/e").as_deref(), Some("E:/"));
+        assert_eq!(drive_path("/docs/x"), None);
+        assert_eq!(drive_path("src/x"), None);
+    }
+
+    #[test]
+    fn remote_grants_are_paths_inside_the_runtime() {
+        use imperium_api::{PathGrant, PathMode};
+        let workspace = Workspace::remote(
+            Remote::Ssh { host: "box".into() },
+            &["/home/me/project".to_string()],
+            Arc::new(crate::ProcessRunner),
+        )
+        .unwrap()
+        .with_grants(&[
+            PathGrant {
+                path: "/home/me/.cargo".into(),
+                mode: PathMode::ReadWrite,
+            },
+            PathGrant {
+                path: "/opt/toolchains".into(),
+                mode: PathMode::Read,
+            },
+            PathGrant {
+                path: "~/.npm".into(),
+                mode: PathMode::Read,
+            },
+        ]);
+        assert_eq!(workspace.grants().len(), 2, "~ cannot be expanded remotely");
+        assert!(
+            workspace
+                .resolve_remote("/home/me/.cargo/registry", true)
+                .is_ok()
+        );
+        assert!(
+            workspace
+                .resolve_remote("/opt/toolchains/bin/go", false)
+                .is_ok()
+        );
+        assert!(matches!(
+            workspace.resolve_remote("/opt/toolchains/bin/go", true),
+            Err(ToolError::ReadOnly(_))
+        ));
+        assert!(matches!(
+            workspace.resolve_remote("/etc/passwd", false),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        assert_eq!(
+            workspace.rule_target("src/main.rs"),
+            Target::Path {
+                absolute: "/home/me/project/src/main.rs".into(),
+                relative: Some("src/main.rs".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_read_only_mount_can_be_read_but_not_written_except_in_writable_grants() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        std::fs::write(first.path().join("notes.txt"), "one").unwrap();
+        let workspace = Workspace::new(first.path())
+            .unwrap()
+            .with_folders([second.path()])
+            .unwrap()
+            .with_grants(&[PathGrant {
+                path: scratch.path().display().to_string(),
+                mode: PathMode::ReadWrite,
+            }])
+            .with_read_only();
+        assert!(workspace.is_read_only());
+        // Reading and listing work everywhere.
+        assert!(workspace.resolve("notes.txt").is_ok());
+        assert!(
+            workspace
+                .resolve(&second.path().join("x.txt").to_string_lossy())
+                .is_ok()
+        );
+        // Writing, editing, and deleting are refused in every folder, new files included.
+        for path in [
+            "notes.txt".to_string(),
+            "new.txt".to_string(),
+            second.path().join("x.txt").display().to_string(),
+        ] {
+            assert!(
+                matches!(
+                    workspace.resolve_writable(&path),
+                    Err(ToolError::ReadOnly(_))
+                ),
+                "{path}"
+            );
+        }
+        // The scratch grant is still writable, and what is outside stays outside.
+        let in_scratch = scratch.path().join("tmp.txt");
+        assert!(
+            workspace
+                .resolve_writable(&in_scratch.to_string_lossy())
+                .is_ok()
+        );
+        let outside = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            workspace.resolve(&outside.path().join("x").to_string_lossy()),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        // Narrowing to another set of folders keeps the mount read-only.
+        let narrowed = workspace.with_roots(&[second.path()]).unwrap();
+        assert!(narrowed.is_read_only());
+        assert!(narrowed.resolve_writable("x.txt").is_err());
+    }
+
+    #[test]
+    fn a_writable_grant_inside_or_around_a_read_only_folder_does_not_reopen_it() {
+        let outer = tempfile::tempdir().unwrap();
+        let project = outer.path().join("project");
+        std::fs::create_dir_all(project.join("build")).unwrap();
+        let grant = |path: &Path| PathGrant {
+            path: path.display().to_string(),
+            mode: PathMode::ReadWrite,
+        };
+        let workspace = Workspace::new(&project)
+            .unwrap()
+            .with_grants(&[grant(&project.join("build")), grant(outer.path())])
+            .with_read_only();
+        for path in [project.join("build").join("out.o"), project.join("src.rs")] {
+            assert!(
+                matches!(
+                    workspace.resolve_writable(&path.to_string_lossy()),
+                    Err(ToolError::ReadOnly(_))
+                ),
+                "{}",
+                path.display()
+            );
+        }
+        // Beside the folder, the grant still works.
+        let beside = outer.path().join("notes.txt");
+        assert!(
+            workspace
+                .resolve_writable(&beside.to_string_lossy())
+                .is_ok()
+        );
+        // Without the mount the inner grant is writable, as before.
+        let open = Workspace::new(&project)
+            .unwrap()
+            .with_grants(&[grant(&project.join("build"))]);
+        assert!(
+            open.resolve_writable(&project.join("build/out.o").to_string_lossy())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_read_only_remote_workspace_refuses_writes_in_its_folders() {
+        let workspace = Workspace::remote(
+            Remote::Ssh { host: "box".into() },
+            &["/home/me/project".to_string()],
+            Arc::new(crate::ProcessRunner),
+        )
+        .unwrap()
+        .with_read_only();
+        assert!(workspace.resolve_remote("src/main.rs", false).is_ok());
+        assert!(matches!(
+            workspace.resolve_remote("src/main.rs", true),
+            Err(ToolError::ReadOnly(_))
+        ));
+    }
+
+    #[test]
+    fn every_folder_of_an_environment_is_inside_and_nothing_else() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(second.path().join("notes.txt"), "two").unwrap();
+        let workspace = Workspace::new(first.path())
+            .unwrap()
+            .with_folders([second.path(), first.path(), second.path()])
+            .unwrap();
+        assert_eq!(workspace.roots().len(), 2, "duplicates are skipped");
+        assert_eq!(workspace.folders_display().len(), 2);
+        assert!(!workspace.folders_display()[1].starts_with(r"\\?\"));
+
+        let in_second = second.path().join("notes.txt");
+        let resolved = workspace.resolve(&in_second.to_string_lossy()).unwrap();
+        assert!(workspace.display(&resolved).ends_with("/notes.txt"));
+        let new_in_second = second.path().join("new").join("file.txt");
+        assert!(workspace.resolve(&new_in_second.to_string_lossy()).is_ok());
+        // Relative paths start at the first folder and cannot climb out of it.
+        assert!(workspace.resolve("../x").is_err());
+        let elsewhere = outside.path().join("x");
+        assert!(matches!(
+            workspace.resolve(&elsewhere.to_string_lossy()),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        assert!(
+            Workspace::new(first.path())
+                .unwrap()
+                .with_folders([outside.path().join("missing")])
+                .is_err()
+        );
+    }
+
+    /// A workspace with a folder, a second folder, a scratch folder and a writable grant, and a
+    /// folder next to the first that nothing opens.
+    struct Layout {
+        first: tempfile::TempDir,
+        second: tempfile::TempDir,
+        scratch: tempfile::TempDir,
+        grant: tempfile::TempDir,
+        sibling: tempfile::TempDir,
+        workspace: Workspace,
+    }
+
+    fn layout() -> Layout {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let grant = tempfile::tempdir().unwrap();
+        let sibling = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(first.path())
+            .unwrap()
+            .with_folders([second.path()])
+            .unwrap()
+            .with_grants(&[PathGrant {
+                path: grant.path().display().to_string(),
+                mode: PathMode::ReadWrite,
+            }])
+            .with_scratch(scratch.path());
+        Layout {
+            first,
+            second,
+            scratch,
+            grant,
+            sibling,
+            workspace,
+        }
+    }
+
+    fn at(dir: &tempfile::TempDir, name: &str) -> String {
+        dir.path().join(name).to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn local_files_only_keeps_files_to_the_folders_and_the_scratch_folder() {
+        let layout = layout();
+        let locked = layout.workspace.clone().with_profile(AgentProfile::new(
+            imperium_policy::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            },
+        ));
+        // Without the lock the grant is open (the lock narrows, it does not change the rest).
+        assert!(
+            layout
+                .workspace
+                .resolve(&at(&layout.grant, "g.txt"))
+                .is_ok()
+        );
+
+        for inside in [
+            "notes.txt".to_string(),
+            "src/new/main.rs".to_string(),
+            at(&layout.first, "abs.txt"),
+            at(&layout.second, "other.txt"),
+            at(&layout.scratch, "scratch.txt"),
+        ] {
+            assert!(locked.resolve(&inside).is_ok(), "{inside} should be open");
+            assert!(
+                locked.resolve_writable(&inside).is_ok(),
+                "{inside} should be writable"
+            );
+        }
+        for outside in [
+            "..".to_string(),
+            "../x".to_string(),
+            "src/../../x".to_string(),
+            "nothing/../../x".to_string(),
+            at(&layout.sibling, "x.txt"),
+            // Open by a grant for an unrestricted agent, closed by the lock.
+            at(&layout.grant, "g.txt"),
+        ] {
+            assert!(
+                matches!(
+                    locked.resolve(&outside),
+                    Err(ToolError::OutsideWorkspace(_))
+                ),
+                "{outside} should be refused"
+            );
+            assert!(
+                matches!(
+                    locked.resolve_writable(&outside),
+                    Err(ToolError::OutsideWorkspace(_))
+                ),
+                "{outside} should be refused for writing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_profile_never_opens_a_path_the_workspace_refuses() {
+        let layout = layout();
+        let read_only = Workspace::new(layout.first.path())
+            .unwrap()
+            .with_grants(&[PathGrant {
+                path: layout.grant.path().display().to_string(),
+                mode: PathMode::Read,
+            }]);
+        for rules in [
+            imperium_policy::profile::ProfileRules::default(),
+            imperium_policy::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            },
+            imperium_policy::profile::ProfileRules {
+                mcp: imperium_policy::profile::Allowlist::All,
+                plugins: imperium_policy::profile::Allowlist::All,
+                local_files_only: false,
+            },
+        ] {
+            let workspace = read_only.clone().with_profile(AgentProfile::new(rules));
+            assert!(matches!(
+                workspace.resolve(&at(&layout.sibling, "x")),
+                Err(ToolError::OutsideWorkspace(_))
+            ));
+            assert!(matches!(
+                workspace.resolve_writable(&at(&layout.grant, "g")),
+                Err(ToolError::ReadOnly(_)) | Err(ToolError::OutsideWorkspace(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn the_lock_applies_to_calls_already_in_flight_from_the_next_one() {
+        let layout = layout();
+        let profile = AgentProfile::default();
+        let workspace = layout.workspace.clone().with_profile(profile.clone());
+        let granted = at(&layout.grant, "g.txt");
+        assert!(workspace.resolve(&granted).is_ok());
+        profile.set(imperium_policy::profile::ProfileRules {
+            local_files_only: true,
+            ..Default::default()
+        });
+        assert!(matches!(
+            workspace.resolve(&granted),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+    }
+
+    #[test]
+    fn local_files_only_keeps_a_remote_workspace_to_its_folders() {
+        let workspace = Workspace::remote(
+            Remote::Ssh { host: "box".into() },
+            &["/home/me/project".to_string()],
+            Arc::new(crate::ProcessRunner),
+        )
+        .unwrap()
+        .with_grants(&[PathGrant {
+            path: "/opt/toolchains".into(),
+            mode: PathMode::Read,
+        }]);
+        assert!(
+            workspace
+                .resolve_remote("/opt/toolchains/bin/go", false)
+                .is_ok()
+        );
+        let locked =
+            workspace.with_profile(AgentProfile::new(imperium_policy::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
+        assert!(locked.resolve_remote("src/main.rs", true).is_ok());
+        assert!(matches!(
+            locked.resolve_remote("/opt/toolchains/bin/go", false),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        assert!(matches!(
+            locked.resolve_remote("../other", false),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+    }
+
+    #[test]
+    fn local_files_only_refuses_the_daemons_folders_even_inside_an_environment_folder() {
+        let project = tempfile::tempdir().unwrap();
+        let config = project.path().join("fake-config");
+        let data = project.path().join("fake-data");
+        std::fs::create_dir_all(data.join("scratch")).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("config.toml"), "secret").unwrap();
+        let workspace = Workspace::new(project.path())
+            .unwrap()
+            .with_scratch(&data.join("scratch"))
+            .with_protected_folders([&config, &data]);
+        let settings = config.join("config.toml").to_string_lossy().to_string();
+        // Without the lock the folder is the agent's like any other.
+        assert!(workspace.resolve(&settings).is_ok());
+        let locked =
+            workspace.with_profile(AgentProfile::new(imperium_policy::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
+        for path in [
+            settings,
+            "fake-config/config.toml".to_string(),
+            "fake-config/new.toml".to_string(),
+            "fake-data/sessions/x.jsonl".to_string(),
+            "src/../fake-config/config.toml".to_string(),
+        ] {
+            assert!(
+                matches!(locked.resolve(&path), Err(ToolError::OutsideWorkspace(_))),
+                "{path} should be refused"
+            );
+            assert!(locked.resolve_writable(&path).is_err(), "{path}");
+        }
+        // The rest of the folder and the session's scratch folder (inside the data folder) stay.
+        assert!(locked.resolve("src/main.rs").is_ok());
+        assert!(locked.resolve("fake-data/scratch/notes.txt").is_ok());
+    }
+
+    #[test]
+    fn local_files_only_may_not_write_the_files_that_configure_the_folder() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".imperium")).unwrap();
+        std::fs::write(project.path().join(".imperium/config.toml"), "x = 1").unwrap();
+        let open = Workspace::new(project.path()).unwrap();
+        let locked =
+            open.clone()
+                .with_profile(AgentProfile::new(imperium_policy::profile::ProfileRules {
+                    local_files_only: true,
+                    ..Default::default()
+                }));
+        for file in [
+            ".imperium/config.toml",
+            ".imperium/config.local.toml",
+            ".mcp.json",
+            "./.imperium/../.mcp.json",
+        ] {
+            // An agent without the lock writes them like any file.
+            assert!(open.resolve_writable(file).is_ok(), "{file}");
+            assert!(
+                matches!(
+                    locked.resolve_writable(file),
+                    Err(ToolError::OutsideWorkspace(_))
+                ),
+                "{file} should be refused for writing"
+            );
+        }
+        // Reading them and writing anything else stays open.
+        assert!(locked.resolve(".imperium/config.toml").is_ok());
+        assert!(
+            locked
+                .resolve_writable(".imperium/skills/a/SKILL.md")
+                .is_ok()
+        );
+        assert!(locked.resolve_writable("src/main.rs").is_ok());
+    }
+
+    #[test]
+    fn the_configuration_files_are_matched_by_name_not_by_bytes() {
+        let project = tempfile::tempdir().unwrap();
+        let locked = Workspace::new(project.path())
+            .unwrap()
+            .with_profile(AgentProfile::new(imperium_policy::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
+        // Spellings a case-insensitive or Windows file system maps onto the files, whether or not
+        // the folder or the file exists. Case is checked everywhere; the rest where it applies.
+        let mut spellings = vec![
+            ".MCP.json",
+            ".Mcp.JSON",
+            ".IMPERIUM/config.toml",
+            ".Imperium/CONFIG.toml",
+            ".imperium/Config.Local.toml",
+            ".mcp.jſon",
+            ".ımperium/config.toml",
+        ];
+        if cfg!(windows) {
+            spellings.extend([
+                ".mcp.json.",
+                ".mcp.json ",
+                ".mcp.json::$DATA",
+                ".imperium/config.toml.",
+                ".imperium\\config.toml::$DATA",
+            ]);
+        }
+        for file in &spellings {
+            assert!(
+                locked.resolve_writable(file).is_err(),
+                "{file} should be refused (folder absent)"
+            );
+        }
+        // The same with the folder present and the file absent.
+        std::fs::create_dir_all(project.path().join(".imperium")).unwrap();
+        for file in &spellings {
+            assert!(
+                locked.resolve_writable(file).is_err(),
+                "{file} should be refused (folder present)"
+            );
+        }
+        // Other names stay open, also ones that only look alike.
+        for file in [
+            ".mcp.json.bak",
+            ".imperium/config.toml.bak",
+            ".imperium/notes.toml",
+            "mcp.json",
+        ] {
+            assert!(locked.resolve_writable(file).is_ok(), "{file}");
+        }
+    }
+
+    #[test]
+    fn a_writer_subagents_workspace_keeps_the_delegators_profile() {
+        let layout = layout();
+        let profile = AgentProfile::default();
+        let workspace = layout.workspace.clone().with_profile(profile.clone());
+        let tree = tempfile::tempdir().unwrap();
+        let moved = workspace.with_roots(&[tree.path()]).unwrap();
+        assert_eq!(moved.profile(), &profile);
+        profile.set(imperium_policy::profile::ProfileRules {
+            local_files_only: true,
+            ..Default::default()
+        });
+        assert!(moved.profile().local_files_only());
+        // Outside the writer's own folders is refused; inside is open.
+        assert!(moved.resolve(&at(&layout.first, "x")).is_err());
+        assert!(moved.resolve(&at(&tree, "x")).is_ok());
     }
 }

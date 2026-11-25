@@ -1,0 +1,237 @@
+/* Model configuration dialog: each model's settings as tables (one row per setting), the (i) icon
+   with its tooltip, the estimated-memory table, and the greyed-out look of a model that is off.
+   This file loads before primitives.css, which wins ties, so the rules that restyle the shared
+   `.table` are written as `.table.model-table`. */
+
+.model-config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  padding-top: var(--sp-2);
+}
+
+.model-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+}
+
+.model-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* ---- One table per group of settings: name, value, reset ---- */
+.table.model-table {
+  border: 1px solid var(--border);
+  border-collapse: separate;
+  border-radius: var(--radius);
+  border-spacing: 0;
+  background: var(--surface-raised);
+  font-size: var(--fs-md);
+}
+
+.table.model-table caption {
+  padding: 0 0 var(--sp-2);
+  text-align: left;
+  caption-side: top;
+}
+
+.model-table-title {
+  display: block;
+  margin-bottom: var(--sp-1);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.table.model-table caption small {
+  display: block;
+  font-size: var(--fs-sm);
+}
+
+.table.model-table .model-setting-row > * {
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.table.model-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.table.model-table tbody tr:hover {
+  background: transparent;
+}
+
+.table.model-table .model-setting-row th {
+  width: 36%;
+  color: var(--text);
+  font-weight: var(--fw-medium);
+  white-space: normal;
+}
+
+.model-setting-name {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.model-setting-aspects {
+  display: block;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+}
+
+.table.model-table td.model-setting-value {
+  white-space: normal;
+}
+
+.model-setting-value > * + * {
+  margin-top: var(--sp-1);
+}
+
+.model-setting-value small {
+  display: block;
+  font-size: var(--fs-sm);
+}
+
+.table.model-table td.model-setting-reset {
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.model-setting-value .field,
+.model-setting-value button.select.setting-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.model-setting-value input:disabled,
+.model-setting-value button.select:disabled {
+  opacity: 0.5;
+}
+
+.model-setting-row.unavailable th,
+.model-setting-row.unavailable td {
+  opacity: 0.6;
+}
+
+.model-setting-row.warn output {
+  color: var(--warn);
+}
+
+.model-setting-reset button.reset,
+.model-card-metadata button.reset {
+  min-height: var(--control-h-sm);
+}
+
+.model-card-metadata summary {
+  cursor: pointer;
+  font-size: var(--fs-sm);
+}
+
+.model-card-metadata pre {
+  margin: var(--sp-1) 0 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+}
+
+/* ---- The estimate ---- */
+.model-memory output {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-medium);
+}
+
+.model-memory.updating output {
+  opacity: 0.5;
+}
+
+.badge.estimate {
+  margin-left: var(--sp-1);
+}
+
+/* ---- The (i) icon and its tooltip ---- */
+.info-tip-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  padding: 0;
+  border-color: transparent;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: help;
+}
+
+.info-tip-button svg {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.info-tip-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+/* Touch: a tap shows the help under the name instead of in a tooltip. */
+.info-tip-inline {
+  display: block;
+  flex-basis: 100%;
+  padding: var(--sp-2);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-regular);
+}
+
+.info-tip-inline .info-tip-help,
+.info-tip-inline .info-tip-affects {
+  display: block;
+}
+
+.info-tip-inline .info-tip-affects {
+  margin-top: var(--sp-1);
+}
+
+.tooltip .info-tip-help,
+.tooltip .info-tip-affects {
+  display: block;
+}
+
+.tooltip .info-tip-affects {
+  margin-top: var(--sp-1);
+  color: var(--text-muted);
+}
+
+/* ---- "Use this model" off: the model's tables are greyed, the switch row stays readable ---- */
+.model-off .model-table:not(:has(.switch)) {
+  opacity: 0.55;
+}
+
+.model-off .model-table:has(.switch) tr:not(:has(.switch)) {
+  opacity: 0.55;
+}
+
+.model-default-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+}
+
+.model-default-choice button.select {
+  width: auto;
+  min-width: min(100%, calc(224 * var(--px)));
+}

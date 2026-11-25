@@ -1,0 +1,909 @@
+/* The window: title bar, columns, dividers, panels and their headers, the panel editor and the connection banner. */
+
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+/* The app root takes keyboard focus at launch (shared/useWindows.ts) so shortcuts work without a click. */
+.app:focus,
+.app:focus-visible {
+  outline: none;
+}
+
+/* Title bar: a flat strip, the wordmark on the left and the window's tools on the right. */
+.titlebar {
+  position: relative;
+  z-index: var(--z-raised);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: calc(var(--control-h) + var(--sp-3));
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+/* The one place the chrome gradient is kept. */
+.titlebar .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  background: var(--wordmark);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* A small accent-cored ring before the wordmark */
+.titlebar .brand::before {
+  content: "";
+  width: calc(12 * var(--px));
+  height: calc(12 * var(--px));
+  border-radius: var(--radius-full);
+  background: radial-gradient(circle, var(--accent) 0 32%, transparent 36%);
+  border: calc(1.5 * var(--px)) solid var(--text-muted);
+}
+
+.connection {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.connection::before {
+  content: "";
+  width: calc(7 * var(--px));
+  height: calc(7 * var(--px));
+  border-radius: var(--radius-full);
+  background: var(--text-subtle);
+}
+
+.connection[data-state="connected"]::before {
+  background: var(--ok);
+  box-shadow: 0 0 0 calc(3 * var(--px)) var(--ok-soft);
+}
+
+.connection[data-state="connecting"]::before {
+  background: var(--accent);
+  animation: pulse var(--dur-pulse) var(--ease-standard) infinite;
+}
+
+.connection[data-state="failed"]::before {
+  background: var(--danger);
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* The window's tools (connectors, layout, settings) sit together as one icon group. */
+.titlebar-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.layout-toggle[aria-pressed="true"],
+.layout-toggle[aria-pressed="true"]:hover:not(:disabled) {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+/* Updates: the version button carries the channel. */
+.update-version {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Clipped so a panel's overflowing content (a wide table, a hidden label) never scrolls the page. */
+.workspace {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Columns and stacks. Columns meet at hairlines; dividers show an accent line while hovered. */
+.split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.split-row {
+  flex-direction: row;
+}
+
+.split-column {
+  flex-direction: column;
+}
+
+.split-cell {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Every column keeps its minimum width; what does not fit is folded away (layout/fold.ts). */
+.split-row > .split-cell[data-kind="sidebar"] {
+  min-width: var(--col-min-sidebar);
+}
+
+.split-row > .split-cell[data-kind="session"] {
+  min-width: var(--col-min-session);
+}
+
+.split-row > .split-cell[data-kind="side"] {
+  min-width: var(--col-min-side);
+}
+
+/* A folded column keeps its share of the saved proportions and draws nothing; a sheet shows its panels. */
+.split-cell.away {
+  display: none;
+}
+
+/* Below 600 px the session fills the window, whatever its minimum. */
+.app[data-narrow] .split-row > .split-cell {
+  min-width: 0;
+}
+
+/* One column of the workspace (Columns.tsx): a spanning panel, a stack, or (in the editor) an empty column. */
+.layout-column {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.split-column > .split-cell + .split-cell {
+  border-top: 1px solid var(--border);
+}
+
+/* Folding a stacked panel: it shrinks to its header and the open ones grow into its room. */
+.split-column > .split-cell {
+  transition: flex-grow var(--dur-base) var(--ease-standard);
+}
+
+.split-column.dragging > .split-cell {
+  transition: none;
+}
+
+.split-column > .split-cell.collapsed {
+  flex: 0 0 auto;
+}
+
+.panel.collapsed > .panel-body {
+  display: none;
+}
+
+.rail .panel-header h2 {
+  flex: 0 1 auto;
+  min-width: calc(56 * var(--px));
+  margin-right: auto;
+}
+
+.rail .panel-header > button:not(.icon-only) {
+  white-space: nowrap;
+}
+
+/* A narrow rail keeps a header action's icon and drops its words (still its accessible name). */
+@container (max-width: 17rem) {
+  .rail .panel-header > button:not(.icon-only):has(> .lucide) {
+    gap: 0;
+    padding-inline: var(--sp-1);
+    font-size: 0em;
+  }
+
+  .rail .panel-header > button:not(.icon-only) > .lucide {
+    width: var(--icon-sm);
+    height: var(--icon-sm);
+  }
+}
+
+/* The chevron and title sit at the left, the panel's buttons at the right; the title keeps a
+   few letters however narrow the rail. */
+.rail .panel-header {
+  cursor: default;
+  user-select: none;
+}
+
+.panel-header .panel-fold {
+  margin-left: calc(-1 * var(--sp-1));
+}
+
+.panel-header .panel-fold .lucide {
+  transition: transform var(--dur-base) var(--ease-standard);
+}
+
+.panel.collapsed .panel-fold .lucide {
+  transform: rotate(-90deg);
+}
+
+/* The header's ⋯ menu (collapse all, detach, close, and the panel's secondary actions): quiet
+   until the header is hovered or holds focus, so a resting header shows its title and primary
+   action only. */
+.panel-header .panel-menu-button {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.panel-header:hover .panel-menu-button,
+.panel-header:focus-within .panel-menu-button,
+.panel-header .panel-menu-button.open {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .panel-header .panel-menu-button {
+    opacity: 1;
+  }
+}
+
+.divider {
+  position: absolute;
+  z-index: var(--z-divider);
+  touch-action: none;
+}
+
+.divider::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  border-radius: calc(2 * var(--px));
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.divider-row {
+  top: 0;
+  bottom: 0;
+  right: calc(-4 * var(--px));
+  width: calc(8 * var(--px));
+  cursor: col-resize;
+}
+
+.divider-row::after {
+  width: calc(2 * var(--px));
+}
+
+.divider-column {
+  left: 0;
+  right: 0;
+  bottom: calc(-4 * var(--px));
+  height: calc(8 * var(--px));
+  cursor: row-resize;
+}
+
+.divider-column::after {
+  height: calc(2 * var(--px));
+}
+
+.divider:hover::after,
+.divider:active::after {
+  opacity: 0.75;
+}
+
+/* Side rails: flat surfaces; panels are open sections rather than boxes. */
+.rail {
+  background: var(--surface);
+}
+
+.rail-left {
+  border-right: 1px solid var(--border);
+}
+
+.rail-right {
+  border-left: 1px solid var(--border);
+}
+
+/* Panels */
+.panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  container-type: inline-size;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1);
+  flex: none;
+  height: var(--panel-header-h);
+  padding: 0 var(--sp-3);
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-header button {
+  flex: none;
+  font-size: var(--fs-sm);
+  background: transparent;
+  box-shadow: none;
+}
+
+.panel-header button:not(.icon-only) {
+  height: var(--control-h-sm);
+  padding: 0 var(--control-pad-sm);
+}
+
+.panel-header button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+/* Header and toolbar tools (the primary action, the ⋯ menu, pin and dock): small squares. */
+.panel-header .icon-only,
+button.icon-only.panel-tool {
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  padding: 0;
+}
+
+.panel-header .icon-only .lucide,
+button.icon-only.panel-tool .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.panel-body {
+  position: relative; /* contains .visually-hidden labels so they cannot escape the panel */
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+}
+
+/* The session is the canvas: no header bar, edge to edge. Its title stays for screen readers. */
+.panel[data-panel="session"] {
+  background: var(--bg);
+}
+
+.panel[data-panel="session"] > .panel-body {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.panel[data-panel="session"] > .panel-header {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Daemon: a status line with a light, the actions, and an optional log tail. */
+.daemon-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.daemon-dot {
+  width: calc(8 * var(--px));
+  height: calc(8 * var(--px));
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--text-subtle);
+}
+
+.daemon-state[data-running="true"] .daemon-dot {
+  background: var(--ok);
+  box-shadow: 0 0 calc(6 * var(--px)) var(--ok);
+}
+
+.daemon-log pre {
+  max-height: calc(210 * var(--px));
+  overflow: auto;
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-2);
+  font-family: var(--font-code);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.daemon-log-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.update-state {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+/* The connection bar above the workspace while the daemon is away. */
+.connection-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-md);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.connection-banner[data-state="offline"] {
+  background: var(--danger-soft);
+}
+
+.connection-banner[data-state="offline"] .daemon-dot {
+  background: var(--danger);
+}
+
+.connection-message {
+  flex: 1;
+  min-width: calc(180 * var(--px));
+}
+
+.connection-error {
+  flex: 1 1 100%;
+}
+
+.connection-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* In a narrow window the fields shrink and the button wraps under them, so the bar never scrolls the page sideways. */
+.connection-form input {
+  flex: 1 1 calc(120 * var(--px));
+  min-width: 0;
+}
+
+/* A detached panel's window: the panel fills it under its own header (layout/PanelWindow.tsx). */
+.app-panel .panel-window {
+  background: var(--bg);
+}
+
+.app-panel .panel-window > .panel-header {
+  position: static;
+  width: auto;
+  height: var(--panel-header-h);
+  padding: 0 var(--sp-3);
+  overflow: visible;
+  clip-path: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.panel-pin[aria-pressed="true"] {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.panel-pin[aria-pressed="true"] .lucide {
+  fill: currentColor;
+}
+
+.settings-row-note.error {
+  color: var(--danger);
+}
+
+/* ---- Panel editor (the layout toggle beside Settings): quiet handles, drop lines, Done. ---- */
+.layout-editor-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-sm);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--border);
+  animation: fade-in var(--dur-fast) var(--ease-standard);
+}
+
+.layout-editor-bar > span {
+  min-width: 0;
+  margin-right: auto;
+}
+
+.layout-editor-bar button {
+  flex: none;
+  white-space: nowrap;
+}
+
+.editing-layout .panel {
+  position: relative;
+}
+
+.editing-layout .panel-header {
+  justify-content: flex-start;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.editing-layout .panel-header:hover {
+  background: var(--surface-hover);
+}
+
+.editing-layout .panel-body {
+  opacity: 0.45;
+}
+
+/* The session's header is hidden outside the editor; in it, it is the handle like any other. */
+.editing-layout .panel[data-panel="session"] > .panel-header {
+  position: static;
+  width: auto;
+  height: var(--panel-header-h);
+  min-height: 0;
+  padding: 0 var(--sp-3);
+  overflow: visible;
+  clip-path: none;
+  justify-content: flex-start;
+}
+
+.panel.drag-source {
+  opacity: 0.4;
+}
+
+/* Where a dragged panel lands: a line above a panel, at a column's end, or at a column's edge. */
+.panel.drop-before::before {
+  content: "";
+  position: absolute;
+  left: var(--sp-2);
+  right: var(--sp-2);
+  height: calc(2 * var(--px));
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  z-index: var(--z-drop);
+  pointer-events: none;
+  top: 0;
+}
+
+.layout-column.drop-end::after {
+  content: "";
+  position: absolute;
+  left: var(--sp-2);
+  right: var(--sp-2);
+  height: calc(2 * var(--px));
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  z-index: var(--z-drop);
+  pointer-events: none;
+  bottom: calc(2 * var(--px));
+}
+
+.layout-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--sp-3);
+  z-index: var(--z-edge);
+}
+
+.layout-edge.left {
+  left: 0;
+}
+
+.layout-edge.right {
+  right: 0;
+}
+
+.layout-edge::after {
+  content: "";
+  position: absolute;
+  top: var(--sp-2);
+  bottom: var(--sp-2);
+  left: 50%;
+  width: calc(3 * var(--px));
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.layout-edge.active::after {
+  opacity: 1;
+}
+
+.layout-empty-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin: var(--sp-2);
+  font-size: var(--fs-sm);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+
+.layout-column.drop-end > .layout-empty-column {
+  background: var(--accent-soft);
+}
+
+.layout-column.drop-end:has(> .layout-empty-column)::after {
+  display: none;
+}
+
+.layout-drag-ghost {
+  position: fixed;
+  z-index: var(--z-tour);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  background: var(--surface-overlay);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--elev-2);
+  transform: translate(12px, 12px);
+  pointer-events: none;
+}
+
+.layout-drag-ghost .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+/* Modules inside panels, the editor's window strip, and where a dragged module lands. */
+.columns-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.columns-root > .split {
+  flex: 1;
+  height: auto;
+}
+
+.layout-window-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-sm);
+  border-bottom: 1px solid var(--border);
+}
+
+.layout-window-zone {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  margin-right: auto;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+
+.layout-window-zone.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.layout-window-zone .lucide,
+.layout-window-chip .lucide {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.layout-window-chip {
+  cursor: grab;
+  touch-action: none;
+}
+
+.panel.drop-into {
+  outline: 2px solid var(--focus);
+  outline-offset: calc(-2 * var(--px));
+  background: var(--accent-soft);
+}
+
+.panel-module {
+  margin-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+
+.panel-module-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1);
+  padding: var(--sp-1) 0;
+}
+
+.panel-module-header h3 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+}
+
+.panel-module-body {
+  min-height: calc(180 * var(--px));
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-module-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: var(--sp-1) var(--sp-2);
+  list-style: none;
+}
+
+.panel-module-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: calc(2 * var(--px)) var(--sp-2);
+  font-size: var(--fs-sm);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* Narrow window (below 600 px, layout/fold.ts): the title bar keeps only what is needed to work. */
+.app[data-narrow] .titlebar {
+  gap: var(--sp-2);
+  padding-inline: var(--sp-2);
+}
+
+.app[data-narrow] .titlebar .connection,
+.app[data-narrow] .titlebar .badge {
+  display: none;
+}
+
+/* Approvals sit in the sidebar, out of sight below 600 px: the sidebar button carries a dot. */
+.sidebar-toggle[data-attention] {
+  position: relative;
+}
+
+.sidebar-toggle[data-attention]::after {
+  content: "";
+  position: absolute;
+  top: calc(4 * var(--px));
+  right: calc(4 * var(--px));
+  width: calc(7 * var(--px));
+  height: calc(7 * var(--px));
+  border-radius: var(--radius-full);
+  background: var(--warn);
+}
+
+/* Sheets (layout/Sheet.tsx): a folded column's own cell, moved to the window's edge over a scrim; the
+   sidebar from the left, a side panel from the right. The cell stays where Columns keeps it, so its
+   panels are mounted once. */
+.sheet-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-sticky);
+  background: var(--scrim);
+  animation: fade-in var(--dur-fast) var(--ease-standard);
+}
+
+.split-cell.away.sheet-cell {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: var(--z-sheet);
+  display: flex;
+  flex-direction: column;
+  width: min(var(--sheet-w), 100%);
+  background: var(--surface);
+  box-shadow: var(--elev-3);
+}
+
+/* The sheet takes focus from script when it has nothing focusable; its controls draw their own rings. */
+.split-cell.sheet-cell:focus {
+  outline: none;
+}
+
+.sheet-cell.sheet-left {
+  left: 0;
+  border-right: 1px solid var(--border-strong);
+  animation: sheet-in-left var(--dur-base) var(--ease-standard);
+}
+
+.sheet-cell.sheet-right {
+  right: 0;
+  border-left: 1px solid var(--border-strong);
+  animation: sheet-in-right var(--dur-base) var(--ease-standard);
+}
+
+.split-cell.away.sheet-cell.sheet-full {
+  width: 100%;
+  border-left: none;
+}
+
+/* The sidebar leaves a strip of scrim to tap beside it. */
+.app[data-narrow] .split-cell.away.sheet-cell.sheet-left {
+  width: min(var(--sheet-w), calc(100% - 48 * var(--px)));
+}
+
+.sheet-cell > .layout-column {
+  min-height: 0;
+}
+
+.sheet-cell .rail {
+  border: none;
+}
+
+.sheet-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--panel-header-h);
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.sheet-heading {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+@keyframes sheet-in-left {
+  from {
+    transform: translateX(calc(-24 * var(--px)));
+    opacity: 0;
+  }
+}
+
+@keyframes sheet-in-right {
+  from {
+    transform: translateX(calc(24 * var(--px)));
+    opacity: 0;
+  }
+}

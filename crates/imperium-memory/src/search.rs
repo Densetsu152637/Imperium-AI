@@ -1,21 +1,14 @@
 //! Term-based relevance: each query term found in an entry adds its inverse document
 //! frequency, weighted by where it appears (name, description, body). Small and fast for the
-//! hundreds of entries a memory holds; embeddings can be layered on later.
+//! hundreds of entries a memory holds. Words come from the tokenizer session search shares
+//! ([`crate::retrieval`]).
 
 use std::collections::HashSet;
 
 use crate::Entry;
 
-const STOPWORDS: [&str; 24] = [
-    "the", "and", "for", "with", "that", "this", "are", "was", "but", "not", "you", "your", "use",
-    "how", "what", "which", "when", "where", "who", "why", "can", "should", "from", "into",
-];
-
 fn terms(text: &str) -> HashSet<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .map(str::to_lowercase)
-        .filter(|word| word.len() >= 3 && !STOPWORDS.contains(&word.as_str()))
-        .collect()
+    crate::retrieval::words(text, 3).into_iter().collect()
 }
 
 /// A relevance score per entry (0 when nothing matches), in the same order as `entries`.

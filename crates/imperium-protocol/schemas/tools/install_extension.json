@@ -1,0 +1,35 @@
+{
+  "description": "Install a skill (a folder with SKILL.md), a plugin (a folder with .claude-plugin/plugin.json), or a UI mod (a folder with mod.json) into the user's Imperium config, from a git repository or a folder on this machine, or a plugin by name@marketplace from a marketplace the user added. Nothing in it runs at install: skills and plugins are listed for agents and load when first used, a plugin with hooks or MCP servers stays off (activate_plugin cannot start it) and is withheld until the user approves it in the Imperium desktop app; a plugin installed from a git URL or folder cannot be approved there yet (roadmap item 60), and a mod shows only after the user turns it on. Where it came from (URL and commit, or folder) is recorded, and the user can undo the install. Install only from sources the user asked for or that you have good reason to trust.",
+  "name": "install_extension",
+  "parameters": {
+    "properties": {
+      "kind": {
+        "description": "What to install",
+        "enum": [
+          "skill",
+          "plugin",
+          "mod"
+        ],
+        "type": "string"
+      },
+      "path": {
+        "description": "The folder inside the source that holds the extension, when it is not at the top, such as \"skills/pdf\"",
+        "type": "string"
+      },
+      "revision": {
+        "description": "For a git source: the branch, tag, or commit to install (default: the default branch)",
+        "type": "string"
+      },
+      "source": {
+        "description": "A git URL (https://, ssh://, git@host:path, or file://), a folder on this machine, or for a plugin name@marketplace (a plugin of a marketplace the user added)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "kind",
+      "source"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

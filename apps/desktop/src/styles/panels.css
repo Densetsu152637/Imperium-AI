@@ -1,0 +1,709 @@
+/* The side panels: agents, approvals, browser, preview, resources, telemetry, usage and review. */
+
+/* Empty states inside a panel are quieter than a full view's. */
+.empty-state.compact {
+  padding: var(--sp-3);
+}
+
+/* Telemetry: the Markdown table of the models in use, on the shared table. The figures stay on
+   one line and align right; the model column takes the rest of the width and ends in an ellipsis. */
+.telemetry .table td,
+.telemetry .table th {
+  padding-inline: var(--sp-1);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.telemetry .table td:first-child,
+.telemetry .table th:first-child {
+  width: 100%;
+  max-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+/* A hidden column's value moves to a muted second line under the model: `cell-sub-mid` while the
+   wider drops apply, `cell-sub-narrow` under 22 rem. */
+.cell-sub {
+  display: none;
+  margin-top: var(--sp-1);
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: normal;
+}
+
+.cell-sub .badge {
+  white-space: normal;
+}
+
+/* Under 22 rem the token columns give way, so the model keeps a readable name. */
+@container (max-width: 22rem) {
+  .cell-sub-narrow {
+    display: block;
+  }
+
+  .telemetry .table th:nth-child(3),
+  .telemetry .table td:nth-child(3),
+  .telemetry .table th:nth-child(4),
+  .telemetry .table td:nth-child(4) {
+    display: none;
+  }
+}
+
+/* Agents panel: one line per subagent, like the session list's rows. */
+.list button.agent-row-main {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.agent-row-main > .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-elapsed {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Resources: usage meters with sparklines, then the local models and endpoints in use */
+.resources {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+  font-size: var(--fs-sm);
+}
+
+.resources .meters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.resources .gpu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.meter {
+  display: grid;
+  grid-template-columns: minmax(0, 4.5rem) minmax(3rem, 1fr) 2.75rem minmax(3rem, 6rem);
+  grid-template-areas:
+    "label bar value spark"
+    ". detail detail detail";
+  align-items: center;
+  column-gap: var(--sp-2);
+  row-gap: var(--sp-1);
+}
+
+.meter-label {
+  grid-area: label;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+}
+
+.meter-bar {
+  grid-area: bar;
+  height: var(--sp-2);
+  border-radius: var(--radius-full);
+  background: var(--surface-raised-hover);
+  overflow: hidden;
+}
+
+.meter-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--dur-base) var(--ease-standard);
+}
+
+.meter-bar[data-level="busy"] > span {
+  background: var(--warn);
+}
+
+.meter-bar[data-level="high"] > span {
+  background: var(--danger);
+}
+
+.meter-value {
+  grid-area: value;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sparkline {
+  grid-area: spark;
+  width: 100%;
+  height: var(--sp-5);
+}
+
+.sparkline polyline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.meter-detail {
+  grid-area: detail;
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-section h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+/* A long model name is cut with an ellipsis (its full name is on hover) rather than widening the table. */
+.resources .table td:first-child {
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resources td.errors {
+  color: var(--danger);
+}
+
+.resources .daemon-usage {
+  margin: 0;
+  font-size: var(--fs-xs);
+}
+
+/* Narrower panels drop the less important table columns: State and Sessions (or Tokens and
+   Latency) first, then Placement (or Sessions), and under 22 rem the sparklines too. */
+@container (max-width: 38rem) {
+  .cell-sub-mid {
+    display: block;
+  }
+
+  .resources .resource-table th:nth-child(4),
+  .resources .resource-table td:nth-child(4),
+  .resources .resource-table th:nth-child(5),
+  .resources .resource-table td:nth-child(5) {
+    display: none;
+  }
+}
+
+@container (max-width: 22rem) {
+  .meter {
+    grid-template-columns: minmax(0, 4.5rem) minmax(3rem, 1fr) 2.75rem;
+    grid-template-areas:
+      "label bar value"
+      ". detail detail";
+  }
+
+  .sparkline {
+    display: none;
+  }
+
+  .resources .resource-table th:nth-child(2),
+  .resources .resource-table td:nth-child(2) {
+    display: none;
+  }
+
+  .resources .resource-table th,
+  .resources .resource-table td {
+    padding-inline: var(--sp-1);
+  }
+
+  .resources .resource-table td:first-child {
+    max-width: 5.5rem;
+  }
+}
+
+/* Approvals */
+.approvals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.approval {
+  border-bottom: 1px solid var(--border);
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-sm);
+}
+
+.approval:last-child {
+  border-bottom: 0;
+}
+
+.approval p {
+  margin: 0 0 var(--sp-2);
+  overflow-wrap: anywhere;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* Browser and preview: a toolbar that wraps, then the page. The panel is the container; under
+   22 rem the address field takes a row of its own. */
+.browser,
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+  min-height: 0;
+}
+
+.browser-bar,
+.preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.browser-who {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.browser-nav,
+.browser-tab-tools {
+  display: inline-flex;
+  flex: none;
+  gap: var(--sp-1);
+}
+
+.browser-address {
+  display: flex;
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.browser-address input,
+.preview-bar input {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.browser-give {
+  flex: none;
+}
+
+@container (max-width: 22rem) {
+  .browser-address,
+  .preview-bar input {
+    flex-basis: 100%;
+  }
+
+  .browser-address {
+    order: 3;
+  }
+
+  .browser-give {
+    margin-inline-start: auto;
+  }
+}
+
+/* The shared tabs beside the new and close tools; a crowded strip wraps onto more rows instead of
+   scrolling, and a long title ends in an ellipsis. */
+.browser-tabs {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.browser-tabs .browser-tab-list {
+  flex: 1 1 0;
+  flex-wrap: wrap;
+  min-width: 0;
+  border-bottom: 0;
+}
+
+.browser-tabs .tabs-tab {
+  min-width: 0;
+  max-width: 100%;
+  margin-bottom: 0;
+}
+
+/* The tab's label span (the shared Tabs wraps the title in one) gives way, ending in an ellipsis. */
+.browser-tabs .tabs-tab > span:first-of-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-tabs .tabs-badge {
+  flex: none;
+  color: var(--accent-text);
+}
+
+.browser-view {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.browser-view figcaption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: var(--sp-1);
+}
+
+.browser-view img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* The page image draws the ring (.browser-page:focus-visible img below). */
+.browser-page {
+  outline: none;
+}
+
+.browser-page:focus-visible img {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.browser-view img.driving {
+  cursor: pointer;
+}
+
+.preview-frame {
+  width: 100%;
+  min-height: 24rem;
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* Pages assume a white canvas whatever the app's theme is: a light-scheme canvas is white. */
+  background: Canvas;
+  color-scheme: light;
+}
+
+.budget-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.budget-row {
+  display: grid;
+  grid-template-columns: minmax(0, 9rem) minmax(3rem, 1fr) 2.75rem;
+  grid-template-areas:
+    "label bar value"
+    "detail detail detail";
+  align-items: center;
+  column-gap: var(--sp-2);
+  row-gap: var(--sp-1);
+  width: 100%;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+  text-align: left;
+  font-size: var(--fs-sm);
+}
+
+.budget-row[aria-pressed="true"] {
+  background: var(--surface-active);
+}
+
+.budget-row-label {
+  grid-area: label;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--fw-semibold);
+}
+
+.budget-row .meter-bar {
+  grid-area: bar;
+}
+
+.budget-row-detail {
+  grid-area: detail;
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Under 22 rem the budget's label sits over its bar. */
+@container (max-width: 22rem) {
+  .budget-row {
+    grid-template-columns: minmax(0, 1fr) 2.75rem;
+    grid-template-areas:
+      "label value"
+      "bar bar"
+      "detail detail";
+  }
+}
+
+.usage .resource-section h3 {
+  flex-wrap: wrap;
+}
+
+.usage-measure {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.usage-chart {
+  display: block;
+  width: 100%;
+  height: 6rem;
+}
+
+.usage-chart rect {
+  fill: var(--accent);
+}
+
+.usage-chart rect:hover {
+  fill: var(--text);
+}
+
+.usage-total {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-xs);
+}
+
+/* The review pane: changed files as quiet unified diffs. Hunk and file tools are row tools,
+   shown on hover or focus; added and removed lines are tinted, context stays plain. Every row
+   wraps instead of scrolling sideways; the panel is the container. */
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-sm);
+}
+
+.review-bar,
+.review-actions,
+.review-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.review-since {
+  display: flex;
+  flex: 1 1 10rem;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.review-since button.select {
+  flex: 1;
+  min-width: 0;
+}
+
+.review-bar-tools {
+  display: inline-flex;
+  flex: none;
+  gap: var(--sp-1);
+}
+
+.review-commit button.select {
+  width: 100%;
+  min-width: 0;
+}
+
+.review-confirm > span {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+/* Under 22 rem the label sits over its control. */
+@container (max-width: 22rem) {
+  .review-since {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-1);
+  }
+}
+
+.review-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.review-file summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+  padding: var(--sp-1) 0;
+}
+
+.review-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-code);
+}
+
+.review-repo,
+.review-counts {
+  color: var(--text-muted);
+}
+
+.review-counts {
+  flex: none;
+}
+
+.review-status {
+  font-family: var(--font-code);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  width: 1ch;
+}
+
+.review-added,
+.review-add {
+  color: var(--ok);
+}
+
+.review-deleted,
+.review-del {
+  color: var(--danger);
+}
+
+.review-tools {
+  display: inline-flex;
+  flex: none;
+  gap: var(--sp-1);
+}
+
+.review-file summary:hover button.row-tool,
+.review-file summary:focus-within button.row-tool,
+.review-hunk-header:hover button.row-tool,
+.review-hunk-header:focus-within button.row-tool {
+  opacity: 1;
+}
+
+.review-hunk {
+  margin: var(--sp-1) 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.review-hunk-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.review-hunk-header code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-lines {
+  margin: 0;
+  padding: var(--sp-1) 0;
+  font-family: var(--font-code);
+  font-size: var(--fs-xs);
+}
+
+.review-line {
+  display: block;
+  /* Hanging indent: the sign takes the first character, so a wrapped line sits under the text. */
+  padding: 0 var(--sp-2);
+  padding-inline-start: calc(var(--sp-2) + 1ch);
+  text-indent: -1ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.review-line-add {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.review-line-del {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.review-commit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.review-commit textarea {
+  min-width: 0;
+  font-family: var(--font-code);
+  font-size: var(--fs-sm);
+  resize: vertical;
+}
+
+.review-command {
+  margin: 0;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-code);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+@media (hover: none) {
+  .review button.icon-only.row-tool {
+    opacity: 1;
+  }
+}

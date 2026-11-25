@@ -1,0 +1,35 @@
+name: Bundle check
+
+# Builds the desktop installers and the CLI packages for every platform without publishing anything,
+# so a change that breaks bundling (the toolchain, tauri.conf.json, the sidecar steps) fails on its
+# pull request instead of on the next push to experimental. No signing secrets are passed.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/build.yml
+      - .github/workflows/bundle-check.yml
+      - scripts/ci/build-desktop.sh
+      - scripts/ci/package-cli.sh
+      - scripts/ci/install-linux-deps.sh
+      - scripts/ci/check-linux-packages.sh
+      - rust-toolchain.toml
+      - Cargo.lock
+      - apps/desktop/src-tauri/**
+      - apps/desktop/package.json
+      - policy/**
+      - pets/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bundle-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      channel: bundle-check
+      version: 0.0.0-bundle-check

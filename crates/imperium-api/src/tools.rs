@@ -39,6 +39,20 @@ pub struct ToolCheck {
     /// Refuse the call while required workflow context is unloaded (under
     /// `required-before-action`).
     pub needs_context: bool,
+    /// For a call that runs a shell command (a preview's dev server): the command line. The
+    /// session then treats the call exactly like `run_command` with that command: its
+    /// permission rules and "always allow" suggestions, the safety floor, and permission
+    /// modes (plan mode refuses it).
+    pub command: Option<String>,
+}
+
+/// One open tab of the session's browser, as reported with [`ToolEvent::BrowserView`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserTabView {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub active: bool,
 }
 
 /// Something a call produced that the session reports to its clients.
@@ -51,11 +65,20 @@ pub enum ToolEvent {
         kind: String,
         prompt: String,
     },
-    /// The browser's page after an action, with a base64 PNG screenshot.
+    /// The browser's page after an action, with a base64 JPEG screenshot, the tab it is and
+    /// every open tab.
     BrowserView {
         url: String,
         title: String,
         screenshot: String,
+        tab: String,
+        tabs: Vec<BrowserTabView>,
+    },
+    /// The live preview changed: `url` is the loopback page now shown, or `None` once it is
+    /// closed. `command` is the process serving it, when the session started one.
+    PreviewChanged {
+        url: Option<String>,
+        command: Option<String>,
     },
 }
 
@@ -65,6 +88,48 @@ pub struct ToolContext<'a> {
     pub root: &'a Path,
     /// Reports an event to the session's clients, attributed to the calling agent.
     pub emit: &'a (dyn Fn(ToolEvent) + Send + Sync),
+    /// Answers a sampling request an outside server (MCP) makes while the call runs, by asking
+    /// the user and then the session's model; `None` where there is no one to ask.
+    pub sampler: Option<&'a dyn Sampler>,
+}
+
+/// One message of a sampling request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SamplingMessage {
+    /// Written by the assistant rather than the user.
+    pub assistant: bool,
+    pub text: String,
+}
+
+/// What an outside server asks the session's model to continue, already bounded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SamplingRequest {
+    /// The server's name in the configuration.
+    pub server: String,
+    pub system_prompt: Option<String>,
+    pub messages: Vec<SamplingMessage>,
+    /// Most tokens the reply may generate.
+    pub max_tokens: u32,
+}
+
+/// The model's reply to a sampling request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SamplingReply {
+    pub text: String,
+    /// The model that wrote it.
+    pub model: String,
+    /// The reply was cut at `max_tokens`.
+    pub truncated: bool,
+}
+
+/// A sampling request's outcome: the reply, or why it was refused or failed.
+pub type SamplingFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<SamplingReply, String>> + Send + 'a>>;
+
+/// Runs a sampling request: asks the user to approve it, checks the budgets, and calls the
+/// session's model. An error is the reason it was refused.
+pub trait Sampler: Send + Sync {
+    fn sample<'a>(&'a self, request: SamplingRequest) -> SamplingFuture<'a>;
 }
 
 /// A set of tools offered to every agent in a session.
@@ -74,9 +139,30 @@ pub trait ToolProvider: Send + Sync + fmt::Debug {
         ToolGroup::Builtin
     }
 
+    /// Whether subagents are offered the tools too; false keeps them (and their instructions)
+    /// to the root agent, the one that delegates.
+    fn for_subagents(&self) -> bool {
+        true
+    }
+
+    /// Whether writer subagents (which work in git worktrees of their own) are offered the
+    /// tools; false keeps them to agents working in the session's own folders, for tools tied
+    /// to the session's folders, such as the live preview.
+    fn for_writers(&self) -> bool {
+        true
+    }
+
     /// Prepares the tools before the session's first turn (such as starting servers).
     fn start(&self) -> StartFuture<'_> {
         Box::pin(async { Vec::new() })
+    }
+
+    /// Whether the call to `name` is approved afresh every time: it asks even where the tool
+    /// was allowed for the session, an allow rule covers it, the session was pre-approved or the
+    /// permission mode is `full`, and offers no "always allow" rule. Deny rules and plan mode
+    /// still refuse it. For a call that writes outside what a rule can describe (a download).
+    fn always_asks(&self, _name: &str) -> bool {
+        false
     }
 
     /// Instructions added to the system prompt while the tools are offered.
@@ -89,6 +175,13 @@ pub trait ToolProvider: Send + Sync + fmt::Debug {
 
     /// Whether this provider runs the tool called `name`.
     fn handles(&self, name: &str) -> bool;
+
+    /// The outside server (MCP) the tool called `name` comes from, by the name in the
+    /// configuration, so a persistent agent's permission profile can allow some servers and not
+    /// others. `None` for tools that come from no server.
+    fn server_of(&self, _name: &str) -> Option<String> {
+        None
+    }
 
     /// Reads a call's arguments and says how to check it. An error goes back to the model
     /// before any hook runs.

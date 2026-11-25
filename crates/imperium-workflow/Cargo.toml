@@ -8,10 +8,11 @@ repository.workspace = true
 description = "The Imperium Workflow Contract: workflow packs, context retrieval, and load manifests"
 
 [dependencies]
+imperium-api = { version = "0.2.0", path = "../imperium-api" }
 serde = { version = "1.0.229", features = ["derive"] }
+sha2 = "0.11.1"
 thiserror = "2.0.21"
 toml = "1.2.1"
-tracing = "0.1.44"
 
 [lints]
 workspace = true

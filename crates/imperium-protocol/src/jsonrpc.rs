@@ -145,6 +145,16 @@ pub mod codes {
     pub const MODEL_UNAVAILABLE: i32 = -32004;
     /// The caller is not allowed to use this method (a paired phone outside its scopes).
     pub const FORBIDDEN: i32 = -32005;
+    /// The session cannot do this now: a turn is running.
+    pub const SESSION_BUSY: i32 = -32006;
+    /// The session's conversation cannot fit the requested model's context window.
+    pub const CONTEXT_TOO_LARGE: i32 = -32007;
+    /// A budget in the session's scope is used up and says to ask (repeat with
+    /// `confirm_budget`) or to block; `data` is a `BudgetStop`.
+    pub const BUDGET_EXCEEDED: i32 = -32008;
+    /// The daemon is exiting because nothing uses it and takes no more leases; a client
+    /// waits for it to go and starts a new one.
+    pub const DAEMON_STOPPING: i32 = -32009;
 }
 
 #[cfg(test)]

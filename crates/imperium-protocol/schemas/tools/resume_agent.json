@@ -1,0 +1,25 @@
+{
+  "description": "Give a finished or paused subagent a follow-up. It continues with its full earlier conversation (what it read, found, and did), so prefer it to spawn_agent for follow-ups on the same area; for a subagent paused by the user's steering, the text can re-brief it. Collect its report with await_tasks. With cancel: true (and no text), end a paused subagent instead of resuming it.",
+  "name": "resume_agent",
+  "parameters": {
+    "properties": {
+      "agent_id": {
+        "description": "The subagent's task id, such as t1",
+        "type": "string"
+      },
+      "cancel": {
+        "description": "End the paused subagent instead of resuming it",
+        "type": "boolean"
+      },
+      "text": {
+        "description": "The follow-up; required unless cancelling",
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent_id"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

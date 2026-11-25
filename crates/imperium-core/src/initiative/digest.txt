@@ -1,0 +1,1 @@
+Call work_digest once with a short `summary` and up to 8 `items`, each `text` with its `source`: the work still open in the roadmap or plan documents and the sessions that are unfinished. This is a reminder for the user, so list what is left, not what you would do. If nothing is left, do not call it.

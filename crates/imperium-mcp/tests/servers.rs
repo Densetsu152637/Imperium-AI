@@ -157,6 +157,7 @@ async fn http_servers_list_tools_across_pages_and_call_them() {
         },
         allow: vec!["echo".into()],
         timeout: Duration::from_secs(5),
+        sampling: false,
     };
     let broken = ServerSpec {
         name: "broken".into(),
@@ -168,6 +169,7 @@ async fn http_servers_list_tools_across_pages_and_call_them() {
         },
         allow: Vec::new(),
         timeout: Duration::from_secs(5),
+        sampling: false,
     };
     let (servers, failed) = McpServers::connect(vec![spec, broken]).await;
     assert_eq!(failed.len(), 1);
@@ -185,12 +187,70 @@ async fn http_servers_list_tools_across_pages_and_call_them() {
         json!({"type": "object"})
     );
     assert_eq!(
-        servers.call("mcp__fake__echo", r#"{"text":"hi"}"#).await,
+        servers
+            .call("mcp__fake__echo", r#"{"text":"hi"}"#, None)
+            .await,
         Ok("hi".to_string())
     );
     assert_eq!(
-        servers.call("mcp__fake__fail", "").await,
+        servers.call("mcp__fake__fail", "", None).await,
         Err("it broke".to_string())
     );
-    assert!(servers.call("mcp__fake__nope", "{}").await.is_err());
+    assert!(servers.call("mcp__fake__nope", "{}", None).await.is_err());
+}
+
+/// A stdio "server" that only writes its environment to a file and exits: it never answers the
+/// handshake, which the test does not need. (`sh -c env` on unix; `cmd /C set` on Windows, with a
+/// path without spaces so the argument is not quoted.)
+async fn environment_of(env: Vec<(String, String)>) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let out = std::env::temp_dir().join(format!("imperium-env-{}-{nanos}.txt", std::process::id()));
+    let spec = ServerSpec {
+        name: "dump".into(),
+        launch: Launch::Stdio {
+            command: if cfg!(windows) { "cmd" } else { "sh" }.into(),
+            args: if cfg!(windows) {
+                vec!["/C".into(), format!("set>{}", out.display())]
+            } else {
+                vec!["-c".into(), format!("env > '{}'", out.display())]
+            },
+            env,
+            cwd: None,
+        },
+        allow: Vec::new(),
+        timeout: Duration::from_secs(5),
+        sampling: false,
+    };
+    let _ = McpServers::connect(vec![spec]).await;
+    let text = std::fs::read_to_string(&out).unwrap_or_default();
+    let _ = std::fs::remove_file(&out);
+    text
+}
+
+#[tokio::test]
+async fn a_clean_env_server_sees_the_allowlist_and_its_own_variables_only() {
+    // Cargo sets this for the test process, so the daemon's environment holds it.
+    let leaked = "CARGO_MANIFEST_DIR";
+    assert!(std::env::var_os(leaked).is_some());
+    let clean = environment_of(vec![
+        (
+            imperium_mcp::servers::CLEAN_ENV.to_string(),
+            "1".to_string(),
+        ),
+        ("OWN_VAR".to_string(), "mine".to_string()),
+    ])
+    .await;
+    assert!(clean.contains("OWN_VAR=mine"), "{clean}");
+    // Windows spells it `Path`.
+    assert!(clean.to_ascii_uppercase().contains("PATH="), "{clean}");
+    assert!(clean.contains("IMPERIUM_MCP_CHILD=1"), "{clean}");
+    assert!(clean.contains("IMPERIUM_SPAWNED_BY_DAEMON=1"), "{clean}");
+    assert!(!clean.contains(leaked), "{clean}");
+    assert!(!clean.contains("IMPERIUM_PLUGIN_CLEAN_ENV"), "{clean}");
+    // Any other server keeps the daemon's environment.
+    let plain = environment_of(vec![("OWN_VAR".to_string(), "mine".to_string())]).await;
+    assert!(plain.contains(leaked), "{plain}");
 }

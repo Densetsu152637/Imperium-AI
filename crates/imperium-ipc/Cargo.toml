@@ -1,0 +1,52 @@
+[package]
+name = "imperium-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Same-user local sockets for the Imperium daemon: a Unix domain socket or a Windows named pipe"
+
+[dependencies]
+tokio = { version = "1.54.1", features = ["net", "io-util", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The presence check of plugin approvals (`macos_presence.rs`): LocalAuthentication.
+block2 = "0.6.2"
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSError", "NSString"] }
+objc2-local-authentication = { version = "0.3.2", default-features = false, features = ["std", "block2", "LAContext", "LAError"] }
+
+[target.'cfg(windows)'.dependencies]
+getrandom = "0.4.3"
+# The presence check of plugin approvals (`windows/hello.rs`): Windows Hello through
+# `UserConsentVerifier` and its window interop.
+windows-api = { package = "windows", version = "0.62.2", features = [
+    "Security_Credentials_UI",
+    "Win32_Foundation",
+    "Win32_System_WinRT",
+] }
+windows-future = "0.3.2"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["net", "io-util", "time", "rt", "macros"] }
+
+# The Windows named-pipe ACL, the process handle, the DLL search and Windows Hello need Win32 and
+# WinRT calls, and the macOS sandbox and presence checks need C and Objective-C calls, all unsafe.
+# Only those modules opt in (`#[allow(unsafe_code)]`); the rest of the workspace still forbids it.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

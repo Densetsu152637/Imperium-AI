@@ -60,6 +60,11 @@ impl Paths {
         self.config_dir.join("config.toml")
     }
 
+    /// The layer the desktop app writes model settings to; it wins over `config.toml`.
+    pub fn app_models_file(&self) -> PathBuf {
+        self.config_dir.join("models.toml")
+    }
+
     /// Written by a running daemon so local clients can find it.
     pub fn daemon_endpoint_file(&self) -> PathBuf {
         self.data_dir.join("daemon.json")
@@ -68,6 +73,28 @@ impl Paths {
     /// Held locked by the running daemon so only one runs per user.
     pub fn daemon_lock_file(&self) -> PathBuf {
         self.data_dir.join("daemon.lock")
+    }
+
+    /// The local socket's folder (`imperium-ipc` binds `daemon.sock` inside it).
+    pub fn daemon_socket_dir(&self) -> PathBuf {
+        self.data_dir.join("ipc")
+    }
+
+    /// What a command an agent runs must not be able to read or open, because it would hand it
+    /// the daemon: the endpoint file (it holds the access token), the local socket's folder, the
+    /// paired phones' file, the remote daemons' endpoint files (their tokens), and the encrypted secret store with its key. The OS isolation tier
+    /// hides them (`imperium_tools::hide_from_os_sandbox`).
+    pub fn daemon_credential_paths(&self) -> Vec<PathBuf> {
+        vec![
+            self.daemon_endpoint_file(),
+            self.daemon_socket_dir(),
+            self.data_dir.join("devices.json"),
+            // Forwarded remote daemons: their tokens and loopback ports (`imperium remote`).
+            self.data_dir.join("remotes"),
+            self.data_dir.join("secrets.key"),
+            self.data_dir.join("secrets.enc"),
+            self.data_dir.join("secrets.lock"),
+        ]
     }
 }
 
@@ -88,5 +115,24 @@ mod tests {
             Path::new("/opt/imperium/data/daemon.json")
         );
         assert_eq!(paths.cache_dir(), Path::new("/opt/imperium/cache"));
+    }
+
+    #[test]
+    fn the_credential_paths_name_the_token_the_socket_and_the_secret_store() {
+        let paths = Paths::under(Path::new("/opt/imperium"));
+        let credentials = paths.daemon_credential_paths();
+        for expected in [
+            "/opt/imperium/data/daemon.json",
+            "/opt/imperium/data/ipc",
+            "/opt/imperium/data/devices.json",
+            "/opt/imperium/data/remotes",
+            "/opt/imperium/data/secrets.key",
+            "/opt/imperium/data/secrets.enc",
+        ] {
+            assert!(
+                credentials.contains(&PathBuf::from(expected)),
+                "{expected} missing from {credentials:?}"
+            );
+        }
     }
 }

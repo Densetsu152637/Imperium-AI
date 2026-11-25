@@ -1,0 +1,93 @@
+/* The first-run tour. */
+
+/* First-run tour: a dimmed workspace with a cut-out around the step's element and a card beside it. */
+.tour-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-tour);
+}
+
+.tour-dim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+}
+
+.tour-spotlight {
+  position: absolute;
+  border-radius: var(--radius);
+  outline: 2px solid var(--focus);
+  box-shadow: 0 0 0 100vmax var(--scrim);
+  pointer-events: none;
+}
+
+/* The card is a .card (raised surface, border, radius, padding) floating at elevation 2. */
+.tour-card {
+  position: absolute;
+  width: min(360px, calc(100vw - 24px));
+  box-shadow: var(--elev-2);
+  color: var(--text);
+}
+
+.tour-card:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.tour-card h2 {
+  margin: var(--sp-1) 0 var(--sp-2);
+  font-size: var(--fs-lg);
+}
+
+.tour-card p {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+
+.tour-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+/* Step dots: the current one is the accent, those behind it are a stronger edge colour. */
+.tour-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.tour-dot {
+  width: calc(6 * var(--px));
+  height: calc(6 * var(--px));
+  border-radius: var(--radius-full);
+  background: var(--border-control);
+  opacity: 0.45;
+}
+
+.tour-dot.done {
+  opacity: 1;
+}
+
+.tour-dot.current {
+  background: var(--accent);
+  opacity: 1;
+}
+
+.tour-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+.tour-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

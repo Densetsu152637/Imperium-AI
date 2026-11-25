@@ -1,0 +1,237 @@
+/* Forced colours (Windows contrast themes, `forced-colors: active`): the browser replaces colours,
+   backgrounds, borders and outlines with the user's system colours and drops box-shadows. What the
+   app shows by colour or shadow alone has to be said another way. This file is the one place for it,
+   imported last so it wins ties. Three tools:
+   - a state drawn by a soft background (selected, pressed, active) gets a border or an inset outline
+     in `Highlight`, which survives forcing;
+   - a shape drawn only by a background (a dot, a bar's fill, a knob, a check mark) opts out with
+     `forced-color-adjust: none` and takes system colours, so it keeps its shape and its state;
+   - data colours (the context categories, the accent and project colour pickers) opt out and keep
+     their own colours, because the colour is the content there.
+   Text, icons (they paint with currentColor), borders and focus outlines are forced correctly by the
+   browser and need nothing. */
+
+@media (forced-colors: active) {
+  /* ---- The wordmark's gradient falls back to plain text ---- */
+  .titlebar .brand {
+    background: none;
+    color: CanvasText;
+  }
+
+  /* ---- Hover: buttons that rest without an edge (ghost, icon, row tools) show one under the pointer ---- */
+  button:hover:not(:disabled),
+  .card.interactive:hover,
+  .field:hover:not(:disabled) {
+    border-color: Highlight;
+  }
+
+  /* ---- Selected, pressed and active: an edge in Highlight in place of the soft accent background ---- */
+  .list button.selected,
+  .list button.selected:hover:not(:disabled),
+  .settings-nav .settings-nav-item.active,
+  .settings-nav .settings-nav-item.active:hover:not(:disabled),
+  .chip[aria-pressed="true"],
+  .layout-toggle[aria-pressed="true"],
+  .layout-toggle[aria-pressed="true"]:hover:not(:disabled),
+  .panel-pin[aria-pressed="true"],
+  .budget-row[aria-pressed="true"],
+  button.tile-choice[aria-checked="true"],
+  .compare-models label.on,
+  .layout-window-zone.active {
+    border-color: Highlight;
+  }
+
+  .tabs-list .tabs-tab.active {
+    border-bottom-color: Highlight;
+  }
+
+  .tabs-list.vertical .tabs-tab.active {
+    border-right-color: Highlight;
+  }
+
+  /* The session footer's open picker and drawer buttons: a full border, which draws whether or not the
+     button has one at rest (the footer's buttons rest with a transparent edge). */
+  .session-footer button.select.open,
+  .session-footer .footer-button[aria-expanded="true"],
+  .context-meter[aria-expanded="true"] {
+    border: 1px solid Highlight;
+  }
+
+  /* The panel editor's bar (it has only a bottom edge) and the empty column a panel is being dragged over. */
+  .layout-editor-bar {
+    border-bottom: 2px solid Highlight;
+  }
+
+  .layout-column.drop-end > .layout-empty-column {
+    border: 2px solid Highlight;
+  }
+
+  /* The user's message bubble. */
+  .conversation > .message.user {
+    border: 1px solid CanvasText;
+  }
+
+  /* Menus, select lists and the palette keep their focus on the list, and the active item is the focus indicator. */
+  .row-menu-item.active,
+  .select-option.active,
+  .command-palette-item.active {
+    outline: 2px solid Highlight;
+    outline-offset: calc(-2 * var(--px));
+  }
+
+  /* ---- Checkbox: the box is drawn, so the fill and the check are given system colours ---- */
+  input[type="checkbox"]:checked,
+  input[type="checkbox"]:indeterminate {
+    forced-color-adjust: none;
+    background: Highlight;
+    border-color: Highlight;
+  }
+
+  input[type="checkbox"]:checked::after,
+  input[type="checkbox"]:indeterminate::after {
+    background: HighlightText;
+  }
+
+  input[type="checkbox"]:checked:focus-visible,
+  input[type="checkbox"]:indeterminate:focus-visible {
+    outline-color: CanvasText;
+  }
+
+  /* ---- Switch: a track, a knob, and the position says on or off ---- */
+  .switch {
+    forced-color-adjust: none;
+    background: ButtonFace;
+    border-color: ButtonText;
+  }
+
+  .switch-knob {
+    background: ButtonText;
+  }
+
+  .switch.on,
+  .switch.on:hover:not(:disabled) {
+    background: Highlight;
+    border-color: Highlight;
+  }
+
+  .switch.on .switch-knob {
+    background: HighlightText;
+  }
+
+  .switch:disabled {
+    border-color: GrayText;
+  }
+
+  .switch:disabled .switch-knob {
+    background: GrayText;
+  }
+
+  .switch:focus-visible {
+    outline-color: CanvasText;
+  }
+
+  /* ---- Dots: filled in the text colour, hollow rings stay rings, a dimmed one is GrayText ---- */
+  .status-dot,
+  .daemon-dot,
+  .connection::before,
+  .jump-latest-dot,
+  .ptt-dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+    box-shadow: none;
+  }
+
+  .status-dot:not(.working, .task-running, .watching, .merged, .task-finished, .needs_attention, .task-failed, .needs_model, .paused, .task-paused),
+  .daemon-state[data-running="false"] .daemon-dot,
+  .connection[data-state="failed"]::before {
+    background: GrayText;
+  }
+
+  .status-dot.needs_model,
+  .status-dot.paused,
+  .status-dot.task-paused {
+    background: transparent;
+    border-color: CanvasText;
+  }
+
+  .tour-dot {
+    forced-color-adjust: none;
+    background: GrayText;
+    opacity: 1;
+  }
+
+  .tour-dot.done {
+    background: CanvasText;
+  }
+
+  .tour-dot.current {
+    background: Highlight;
+  }
+
+  /* The approvals dot on the sidebar button, shown when the sidebar is a sheet. */
+  .sidebar-toggle[data-attention]::after {
+    background: Highlight;
+    forced-color-adjust: none;
+  }
+
+  /* ---- Bars: a track with an edge and a fill in Highlight ---- */
+  .meter-bar,
+  .context-meter-bar,
+  .context-bar {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+
+  .meter-bar > span,
+  .context-meter-bar > span {
+    background: Highlight;
+  }
+
+  .meter-bar[data-level="busy"] > span,
+  .meter-bar[data-level="high"] > span,
+  .context-meter.high .context-meter-bar > span,
+  .context-meter.full .context-meter-bar > span {
+    background: Mark;
+  }
+
+  /* The context categories are data colours: they keep their own, and a segment keeps its hairline. */
+  .context-segment,
+  .context-swatch {
+    forced-color-adjust: none;
+  }
+
+  .context-swatch.ctx-free,
+  .context-segment.ctx-free {
+    background: transparent;
+  }
+
+  /* ---- Colour pickers: the swatch is the colour, and the chosen one gets a thick edge ---- */
+  .swatches .swatch,
+  button.colour-choice {
+    forced-color-adjust: none;
+    border-color: CanvasText;
+  }
+
+  .swatches .swatch.selected,
+  button.colour-choice[aria-checked="true"] {
+    border-width: calc(4 * var(--px));
+    border-color: Highlight;
+  }
+
+  .swatches .swatch:focus-visible,
+  button.colour-choice:focus-visible {
+    outline-color: CanvasText;
+  }
+
+  /* ---- The panel editor: drag handles, edges and drop lines are drawn with a background ---- */
+  .divider:hover::after,
+  .divider:active::after,
+  .layout-edge.active::after,
+  .panel.drop-before::before,
+  .layout-column.drop-end::after {
+    forced-color-adjust: none;
+    background: Highlight;
+    opacity: 1;
+  }
+}
