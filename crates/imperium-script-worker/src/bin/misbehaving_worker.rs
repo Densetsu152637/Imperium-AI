@@ -84,7 +84,7 @@ fn main() -> ExitCode {
                 .ok();
             stdout.flush().ok();
         }
-        "call" => send(&event(Kind::FunctionCall(pb::FunctionCall {
+        "call" => send(&event(Kind::FunctionCall(monty_proto::WireFunctionCall {
             function_name: "f".to_owned(),
             call_id: 1,
             ..Default::default()
