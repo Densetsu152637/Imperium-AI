@@ -23,9 +23,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use imperium_engine::Session;
 use imperium_github::{GitHub, ReviewComment, git};
-use imperium_protocol::session::SessionStatus;
+use imperium_protocol::methods::SESSION_UPDATED;
+use imperium_protocol::session::{
+    AgentEvent, AgentStatus, ROOT_AGENT, SessionEvent, SessionStatus,
+};
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 
 use super::{
     DATA_MARK, announce_with, ci_config_paths, neutralise, nonce, push_approval, worktree_path,
@@ -336,9 +341,33 @@ impl Ledger {
     }
 
     fn remember_permission(&self, key: (String, String), allowed: bool) {
-        self.lock()
+        let mut inner = self.lock();
+        // Expired answers go, so the cache does not grow with every login ever seen.
+        inner
             .permissions
-            .insert(key, (Instant::now(), allowed));
+            .retain(|_, (at, _)| at.elapsed() < PERMISSION_TTL);
+        inner.permissions.insert(key, (Instant::now(), allowed));
+    }
+
+    /// Hands comments back after a wake that did not take them: the cursor, the attempt and
+    /// the counts return to what `before` held, and the pull request is looked at again at the
+    /// next pass.
+    fn give_back(&self, state: &DaemonState, before: &Entry) {
+        let mut inner = self.lock();
+        if let Some(entry) = inner
+            .entries
+            .iter_mut()
+            .find(|e| e.is(&before.repo, before.number))
+        {
+            entry.cursor = before.cursor.clone();
+            entry.attempts = before.attempts;
+            entry.ignored = before.ignored;
+            entry.untrusted_handled = before.untrusted_handled;
+        }
+        inner
+            .next_check
+            .remove(&key_of(&before.repo, before.number));
+        Self::save(state, &inner);
     }
 
     /// True the first time it is asked for a pull request in this run.
@@ -469,6 +498,16 @@ async fn examine(
         });
         return;
     }
+    // The daemon's own replies end with a footer marker and are written by its own login: the
+    // marker alone, in anyone else's comment, wakes nothing special.
+    let own = match github.login().await {
+        Ok(login) => Some(login),
+        Err(error) if imperium_github::is_unsupported(&error) => None,
+        Err(error) => {
+            tracing::warn!(%repo, pr = number, %error, "could not tell which comments are the daemon's own");
+            return;
+        }
+    };
     let mut cursor = entry.cursor.clone();
     let mut items = Vec::new();
     let mut ignored = 0_u32;
@@ -485,7 +524,11 @@ async fn examine(
             };
             *seen = (*seen).max(comment.id);
             // The daemon's own replies never wake it.
-            if comment.body.contains(REPLY_MARKER) {
+            if own
+                .as_deref()
+                .is_some_and(|me| comment.author.eq_ignore_ascii_case(me))
+                && comment.body.trim_end().ends_with(REPLY_MARKER)
+            {
                 continue;
             }
             match can_write(state, github, &repo, &comment.author).await {
@@ -528,16 +571,46 @@ async fn examine(
         }
         return;
     }
-    let place = match entry.owner.as_deref().and_then(|id| state.session(id)) {
+    // A pull request from a fork (or whose fork is gone) has its branch somewhere the daemon
+    // does not push to.
+    match github.pr_head_repo(&repo, number).await {
+        Ok(Some(head)) if head.eq_ignore_ascii_case(&repo) => {}
+        Ok(_) => {
+            if ledger.first_stop(&repo, number) {
+                announce_with(
+                    state,
+                    &repo,
+                    number,
+                    "stopped",
+                    None,
+                    "this pull request comes from a fork, whose branch auto-fix cannot push to; leaving it to you".to_string(),
+                    TRIGGER,
+                    ids,
+                );
+            }
+            return;
+        }
+        Err(error) if imperium_github::is_unsupported(&error) => {}
+        Err(error) => {
+            tracing::warn!(%repo, pr = number, %error, "could not tell where the pull request's branch is");
+            return;
+        }
+    }
+    // The ledger names an owner, but the daemon takes the session only if it is bound to this
+    // pull request now and its folder is this repository's checkout: a changed or forged file
+    // cannot aim a wake at another session.
+    let owner = entry
+        .owner
+        .as_deref()
+        .and_then(|id| state.load_session(id))
+        .filter(|session| owns(state, session, &repo, number));
+    let place = match owner {
         None => Place::Replacement(
-            "the session that owned this pull request was deleted or archived".to_string(),
+            "the session that owned this pull request was deleted or archived, or is no longer bound to it"
+                .to_string(),
         ),
         Some(session) => {
-            let ready = matches!(
-                session.status().0,
-                SessionStatus::Idle | SessionStatus::Watching
-            ) && !session.is_stopped();
-            if !ready {
+            if !ready(&session) {
                 // Busy with the user's own turn: the comments are read again on the next pass.
                 return;
             }
@@ -556,7 +629,10 @@ async fn examine(
         e.ignored = e.ignored.saturating_add(ignored);
     });
     state.pr_monitor().announce_flags(state, &repo, number);
-    let entry = ledger.entry(&repo, number).unwrap_or(entry);
+    let before = entry;
+    let entry = ledger
+        .entry(&repo, number)
+        .unwrap_or_else(|| before.clone());
     let state = Arc::clone(state);
     let github = Arc::clone(github);
     tokio::spawn(wake(
@@ -564,6 +640,7 @@ async fn examine(
         github,
         Wake {
             entry,
+            before,
             branch: pr.head_ref,
             items,
             ids,
@@ -571,6 +648,25 @@ async fn examine(
         },
         running,
     ));
+}
+
+/// Whether the session is bound to `repo#number` and works in a checkout of `repo`.
+fn owns(state: &DaemonState, session: &Session, repo: &str, number: u64) -> bool {
+    state
+        .pr_monitor()
+        .target_of(session.id())
+        .is_some_and(|(bound, n)| n == number && bound.eq_ignore_ascii_case(repo))
+        && crate::pr_monitor::check_repo(session, repo).is_ok()
+}
+
+/// Whether a wake may start a turn in the session now: nothing is running, it was not stopped
+/// by the user, and no other wake holds it.
+fn ready(session: &Session) -> bool {
+    matches!(
+        session.status().0,
+        SessionStatus::Idle | SessionStatus::Watching
+    ) && !session.is_stopped()
+        && !session.workspace().permissions().is_capped()
 }
 
 /// Why the session's folder may not be worked in, when it may not (N2): it must be on the pull
@@ -603,6 +699,8 @@ async fn checkout_problem(dir: &Path, branch: &str) -> Option<String> {
 
 struct Wake {
     entry: Entry,
+    /// The entry as it was before the comments were taken, for [`Ledger::give_back`].
+    before: Entry,
     branch: String,
     items: Vec<Item>,
     ids: Vec<u64>,
@@ -654,10 +752,256 @@ fn review_prompt(number: u64, branch: &str, items: &[Item]) -> String {
     )
 }
 
+/// How the owner's turn ended.
+enum Owned {
+    /// The woken turn ended, with the model's final text.
+    Done(String),
+    /// Something else had the session (a turn of the user's started first): nothing was sent, or
+    /// the wake message was taken back out of the queue, and the comments go back.
+    Raced,
+    Failed(String),
+}
+
+/// Waits for the turn the wake message starts. Permission requests become approvals (once the
+/// wake's own turn runs), and a question the model asks the user is left for the user to
+/// answer. Turn events before the turn of `id` started (a turn of the user's own) are not the
+/// wake's: if one starts first, the wake message is taken back out of the queue and `Ok(true)`
+/// says so; `Ok(false)` is the wake's own turn ending.
+#[allow(clippy::too_many_arguments)]
+async fn follow(
+    state: Option<&Arc<DaemonState>>,
+    session: &Arc<Session>,
+    events: &mut broadcast::Receiver<AgentEvent>,
+    prompt: &str,
+    id: &str,
+    started: &mut bool,
+    reply: &mut String,
+    on_start: &dyn Fn(),
+) -> Result<bool, String> {
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return Err("the session ended".into()),
+        };
+        let root = event.agent_id == ROOT_AGENT;
+        match event.event {
+            SessionEvent::PermissionRequested {
+                request_id,
+                tool,
+                summary,
+                ..
+            } if *started => {
+                if let Some(state) = state {
+                    state.bridge_permission(session, request_id, &tool, summary);
+                }
+            }
+            SessionEvent::TurnStarted { text, .. } if root && !*started => {
+                if text == prompt || session.turn_message().as_deref() == Some(id) {
+                    *started = true;
+                    on_start();
+                } else if session.remove_queued(None, id).is_ok() {
+                    return Ok(true);
+                }
+            }
+            SessionEvent::TextDelta { text } if root && *started => reply.push_str(&text),
+            SessionEvent::TurnCompleted { .. } if root && *started => return Ok(false),
+            SessionEvent::TurnFailed { message } if root && *started => return Err(message),
+            _ => {}
+        }
+    }
+}
+
+/// Waits until no subagent of the session is working. A paused one is cancelled: it would run
+/// on the session's permissions again when resumed. They share the session's permissions, so
+/// the cap stays on until they are done. `None` waits without limit.
+async fn settle_agents(session: &Session, within: Option<Duration>) -> bool {
+    let deadline = within.map(|within| Instant::now() + within);
+    loop {
+        let mut working = false;
+        for agent in session.agents() {
+            if agent.agent_id == ROOT_AGENT {
+                continue;
+            }
+            match agent.status {
+                AgentStatus::Running => working = true,
+                AgentStatus::Paused => {
+                    let _ = session.cancel_agent(&agent.agent_id);
+                }
+                _ => {}
+            }
+        }
+        if !working {
+            return true;
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn wake_timeout(_session: &str) -> Duration {
+    #[cfg(feature = "testing")]
+    if let Some(timeout) = testing::timeout_for(_session) {
+        return timeout;
+    }
+    WAKE_TIMEOUT
+}
+
+/// Tells clients the session's mode may have changed (the cap shows as `ask`).
+fn announce_session(state: &DaemonState, session: &Session) {
+    state.announce(SESSION_UPDATED, state.summary(session));
+}
+
+/// Runs the wake as a turn of the owning session, capped from before the message is sent until
+/// the turn and its subagents are over. The cap is applied first, then the session is checked
+/// again (a turn of the user's may have started since the first check), then the message is
+/// sent under an id that tells its turn from any other. If the turn does not end in time the
+/// session is stopped and the cap stays on until the turn really ends, so resuming it later
+/// does not run it uncapped.
+async fn owner_turn(
+    state: &Arc<DaemonState>,
+    session: &Arc<Session>,
+    prompt: &str,
+    on_start: &dyn Fn(),
+) -> Owned {
+    let Some(cap) = crate::permissions::TurnCap::apply(session) else {
+        return Owned::Raced;
+    };
+    announce_session(state, session);
+    let mut events = session.subscribe();
+    #[cfg(feature = "testing")]
+    testing::paused(session.id()).await;
+    if !ready_after_cap(session) {
+        drop(cap);
+        announce_session(state, session);
+        return Owned::Raced;
+    }
+    if let Err(stop) = crate::budgets::check(state, session.id(), false) {
+        drop(cap);
+        announce_session(state, session);
+        return Owned::Failed(stop.message);
+    }
+    let id = session.reserve_message_id();
+    if session.send_as(id.clone(), prompt.to_string()).is_err() {
+        drop(cap);
+        announce_session(state, session);
+        return Owned::Failed("the session closed before it started".to_string());
+    }
+    let (mut started, mut reply) = (false, String::new());
+    let timeout = wake_timeout(session.id());
+    let outcome = tokio::time::timeout(
+        timeout,
+        follow(
+            Some(state),
+            session,
+            &mut events,
+            prompt,
+            &id,
+            &mut started,
+            &mut reply,
+            on_start,
+        ),
+    )
+    .await;
+    match outcome {
+        Ok(Ok(true)) => {
+            drop(cap);
+            announce_session(state, session);
+            Owned::Raced
+        }
+        Ok(result) => {
+            // The root's turn ended; its subagents may still work under the same permissions.
+            let settled = settle_agents(session, Some(timeout)).await;
+            if !settled {
+                session.stop();
+                hold(
+                    Arc::clone(state),
+                    Arc::clone(session),
+                    cap,
+                    events,
+                    id,
+                    started,
+                );
+                return Owned::Failed(
+                    "subagents were still working when the wake ended; the session was stopped and stays capped until they end"
+                        .to_string(),
+                );
+            }
+            drop(cap);
+            announce_session(state, session);
+            match result {
+                Ok(_) => Owned::Done(reply.trim().to_string()),
+                Err(message) => Owned::Failed(message),
+            }
+        }
+        Err(_) => {
+            // Stopping pauses the turn; it would go on uncapped if the cap were lifted now.
+            session.stop();
+            hold(
+                Arc::clone(state),
+                Arc::clone(session),
+                cap,
+                events,
+                id,
+                started,
+            );
+            Owned::Failed(format!(
+                "timed out after {} s; the session was stopped and stays capped until its turn ends",
+                timeout.as_secs()
+            ))
+        }
+    }
+}
+
+/// Like [`ready`], with the wake's own cap on.
+fn ready_after_cap(session: &Session) -> bool {
+    matches!(
+        session.status().0,
+        SessionStatus::Idle | SessionStatus::Watching
+    ) && !session.is_stopped()
+}
+
+/// Keeps `cap` until the woken turn has really ended (it may be paused, and runs capped when
+/// resumed) and the subagents are done, then lifts it.
+fn hold(
+    state: Arc<DaemonState>,
+    session: Arc<Session>,
+    cap: crate::permissions::TurnCap,
+    mut events: broadcast::Receiver<AgentEvent>,
+    id: String,
+    mut started: bool,
+) {
+    tokio::spawn(async move {
+        if started {
+            let (mut reply, prompt) = (String::new(), String::new());
+            let _ = follow(
+                None,
+                &session,
+                &mut events,
+                &prompt,
+                &id,
+                &mut started,
+                &mut reply,
+                &|| {},
+            )
+            .await;
+        } else {
+            // The message never started: take it out of the queue if it is still there.
+            let _ = session.remove_queued(None, &id);
+        }
+        settle_agents(&session, None).await;
+        drop(cap);
+        announce_session(&state, &session);
+    });
+}
+
 async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, running: Running) {
     let _running = running;
     let Wake {
         entry,
+        before,
         branch,
         items,
         ids,
@@ -677,44 +1021,26 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
         );
     };
     let prompt = review_prompt(number, &branch, &items);
+    let owner_checkout = matches!(place, Place::Owner(_));
     let (dir, session_id, summary) = match place {
         Place::Owner(session) => {
             let id = session.id().to_string();
-            say(
-                "started",
-                Some(id.clone()),
-                "answering new review comments".to_string(),
-            );
-            if let Err(stop) = crate::budgets::check(&state, session.id(), false) {
-                say("failed", Some(id), stop.message);
-                return;
-            }
-            let dir = PathBuf::from(session.project_dir());
-            // Capped for this turn only; the session's own mode comes back below, whatever
-            // happens to the turn.
-            let cap = crate::permissions::TurnCap::apply(&session);
-            let events = session.subscribe();
-            if session.send(prompt).is_err() {
-                drop(cap);
+            let on_start = || {
                 say(
-                    "failed",
-                    Some(id),
-                    "the session closed before it started".to_string(),
+                    "started",
+                    Some(id.clone()),
+                    "answering new review comments".to_string(),
                 );
-                return;
-            }
-            let outcome = state.wait_for_turn(&session, events, WAKE_TIMEOUT).await;
-            if outcome
-                .as_ref()
-                .is_err_and(|message| message.starts_with("timed out"))
-            {
-                // The turn is still running: it must not outlive the cap.
-                session.stop();
-            }
-            drop(cap);
-            match outcome {
-                Ok(summary) => (dir, Some(id), summary),
-                Err(message) => {
+            };
+            match owner_turn(&state, &session, &prompt, &on_start).await {
+                Owned::Done(summary) => (PathBuf::from(session.project_dir()), Some(id), summary),
+                Owned::Raced => {
+                    // Not woken: the comments are looked at again at the next pass.
+                    state.pr_monitor().ledger().give_back(&state, &before);
+                    state.pr_monitor().announce_flags(&state, &repo, number);
+                    return;
+                }
+                Owned::Failed(message) => {
                     say("failed", Some(id), message);
                     return;
                 }
@@ -765,13 +1091,24 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
         }
     };
     commit_and_push(
-        &state, &github, &entry, &branch, &dir, session_id, &summary, &ids,
+        &state,
+        &github,
+        &entry,
+        &branch,
+        &dir,
+        session_id,
+        &summary,
+        &ids,
+        owner_checkout,
     )
     .await;
 }
 
 /// Commits what the session changed in `dir` and pushes it after the user approves, always: a
-/// change made from text other people wrote never goes out on `push = "auto"`.
+/// change made from text other people wrote never goes out on `push = "auto"`. What is pushed
+/// is the commit the approval measured, by its hash, whatever `HEAD` is by then. Anything the
+/// session left untracked in the folder is taken with `git add -A`, and a declined push leaves
+/// the commit where it was made (on the branch, in the folder).
 #[allow(clippy::too_many_arguments)]
 async fn commit_and_push(
     state: &Arc<DaemonState>,
@@ -782,6 +1119,7 @@ async fn commit_and_push(
     session_id: Option<String>,
     summary: &str,
     ids: &[u64],
+    owner_checkout: bool,
 ) {
     let (repo, number) = (entry.repo.as_str(), entry.number);
     let say = |status: &str, text: String| {
@@ -796,6 +1134,21 @@ async fn commit_and_push(
             ids.to_vec(),
         );
     };
+    // The folder is the pull request's branch checkout, still: if the turn (or the user) moved
+    // it elsewhere, nothing is committed on whatever branch it is on now.
+    if owner_checkout {
+        match git::current_branch(dir).await {
+            Ok(current) if current == branch => {}
+            _ => {
+                say(
+                    "failed",
+                    "the folder is no longer on the pull request's branch, so nothing was committed"
+                        .to_string(),
+                );
+                return;
+            }
+        }
+    }
     let message = format!(
         "fix: address review comments on #{number}\n\n{summary}\n\nImperium-Auto-Fix: session {session}",
         summary = summary.chars().take(1500).collect::<String>(),
@@ -812,8 +1165,15 @@ async fn commit_and_push(
             return;
         }
     }
-    // The approval shows what the daemon measured over `origin/<branch>..HEAD`: everything that
-    // would leave the machine, including commits that were there before the wake.
+    // The approval shows what the daemon measured over `origin/<branch>..<commit>`: everything
+    // that would leave the machine, including commits that were there before the wake.
+    let sha = match git::head(dir).await {
+        Ok(sha) => sha,
+        Err(error) => {
+            say("failed", error);
+            return;
+        }
+    };
     let mut warnings = vec![format!(
         "this change answers review comments written by other people (untrusted text; ids {}); \
          a push for review comments always asks, whatever push is set to",
@@ -833,6 +1193,14 @@ async fn commit_and_push(
         Ok(1) => {}
         Ok(count) => warnings.push(format!("the push would send {count} commits, not one")),
         Err(error) => warnings.push(format!("the commits to push could not be counted: {error}")),
+    }
+    if git::head(dir).await.ok().as_deref() != Some(sha.as_str()) {
+        say(
+            "failed",
+            "the folder's HEAD moved while the push was being measured; nothing was pushed"
+                .to_string(),
+        );
+        return;
     }
     let paths: Vec<String> = changes.iter().map(|(_, path)| path.clone()).collect();
     let flagged = ci_config_paths(&paths);
@@ -856,7 +1224,7 @@ async fn commit_and_push(
         say("failed", error);
         return;
     }
-    match git::push(dir, branch).await {
+    match git::push_commit(dir, &sha, branch).await {
         Ok(()) => {
             state
                 .pr_monitor()
@@ -865,5 +1233,66 @@ async fn commit_and_push(
             say("pushed", summary.to_string());
         }
         Err(error) => say("failed", error),
+    }
+}
+
+/// Hooks for the daemon's tests: hold a wake at the moment it re-checks the session, and
+/// shorten the time a wake turn may take.
+#[cfg(feature = "testing")]
+pub mod testing {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    use std::time::Duration;
+
+    use tokio::sync::Notify;
+
+    type Pauses = Mutex<HashMap<String, (Arc<Notify>, Arc<Notify>)>>;
+
+    fn pauses() -> &'static Pauses {
+        static PAUSES: OnceLock<Pauses> = OnceLock::new();
+        PAUSES.get_or_init(Pauses::default)
+    }
+
+    fn timeouts() -> &'static Mutex<HashMap<String, Duration>> {
+        static TIMEOUTS: OnceLock<Mutex<HashMap<String, Duration>>> = OnceLock::new();
+        TIMEOUTS.get_or_init(Mutex::default)
+    }
+
+    /// The next wake of `session` stops after it applied its cap and before it checks the
+    /// session again: it notifies the first handle and goes on when the second is notified.
+    pub fn pause_wake(session: &str) -> (Arc<Notify>, Arc<Notify>) {
+        let pair = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+        pauses()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(session.to_string(), pair.clone());
+        pair
+    }
+
+    /// How long a wake turn of `session` may take.
+    pub fn set_wake_timeout(session: &str, timeout: Duration) {
+        timeouts()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(session.to_string(), timeout);
+    }
+
+    pub(super) fn timeout_for(session: &str) -> Option<Duration> {
+        timeouts()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(session)
+            .copied()
+    }
+
+    pub(super) async fn paused(session: &str) {
+        let pair = pauses()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(session);
+        if let Some((reached, release)) = pair {
+            reached.notify_one();
+            release.notified().await;
+        }
     }
 }

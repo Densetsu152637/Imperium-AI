@@ -775,12 +775,26 @@ session because someone wrote a review comment on its pull request
 turn runs in the stricter of the session's mode and `ask`: every mode but `plan` becomes `ask`
 (allow rules, *Always this session* approvals, `accept_edits`, `full` and `auto` do not apply
 during the turn), and `plan` stays `plan`. Deny rules and the safety floor apply as always, and
-nothing is pre-approved, so every edit, command and tool that asks waits for the user; reads run as
-they do in `ask`. Only the mode changes (`permissions::TurnCap`): the session's rules and
-approvals are untouched, and the session's own mode comes back when the turn ends, also on an
-error, a timeout or a cancel (unless the user changed the mode meanwhile, whose choice stands).
-The user's later messages are **not** capped, with the comment text still in the history; the
-card says so until it is acknowledged.
+nothing is pre-approved. On top of the mode, the session is **capped** (`Permissions::cap`, held
+by `permissions::TurnCap`): **every call that is not a read asks, every time, with no exception**,
+whatever the tool's own default, an allow rule, an allow list, the session's approvals or a
+pre-approval says. That covers file writes and edits, commands, web search and fetch, browser and
+media tools, MCP and extension tools, `activate_plugin`, and the agent tools that change something
+outside the conversation: `spawn_agent`, `start_session`, `steer_agent`, `queue_agent`,
+`resume_agent`, `keep_as_knowledge`, `ask_agent`, `delegate_chunks`, `memory_remember`,
+`memory_edit` and `memory_forget`, also when reached through `call_tool`. Deny rules still refuse
+and plan mode still refuses. Reads (`read_file`, `list_dir`, `glob`, `grep`, `memory_search`,
+`memory_read`) run. `update_plan` and `update_state` only write the agent's own working notes,
+which live in the conversation and persist nowhere else, so they run; `await_tasks`,
+`list_agents`, `list_knowledge_agents`, `load_skill`, `context_load` and `ask_user` read or wait.
+The session's rules and approvals are untouched, and the session's own mode comes back when
+the turn **and its subagents** are over. Subagents share the session's permissions, so the cap
+is held until none is working (a paused one is cancelled). If the turn does not end in time the
+session is stopped and stays capped until the turn really ends, so resuming it later does not
+run it uncapped. If a turn of the user's own got the session first, the wake message is taken
+back out of the queue and the comments are looked at again later. The user's later messages are
+**not** capped, with the comment text still in the history; the card says so until it is
+acknowledged.
 
 **The safety floor** is a built-in check that applies everywhere: no mode, allow rule, session
 approval, or unattended session's pre-approved tools lift it (plan mode refuses the call

@@ -513,6 +513,17 @@ impl HttpGitHub {
         .await
     }
 
+    async fn head_repo(&self, repo: &str, number: u64) -> Result<Option<String>, String> {
+        let (owner, name) = split_repo(repo)?;
+        let pull = self
+            .rest(&format!("/repos/{owner}/{name}/pulls/{number}"), false)
+            .await?
+            .unwrap_or(Value::Null);
+        Ok(pull["head"]["repo"]["full_name"]
+            .as_str()
+            .map(str::to_string))
+    }
+
     async fn is_own(&self, repo: &str, number: u64) -> Result<bool, String> {
         let (owner, name) = split_repo(repo)?;
         let pull = self
@@ -725,6 +736,14 @@ impl GitHub for HttpGitHub {
 
     fn is_own_pull_request<'a>(&'a self, repo: &'a str, number: u64) -> GhFuture<'a, bool> {
         Box::pin(self.is_own(repo, number))
+    }
+
+    fn pr_head_repo<'a>(&'a self, repo: &'a str, number: u64) -> GhFuture<'a, Option<String>> {
+        Box::pin(self.head_repo(repo, number))
+    }
+
+    fn login(&self) -> GhFuture<'_, String> {
+        Box::pin(self.viewer_login())
     }
 
     fn collaborator_permission<'a>(

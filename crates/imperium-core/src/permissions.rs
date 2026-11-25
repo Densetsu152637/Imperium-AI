@@ -537,11 +537,15 @@ pub(crate) fn capped_mode(mode: imperium_api::PermissionMode) -> imperium_api::P
     }
 }
 
-/// Holds a session at [`capped_mode`] for one turn that the daemon started from text written by
-/// others (a review comment). The session's own mode comes back when this is dropped, also on an
+/// Holds a session capped for one turn that the daemon started from text written by others (a
+/// review comment): the session's mode is the stricter of its own and `ask` ([`capped_mode`]),
+/// and every call that is not a read asks, whatever the tool's own policy says
+/// (`Permissions::cap`). The mode the session had comes back when this is dropped, also on an
 /// error, a timeout or a cancelled task, unless the user changed the mode meanwhile (their
-/// choice stands). Nothing is pre-approved and no rule is added: only the mode changes, so the
-/// user's rules and the session's approvals are intact for the turns after.
+/// choice stands). Nothing is pre-approved and no rule is added, so the user's rules and the
+/// session's approvals are intact for the turns after. Two caps on one session are refused
+/// ([`TurnCap::apply`] returns `None`), so one cannot save the other's capped mode as the mode
+/// to give back.
 pub(crate) struct TurnCap {
     session: std::sync::Arc<imperium_engine::Session>,
     original: imperium_api::PermissionMode,
@@ -549,21 +553,28 @@ pub(crate) struct TurnCap {
 }
 
 impl TurnCap {
-    pub(crate) fn apply(session: &std::sync::Arc<imperium_engine::Session>) -> Self {
+    pub(crate) fn apply(session: &std::sync::Arc<imperium_engine::Session>) -> Option<Self> {
+        let permissions = session.workspace().permissions();
+        if permissions.is_capped() {
+            return None;
+        }
+        permissions.cap();
         let original = session.permission_mode();
         let capped = capped_mode(original);
         session.set_permission_mode(capped);
-        Self {
+        Some(Self {
             session: std::sync::Arc::clone(session),
             original,
             capped,
-        }
+        })
     }
 }
 
 impl Drop for TurnCap {
     fn drop(&mut self) {
-        if self.session.permission_mode() == self.capped {
+        let permissions = self.session.workspace().permissions();
+        permissions.uncap();
+        if !permissions.is_capped() && self.session.permission_mode() == self.capped {
             self.session.set_permission_mode(self.original);
         }
     }

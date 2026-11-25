@@ -903,6 +903,42 @@ impl Agent {
         {
             return self.tool_finished(call, name, false, refused(Refusal::Plan, summary), None);
         }
+        // A turn the daemon woke from text other people wrote asks before anything that changes
+        // state outside the conversation (starting agents and sessions, saving or editing
+        // memory, loading plugins), whatever the tool's own policy says. The call is already
+        // the effective one (`call_tool` is unwrapped). Planning and state notes stay in the
+        // conversation, and the other agent tools only read or wait, so they run.
+        if self.workspace.permissions().is_capped()
+            && matches!(
+                tool,
+                AgentTool::SpawnAgent
+                    | AgentTool::SteerAgent
+                    | AgentTool::QueueAgent
+                    | AgentTool::ResumeAgent
+                    | AgentTool::KeepAsKnowledge
+                    | AgentTool::AskAgent
+                    | AgentTool::DelegateChunks
+                    | AgentTool::ActivatePlugin
+                    | AgentTool::StartSession
+                    | AgentTool::MemoryRemember
+                    | AgentTool::MemoryEdit
+                    | AgentTool::MemoryForget
+            )
+        {
+            if self.fork.is_some() {
+                return self.tool_finished(call, name, false, fork::ask_refusal(summary), None);
+            }
+            let question = format!("{summary} (in a turn woken by review comments)");
+            if !self.approve_with(name, &question, None, false, true).await {
+                return self.tool_finished(
+                    call,
+                    name,
+                    false,
+                    "The user denied this action.".into(),
+                    None,
+                );
+            }
+        }
         let started = self.tool_started(call, name, summary.to_string());
         let result = match tool {
             AgentTool::UpdatePlan => self.update_plan(arguments),

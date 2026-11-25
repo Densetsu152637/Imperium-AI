@@ -15,6 +15,7 @@
 //! allowed by `cargo test`. Rules are a convenience on top of the folder sandbox and isolation
 //! tiers, not a sandbox of their own.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use imperium_api::{PathGrant, PermissionMode, PermissionRule, RuleAction};
@@ -63,12 +64,29 @@ impl SharedRules {
 }
 
 /// A session's permission mode, shared by its agents so a change applies from their next call.
+/// It also holds the session's "capped" count: while a turn the daemon started from text other
+/// people wrote runs, every call that is not a read asks (see [`Permissions::judge`]).
 #[derive(Debug, Clone, Default)]
-pub struct SharedMode(Arc<RwLock<PermissionMode>>);
+pub struct SharedMode(Arc<RwLock<PermissionMode>>, Arc<AtomicUsize>);
 
 impl SharedMode {
     pub fn new(mode: PermissionMode) -> Self {
-        SharedMode(Arc::new(RwLock::new(mode)))
+        SharedMode(Arc::new(RwLock::new(mode)), Arc::default())
+    }
+
+    /// Whether a capped turn is running (any number of holders).
+    pub fn is_capped(&self) -> bool {
+        self.1.load(Ordering::SeqCst) > 0
+    }
+
+    pub fn cap(&self) {
+        self.1.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn uncap(&self) {
+        let _ = self
+            .1
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
     }
 
     pub fn get(&self) -> PermissionMode {
@@ -171,11 +189,36 @@ impl Permissions {
     ) -> Judgement {
         let rule = self.evaluate(tool, target);
         let floored = floor_override.unwrap_or_else(|| safety_floor(kind, target));
+        let mut decision = decide_call(self.mode(), kind, rule, floored);
+        // A capped turn asks for everything but a read, whatever the tool's default is (web
+        // search and fetch, browser, MCP and extension tools on an allow list, ...) and
+        // whatever rules, session approvals or pre-approval say. Deny rules and plan mode
+        // still refuse.
+        if self.is_capped()
+            && kind != CallKind::Read
+            && matches!(decision, Decision::Run | Decision::Ask { .. })
+        {
+            decision = Decision::Ask { sticky: false };
+        }
         Judgement {
-            decision: decide_call(self.mode(), kind, rule, floored),
+            decision,
             rule,
             floored,
         }
+    }
+
+    /// Whether a capped turn is running.
+    pub fn is_capped(&self) -> bool {
+        self.mode.is_capped()
+    }
+
+    /// Starts a capped turn: until the matching [`Self::uncap`], every call but a read asks.
+    pub fn cap(&self) {
+        self.mode.cap();
+    }
+
+    pub fn uncap(&self) {
+        self.mode.uncap();
     }
 
     /// Changes the session's permission mode from its agents' next calls on.
@@ -1439,5 +1482,58 @@ mod tests {
             CallKind::Edit,
             &path(&canonical.join("elsewhere/x.js"))
         ));
+    }
+
+    /// In a capped turn every call but a read asks, every time: a tool that never asks (web
+    /// search), one an allow rule lets run (an MCP or extension tool) and a command alike. A
+    /// deny rule and plan mode still refuse, and the caps count, so two holders do not undo
+    /// each other.
+    #[test]
+    fn a_capped_turn_asks_for_every_call_but_a_read() {
+        let allow = |tool: &str| {
+            Permissions::new(
+                SharedRules::new(vec![rule(tool, "", RuleAction::Allow)]),
+                SharedRules::default(),
+            )
+            .with_mode(PermissionMode::Full)
+        };
+        let other = |asks| CallKind::Other { asks };
+        for (tool, kind) in [
+            ("web_search", other(false)),
+            ("mcp__srv__lookup", other(true)),
+            ("ext_tool", other(false)),
+            ("run_command", CallKind::Execute),
+            ("write_file", CallKind::Edit),
+        ] {
+            let permissions = allow(tool);
+            let judge = |p: &Permissions| p.judge(tool, &Target::Other, kind, None).decision;
+            assert_eq!(judge(&permissions), RUN, "{tool} runs when not capped");
+            permissions.cap();
+            permissions.cap();
+            assert_eq!(judge(&permissions), ASK_EVERY_TIME, "{tool}");
+            permissions.uncap();
+            assert!(permissions.is_capped());
+            permissions.uncap();
+            assert_eq!(judge(&permissions), RUN, "{tool} after the cap");
+        }
+        let permissions = allow("read_file");
+        permissions.cap();
+        assert_eq!(
+            permissions
+                .judge("read_file", &Target::Other, CallKind::Read, None)
+                .decision,
+            RUN
+        );
+        let denied = Permissions::new(
+            SharedRules::new(vec![rule("web_search", "", RuleAction::Deny)]),
+            SharedRules::default(),
+        );
+        denied.cap();
+        assert_eq!(
+            denied
+                .judge("web_search", &Target::Other, other(false), None)
+                .decision,
+            Decision::Refuse(Refusal::Rule)
+        );
     }
 }

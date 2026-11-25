@@ -72,6 +72,15 @@ pub async fn push(worktree: &Path, branch: &str) -> Result<(), String> {
         .map(|_| ())
 }
 
+/// Pushes exactly the commit `sha` to `branch` on origin (a plain push, like [`push`]), so what
+/// was approved is what goes, whatever `HEAD` is by then.
+pub async fn push_commit(worktree: &Path, sha: &str, branch: &str) -> Result<(), String> {
+    let target = format!("{sha}:refs/heads/{branch}");
+    git(worktree, &["push", "origin", &target])
+        .await
+        .map(|_| ())
+}
+
 /// What a push of the worktree's `HEAD` would add to `origin/<branch>`: each changed path with
 /// its `git diff --name-status` letter (a rename counts as a delete and an add).
 pub async fn changes_since_origin(

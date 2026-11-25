@@ -195,9 +195,17 @@ the PR touches.
      permission mode and `ask`**; a session in `plan` mode stays in `plan`. `ask` mode ignores
      allow rules and session approvals, so a user-layer or environment-layer allow rule, a
      session's "always allow", `accept edits`, `full access` and `auto` promotion do not apply
-     during the turn. Deny rules and the safety floor still apply. The result: **every file
-     write, edit, command and MCP, browser or network tool call asks**; plain reads (glob, grep,
-     read_file) run as they do in `ask` mode today. The wake pre-approves nothing, and in
+     during the turn. Deny rules and the safety floor still apply. `ask` mode alone is not
+     enough (a tool that never asks by default, an MCP tool on an allow list, memory writes and
+     `spawn_agent` are not asked in it), so the session is also **capped**
+     (`Permissions::cap`): **every call that is not a read asks, every time, with no exception**
+     (file writes and edits, commands, web, browser, MCP and extension tools, `activate_plugin`,
+     `spawn_agent`, `start_session`, memory writes, also through `call_tool`); plain reads (glob,
+     grep, read_file, memory reads) run. `update_plan` and `update_state` write only the agent's
+     own notes in the conversation and run. The cap is applied before the wake message is sent,
+     the session is checked again then, and the wake is recognised by its own turn's start; it
+     is held until the turn and its subagents end, and after a timeout or a stop until the turn
+     really ends. The wake pre-approves nothing, and in
      particular `write_file` and `edit_file` are **not** pre-approved in a wake turn. That is
      stricter than #267's Fix CI, which runs in `ask` mode with those two pre-approved (D8).
      (Pre-approving edits inside the PR worktree would be
@@ -866,8 +874,10 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   `autofix/review.rs` (no `ci.rs`); (4) the cursors baseline when the switch is turned on, so
   earlier comments do not wake; (5) Fix CI's attempt count stays in memory (stage 8 moves it
   onto the wake path); (6) `set_monitor` checks the author with a new `is_own_pull_request`
-  client call. `ask` mode runs a tool that never asks by default (searching the web) without
-  asking, so such a tool still runs in a wake turn.
+  client call; (7) the cap is more than `ask` mode: `Permissions::cap` makes every non-read
+  call ask (the security review found that `ask` alone let never-asking tools, allowed MCP tools,
+  memory writes and `spawn_agent` run); its check for the agent tools is in
+  `imperium-engine`'s `agent/tools.rs` (agreed with the research session).
 - Handoff notes: no tool is added for the agent; the envelope and the capped mode are the only
   changes to what the model sees and can do. Stage 8 adds the reply ledger beside the cursors
   (`REPLY_MARKER` already keeps the daemon's own replies from waking it) and moves Fix CI onto

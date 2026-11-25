@@ -76,6 +76,22 @@ impl DaemonState {
         resumed
     }
 
+    /// The session `id`, loaded from its record when it is not running (a session that was not
+    /// resumed at the last start). `None` for one that was deleted or archived.
+    pub(crate) fn load_session(&self, id: &str) -> Option<Arc<Session>> {
+        if let Some(session) = self.session(id) {
+            return Some(session);
+        }
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(self.meta_path(id)).ok()?).ok()?;
+        if meta["archived"] == true {
+            return None;
+        }
+        self.resume_from_meta(id, &meta, &self.journal_path(id), false)
+            .ok()
+            .map(|(session, _)| session)
+    }
+
     /// Continues one recorded session from its meta file and journal.
     pub(super) fn resume_from_meta(
         &self,

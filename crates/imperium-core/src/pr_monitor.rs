@@ -810,7 +810,7 @@ impl PrMonitor {
     }
 
     /// The repository and number of the pull request a session is bound to.
-    fn target_of(&self, session_id: &str) -> Option<(String, u64)> {
+    pub(crate) fn target_of(&self, session_id: &str) -> Option<(String, u64)> {
         let inner = self.lock();
         let tracked = inner.tracked.get(&inner.sessions.get(session_id)?.key)?;
         Some((tracked.repo.clone(), tracked.number))

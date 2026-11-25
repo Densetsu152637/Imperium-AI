@@ -1719,3 +1719,74 @@ async fn the_loader_text_is_the_same_in_every_request_and_ends_the_base_prompt()
         assert!(after.is_empty() || after.starts_with("\n\n"), "{after}");
     }
 }
+
+/// In a capped turn (one the daemon woke from text other people wrote) every call that is not a
+/// read asks, in full-access mode and with the integration's own policy "never asks": a
+/// subagent, the same call through `call_tool`, a built-in integration, an MCP tool and a
+/// command. A refusal runs nothing.
+#[tokio::test]
+async fn a_capped_turn_asks_for_everything_but_a_read() {
+    let steps = vec![
+        Some(("spawn_agent", json!({"brief": "look around"}))),
+        Some((
+            "call_tool",
+            json!({"name": "spawn_agent", "arguments": {"brief": "look around"}}),
+        )),
+        Some(("web_fetch", json!({}))),
+        Some(("call_tool", json!({"name": ALPHA, "arguments": {}}))),
+        Some(("run_command", json!({"command": "echo hi"}))),
+        Some(("read_file", json!({"path": "a.txt"}))),
+        None,
+    ];
+    let setup = start(options(HarnessMode::On, steps)).await;
+    std::fs::write(setup.project.path().join("a.txt"), "AAA").unwrap();
+    setup.session.workspace().permissions().cap();
+    let mut events = setup.session.subscribe();
+    setup.session.send("go".into()).unwrap();
+    let (mut asked, mut results) = (Vec::new(), Vec::new());
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event within 20 s")
+            .unwrap();
+        if event.agent_id != ROOT_AGENT {
+            continue;
+        }
+        match event.event {
+            SessionEvent::PermissionRequested {
+                request_id, tool, ..
+            } => {
+                asked.push(tool);
+                setup
+                    .session
+                    .respond(
+                        request_id,
+                        imperium_protocol::session::PermissionDecision::Deny,
+                    )
+                    .unwrap();
+            }
+            SessionEvent::ToolFinished { ok, output, .. } => results.push((ok, output)),
+            SessionEvent::TurnCompleted { .. } => break,
+            SessionEvent::TurnFailed { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        asked,
+        [
+            "spawn_agent",
+            "spawn_agent",
+            "web_fetch",
+            ALPHA,
+            "run_command"
+        ],
+        "{results:?}"
+    );
+    for result in &results[..5] {
+        assert!(!result.0 && result.1.contains("denied"), "{results:?}");
+    }
+    // The read ran without asking.
+    assert!(results[5].0 && results[5].1.contains("AAA"), "{results:?}");
+    // No subagent was started.
+    assert_eq!(setup.session.agents().len(), 1);
+}

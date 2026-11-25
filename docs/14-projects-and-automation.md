@@ -1305,12 +1305,22 @@ can comment, so nothing in it is trusted:
 - **Capped turn.** The woken turn runs in the stricter of the session's mode and `ask`
   ([05](05-tools-and-isolation.md#permission-modes-implemented)): every edit, command and tool that
   asks waits for the user, whatever allow rules, *Always this session* approvals, `accept_edits`,
-  `full` access or `auto` say; `plan` stays `plan`. Nothing is pre-approved (stricter than Fix CI,
-  whose worktree belongs to the daemon). The session's mode comes back afterwards; the user's later
-  messages are not capped.
-- **Where it runs.** In the owning session's folder, only if that folder is on the pull request's
+  `full` access or `auto` say; `plan` stays `plan`. On top of the mode, **every call that is not a
+  read asks, every time** (web, browser, MCP and extension tools, memory writes, `spawn_agent` and
+  `start_session`, also through `call_tool`; the list is in
+  [05](05-tools-and-isolation.md#permission-modes-implemented)). Nothing is pre-approved (stricter
+  than Fix CI, whose worktree belongs to the daemon). The cap is applied before the message is
+  sent, the session is checked again then (a turn of the user's own may have started), and the
+  wake counts only from the start of its own turn. It is held until the turn and its subagents
+  are over, and after a timeout or a stop until the turn really ends. The session's mode
+  comes back afterwards; the user's later messages are not capped. A question the model asks the
+  user waits for the user, within the turn's time limit.
+- **Where it runs.** In the owning session's folder (loaded from its record if it is not running),
+  only if that session is bound to this pull request now and its `origin` is the repository (the
+  ledger file is not trusted to name an owner), and the folder is on the pull request's
   branch, at or ahead of `origin/<branch>` (not behind or diverged; `origin` is fetched first) and
-  clean. If a check fails, or the session is deleted or archived, the daemon starts a **new
+  clean. A pull request from a fork is not woken at all (the branch is not one the daemon pushes
+  to): an `autofix.event` with status `stopped` says so. If a check fails, or the session is deleted or archived, the daemon starts a **new
   unattended session** on the pull request's own worktree
   (`<data>/worktrees/<owner>__<repo>/pr-<n>`, from the pull request's branch, in `ask` mode with
   nothing pre-approved) and says so in the `autofix.event`; it never unarchives a session. A merged
@@ -1321,8 +1331,12 @@ can comment, so nothing in it is trusted:
   someone else; the approval lists everything in `origin/<branch>..HEAD` (the commits that were
   there before the wake too), flags CI configuration and git hooks, says that review comments
   drove it, and labels the model's summary as unverified. Auto-merge is turned off before a push,
-  as for Fix CI. In the owning folder, the commit also takes anything the user changed there
-  during the turn (the approval shows it).
+  as for Fix CI. The push sends the commit the approval measured, by its hash, whatever `HEAD` is
+  by then, and nothing is committed if the folder left the pull request's branch during the turn.
+  Accepted residual risks: in the owning folder `git add -A` also takes files the session or the
+  user created untracked during the turn (the approval lists them), and a declined push leaves the
+  commit on the branch in that folder. The daemon's own replies are recognised by the footer
+  marker as the end of a comment by the daemon's own login, nothing else.
 - **Events and limits.** `autofix.event` carries `trigger` (`review`) and the `comment_ids` that
   woke the session. Every wake counts toward `max_attempts_per_pr`; an accepted push resets the
   count, and once it is reached further comments wait ("stopped") until the switch is turned off

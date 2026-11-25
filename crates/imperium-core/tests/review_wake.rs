@@ -18,7 +18,7 @@ use imperium_engine::Session;
 use imperium_github::{HttpGitHub, StaticToken};
 use imperium_github_fake::FakeGithub;
 use imperium_protocol::jsonrpc::{Notification, Outcome};
-use imperium_protocol::session::SessionEvent;
+use imperium_protocol::session::{PermissionDecision, SessionEvent};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
@@ -78,6 +78,13 @@ async fn fake_model(wake: Vec<(&'static str, Value)>, later: Vec<(&'static str, 
                 let fail = messages
                     .iter()
                     .any(|m| m["content"].to_string().contains("FAIL-THE-TURN"));
+                // A subagent whose brief says so is slow, so it outlives the root's turn.
+                if !is_wake
+                    && last_user
+                        .is_some_and(|at| messages[at]["content"].to_string().contains("SLOW-SUB"))
+                {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
                 seen.lock().unwrap().push(body);
                 if fail {
                     return (
@@ -959,9 +966,13 @@ async fn the_daemons_own_reply_does_not_wake_and_a_restart_does_not_rehandle() {
         &format!("Done: renamed it.\n\n{REPLY_MARKER}"),
     );
     world.quiet().await;
-    world
-        .fake
-        .add_issue_comment(REPO, 7, "alice", "MEMBER", "Please check the docs.");
+    world.fake.add_issue_comment(
+        REPO,
+        7,
+        "alice",
+        "MEMBER",
+        &format!("Please check the docs. {REPLY_MARKER} Thanks."),
+    );
     let seen = world.wake(|_, _| true).await;
     assert_eq!(seen.statuses, ["started", "nothing"]);
 
@@ -1124,4 +1135,290 @@ async fn auto_fix_is_refused_for_a_pull_request_the_account_did_not_open() {
         .await
         .unwrap_err();
     assert!(wrong.contains("not the pull request"), "{wrong}");
+}
+
+/// Starts a user turn on `session` that waits for an answer to a permission request, and
+/// returns the request's id.
+async fn user_turn_waiting(session: &Session) -> u64 {
+    let mut events = session.subscribe();
+    session.send("run it".into()).unwrap();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event within 20 s")
+            .unwrap()
+            .event
+        {
+            SessionEvent::PermissionRequested { request_id, .. } => return request_id,
+            SessionEvent::TurnFailed { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_turn_the_user_started_first_does_not_let_the_wake_run_uncapped() {
+    let mut world = World::new(
+        write_greeting(),
+        vec![("run_command", json!({"command": "echo hi"}))],
+        "",
+    )
+    .await;
+    let session = world.new_session();
+    world.arm(&session).await;
+    // The wake has applied its cap and is about to check the session again.
+    let (reached, release) = imperium_core::review_testing::pause_wake(session.id());
+    comment(&world, "Please fix it.");
+    world.poll().await;
+    tokio::time::timeout(Duration::from_secs(10), reached.notified())
+        .await
+        .expect("the wake reached the pause");
+    // The user's own turn starts now, and waits for an answer.
+    let request = user_turn_waiting(&session).await;
+    release.notify_one();
+    // The wake did not send its message behind the user's turn.
+    while let Some(notice) = world.next(Duration::from_millis(700)).await {
+        assert_ne!(notice.method, "autofix.event", "{:?}", notice.params);
+    }
+    let mut events = session.subscribe();
+    session.respond(request, PermissionDecision::Deny).unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if matches!(
+                events.recv().await.unwrap().event,
+                SessionEvent::TurnCompleted { .. }
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the user's turn ends");
+    // The comments were handed back: the wake runs on a later pass, capped.
+    let owner = Arc::clone(&session);
+    let seen = world
+        .wake(move |kind, summary| {
+            if kind == "tool" {
+                assert!(summary.contains("write_file"), "{summary}");
+                assert_eq!(owner.permission_mode(), PermissionMode::Ask);
+            }
+            true
+        })
+        .await;
+    assert_eq!(
+        seen.statuses,
+        ["started", "awaiting_approval", "pushed"],
+        "{seen:?}"
+    );
+    assert_eq!(session.permission_mode(), PermissionMode::Default);
+}
+
+#[tokio::test]
+async fn subagents_do_not_outlive_the_cap() {
+    let mut world = World::new(
+        vec![("spawn_agent", json!({"brief": "SLOW-SUB look around"}))],
+        vec![],
+        "",
+    )
+    .await;
+    let session = world.new_session();
+    session.set_permission_mode(PermissionMode::Full);
+    world.arm(&session).await;
+    comment(&world, "Look around.");
+    let asked = Arc::new(Mutex::new(None::<std::time::Instant>));
+    let noted = Arc::clone(&asked);
+    let seen = world
+        .wake(move |kind, summary| {
+            if kind == "tool" && summary.contains("spawn_agent") {
+                *noted.lock().unwrap() = Some(std::time::Instant::now());
+            }
+            true
+        })
+        .await;
+    assert_eq!(seen.statuses, ["started", "nothing"], "{seen:?}");
+    // The root's turn ended at once; the wake waited for the slow subagent under the cap.
+    let waited = asked.lock().unwrap().expect("spawn_agent asked").elapsed();
+    assert!(waited >= Duration::from_millis(2000), "{waited:?}");
+    assert!(!session.workspace().permissions().is_capped());
+    assert_eq!(session.permission_mode(), PermissionMode::Full);
+}
+
+#[tokio::test]
+async fn a_timed_out_wake_stays_capped_until_its_turn_really_ends() {
+    let mut world = World::new(
+        vec![("run_command", json!({"command": "echo hi"}))],
+        vec![],
+        "",
+    )
+    .await;
+    let session = world.new_session();
+    world.arm(&session).await;
+    imperium_core::review_testing::set_wake_timeout(session.id(), Duration::from_secs(1));
+    comment(&world, "Run it.");
+    while world.notices.try_recv().is_ok() {}
+    // Nobody answers the command's approval, so the turn outlasts the wake's time.
+    let mut request = None;
+    let mut summary = None;
+    for _ in 0..8 {
+        world.poll().await;
+        while let Some(notice) = world.next(Duration::from_secs(2)).await {
+            match notice.method.as_str() {
+                "approval.requested" => request = notice.params["id"].as_u64(),
+                "autofix.event" if notice.params["status"] == "failed" => {
+                    summary = notice.params["summary"].as_str().map(str::to_string);
+                }
+                _ => {}
+            }
+            if summary.is_some() {
+                break;
+            }
+        }
+        if summary.is_some() {
+            break;
+        }
+    }
+    let summary = summary.expect("the wake gave up");
+    assert!(summary.contains("timed out"), "{summary}");
+    // Stopped, and still capped: resuming it later does not run the turn uncapped.
+    assert!(session.is_stopped());
+    assert!(session.workspace().permissions().is_capped());
+    assert_eq!(session.permission_mode(), PermissionMode::Ask);
+    session.resume_work();
+    assert!(session.workspace().permissions().is_capped());
+    assert!(
+        world
+            .daemon
+            .approvals()
+            .respond(request.expect("the command asked"), false)
+    );
+    // Only when the turn has ended is the session itself again.
+    for _ in 0..100 {
+        if !session.workspace().permissions().is_capped() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!session.workspace().permissions().is_capped());
+    assert_eq!(session.permission_mode(), PermissionMode::Default);
+}
+
+#[tokio::test]
+async fn the_push_is_the_commit_that_was_approved() {
+    let mut world = World::new(write_greeting(), vec![], "").await;
+    let session = world.new_session();
+    world.arm(&session).await;
+    comment(&world, "Add a newline.");
+    let (clone, approved) = (world.clone.clone(), Arc::new(Mutex::new(String::new())));
+    let noted = Arc::clone(&approved);
+    let seen = world
+        .wake(move |kind, _| {
+            if kind == "push" {
+                // The folder moves on after the approval was asked and before it is answered.
+                *noted.lock().unwrap() = git(&clone, &["rev-parse", "HEAD"]);
+                git(&clone, &["commit", "-q", "--allow-empty", "-m", "sneaky"]);
+            }
+            true
+        })
+        .await;
+    assert_eq!(
+        seen.statuses,
+        ["started", "awaiting_approval", "pushed"],
+        "{seen:?}"
+    );
+    let approved = approved.lock().unwrap().clone();
+    assert_eq!(world.origin_head(), approved);
+    assert_ne!(git(&world.clone, &["rev-parse", "HEAD"]), approved);
+}
+
+#[tokio::test]
+async fn nothing_is_committed_when_the_folder_left_the_branch_during_the_turn() {
+    let mut world = World::new(write_greeting(), vec![], "").await;
+    let session = world.new_session();
+    world.arm(&session).await;
+    comment(&world, "Add a newline.");
+    let (clone, before, tip) = (
+        world.clone.clone(),
+        git(&world.clone, &["rev-parse", "HEAD"]),
+        world.origin_head(),
+    );
+    let seen = world
+        .wake(move |kind, _| {
+            if kind == "tool" {
+                git(&clone, &["checkout", "-q", "-b", "elsewhere"]);
+            }
+            true
+        })
+        .await;
+    assert_eq!(seen.statuses, ["started", "failed"], "{seen:?}");
+    assert!(
+        seen.events[1]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("no longer on the pull request's branch")
+    );
+    assert_eq!(git(&world.clone, &["rev-parse", "HEAD"]), before);
+    assert_eq!(world.origin_head(), tip);
+}
+
+#[tokio::test]
+async fn a_forged_ledger_cannot_aim_a_wake_at_a_session_not_bound_to_the_pull_request() {
+    let mut world = World::new(vec![], vec![], "").await;
+    let other = world.new_session();
+    let other_id = other.id().to_string();
+    // A ledger entry that names a live session which is not bound to the pull request.
+    let data = imperium_config::Paths::under(&world.root.path().join("home"))
+        .data_dir()
+        .to_path_buf();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join("pr-review.json"),
+        json!([{
+            "repo": REPO, "number": 7, "active": true, "owner": other_id,
+            "project": world.clone, "baselined": true,
+            "cursor": {"reviews": 0, "review_comments": 0, "issue_comments": 0},
+            "attempts": 0, "untrusted_handled": false, "ignored": 0
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    comment(&world, "Please look.");
+    let seen = world.wake(|_, _| true).await;
+    let started = seen.events[0]["summary"].as_str().unwrap();
+    assert!(started.contains("a new unattended session"), "{started}");
+    assert_ne!(seen.events[0]["session_id"], other_id);
+    // The named session was never given the comments.
+    assert_eq!(
+        other.status().0,
+        imperium_protocol::session::SessionStatus::Idle
+    );
+    assert_eq!(world.daemon.sessions().len(), 2);
+}
+
+#[tokio::test]
+async fn a_pull_request_from_a_fork_wakes_nothing() {
+    let mut world = World::new(vec![], vec![], "").await;
+    let session = world.new_session();
+    world.arm(&session).await;
+    world.fake.set_head_repo(REPO, 7, Some("fork/repo"));
+    comment(&world, "Please look.");
+    let seen = world.wake(|_, _| true).await;
+    assert_eq!(seen.statuses, ["stopped"], "{seen:?}");
+    assert!(seen.events[0]["summary"].as_str().unwrap().contains("fork"));
+    assert_eq!(world.daemon.sessions().len(), 1);
+}
+
+#[tokio::test]
+async fn a_session_that_was_not_loaded_is_loaded_for_the_wake() {
+    let mut world = World::new(vec![], vec![], "").await;
+    let session = world.new_session();
+    let id = session.id().to_string();
+    world.arm(&session).await;
+    drop(session);
+    let mut world = world.restart().await;
+    // No `resume_sessions`: the owner is on disk only.
+    assert!(world.daemon.session(&id).is_none());
+    comment(&world, "Please look.");
+    let seen = world.wake(|_, _| true).await;
+    assert_eq!(seen.statuses, ["started", "nothing"], "{seen:?}");
+    assert_eq!(seen.events[0]["session_id"], id);
 }

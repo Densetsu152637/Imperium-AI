@@ -81,6 +81,8 @@ pub struct Pr {
     pub reviews: Vec<Comment>,
     /// Comments on the conversation (`/issues/{n}/comments`).
     pub issue_comments: Vec<Comment>,
+    /// The repository the branch is in, when it is a fork's (`None`: the pull request's own).
+    pub head_repo: Option<String>,
     /// The method and head OID of the last accepted `enablePullRequestAutoMerge`.
     pub auto_merge: Option<(String, String)>,
 }
@@ -237,6 +239,7 @@ impl FakeGithub {
             threads: Vec::new(),
             reviews: Vec::new(),
             issue_comments: Vec::new(),
+            head_repo: None,
             auto_merge: None,
         };
         self.w()
@@ -257,6 +260,11 @@ impl FakeGithub {
             pr.mergeable = mergeable.to_string();
             pr.merge_state = merge_state.to_string();
         });
+    }
+
+    /// Makes the pull request one from a fork (`Some("fork/repo")`) or an ordinary one.
+    pub fn set_head_repo(&self, repo: &str, number: u64, head: Option<&str>) {
+        self.with_pr(repo, number, |pr| pr.head_repo = head.map(str::to_string));
     }
 
     pub fn set_in_merge_queue(&self, repo: &str, number: u64, queued: bool) {
@@ -643,10 +651,13 @@ async fn rest(State(world): State<Shared>, uri: Uri, headers: HeaderMap) -> Resp
             let (Some(repo), Ok(number)) = (repo, number.parse::<u64>()) else {
                 return not_found();
             };
+            let own = format!("{}/{}", parts[1], parts[2]);
             repo.prs.get(&number).map_or_else(not_found, |pr| {
+                let head = pr.head_repo.clone().unwrap_or(own);
                 reply(
                     200,
-                    json!({"number": number, "user": {"login": pr.author}, "state": pr.state}),
+                    json!({"number": number, "user": {"login": pr.author}, "state": pr.state,
+                           "head": {"ref": pr.head_ref, "repo": {"full_name": head}}}),
                 )
             })
         }
