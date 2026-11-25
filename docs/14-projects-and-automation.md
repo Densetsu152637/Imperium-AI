@@ -1253,7 +1253,9 @@ disable auto-merge first and do not enable it again. A push by anyone else after
 it is caught at the next poll: the daemon records the head the user confirmed (kept with the
 binding), and when auto-merge is on and the head differs it turns auto-merge off and says why on
 the card; only a merge GitHub completes inside that poll interval is outside the guarantee.
-Auto-merge Imperium did not enable is left alone. No agent
+Auto-merge Imperium did not enable is left alone. Unbinding the last session on a pull request
+Imperium enabled turns auto-merge off first (the card's button says so, and a failed turn-off
+keeps the binding); deleting or archiving such a session turns it off best effort. No agent
 tool, hook, plugin, mod, webview frame, CLI command, project file, phone token or comment text can
 turn it on.
 

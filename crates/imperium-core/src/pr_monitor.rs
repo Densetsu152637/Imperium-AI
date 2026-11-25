@@ -203,7 +203,7 @@ impl PrMonitor {
             number,
         };
         let archive = state.settings().sessions.auto_archive_on_pr_close;
-        let (cached, moved) = {
+        let (cached, moved, orphan) = {
             let mut inner = self.lock();
             let previous = inner.sessions.get(session.id()).cloned();
             let moved = previous.as_ref().is_none_or(|old| old.key != key);
@@ -218,14 +218,19 @@ impl PrMonitor {
             };
             inner.sessions.insert(session.id().to_string(), binding);
             Self::track(&mut inner, repo, number, None, None);
-            if let Some(old) = previous.filter(|old| old.key != key) {
-                Self::drop_if_unused(&mut inner, &old.key);
-            }
+            let orphan = previous
+                .filter(|old| old.key != key)
+                .and_then(|old| Self::drop_if_unused(&mut inner, &old.key));
             (
                 inner.tracked.get(&key).and_then(|t| t.status.clone()),
                 moved,
+                orphan,
             )
         };
+        // The session left a pull request it had turned auto-merge on for.
+        if let Some((old_repo, old_number)) = orphan {
+            self.disown(&old_repo, old_number);
+        }
         self.save(state, session.id());
         match cached {
             Some(status) => {
@@ -405,10 +410,83 @@ impl PrMonitor {
         Some(pr_url(&tracked.repo, tracked.number))
     }
 
-    fn drop_if_unused(inner: &mut Inner, key: &Key) {
-        if !inner.sessions.values().any(|bound| bound.key == *key) {
-            inner.tracked.remove(key);
+    /// Drops the tracked entry nobody follows any more. When Imperium had turned auto-merge on
+    /// for it (a head is recorded), the pull request is returned: nothing would watch its head
+    /// from now on, so [`Self::disown`] turns auto-merge off.
+    fn drop_if_unused(inner: &mut Inner, key: &Key) -> Option<(String, u64)> {
+        if inner.sessions.values().any(|bound| bound.key == *key) {
+            return None;
         }
+        let tracked = inner.tracked.remove(key)?;
+        tracked
+            .confirmed_head
+            .map(|_| (tracked.repo, tracked.number))
+    }
+
+    /// Turns auto-merge off for a pull request that is no longer followed (the session was
+    /// deleted or archived, or moved to another pull request), without waiting: best effort,
+    /// logged either way.
+    fn disown(&self, repo: &str, number: u64) {
+        let Some(github) = self.github.get().cloned() else {
+            tracing::warn!(%repo, pr = number, "auto-merge stays on: this pull request is no longer followed and GitHub is not available");
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(%repo, pr = number, "auto-merge stays on: this pull request is no longer followed and nothing could turn it off");
+            return;
+        };
+        let repo = repo.to_string();
+        runtime.spawn(async move {
+            match github.set_auto_merge(&repo, number, &AutoMerge::Disable).await {
+                Ok(()) => tracing::info!(%repo, pr = number, "auto-merge was turned off: nothing follows this pull request any more"),
+                Err(error) => tracing::warn!(%repo, pr = number, error = %clean(&error, ERROR_CHARS), "auto-merge stays on: this pull request is no longer followed and it could not be turned off"),
+            }
+        });
+    }
+
+    /// Before an unbind: when this session is the last to follow a pull request Imperium turned
+    /// auto-merge on for, turns it off. An error means the unbind must not go ahead.
+    pub(crate) async fn release(&self, session_id: &str) -> Result<(), String> {
+        let key = {
+            let inner = self.lock();
+            let Some(binding) = inner.sessions.get(session_id) else {
+                return Ok(());
+            };
+            let shared = inner
+                .sessions
+                .iter()
+                .any(|(id, bound)| id != session_id && bound.key == binding.key);
+            let confirmed = inner
+                .tracked
+                .get(&binding.key)
+                .is_some_and(|t| t.confirmed_head.is_some());
+            if shared || !confirmed {
+                return Ok(());
+            }
+            binding.key.clone()
+        };
+        let (repo, number) = {
+            let inner = self.lock();
+            let tracked = inner.tracked.get(&key).ok_or("no pull request is bound")?;
+            (tracked.repo.clone(), tracked.number)
+        };
+        let github = self.github.get().cloned().ok_or(
+            "auto-merge is on and GitHub is not available to turn it off, so the pull request was not unbound",
+        )?;
+        github
+            .set_auto_merge(&repo, number, &AutoMerge::Disable)
+            .await
+            .map_err(|error| {
+                format!(
+                    "auto-merge is on and could not be turned off, so the pull request was not unbound: {}",
+                    clean(&error, ERROR_CHARS)
+                )
+            })?;
+        let mut inner = self.lock();
+        if let Some(tracked) = inner.tracked.get_mut(&key) {
+            tracked.confirmed_head = None;
+        }
+        Ok(())
     }
 
     /// Ends a session's binding, switches its watch overlay off, and tells clients. False when
@@ -432,11 +510,16 @@ impl PrMonitor {
 
     /// Drops a session's binding without telling anyone (the session itself is gone).
     pub(crate) fn forget(&self, session_id: &str) -> bool {
-        let mut inner = self.lock();
-        let Some(binding) = inner.sessions.remove(session_id) else {
-            return false;
+        let orphan = {
+            let mut inner = self.lock();
+            let Some(binding) = inner.sessions.remove(session_id) else {
+                return false;
+            };
+            Self::drop_if_unused(&mut inner, &binding.key)
         };
-        Self::drop_if_unused(&mut inner, &binding.key);
+        if let Some((repo, number)) = orphan {
+            self.disown(&repo, number);
+        }
         true
     }
 
@@ -611,12 +694,10 @@ impl PrMonitor {
             };
             (confirmed, tracked.repo.clone(), tracked.number)
         };
-        if !status.auto_merge.enabled {
-            // Turned off elsewhere, or merged: the confirmation is spent.
-            self.set_confirmed(state, key, None);
-            return;
-        }
-        if status.head_sha == confirmed {
+        // A read that says auto-merge is off does not erase the record: it can be a read that
+        // was in flight before the user turned it on. Only turning it off here clears it, and a
+        // record that outlives its auto-merge can only cause one extra, harmless disable.
+        if !status.auto_merge.enabled || status.head_sha == confirmed {
             return;
         }
         if let Err(error) = github
@@ -688,9 +769,6 @@ impl PrMonitor {
         session_id: &str,
         branch: &str,
     ) -> Result<(), String> {
-        let Some(github) = self.github.get().cloned() else {
-            return Ok(());
-        };
         let target = {
             let inner = self.lock();
             inner
@@ -711,6 +789,9 @@ impl PrMonitor {
         if bound_branch.is_some_and(|bound| bound != clean(branch, NAME_CHARS)) {
             return Ok(());
         }
+        let github = self.github.get().cloned().ok_or(
+            "GitHub is not available, so whether auto-merge is on cannot be checked: nothing was pushed",
+        )?;
         disable_before_push(state, github.as_ref(), &repo, number).await
     }
 
@@ -1333,6 +1414,45 @@ enabled = false
             status.auto_merge.reason_unavailable.as_deref(),
             Some("the repository does not allow auto-merge")
         );
+    }
+
+    #[tokio::test]
+    async fn a_push_for_a_bound_branch_is_refused_when_github_is_not_available() {
+        let config = "[models]
+default = \"fake:m\"
+[endpoints.fake]
+base_url = \"http://127.0.0.1:9/v1\"
+[workflow]
+enabled = false
+";
+        let settings = imperium_config::Config::from_layers([
+            imperium_config::Layer::defaults(),
+            imperium_config::Layer::new(
+                imperium_config::Source::User("test".into()),
+                config.parse().unwrap(),
+            ),
+        ])
+        .settings()
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let state = DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        let (session, _) = state
+            .create_session(&folder.path().display().to_string(), None)
+            .unwrap();
+        let monitor = state.pr_monitor();
+        // Not bound: nothing to turn off, so the push is not held up.
+        monitor
+            .disable_before_branch_push(&state, session.id(), "feature")
+            .await
+            .unwrap();
+        // Bound, and the daemon has no GitHub to ask: the push is refused.
+        state.watch(&session, Some(("owner/repo".into(), 7)));
+        let refused = monitor
+            .disable_before_branch_push(&state, session.id(), "feature")
+            .await
+            .unwrap_err();
+        assert!(refused.contains("nothing was pushed"), "{refused}");
     }
 
     #[test]

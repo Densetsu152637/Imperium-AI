@@ -37,16 +37,29 @@ impl Connection {
                     }
                 })
             }
-            PullRequestsUnbind::NAME => {
-                call::<PullRequestsUnbind>(c.params.take(), |params: PullRequestsUnbindParams| {
-                    let session = self.state.session(&params.session_id).ok_or_else(|| {
+            // Unbinding the last session that follows a pull request Imperium turned auto-merge on
+            // for turns it off first; if that fails the binding stays and the call fails.
+            PullRequestsUnbind::NAME => call_later::<PullRequestsUnbind, _>(
+                c.params.take(),
+                c.later,
+                |params: PullRequestsUnbindParams| {
+                    let state = Arc::clone(&self.state);
+                    let session = state.session(&params.session_id).ok_or_else(|| {
                         ErrorObject::new(codes::SESSION_NOT_FOUND, "no such session")
-                    })?;
-                    Ok(PullRequestsUnbindResult {
-                        was_bound: self.state.pr_monitor().unbind(&self.state, &session),
-                    })
-                })
-            }
+                    });
+                    async move {
+                        let session = session?;
+                        state
+                            .pr_monitor()
+                            .release(&params.session_id)
+                            .await
+                            .map_err(refused)?;
+                        Ok(PullRequestsUnbindResult {
+                            was_bound: state.pr_monitor().unbind(&state, &session),
+                        })
+                    }
+                },
+            ),
             PullRequestsStatus::NAME => {
                 self.show_pull_requests();
                 call::<PullRequestsStatus>(c.params.take(), |params: PullRequestsStatusParams| {

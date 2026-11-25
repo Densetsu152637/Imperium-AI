@@ -966,8 +966,17 @@ change anything are that mutation and `disablePullRequestAutoMerge`.
   it" and sends `pull_requests.changed`. It never turns it on again: the user confirms again in
   the desktop app. The poll is at most 60 s while a card is shown (`github.autofix.poll_s`
   otherwise), so a merge that GitHub completes inside one poll interval of the push is outside
-  the guarantee. Auto-merge that Imperium did not turn on (enabled on GitHub itself, or before
-  this was recorded) has no confirmed head, and the poll leaves it alone.
+  the guarantee. The record is cleared only when Imperium turns auto-merge off (the user, the
+  poll's own turn-off, or a push of the daemon's own), never because one read said it was off
+  (that read may have been in flight before the user enabled it); a record that outlives its
+  auto-merge can only cause one extra, harmless disable. Auto-merge that Imperium did not turn
+  on (enabled on GitHub itself, or before this was recorded) has no confirmed head, and the
+  poll leaves it alone. A daemon that was down when someone pushed catches it at its first
+  poll. A session that cannot be watched any more turns it off too: **unbinding** the last
+  session that follows a pull request Imperium enabled turns auto-merge off first (and fails,
+  keeping the binding, when that is not possible), and **deleting or archiving** such a session
+  turns it off best effort, logged. A push by the daemon for a bound branch is refused when
+  GitHub is not available to check.
 - **Where it is not offered**, with the reason on the card: a draft (GitHub refuses it), a
   repository that does not allow auto-merge, a repository whose merge settings the token cannot
   read (a token without push access gets no `allow_*` flags; that is "cannot be enabled here",

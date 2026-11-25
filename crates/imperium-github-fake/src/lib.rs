@@ -100,6 +100,8 @@ struct World {
     /// `(cost, remaining, seconds until reset)` reported with every GraphQL reply.
     graphql_cost: (u32, u32, u64),
     next_id: u64,
+    /// Held back before the next `PrStatus` reply is sent (the reply itself is already decided).
+    delay_next_status: Option<std::time::Duration>,
 }
 
 type Shared = Arc<Mutex<World>>;
@@ -339,6 +341,12 @@ impl FakeGithub {
         self.w().fail_status = Some(status);
     }
 
+    /// Sends the next `PrStatus` reply after `delay`, with the state it had when it was asked:
+    /// a read that was in flight while something else changed.
+    pub fn delay_next_status(&self, delay: std::time::Duration) {
+        self.w().delay_next_status = Some(delay);
+    }
+
     /// The cost, remaining points and seconds-to-reset every GraphQL reply reports.
     pub fn set_graphql_cost(&self, cost: u32, remaining: u32, reset_in: u64) {
         self.w().graphql_cost = (cost, remaining, reset_in);
@@ -563,7 +571,23 @@ async fn graphql(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let text = String::from_utf8_lossy(&body).into_owned();
+    let delay = {
+        let mut held = world.lock().expect("fake world lock");
+        if String::from_utf8_lossy(&body).contains("\"operationName\":\"PrStatus\"") {
+            held.delay_next_status.take()
+        } else {
+            None
+        }
+    };
+    let response = graphql_reply(&world, &uri, &headers, &body);
+    if let Some(delay) = delay {
+        tokio::time::sleep(delay).await;
+    }
+    response
+}
+
+fn graphql_reply(world: &Shared, uri: &Uri, headers: &HeaderMap, body: &Bytes) -> Response {
+    let text = String::from_utf8_lossy(body).into_owned();
     let request: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     let operation = request["operationName"]
         .as_str()
@@ -573,8 +597,8 @@ async fn graphql(
     if let Some(early) = admit(
         &mut world,
         "POST",
-        &uri,
-        &headers,
+        uri,
+        headers,
         &text,
         Some(operation.clone()),
     ) {

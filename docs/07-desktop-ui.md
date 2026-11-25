@@ -1575,7 +1575,7 @@ in a terminal, and `imperium pr automerge status|off SESSION` shows or turns off
   are listed under it (five, then *and N more*). A merged or closed pull request keeps only its
   checks line.
 - **Details:** the branches, the *Fix CI and review comments* and *Auto-merge* switches, the merge
-  method picker and *Stop following this pull request* (`pull_requests.unbind`). The auto-fix
+  method picker and *Stop following this pull request* (`pull_requests.unbind`; while auto-merge is on the button reads *Stop following and turn auto-merge off*, because unbinding turns it off first and, if GitHub refuses, keeps the binding and says why). The auto-fix
   switch is **disabled** until the stage that builds it, with its reason beside it and in its
   accessible name (`Switch` `disabled`). The *Auto-merge* switch is on while GitHub holds the
   request, and its note says plainly that GitHub then merges when its own rules pass **with nobody

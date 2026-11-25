@@ -297,7 +297,7 @@ function Bound({
           {client && (
             <div className="pr-actions">
               <button type="button" className="ghost small" onClick={() => void unbind()}>
-                Stop following this pull request
+                {view.autoMerge.on ? "Stop following and turn auto-merge off" : "Stop following this pull request"}
               </button>
             </div>
           )}

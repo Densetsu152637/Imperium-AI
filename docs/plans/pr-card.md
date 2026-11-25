@@ -791,6 +791,11 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   Imperium did not enable is left alone), and `session.review_pull_request` disables it before
   its push. The F4 guarantee is therefore: a push is caught at the next poll, and only a merge
   GitHub completes inside that poll interval is outside it.
+- Round 2: a read that says auto-merge is off no longer erases the confirmed head (only
+  Imperium's own turn-offs clear it); unbinding the last session on a pull request Imperium
+  enabled turns auto-merge off first and fails, keeping the binding, if that fails; deleting,
+  archiving or moving a session off such a pull request turns it off best effort; a push for a
+  bound branch is refused when GitHub is unavailable.
 - Handoff notes: the docs say plainly that auto-merge lands code unseen. A repository whose
   `allow_*` flags are missing (a token without push access) reads as "cannot be enabled here" with
   that reason, never as every method off.

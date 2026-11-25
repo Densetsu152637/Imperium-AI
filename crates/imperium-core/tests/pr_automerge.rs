@@ -803,3 +803,130 @@ async fn auto_merge_enabled_elsewhere_is_left_alone_when_the_head_moves() {
     assert_eq!(world.mutations(), ["EnableAutoMerge"]);
     assert_eq!(world.status().await["auto_merge"]["enabled"], true);
 }
+
+impl World {
+    fn status_reads(&self) -> usize {
+        self.fake
+            .requests()
+            .iter()
+            .filter(|r| r.operation.as_deref() == Some("PrStatus"))
+            .count()
+    }
+
+    /// Calls `pull_requests.unbind` as an ordinary client.
+    async fn unbind(&self) -> Response {
+        let mut connection = self.other("imperium").await;
+        call(
+            &mut connection,
+            "pull_requests.unbind",
+            json!({"session_id": self.session}),
+        )
+        .await
+    }
+
+    /// Waits for `count` accepted mutations (a disable the daemon sends in the background).
+    async fn wait_for_mutations(&self, count: usize) {
+        for _ in 0..200 {
+            if self.fake.mutations().len() >= count {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("expected {count} mutations, saw {:?}", self.mutations());
+    }
+}
+
+/// A poll whose read was in flight before the user turned auto-merge on comes back saying it is
+/// off. It must not erase the head the user confirmed, or a later push is never caught.
+#[tokio::test]
+async fn a_poll_in_flight_before_enabling_does_not_erase_the_confirmed_head() {
+    let world = World::new("").await;
+    world.fake.delay_next_status(Duration::from_millis(700));
+    let reads = world.status_reads();
+    let daemon = Arc::clone(&world.daemon);
+    let stale = tokio::spawn(async move {
+        daemon.pr_monitor().poll(&daemon, true).await;
+    });
+    while world.status_reads() == reads {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The in-flight read is held back with auto-merge off; meanwhile the user turns it on.
+    world.turn_on("squash").await;
+    stale.await.unwrap();
+
+    world.fake.force_push(REPO, 7, "def456");
+    world.poll().await;
+    assert_eq!(world.mutations(), ["EnableAutoMerge", "DisableAutoMerge"]);
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_none());
+}
+
+#[tokio::test]
+async fn unbinding_turns_auto_merge_off_and_a_failed_turn_off_keeps_the_binding() {
+    let world = World::new("").await;
+    world.turn_on("squash").await;
+
+    // The turn-off fails: the unbind fails with a reason and the binding stays.
+    world.fake.fail_next(500);
+    let (code, message) = error(world.unbind().await);
+    assert_eq!(code, codes::INVALID_PARAMS);
+    assert!(message.contains("was not unbound"), "{message}");
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_some());
+    assert_eq!(world.status().await["auto_merge"]["enabled"], true);
+
+    // Retried, it turns auto-merge off and then unbinds.
+    let answer = result(world.unbind().await);
+    assert_eq!(answer["was_bound"], true);
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_none());
+    assert_eq!(world.mutations(), ["EnableAutoMerge", "DisableAutoMerge"]);
+
+    // Nothing is sent for a pull request Imperium did not turn on.
+    let other = World::new("").await;
+    let answer = result(other.unbind().await);
+    assert_eq!(answer["was_bound"], true);
+    assert!(other.fake.mutations().is_empty());
+}
+
+#[tokio::test]
+async fn deleting_the_session_turns_auto_merge_off() {
+    let world = World::new("").await;
+    world.turn_on("squash").await;
+    world.daemon.delete_session(&world.session, false).unwrap();
+    world.wait_for_mutations(2).await;
+    assert_eq!(world.mutations(), ["EnableAutoMerge", "DisableAutoMerge"]);
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_none());
+}
+
+/// The daemon was down when someone pushed: the first poll after it comes back catches it.
+#[tokio::test]
+async fn a_restart_keeps_the_confirmed_head_and_the_first_poll_catches_a_push() {
+    let world = World::new("").await;
+    world.turn_on("squash").await;
+    let World {
+        fake,
+        daemon,
+        session,
+        _home,
+        _folder,
+    } = world;
+    drop(daemon);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    fake.force_push(REPO, 7, "def456");
+
+    let daemon = DaemonState::new(
+        imperium_config::Paths::under(_home.path()),
+        settings(""),
+        None,
+    );
+    daemon.pr_monitor().attach(Arc::new(github(&fake)));
+    assert_eq!(daemon.resume_sessions(), 1);
+    assert!(daemon.session(&session).is_some());
+    daemon.pr_monitor().poll(&daemon, true).await;
+
+    let operations: Vec<String> = fake
+        .mutations()
+        .into_iter()
+        .map(|(operation, _)| operation)
+        .collect();
+    assert_eq!(operations, ["EnableAutoMerge", "DisableAutoMerge"]);
+    assert!(fake.pr(REPO, 7).auto_merge.is_none());
+}
