@@ -668,6 +668,10 @@ pub struct HarnessSettings {
     /// schema on every call (docs/plans/reactive-tools.md). `auto` is on for an agent whose
     /// own model runs on this machine. It stays `off` by default.
     pub tool_loading: HarnessMode,
+    /// Think at `low` effort on a call that follows a tool result that worked, and at the
+    /// session's effort on a turn's first call and after a failure (docs/04-models-and-routing.md#per-call-effort).
+    /// Off by default: every call then carries the session's effort.
+    pub adaptive_effort: bool,
     /// When a conversation reaches `context.auto_compact_at`, first replace the results of
     /// repeatable read-only tool calls (file reads, searches, fetches) from older turns with a
     /// short stub, and skip the summary when that frees enough room. Nothing changes below the
@@ -692,6 +696,7 @@ impl Default for HarnessSettings {
             clarify: HarnessMode::Auto,
             clarify_below: 0.7,
             tool_loading: HarnessMode::Off,
+            adaptive_effort: false,
             clear_stale_results: true,
             clear_after_turns: 2,
         }
