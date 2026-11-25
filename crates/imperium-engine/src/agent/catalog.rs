@@ -699,9 +699,10 @@ impl Agent {
     /// `call_tool`, once each, and reports them.
     pub(super) fn note_loaded(&self, names: &[String], via: ToolLoadVia) {
         let mut loaded = lock(&self.loaded_tools);
+        let mut reported = lock(&self.reported_tools);
         let mut fresh: Vec<String> = Vec::new();
         for name in names {
-            if !loaded.contains(name) && !fresh.contains(name) {
+            if reported.insert(name.clone()) {
                 fresh.push(name.clone());
             }
             // The set is kept oldest use first, so a tool used again moves to the end.
@@ -709,6 +710,7 @@ impl Agent {
             loaded.push(name.clone());
         }
         drop(loaded);
+        drop(reported);
         lock(&self.schema_seen).extend(names.iter().cloned());
         if !fresh.is_empty() {
             self.emit(SessionEvent::ToolsLoaded { names: fresh, via });

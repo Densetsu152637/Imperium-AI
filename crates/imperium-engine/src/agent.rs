@@ -265,6 +265,8 @@ pub(crate) struct Agent {
     /// (searched, run through `call_tool`, or already advised): schema advice is given once
     /// per tool, and again after a compaction removed the earlier result.
     schema_seen: Mutex<HashSet<String>>,
+    /// The tools already reported in a `tools_loaded` event (once per tool and agent).
+    reported_tools: Mutex<HashSet<String>>,
     /// Whether the call in flight got as far as running (it started), and whether its
     /// arguments were judged and rejected before that; both are false for a call a refusal
     /// stopped. Set by [`Agent::tool_started`] and the argument checks, read by
@@ -484,6 +486,7 @@ impl Agent {
             search_text: std::sync::OnceLock::new(),
             loaded_tools: Mutex::new(Vec::new()),
             schema_seen: Mutex::new(HashSet::new()),
+            reported_tools: Mutex::new(HashSet::new()),
             call_started: std::sync::atomic::AtomicBool::new(false),
             call_args_failed: std::sync::atomic::AtomicBool::new(false),
         }
