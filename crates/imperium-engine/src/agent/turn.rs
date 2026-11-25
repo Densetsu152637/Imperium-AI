@@ -326,10 +326,14 @@ impl Agent {
                     }
                 };
                 let queue_wait = lease.as_ref().map(|lease| lease.waited);
+                // A variant's edits of the root's tools: what the model reads is renamed and
+                // redescribed; the engine's own messages and list keep the engine's names.
+                let shown_tools = self.shown_tools(&tools);
+                let shown_messages = self.shown_messages();
                 let request = ChatRequest {
                     model: &self.model.model,
-                    messages: &self.messages,
-                    tools: &tools,
+                    messages: shown_messages.as_deref().unwrap_or(&self.messages),
+                    tools: shown_tools.as_deref().unwrap_or(&tools),
                     slot: lease.as_ref().and_then(|lease| lease.slot),
                     max_tokens: lease.as_ref().and_then(|lease| lease.max_tokens),
                     effort: self.request_effort(),
@@ -414,7 +418,7 @@ impl Agent {
                 waits += 1;
                 self.emit(SessionEvent::Resumed {});
             };
-            let completion = match result {
+            let mut completion = match result {
                 Ok(completion) => completion,
                 Err(error) => {
                     let message = error.to_string();
@@ -424,6 +428,9 @@ impl Agent {
                     return self.outcome(message, false, total);
                 }
             };
+            // The model's names for a variant's renamed tools become the engine's again before
+            // anything is stored.
+            self.engine_calls(&mut completion.tool_calls);
             let usage = completion.usage.unwrap_or_default();
             // The pool admits calls by the estimate: a prompt above it overcommits the pool.
             if self.model.local && usage.prompt_tokens > u64::from(estimate) {

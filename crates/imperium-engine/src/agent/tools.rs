@@ -32,7 +32,13 @@ impl Agent {
     pub(super) fn offered_tools(&self) -> (Vec<ToolSpec>, Vec<(Category, String)>) {
         self.enforce_lock();
         let (specs, groups) = self.tool_offered();
-        let texts = tool_texts(&specs, &groups);
+        // The variant's edits change what the model reads, so the accounting counts the tools
+        // as sent (the engine keeps its own names in `specs`).
+        let texts = match self.shown_tools(&specs) {
+            Some(shown) => tool_texts(&shown, &groups),
+            None => tool_texts(&specs, &groups),
+        };
+        self.report_catalog(&specs);
         (specs, texts)
     }
 
@@ -47,6 +53,28 @@ impl Agent {
     /// [`Agent::tool_universe`]; `keep_activation` keeps `activate_plugin` listed after the
     /// last plugin is active (loading on, where the offered list must not change).
     pub(super) fn build_universe(&self, keep_activation: bool) -> (Vec<ToolSpec>, Vec<Category>) {
+        let (specs, groups) = self.universe_before_edits(keep_activation);
+        // A variant's dropped tools leave the root's universe (and so its list and searches).
+        let Some(editing) = self
+            .shared
+            .tool_edits
+            .as_ref()
+            .filter(|editing| self.id == ROOT_AGENT && !editing.drops().is_empty())
+        else {
+            return (specs, groups);
+        };
+        specs
+            .into_iter()
+            .zip(groups)
+            .filter(|(spec, _)| !editing.dropped(&spec.name))
+            .unzip()
+    }
+
+    /// [`Agent::build_universe`] before a variant's drops.
+    pub(super) fn universe_before_edits(
+        &self,
+        keep_activation: bool,
+    ) -> (Vec<ToolSpec>, Vec<Category>) {
         if self.single_call {
             return (Vec::new(), Vec::new());
         }
@@ -717,6 +745,7 @@ impl Agent {
         };
         self.call_started.store(false, Ordering::SeqCst);
         self.call_args_failed.store(false, Ordering::SeqCst);
+        self.report_call(&effective.function.name, proxied);
         let output = self.run_effective(&effective).await;
         self.with_schema_advice(&effective, proxied, output)
     }
@@ -748,6 +777,18 @@ impl Agent {
     }
 
     pub(super) async fn run_tool_once(&mut self, call: &ToolCall) -> String {
+        // A variant's renamed tool is the engine's again before any check looks at the name
+        // (the shell lock, a fork's and a launcher's lists, the named agent's tools).
+        let engine_call;
+        let call = match self.engine_name(&call.function.name) {
+            Some(name) => {
+                let mut mapped = call.clone();
+                mapped.function.name = name;
+                engine_call = mapped;
+                &engine_call
+            }
+            None => call,
+        };
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
         // The files as they were before the turn are being recorded beside the model call; no
@@ -799,6 +840,9 @@ impl Agent {
         // With loading on, the offered list says nothing of what may be called, so a call is
         // checked against the agent's tools as they are now. With it off the call runs as it
         // always has.
+        if let Some(why) = self.dropped_refusal(name) {
+            return self.tool_finished(call, name, false, format!("error: {why}"), None);
+        }
         if self.reactive() && !self.in_universe(name) {
             return self.tool_finished(
                 call,

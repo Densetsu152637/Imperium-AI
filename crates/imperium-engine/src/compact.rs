@@ -198,7 +198,7 @@ fn transcript(messages: &[ChatMessage]) -> String {
             ChatMessage::User { content, .. } => {
                 // Instruction files and carried-over context are kept as they are, not
                 // summarised.
-                let content = instructions::strip(&without_pinned(content));
+                let content = instructions::strip(&without_loaded_tools(&without_pinned(content)));
                 if !content.is_empty() {
                     out.push_str(&format!(
                         "### User\n{}\n\n",
@@ -355,6 +355,26 @@ fn without_pinned(content: &str) -> String {
         return format!("{}{}", &content[..start], &content[end..]);
     }
     content.to_string()
+}
+
+/// `content` without any `<loaded-tools>` block an earlier compaction put into its summary, so
+/// the summariser neither paraphrases nor stacks them: the block is built afresh each time.
+fn without_loaded_tools(content: &str) -> String {
+    const OPEN: &str = "<loaded-tools>";
+    const CLOSE: &str = "</loaded-tools>";
+    let mut text = content.to_string();
+    while let Some(start) = text.find(OPEN) {
+        let end = match text[start..].find(CLOSE) {
+            Some(end) => start + end + CLOSE.len(),
+            None => text.len(),
+        };
+        text = format!(
+            "{}{}",
+            &text[..start],
+            text[end..].trim_start_matches(char::from(10))
+        );
+    }
+    text
 }
 
 /// The summary as it is put into the conversation, tagged so a restored conversation's
@@ -1148,6 +1168,48 @@ mod tests {
         // A tool that is not pinned is not carried, through the proxy or not.
         let (other, _) = proxied_and_direct("read_file", serde_json::json!({"path": "a.txt"}));
         assert!(pinned_context(&other, &spans, other.len()).is_empty());
+    }
+
+    #[test]
+    fn earlier_loaded_tools_blocks_are_left_out_of_the_transcript() {
+        let first = summary_block(
+            "notes",
+            "<loaded-tools>
+- web_fetch: Fetch a page.
+</loaded-tools>
+",
+        );
+        let second = summary_block(
+            "more notes",
+            "<loaded-tools>
+- update_plan: Plan.
+</loaded-tools>
+",
+        );
+        let stacked = format!(
+            "{first}
+{second}"
+        );
+        let text = transcript(&[ChatMessage::user(stacked)]);
+        assert!(!text.contains("loaded-tools"), "{text}");
+        assert!(
+            !text.contains("web_fetch") && !text.contains("update_plan"),
+            "{text}"
+        );
+        assert!(
+            text.contains("notes") && text.contains("more notes"),
+            "{text}"
+        );
+        assert_eq!(
+            without_loaded_tools(
+                "a
+
+b"
+            ),
+            "a
+
+b"
+        );
     }
 
     #[test]

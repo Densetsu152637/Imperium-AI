@@ -81,6 +81,14 @@ pub struct PromptPreview {
     /// Variant edits that found nothing to change.
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// With reactive tool loading on: the tools outside the list, with their full schemas as
+    /// `tool_search` returns them (`name`, `description`, `parameters`), after the variant's
+    /// edits. Empty with loading off.
+    #[serde(default)]
+    pub deferred_tools: Vec<serde_json::Value>,
+    /// How tools are offered (the mode, the core and the deferred names).
+    #[serde(default)]
+    pub tool_loading: Option<EvalToolLoading>,
 }
 
 /// Everything an evaluation session is set up with.
@@ -166,7 +174,7 @@ pub struct EvalVariant {
     #[serde(default)]
     pub tools: ToolEdits,
     /// Loop flags as text: `max_steps`, `effort`, `auto_compact`, `auto_compact_at`,
-    /// `knowledge`, `attended`, `harness`.
+    /// `knowledge`, `attended`, `harness`, `tool_loading`.
     #[serde(default)]
     pub flags: BTreeMap<String, String>,
     /// Text appended to the system prompt after the variant's own edits.
@@ -215,6 +223,11 @@ pub struct ToolEdits {
     /// New descriptions (`name = "text"`).
     #[serde(default)]
     pub description: BTreeMap<String, String>,
+    /// With reactive tool loading on: the tools offered directly (besides `tool_search` and
+    /// `call_tool`), whatever the default core is; every other tool of the universe is
+    /// deferred. Empty leaves the default core. Names are the engine's.
+    #[serde(default)]
+    pub core: Vec<String>,
 }
 
 /// The kind of subagent a recording is for.
@@ -290,6 +303,47 @@ pub struct EvalResult {
     pub ended: Option<EvalEnd>,
     /// The root agent's last plan.
     pub plan: Option<serde_json::Value>,
+    /// How the root agent was offered its tools and what it reached on demand; `None` before
+    /// its first request.
+    #[serde(default)]
+    pub tool_loading: Option<EvalToolLoading>,
+}
+
+/// Reactive tool loading in one run (docs/plans/reactive-tools.md, R7). Every name is the one the
+/// model saw, after the variant's renames; `call` is the 1-based index of the root call whose
+/// reply made the request.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvalToolLoading {
+    /// `on` when the root's tool list was the fixed one with `tool_search` and `call_tool`,
+    /// otherwise `off`.
+    pub mode: String,
+    /// The tools offered directly in the first request (without the two loader tools).
+    pub core: Vec<String>,
+    /// The tools reached through `tool_search` and `call_tool`, in catalog order.
+    pub deferred: Vec<String>,
+    /// Tools whose parameters a `tool_search` showed for the first time.
+    pub searched: Vec<EvalSearched>,
+    /// Calls to deferred tools, through `call_tool` or by name.
+    pub called: Vec<EvalCalled>,
+    /// The compact JSON size of the `tools` array of each root request, in order.
+    pub tool_bytes_by_call: Vec<u64>,
+    /// How many times the `tools` array differed from the request before it.
+    pub tool_list_changes: u64,
+    /// `sha256:` over the deferred tools' full schemas in catalog order; `None` with loading
+    /// off.
+    pub catalog_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvalSearched {
+    pub names: Vec<String>,
+    pub call: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvalCalled {
+    pub name: String,
+    pub call: u64,
 }
 
 /// How an evaluation session's root turn ended.
