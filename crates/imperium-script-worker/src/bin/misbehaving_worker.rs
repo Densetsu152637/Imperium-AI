@@ -23,7 +23,7 @@ fn send(event: &pb::WorkerEvent) {
 }
 
 fn main() -> ExitCode {
-    let mode = std::env::args().last().unwrap_or_default();
+    let mode = std::env::args().next_back().unwrap_or_default();
     let mut reader = FrameReader::new(io::stdin().lock());
 
     // Configure -> Ok.
