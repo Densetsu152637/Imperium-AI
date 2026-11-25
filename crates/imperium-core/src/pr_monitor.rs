@@ -15,8 +15,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use imperium_engine::Session;
 use imperium_github::{AutoMerge, Check, GitHub, MergeSettings};
 use imperium_protocol::methods::{
-    PULL_REQUESTS_CHANGED, PrAutoMerge, PrChecks, PrConflictState, PrMergeMethod, PrReview,
-    PrState, PrStatus, PullRequestsChangedParams, SESSION_UPDATED,
+    AUTOFIX_EVENT, AutofixEventParams, PULL_REQUESTS_CHANGED, PrAutoMerge, PrChecks,
+    PrConflictState, PrMergeMethod, PrReview, PrState, PrStatus, PullRequestsChangedParams,
+    SESSION_UPDATED,
 };
 use imperium_protocol::session::SessionStatus;
 use serde_json::Value;
@@ -34,6 +35,11 @@ const TITLE_CHARS: usize = 200;
 const NAME_CHARS: usize = 100;
 const NAMES_SHOWN: usize = 20;
 const ERROR_CHARS: usize = 200;
+/// The file in the data folder that lists pull requests whose auto-merge still has to be turned
+/// off (see [`Orphan`]).
+const ORPHANS_FILE: &str = "auto-merge-to-turn-off.json";
+/// The first wait before a turn-off that failed is tried again; it doubles up to [`MAX_BACKOFF`].
+const ORPHAN_RETRY: Duration = Duration::from_secs(30);
 const MOVED_NOTICE: &str =
     "auto-merge was turned off because new commits were pushed after you enabled it";
 
@@ -64,6 +70,40 @@ struct Tracked {
     confirmed_head: Option<String>,
 }
 
+/// A pull request that nothing follows any more (its session was deleted, archived or moved to
+/// another pull request) while Imperium's auto-merge request is still on at GitHub. Kept in the
+/// data folder until the turn-off works or GitHub says auto-merge is already off, so a failure
+/// does not leave an unwatched pull request set to merge unseen.
+#[derive(Debug, Clone)]
+struct Orphan {
+    repo: String,
+    number: u64,
+    /// The head commit the user confirmed.
+    head: String,
+}
+
+impl Orphan {
+    fn matches(&self, repo: &str, number: u64) -> bool {
+        self.number == number && self.repo.eq_ignore_ascii_case(repo)
+    }
+}
+
+/// An [`Orphan`] with where its retries stand (only the orphan itself is persisted).
+#[derive(Debug)]
+struct Retry {
+    orphan: Orphan,
+    attempts: u32,
+    next_at: Instant,
+    /// Whether the user was told about the failure in this daemon run.
+    told: bool,
+}
+
+#[derive(Debug, Default)]
+struct Orphans {
+    loaded: bool,
+    list: Vec<Retry>,
+}
+
 /// A session's binding: its pull request and its own switches (stage 7 acts on them).
 #[derive(Debug, Clone)]
 struct Binding {
@@ -88,6 +128,7 @@ pub struct PrMonitor {
     started: AtomicBool,
     subscribers: AtomicUsize,
     kick: Notify,
+    orphans: Mutex<Orphans>,
 }
 
 /// Held by a connection that shows pull requests; the poller runs faster meanwhile.
@@ -109,6 +150,7 @@ impl Default for PrMonitor {
             started: AtomicBool::new(false),
             subscribers: AtomicUsize::new(0),
             kick: Notify::new(),
+            orphans: Mutex::default(),
         }
     }
 }
@@ -228,8 +270,8 @@ impl PrMonitor {
             )
         };
         // The session left a pull request it had turned auto-merge on for.
-        if let Some((old_repo, old_number)) = orphan {
-            self.disown(&old_repo, old_number);
+        if let Some(orphan) = orphan {
+            self.disown(state, orphan);
         }
         self.save(state, session.id());
         match cached {
@@ -413,41 +455,177 @@ impl PrMonitor {
     /// Drops the tracked entry nobody follows any more. When Imperium had turned auto-merge on
     /// for it (a head is recorded), the pull request is returned: nothing would watch its head
     /// from now on, so [`Self::disown`] turns auto-merge off.
-    fn drop_if_unused(inner: &mut Inner, key: &Key) -> Option<(String, u64)> {
+    fn drop_if_unused(inner: &mut Inner, key: &Key) -> Option<Orphan> {
         if inner.sessions.values().any(|bound| bound.key == *key) {
             return None;
         }
         let tracked = inner.tracked.remove(key)?;
-        tracked
-            .confirmed_head
-            .map(|_| (tracked.repo, tracked.number))
+        tracked.confirmed_head.map(|head| Orphan {
+            repo: tracked.repo,
+            number: tracked.number,
+            head,
+        })
     }
 
-    /// Turns auto-merge off for a pull request that is no longer followed (the session was
-    /// deleted or archived, or moved to another pull request), without waiting: best effort,
-    /// logged either way.
-    fn disown(&self, repo: &str, number: u64) {
-        let Some(github) = self.github.get().cloned() else {
-            tracing::warn!(%repo, pr = number, "auto-merge stays on: this pull request is no longer followed and GitHub is not available");
-            return;
-        };
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            tracing::warn!(%repo, pr = number, "auto-merge stays on: this pull request is no longer followed and nothing could turn it off");
-            return;
-        };
-        let repo = repo.to_string();
-        runtime.spawn(async move {
-            match github.set_auto_merge(&repo, number, &AutoMerge::Disable).await {
-                Ok(()) => tracing::info!(%repo, pr = number, "auto-merge was turned off: nothing follows this pull request any more"),
-                Err(error) => tracing::warn!(%repo, pr = number, error = %clean(&error, ERROR_CHARS), "auto-merge stays on: this pull request is no longer followed and it could not be turned off"),
+    /// Hands a pull request that is no longer followed to the turn-off list, which is saved in the
+    /// data folder before anything is sent, and wakes the poller to work through it. The poller
+    /// retries a failed turn-off with a growing wait, also after a restart, and tells the user
+    /// once that it could not be turned off yet ([`Self::retry_orphans`]).
+    fn disown(&self, state: &DaemonState, orphan: Orphan) {
+        {
+            let mut orphans = self.orphans(state);
+            orphans
+                .list
+                .retain(|retry| !retry.orphan.matches(&orphan.repo, orphan.number));
+            orphans.list.push(Retry {
+                orphan,
+                attempts: 0,
+                next_at: Instant::now(),
+                told: false,
+            });
+            save_orphans(state, &orphans);
+        }
+        self.kick.notify_one();
+    }
+
+    /// The turn-off list, read from the data folder the first time it is needed.
+    fn orphans(&self, state: &DaemonState) -> MutexGuard<'_, Orphans> {
+        let mut orphans = self.orphans.lock().unwrap_or_else(PoisonError::into_inner);
+        if !orphans.loaded {
+            orphans.loaded = true;
+            let file = state.data_dir().join(ORPHANS_FILE);
+            let saved = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Vec<Value>>(&text).ok())
+                .unwrap_or_default();
+            for entry in saved {
+                let (Some(repo), Some(number), Some(head)) = (
+                    entry["repo"].as_str(),
+                    entry["number"].as_u64(),
+                    entry["head"].as_str(),
+                ) else {
+                    continue;
+                };
+                orphans.list.push(Retry {
+                    orphan: Orphan {
+                        repo: repo.to_string(),
+                        number,
+                        head: head.to_string(),
+                    },
+                    attempts: 0,
+                    next_at: Instant::now(),
+                    told: false,
+                });
             }
-        });
+        }
+        orphans
+    }
+
+    /// Tries the turn-offs that are due (all of them when `force`). An entry is dropped when the
+    /// turn-off worked, when GitHub says auto-merge is already off (or the pull request is not
+    /// open), or when a session follows the pull request again with a confirmation of its own
+    /// (the head guard owns it then). A failure keeps the entry, waits longer before the next
+    /// try, and tells the user the first time in this run.
+    async fn retry_orphans(&self, state: &Arc<DaemonState>, force: bool) {
+        let now = Instant::now();
+        let due: Vec<Orphan> = self
+            .orphans(state)
+            .list
+            .iter()
+            .filter(|retry| force || retry.next_at <= now)
+            .map(|retry| retry.orphan.clone())
+            .collect();
+        for orphan in due {
+            let followed = self
+                .lock()
+                .tracked
+                .get(&key_of(&orphan.repo, orphan.number))
+                .is_some_and(|tracked| tracked.confirmed_head.is_some());
+            let outcome = if followed {
+                Ok(())
+            } else {
+                self.turn_off(&orphan).await
+            };
+            let mut orphans = self.orphans(state);
+            let Some(at) = orphans
+                .list
+                .iter()
+                .position(|retry| retry.orphan.matches(&orphan.repo, orphan.number))
+            else {
+                continue;
+            };
+            match outcome {
+                Ok(()) => {
+                    orphans.list.remove(at);
+                    save_orphans(state, &orphans);
+                    tracing::info!(repo = %orphan.repo, pr = orphan.number, "auto-merge is off: nothing follows this pull request any more");
+                }
+                Err(error) => {
+                    let error = clean(&error, ERROR_CHARS);
+                    let retry = &mut orphans.list[at];
+                    retry.attempts += 1;
+                    retry.next_at = Instant::now() + backoff(retry.attempts, ORPHAN_RETRY, &error);
+                    tracing::warn!(repo = %orphan.repo, pr = orphan.number, %error, "auto-merge stays on: this pull request is no longer followed and it could not be turned off yet; it is tried again");
+                    if !std::mem::replace(&mut retry.told, true) {
+                        drop(orphans);
+                        state.announce(
+                            AUTOFIX_EVENT,
+                            AutofixEventParams {
+                                repo: orphan.repo.clone(),
+                                pull_request: orphan.number,
+                                status: "failed".to_string(),
+                                session_id: None,
+                                summary: format!(
+                                    "auto-merge on {}#{} could not be turned off yet ({error}); Imperium will try again",
+                                    orphan.repo, orphan.number
+                                ),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// One turn-off of an orphaned pull request. `Ok` also when GitHub says there is nothing to
+    /// turn off.
+    async fn turn_off(&self, orphan: &Orphan) -> Result<(), String> {
+        let github = self
+            .github
+            .get()
+            .cloned()
+            .ok_or("GitHub is not available")?;
+        match github.pr_status(&orphan.repo, orphan.number).await {
+            Ok(pr) if pr.state != "OPEN" || pr.auto_merge.is_none() => return Ok(()),
+            Ok(_) => {}
+            Err(error) if imperium_github::is_unsupported(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        github
+            .set_auto_merge(&orphan.repo, orphan.number, &AutoMerge::Disable)
+            .await
+    }
+
+    /// When the next turn-off is due, if any.
+    fn next_orphan(&self, state: &DaemonState) -> Option<Instant> {
+        self.orphans(state)
+            .list
+            .iter()
+            .map(|retry| retry.next_at)
+            .min()
     }
 
     /// Before an unbind: when this session is the last to follow a pull request Imperium turned
-    /// auto-merge on for, turns it off. An error means the unbind must not go ahead.
-    pub(crate) async fn release(&self, session_id: &str) -> Result<(), String> {
-        let key = {
+    /// auto-merge on for, turns it off. An error means the unbind must not go ahead. The
+    /// confirmation is cleared afterwards only if it is still the one read before the turn-off:
+    /// an enable that finished meanwhile (this session or another one that bound the pull
+    /// request) has recorded a newer head, which stays.
+    pub(crate) async fn release(
+        &self,
+        state: &DaemonState,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let (key, repo, number, head) = {
             let inner = self.lock();
             let Some(binding) = inner.sessions.get(session_id) else {
                 return Ok(());
@@ -456,19 +634,21 @@ impl PrMonitor {
                 .sessions
                 .iter()
                 .any(|(id, bound)| id != session_id && bound.key == binding.key);
-            let confirmed = inner
-                .tracked
-                .get(&binding.key)
-                .is_some_and(|t| t.confirmed_head.is_some());
-            if shared || !confirmed {
+            let Some(tracked) = inner.tracked.get(&binding.key) else {
+                return Ok(());
+            };
+            let Some(head) = tracked.confirmed_head.clone() else {
+                return Ok(());
+            };
+            if shared {
                 return Ok(());
             }
-            binding.key.clone()
-        };
-        let (repo, number) = {
-            let inner = self.lock();
-            let tracked = inner.tracked.get(&key).ok_or("no pull request is bound")?;
-            (tracked.repo.clone(), tracked.number)
+            (
+                binding.key.clone(),
+                tracked.repo.clone(),
+                tracked.number,
+                head,
+            )
         };
         let github = self.github.get().cloned().ok_or(
             "auto-merge is on and GitHub is not available to turn it off, so the pull request was not unbound",
@@ -482,17 +662,14 @@ impl PrMonitor {
                     clean(&error, ERROR_CHARS)
                 )
             })?;
-        let mut inner = self.lock();
-        if let Some(tracked) = inner.tracked.get_mut(&key) {
-            tracked.confirmed_head = None;
-        }
+        self.replace_confirmed(state, &key, Some(&head), None);
         Ok(())
     }
 
     /// Ends a session's binding, switches its watch overlay off, and tells clients. False when
     /// it had none.
     pub(crate) fn unbind(&self, state: &DaemonState, session: &Session) -> bool {
-        let was_bound = self.forget(session.id());
+        let was_bound = self.forget(state, session.id());
         session.set_watch(None);
         if was_bound {
             state.record_pull_request(session.id(), None);
@@ -509,7 +686,7 @@ impl PrMonitor {
     }
 
     /// Drops a session's binding without telling anyone (the session itself is gone).
-    pub(crate) fn forget(&self, session_id: &str) -> bool {
+    pub(crate) fn forget(&self, state: &DaemonState, session_id: &str) -> bool {
         let orphan = {
             let mut inner = self.lock();
             let Some(binding) = inner.sessions.remove(session_id) else {
@@ -517,8 +694,8 @@ impl PrMonitor {
             };
             Self::drop_if_unused(&mut inner, &binding.key)
         };
-        if let Some((repo, number)) = orphan {
-            self.disown(&repo, number);
+        if let Some(orphan) = orphan {
+            self.disown(state, orphan);
         }
         true
     }
@@ -649,11 +826,27 @@ impl PrMonitor {
     /// Records (or, with `None`, forgets) the head commit the user confirmed for a pull request,
     /// and saves it with every session bound to it.
     fn set_confirmed(&self, state: &DaemonState, key: &Key, head: Option<String>) {
+        self.replace_confirmed(state, key, None, head);
+    }
+
+    /// [`Self::set_confirmed`], but with `expected` given only when the record still holds that
+    /// head: a record another call changed since it was read is left as it is.
+    fn replace_confirmed(
+        &self,
+        state: &DaemonState,
+        key: &Key,
+        expected: Option<&str>,
+        head: Option<String>,
+    ) {
         let sessions: Vec<String> = {
             let mut inner = self.lock();
             let Some(tracked) = inner.tracked.get_mut(key) else {
                 return;
             };
+            if expected.is_some_and(|expected| tracked.confirmed_head.as_deref() != Some(expected))
+            {
+                return;
+            }
             if tracked.confirmed_head == head {
                 return;
             }
@@ -842,12 +1035,16 @@ impl PrMonitor {
         for key in due {
             let _ = self.read(state, &key).await;
         }
+        self.retry_orphans(state, force).await;
         let interval = self.interval();
         let now = Instant::now();
+        let orphan = self.next_orphan(state);
         self.lock()
             .tracked
             .values()
-            .map(|tracked| tracked.next_due.saturating_duration_since(now))
+            .map(|tracked| tracked.next_due)
+            .chain(orphan)
+            .map(|due| due.saturating_duration_since(now))
             .min()
             .unwrap_or(interval)
             .min(interval)
@@ -859,7 +1056,7 @@ impl PrMonitor {
         let ids: Vec<String> = self.lock().sessions.keys().cloned().collect();
         for id in ids {
             if state.session(&id).is_none() {
-                self.forget(&id);
+                self.forget(state, &id);
             }
         }
     }
@@ -988,6 +1185,38 @@ impl PrMonitor {
             .settings
             .insert(key, (Instant::now(), result.clone()));
         result
+    }
+}
+
+/// Writes the turn-off list to the data folder (through a temporary file, so a crash leaves the
+/// old list). A failure is logged: the list in memory is still worked through.
+fn save_orphans(state: &DaemonState, orphans: &Orphans) {
+    let file = state.data_dir().join(ORPHANS_FILE);
+    let entries: Vec<Value> = orphans
+        .list
+        .iter()
+        .map(|retry| {
+            serde_json::json!({
+                "repo": retry.orphan.repo,
+                "number": retry.orphan.number,
+                "head": retry.orphan.head,
+            })
+        })
+        .collect();
+    let write = || -> std::io::Result<()> {
+        if entries.is_empty() {
+            return match std::fs::remove_file(&file) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            };
+        }
+        std::fs::create_dir_all(state.data_dir())?;
+        let temporary = file.with_extension("json.tmp");
+        std::fs::write(&temporary, Value::Array(entries.clone()).to_string())?;
+        std::fs::rename(&temporary, &file)
+    };
+    if let Err(error) = write() {
+        tracing::warn!(%error, "could not save the list of pull requests whose auto-merge is to be turned off");
     }
 }
 

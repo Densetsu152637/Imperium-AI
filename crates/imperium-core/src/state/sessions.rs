@@ -302,7 +302,7 @@ impl DaemonState {
         }
         self.forget_session(id);
         // A pull request it had turned auto-merge on for is not watched any more: off.
-        self.pr_monitor().forget(id);
+        self.pr_monitor().forget(self, id);
         self.forget_eval(id);
         // Files copied into its attachments folder go with it.
         let _ = std::fs::remove_dir_all(crate::attachments::store_dir(self.paths.data_dir(), id));

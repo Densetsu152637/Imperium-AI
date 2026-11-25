@@ -823,17 +823,6 @@ impl World {
         )
         .await
     }
-
-    /// Waits for `count` accepted mutations (a disable the daemon sends in the background).
-    async fn wait_for_mutations(&self, count: usize) {
-        for _ in 0..200 {
-            if self.fake.mutations().len() >= count {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        panic!("expected {count} mutations, saw {:?}", self.mutations());
-    }
 }
 
 /// A poll whose read was in flight before the user turned auto-merge on comes back saying it is
@@ -891,7 +880,8 @@ async fn deleting_the_session_turns_auto_merge_off() {
     let world = World::new("").await;
     world.turn_on("squash").await;
     world.daemon.delete_session(&world.session, false).unwrap();
-    world.wait_for_mutations(2).await;
+    // The poller (not running in a test) works through the turn-off list.
+    world.poll().await;
     assert_eq!(world.mutations(), ["EnableAutoMerge", "DisableAutoMerge"]);
     assert!(world.fake.pr(REPO, 7).auto_merge.is_none());
 }
@@ -929,4 +919,239 @@ async fn a_restart_keeps_the_confirmed_head_and_the_first_poll_catches_a_push() 
         .collect();
     assert_eq!(operations, ["EnableAutoMerge", "DisableAutoMerge"]);
     assert!(fake.pr(REPO, 7).auto_merge.is_none());
+}
+
+const PENDING_FILE: &str = "auto-merge-to-turn-off.json";
+
+impl World {
+    /// The pull requests whose auto-merge Imperium still has to turn off, as saved in the data
+    /// folder.
+    fn pending(&self) -> Vec<Value> {
+        pending_in(self.daemon.data_dir())
+    }
+
+    /// Binds a second session on the same repository to the pull request, as an ordinary client.
+    async fn second_session(&self) -> (String, tempfile::TempDir) {
+        let folder = repository("https://github.com/owner/repo.git");
+        let (session, _) = self
+            .daemon
+            .create_session(&folder.path().display().to_string(), None)
+            .unwrap();
+        let session = session.id().to_string();
+        let mut anyone = self.other("second").await;
+        result(
+            call(
+                &mut anyone,
+                "pull_requests.bind",
+                json!({"session_id": session, "url": URL}),
+            )
+            .await,
+        );
+        (session, folder)
+    }
+}
+
+fn pending_in(data_dir: &std::path::Path) -> Vec<Value> {
+    match std::fs::read_to_string(data_dir.join(PENDING_FILE)) {
+        Ok(text) => serde_json::from_str(&text).unwrap(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// An enable that finishes while an unbind waits for GitHub to confirm its turn-off (another
+/// session binds the pull request and turns auto-merge on at a newer head) records a head the
+/// unbind must not erase, or a later push is never caught.
+#[tokio::test]
+async fn an_enable_during_an_unbind_keeps_its_confirmed_head() {
+    let world = World::new("").await;
+    world.turn_on("squash").await;
+    world.fake.force_push(REPO, 7, "def456");
+    // GitHub applies the turn-off and then answers late.
+    world.fake.delay_next_disable(Duration::from_millis(2000));
+
+    let race = async {
+        while world.mutations().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (second, folder) = world.second_session().await;
+        let mut app = world.app().await;
+        let challenge = result(
+            call(
+                &mut app,
+                "pull_requests.auto_merge_challenge",
+                json!({"session_id": second, "url": URL, "head_sha": "def456",
+                       "merge_method": "squash"}),
+            )
+            .await,
+        );
+        let challenge = challenge["challenge"].as_str().unwrap().to_string();
+        result(
+            call(
+                &mut app,
+                "pull_requests.set_auto_merge",
+                json!({"session_id": second, "url": URL, "head_sha": "def456", "enabled": true,
+                       "merge_method": "squash", "challenge": challenge}),
+            )
+            .await,
+        );
+        folder
+    };
+    let (unbound, _folder) = tokio::join!(world.unbind(), race);
+    assert_eq!(result(unbound)["was_bound"], true);
+    assert_eq!(
+        world.mutations(),
+        ["EnableAutoMerge", "DisableAutoMerge", "EnableAutoMerge"]
+    );
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_some());
+
+    // The second session's confirmation survived: the next push is caught.
+    world.fake.force_push(REPO, 7, "fed789");
+    world.poll().await;
+    assert_eq!(
+        world.mutations(),
+        [
+            "EnableAutoMerge",
+            "DisableAutoMerge",
+            "EnableAutoMerge",
+            "DisableAutoMerge"
+        ]
+    );
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_none());
+}
+
+/// A turn-off that fails when the session is deleted is saved (before anything is sent), tried
+/// again at the next tick, announced once, and dropped when it works.
+#[tokio::test]
+async fn a_failed_turn_off_on_delete_is_saved_announced_and_retried_at_the_next_tick() {
+    let world = World::new("").await;
+    world.turn_on("squash").await;
+    let mut announcements = world.daemon.announcements();
+
+    world.daemon.delete_session(&world.session, false).unwrap();
+    let saved = world.pending();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(saved[0]["repo"], REPO);
+    assert_eq!(saved[0]["number"], 7);
+    assert_eq!(saved[0]["head"], HEAD);
+
+    // The tick's attempt fails: the entry stays, auto-merge stays on, the user hears of it once.
+    world.fake.fail_next(500);
+    world.poll().await;
+    assert_eq!(world.pending().len(), 1);
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_some());
+    let mut told = Vec::new();
+    while let Ok(notification) = announcements.try_recv() {
+        if notification.method == "autofix.event" {
+            told.push(notification.params);
+        }
+    }
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0]["status"], "failed");
+    assert_eq!(told[0]["pull_request"], 7);
+    let summary = told[0]["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("could not be turned off yet") && summary.contains("try again"),
+        "{summary}"
+    );
+    assert!(!summary.contains(TOKEN));
+
+    // The next tick turns it off, drops the entry and says nothing more.
+    world.poll().await;
+    assert!(world.pending().is_empty());
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_none());
+    assert_eq!(world.mutations(), ["EnableAutoMerge", "DisableAutoMerge"]);
+    assert!(
+        !std::iter::from_fn(|| announcements.try_recv().ok())
+            .any(|notification| notification.method == "autofix.event")
+    );
+}
+
+/// A restart retries what was left on the list.
+#[tokio::test]
+async fn a_restart_retries_a_turn_off_that_was_left_on_the_list() {
+    let world = World::new("").await;
+    world.turn_on("squash").await;
+    world.daemon.delete_session(&world.session, false).unwrap();
+    world.fake.fail_next(500);
+    world.poll().await;
+    assert_eq!(world.pending().len(), 1);
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_some());
+
+    let World {
+        fake,
+        daemon,
+        _home,
+        _folder,
+        ..
+    } = world;
+    drop(daemon);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let daemon = DaemonState::new(
+        imperium_config::Paths::under(_home.path()),
+        settings(""),
+        None,
+    );
+    daemon.pr_monitor().attach(Arc::new(github(&fake)));
+    assert_eq!(pending_in(daemon.data_dir()).len(), 1);
+    daemon.pr_monitor().poll(&daemon, true).await;
+
+    assert!(fake.pr(REPO, 7).auto_merge.is_none());
+    assert!(pending_in(daemon.data_dir()).is_empty());
+}
+
+/// Auto-merge that was turned off some other way needs nothing sent: the entry is just dropped.
+#[tokio::test]
+async fn an_entry_whose_pull_request_is_already_off_is_dropped() {
+    let world = World::new("").await;
+    world.turn_on("squash").await;
+    world.daemon.delete_session(&world.session, false).unwrap();
+    assert_eq!(world.pending().len(), 1);
+    github(&world.fake)
+        .set_auto_merge(REPO, 7, &imperium_github::AutoMerge::Disable)
+        .await
+        .unwrap();
+
+    world.poll().await;
+    assert!(world.pending().is_empty());
+    // Only the user's enable and the outside disable: nothing more was sent.
+    assert_eq!(world.mutations(), ["EnableAutoMerge", "DisableAutoMerge"]);
+}
+
+/// After someone turns auto-merge off on GitHub the confirmed head is kept (a read that says it
+/// is off may be stale), so when auto-merge is later turned on again on GitHub at a new head,
+/// Imperium's guard turns it off. That fails safe; it is the one case of auto-merge Imperium
+/// did not enable that it does not leave alone.
+#[tokio::test]
+async fn auto_merge_enabled_again_on_github_at_a_new_head_after_an_outside_disable_is_turned_off() {
+    let world = World::new("").await;
+    world.turn_on("squash").await;
+    github(&world.fake)
+        .set_auto_merge(REPO, 7, &imperium_github::AutoMerge::Disable)
+        .await
+        .unwrap();
+    world.poll().await;
+    assert_eq!(world.status().await["auto_merge"]["enabled"], false);
+
+    world.fake.force_push(REPO, 7, "def456");
+    let enable = imperium_github::AutoMerge::Enable {
+        method: imperium_github::MergeMethod::Squash,
+        expected_head_oid: "def456".into(),
+    };
+    github(&world.fake)
+        .set_auto_merge(REPO, 7, &enable)
+        .await
+        .unwrap();
+    world.poll().await;
+
+    assert_eq!(
+        world.mutations(),
+        [
+            "EnableAutoMerge",
+            "DisableAutoMerge",
+            "EnableAutoMerge",
+            "DisableAutoMerge"
+        ]
+    );
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_none());
 }
