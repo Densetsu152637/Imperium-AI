@@ -18,11 +18,9 @@ async fn outcome_of(mode: &str) -> Result<(), ScriptError> {
         .await
         .expect("the test worker starts");
     let pid = run.pid().unwrap();
-    let result = loop {
-        match run.next().await {
-            ScriptEvent::Done(result) => break result,
-            other => panic!("{mode}: unexpected event {other:?}"),
-        }
+    let result = match run.next().await {
+        ScriptEvent::Done(result) => result,
+        other => panic!("{mode}: unexpected event {other:?}"),
     };
     // The worker is killed whatever the outcome.
     let pid = rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap();
