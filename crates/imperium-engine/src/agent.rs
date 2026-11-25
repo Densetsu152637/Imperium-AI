@@ -894,23 +894,23 @@ mod prompt_tests {
 
     #[test]
     fn the_prompts_carry_the_knowledge_source_rule() {
-        assert!(!prompts::KNOWLEDGE_SOURCE.contains("knowledge"));
-        assert!(prompts::KNOWLEDGE_SOURCE.starts_with("Settled real-world facts, arithmetic"));
+        assert!(!KNOWLEDGE_SOURCE.contains("knowledge"));
+        assert!(KNOWLEDGE_SOURCE.starts_with("Settled real-world facts, arithmetic"));
         for prompt in [
             root_prompt("/work", false),
             root_prompt("/work", true),
             subagent_prompt("/work"),
         ] {
-            assert_eq!(prompt.matches(prompts::KNOWLEDGE_SOURCE).count(), 1);
+            assert_eq!(prompt.matches(KNOWLEDGE_SOURCE).count(), 1);
             assert!(!prompt.contains("  "));
         }
         // It follows each prompt's look-up sentence.
         let root = root_prompt("/work", false);
         let look_up = root.find("you learned in training.").unwrap();
-        assert!(root.find(prompts::KNOWLEDGE_SOURCE).unwrap() > look_up);
+        assert!(root.find(KNOWLEDGE_SOURCE).unwrap() > look_up);
         let subagent = subagent_prompt("/work");
         let look_up = subagent.find("you learned in training.").unwrap();
-        assert!(subagent.find(prompts::KNOWLEDGE_SOURCE).unwrap() > look_up);
+        assert!(subagent.find(KNOWLEDGE_SOURCE).unwrap() > look_up);
     }
 
     #[test]
