@@ -865,8 +865,8 @@ and `environments.agent_update` (protocol 0.28)
     container, is off by default.
 
     CI builds the image and starts the compose stack. It checks the healthcheck, a handshake
-    through the remote path, and one `imperium run --headless --json` task against it. No plan
-    yet.
+    through the remote path, and one `imperium run --headless --json` task against it
+    ([plan](plans/server-package.md)).
 
 <!-- markdownlint-disable-next-line MD029 -->
 64. **Consul escalation workflow** (planned). A built-in workflow in which Consul, one of
