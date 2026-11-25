@@ -1,0 +1,515 @@
+# One input per line, ASCII only. Escapes (\xNN, \uNNNN, \\) are decoded by tests/test_hostile.py.
+# Lines starting with a hash are comments, so a hash input is written \x23.
+# Every line must be refused with a parse or guard error, or give a result, and the audit hook
+# must record nothing outside its allow-list. Big inputs (1 MiB, 50,000 nested parentheses) are
+# built in the test, because they do not belong in a text file.
+
+# --- Python code and attribute access ---
+__import__('os').system('id')
+__import__("os").system("id")
+().__class__.__bases__[0].__subclasses__()
+[].__class__.__mro__[1].__subclasses__()
+x.__class__
+x.__class__.__init__.__globals__
+(1).__class__
+"".__class__.__mro__
+eval("1")
+eval('__import__("os")')
+exec("import os")
+exec('print(1)')
+compile("1", "", "eval")
+lambda: 0
+lambda x: x
+(lambda: 0)()
+open('/etc/passwd')
+open("C:\\Windows\\win.ini").read()
+getattr(x, "__class__")
+setattr(x, "a", 1)
+delattr(x, "a")
+globals()
+locals()
+vars()
+dir()
+type(x)
+type("a", (), {})
+breakpoint()
+input()
+print(1)
+help()
+Symbol('x')
+Symbol("x", real=True)
+S('1')
+S("x + 1")
+sympify('1')
+sympify("__import__('os')")
+parse_expr('x+1')
+parse_latex('x^2')
+lambdify(x, x)
+lambdify(x, x, 'numpy')
+sympy.sympify('1')
+sympy.Symbol('x')
+sympy.core.sympify.sympify('1')
+os.system('id')
+os.system
+subprocess.run(['id'])
+sys.exit()
+importlib.import_module('os')
+pickle.loads(b'')
+marshal.loads(b'')
+ctypes.CDLL(None)
+x if 1 else 2
+[i for i in range(10)]
+{1: 2}
+{1, 2}
+{x for x in y}
+(x for x in y)
+x := 1
+x = y = z
+x; y
+x; import os
+import os
+from os import system
+x @ y
+x // y
+x % y
+x & y
+x | y
+x ~ y
+not x
+x and y
+x or y
+x is y
+x in y
+x[0]
+x[0][0]
+x[1:2]
+f(x)
+foo(1)
+Integral(x, x)
+Eq(x, 1)
+Matrix([[1, 2], [3, 4]])
+sin x
+sin(x
+sin(x))
+sin(x, y, z)
+sin()
+Abs(1, 2)
+expand((x+y+z)^5000)
+\x23
+x.y
+x.5
+5.x
+1.2.3
+..5
+1..2
+.
+
+# --- string, f-string, % and escape syntax ---
+f"{__import__('os')}"
+f'{x}'
+"%s" % x
+"%(x)s" % {'x': 1}
+x % (1,)
+b'abc'
+r'\x41'
+'a' 'b'
+"abc"
+'abc'
+"""abc"""
+'''abc'''
+x = "a"
+\\
+x\\y
+\\x41
+x\\n
+`x`
+$x
+$(id)
+${x}
+x?y
+x:y
+x ? y : z
+x #comment
+<script>alert(1)</script>
+{{7*7}}
+{% raw %}
+%s
+%n%n%n%n
+\u0000
+
+# --- control characters, NUL, BOM and unusual whitespace ---
+\x00
+x\x00
+\x00x
+1+\x00
+x\x00+1
+\x01x
+x\x1b[0m
+x\x7f
+\ufeffx
+x\ufeff
+x\u200b+1
+x\u00a0+1
+x\u2028+1
+x\u3000+1
+x\u0085+1
+\x0b1
+\x0c1
+1\x0b+2
+x\r\n+1
+x\n\ny
+\t\t\t
+
+\r
+
+# --- Unicode: homoglyphs, full-width and other scripts ---
+\uff3f\uff3f class\uff3f\uff3f
+x\uff3f\uff3fclass\uff3f\uff3f
+\uff58+1
+x\uff0b1
+\uff11+\uff12
+\u0661+\u0662
+1+\u0662
+\u0430+1
+\u03b1+1
+\u03c0
+\u03c0x
+2\u03c0
+\u03c0^2
+\u221a2
+\u221a(x+1)
+\u221ax
+2\u221ax
+\u221a
+\u221a\u221a2
+x\u00b2
+x\u00b2\u00b3
+\u00b2
+(x+1)\u00b3
+x\u00d7y
+x\u00b7y
+x\u00f7y
+x\u2212y
+x\u2264y
+x\u2265y
+x\u2260y
+x\u2264y\u2264z
+x\u221e
+\u221e
+\u2211(x)
+\u222bx dx
+x\u00b9
+x\u2070
+x\u2082
+\u00bd
+\u2153+1
+\U0001d4b3+1
+\U0001f600
+\u202ex+1
+\u2066x\u2069
+x\u0301
+e\u0301
+\u00e9+1
+x\ud7ff
+
+# --- Names, underscores and identifier abuse ---
+__class__
+__class__+1
+__import__
+__import__(1)
+_x
+x_
+x__y
+x_1
+x_y_z
+x_1_2
+a_b_c_d_e_f
+_
+__
+___
+x___y
+x_ y
+x _y
+os.system
+os . system
+x y
+xy
+x y z
+2 3
+2x
+2 x
+x 2
+(x)(y)
+x(y)
+x()
+pi(x)
+E(2)
+I(2)
+oo(1)
+pi pi
+2pi
+2 pi
+pi2
+e
+sin
+exp
+Pi
+PI
+INF
+nan
+NaN
+inf
+None
+True
+False
+
+# --- Numbers and the guard ---
+10^10^10
+1e999999999
+1e-999999999
+1e999999999999999999999999
+1e+999999999
+sqrt(2)^(10^6)
+factorial(factorial(20))
+factorial(10^7)
+factorial(10^6)
+factorial(25000)
+factorial(30000)
+factorial(1000000)
+(10^6)!
+((10^6)!)!
+gamma(10^7)
+binomial(10^7, 5)
+binomial(10^6, 500000)
+fibonacci(10^7)
+lucas(10^7)
+prime(10^7)
+prime(10^6)
+nextprime(10^300)
+isprime(10^300)
+harmonic(10^6)
+bernoulli(10^5)
+catalan(10^6)
+2^(10^6)
+2^1000000
+2^(2^30)
+2^2^2^2^2
+9^9^9
+(-1)^(10^10)
+0^(10^10)
+1^(10^10)
+x^(10^10)
+x^(10^7)
+(x+y+z)^5000
+(x+y)^10000
+exp(10^6)
+exp(10^10)
+sinh(10^7)
+pi^(10^7)
+E^(10^6)
+I^(10^10)
+oo^(10^10)
+[[2,1],[1,1]]^(10^6)
+[[2,1],[1,1]]^(10^9)
+[[x,1],[1,x]]^5000
+[[1,2],[3,4]]^x
+[[1,2],[3,4]]^(1/2)
+[1,2]^2
+2^[1,2]
+[1,2]/[3,4]
+sin([1,2])
+Abs([[1,2],[3,4]])
+(10^50000)^2
+(10^50000)^3
+(10^99999)*10
+10^50000*10^50000
+(1/10^50000)^2
+1/(10^100000)
+1e100000
+1e99999
+0.1^100000
+0.000000001^20000
+123456789^123456789
+1000000007^1000000007
+(2^100000)!
+sqrt(10^200000)
+root(10^200000, 2)
+root(2, 10^7)
+root(2, 0)
+cbrt(10^300000)
+lcm(10^60000, 10^60000)
+gcd(10^100000, 1)
+Mod(10^200000, 7)
+floor(10^200000)
+Max(10^60000, 10^60000)
+
+# --- Size and structure ---
+[[1,2,3],[4,5]]
+[[1,2],[3,4],[5,6]]
+[[[1]]]
+[[1],[[2]]]
+[1,[2,3]]
+[]
+[[]]
+[,]
+[1,]
+[,1]
+[1 2]
+[1,2
+1,2]
+((((((((((x))))))))))
+(((x)
+x)))
+()
+(())
+)(
+][
+(]
+[)
+1+
++
+*
+x*
+*x
+x**
+**x
+x^
+^x
+x^^y
+x**y**z
+x+*y
+x*/y
+x-+-+-y
+--x
+---x
++-+-x
+x!!
+x!!!
+!x
+(x)!
+(x!)!
+x!^2
+2^x!
+-x!
+x!=y
+x!=!y
+x=
+=x
+x==
+x===y
+x=>y
+x<>y
+x=<y
+x<
+>x
+x<y<z
+x<y>z
+x=y=z
+x<y=z
+(x<y)<z
+x<y, z
+[x<y]
+sin(x<y)
+x<y+1
+x+1<y+2
+1<2
+x==x
+x!=x
+2x^2y
+2(x)
+2(x)(y)
+2sin(x)
+2 sin(x)
+2sin(x)cos(x)
+sin(x)cos(x)
+sin(x)(y)
+x(x)
+(x)x
+)x
+2e
+2e3
+2E+3
+2e+
+2e-
+2e+x
+2E
+3e2x
+1e2e3
+1e1e1
+0.5
+.5
+0.
+0.0
+00.5
+007
+0e999999999
+0e0
+1_000
+1,000
+1.5.2
+0x10
+0b1
+0o7
+1j
+1J
+1l
+1L
+1e
+
+# --- Mixed realistic and nonsense ---
+x^2+2x+1
+(x+1)^2
+sin(x)^2+cos(x)^2
+integrate(x^2, x)
+solve(x^2=4)
+x^2 = 4
+x^2 == 4
+2x+3 < 7
+(x^2-1)/(x-1)
+1/0
+0/0
+0^0
+log(0)
+log(1, 2, 3)
+atan2(1)
+Min()
+Max(1)
+gcd(1)
+lcm(1, 2, 3, 4)
+oo-oo
+oo*0
+I^2
+I^I
+E^(I*pi)
+pi^pi^pi
+sqrt(-1)
+sqrt(x)^2
+cbrt(-8)
+root(8, 3)
+root(x, y)
+Abs(-3)
+sign(0)
+re(I)
+im(I)
+conjugate(I)
+arg(-1)
+floor(3.7)
+ceiling(3.2)
+Mod(7, 3)
+binomial(5, 2)
+fibonacci(10)
+lucas(10)
+prime(100)
+nextprime(100)
+prevprime(100)
+isprime(97)
+harmonic(10)
+bernoulli(10)
+catalan(10)
+factorial(20)
+20!
+gamma(5)
+erf(1)
+exp(1)
+ln(2)
+log(8, 2)

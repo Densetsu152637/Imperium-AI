@@ -379,6 +379,13 @@ sampling is refused unless enabled (below). A remote server that wants an OAuth 
 reported as needing one, and the user signs in to it on purpose
 ([OAuth for remote servers](#oauth-for-remote-servers-implemented)).
 
+**Planned (roadmap item 62, stage 1 of the [CAS plan](plans/cas-mcp.md) in progress):** a built-in
+computer algebra server, `imperium_cas`, backed by SymPy and started per session like any stdio
+server. Agent text never reaches `sympify`, `parse_expr` or `eval`: a hand-written parser reads a
+small infix language and a size guard refuses runaway numbers before anything is computed. Only
+that front end exists so far, as the `sidecars/cas/` project and its `python-cas` CI job; the
+server, its sandbox and its setup are later stages of the plan.
+
 ### Resources, prompts, and sampling (implemented)
 
 A server that declares the `resources` capability gets two more tools beside its own,

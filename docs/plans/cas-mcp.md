@@ -3,7 +3,7 @@
 Revision: 2026-11-26, revision 3 (plan-gate review round 2: R2-1 to R2-5 and the nits folded in;
 revision 2 folded in F1 to F11 and decided the four open questions); written against
 `experimental` at `56ce2da9` (last updated). Roadmap [item 62](../12-roadmap.md#next-in-order).
-Status: planned (no stage started).
+Status: in progress (stage 1 done in review; no other stage started).
 
 Imperium ships a computer algebra system as a built-in [MCP](../05-tools-and-isolation.md#mcp)
 server backed by SymPy, so agents (local models in particular) do exact symbolic maths instead of
@@ -1074,9 +1074,58 @@ Commands are what CI runs; nothing needs a local Rust build.
   - the existing `python` job is unchanged and still skipped (no `sidecars/media`).
 
   About 750 lines.
-- Status: pending.
+- Status: done (pull request pending merge; see the outcome).
 - Handoff notes: the media sidecar's job must stay Ubuntu-only. `check-python.sh` with no
   argument keeps its old behaviour.
+- Outcome (2026-11-26):
+  - **Delivered.** `sidecars/cas/` (Python 3.12.14, `package = false`, every dependency pinned
+    exactly and locked with hashes: `sympy` 1.14.0, `mpmath` 1.3.0, `mcp` 2.3.0, and `pytest`,
+    `hypothesis` and `ruff` as dev dependencies), `parse.py`, `guard.py`, `functions.py`, an
+    empty `__init__.py`, the tests below, the `python-cas` job on the three-OS matrix,
+    `scripts/check-python.sh <sidecar>`, the `python_cas` detect output with its
+    `test-detect.sh` case, and the notes in 05 and 11. The `python-cas` job also runs
+    `ruff format --check`.
+  - **Checks to tests.** Precedence, implicit multiplication, relations, matrices, caps and every
+    refusal with its column: `test_parse.py`. Goal 2's guard inputs with their estimates, the
+    allowed cases, each guard class and matrix caps: `test_guard.py`. The hostile corpus
+    (`hostile.txt`, 493 lines, plus 26 built-in huge inputs) with an audit hook recording every
+    event, and four Hypothesis fuzz tests at 2,000 examples (seed printed in the pytest header,
+    `CAS_FUZZ_SEED` repeats it): `test_hostile.py`. The R1 to R4 AST scan, its negative cases and
+    the ruff `S` check: `test_no_dynamic_code.py`. The table equals this plan's D1 list, read
+    from this file: `test_functions_table.py`.
+  - **Audit events.** Parsing and guarding raise no audit event at all, so stage 1's allow-list is
+    empty (`support.ALLOWED_EVENTS`). The guard avoids `id()` for this reason: Python 3.12
+    audits `builtins.id`.
+  - **Choices the plan left open.**
+    - R4 as written forbids every import but `re`, `math`, `dataclasses` and `typing`, which would
+      forbid `guard.py` using `parse.py`'s tree and `parse.py` using the function table. The test
+      allows the sibling modules `functions` (parse, guard) and `parse` (guard), and nothing else.
+    - R1 grants exceptions for `subprocess`, `os` and `ctypes` but does not list them, so the scan
+      treats them as forbidden everywhere else. Two consequences for later stages: `worker.py`
+      needs an exception for `os._exit` (R2 forbids `_` attributes), and `landlock.py` imports
+      `os` and `sys` per stage 2b, while only `ctypes` is excepted. Adjust the test's
+      `EXCEPTIONS` with the stage that needs it.
+    - `re.compile` is `compile` to R1, so the tokenizer scans by hand and uses no regular
+      expression. `is_identifier` is hand-written and tested against the published pattern.
+    - The function table also records each function's argument count (`Min`, `Max`, `gcd` and
+      `lcm` are variadic) and the `capped` caps. D1 lists no cap for `nextprime` and `prevprime`:
+      they get `isprime`'s 200 digits.
+    - A function name with no `(` after it is a symbol (D1: "any other identifier is a
+      `Symbol`"); `sin x` is the two-names error. A relation is allowed only at the top level.
+      `!` parses to a call of `factorial`, so the guard needs no separate rule.
+    - `2e3` and `2E+3` are numbers; `2e` and `2E` are `2*e` and `2*E`.
+    - D2 refinements: the guard keeps an exact value for small constants (up to 64 digits), so
+      `10^6` is known exactly when it is the exponent of a matrix power. For a whole-number base
+      it estimates `p/q·log10(base)+1` digits rather than `p/q·digits(base)`, so `isprime(10^199)`
+      is allowed and `10^99999` is the largest power of ten. `select` is the sum of its inputs
+      as written, so `Mod(10^99999, 7)` (100,001 digits) is refused. A constant `exp`, `sinh` or
+      `cosh` of more than about 230,000 is refused (`exp(1000)` is allowed), because its result
+      may be raised to a power.
+      A list or matrix argument to a function is refused, and a flat list holds at most 400
+      entries.
+  - **Not covered here.** The corpus runs at parse and guard level only. `test_no_string_to_sympy`
+    and the audit allow-list for the worker are stage 2a. The `python-cas` job's limits tests are
+    stage 2b.
 
 ### Stage 2a: Builder, worker and the audit hook
 
@@ -1108,6 +1157,10 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Status: pending.
 - Handoff notes: record the measured warm-up time, memory and allow-list in the outcome; stage
   2b's default limits and stage 5's warm-up allowance use them.
+  The tree can be 2,000 levels deep (a long `1+1+1+...`), so `build.py` walks it with
+  `parse.postorder`, never recursively. The AST scan's `EXCEPTIONS` and `R4_ALLOWED` in
+  `tests/test_no_dynamic_code.py` need `os._exit` for `worker.py` and the SymPy names `build.py`
+  imports (see stage 1's outcome).
 
 ### Stage 2b: Front-side pool, Unix limits and Landlock
 
@@ -1150,6 +1203,9 @@ Commands are what CI runs; nothing needs a local Rust build.
   About 650 lines.
 - Status: pending.
 - Handoff notes: on Windows these tests skip; the Windows limits are covered by stages 5 and 7.
+  `imperium_cas/__init__.py` must stay empty, or import nothing: importing the package must not
+  import `pool`, `worker` or the SDK before the Landlock statement. Stage 1 creates it empty and
+  `test_no_dynamic_code.py::test_init_is_empty` enforces it; the AST check covers it.
 
 ### Stage 3: MCP front and the eleven tools
 
@@ -1267,6 +1323,10 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Status: pending.
 - Handoff notes: `windows-sys` features are added to `imperium-ipc` only. No `unsafe` appears
   outside `imperium-ipc`.
+  The broker sends `arm` when the call is handed to the worker, not when the worker reports ready.
+  An unarmed spare therefore has no wall clock, only CPU, memory and active-process limits, so
+  the "never armed" test becomes "an unarmed worker is stopped at the default CPU limit". (D3's
+  `arm` and wall-clock wording, which count from "ready", needs this change when stage 5 edits it.)
 
 ### Stage 6: Managed environment and the CLI
 
@@ -1308,6 +1368,9 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Status: pending.
 - Handoff notes: the real setup runs first in stage 7's `cas_mcp`. Record the measured download
   and disk sizes there.
+  The `.pth` is written as `import site; site.addsitedir("<venv site-packages>")` plus the
+  project's `src` path line, so that `pywin32.pth` is processed; or this stage proves that
+  `pywin32` is never imported by the server (D5 says the `.pth` holds the two paths).
 
 ### Stage 7: Daemon wiring, protocol and the end-to-end test
 
@@ -1367,6 +1430,8 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Status: pending.
 - Handoff notes: take the protocol minor at merge time. `state/create.rs` changes only where
   `session_servers` is called and its notices are merged; the evaluation branch stays as it is.
+  The Windows launch needs the same `.pth` rule as stage 6: `site.addsitedir` of the venv's
+  `site-packages`, so `pywin32.pth` is processed, or a proof that `pywin32` is never imported.
 
 ### Stage 8: Connectors UI, docs and close-out
 
