@@ -1153,7 +1153,7 @@ These need the user; each has the default this plan uses until answered.
 2. **Should a paired phone ever see terminal output read-only?** Default: no, and no file pane
    either (D8).
 3. **Should the file pane become an editor in a later item?** Default: read-only in this plan
-   (D11).
+   (D11). Editing is roadmap item 66.
 4. **Terminals and the file pane for remote runtimes** (container, WSL, SSH: `docker exec -it`,
    `wsl.exe`, `ssh -t` inside the same PTY): a follow-up roadmap item, or out of scope? Default:
    out of scope here; the pane says why.
