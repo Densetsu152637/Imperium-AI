@@ -75,8 +75,10 @@ impl Agent {
             Some(def) => {
                 // The tools the delegator has now: a file narrows these, so it can never give a
                 // subagent one that the delegator lacks.
+                // A variant's drops are the root's alone, so they do not narrow what a subagent's
+                // file may list.
                 let parent: Vec<String> = self
-                    .tool_universe()
+                    .universe_before_edits(self.reactive())
                     .0
                     .into_iter()
                     .map(|tool| tool.name)
