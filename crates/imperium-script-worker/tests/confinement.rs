@@ -8,7 +8,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use common::{probe_path, worker_path};
+use common::worker_path;
 
 /// Runs the probe, which confines itself and then tries what a program must not do.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -19,7 +19,7 @@ fn probe(extra: &[&str]) -> HashMap<String, String> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
 
-    let output = Command::new(probe_path())
+    let output = Command::new(common::probe_path())
         .args(["--file", file.to_str().unwrap()])
         .args(["--port", &port.to_string()])
         .args(["--pid", &std::process::id().to_string()])
