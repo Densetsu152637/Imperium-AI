@@ -102,7 +102,11 @@ impl Agent {
         if self.shared.memory.is_some() {
             tools.extend([memory_search_spec(), memory_read_spec()]);
             if self.can_delegate {
-                tools.push(memory_remember_spec());
+                tools.extend([
+                    memory_remember_spec(),
+                    memory_edit_spec(),
+                    memory_forget_spec(),
+                ]);
             }
         }
         if self.can_delegate {
@@ -825,6 +829,12 @@ impl Agent {
             "memory_remember" if self.shared.memory.is_some() && self.can_delegate => {
                 AgentTool::MemoryRemember
             }
+            "memory_edit" if self.shared.memory.is_some() && self.can_delegate => {
+                AgentTool::MemoryEdit
+            }
+            "memory_forget" if self.shared.memory.is_some() && self.can_delegate => {
+                AgentTool::MemoryForget
+            }
             _ => {
                 return match self.provider_for(name) {
                     Some(provider) => self.run_provider(provider.as_ref(), call).await,
@@ -854,6 +864,8 @@ impl Agent {
             AgentTool::MemorySearch => "search memory",
             AgentTool::MemoryRead => "read a memory",
             AgentTool::MemoryRemember => "save a memory",
+            AgentTool::MemoryEdit => "edit a memory",
+            AgentTool::MemoryForget => "forget a memory",
         };
         // Plan mode only reads: starting a session (which would not be in plan mode) or saving
         // a memory changes things.
@@ -863,8 +875,13 @@ impl Agent {
                 .launcher
                 .as_ref()
                 .is_some_and(|launcher| launcher.allows_start_in_plan_mode());
-        if matches!(tool, AgentTool::StartSession | AgentTool::MemoryRemember)
-            && !start_allowed
+        if matches!(
+            tool,
+            AgentTool::StartSession
+                | AgentTool::MemoryRemember
+                | AgentTool::MemoryEdit
+                | AgentTool::MemoryForget
+        ) && !start_allowed
             && self.workspace.permissions().mode() == PermissionMode::Plan
         {
             return self.tool_finished(call, name, false, refused(Refusal::Plan, summary), None);
@@ -892,6 +909,8 @@ impl Agent {
             AgentTool::MemorySearch => self.memory_search(arguments),
             AgentTool::MemoryRead => self.memory_read(arguments),
             AgentTool::MemoryRemember => self.memory_remember(arguments).await,
+            AgentTool::MemoryEdit => self.memory_edit(arguments).await,
+            AgentTool::MemoryForget => self.memory_forget(arguments).await,
         };
         let (ok, output) = match result {
             Ok(output) => (true, output),
@@ -1039,6 +1058,8 @@ pub(super) enum AgentTool {
     MemorySearch,
     MemoryRead,
     MemoryRemember,
+    MemoryEdit,
+    MemoryForget,
     ContextLoad,
     StartSession,
     ListAgents,

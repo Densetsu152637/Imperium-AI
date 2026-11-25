@@ -741,7 +741,7 @@ In every mode, deny rules refuse first and ask rules ask, every time. "Ask, ever
 allow rules and *Always this session* approvals are ignored (tools an unattended session was
 started with pre-approved still run). Plan mode refuses without asking, whatever the rules
 allow, and tells the model to present its plan; it also refuses `start_session` (the session
-started would not be in plan mode) and `memory_remember`. Tools that never ask (searching the
+started would not be in plan mode) and `memory_remember`, `memory_edit` and `memory_forget`. Tools that never ask (searching the
 web or earlier sessions, `ask_user`, delegation) still run, and the app-config tools
 (`set_model_card`, `install_extension`, `uninstall_extension`) count as tools that ask in `ask`
 and `plan`.

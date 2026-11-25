@@ -39,6 +39,8 @@ pub const WRITE_TOOLS: &[&str] = &[
     "command_output",
     "command_stop",
     "memory_remember",
+    "memory_edit",
+    "memory_forget",
 ];
 
 /// What a bridged call's permission request summary starts with. The request is the user's to
@@ -69,6 +71,8 @@ pub fn tools() -> Vec<BridgeTool> {
         crate::agent::memory_search_spec(),
         crate::agent::memory_read_spec(),
         crate::agent::memory_remember_spec(),
+        crate::agent::memory_edit_spec(),
+        crate::agent::memory_forget_spec(),
     ]);
     for definition in [contract::web_search(), contract::web_fetch()] {
         specs.push(imperium_api::ToolSpec {

@@ -400,7 +400,7 @@ and `environments.agent_update` (protocol 0.28)
     `session.run_tool`, `session.tool_result`): `imperium mcp-serve --tools` exposes Imperium's
     own tools (`read_file`, `list_dir`, `glob`, `grep`, `memory_search`, `memory_read`,
     `web_search`, `web_fetch`, and with `--allow-write` also `write_file`, `edit_file`,
-    `run_command`, `command_output`, `command_stop`, `memory_remember`) as `imperium_<tool>` MCP
+    `run_command`, `command_output`, `command_stop`, `memory_remember`, `memory_edit`, `memory_forget`) as `imperium_<tool>` MCP
     tools. Every call runs inside an Imperium session, through the checks a model's own call
     goes through (permission rules, safety floor, agent profile and local-files-only lock,
     sandbox, hooks, journal), with no model call and so no budget spent; the session is

@@ -61,7 +61,10 @@ use memory::*;
 use prompts::*;
 use sampling::*;
 use specs::*;
-pub(crate) use specs::{memory_read_spec, memory_remember_spec, memory_search_spec};
+pub(crate) use specs::{
+    memory_edit_spec, memory_forget_spec, memory_read_spec, memory_remember_spec,
+    memory_search_spec,
+};
 pub(crate) use tools::shown;
 use tools::*;
 pub(crate) use turn::effective_window;

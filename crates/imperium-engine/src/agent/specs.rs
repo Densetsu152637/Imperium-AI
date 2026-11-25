@@ -60,6 +60,30 @@ pub(crate) fn memory_remember_spec() -> ToolSpec {
     }
 }
 
+pub(crate) fn memory_edit_spec() -> ToolSpec {
+    ToolSpec {
+        name: "memory_edit".into(),
+        description: "Replace one exact, unique string in a saved memory's body, as edit_file does; its description and type stay.".into(),
+        parameters: json!({"type": "object", "properties": {
+            "name": {"type": "string"},
+            "old_string": {"type": "string"},
+            "new_string": {"type": "string"},
+            "scope": {"type": "string", "enum": ["global", "environment"], "description": "Where it is; the environment's first when left out"}
+        }, "required": ["name", "old_string", "new_string"]}),
+    }
+}
+
+pub(crate) fn memory_forget_spec() -> ToolSpec {
+    ToolSpec {
+        name: "memory_forget".into(),
+        description: "Remove a memory that is wrong or obsolete. It is moved aside, not erased: the user can restore it.".into(),
+        parameters: json!({"type": "object", "properties": {
+            "name": {"type": "string"},
+            "scope": {"type": "string", "enum": ["global", "environment"], "description": "Where it is; the environment's first when left out"}
+        }, "required": ["name"]}),
+    }
+}
+
 /// The tool that starts a plugin's servers.
 pub(super) const ACTIVATE_PLUGIN: &str = "activate_plugin";
 
