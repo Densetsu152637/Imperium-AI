@@ -33,7 +33,6 @@ mod status;
 mod title;
 
 pub use agents::agents_dir;
-pub use spill::results_dir;
 pub use branch::{BranchPlan, mark_turn, plan_branch, plan_branch_at_end, turns_path};
 pub use budget_gate::{BudgetGate, BudgetVerdict};
 pub use checkpoints::TurnCheckpoints;
@@ -55,6 +54,7 @@ pub use session::{
     BridgeError, Session, SessionClosed, SessionConfig, SessionMemory, SessionOptions,
     new_session_id,
 };
+pub use spill::results_dir;
 pub use status::next_attempt;
 pub use title::task_title;
 

@@ -78,10 +78,10 @@ use crate::breakdown::{
 };
 use crate::compact::{self, SwitchError};
 use crate::harness::{self, SessionState, StateUpdate};
-use crate::spill;
 use crate::instructions;
 use crate::queue::{Inbox, QueueError, steering_text};
 use crate::session::{SessionMemory, Shared, lock};
+use crate::spill;
 use crate::{ResolvedModel, TaskRequest, escalate, route, route_noted};
 use imperium_api::{LocalLease, LocalModels, LocalPresence};
 
