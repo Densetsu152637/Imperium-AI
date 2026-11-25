@@ -597,6 +597,13 @@ Stage 5 follows the build that contains stage 4.
   (a fixture plugin tool with a marker in its description; the marker is absent); the breakdown
   labels a `tool_search` result's schemas per source category; one test per R9 row that the
   `call_tool` form reads back like the direct form, and the source-scan test of R9.
+- Stage 2b, as built: `effective_call` and the R9 rows with their tests and the source scan, the
+  `loader_text` region, one breakdown category per tool with `tool_search` schemas labelled by
+  source, the `harness.tool_loading` registry entry and 10 row, and schema advice at most once
+  per tool and agent. The names-only `<loaded-tools>` block after a compaction is stage 3's
+  change (R6, stage 3 "Changes"), so its two tests (no MCP or plugin description in the block;
+  the 1,500-byte cap) move to stage 3 with it; stage 2b tests that a `tool_search` result keeps
+  its tool-result framing in the summariser's transcript.
 - Depends on: none. Size: about 1,000 lines, so it is two pull requests: 2a, the protocol and
   config part plus the engine's universe, offered list, `tool_search`, `call_tool` and the
   dispatch order; 2b, the R9 helper and its callers, the loader sentence and the breakdown.

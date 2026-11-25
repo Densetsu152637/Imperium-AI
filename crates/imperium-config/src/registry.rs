@@ -190,6 +190,8 @@ pub static SETTINGS: &[SettingDef] = &[
     def("github.autofix.enabled", "GitHub auto-fix", Bool, "Fix your pull requests whose checks fail."),
     choice("github.autofix.push", "Auto-fix pushes", &["ask", "auto"], "Ask before each push, or push without asking."),
     def("github.autofix.max_attempts_per_pr", "Auto-fix attempts", Integer, "Failing commits per pull request before auto-fix stops."),
+    def("github.automerge.allowed", "Allow auto-merge", Bool, "Whether the desktop app may ask GitHub to auto-merge a pull request when you turn the switch on. Off refuses every request. It never turns auto-merge on by itself, and only this file (not a project's) is read for it."),
+    choice("github.automerge.default_method", "Preferred merge method", &["squash", "merge", "rebase"], "The merge method the pull-request card preselects when the repository allows it; otherwise the first allowed of squash, merge and rebase. It never turns auto-merge on."),
     def("github.session_gh", "Environments that keep gh's login", StringList, "Ids of environments whose sessions keep the GitHub CLI's login: their commands keep GH_TOKEN, GITHUB_TOKEN and GH_CONFIG_DIR and the OS sandbox does not hide gh's config folder. Off for every other environment."),
     def("github.autofix.poll_s", "Auto-fix polling (seconds)", Integer, "How often pull requests are checked."),
     def("github.autofix.model", "Auto-fix model", STRING, "Model for fix sessions; empty uses the default model."),
@@ -261,6 +263,7 @@ pub static SETTINGS: &[SettingDef] = &[
     choice("harness.hints", "Ambiguity hints", HARNESS_MODE, "Put guidance for messages that point at something unseen (\"that file\", \"the issue from earlier\", \"deploy it\") at the top of the turn they arrive in. auto: only when the root agent's model runs on this machine."),
     choice("harness.clarify", "Ask instead of guessing", HARNESS_MODE, "Offer the root agent request_clarification and tell it to ask when its confidence is low instead of guessing. auto: only when the root agent's model runs on this machine; never in unattended sessions."),
     def("harness.clarify_below", "Ask below confidence", Number, "Confidence (0 to 1) below which the root agent asks with request_clarification instead of guessing."),
+    choice("harness.tool_loading", "Reach tools on demand", HARNESS_MODE, "Offer the agent a small fixed list (the file and command tools, tool_search and call_tool) and let it find and run every other tool by name, instead of sending every tool's schema on every call. auto: only when the agent's model runs on this machine. Off by default."),
     def("sessions.auto_archive_after_days", "Archive idle sessions after (days)", Integer, "Archive a session after this many days without activity; 0 never does. Working, waiting, pinned, and project-agent sessions are never archived."),
     def("sessions.auto_archive_on_pr_close", "Archive when the pull request closes", Bool, "Archive a session once the pull request it watches is merged or closed."),
     def("sessions.agent_state_keep", "Keep agent state", Bool, "Keep each agent's conversation, plan, and usage beside the session's files, so finished subagents can be resumed with a follow-up, also after a restart. Deleted with the session."),
@@ -713,6 +716,57 @@ mod tests {
         set_user_setting(&paths, "github.session_gh", &Json::from(vec!["env-a"]), []).unwrap();
         let config = load(&paths, None, owned(&[])).unwrap();
         assert_eq!(config.settings().unwrap().github.session_gh, ["env-a"]);
+    }
+
+    #[test]
+    fn automerge_allows_by_default_and_a_project_file_does_not_change_it() {
+        let (home, paths) = home();
+        let config = load(&paths, None, owned(&[])).unwrap();
+        let settings = config.settings().unwrap();
+        assert!(settings.github.automerge.allowed);
+        assert_eq!(settings.github.automerge.default_method, "squash");
+
+        // A project's own file is never merged as settings: it cannot set the preference either.
+        let project = home.path().join("project");
+        std::fs::create_dir_all(project.join(".imperium")).unwrap();
+        std::fs::write(
+            project.join(".imperium/config.toml"),
+            "[github.automerge]
+allowed = false
+default_method = \"rebase\"
+",
+        )
+        .unwrap();
+        let config = load(&paths, Some(&project), owned(&[])).unwrap();
+        assert!(!config.warnings().is_empty());
+        let settings = config.settings().unwrap();
+        assert!(settings.github.automerge.allowed);
+        assert_eq!(settings.github.automerge.default_method, "squash");
+
+        // The user's own file does.
+        set_user_setting(&paths, "github.automerge.allowed", &Json::from(false), []).unwrap();
+        set_user_setting(
+            &paths,
+            "github.automerge.default_method",
+            &Json::from("rebase"),
+            [],
+        )
+        .unwrap();
+        let settings = load(&paths, Some(&project), owned(&[]))
+            .unwrap()
+            .settings()
+            .unwrap();
+        assert!(!settings.github.automerge.allowed);
+        assert_eq!(settings.github.automerge.default_method, "rebase");
+        assert!(
+            set_user_setting(
+                &paths,
+                "github.automerge.default_method",
+                &Json::from("fast"),
+                []
+            )
+            .is_err()
+        );
     }
 
     #[test]

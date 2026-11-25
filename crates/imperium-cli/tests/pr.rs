@@ -9,7 +9,7 @@ use imperium_cli::client::Client;
 use imperium_cli::pr;
 use imperium_config::{Config, Layer, Paths, Source};
 use imperium_core::{AccessToken, DaemonState};
-use imperium_github::{HttpGitHub, StaticToken};
+use imperium_github::{GitHub, HttpGitHub, StaticToken};
 use imperium_github_fake::FakeGithub;
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
@@ -159,6 +159,68 @@ async fn prints_the_status_the_daemon_holds() {
     // With no session named, every running session that has a pull request bound.
     let all = pr::status(&mut world.client, None).await.unwrap();
     assert_eq!(all, format!("session {}\n{one}", world.session));
+}
+
+#[tokio::test]
+async fn automerge_shows_its_state_and_turns_off_and_the_command_line_cannot_turn_it_on() {
+    let mut world = world().await;
+    world
+        .client
+        .call::<PullRequestsBind>(PullRequestsBindParams {
+            session_id: world.session.clone(),
+            url: URL.to_string(),
+        })
+        .await
+        .unwrap();
+    let shown = pr::automerge_status(&mut world.client, &world.session)
+        .await
+        .unwrap();
+    assert_eq!(shown, "owner/repo#7: auto-merge off\n");
+
+    // Turning off what is already off sends nothing to GitHub.
+    let off = pr::automerge_off(&mut world.client, &world.session)
+        .await
+        .unwrap();
+    assert_eq!(off, "owner/repo#7: auto-merge off\n");
+    assert!(world._fake.mutations().is_empty());
+
+    // Turned on elsewhere (here GitHub itself), the command line shows it and turns it off.
+    let github = HttpGitHub::new(&world._fake.url(), Arc::new(StaticToken::new(TOKEN))).unwrap();
+    github
+        .set_auto_merge(
+            REPO,
+            7,
+            &imperium_github::AutoMerge::Enable {
+                method: imperium_github::MergeMethod::Squash,
+                expected_head_oid: "abc123".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let off = pr::automerge_off(&mut world.client, &world.session)
+        .await
+        .unwrap();
+    assert_eq!(off, "owner/repo#7: auto-merge off\n");
+    assert!(world._fake.pr(REPO, 7).auto_merge.is_none());
+
+    // A command that is not the desktop app cannot turn it on: the daemon refuses the call
+    // the command line has no code to make.
+    let error = world
+        .client
+        .call::<imperium_protocol::methods::PullRequestsSetAutoMerge>(
+            imperium_protocol::methods::PullRequestsSetAutoMergeParams {
+                session_id: world.session.clone(),
+                url: URL.to_string(),
+                head_sha: "abc123".into(),
+                enabled: true,
+                merge_method: Some(PrMergeMethod::Squash),
+                challenge: Some("made-up".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("permission denied"), "{error}");
+    assert!(world._fake.pr(REPO, 7).auto_merge.is_none());
 }
 
 fn hostile() -> PrStatus {
