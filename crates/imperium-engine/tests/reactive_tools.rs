@@ -177,6 +177,53 @@ impl ToolProvider for Flaky {
     }
 }
 
+/// An integration of an MCP server whose tool list the test changes while the session runs.
+#[derive(Debug)]
+struct Shifty {
+    names: Arc<Mutex<Vec<String>>>,
+}
+
+impl ToolProvider for Shifty {
+    fn group(&self) -> imperium_api::ToolGroup {
+        imperium_api::ToolGroup::External
+    }
+
+    fn specs(&self) -> Vec<ToolSpec> {
+        self.names
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|name| ToolSpec {
+                name: name.clone(),
+                description: "A shifting servers tool.".into(),
+                parameters: json!({"type": "object", "properties": {}}),
+            })
+            .collect()
+    }
+
+    fn handles(&self, name: &str) -> bool {
+        self.names.lock().unwrap().iter().any(|known| known == name)
+    }
+
+    fn check(&self, _name: &str, _arguments: &str) -> Result<ToolCheck, String> {
+        Ok(ToolCheck {
+            summary: "call shifty".into(),
+            ask: false,
+            needs_context: false,
+            command: None,
+        })
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: &'a ToolContext<'a>,
+        _name: &'a str,
+        _arguments: &'a str,
+    ) -> ToolFuture<'a> {
+        Box::pin(async { Ok("shifty ok".to_string()) })
+    }
+}
+
 /// What one model request carried.
 #[derive(Debug, Clone)]
 struct Seen {
@@ -257,6 +304,10 @@ struct Options {
     profile: ProfileRules,
     hooks: Vec<ConfiguredHook>,
     launcher: Option<Arc<dyn SessionLauncher>>,
+    /// Agent files (file name, text) in the user's config.
+    agents: Vec<(&'static str, String)>,
+    /// Integrations besides the fixed ones.
+    extra: Vec<Arc<dyn ToolProvider>>,
 }
 
 fn options(loading: HarnessMode, root: Vec<Step>) -> Options {
@@ -281,6 +332,11 @@ async fn start(options: Options) -> Setup {
     let config = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     write_plugin(config.path(), &mcp_server("words").await);
+    for (name, text) in &options.agents {
+        let path = config.path().join("agents").join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
     let extensions = imperium_extensions::load(&Sources {
         config_dir: config.path().to_path_buf(),
         project_dir: project.path().to_path_buf(),
@@ -308,6 +364,9 @@ async fn start(options: Options) -> Setup {
         server("alpha", mcp_server("alpha").await),
         server("beta", mcp_server("beta").await),
     ]);
+    let mut providers: Vec<Arc<dyn ToolProvider>> =
+        vec![Arc::new(mcp), Arc::new(Fetcher), Arc::new(Flaky)];
+    providers.extend(options.extra);
     let session = Session::spawn(SessionConfig {
         id: "reactive".into(),
         workspace,
@@ -328,7 +387,7 @@ async fn start(options: Options) -> Setup {
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),
         local: None,
-        tools: vec![Arc::new(mcp), Arc::new(Fetcher), Arc::new(Flaky)],
+        tools: providers,
         notices: Vec::new(),
         extensions,
         memory: None,
@@ -468,6 +527,9 @@ async fn with_loading_off_the_whole_list_is_offered_unchanged_and_nothing_is_che
         let root = vec![
             // Not offered (no knowledge agent exists), but dispatched as it always was.
             Some(("list_knowledge_agents", json!({}))),
+            // The same for a question to a knowledge agent that does not exist: the call runs
+            // and the agent says so, instead of the universe check refusing it.
+            Some(("ask_agent", json!({"agent": "t9", "question": "q"}))),
             Some(("tool_search", json!({"query": "plan"}))),
             None,
         ];
@@ -478,8 +540,13 @@ async fn with_loading_off_the_whole_list_is_offered_unchanged_and_nothing_is_che
             "{:?}",
             done.results
         );
+        assert!(
+            !done.results[1].1.contains("not one of your tools"),
+            "{:?}",
+            done.results
+        );
         // The loader tools do not exist with loading off.
-        assert!(!done.results[1].0, "{:?}", done.results);
+        assert!(!done.results[2].0, "{:?}", done.results);
         let seen = setup.seen.lock().unwrap();
         lists.push(seen[0].clone());
     }
@@ -710,6 +777,10 @@ async fn call_tool_is_refused_where_a_direct_call_is() {
             "call_tool",
             json!({"name": "list_knowledge_agents", "arguments": {}}),
         )),
+        Some((
+            "call_tool",
+            json!({"name": "ask_agent", "arguments": {"agent": "t9", "question": "q"}}),
+        )),
         None,
     ];
     let mut setup = options(HarnessMode::On, setup_root);
@@ -742,6 +813,10 @@ async fn call_tool_is_refused_where_a_direct_call_is() {
             && results[7]
                 .1
                 .contains("list_knowledge_agents is not one of your tools"),
+        "{results:?}"
+    );
+    assert!(
+        !results[8].0 && results[8].1.contains("ask_agent is not one of your tools"),
         "{results:?}"
     );
     let seen = setup.seen.lock().unwrap();
@@ -865,6 +940,11 @@ async fn a_failed_call_to_a_deferred_tool_carries_its_parameters() {
         let result = seen[index].last_result.as_deref().unwrap();
         assert!(!result.contains(advice), "{result}");
     }
+    // The call that reached the tool's parser is reported as loaded through the proxy.
+    assert!(done.events.iter().any(|event| matches!(
+        event,
+        SessionEvent::ToolsLoaded { names, via: ToolLoadVia::Call } if names == &["update_plan"]
+    )));
     assert_eq!(done.results[4], (true, "alpha ok".to_string()));
     assert_eq!(done.results[5], (true, "beta ok".to_string()));
     // The events keep the tool's own output, without the advice.
@@ -1019,6 +1099,98 @@ async fn the_loaders_are_exempt_from_a_launcher_limit_but_their_inner_tools_are_
         "{results:?}"
     );
     assert!(!setup.project.path().join("x.txt").exists());
+    // A refusal says nothing about the tool: no parameters appended, nothing reported loaded.
+    let seen = setup.seen.lock().unwrap().clone();
+    let told = seen.last().unwrap().last_result.as_deref().unwrap();
+    assert!(told.contains("this turn only reads and suggests"), "{told}");
+    assert!(!told.contains("The parameters of"), "{told}");
+    assert!(!done.events.iter().any(|event| matches!(
+        event,
+        SessionEvent::ToolsLoaded { names, .. } if names.iter().any(|name| name == "write_file")
+    )));
+}
+
+#[tokio::test]
+async fn a_named_agent_with_a_tools_list_gets_no_loader_and_the_proxy_is_refused() {
+    let file = "---\nname: reader\ndescription: Reads.\ntools: read_file\n---\nRead.\n";
+    let root = vec![
+        Some((
+            "call_tool",
+            json!({"name": "spawn_agent", "arguments": {
+            "brief": "look", "agent": "reader"}}),
+        )),
+        Some(("call_tool", json!({"name": "await_tasks", "arguments": {}}))),
+        None,
+    ];
+    let sub = vec![
+        Some((
+            "call_tool",
+            json!({"name": "write_file", "arguments": {
+            "path": "out.txt", "content": "x"}}),
+        )),
+        Some(("write_file", json!({"path": "out.txt", "content": "x"}))),
+        None,
+    ];
+    let mut setup = options(HarnessMode::On, root);
+    setup.sub = sub;
+    setup.agents = vec![("reader.md", file.to_string())];
+    let setup = start(setup).await;
+    let done = turn(&setup.session, "delegate").await;
+    assert!(done.results[0].0, "{:?}", done.results);
+    let seen = setup.seen.lock().unwrap().clone();
+    let subs: Vec<&Seen> = seen.iter().filter(|request| request.subagent).collect();
+    assert_eq!(subs.len(), 3, "{seen:?}");
+    // Its file lists its whole universe, offered directly: no loader.
+    assert_eq!(subs[0].names, ["read_file"]);
+    for refused in [subs[1], subs[2]] {
+        let told = refused.last_result.as_deref().unwrap();
+        assert!(
+            told.contains("not one of the tools of the agent reader"),
+            "{told}"
+        );
+    }
+    assert!(!setup.project.path().join("out.txt").exists());
+}
+
+#[tokio::test]
+async fn a_list_change_of_an_mcp_server_changes_neither_the_list_nor_the_description() {
+    let names = Arc::new(Mutex::new(vec!["mcp__shifty__one".to_string()]));
+    let root = vec![
+        None,
+        Some(("tool_search", json!({"query": "shifty"}))),
+        Some((
+            "call_tool",
+            json!({"name": "mcp__shifty__two", "arguments": {}}),
+        )),
+        None,
+    ];
+    let mut setup = options(HarnessMode::On, root);
+    setup.extra = vec![Arc::new(Shifty {
+        names: Arc::clone(&names),
+    })];
+    let setup = start(setup).await;
+    turn(&setup.session, "first").await;
+    // The server now lists another tool.
+    names.lock().unwrap().push("mcp__shifty__two".to_string());
+    let done = turn(&setup.session, "second").await;
+    let seen = setup.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 4);
+    for request in &seen {
+        assert_eq!(request.tools_json, seen[0].tools_json);
+    }
+    assert!(!seen[0].tools_json.contains("shifty"));
+    // The new tool is found by searching and runs through the proxy.
+    assert!(
+        done.results[0].1.contains("mcp__shifty__two"),
+        "{:?}",
+        done.results
+    );
+    assert!(
+        done.results[0].1.contains("mcp__shifty__one"),
+        "{:?}",
+        done.results
+    );
+    assert_eq!(done.results[1], (true, "shifty ok".to_string()));
 }
 
 /// A local runtime with one model, `m`, whose leases cost nothing.

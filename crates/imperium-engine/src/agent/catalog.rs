@@ -236,14 +236,18 @@ pub(super) fn search(
 ) -> Found {
     let mut found = Found::default();
     if !names.is_empty() {
+        let mut bytes = 0;
         for requested in names {
             let requested = requested.trim();
-            let matches: Vec<&ToolSpec> = match requested.strip_suffix('*') {
-                Some(prefix) if !prefix.is_empty() => specs
+            let prefix = requested
+                .strip_suffix('*')
+                .filter(|prefix| !prefix.is_empty());
+            let matches: Vec<&ToolSpec> = match prefix {
+                Some(prefix) => specs
                     .iter()
                     .filter(|spec| spec.name.starts_with(prefix))
                     .collect(),
-                _ => specs.iter().filter(|spec| spec.name == requested).collect(),
+                None => specs.iter().filter(|spec| spec.name == requested).collect(),
             };
             if matches.is_empty() {
                 found.unknown.push(serde_json::json!({
@@ -252,9 +256,19 @@ pub(super) fn search(
                 }));
             }
             for spec in matches {
-                if !found.shown.contains(&spec.name) {
+                if found.shown.contains(&spec.name) {
+                    continue;
+                }
+                let value = entry(spec);
+                let size = value.to_string().len();
+                // An exact name is returned whole whatever its size; a prefix stops at the cap
+                // like a query does, after the first schema, and lists the rest.
+                if prefix.is_none() || found.tools.is_empty() || bytes + size <= SEARCH_CAP {
+                    bytes += size;
                     found.shown.push(spec.name.clone());
-                    found.tools.push(entry(spec));
+                    found.tools.push(value);
+                } else {
+                    found.more.push(listed(spec));
                 }
             }
         }
@@ -497,6 +511,14 @@ impl Agent {
         let Some(spec) = self.universe_spec(name) else {
             return output;
         };
+        // Only a call that got past the refusals (it started, or its arguments were judged and
+        // rejected) says anything about the tool: a launcher, fork, profile, rule, hook or
+        // approval refusal says nothing about its parameters.
+        let reached = self.call_started.load(Ordering::SeqCst)
+            || self.call_args_failed.load(Ordering::SeqCst);
+        if !reached {
+            return output;
+        }
         if proxied {
             self.note_loaded(std::slice::from_ref(&spec.name), ToolLoadVia::Call);
         }
@@ -615,6 +637,31 @@ mod tests {
             &["search_a".into(), "search_b".into(), "search_c".into()],
         );
         assert_eq!(found.shown.len(), 3);
+    }
+
+    #[test]
+    fn a_prefix_stops_at_the_cap_after_the_first_schema_and_exact_names_do_not() {
+        let big = |name: &str| ToolSpec {
+            name: name.into(),
+            description: "Server tool.".into(),
+            parameters: serde_json::json!({"description": "x".repeat(5_000)}),
+        };
+        let specs = vec![big("mcp__s__a"), big("mcp__s__b"), big("mcp__s__c")];
+        let catalog = deferred_indices(&specs);
+        let found = search(&specs, &catalog, "", &["mcp__s__*".to_string()]);
+        assert_eq!(found.shown, ["mcp__s__a"]);
+        assert_eq!(
+            found.more,
+            ["mcp__s__b: Server tool.", "mcp__s__c: Server tool."]
+        );
+        // The same tools asked for by exact name come back whole.
+        let exact: Vec<String> = ["mcp__s__a", "mcp__s__b", "mcp__s__c"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let found = search(&specs, &catalog, "", &exact);
+        assert_eq!(found.shown.len(), 3);
+        assert!(found.more.is_empty());
     }
 
     #[test]

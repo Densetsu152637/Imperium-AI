@@ -505,7 +505,10 @@ impl Agent {
         let finish = |ok: bool, output: String| self.tool_finished(call, name, ok, output, None);
         let check = match provider.check(name, arguments) {
             Ok(check) => check,
-            Err(error) => return finish(false, format!("error: {error}")),
+            Err(error) => {
+                self.call_args_failed.store(true, Ordering::SeqCst);
+                return finish(false, format!("error: {error}"));
+            }
         };
         let summary = self.annotate(check.summary.clone());
         // A call that runs a command is judged as `run_command` on that command.
@@ -598,6 +601,7 @@ impl Agent {
 
     /// Announces a tool call that is about to run; returns when it started.
     pub(super) fn tool_started(&self, call: &ToolCall, tool: &str, summary: String) -> Instant {
+        self.call_started.store(true, Ordering::SeqCst);
         self.emit(SessionEvent::ToolStarted {
             call_id: call.id.clone(),
             tool: tool.to_string(),
@@ -690,6 +694,8 @@ impl Agent {
                 );
             }
         };
+        self.call_started.store(false, Ordering::SeqCst);
+        self.call_args_failed.store(false, Ordering::SeqCst);
         let output = self.run_effective(&effective).await;
         self.with_schema_advice(&effective, proxied, output)
     }
@@ -900,7 +906,10 @@ impl Agent {
         };
         let invocation = match Invocation::parse(&call.function.name, &call.function.arguments) {
             Ok(invocation) => invocation,
-            Err(error) => return finish(false, format!("error: {error}")),
+            Err(error) => {
+                self.call_args_failed.store(true, Ordering::SeqCst);
+                return finish(false, format!("error: {error}"));
+            }
         };
         let tool = invocation.tool_name();
         let summary = self.annotate(invocation.summary());

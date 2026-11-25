@@ -256,6 +256,12 @@ pub(crate) struct Agent {
     /// The tools whose parameters this agent has seen in a `tool_search` result or that it
     /// ran through `call_tool`.
     loaded_tools: Mutex<Vec<String>>,
+    /// Whether the call in flight got as far as running (it started), and whether its
+    /// arguments were judged and rejected before that; both are false for a call a refusal
+    /// stopped. Set by [`Agent::tool_started`] and the argument checks, read by
+    /// `with_schema_advice`.
+    call_started: std::sync::atomic::AtomicBool,
+    call_args_failed: std::sync::atomic::AtomicBool,
 }
 
 impl Agent {
@@ -467,6 +473,8 @@ impl Agent {
             plugin_loader: std::sync::OnceLock::new(),
             search_text: std::sync::OnceLock::new(),
             loaded_tools: Mutex::new(Vec::new()),
+            call_started: std::sync::atomic::AtomicBool::new(false),
+            call_args_failed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
