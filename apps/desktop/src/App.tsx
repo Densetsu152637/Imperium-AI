@@ -37,6 +37,7 @@ import type {
   SessionComparePickParams,
   SessionCreateResult,
   InitiativeNotice,
+  AutofixEventParams,
   SessionEventParams,
   DownloadJob,
   LocalModelListResult,
@@ -67,6 +68,8 @@ import { activeShape, clearOverride, DEFAULT_SHAPE, editShape, hasOverride, save
 import { downloadNotice, initiativeNotice, sessionNotice, updateNotice } from "./shared/attention";
 import { budgetNotice, budgetStop } from "./models/budgets";
 import { focusMainWindow, notify, onNoticeOpened } from "./shared/notify";
+import { failureNotice, type FailureToast } from "./shared/failureNotices";
+import { FailureToasts } from "./shared/FailureToasts";
 import {
   EnvironmentsPanel,
   SessionSortSelect,
@@ -293,6 +296,9 @@ export function App() {
   settingsRef.current = settings;
   // Downloads already announced, so repeated progress reports for a finished one stay quiet.
   const announcedDownloads = useRef(new Set<string>());
+  const failureMemory = useRef(new Map<string, number>());
+  const [failureToasts, setFailureToasts] = useState<FailureToast[]>([]);
+  const dismissFailureToast = useCallback((id: string) => setFailureToasts((all) => all.filter((t) => t.id !== id)), []);
   // Icons chosen per folder before environments, carried over when folders become environments.
   const folderIcons = useProjectIcons();
   const folderIconsRef = useRef(folderIcons);
@@ -369,6 +375,15 @@ export function App() {
         }
         if (notification.method === "initiative.notice") {
           if (!isDetached) void notify(initiativeNotice(notification.params as InitiativeNotice), settingsRef.current);
+          return;
+        }
+        if (notification.method === "autofix.event") {
+          // Only failures, once per repeat window: a toast, and a system notice when in the background.
+          const shown = isDetached ? null : failureNotice(notification.params as AutofixEventParams, failureMemory.current, Date.now());
+          if (shown) {
+            setFailureToasts((all) => [...all.slice(-3), shown.toast]);
+            void notify(shown.notice, settingsRef.current);
+          }
           return;
         }
         if (notification.method === "budgets.alert") {
@@ -1756,6 +1771,7 @@ export function App() {
         />
       )}
       {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={daemon} />}
+      <FailureToasts toasts={failureToasts} onDismiss={dismissFailureToast} />
       {editingLayout && (
         <div className="layout-editor-bar" role="region" aria-label="Layout editor">
           <span className="muted">
