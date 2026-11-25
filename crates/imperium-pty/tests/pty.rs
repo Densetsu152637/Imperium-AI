@@ -113,7 +113,12 @@ fn a_background_job_dies_with_its_terminal() {
         &["--norc", "--noprofile", "-i"],
         dir.path(),
     ));
-    pty.write(b"sleep 60 & echo JOB:$!:END\n").unwrap();
+    // `set +H`: bash 3.2 (macOS) takes the `!` of `$!` for history expansion otherwise.
+    pty.write(
+        b"set +H; sleep 60 & echo JOB:$!:END
+",
+    )
+    .unwrap();
     let job = common::wait_for_number(&pty, "JOB:", ":END");
     assert!(common::alive(job), "the job is running before the end");
     pty.end();
