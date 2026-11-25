@@ -6,6 +6,9 @@ use std::fmt;
 /// The default `script_memory_mb` (plan C5), used when the daemon passes none.
 pub const DEFAULT_MEMORY_MB: u64 = 256;
 
+/// The smallest `--memory-mb`: below it the runtime itself cannot start inside the OS backstop.
+pub const MIN_MEMORY_MB: u64 = 32;
+
 /// Parsed arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
@@ -45,10 +48,10 @@ impl Options {
                     options.memory_mb = value
                         .parse::<u64>()
                         .ok()
-                        .filter(|mb| (1..=1_048_576).contains(mb))
+                        .filter(|mb| (MIN_MEMORY_MB..=1_048_576).contains(mb))
                         .ok_or_else(|| {
                             UsageError(format!(
-                                "--memory-mb: {value:?} is not a size in 1..=1048576"
+                                "--memory-mb: {value:?} is not a size in {MIN_MEMORY_MB}..=1048576"
                             ))
                         })?;
                 }
@@ -83,6 +86,8 @@ mod tests {
     fn rejects_bad_input() {
         assert!(parse(&["--memory-mb"]).is_err());
         assert!(parse(&["--memory-mb", "0"]).is_err());
+        assert!(parse(&["--memory-mb", "31"]).is_err());
+        assert_eq!(parse(&["--memory-mb", "32"]).unwrap().memory_mb, 32);
         assert!(parse(&["--memory-mb", "lots"]).is_err());
         assert!(parse(&["subprocess"]).is_err());
     }

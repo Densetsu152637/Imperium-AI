@@ -13,13 +13,25 @@ use common::worker_path;
 /// Runs the probe, which confines itself and then tries what a program must not do.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn probe(extra: &[&str]) -> HashMap<String, String> {
+    probe_with(extra, None)
+}
+
+/// As [`probe`], leaving `inherit` open in the probe as a descriptor that is not close-on-exec.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn probe_with(extra: &[&str], inherit: Option<&std::fs::File>) -> HashMap<String, String> {
+    use std::os::fd::AsRawFd;
+
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("secret.txt");
     std::fs::write(&file, "secret").unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
 
-    let output = Command::new(common::probe_path())
+    let mut command = Command::new(common::probe_path());
+    if let Some(file) = inherit {
+        command.args(["--fd", &file.as_raw_fd().to_string()]);
+    }
+    let output = command
         .args(["--file", file.to_str().unwrap()])
         .args(["--port", &port.to_string()])
         .args(["--pid", &std::process::id().to_string()])
@@ -87,6 +99,37 @@ fn macos_worker_cannot_read_connect_spawn_or_reach_mach_services() {
         seen["mach_lookup"].starts_with("denied"),
         "pasteboard: {seen:?}"
     );
+}
+
+/// F1: a descriptor the daemon left open without close-on-exec is closed before confinement, so
+/// `fstat` on it gives `EBADF` inside the worker. The probe first checks it really was open.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn an_inherited_descriptor_is_closed_before_the_worker_is_confined() {
+    let dir = tempfile::tempdir().unwrap();
+    let leaked = std::fs::File::open(dir.path()).unwrap();
+    // `File::open` sets close-on-exec; clear it so the child inherits the descriptor.
+    rustix::io::fcntl_setfd(&leaked, rustix::io::FdFlags::empty()).unwrap();
+    let seen = probe_with(&[], Some(&leaked));
+    assert_eq!(seen["inherited_fd_before"], "open", "{seen:?}");
+    assert_eq!(seen["inherited_fd_after"], "closed", "{seen:?}");
+    assert!(seen["confined"].contains("fds:"), "{seen:?}");
+}
+
+/// F1, fail closed: when the sweep cannot be applied the worker exits before reading a request.
+#[cfg(unix)]
+#[test]
+fn the_worker_exits_when_the_descriptor_sweep_is_forced_to_fail() {
+    let output = Command::new(worker_path())
+        .args(["--force-confinement-failure", "fds"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(i32::from(imperium_script_worker::EXIT_CONFINEMENT_FAILED))
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("fds"));
 }
 
 /// F10, at the process level: when a stage cannot be applied the worker exits before reading a

@@ -152,7 +152,6 @@ fn build_filters() -> Result<(BpfProgram, BpfProgram), ConfineError> {
         libc::SYS_set_robust_list,
         libc::SYS_set_tid_address,
         libc::SYS_sched_yield,
-        libc::SYS_sched_getaffinity,
         libc::SYS_getpid,
         libc::SYS_gettid,
         libc::SYS_restart_syscall,
@@ -232,10 +231,32 @@ fn build_filters() -> Result<(BpfProgram, BpfProgram), ConfineError> {
         ])?],
     );
 
-    // `prlimit64` only to read (a null new-limit pointer); `prctl` only to name a thread.
+    // `prlimit64` only to read (a null new-limit pointer) and only about the worker itself (pid 0
+    // or its own id); `sched_getaffinity` (the runtime asks for the CPU count) likewise.
     rules.insert(
         libc::SYS_prlimit64,
-        vec![rule(vec![condition(2, SeccompCmpOp::Eq, 0, qword)?])?],
+        vec![
+            rule(vec![
+                condition(0, SeccompCmpOp::Eq, 0, dword.clone())?,
+                condition(2, SeccompCmpOp::Eq, 0, qword.clone())?,
+            ])?,
+            rule(vec![
+                condition(0, SeccompCmpOp::Eq, own_pid, dword.clone())?,
+                condition(2, SeccompCmpOp::Eq, 0, qword)?,
+            ])?,
+        ],
+    );
+    rules.insert(
+        libc::SYS_sched_getaffinity,
+        vec![
+            rule(vec![condition(0, SeccompCmpOp::Eq, 0, dword.clone())?])?,
+            rule(vec![condition(
+                0,
+                SeccompCmpOp::Eq,
+                own_pid,
+                dword.clone(),
+            )?])?,
+        ],
     );
     rules.insert(
         libc::SYS_prctl,

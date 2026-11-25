@@ -43,11 +43,11 @@ monty-types = "=1.6.0"
 
 [target.'cfg(unix)'.dependencies]
 # Safe wrappers for the resource limit and the process-wide flags the confinement sets.
-rustix = { version = "1.1.6", default-features = false, features = ["std", "process", "thread"] }
+rustix = { version = "1.1.6", default-features = false, features = ["std", "process", "thread", "fs"] }
+# `close_range`, `close` and `getdtablesize` for the inherited-descriptor sweep (confine/fds.rs).
+libc = "0.2.191"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Syscall numbers for the seccomp allowlist.
-libc = "0.2.191"
 landlock = "0.4.7"
 seccompiler = { version = "0.5.0", default-features = false }
 

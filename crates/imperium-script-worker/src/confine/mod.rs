@@ -10,6 +10,8 @@ use std::fmt;
 
 use crate::options::Options;
 
+#[cfg(unix)]
+mod fds;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -27,7 +29,8 @@ use unsupported::apply as apply_platform;
 /// What to apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
-    /// The OS backstop for memory: `RLIMIT_DATA`, twice the program's `script_memory_mb`.
+    /// The OS backstop for memory: `RLIMIT_DATA` on Linux, twice the program's `script_memory_mb`
+    /// (macOS has no enforced one, plan C1).
     pub memory_limit_bytes: u64,
     /// Test hook: the stage that must fail instead of being applied (`test-support` builds only).
     pub force_failure: Option<String>,
@@ -81,7 +84,22 @@ impl std::error::Error for ConfineError {}
 /// Applies this platform's confinement to the calling process. Call it on the main thread, before
 /// any other thread exists and before the first read from stdin.
 pub fn apply(settings: &Settings) -> Result<Report, ConfineError> {
-    apply_platform(settings)
+    // First, before any other stage: a descriptor inherited from the daemon would stay usable
+    // under the confinement (plan C1, F1). Failing here is failing closed.
+    #[cfg(unix)]
+    {
+        forced(settings, "fds")?;
+        fds::close_inherited()?;
+        let mut report = apply_platform(settings)?;
+        report
+            .applied
+            .insert(0, "fds: every descriptor above 2 closed".to_owned());
+        Ok(report)
+    }
+    #[cfg(not(unix))]
+    {
+        apply_platform(settings)
+    }
 }
 
 /// Fails with the stage's name when a test asked for exactly that stage to fail.

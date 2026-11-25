@@ -76,6 +76,28 @@ fn main() -> ExitCode {
                 _ => return ExitCode::FAILURE,
             }
         }
+        "oversized_frame" => {
+            // A length header past the driver's 16 MiB cap; no body follows.
+            let mut stdout = io::stdout();
+            stdout
+                .write_all(&(16_u32 * 1024 * 1024 + 1).to_le_bytes())
+                .ok();
+            stdout.flush().ok();
+        }
+        "call" => send(&event(Kind::FunctionCall(pb::FunctionCall {
+            function_name: "f".to_owned(),
+            call_id: 1,
+            ..Default::default()
+        }))),
+        "cwd_empty" => {
+            // The driver starts the worker in an empty folder of its own.
+            let empty = std::fs::read_dir(".").is_ok_and(|mut entries| entries.next().is_none());
+            if empty {
+                send(&event(Kind::Complete(pb::Complete::default())));
+            } else {
+                return ExitCode::FAILURE;
+            }
+        }
         "hang" => loop {
             thread::sleep(Duration::from_secs(3600));
         },

@@ -17,6 +17,8 @@ struct Probe {
     file: String,
     port: u16,
     pid: u32,
+    /// A descriptor the test left open, not close-on-exec, for the worker to inherit (-1: none).
+    fd: i32,
 }
 
 fn report(name: &str, outcome: impl std::fmt::Display) {
@@ -30,12 +32,34 @@ fn denied<T, E: std::fmt::Display>(result: Result<T, E>) -> String {
     }
 }
 
+/// `open` when `fstat` works on the descriptor, `closed` on `EBADF`, `none` without one.
+#[cfg(not(unix))]
+fn fd_state(_fd: i32) -> String {
+    "none".to_owned()
+}
+
+#[cfg(unix)]
+fn fd_state(fd: i32) -> String {
+    if fd < 0 {
+        return "none".to_owned();
+    }
+    // SAFETY: only `fstat`ed for the duration of the call, never closed or owned here; a number
+    // that is not open gives `EBADF`.
+    let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+    match rustix::fs::fstat(borrowed) {
+        Ok(_) => "open".to_owned(),
+        Err(err) if err == rustix::io::Errno::BADF => "closed".to_owned(),
+        Err(err) => format!("error ({err})"),
+    }
+}
+
 fn main() -> ExitCode {
     let mut options = Options::parse(std::iter::empty()).expect("defaults parse");
     let mut probe = Probe {
         file: String::new(),
         port: 0,
         pid: 0,
+        fd: -1,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -44,6 +68,7 @@ fn main() -> ExitCode {
             "--file" => probe.file = value,
             "--port" => probe.port = value.parse().unwrap_or(0),
             "--pid" => probe.pid = value.parse().unwrap_or(0),
+            "--fd" => probe.fd = value.parse().unwrap_or(-1),
             "--memory-mb" => options.memory_mb = value.parse().unwrap_or(256),
             "--force-confinement-failure" => options.force_failure = Some(value),
             _ => {
@@ -53,6 +78,7 @@ fn main() -> ExitCode {
         }
     }
 
+    report("inherited_fd_before", fd_state(probe.fd));
     match confine::apply(&confine::Settings::from(&options)) {
         Ok(applied) => report("confined", applied.applied.join("; ")),
         Err(err) => {
@@ -61,6 +87,7 @@ fn main() -> ExitCode {
         }
     }
 
+    report("inherited_fd_after", fd_state(probe.fd));
     report("open_file", denied(std::fs::read(&probe.file)));
     report(
         "connect",

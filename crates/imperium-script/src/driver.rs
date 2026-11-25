@@ -99,6 +99,10 @@ pub enum ScriptError {
     /// The worker exited without finishing.
     #[error("the program's interpreter stopped unexpectedly: {0}")]
     Crashed(String),
+    /// The program used up its wall-clock budget while the driver waited for the worker; it was
+    /// killed.
+    #[error("the program ran out of time")]
+    WallBudget,
     /// The worker did not answer within `request_timeout`; it was killed.
     #[error("the program's interpreter did not answer in time")]
     Unresponsive,
@@ -187,8 +191,12 @@ impl Launcher {
         permit: OwnedSemaphorePermit,
     ) -> Result<ScriptRun, ScriptError> {
         let started = Instant::now();
+        let scratch = ScratchDir::create().map_err(|err| {
+            ScriptError::Unavailable(format!("cannot make the worker's working folder: {err}"))
+        })?;
         let mut command = Command::new(&self.worker);
         command
+            .current_dir(&scratch.0)
             .arg("--memory-mb")
             .arg(limits.memory_mb.to_string())
             .args(&self.extra_args)
@@ -230,6 +238,7 @@ impl Launcher {
             finished: false,
             startup: Duration::ZERO,
             _permit: permit,
+            _scratch: scratch,
         };
         run.open(code, started).await?;
         Ok(run)
@@ -272,13 +281,15 @@ enum Pending {
 
 enum ReadFailure {
     Timeout,
+    /// The caller's deadline passed first.
+    Deadline,
     Eof,
     Io,
     Frame(String),
 }
 
-/// One program in one worker. Dropping it kills the worker; [`ScriptRun::finish`] also waits for
-/// the OS to confirm the exit.
+/// One program in one worker. Dropping it kills the worker (`kill_on_drop` sends the signal and
+/// does not wait); [`ScriptRun::finish`] and the program's end wait for the OS to confirm the exit.
 #[derive(Debug)]
 pub struct ScriptRun {
     child: Child,
@@ -296,6 +307,37 @@ pub struct ScriptRun {
     finished: bool,
     startup: Duration,
     _permit: OwnedSemaphorePermit,
+    /// The worker's working folder, empty, removed when the run is dropped.
+    #[cfg(unix)]
+    _scratch: ScratchDir,
+}
+
+/// An empty folder made for one worker to start in (plan C1: an empty working folder).
+#[cfg(unix)]
+#[derive(Debug)]
+struct ScratchDir(PathBuf);
+
+#[cfg(unix)]
+impl ScratchDir {
+    fn create() -> io::Result<Self> {
+        use std::os::unix::fs::DirBuilderExt as _;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "imperium-script-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+        Ok(Self(path))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.0);
+    }
 }
 
 impl ScriptRun {
@@ -370,12 +412,12 @@ impl ScriptRun {
             Err(err) => Some(format!(
                 "the worker did not accept its configuration: {err}"
             )),
-            Ok(()) => match self.read_event().await {
+            Ok(()) => match self.read_event(None).await {
                 Ok(event) if matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))) => None,
                 Ok(_) => {
                     Some("the worker answered its configuration with something else".to_owned())
                 }
-                Err(ReadFailure::Timeout) => {
+                Err(ReadFailure::Timeout | ReadFailure::Deadline) => {
                     Some("the worker did not answer its configuration".to_owned())
                 }
                 Err(ReadFailure::Eof | ReadFailure::Io | ReadFailure::Frame(_)) => {
@@ -410,7 +452,18 @@ impl ScriptRun {
     }
 
     /// The program's next event. After `NameLookup` or `Call`, answer before calling again.
+    /// Each wait for the worker is bounded by `request_timeout` but the call as a whole is not
+    /// (it answers `OsCall`s and pings inside), so the engine should use
+    /// [`next_until`](Self::next_until) with the program's wall deadline.
     pub async fn next(&mut self) -> ScriptEvent {
+        self.next_until(None).await
+    }
+
+    /// As [`next`](Self::next), but the program ends with [`ScriptError::WallBudget`] and its
+    /// worker is killed when `deadline` passes before an event the host must handle arrives. The
+    /// engine passes the program's wall-clock deadline (plan C5); time the host spends answering
+    /// calls between `next` calls is its own to account for.
+    pub async fn next_until(&mut self, deadline: Option<Instant>) -> ScriptEvent {
         if self.finished {
             return ScriptEvent::Done(Err(ScriptError::Misuse(
                 "the program has already ended".to_owned(),
@@ -425,7 +478,7 @@ impl ScriptRun {
         }
         let mut pings = 0_u32;
         loop {
-            let event = match self.read_event().await {
+            let event = match self.read_event(deadline).await {
                 Ok(event) => event,
                 Err(failure) => {
                     let error = self.failure(failure).await;
@@ -655,7 +708,7 @@ impl ScriptRun {
             .is_ok()
         {
             // The worker's reply ends the turn; its content does not matter, the program is over.
-            let _ = self.read_event().await;
+            let _ = self.read_event(None).await;
         }
         self.end(Err(ScriptError::TooManyRequests)).await
     }
@@ -677,6 +730,7 @@ impl ScriptRun {
     async fn failure(&mut self, failure: ReadFailure) -> ScriptError {
         match failure {
             ReadFailure::Timeout => ScriptError::Unresponsive,
+            ReadFailure::Deadline => ScriptError::WallBudget,
             ReadFailure::Frame(what) => ScriptError::Misbehaved(what),
             ReadFailure::Eof | ReadFailure::Io => {
                 let status = timeout(Duration::from_secs(2), self.child.wait())
@@ -711,9 +765,19 @@ impl ScriptRun {
         Ok(())
     }
 
-    async fn read_event(&mut self) -> Result<pb::WorkerEvent, ReadFailure> {
+    async fn read_event(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> Result<pb::WorkerEvent, ReadFailure> {
         let stdout = &mut self.stdout;
-        let body = timeout(self.request_timeout, async {
+        let (wait, by_deadline) = match deadline {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                (self.request_timeout.min(left), left < self.request_timeout)
+            }
+            None => (self.request_timeout, false),
+        };
+        let body = timeout(wait, async {
             let mut len = [0_u8; 4];
             stdout.read_exact(&mut len).await?;
             let len = u32::from_le_bytes(len);
@@ -728,7 +792,13 @@ impl ScriptRun {
             Ok::<_, io::Error>(body)
         })
         .await
-        .map_err(|_| ReadFailure::Timeout)?
+        .map_err(|_| {
+            if by_deadline {
+                ReadFailure::Deadline
+            } else {
+                ReadFailure::Timeout
+            }
+        })?
         .map_err(|err| match err.kind() {
             io::ErrorKind::UnexpectedEof => ReadFailure::Eof,
             io::ErrorKind::InvalidData => ReadFailure::Frame(err.to_string()),

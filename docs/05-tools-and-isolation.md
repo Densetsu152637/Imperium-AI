@@ -1239,14 +1239,15 @@ daemon-side driver, built and tested but not wired into the engine.
   Monty crates are pinned to one release, exactly, in `runtimes/monty.env` and Imperium's
   `Cargo.lock`.
 - **Confinement is applied by the worker to itself before it reads any request**, and the worker
-  exits when any part cannot be applied (fail closed). On Linux it sets `PR_SET_NO_NEW_PRIVS`,
+  exits when any part cannot be applied (fail closed). First it closes every inherited file
+  descriptor above 2, and the driver starts it in an empty folder of its own. On Linux it sets `PR_SET_NO_NEW_PRIVS`,
   `RLIMIT_DATA` (twice the program's memory budget), Landlock where the kernel has it (no file
   access at all) and a seccomp allowlist: reads from stdin, writes to stdout and stderr, memory,
   futexes, clocks, `getrandom`, signals, exit, `kill` of itself and `clone` for threads only. Every
   other system call fails, `clone3` with `ENOSYS`; another architecture kills the process. On macOS
   it calls `sandbox_init` with a profile that starts from `(deny default)` and allows reading its
   own binary and the system libraries and a few `sysctl` keys, so there is no file access, network,
-  process creation or `mach-lookup` (no pasteboard). The Windows launch (restricted token, job
+  process creation or `mach-lookup` (no pasteboard). macOS has no enforced memory limit at the OS level (Monty's own limit and allocator ceiling apply while no escape has happened). The Windows launch (restricted token, job
   object, labels) is stage 1b; until then the worker refuses to run there.
 - **The driver** is `crates/imperium-script`. It starts one worker per program with an empty
   environment, accepts only the events of the plan's allowlist (anything else kills the worker),
