@@ -124,14 +124,6 @@ def warm_up() -> None:
     encode_frame({"ok": True, "text": "x"}, REPLY_CAP)
 
 
-def max_rss_bytes() -> int | None:
-    """Peak resident memory, on Unix (Linux reports KiB, macOS bytes)."""
-    if sys.platform == "win32":
-        return None
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return peak if sys.platform == "darwin" else peak * 1024
-
-
 def install_audit_hook(allowed: frozenset[str] = ALLOWED_EVENTS) -> None:
     """Install the allow-list hook. It cannot be removed, and it exits rather than raises."""
 
@@ -160,7 +152,6 @@ def run(handler, argv: list[str]) -> None:
         "ready": True,
         "pid": os.getpid(),
         "warmup_seconds": round(warmup_seconds, 3),
-        "max_rss_bytes": max_rss_bytes(),
         "limits": limits,
     }
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer

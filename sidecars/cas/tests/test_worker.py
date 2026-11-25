@@ -47,9 +47,25 @@ def call(proc, request: dict | None = None, raw: bytes | None = None):
 
 
 def process_memory(proc) -> int | None:
-    """The worker's working set on Windows, read from outside (the worker has no `ctypes`)."""
-    if sys.platform != "win32":
+    """The worker's peak memory, read from outside: the worker may not open files or load
+    `ctypes`, and on Linux its own `ru_maxrss` carries over the parent's peak across `exec`.
+    Linux: `VmHWM`; macOS: the current resident size from `ps`; Windows: the peak working set."""
+    if sys.platform.startswith("linux"):
+        with open(f"/proc/{proc.pid}/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) * 1024
         return None
+    if sys.platform == "darwin":
+        import subprocess
+
+        out = subprocess.run(  # noqa: S603 - a fixed system tool
+            ["/bin/ps", "-o", "rss=", "-p", str(proc.pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        return int(out) * 1024 if out.isdigit() else None
     import ctypes
     from ctypes import wintypes
 
@@ -82,7 +98,7 @@ def test_one_call_in_one_reply_out_then_exit():
     proc = spawn_worker("--cpu-seconds", "15", "--memory-mib", "1024")
     ready = read_frame(proc.stdout, REPLY_CAP)
     ready_after = time.perf_counter() - started
-    memory = ready["max_rss_bytes"] or process_memory(proc)
+    memory = process_memory(proc)
     proc.stdin.write(encode_frame({"tool": "build", "expression": "x^2 + 2x"}, REQUEST_CAP))
     proc.stdin.close()
     reply = read_frame(proc.stdout, REPLY_CAP)

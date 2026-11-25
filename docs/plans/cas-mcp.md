@@ -1247,7 +1247,7 @@ Commands are what CI runs; nothing needs a local Rust build.
   - **Choices the plan left open.**
     - Exit codes: `0` ok, `64` bad command line, `65` bad request frame, `66` `MemoryError`
       (stage 2b maps it to `limit`), `77` `REFUSED`. The worker writes a ready frame
-      (`pid`, `warmup_seconds`, `max_rss_bytes` on Unix, the parsed limits) after the hook is
+      (`pid`, `warmup_seconds` and the parsed limits) after the hook is
       installed and before it reads the call, for 2b's and the broker's `arm`. Every exit is
       `os._exit`, so no interpreter shutdown runs under the hook.
     - Limits on the command line: `--cpu-seconds` (1 to 120) and `--memory-mib` (64 to 8,192),
