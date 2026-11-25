@@ -744,7 +744,10 @@ fn extract_zip(file: std::fs::File, into: &Path) -> std::io::Result<()> {
     let mut archive = zip::ZipArchive::new(file).map_err(std::io::Error::other)?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(std::io::Error::other)?;
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .map_err(|_| refuse("?", "unreadable entry name"))?
+            .into_owned();
         if name.split(['/', '\\']).any(|part| part == "..") {
             return Err(refuse(&name, "contains `..`"));
         }
