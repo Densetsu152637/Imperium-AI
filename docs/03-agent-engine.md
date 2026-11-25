@@ -217,11 +217,11 @@ the client (`crates/imperium-engine/src/agent/call_repair.rs`), without a model 
   hook or permission keep their own messages. With `harness.tool_loading` on nothing is added,
   since other tools are reached through `call_tool`.
 - **Invalid arguments.** Arguments that do not parse as JSON get one repair attempt (a code
-  fence removed, trailing commas before `}` or `]` removed outside strings); if that fails the
-  result is an error saying the arguments are not valid JSON. Empty arguments stay an empty
-  object, and valid arguments are untouched.
+  fence removed, trailing commas before `}` or `]` removed outside strings). Arguments that
+  stay unparseable are left as they are, for the tool's own lenient reader to accept or answer
+  with its own error (a Windows path with unescaped backslashes is read that way). Empty
+  arguments stay an empty object, and valid arguments are untouched.
 
-Each rejection is an ordinary failed tool call, so the model sees the error and may try again.
 
 ## Planning
 

@@ -7,7 +7,7 @@
 //! 2. [`with_close_names`]: the result of a call to a tool that does not exist names the closest
 //!    valid tools.
 //! 3. [`vet`]: arguments that are not valid JSON get one repair attempt (code fences and
-//!    trailing commas removed) before an error result.
+//!    trailing commas removed); what stays unparseable is left to the tool's own reader.
 
 use imperium_api::{FunctionCall, ToolCall};
 use serde_json::Value;
@@ -131,23 +131,19 @@ fn remove_trailing_commas(text: &str) -> String {
     out
 }
 
-/// A call ready to run, or the error result that answers it instead: arguments that are not
-/// JSON get one repair, then an error result.
-pub(crate) fn vet(mut call: ToolCall) -> Result<ToolCall, String> {
-    let name = call.function.name.as_str();
+/// The call with its arguments repaired once when they are not JSON (a code fence and trailing
+/// commas removed). Arguments that stay unparseable are left as they are: each tool reads
+/// them as leniently as it can and answers with its own error when it cannot.
+pub(crate) fn vet(mut call: ToolCall) -> ToolCall {
     let arguments = call.function.arguments.as_str();
     // Empty arguments are an empty object, as the tools read them.
-    if !arguments.trim().is_empty() && serde_json::from_str::<Value>(arguments).is_err() {
-        match repair_arguments(arguments) {
-            Some(fixed) => call.function.arguments = fixed,
-            None => {
-                return Err(format!(
-                    "error: the arguments of {name} are not valid JSON, and it was not run. Send                      one JSON object that matches the tool's schema."
-                ));
-            }
-        }
+    if !arguments.trim().is_empty()
+        && serde_json::from_str::<Value>(arguments).is_err()
+        && let Some(fixed) = repair_arguments(arguments)
+    {
+        call.function.arguments = fixed;
     }
-    Ok(call)
+    call
 }
 
 /// `output`, the result of a call to `name` that failed as an unknown tool, with the closest
@@ -299,10 +295,10 @@ mod tests {
     #[test]
     fn arguments_with_fences_or_trailing_commas_are_repaired_once() {
         let fenced = "```json\n{\"path\": \"a.rs\"}\n```";
-        let fixed = vet(call("read_file", fenced)).unwrap();
+        let fixed = vet(call("read_file", fenced));
         assert_eq!(fixed.function.arguments, r#"{"path":"a.rs"}"#);
         let commas = r#"{"a": [1, 2,], "b": "x,}", }"#;
-        let fixed = vet(call("read_file", commas)).unwrap();
+        let fixed = vet(call("read_file", commas));
         let value: Value = serde_json::from_str(&fixed.function.arguments).unwrap();
         assert_eq!(value["a"], serde_json::json!([1, 2]));
         assert_eq!(value["b"], "x,}");
@@ -311,16 +307,15 @@ mod tests {
     #[test]
     fn valid_and_empty_arguments_are_left_alone() {
         let spaced = r#"{ "path" : "a" }"#;
-        let kept = vet(call("read_file", spaced)).unwrap();
+        let kept = vet(call("read_file", spaced));
         assert_eq!(kept.function.arguments, spaced);
-        let empty = vet(call("read_file", "")).unwrap();
+        let empty = vet(call("read_file", ""));
         assert_eq!(empty.function.arguments, "");
     }
 
     #[test]
-    fn arguments_that_cannot_be_repaired_are_an_error_result() {
-        let error = vet(call("read_file", "{path: a.rs")).unwrap_err();
-        assert!(error.contains("not valid JSON"), "{error}");
-        assert!(error.contains("read_file"), "{error}");
+    fn arguments_that_cannot_be_repaired_are_left_for_the_tool_to_read() {
+        let raw = "{path: a.rs";
+        assert_eq!(vet(call("read_file", raw)).function.arguments, raw);
     }
 }

@@ -533,18 +533,7 @@ impl Agent {
             let close: &[String] = if self.reactive() { &[] } else { &offered };
             for call in completion.tool_calls {
                 self.last_tool_ok.store(false, Ordering::SeqCst);
-                let call = match call_repair::vet(call.clone()) {
-                    Ok(call) => call,
-                    Err(error) => {
-                        let name = effective_call(&call).function.name.clone();
-                        let output = self.tool_finished(&call, &name, false, error, None);
-                        self.messages.push(ChatMessage::Tool {
-                            tool_call_id: call.id,
-                            content: output,
-                        });
-                        continue;
-                    }
-                };
+                let call = call_repair::vet(call);
                 let output = self.run_tool(&call).await;
                 let output = call_repair::with_close_names(
                     &output,
