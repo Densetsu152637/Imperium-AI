@@ -111,4 +111,11 @@ started_by?: StartedBy,
  * across restarts; absent from daemons that predate it and while nothing is bound. The
  * `status_detail` `repo#n` watch string keeps its format.
  */
-pull_request_url?: string, };
+pull_request_url?: string,
+/**
+ * `true` while every call that is not a read asks, whatever the mode or the rules say: a
+ * session the daemon started from review comments written by other people (capped for its
+ * whole life, and the user cannot lift it: start a new session or branch to work
+ * uncapped), or a session during a turn woken by such comments.
+ */
+capped?: boolean, };

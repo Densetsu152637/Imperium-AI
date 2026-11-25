@@ -106,6 +106,8 @@ struct Inner {
     next_check: HashMap<Key, Instant>,
     /// Pull requests whose "stopped" notice was sent in this run.
     stopped: HashSet<Key>,
+    /// How many wakes in a row ended without the session starting its turn.
+    raced: HashMap<Key, u32>,
 }
 
 /// The daemon's review-wake state, kept in the data folder.
@@ -370,6 +372,18 @@ impl Ledger {
             .next_check
             .remove(&key_of(&before.repo, before.number));
         Self::save(state, &inner);
+    }
+
+    /// Counts a wake that did not start its turn; returns the count in a row.
+    fn note_raced(&self, repo: &str, number: u64) -> u32 {
+        let mut inner = self.lock();
+        let count = inner.raced.entry(key_of(repo, number)).or_insert(0);
+        *count += 1;
+        *count
+    }
+
+    fn clear_raced(&self, repo: &str, number: u64) {
+        self.lock().raced.remove(&key_of(repo, number));
     }
 
     /// True the first time it is asked for a pull request in this run.
@@ -652,6 +666,10 @@ async fn examine(
     ));
 }
 
+/// How many wakes in a row may end without the session starting its turn before the user is
+/// told.
+const RACED_LIMIT: u32 = 5;
+
 /// Whether the session is bound to `repo#number` and works in a checkout of `repo`.
 fn owns(state: &DaemonState, session: &Session, repo: &str, number: u64) -> bool {
     state
@@ -668,7 +686,10 @@ fn ready(session: &Session) -> bool {
         session.status().0,
         SessionStatus::Idle | SessionStatus::Watching
     ) && !session.is_stopped()
-        && !session.workspace().permissions().is_capped()
+        // Another wake's cap on the session means it is busy; a standing cap (a replacement
+        // session the user took over) is the wake's own cap.
+        && !(session.workspace().permissions().is_capped()
+            && !session.workspace().permissions().is_standing())
 }
 
 /// Why the session's folder may not be worked in, when it may not (N2): it must be on the pull
@@ -1036,14 +1057,30 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
                 );
             };
             match owner_turn(&state, &session, &prompt, &on_start).await {
-                Owned::Done(summary) => (PathBuf::from(session.project_dir()), Some(id), summary),
+                Owned::Done(summary) => {
+                    state.pr_monitor().ledger().clear_raced(&repo, number);
+                    (PathBuf::from(session.project_dir()), Some(id), summary)
+                }
                 Owned::Raced => {
                     // Not woken: the comments are looked at again at the next pass.
-                    state.pr_monitor().ledger().give_back(&state, &before);
+                    let ledger = state.pr_monitor().ledger();
+                    ledger.give_back(&state, &before);
                     state.pr_monitor().announce_flags(&state, &repo, number);
+                    let times = ledger.note_raced(&repo, number);
+                    if times % RACED_LIMIT == 0 {
+                        tracing::warn!(%repo, pr = number, times, "the session could not be woken");
+                        say(
+                            "failed",
+                            Some(id),
+                            format!(
+                                "the session could not be woken {times} times in a row (it was busy or capped by another wake); the comments are tried again"
+                            ),
+                        );
+                    }
                     return;
                 }
                 Owned::Failed(message) => {
+                    state.pr_monitor().ledger().clear_raced(&repo, number);
                     say("failed", Some(id), message);
                     return;
                 }
@@ -1092,6 +1129,7 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
                 // Nobody answers its requests any more: a late "allow" must not run a call
                 // in a session already reported as failed.
                 if let Some(worker) = session_id.as_deref().and_then(|id| state.session(id)) {
+                    worker.stop();
                     worker.deny_pending_requests();
                 }
                 say("failed", session_id, summary);

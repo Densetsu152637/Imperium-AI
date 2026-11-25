@@ -550,11 +550,24 @@ pub(crate) struct TurnCap {
     session: std::sync::Arc<imperium_engine::Session>,
     original: imperium_api::PermissionMode,
     capped: imperium_api::PermissionMode,
+    /// False for a session capped for its whole life: its cap is already on and stays on.
+    held: bool,
 }
 
 impl TurnCap {
     pub(crate) fn apply(session: &std::sync::Arc<imperium_engine::Session>) -> Option<Self> {
         let permissions = session.workspace().permissions();
+        if permissions.is_standing() {
+            // Capped for good (a replacement session the user took over): the wake runs on
+            // that cap, and nothing is taken or given back.
+            let mode = session.permission_mode();
+            return Some(Self {
+                session: std::sync::Arc::clone(session),
+                original: mode,
+                capped: mode,
+                held: false,
+            });
+        }
         // One step, so two wakes cannot both pass and one save the other's capped mode.
         if !permissions.try_cap() {
             return None;
@@ -566,12 +579,16 @@ impl TurnCap {
             session: std::sync::Arc::clone(session),
             original,
             capped,
+            held: true,
         })
     }
 }
 
 impl Drop for TurnCap {
     fn drop(&mut self) {
+        if !self.held {
+            return;
+        }
         let permissions = self.session.workspace().permissions();
         permissions.uncap();
         if !permissions.is_capped() && self.session.permission_mode() == self.capped {

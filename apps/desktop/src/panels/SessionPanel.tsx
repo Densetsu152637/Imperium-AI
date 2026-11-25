@@ -527,6 +527,14 @@ export function SessionPanel({
             onChange={onSetPermissionMode}
           />
         )}
+        {session.summary.capped && (
+          <Badge
+            tone="warn"
+            title="Every call that is not a read asks, whatever the mode or the rules say. The session was started from review comments written by other people. This cannot be lifted: start a new session, or branch, to work uncapped."
+          >
+            capped (review wake)
+          </Badge>
+        )}
         <span className="session-footer-spacer" />
         {sum.costUsd !== null && (
           <span className="session-cost muted" title="Session cost">

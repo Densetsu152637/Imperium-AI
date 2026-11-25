@@ -1317,8 +1317,11 @@ can comment, so nothing in it is trusted:
   user waits for the user, within the turn's time limit. A wake that times out stops the session,
   denies the requests still waiting (the daemon reports the wake as failed, so a late "allow"
   must not run anything), and leaves the session capped until the user resumes it and the turn
-  finishes, or cancels it; a replacement session whose wake fails has its pending requests
-  denied the same way.
+  finishes, or cancels it; a replacement session whose wake fails is stopped and has its pending
+  requests denied the same way. The replacement session is capped for its whole life and the user
+  cannot lift that: start a new session or branch to work uncapped; the session shows a "capped
+  (review wake)" badge. A wake that ends without starting its turn five times in a row (the
+  session was busy) says so in an `autofix.event` with status `failed`.
 - **Where it runs.** In the owning session's folder (loaded from its record if it is not running),
   only if that session is bound to this pull request now and its `origin` is the repository (the
   ledger file is not trusted to name an owner), and the folder is on the pull request's

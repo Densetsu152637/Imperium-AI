@@ -559,6 +559,11 @@ impl DaemonState {
             read_only: placement.read_only,
             started_by: placement.started_by,
             pull_request_url: self.pr_monitor.url_of(session.id()),
+            capped: session
+                .workspace()
+                .permissions()
+                .is_capped()
+                .then_some(true),
             created_at: created_at(&self.journal_path(session.id())),
             title: placement
                 .title

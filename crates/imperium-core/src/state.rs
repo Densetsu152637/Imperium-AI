@@ -1267,6 +1267,7 @@ fn summary(session: &Session) -> SessionSummary {
         read_only: false,
         started_by: None,
         pull_request_url: None,
+        capped: None,
     }
 }
 

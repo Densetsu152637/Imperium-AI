@@ -504,6 +504,8 @@ impl Agent {
         {
             return true;
         }
+        // An "always allow" rule would not lift the cap, so none is offered.
+        let suggested = suggested.filter(|_| !self.workspace.permissions().is_capped());
         let (request_id, answer) = self.shared.broker.request();
         // A bridged call's request is marked: it is the user's to answer, not the harness's.
         let summary = if self.bridged.load(Ordering::SeqCst) {

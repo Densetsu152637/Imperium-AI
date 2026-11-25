@@ -1246,7 +1246,10 @@ async fn subagents_do_not_outlive_the_cap() {
 #[tokio::test]
 async fn a_timed_out_wake_stays_capped_until_its_turn_really_ends() {
     let mut world = World::new(
-        vec![("run_command", json!({"command": "echo hi"}))],
+        vec![
+            ("run_command", json!({"command": "echo hi"})),
+            ("run_command", json!({"command": "echo again"})),
+        ],
         vec![],
         "",
     )
@@ -1283,6 +1286,7 @@ async fn a_timed_out_wake_stays_capped_until_its_turn_really_ends() {
     assert!(session.is_stopped());
     assert!(session.workspace().permissions().is_capped());
     assert_eq!(session.permission_mode(), PermissionMode::Ask);
+    let mut events = session.subscribe();
     session.resume_work();
     assert!(
         world
@@ -1290,6 +1294,21 @@ async fn a_timed_out_wake_stays_capped_until_its_turn_really_ends() {
             .approvals()
             .respond(request.expect("the command asked"), false)
     );
+    // The resumed turn is capped: its next call asks as well.
+    let asked = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let SessionEvent::PermissionRequested {
+                request_id, tool, ..
+            } = events.recv().await.unwrap().event
+            {
+                return (request_id, tool);
+            }
+        }
+    })
+    .await
+    .expect("the resumed turn asked again");
+    assert_eq!(asked.1, "run_command");
+    session.respond(asked.0, PermissionDecision::Deny).unwrap();
     // Only when the turn has ended is the session itself again.
     for _ in 0..100 {
         if !session.workspace().permissions().is_capped() {
@@ -1456,4 +1475,51 @@ async fn a_replacement_session_is_capped_for_its_whole_life() {
     let sessions = world.daemon.sessions();
     assert_eq!(sessions.len(), 1);
     assert!(sessions[0].workspace().permissions().is_capped());
+}
+
+#[tokio::test]
+async fn a_session_capped_for_life_that_owns_the_pull_request_is_woken_on_its_own_cap() {
+    let mut world = World::new(write_greeting(), vec![], "").await;
+    let (session, _) = world
+        .daemon
+        .create_session_with(
+            &world.clone.display().to_string(),
+            None,
+            SessionOptions {
+                capped: true,
+                ..SessionOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(session.workspace().permissions().is_standing());
+    world.arm(&session).await;
+    comment(&world, "Add a newline.");
+    let owner = Arc::clone(&session);
+    let seen = world
+        .wake(move |kind, summary| {
+            if kind == "tool" {
+                assert!(summary.contains("write_file"), "{summary}");
+                assert!(owner.workspace().permissions().is_capped());
+            }
+            true
+        })
+        .await;
+    // Woken once (not handed back again and again), asked, and still capped afterwards.
+    assert_eq!(
+        seen.statuses,
+        ["started", "awaiting_approval", "pushed"],
+        "{seen:?}"
+    );
+    assert!(seen.approvals.iter().any(|(kind, _)| kind == "tool"));
+    assert!(session.workspace().permissions().is_capped());
+    assert_eq!(world.status(session.id()).await["auto_fix"], true);
+    // The summary says so, for the badge.
+    let listed = world.rpc("session.list", json!({})).await.unwrap();
+    let row = listed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["session_id"] == session.id())
+        .expect("the session is listed");
+    assert_eq!(row["capped"], true);
 }

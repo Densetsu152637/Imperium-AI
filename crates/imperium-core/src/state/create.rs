@@ -467,7 +467,7 @@ impl DaemonState {
         });
         workspace.permissions().set_mode(permission_mode);
         if options.capped {
-            workspace.permissions().cap();
+            workspace.permissions().cap_for_life();
         }
         let mut placement = Placement {
             environment_id: options.environment_id.clone(),

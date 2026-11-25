@@ -791,7 +791,11 @@ compaction, where it would be trusted, so nothing a capped turn plants outlives 
 `list_agents`, `list_knowledge_agents`, `load_skill`, `context_load` and `ask_user` read or wait.
 The cap also counts as the safety floor, so a tool the session was started with pre-approved still
 asks. A session the daemon starts for a wake (a deleted or archived owner, or a failed checkout) is
-capped for its whole life (`SessionOptions::capped`, kept in its record).
+capped for its whole life (`SessionOptions::capped`, kept in its record). **The user cannot lift
+that cap**: to work uncapped, start a new session or branch one. The session summary says so
+(`SessionSummary.capped`), the desktop shows a "capped (review wake)" badge in the session footer,
+and a capped session's approval requests offer no "always allow" rule. If the user binds such a
+session to the pull request and turns auto-fix on, later wakes run on that standing cap.
 The session's rules and approvals are untouched, and the session's own mode comes back when
 the turn **and its subagents** are over. Subagents share the session's permissions, so the cap
 is held until none is working (a paused one is cancelled). If the turn does not end in time the
