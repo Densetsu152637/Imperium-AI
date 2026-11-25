@@ -819,8 +819,8 @@ Findings that refute or change assumptions:
   (ruff and ty) and `zip` 8.6.0, which carries two RUSTSEC advisories (0546 and 0547) that `deny.toml`
   ignores with reasons; `salsa` is pinned to 0.28.2. The other six zip ignores (0367, 0368,
   0369, 0429, 0545, 0548) are **pre-existing and not Monty-related**: they affect zip 4.6.1, used
-  by `imperium-local` and `tauri-plugin-updater` (0545 also zip 0.6.6, via `monty-typeshed`).
-  Their follow-up, a separate pull request, is to upgrade those to zip >= 9.0.5. Resolution: stage 1b builds the owned `monty::MontyRun`
+  by `tauri-plugin-updater` 2.12.0 (`imperium-local` moved to zip 9.8.2 in #313; 0545 also zip
+  0.6.6, via `monty-typeshed`). They stay until the updater can leave zip 4.6.1 (MSRV 1.90). Resolution: stage 1b builds the owned `monty::MontyRun`
   loop (F12) instead of `monty-proto`'s `worker` feature, which drops the type checker and `zip`,
   and then removes the two Monty-only ignores (0546 and 0547). The six pre-existing ones stay
   until the zip upgrade. Until then the ignores are reviewed by the weekly advisory workflow.
@@ -1127,7 +1127,7 @@ adds a sidecar; root checks the `Experimental` run for that merge and that the r
 - **The `worker` feature's weight.** Until 1b, the binary is 40 to 43 MiB and carries `zip` 8.6.0
   with two ignored advisories (0546, 0547); unreachable from a program, but dead weight and an
   audit burden. The owned loop in 1b removes it. The other six zip ignores are pre-existing
-  (zip 4.6.1 in `imperium-local` and the updater) and wait for a separate upgrade to zip >= 9.0.5.
+  (zip 4.6.1 in the updater only, since #313) and wait for the updater to move (MSRV 1.90).
 - **`eval` and `exec` inside Monty** must be refused by the engine, and every `FunctionCall`
   must be re-checked at call time, not only at name lookup (stage 1a findings).
 

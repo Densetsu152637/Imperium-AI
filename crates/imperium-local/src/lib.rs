@@ -30,3 +30,4 @@ pub mod speech;
 pub mod suggest;
 pub mod supervisor;
 pub mod vllm_env;
+pub mod wsl;

@@ -379,6 +379,13 @@ sampling is refused unless enabled (below). A remote server that wants an OAuth 
 reported as needing one, and the user signs in to it on purpose
 ([OAuth for remote servers](#oauth-for-remote-servers-implemented)).
 
+**Planned (roadmap item 62, stage 1 of the [CAS plan](plans/cas-mcp.md) in progress):** a built-in
+computer algebra server, `imperium_cas`, backed by SymPy and started per session like any stdio
+server. Agent text never reaches `sympify`, `parse_expr` or `eval`: a hand-written parser reads a
+small infix language and a size guard refuses runaway numbers before anything is computed. Only
+that front end exists so far, as the `sidecars/cas/` project and its `python-cas` CI job; the
+server, its sandbox and its setup are later stages of the plan.
+
 ### Resources, prompts, and sampling (implemented)
 
 A server that declares the `resources` capability gets two more tools beside its own,
@@ -1013,10 +1020,12 @@ change anything are that mutation and `disablePullRequestAutoMerge`.
   strict `owner/name`, or a number that is not positive, is skipped with a warning, and past 100
   entries the oldest are dropped with a warning. The first failure in a daemon run is sent as an
   `autofix.event` with status `failed` ("auto-merge could not be turned off yet ... Imperium
-  will try again"); the desktop app shows it as a toast and, while it is in the background, a
-  system notification (text only, an identical failure is shown at most once in 10 minutes), and
-  the phone page shows it too. Other clients see the notification only if they handle it. A push by the daemon for a bound branch is refused when GitHub is not
-  available to check.
+  will try again"); the desktop app shows it as a toast and a system notification per the
+  user's notification settings (`notifyFailed`, `notifyOnlyInBackground`; text only, an
+  identical failure is shown at most once in 10 minutes, at most 50 distinct failures are
+  remembered, and system notifications are at least 5 seconds apart), and the phone page shows
+  it too. Other clients see the notification only if they handle it. A push by the daemon for
+  a bound branch is refused when GitHub is not available to check.
 - **Where it is not offered**, with the reason on the card: a draft (GitHub refuses it), a
   repository that does not allow auto-merge, a repository whose merge settings the token cannot
   read (a token without push access gets no `allow_*` flags; that is "cannot be enabled here",

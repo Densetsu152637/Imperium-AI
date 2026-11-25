@@ -135,8 +135,8 @@ fn the_fallback_descriptor_loop_closes_an_inherited_descriptor() {
 fn linux_prlimit_and_affinity_are_only_about_the_worker_itself() {
     let seen = probe(&[]);
     for key in ["prlimit_other", "prlimit_write", "affinity_other"] {
-        assert!(
-            seen[key].contains("ret=-1") && seen[key].contains("errno=1"),
+        assert_eq!(
+            seen[key], "ret=-1 errno=1",
             "{key} should be EPERM: {seen:?}"
         );
     }

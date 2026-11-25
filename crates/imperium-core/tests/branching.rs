@@ -643,3 +643,54 @@ async fn a_branch_with_a_worktree_runs_no_hook_from_the_repository() {
     assert!(branched.worktree);
     assert!(!marker.exists(), "the post-checkout hook did not run");
 }
+
+#[tokio::test]
+async fn a_branch_keeps_its_own_copy_of_the_tool_results_its_conversation_points_at() {
+    let url = serve().await;
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url);
+    let mut connection = connect(&state).await;
+    let (session, _) = state
+        .create_session(&folder.path().display().to_string(), None)
+        .unwrap();
+    let id = session.id().to_string();
+    let sessions = imperium_config::Paths::under(home.path())
+        .data_dir()
+        .join("sessions");
+    let parent_results = sessions.join(format!("{id}.results"));
+    std::fs::create_dir_all(&parent_results).unwrap();
+    std::fs::write(parent_results.join("1-grep.txt"), "the whole output").unwrap();
+    // A message that names the saved file, as a tool result's notice does.
+    session
+        .send(format!(
+            "Full output saved to {}",
+            parent_results.join("1-grep.txt").display()
+        ))
+        .unwrap();
+    after_turns(&state, &id, 1).await;
+
+    let branched: SessionBranchResult = serde_json::from_value(
+        call(&mut connection, "session.branch", json!({"session_id": id}))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let child = branched.session_id;
+    let child_results = sessions.join(format!("{child}.results"));
+    assert_eq!(
+        std::fs::read_to_string(child_results.join("1-grep.txt")).unwrap(),
+        "the whole output"
+    );
+    let messages = std::fs::read_to_string(imperium_engine::messages_path(
+        &sessions.join(format!("{child}.jsonl")),
+    ))
+    .unwrap();
+    assert!(messages.contains(&format!("{child}.results")), "{messages}");
+    assert!(!messages.contains(&format!("{id}.results")), "{messages}");
+
+    // The parent can go: the branch's paths stay valid.
+    state.delete_session(&id, false).unwrap();
+    assert!(!parent_results.exists());
+    assert!(child_results.join("1-grep.txt").is_file());
+}

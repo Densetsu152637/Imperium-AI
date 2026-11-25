@@ -1187,8 +1187,6 @@ impl PrMonitor {
     }
 }
 
-/// Writes the turn-off list to the data folder (through a temporary file, so a crash leaves the
-/// old list). A failure is logged: the list in memory is still worked through.
 /// The entries of the saved turn-off list that are usable. An entry whose repository is not a
 /// strict `owner/name` (the parser the GitHub client uses), whose number is not positive, or that
 /// lacks a head is skipped with a warning; past [`MAX_ORPHANS`] the oldest (first) are dropped.
@@ -1229,6 +1227,8 @@ fn parse_orphans(saved: Vec<Value>) -> Vec<Orphan> {
     list
 }
 
+/// Writes the turn-off list to the data folder (through a temporary file, so a crash leaves the
+/// old list). A failure is logged: the list in memory is still worked through.
 fn save_orphans(state: &DaemonState, orphans: &Orphans) {
     let file = state.data_dir().join(ORPHANS_FILE);
     let entries: Vec<Value> = orphans
@@ -1599,6 +1599,54 @@ mod tests {
         assert_eq!(list.len(), MAX_ORPHANS);
         assert_eq!(list.first().map(|orphan| orphan.number), Some(6));
         assert_eq!(list.last().map(|orphan| orphan.number), Some(105));
+    }
+
+    #[test]
+    fn disowning_past_the_cap_drops_the_oldest_and_saves_the_rest() {
+        let config = "[models]
+default = \"fake:m\"
+[endpoints.fake]
+base_url = \"http://127.0.0.1:9/v1\"
+[workflow]
+enabled = false
+";
+        let settings = imperium_config::Config::from_layers([
+            imperium_config::Layer::defaults(),
+            imperium_config::Layer::new(
+                imperium_config::Source::User("test".into()),
+                config.parse().unwrap(),
+            ),
+        ])
+        .settings()
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let state = DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        let monitor = state.pr_monitor();
+        for number in 1..=(MAX_ORPHANS as u64 + 5) {
+            monitor.disown(
+                &state,
+                Orphan {
+                    repo: "owner/repo".into(),
+                    number,
+                    head: "abc".into(),
+                },
+            );
+        }
+        let numbers: Vec<u64> = monitor
+            .orphans(&state)
+            .list
+            .iter()
+            .map(|retry| retry.orphan.number)
+            .collect();
+        assert_eq!(numbers.len(), MAX_ORPHANS);
+        assert_eq!(numbers.first(), Some(&6));
+        assert_eq!(numbers.last(), Some(&(MAX_ORPHANS as u64 + 5)));
+        let saved: Vec<Value> = serde_json::from_str(
+            &std::fs::read_to_string(state.data_dir().join(ORPHANS_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved.len(), MAX_ORPHANS);
+        assert_eq!(saved[0]["number"], 6);
     }
 
     #[tokio::test]

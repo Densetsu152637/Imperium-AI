@@ -494,7 +494,7 @@ const CLEARABLE_TOOLS: [&str; 6] = [
 
 /// Text that marks a result as a pointer to the real content (an input stored as an artefact,
 /// a large result saved to a file): the pointer is all the model has, so it is never stubbed.
-const OFFLOAD_MARKERS: [&str; 2] = ["stored as artefact", "Full output saved to"];
+const OFFLOAD_MARKERS: [&str; 2] = ["stored as artefact", crate::spill::SAVED_TO];
 
 /// What a cleared result starts with.
 pub(crate) const CLEARED_PREFIX: &str = "[result cleared: ";

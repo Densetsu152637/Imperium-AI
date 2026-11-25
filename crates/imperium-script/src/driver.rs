@@ -701,6 +701,9 @@ impl ScriptRun {
 
     async fn answer(&mut self, kind: pb::client_request::Kind) -> Result<(), ScriptError> {
         self.pending = None;
+        // A `next_until` that was cancelled (dropped) leaves its deadline behind; an answer is
+        // outside any wall deadline.
+        self.deadline = None;
         self.send(kind)
             .await
             .map_err(|err| ScriptError::Crashed(format!("could not answer the interpreter: {err}")))
@@ -727,7 +730,7 @@ impl ScriptRun {
             .is_ok()
         {
             // The worker's reply ends the turn; its content does not matter, the program is over.
-            let _ = self.read_event(None).await;
+            let _ = self.read_event(self.deadline).await;
         }
         self.end(Err(ScriptError::TooManyRequests)).await
     }

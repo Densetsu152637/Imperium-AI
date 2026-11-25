@@ -109,8 +109,10 @@ loading](#reactive-tool-loading-implemented).
 **Following the model.** `auto` follows the root's model, which can change in a session
 (escalating to a hosted model, or switching to a local one): the tools offered are chosen each
 turn, and the harness paragraph of the system prompt is rewritten when the model is switched,
-so the prompt never describes tools that are not offered (the labelled parts of the system
-prompt, and with them the context breakdown, move with the edit).
+so the prompt never describes tools that are not offered. The paragraph is in the swappable
+tail at the very end of the system message
+([stable prompt prefix](#stable-prompt-prefix-implemented)), so a switch changes only the end of the prompt (the labelled parts, and with them the context
+breakdown, move with the edit).
 
 **When they are on.** Each of `dereference`, `state`, `hints` and `clarify` is `auto`, `on` or
 `off`. `auto` (the default) turns the aid on only when the root agent's model runs on this
@@ -354,8 +356,42 @@ the inner tool is not.
 
 **The loader sentence** of the system prompt ("Tools that are not in your tool list are used in
 two steps: ...") is its own region, present for every agent offered the loader and swapped when
-the mode follows a model switch. A context breakdown counts each offered tool under its own
+the mode follows a model switch; it sits in the swappable tail at the end of the system message,
+after the harness paragraph. A context breakdown counts each offered tool under its own
 category and the schemas inside a `tool_search` result under their tools' source categories.
+
+### Stable prompt prefix (implemented)
+
+Roadmap R2.3. A provider's prompt cache and a local runtime's slot reuse the longest prefix of
+the system message and the tool list that a request shares with the one before, so within a
+session both only grow at the end. There is no clock or per-call text in the system prompt;
+the rest is by construction:
+
+- **The swappable tail.** What depends on the model (the harness paragraph, then the loader
+  sentence) is the last part of the system message, after the base prompt, the indexes, the
+  memory and tool instructions and the project's instructions. A model switch that turns the
+  harness aids or the loader on or off adds or takes off only that tail
+  (`Agent::set_tail`); nothing before it moves. A named agent's text is added before the tail.
+  The paragraph used to follow the response style in the middle of the base part.
+- **Stable entries (loading off).** The tool list a hosted agent is offered does not gain or lose
+  a tool in a session. `activate_plugin` is listed for the whole session when the agent could
+  activate a plugin at its start (decided once; it answers "already active" after the last
+  one), and `list_knowledge_agents` and `ask_agent` are listed to every agent that may ask
+  whenever `knowledge.enabled`, not once the first knowledge agent exists; before that they say
+  "No knowledge agents in this session." (and `ask_agent` names none to ask), and they refuse as
+  before for an agent that may not ask. With loading on the offered list was already fixed, and
+  these two stay out of it until a knowledge agent exists (they are searchable then).
+- **Outside tools last.** MCP servers' tools, then activated plugins' tools, are the end of the
+  list, after every built-in and delegation tool, so a server that lists more tools and a plugin
+  that is activated append. A server that drops or renames a tool, or one that connects after
+  a plugin was activated, still changes the list from that tool on (it is not tracked in the
+  order tools arrived), as do a model switch that turns `request_clarification` or
+  `update_state` on or off and a permission change that hides a tool.
+- **Test.** `the_system_prompt_and_the_tool_list_only_grow_across_a_sessions_requests`
+  (`tests/reactive_tools.rs`) runs a hosted session through a plugin activation, an MCP server
+  listing another tool and a kept knowledge agent, and asserts that each root request's system
+  prompt and tool array start with the previous request's;
+  `a_swap_changes_only_the_end_of_the_prompt` covers the tail.
 
 **In evaluations** `imperium run` sets the mode with `--flag tool_loading` and reports what the
 loader did; see [harness variants](#harness-variants) and the output keys under
@@ -476,6 +512,53 @@ section labels (`Context:`) and role preambles (`You are a subagent…`), droppi
 titles have none: records derive one from the brief, and the desktop shows the brief's first
 line. `task_spawned`, `task_resumed`, `task_paused`, and `task_finished` also carry `at_ms`
 (Unix milliseconds) so clients can show how long a subagent has run.
+
+### Large tool results
+
+**Implemented** (roadmap R2.5). `read_file` and `list_dir` bound their own output to the agent's
+window, but `run_command`, `grep` with context, `web_fetch`, MCP tools, `command_output` and the
+rest can still return a great deal. A result longer than a threshold is written to a file in the
+session's results folder, `<data>/sessions/<session id>.results/`, and the conversation keeps
+only a notice: the line and character counts, the path ("Full output saved to <path>; read
+ranges with `read_file` (offset and limit are in lines) or search it with `grep`"), the first and
+last lines, and how many lines were left out. The preview is bounded (half the threshold, at most
+6,000 characters, two thirds of it from the head; one very long line is cut).
+
+- **Threshold.** A sixteenth of the agent's own window in tokens, at four characters a token:
+  8,192 characters at a 32,768-token window, 32,768 at 128,000, never below
+  `harness.result_spill_min_chars` (4,000) and never above 64,000. The window is the one
+  `expected_window()` finds for the agent's model (the table's, else what a local runtime plans,
+  else 32,768 tokens), so a subagent on a small model saves earlier than the root.
+- **Every agent.** The root and subagents (read-only and writer alike) save their results the
+  same way; the folder is a read-only path grant of the session's workspace, so `read_file`,
+  `grep` and commands can read it wherever the session's folders are. A session on a remote
+  runtime keeps its results in the conversation, as the runtime cannot read this machine's folder.
+- **Left alone.** `read_file` and `list_dir` (already bounded, and reading the saved file would
+  save it again), `context_load` and `load_skill` (workflow context that compaction keeps
+  verbatim), and `tool_search`; any result under the threshold, errors included; and a result
+  the root would store as an artefact (above). A failed write keeps the result in the
+  conversation.
+- **Durable.** The notice, with the path, is what the conversation and its saved copy hold, so a
+  resumed session still has a valid path. Archiving keeps the folder; deleting the session
+  deletes it. Saved files are not compacted away or cleaned earlier: they are the session's.
+- **Not worth it.** A result whose notice would be more than 70 % of its size stays whole. A
+  result that began with an error keeps its first line ahead of the notice.
+- **The marker.** Every notice starts with (after the error line, if any) the stable string
+  `[spilled tool result]` (`imperium_engine::SPILL_MARKER`) and, in the same notice, the words `Full output saved to` (`imperium_engine::SAVED_TO`). Code that clears or rewrites old
+  tool results must leave a result that contains it alone, as the notice is already short and
+  its path is the only way back to the output.
+- **Agent tools.** The agent-protocol tools (`await_tasks`, `spawn_agent`, `ask_agent`,
+  `delegate_chunks`, `list_agents`, `ask_user`, `update_plan`, and the like) and the memory tools
+  are never saved: their results are other agents' reports, answers or notes.
+- **Local files only.** A session limited to local files may still read its own results folder
+  (read-only, like its scratch folder); no other path outside its folders opens.
+- **Branches and rewinds.** A branched, forked or rewound session gets its own copy of the
+  parent's results folder, and the copied conversation names the copy, so deleting the parent
+  leaves the child's paths valid.
+- **The prompt.** The folder is not named in the system prompt (its path is per session), so the
+  prompt is identical with the setting on or off.
+- **Settings.** `harness.result_spill` (on by default) and `harness.result_spill_min_chars`.
+  Evaluations take the `result_spill` flag instead, default off.
 
 ### Large inputs and `delegate_chunks`
 
@@ -727,8 +810,10 @@ turn. The desktop shows it in the session's *Context and outputs* section
   delimiters is backslash-escaped, so no item can end the block or split itself. The carried
   context counts against the budget, so a conversation whose kept context alone is too large is
   refused like one whose system prompt is.
-- Large tool outputs are stored as artefacts; the model receives a truncated view plus a
-  handle it can page through.
+- Large tool outputs never fill the conversation: one past a sixteenth of the agent's window is
+  saved to a file and the model keeps a preview and the path ([large tool
+  results](#large-tool-results)); one that would fill the root's window is an artefact
+  ([large inputs](#large-inputs-and-delegate_chunks)).
 
 ## Sessions waiting for a model
 
@@ -1201,6 +1286,10 @@ their recommended answers. The record lists both (`permission_requests`, `questi
 folder hashes the same as `--print-prompt`) and the tool schemas of the first root request, after
 the variant's edits. It changes when loading is on; with `--flag tool_loading=off` it differs from
 runs made before reactive loading only by the knowledge-source sentence of the base prompt.
+Stable prompt prefix (R2.3) changed it again: with loading off the root's list gains
+`list_knowledge_agents` and `ask_agent` (when `knowledge.enabled`) and lists MCP servers' and
+plugins' tools last; with the harness aids or the loader on the system prompt has those
+paragraphs at its end. Evals baselined before R2.3 need a new baseline.
 
 `tool_loading` (additive; null before the root's first request) reports how the root was offered
 its tools. Names are the ones the model saw (after the variant's renames); `call` is the 1-based
@@ -1263,7 +1352,10 @@ true), `attended` (default false), `harness` (`on`, `off`, `auto`; the aids need
 `attended=true`), `tool_loading` (`on`, `off`, `auto`, default `off`; `auto` is on with
 `--local`: the fixed tool list of `harness.tool_loading`, see
 [reactive tool loading](#reactive-tool-loading-implemented), is offered instead of every
-tool), `clear_stale_results` (default true: `harness.clear_stale_results`, for A/B runs) and
+tool), `clear_stale_results` (default true: `harness.clear_stale_results`, for A/B runs),
+`result_spill` (`true` or `false`, default `false`: [large tool results](#large-tool-results)
+saved to a file; unlike `harness.result_spill` it is off unless asked for, so evaluations stay
+comparable with earlier baselines) and
 `parallel_reads` (0 to 8, default 0 for evals: `harness.parallel_reads`, see
 [parallel reads](#parallel-reads-implemented); unlike a session's default of 4, off unless a run
 asks for it). An

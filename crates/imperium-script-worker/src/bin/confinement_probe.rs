@@ -126,7 +126,6 @@ fn platform(probe: &Probe) {
     unsafe {
         let other = i64::from(probe.pid);
         let mut old = [0_u64; 2];
-        let new = [1_u64 << 40; 2];
         let mut affinity = [0_u8; 128];
         let none = std::ptr::null::<u64>();
         // RLIMIT_DATA is 2 on every Linux architecture the worker supports.
@@ -134,6 +133,9 @@ fn platform(probe: &Probe) {
         report("prlimit_other", format!("ret={ret} errno={}", errno()));
         let ret = libc::syscall(libc::SYS_prlimit64, 0_i64, 2_i64, none, old.as_mut_ptr());
         report("prlimit_self_read", format!("ret={ret}"));
+        // A write the kernel would accept (lowering both limits), so only the seccomp rule on the
+        // new-limit pointer can refuse it.
+        let lower = [old[0] / 2; 2];
         let own = i64::from(std::process::id());
         let ret = libc::syscall(libc::SYS_prlimit64, own, 2_i64, none, old.as_mut_ptr());
         report("prlimit_own_pid_read", format!("ret={ret}"));
@@ -141,7 +143,7 @@ fn platform(probe: &Probe) {
             libc::SYS_prlimit64,
             0_i64,
             2_i64,
-            new.as_ptr(),
+            lower.as_ptr(),
             std::ptr::null_mut::<u64>(),
         );
         report("prlimit_write", format!("ret={ret} errno={}", errno()));
