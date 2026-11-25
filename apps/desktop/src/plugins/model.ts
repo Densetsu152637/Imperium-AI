@@ -140,6 +140,8 @@ export function pluginsApi(client: Caller, environment: string | null) {
       client.call<PluginsListResult>("plugins.list", scope ? { environment: scope } : {}),
     inspect: (id: string, revision?: string): Promise<PluginPreview> =>
       client.call<PluginPreview>("plugins.inspect", revision ? { id, revision } : { id }),
+    /** What an installed folder that did not come from a marketplace would run, read from the folder itself. */
+    inspectFolder: (name: string): Promise<PluginPreview> => client.call<PluginPreview>("plugins.inspect_folder", { name }),
     install: (preview: Pick<PluginPreview, "id" | "sha256">, env?: string | null): Promise<PluginsInstallResult> =>
       client.call<PluginsInstallResult>("plugins.install", env ? { id: preview.id, sha256: preview.sha256, environment: env } : { id: preview.id, sha256: preview.sha256 }),
     update: (preview: Pick<PluginPreview, "id" | "sha256">): Promise<PluginsUpdateResult> =>

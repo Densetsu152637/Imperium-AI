@@ -43,11 +43,11 @@ use imperium_protocol::methods::{
 use imperium_protocol::methods::{
     PluginsApprovalChallenge, PluginsApprovalChallengeParams, PluginsApprove, PluginsApproveParams,
     PluginsBrowse, PluginsDeleteSecret, PluginsDeleteSecretParams, PluginsDismissSuggestion,
-    PluginsDismissSuggestionParams, PluginsInspect, PluginsInstall, PluginsList, PluginsListParams,
-    PluginsMarketplaceAdd, PluginsMarketplaceList, PluginsMarketplaceListParams,
-    PluginsMarketplaceRefresh, PluginsMarketplaceRemove, PluginsSetEnabled,
-    PluginsSetEnabledParams, PluginsSetSecret, PluginsSetSecretParams, PluginsSuggestions,
-    PluginsSuggestionsParams, PluginsUninstall, PluginsUpdate,
+    PluginsDismissSuggestionParams, PluginsInspect, PluginsInspectFolder, PluginsInstall,
+    PluginsList, PluginsListParams, PluginsMarketplaceAdd, PluginsMarketplaceList,
+    PluginsMarketplaceListParams, PluginsMarketplaceRefresh, PluginsMarketplaceRemove,
+    PluginsSetEnabled, PluginsSetEnabledParams, PluginsSetSecret, PluginsSetSecretParams,
+    PluginsSuggestions, PluginsSuggestionsParams, PluginsUninstall, PluginsUpdate,
 };
 use imperium_protocol::methods::{
     SessionEvalCreate, SessionEvalCreateParams, SessionEvalResult, SessionEvalResultParams,
@@ -680,6 +680,26 @@ mod tests {
             let handled = phone.handle_text(&request(2, method, json!({"source": "x"})));
             assert_eq!(error_code(&handled), Some(codes::FORBIDDEN), "{method}");
         }
+    }
+
+    #[test]
+    fn a_paired_phone_cannot_inspect_a_plugin_folder() {
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        let mut phone = Connection::restricted(state, vec![Handshake::NAME, "session.list"]);
+        let handled = phone.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        assert_eq!(error_code(&handled), None);
+        let handled = phone.handle_text(&request(
+            2,
+            PluginsInspectFolder::NAME,
+            json!({"name": "p"}),
+        ));
+        assert_eq!(error_code(&handled), Some(codes::FORBIDDEN));
     }
 
     /// Evaluation sessions (replay, variants, a model of their own) are for the `imperium`
