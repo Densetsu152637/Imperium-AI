@@ -686,8 +686,10 @@ Stage 5 follows the build that contains stage 4.
     `SessionOptions`; drops leave the root's universe, `tools.core` replaces the default core, and
     renames and descriptions are applied in `agent/edits.rs` and `tool_edits.rs` where the request
     is built (specs, `tool_search` description and results, past calls, `call_tool` inner names,
-    `tool_search` `names`) and reversed where a reply arrives. `tool_search` `query` still matches
-    the engine's names.
+    `tool_search` `names`) and reversed where a reply arrives. A `tool_search` `query` is ranked
+    over the shown names and descriptions. Renaming or dropping `tool_search` or `call_tool` is
+    refused by variant validation; a subagent's named-agent list resolves against the universe
+    before the root's drops.
   - `Recorder` keeps the prompt edits, the recording and the ledger, and counts the bytes of each
     root request's `tools`; `ToolWatch` reports the catalog, what a search showed for the first
     time, which deferred tools were called, and each dropped-tool refusal, all with the names the

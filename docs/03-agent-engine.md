@@ -1166,7 +1166,10 @@ dispatched, so a rename cannot get past a check keyed on the engine's name (the 
 fork's list, a named agent's list). A `tools.core` list sets the core with loading on. Names
 that match no tool of the universe, and renames onto the name of a tool that stays, add a
 warning (a deferred tool is a tool: dropping one warns of nothing). A `tool_search` `query`
-still matches the engine's names and descriptions; exact `names` use the new names.
+is ranked over the names and descriptions the model reads (the variant's), and exact `names` use
+the new names. `tool_search` and `call_tool` themselves cannot be renamed or dropped (the
+variant is refused). Edits are the root's alone: a subagent's agent file may still list a tool
+the variant dropped from the root.
 
 Context breakdowns and token estimates count the tools as sent after a variant's edits, so a
 variant that redescribes tools shows its real size.

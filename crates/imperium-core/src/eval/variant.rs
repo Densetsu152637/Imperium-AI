@@ -131,6 +131,15 @@ pub(crate) fn validate(variant: &EvalVariant) -> Result<LoopFlags, String> {
     if targets.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err("two tools.rename entries give the same new name".into());
     }
+    for loader in ["tool_search", "call_tool"] {
+        if variant.tools.rename.contains_key(loader)
+            || variant.tools.drop.iter().any(|n| n == loader)
+        {
+            return Err(format!(
+                "tools.rename and tools.drop cannot change {loader}: the loader tools keep their names"
+            ));
+        }
+    }
     if variant.tools.core.iter().any(|name| name.trim().is_empty()) {
         return Err("a tools.core entry is empty".into());
     }
@@ -333,6 +342,19 @@ mod tests {
             ("b".to_string(), "x".to_string()),
         ]);
         assert!(validate(&twice).is_err());
+        for (key, tool) in [
+            ("rename", "call_tool"),
+            ("rename", "tool_search"),
+            ("drop", "call_tool"),
+        ] {
+            let mut loader = variant();
+            if key == "rename" {
+                loader.tools.rename = BTreeMap::from([(tool.to_string(), "x".to_string())]);
+            } else {
+                loader.tools.drop = vec![tool.to_string()];
+            }
+            assert!(validate(&loader).is_err(), "{key} {tool}");
+        }
         let mut empty = variant();
         empty.tools.core = vec![" ".into()];
         assert!(validate(&empty).is_err());

@@ -1871,3 +1871,28 @@ async fn a_renamed_run_command_is_refused_under_a_shell_lock() {
     let seen = setup.seen.lock().unwrap().clone();
     assert!(!seen[0].offers("run_command") && !seen[0].offers("sh"));
 }
+
+/// A variant's drops are the root's alone: a subagent's agent file may still list the tool.
+#[tokio::test]
+async fn a_subagent_file_keeps_a_tool_the_variant_dropped_from_the_root() {
+    let file = "---\nname: planner\ndescription: Plans.\ntools: update_plan\n---\nPlan.\n";
+    let root = vec![
+        Some((
+            "call_tool",
+            json!({"name": "spawn_agent", "arguments": {"brief": "plan", "agent": "planner"}}),
+        )),
+        Some(("call_tool", json!({"name": "await_tasks", "arguments": {}}))),
+        None,
+    ];
+    let mut setup = options(HarnessMode::On, root);
+    setup.agents = vec![("planner.md", file.to_string())];
+    setup.edits.drop = vec!["update_plan".to_string()];
+    let setup = start(setup).await;
+    let done = turn(&setup.session, "delegate").await;
+    assert!(done.results[0].0, "{:?}", done.results);
+    let seen = setup.seen.lock().unwrap().clone();
+    let root_request = seen.iter().find(|request| !request.subagent).unwrap();
+    assert!(!root_request.offers("update_plan"));
+    let sub = seen.iter().find(|request| request.subagent).unwrap();
+    assert_eq!(sub.names, ["update_plan"], "{:?}", sub.names);
+}

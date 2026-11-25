@@ -514,6 +514,44 @@ pub(super) fn search(
     found
 }
 
+/// A search made over the shown tools, with every name and description the engine's again.
+fn unshow(mut found: Found, specs: &[ToolSpec], renames: &crate::tool_edits::Resolved) -> Found {
+    let own = |name: &str| specs.iter().find(|spec| spec.name == renames.engine(name));
+    found.tools = found
+        .tools
+        .into_iter()
+        .map(|value| {
+            let spec = value["name"].as_str().and_then(own);
+            spec.map_or(value.clone(), entry)
+        })
+        .collect();
+    found.more = found
+        .more
+        .into_iter()
+        .map(
+            |line| match line.split_once(": ").and_then(|(name, _)| own(name)) {
+                Some(spec) => listed(spec),
+                None => line,
+            },
+        )
+        .collect();
+    found.shown = found
+        .shown
+        .iter()
+        .map(|name| renames.engine(name).to_string())
+        .collect();
+    for item in &mut found.unknown {
+        if let Some(Value::Array(close)) = item.get_mut("close") {
+            for name in close {
+                if let Some(text) = name.as_str() {
+                    *name = Value::from(renames.engine(text));
+                }
+            }
+        }
+    }
+    found
+}
+
 /// What `tool_search` takes: `names` may be one name or a list.
 #[derive(Deserialize)]
 struct SearchArgs {
@@ -657,12 +695,17 @@ impl Agent {
         };
         let (specs, _) = self.tool_universe();
         let catalog = self.deferred_of(&specs);
-        let found = search(
-            &specs,
-            &catalog,
-            args.query.as_deref().unwrap_or(""),
-            &names,
-        );
+        let query = args.query.as_deref().unwrap_or("");
+        // A query is ranked over the names and descriptions the model reads (a variant's), and
+        // the result is mapped back to the engine's.
+        let found = match self.tool_renames() {
+            Some(renames) if names.is_empty() => {
+                let shown: Vec<ToolSpec> =
+                    specs.iter().map(|spec| renames.show_spec(spec)).collect();
+                unshow(search(&shown, &catalog, query, &names), &specs, renames)
+            }
+            _ => search(&specs, &catalog, query, &names),
+        };
         let fresh = self.note_loaded(&found.shown, ToolLoadVia::Search);
         self.report_search(&fresh);
         Ok(found.render())
@@ -1228,6 +1271,38 @@ mod tests {
 
     /// The composition a subagent's compaction runs: the parent's loaded set filtered to the
     /// subagent's universe, then the block built from the tools it still has.
+    #[test]
+    fn a_query_finds_a_redescribed_tool_by_a_word_only_in_its_new_description() {
+        let specs = vec![
+            spec("read_file", "Read."),
+            spec("update_plan", "Keep a plan."),
+            spec("ask_user", "Ask the user."),
+            spec("web_fetch", "Fetch a page."),
+        ];
+        let edits = imperium_protocol::methods::ToolEdits {
+            description: [(
+                "update_plan".to_string(),
+                "Maintain the checklist.".to_string(),
+            )]
+            .into(),
+            rename: [("ask_user".to_string(), "consult".to_string())].into(),
+            ..Default::default()
+        };
+        let known: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
+        let (renames, _) = crate::tool_edits::resolve(&edits, &known);
+        let catalog = vec![1, 2, 3];
+        let shown: Vec<ToolSpec> = specs.iter().map(|s| renames.show_spec(s)).collect();
+        let by_word = unshow(search(&shown, &catalog, "checklist", &[]), &specs, &renames);
+        assert_eq!(by_word.shown, ["update_plan"]);
+        assert_eq!(by_word.tools[0]["name"], "update_plan");
+        assert_eq!(by_word.tools[0]["description"], "Keep a plan.");
+        let by_new_name = unshow(search(&shown, &catalog, "consult", &[]), &specs, &renames);
+        assert_eq!(by_new_name.shown, ["ask_user"]);
+        // The engine's own wording no longer matches what the model reads.
+        let gone = unshow(search(&shown, &catalog, "keep", &[]), &specs, &renames);
+        assert!(gone.shown.is_empty(), "{:?}", gone.shown);
+    }
+
     #[test]
     fn a_subagents_compaction_block_lists_the_names_it_inherited() {
         let parent: Vec<String> = ["web_fetch", "spawn_agent", "mcp__dict__lookup"]
