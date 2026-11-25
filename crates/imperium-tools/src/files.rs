@@ -6,6 +6,13 @@ use crate::{ToolError, Workspace, remote_files};
 /// notes count; a longer line is cut where this ends).
 const MAX_READ_CHARS: usize = 100_000;
 
+/// Lines one read returns when the call gives no `limit`, so a small model's context is not
+/// filled by a large file; a note says how to read on.
+const DEFAULT_READ_LINES: usize = 500;
+
+/// Entries one `list_dir` call returns; a longer folder is paged with `offset`.
+const MAX_LIST_ENTRIES: usize = 500;
+
 pub(crate) async fn read_file(
     workspace: &Workspace,
     path: &str,
@@ -30,33 +37,57 @@ pub(crate) async fn read_file(
     };
     let (text, note) = readable_text(bytes, path)?;
     let start = offset.unwrap_or(1).max(1) - 1;
+    let total = text.lines().count();
     let lines = text
         .lines()
         .skip(start)
-        .take(limit.unwrap_or(usize::MAX))
+        .take(limit.unwrap_or(DEFAULT_READ_LINES))
         .enumerate();
     let mut out = String::new();
     if let Some(note) = note {
-        out.push_str(&format!("[note: {note}]\n"));
+        out.push_str(&format!(
+            "[note: {note}]
+"
+        ));
     }
     let mut chars = out.chars().count();
-    let mut any = false;
+    // The last line number shown (whole or cut), and whether the character budget ended the read.
+    let mut last = start;
+    let mut cut = false;
     for (index, line) in lines {
-        any = true;
-        let numbered = format!("{:>6}\t{line}\n", start + index + 1);
+        let numbered = format!(
+            "{:>6}	{line}
+",
+            start + index + 1
+        );
         let length = numbered.chars().count();
+        last = start + index + 1;
         if chars + length > MAX_READ_CHARS {
             // A line past the budget is cut where the budget ends, so one huge line (a minified
             // file) still shows its start.
             out.extend(numbered.chars().take(MAX_READ_CHARS - chars));
-            out.push_str("\n[truncated: read a smaller range with offset and limit]\n");
+            cut = true;
             break;
         }
         out.push_str(&numbered);
         chars += length;
     }
-    if !any {
-        out.push_str("[no lines in that range]");
+    if last == start {
+        out.push_str(&format!("[no lines in that range; the file has {total}]"));
+    } else if cut {
+        out.push_str(&format!(
+            "
+[truncated: lines {}-{last} of {total} at the character limit; read a smaller range with offset and limit]
+",
+            start + 1
+        ));
+    } else if last < total {
+        out.push_str(&format!(
+            "[lines {}-{last} of {total}; use offset={} to read more]
+",
+            start + 1,
+            last + 1
+        ));
     }
     Ok(out)
 }
@@ -181,9 +212,45 @@ fn replace_once(text: &str, old: &str, new: &str, path: &str) -> Result<String, 
     }
 }
 
-pub(crate) async fn list_dir(workspace: &Workspace, path: &str) -> Result<String, ToolError> {
+/// A sorted folder listing as one page of at most [`MAX_LIST_ENTRIES`] entries from `offset`
+/// (0-based), with a note on how to continue when there are more.
+pub(crate) fn page_listing(shown: &str, entries: &[String], offset: usize) -> String {
+    if entries.is_empty() {
+        return format!("{shown} is empty");
+    }
+    let total = entries.len();
+    let page: Vec<&str> = entries
+        .iter()
+        .skip(offset)
+        .take(MAX_LIST_ENTRIES)
+        .map(String::as_str)
+        .collect();
+    if page.is_empty() {
+        return format!("[no entries past offset {offset} ({total} in all)]");
+    }
+    let last = offset + page.len();
+    let mut out = page.join(
+        "
+",
+    );
+    if last < total {
+        out.push_str(&format!(
+            "
+[entries {}-{last} of {total}; use offset={last} to see more]",
+            offset + 1
+        ));
+    }
+    out
+}
+
+pub(crate) async fn list_dir(
+    workspace: &Workspace,
+    path: &str,
+    offset: Option<usize>,
+) -> Result<String, ToolError> {
+    let offset = offset.unwrap_or(0);
     if workspace.runtime().is_some() {
-        return remote_files::list(workspace, path).await;
+        return remote_files::list(workspace, path, offset).await;
     }
     let full = workspace.resolve(path)?;
     let mut reader = tokio::fs::read_dir(&full)
@@ -296,13 +363,17 @@ mod tests {
         let read = read_file(&workspace, "min.js", None, None).await.unwrap();
         assert!(read.starts_with("     1\t\u{e9}"));
         assert!(read.contains("[truncated:"));
-        assert!(read.chars().count() < MAX_READ_CHARS + 100);
-        // Many short lines stop at the budget too.
-        let lines = "y".repeat(99) + "\n";
+        assert!(read.chars().count() < MAX_READ_CHARS + 300);
+        // Many long lines stop at the budget too (a limit above the default line cap).
+        let lines = "y".repeat(99)
+            + "
+";
         std::fs::write(dir.path().join("many.txt"), lines.repeat(2000)).unwrap();
-        let read = read_file(&workspace, "many.txt", None, None).await.unwrap();
-        assert!(read.contains("[truncated:"));
-        assert!(read.chars().count() < MAX_READ_CHARS + 100);
+        let read = read_file(&workspace, "many.txt", None, Some(2000))
+            .await
+            .unwrap();
+        assert!(read.contains("[truncated: lines 1-"), "{read}");
+        assert!(read.chars().count() < MAX_READ_CHARS + 200);
         let small = read_file(&workspace, "many.txt", Some(1), Some(2))
             .await
             .unwrap();
@@ -328,8 +399,8 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
         assert_eq!(text, "fn a() {}\nfn c() {}\n");
 
-        assert_eq!(list_dir(&workspace, ".").await.unwrap(), "src/");
-        assert_eq!(list_dir(&workspace, "src").await.unwrap(), "lib.rs");
+        assert_eq!(list_dir(&workspace, ".", None).await.unwrap(), "src/");
+        assert_eq!(list_dir(&workspace, "src", None).await.unwrap(), "lib.rs");
     }
 
     #[tokio::test]
@@ -404,7 +475,7 @@ mod tests {
             .unwrap();
         assert!(read.contains("1.89"));
         assert!(
-            list_dir(&workspace, &toolchain.path().to_string_lossy())
+            list_dir(&workspace, &toolchain.path().to_string_lossy(), None)
                 .await
                 .is_ok()
         );
@@ -466,5 +537,146 @@ mod tests {
             edit_file(&workspace, "a.txt", "z", "y").await,
             Err(ToolError::Invalid(_))
         ));
+    }
+
+    fn numbered(count: usize) -> String {
+        (1..=count)
+            .map(|n| {
+                format!(
+                    "row {n}
+"
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_read_without_a_limit_stops_at_the_default_line_cap_with_a_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        std::fs::write(dir.path().join("big.txt"), numbered(1200)).unwrap();
+        let read = read_file(&workspace, "big.txt", None, None).await.unwrap();
+        assert!(
+            read.contains(
+                "   500	row 500
+"
+            ),
+            "{read}"
+        );
+        assert!(!read.contains("row 501"), "{read}");
+        assert!(
+            read.contains("[lines 1-500 of 1200; use offset=501 to read more]"),
+            "{read}"
+        );
+        // Following the note reads the next page, and the last page has no note.
+        let next = read_file(&workspace, "big.txt", Some(501), None)
+            .await
+            .unwrap();
+        assert!(
+            next.starts_with(
+                "   501	row 501
+"
+            ),
+            "{next}"
+        );
+        assert!(next.contains("[lines 501-1000 of 1200; use offset=1001 to read more]"));
+        let last = read_file(&workspace, "big.txt", Some(1001), None)
+            .await
+            .unwrap();
+        assert!(
+            last.contains(
+                "  1200	row 1200
+"
+            ),
+            "{last}"
+        );
+        assert!(!last.contains("[lines"), "{last}");
+    }
+
+    #[tokio::test]
+    async fn an_explicit_limit_and_offset_read_that_range_with_a_note_when_more_remains() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        std::fs::write(dir.path().join("f.txt"), numbered(40)).unwrap();
+        let read = read_file(&workspace, "f.txt", Some(10), Some(5))
+            .await
+            .unwrap();
+        assert!(
+            read.starts_with(
+                "    10	row 10
+"
+            ),
+            "{read}"
+        );
+        assert!(
+            read.contains(
+                "    14	row 14
+"
+            ),
+            "{read}"
+        );
+        assert!(!read.contains("row 15"), "{read}");
+        assert!(read.contains("[lines 10-14 of 40; use offset=15 to read more]"));
+        // A range that reaches the end, and a whole small file, carry no note.
+        let tail = read_file(&workspace, "f.txt", Some(38), Some(10))
+            .await
+            .unwrap();
+        assert!(!tail.contains("[lines"), "{tail}");
+        let whole = read_file(&workspace, "f.txt", None, None).await.unwrap();
+        assert_eq!(whole, numbered_lines(40));
+        // Past the end says how long the file is.
+        let past = read_file(&workspace, "f.txt", Some(99), None)
+            .await
+            .unwrap();
+        assert_eq!(past, "[no lines in that range; the file has 40]");
+    }
+
+    fn numbered_lines(count: usize) -> String {
+        (1..=count)
+            .map(|n| {
+                format!(
+                    "{n:>6}	row {n}
+"
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn list_dir_pages_a_long_folder_and_leaves_a_short_one_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        for n in 0..620 {
+            std::fs::write(dir.path().join(format!("f{n:04}.txt")), "").unwrap();
+        }
+        let first = list_dir(&workspace, ".", None).await.unwrap();
+        assert!(
+            first.starts_with(
+                "f0000.txt
+"
+            ),
+            "{first}"
+        );
+        assert!(
+            first.contains(
+                "f0499.txt
+"
+            ),
+            "{first}"
+        );
+        assert!(!first.contains("f0500.txt"), "{first}");
+        assert!(first.ends_with("[entries 1-500 of 620; use offset=500 to see more]"));
+        let second = list_dir(&workspace, ".", Some(500)).await.unwrap();
+        assert!(
+            second.starts_with(
+                "f0500.txt
+"
+            ),
+            "{second}"
+        );
+        assert!(second.contains("f0619.txt"), "{second}");
+        assert!(!second.contains("use offset"), "{second}");
+        let past = list_dir(&workspace, ".", Some(900)).await.unwrap();
+        assert_eq!(past, "[no entries past offset 900 (620 in all)]");
     }
 }

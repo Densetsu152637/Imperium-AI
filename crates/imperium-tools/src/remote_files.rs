@@ -85,7 +85,11 @@ pub(crate) async fn write(
     Ok(workspace.display_remote(&full))
 }
 
-pub(crate) async fn list(workspace: &Workspace, path: &str) -> Result<String, ToolError> {
+pub(crate) async fn list(
+    workspace: &Workspace,
+    path: &str,
+    offset: usize,
+) -> Result<String, ToolError> {
     let remote = remote(workspace)?;
     let full = workspace.resolve_remote(path, false)?;
     let output = run(

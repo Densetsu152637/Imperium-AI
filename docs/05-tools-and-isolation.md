@@ -4,7 +4,7 @@
 
 | Tool group  | Tools                                                     | Notes                                            |
 | ----------- | --------------------------------------------------------- | ------------------------------------------------ |
-| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match unique edits; reads numbered and paged with `offset`/`limit`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
+| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match unique edits; reads numbered, capped at 500 lines by default and paged with `offset`/`limit`; `list_dir` capped at 500 entries and paged with `offset`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
 | Execution   | `run_command`, `command_output`, `command_stop` (implemented) | Runs in the project root via `cmd /C` (the line passed verbatim) or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr; `background: true` [returns a process id at once](#background-commands-implemented) |
 | Web         | `web.search`, `web.fetch`                                 | Search providers: SearXNG (self-hosted), Brave, Tavily, Kagi, Exa; pluggable. Pages are [cached](#fetch-cache-and-robotstxt-implemented) and `robots.txt` is honoured |
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
@@ -947,8 +947,11 @@ note); a UTF-8 file with invalid bytes and no NUL bytes is read with U+FFFD for 
 (not to rewrite the file from that text: `edit_file` refuses it), a file with NUL bytes (in the
 first 8 KB when the bytes are valid UTF-8, so BOM-less UTF-16 is not shown as garbage) is refused
 as binary, and a folder is refused with a pointer to `list_dir`, in a remote workspace too.
-One read returns at most 100,000 characters (line numbers and notes included); a longer line is
-cut where that ends, with a note to page by `offset` and `limit`. Edits stay UTF-8. `tool.before`
+A read without a `limit` returns at most 500 lines, and a note (`[lines 1-500 of 1200; use offset=501
+to read more]`) says where to continue; a read that stops short of the end says the same. One read also
+returns at most 100,000 characters (line numbers and notes included); a longer line is
+cut where that ends, with a note to page by `offset` and `limit`. `list_dir` returns at most 500 entries
+per call, sorted, with a note (`use offset=500 to see more`); its optional `offset` skips entries. Edits stay UTF-8. `tool.before`
 and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
 (`path`, `offset`, `limit`) whatever spelling the model used. Each reading is checked like any
 other path, and the first that lands inside a folder or grant is used. The OS tier makes every
