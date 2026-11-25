@@ -392,7 +392,7 @@ mod tests {
         .unwrap();
         let gate_now = gate(&home.paths, &TestVerifier);
         assert!(gate_now.withheld.is_empty(), "{:?}", gate_now.withheld);
-        assert_eq!(gate_now.agent, [theirs.clone()]);
+        assert_eq!(gate_now.agent, std::slice::from_ref(&theirs));
         // An approval of other content is refused, and a change after the approval withholds it.
         let error = record_approval(
             &home.paths,
