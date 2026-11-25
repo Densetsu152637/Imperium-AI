@@ -961,8 +961,14 @@ async fn a_background_command_that_ends_is_reported_to_the_agent_once() {
     session.set_permission_mode(PermissionMode::Full);
     let mut events = session.subscribe();
     session.send("serve".into()).unwrap();
-    let (_, asked) = run_turn(&session, &mut events, PermissionDecision::Deny).await;
+    let (seen, asked) = run_turn(&session, &mut events, PermissionDecision::Deny).await;
     assert!(asked.is_empty(), "{asked:?}");
+    // Clients are shown it too, as an ordinary notice.
+    assert!(
+        seen.iter().any(|event| matches!(event,
+            SessionEvent::Notice { message } if message.contains("p1") && message.contains("code 2"))),
+        "{seen:?}"
+    );
     session.send("anything else?".into()).unwrap();
     run_turn(&session, &mut events, PermissionDecision::Deny).await;
 

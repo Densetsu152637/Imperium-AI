@@ -669,8 +669,8 @@ wait, or join the running turn when the user asks.
   goes on. A steering message that arrives while the model writes its final answer keeps the
   turn going for one more call instead of letting it end. Steering never lands between a tool
   call and its result. With no turn running, steering is an ordinary send.
-- **Background command notices:** at the same safe point the root also takes a
-  `<background-notice>` user message for each background command that ended on its own since
+- **Background command notices:** at the same safe point each agent also takes a
+  `<background-notice>` user message for each background command it started that ended on its own since
   its last model call (once per command; see
   [background commands](05-tools-and-isolation.md#background-commands-implemented)). It wakes
   nothing: one that ends while the agent is idle is delivered at the next turn's first safe
