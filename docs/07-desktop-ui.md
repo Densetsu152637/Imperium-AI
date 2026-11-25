@@ -1565,7 +1565,7 @@ plan (`panels/PullRequestCard.tsx`, styles in `styles/pull-request.css`, rules i
 and then follows the `pull_requests.changed` notifications of its session (an answer that arrives
 after a newer notification does not replace it; a null status only clears what is shown, and the
 empty state follows the session summary losing its `pull_request_url` through `session.updated`). It never polls and never calls GitHub. `imperium pr status` prints the same data
-in a terminal.
+in a terminal, and `imperium pr automerge status|off SESSION` shows or turns off auto-merge.
 
 - **Collapsed:** a state badge (*Open*, *Draft*, *Merged*, *Closed*, each with its own icon), the
   title, `owner/repo#12`, an *Open* button and a *Details* disclosure; then one line of facts, each
@@ -1575,12 +1575,25 @@ in a terminal.
   are listed under it (five, then *and N more*). A merged or closed pull request keeps only its
   checks line.
 - **Details:** the branches, the *Fix CI and review comments* and *Auto-merge* switches, the merge
-  method picker and *Stop following this pull request* (`pull_requests.unbind`). Both switches and
-  the picker are **disabled** until the stages that build them, each with a short reason beside it
-  and in its accessible name (`Switch` `disabled`, `Select` `inert`). The picker lists only
-  `allowed_methods`, and says so when the repository's methods could not be read or the requested
-  method is not allowed. Auto-merge says why GitHub will not take it now: a draft (*GitHub does not
-  allow auto-merge on a draft*), a merged or closed pull request, or `auto_merge.reason_unavailable`.
+  method picker and *Stop following this pull request* (`pull_requests.unbind`; while auto-merge is on the button reads *Stop following and turn auto-merge off*, because unbinding turns it off first and, if GitHub refuses, keeps the binding and says why). The auto-fix
+  switch is **disabled** until the stage that builds it, with its reason beside it and in its
+  accessible name (`Switch` `disabled`). The *Auto-merge* switch is on while GitHub holds the
+  request, and its note says plainly that GitHub then merges when its own rules pass **with nobody
+  looking at the code again** and that Imperium never merges it itself. Turning it **on** runs the
+  app's own `auto_merge_enable` command (`src-tauri/src/auto_merge.rs`): a native confirmation
+  dialog, written from the daemon's status, names the repository, the branch and base, the commit
+  and the method, and only *Turn on auto-merge* continues (the webview never holds a challenge; the
+  daemon answers only the installed desktop app). Turning it **off** is an ordinary
+  `pull_requests.set_auto_merge` call with `enabled: false`. The picker lists only
+  `allowed_methods`, preselects `github.automerge.default_method` when allowed and otherwise the
+  first allowed of squash, merge, rebase, and is inert once the request is on; it says so when the
+  repository's methods could not be read or the requested method is not allowed. The switch is
+  disabled, with the reason beside it, for a draft (*GitHub does not allow auto-merge on a
+  draft*), a merged or closed pull request, `auto_merge.reason_unavailable` (a repository that
+  does not allow it, a merge queue, merge settings the token cannot read) and
+  `github.automerge.allowed = false`. Rules in `sessions/prCard.ts` and `sessions/autoMerge.ts`
+  (`test/prCard.test.ts`, `test/autoMerge.test.ts`, and `test/autoMergeScan.test.ts`, which fails if
+  a mod's allowlist or sources name an auto-merge call).
 - **Errors:** `PrStatus.error` shows in a warning `Notice` above the last good data, which stays;
   the card does not blank. A binding still awaiting its first read shows the neutral loading line with the daemon's
   reason; a real failure shows the warning. Focus moves with the card: Cancel and ending the binding

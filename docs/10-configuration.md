@@ -225,6 +225,8 @@ listed; edit them in the file.
 | `github.autofix.enabled` | `false` | Fix the user's pull requests whose checks fail ([auto-fix](14-projects-and-automation.md#github-auto-fix)) |
 | `github.autofix.push` | `ask` | `ask` queues an approval before each push; `auto` pushes without asking |
 | `github.session_gh` | none | Ids of environments whose sessions keep the GitHub CLI's login. Every other environment's commands drop `GH_TOKEN`, `GITHUB_TOKEN` and `GH_CONFIG_DIR`, and the OS sandbox hides `gh`'s config folder ([auto-fix](14-projects-and-automation.md#github-auto-fix)); setting it hands those sessions the login |
+| `github.automerge.allowed` | `true` | `false` refuses every request to turn on GitHub's auto-merge from the desktop app. User config only: a project's file is never merged as settings. It never turns anything on ([auto-merge](05-tools-and-isolation.md#auto-merge-the-desktop-app-alone-implemented)) |
+| `github.automerge.default_method` | `squash` | `squash`, `merge` or `rebase`: the method the pull-request card preselects when the repository allows it, otherwise the first allowed of `squash`, `merge`, `rebase`. A preference only, never "on"; user config only |
 | `github.autofix.max_attempts_per_pr`, `poll_s`, `model` | `3`, `120`, default model | Stop after this many failing commits per pull request; polling interval; model for fix sessions |
 | `hooks` | none | `[[hooks]]` entries with `event`, optional `matcher`, `timeout_s`, and either `command` or `url` (an HTTP hook, with optional `headers` whose values may use `${secret:name}` from the keychain); see [hooks](06-extensibility.md#hooks) |
 

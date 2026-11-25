@@ -51,8 +51,16 @@ pub fn is_credential_error(error: &str) -> bool {
 
 pub type GhFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 
+const UNSUPPORTED: &str = "is not supported by this GitHub source";
+
 fn unsupported<'a, T: Send + 'a>(what: &'static str) -> GhFuture<'a, T> {
-    Box::pin(async move { Err(format!("{what} is not supported by this GitHub source")) })
+    Box::pin(async move { Err(format!("{what} {UNSUPPORTED}")) })
+}
+
+/// Whether `error` says the source has no such call (a source that implements only the auto-fix
+/// methods), as opposed to a call that failed.
+pub fn is_unsupported(error: &str) -> bool {
+    error.ends_with(UNSUPPORTED)
 }
 
 /// Read access to a repository's pull requests; [`GhCli`] and [`HttpGitHub`] are the real ones.
