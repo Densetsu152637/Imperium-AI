@@ -424,9 +424,11 @@ async fn a_denied_read_leaves_the_others_of_its_step_alone() {
 
 /// A gate the test controls: it counts the reads that reached it, and what each does there is
 /// `on_read`'s (wait for the others, never finish, change a rule).
+type OnRead = Box<dyn Fn(&Invocation) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
 struct Gate {
     entered: AtomicUsize,
-    on_read: Box<dyn Fn(&Invocation) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+    on_read: OnRead,
 }
 
 impl std::fmt::Debug for Gate {
