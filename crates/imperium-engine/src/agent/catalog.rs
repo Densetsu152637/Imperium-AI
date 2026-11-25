@@ -740,7 +740,7 @@ impl Agent {
     /// Takes the loaded set a resumed agent had: its journalled `tools_loaded` events, the
     /// tools it called in `messages`, and the tools of the plugins it activated, less the names
     /// that are no longer among its tools.
-    pub(super) fn rebuild_loaded(&self, history: &[AgentEvent], messages: &[ChatMessage]) {
+    pub(crate) fn rebuild_loaded(&self, history: &[AgentEvent], messages: &[ChatMessage]) {
         let (specs, _) = self.build_universe(false);
         let names = replay_loaded(history, &self.id, messages, |name| {
             specs.iter().any(|spec| spec.name == name)
