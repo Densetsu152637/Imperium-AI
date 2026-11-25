@@ -1,0 +1,3 @@
+// expect: lex-ok
+// tokens: kw:let ident:r = ident:f ( ident:x ) kw:with {record ident:budget : int:1 } ;!
+let r = f(x) with { budget: 1 }

@@ -1,0 +1,3 @@
+// expect: lex-ok
+// tokens: kw:let ident:s = str[ interp[ ( ident:Foo {record ident:a : int:1 } ) spec:">3" ]interp ]str ;!
+let s = "{(Foo { a: 1 }):>3}"
