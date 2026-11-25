@@ -1994,9 +1994,18 @@ echo 'version: 6000 (abc)'
     #[test]
     fn tar_extraction_caps_the_entry_count() {
         let root = tempfile::tempdir().unwrap();
-        untar(&[("a", b"x"), ("b", b"x")], SMALL, root.path()).unwrap();
-        let error =
-            untar(&[("c", b"x"), ("d", b"x"), ("e", b"x")], SMALL, root.path()).unwrap_err();
+        // Tar headers and padding alone are over 1 000 bytes per entry.
+        let limits = Limits {
+            bytes: 1 << 20,
+            ..SMALL
+        };
+        untar(&[("a", b"x"), ("b", b"x")], limits, root.path()).unwrap();
+        let error = untar(
+            &[("c", b"x"), ("d", b"x"), ("e", b"x")],
+            limits,
+            root.path(),
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(!root.path().join("out/e").exists());
     }
