@@ -83,7 +83,7 @@ fn start(
             model: "model".into(),
             pricing: None,
             local: false,
-            context_window: Some(8_000),
+            context_window: Some(12_000),
             kind: "openai".into(),
             reasoning: None,
         }),

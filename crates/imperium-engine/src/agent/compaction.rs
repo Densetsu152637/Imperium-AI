@@ -220,6 +220,15 @@ impl Agent {
         Ok(Some(fit))
     }
 
+    /// The context window this agent's model is expected to have: the model table's, else (for a
+    /// local model) what the runtime would start it with.
+    pub(super) fn expected_window(&self) -> Option<u64> {
+        self.model.context_window.or_else(|| {
+            self.local_models()
+                .and_then(|local| local.planned_context(&self.model.model))
+        })
+    }
+
     /// The conversation estimated against the window this agent's model is expected to have,
     /// without asking its server anything: the model table's window, else (for a local model)
     /// what the runtime would start it with.

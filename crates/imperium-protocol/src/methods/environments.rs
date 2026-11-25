@@ -69,6 +69,11 @@ pub struct EnvironmentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub project_worktrees: Option<bool>,
+    /// Where this environment's sessions put their git worktrees, as `<folder>/<repo>/<branch>`
+    /// (an absolute path on this machine). Left out or empty: the global `sessions.worktree_dir`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub worktree_dir: Option<String>,
 }
 
 /// `environments.update`: rename an environment, change its icon, its runtime, or turn its
@@ -122,6 +127,12 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub project_worktrees: Option<bool>,
+    /// Sets the folder this environment's sessions put their git worktrees in, for sessions
+    /// started afterwards; an empty path clears it, so the global `sessions.worktree_dir`
+    /// applies again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub worktree_dir: Option<String>,
 }
 
 /// `environments.test_runtime`: checks that an environment's runtime can be reached: Docker is
