@@ -734,3 +734,72 @@ async fn the_daemons_own_push_turns_it_off_first_and_never_back_on() {
     assert!(error.contains("could not check"), "{error}");
     assert!(!error.contains(TOKEN));
 }
+
+impl World {
+    async fn poll(&self) {
+        self.daemon.pr_monitor().poll(&self.daemon, true).await;
+    }
+}
+
+/// GitHub keeps auto-merge on after a push, so a push after the user turned it on (by the agent
+/// through `gh`, by a collaborator) would be merged unconfirmed. The poll turns it off.
+#[tokio::test]
+async fn a_head_that_moves_after_enabling_turns_it_off_at_the_next_poll() {
+    let world = World::new("").await;
+    world.turn_on("squash").await;
+    world.fake.force_push(REPO, 7, "def456");
+    world.poll().await;
+
+    assert_eq!(world.mutations(), ["EnableAutoMerge", "DisableAutoMerge"]);
+    assert!(world.fake.pr(REPO, 7).auto_merge.is_none());
+    let status = world.status().await;
+    assert_eq!(status["auto_merge"]["enabled"], false);
+    assert_eq!(status["head_sha"], "def456");
+    assert!(
+        status["auto_merge"]["reason_unavailable"]
+            .as_str()
+            .unwrap()
+            .contains("new commits were pushed after you enabled it"),
+        "{status}"
+    );
+
+    // Said once, and never turned on again by the daemon.
+    world.poll().await;
+    world.poll().await;
+    assert_eq!(world.mutations(), ["EnableAutoMerge", "DisableAutoMerge"]);
+    let status = world.status().await;
+    assert_eq!(status["auto_merge"]["enabled"], false);
+    assert!(status["auto_merge"].get("reason_unavailable").is_none());
+}
+
+#[tokio::test]
+async fn a_head_that_stays_the_same_sends_nothing() {
+    let world = World::new("").await;
+    world.turn_on("squash").await;
+    for _ in 0..3 {
+        world.poll().await;
+    }
+    assert_eq!(world.mutations(), ["EnableAutoMerge"]);
+    assert_eq!(world.status().await["auto_merge"]["enabled"], true);
+}
+
+/// Auto-merge that Imperium did not turn on (enabled on GitHub itself, or before this was
+/// recorded) is not Imperium's to turn off.
+#[tokio::test]
+async fn auto_merge_enabled_elsewhere_is_left_alone_when_the_head_moves() {
+    let world = World::new("").await;
+    let enable = imperium_github::AutoMerge::Enable {
+        method: imperium_github::MergeMethod::Squash,
+        expected_head_oid: HEAD.into(),
+    };
+    github(&world.fake)
+        .set_auto_merge(REPO, 7, &enable)
+        .await
+        .unwrap();
+    world.fake.force_push(REPO, 7, "def456");
+    // The fake drops nothing on a push: GitHub keeps the request.
+    world.poll().await;
+    world.poll().await;
+    assert_eq!(world.mutations(), ["EnableAutoMerge"]);
+    assert_eq!(world.status().await["auto_merge"]["enabled"], true);
+}

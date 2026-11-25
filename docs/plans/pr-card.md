@@ -242,9 +242,11 @@ the PR touches.
 3. **A push after enabling (F4).** `enablePullRequestAutoMerge` is called with
    `expectedHeadOid` set to the head the user saw, so GitHub refuses if the branch moved. The
    daemon **disables auto-merge before its own push** and never re-enables it; the user
-   re-confirms in the desktop app. A push by another writer within one poll interval of enabling
-   is outside the guarantee (GitHub's own check against `expectedHeadOid` covers the instant of
-   enabling only, and the poll covers the rest); the docs say so.
+   re-confirms in the desktop app. The daemon records the head the user confirmed, and the poll
+   turns auto-merge off when it is on and the head differs, so a later push by anyone is caught at
+   the next poll; only a merge GitHub completes inside that poll interval is outside the
+   guarantee (GitHub's own check against `expectedHeadOid` covers the instant of enabling only);
+   the docs say so.
 4. **GitHub tokens never reach the model through Imperium's own paths.** The daemon reads the
    token (`gh auth token` at start and on a 401) into memory and only the daemon-side client uses
    it; the card, merge, comment and fix paths never put it in a prompt, tool result, journal,
@@ -765,7 +767,7 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   includes `pull_requests.set_auto_merge` or `pull_requests.auto_merge_challenge`.
 - Risks: GitHub refuses auto-merge on a PR that is already clean (the card says GitHub will not
   queue it and leaves merging to the user; Imperium does not merge directly); merge-queue
-  branches ignore the method; a push by another writer within one poll interval of enabling is
+  branches ignore the method; a merge GitHub completes inside one poll interval of a later push is
   outside the guarantee (documented).
 - Status: complete
 - Outcome: protocol 0.60 adds `pull_requests.auto_merge_challenge` and `pull_requests.set_auto_merge`.
@@ -784,6 +786,11 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   schemas name nothing about pull requests or auto-merge, `session.run_tool` refuses the method
   names, and a hook, plugin server or mod reaches the daemon as a client that is not the
   installed app.
+- Security review follow-up: the poll now turns auto-merge off when the head differs from the
+  commit the user confirmed (recorded with the binding, so it survives a restart; auto-merge
+  Imperium did not enable is left alone), and `session.review_pull_request` disables it before
+  its push. The F4 guarantee is therefore: a push is caught at the next poll, and only a merge
+  GitHub completes inside that poll interval is outside it.
 - Handoff notes: the docs say plainly that auto-merge lands code unseen. A repository whose
   `allow_*` flags are missing (a token without push access) reads as "cannot be enabled here" with
   that reason, never as every method off.

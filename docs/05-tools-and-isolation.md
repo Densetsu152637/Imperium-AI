@@ -947,21 +947,31 @@ change anything are that mutation and `disablePullRequestAutoMerge`.
   `imperium` command are not the installed desktop app and get `permission denied`. No agent
   tool, `session.run_tool` tool, hook action, plugin tool or mod host call turns it on (tests
   read the tool schemas, the CLI's command tree and the mod host's allowlist). A comment on a
-  pull request is text: it cannot call any of this.
+  pull request is text: it cannot call any of this. That holds for the daemon's methods only:
+  code running directly as the user, such as a tier-0 command that runs `gh auth token` and
+  calls GitHub's API itself, is outside this guarantee, as with plugin approval (sandbox tiers
+  1 and above can hide `gh`'s login, [14](14-projects-and-automation.md#github-auto-fix)).
 - **Turning it off** needs no challenge and any local caller may do it: the card, `imperium pr
   automerge off SESSION`, an agent. There is no enabling command in the CLI: `imperium pr
   automerge` has only `status` and `off`.
-- **A push turns it off first.** The daemon's own push to a pull request's branch (Fix CI)
-  disables auto-merge before it pushes, and never enables it again; if the daemon cannot read
-  whether it is on, or cannot turn it off, it does not push. The user turns it on again in the
-  desktop app once they have seen the push. A push by *another* writer within one poll interval
-  of enabling is outside the guarantee: GitHub's `expectedHeadOid` check covers the instant of
-  enabling only, and the next poll (at most 60 s while the card is shown, `github.autofix.poll_s`
-  otherwise) shows the new head.
+- **A push turns it off.** GitHub keeps auto-merge on after a push, so Imperium does not rely on
+  it. The daemon's own pushes to a pull request's branch (Fix CI, and `session.review_pull_request`
+  when the session has a pull request bound on that branch) disable auto-merge before they push,
+  and never enable it again; if the daemon cannot read whether it is on, or cannot turn it off,
+  it does not push. A push by *anyone else* (the agent through `gh`, a collaborator) is caught
+  by the poll: when Imperium turned auto-merge on it records the head commit the user
+  confirmed, with the session's binding (it survives a restart); at each poll, if auto-merge is
+  on and the head differs, the daemon sends `disablePullRequestAutoMerge`, forgets the record,
+  says on the card "auto-merge was turned off because new commits were pushed after you enabled
+  it" and sends `pull_requests.changed`. It never turns it on again: the user confirms again in
+  the desktop app. The poll is at most 60 s while a card is shown (`github.autofix.poll_s`
+  otherwise), so a merge that GitHub completes inside one poll interval of the push is outside
+  the guarantee. Auto-merge that Imperium did not turn on (enabled on GitHub itself, or before
+  this was recorded) has no confirmed head, and the poll leaves it alone.
 - **Where it is not offered**, with the reason on the card: a draft (GitHub refuses it), a
   repository that does not allow auto-merge, a repository whose merge settings the token cannot
   read (a token without push access gets no `allow_*` flags; that is "cannot be enabled here",
-  never "every method is off"), a branch in a merge queue (which ignores the method), a merged or
+  never "every method is off"), a pull request in the merge queue (which ignores the method), a merged or
   closed pull request, and `github.automerge.allowed = false`. GitHub also refuses a pull request
   that can already merge (it will not queue it): the card says so and leaves merging to the user.
 - **Settings** (`[github.automerge]`, [10](10-configuration.md)): `allowed` (default `true`)

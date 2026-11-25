@@ -34,6 +34,8 @@ const TITLE_CHARS: usize = 200;
 const NAME_CHARS: usize = 100;
 const NAMES_SHOWN: usize = 20;
 const ERROR_CHARS: usize = 200;
+const MOVED_NOTICE: &str =
+    "auto-merge was turned off because new commits were pushed after you enabled it";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Key {
@@ -55,6 +57,13 @@ struct Tracked {
     next_due: Instant,
     /// When the status was last read successfully.
     read_at: Option<Instant>,
+    /// The head commit the user confirmed when the desktop app turned auto-merge on through
+    /// Imperium. Kept with the binding across restarts. While auto-merge is on and the head
+    /// differs, the poll turns auto-merge off. `None` when Imperium did not enable it (it was
+    /// enabled elsewhere, or before this was recorded): then the poll leaves it alone.
+    confirmed_head: Option<String>,
+    /// Said once in the next status: why the daemon turned auto-merge off.
+    notice: Option<String>,
 }
 
 /// A session's binding: its pull request and its own switches (stage 7 acts on them).
@@ -210,7 +219,7 @@ impl PrMonitor {
                 },
             };
             inner.sessions.insert(session.id().to_string(), binding);
-            Self::track(&mut inner, repo, number, None);
+            Self::track(&mut inner, repo, number, None, None);
             if let Some(old) = previous.filter(|old| old.key != key) {
                 Self::drop_if_unused(&mut inner, &old.key);
             }
@@ -241,7 +250,13 @@ impl PrMonitor {
 
     /// The tracked entry for a pull request, made when nobody follows it yet. `saved` is a
     /// status read before a restart, kept only until the first poll replaces it.
-    fn track(inner: &mut Inner, repo: &str, number: u64, saved: Option<PrStatus>) {
+    fn track(
+        inner: &mut Inner,
+        repo: &str,
+        number: u64,
+        saved: Option<PrStatus>,
+        confirmed_head: Option<String>,
+    ) {
         let key = Key {
             repo: repo.to_ascii_lowercase(),
             number,
@@ -254,9 +269,14 @@ impl PrMonitor {
             failures: 0,
             next_due: Instant::now(),
             read_at: None,
+            confirmed_head: None,
+            notice: None,
         });
         if tracked.status.is_none() {
             tracked.status = saved;
+        }
+        if tracked.confirmed_head.is_none() {
+            tracked.confirmed_head = confirmed_head;
         }
     }
 
@@ -314,6 +334,7 @@ impl PrMonitor {
                 "auto_fix": binding.auto_fix,
                 "auto_archive_on_close": binding.auto_archive_on_close,
                 "status": tracked.and_then(|t| t.status.as_ref()),
+                "auto_merge_head": tracked.and_then(|t| t.confirmed_head.as_ref()),
             })
         };
         state.record_pull_request(session_id, Some(record));
@@ -354,7 +375,8 @@ impl PrMonitor {
                         .unwrap_or(state.settings().sessions.auto_archive_on_pr_close),
                 },
             );
-            Self::track(&mut inner, &repo, number, saved.clone());
+            let confirmed = record["auto_merge_head"].as_str().map(str::to_string);
+            Self::track(&mut inner, &repo, number, saved.clone(), confirmed);
         }
         match saved {
             Some(status) => apply_overlay(session, &status),
@@ -455,9 +477,10 @@ impl PrMonitor {
 
     /// Asks GitHub to auto-merge the session's pull request with `method`, pinned to `head_sha`
     /// (GitHub refuses if the branch has moved since). The caller has already checked that this
-    /// is the desktop app and that its challenge fits. Everything is read from GitHub again
-    /// first, never taken from the cache or from the caller: the settings, the draft state, the
-    /// head commit and the merge methods the repository allows. The only calls to GitHub that
+    /// is the desktop app and that its challenge fits. The pull request is read from GitHub
+    /// again first, never taken from the status cache or from the caller: the draft state, the
+    /// head commit and auto-merge itself. The repository's merge settings and allowed methods
+    /// come from their own cache (up to five minutes old). The only calls to GitHub that
     /// change anything are this mutation and [`Self::disable_auto_merge`]; the daemon never calls
     /// a merge endpoint.
     pub(crate) async fn enable_auto_merge(
@@ -512,6 +535,8 @@ impl PrMonitor {
             .set_auto_merge(&repo, number, &change)
             .await
             .map_err(|error| refusal(&error))?;
+        // From now on a different head turns it off again (see `guard_head`).
+        self.set_confirmed(state, &key_of(&repo, number), Some(head_sha.to_string()));
         self.refresh(state, session_id).await
     }
 
@@ -537,7 +562,82 @@ impl PrMonitor {
             .set_auto_merge(&repo, number, &AutoMerge::Disable)
             .await
             .map_err(|error| refusal(&error))?;
+        self.set_confirmed(state, &key_of(&repo, number), None);
         self.refresh(state, session_id).await
+    }
+
+    /// Records (or, with `None`, forgets) the head commit the user confirmed for a pull request,
+    /// and saves it with every session bound to it.
+    fn set_confirmed(&self, state: &DaemonState, key: &Key, head: Option<String>) {
+        let sessions: Vec<String> = {
+            let mut inner = self.lock();
+            let Some(tracked) = inner.tracked.get_mut(key) else {
+                return;
+            };
+            if tracked.confirmed_head == head {
+                return;
+            }
+            tracked.confirmed_head = head;
+            inner
+                .sessions
+                .iter()
+                .filter(|(_, bound)| bound.key == *key)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        for id in sessions {
+            self.save(state, &id);
+        }
+    }
+
+    /// After a read: when Imperium turned auto-merge on for the head the user confirmed and the
+    /// head has moved since (a push by anyone), turns it off, forgets the confirmation, and says
+    /// why in the next status. GitHub keeps auto-merge on across pushes, so this is what keeps a
+    /// later push from being merged unconfirmed; only a merge GitHub completes inside one poll
+    /// interval is outside it. Nothing is done when no confirmed head is recorded (Imperium did
+    /// not enable it), or when the head is unchanged. A failed turn-off keeps the record, so the
+    /// next poll tries again.
+    async fn guard_head(
+        &self,
+        state: &Arc<DaemonState>,
+        github: &Arc<dyn GitHub>,
+        key: &Key,
+        status: &PrStatus,
+    ) {
+        let (confirmed, repo, number) = {
+            let inner = self.lock();
+            let Some(tracked) = inner.tracked.get(key) else {
+                return;
+            };
+            let Some(confirmed) = tracked.confirmed_head.clone() else {
+                return;
+            };
+            (confirmed, tracked.repo.clone(), tracked.number)
+        };
+        if !status.auto_merge.enabled {
+            // Turned off elsewhere, or merged: the confirmation is spent.
+            self.set_confirmed(state, key, None);
+            return;
+        }
+        if status.head_sha == confirmed {
+            return;
+        }
+        if let Err(error) = github
+            .set_auto_merge(&repo, number, &AutoMerge::Disable)
+            .await
+        {
+            tracing::warn!(%repo, pr = number, error = %clean(&error, ERROR_CHARS), "could not turn auto-merge off after the head moved");
+            return;
+        }
+        self.set_confirmed(state, key, None);
+        if let Some(tracked) = self.lock().tracked.get_mut(key) {
+            tracked.notice = Some(MOVED_NOTICE.to_string());
+        }
+        // The recursion is boxed: this read finds auto-merge off and the record gone.
+        let again: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<PrStatus, String>> + Send + '_>,
+        > = Box::pin(self.read(state, key));
+        let _ = again.await;
     }
 
     /// Reads a pull request from GitHub now when a session follows it, so the cache and the
@@ -553,8 +653,44 @@ impl PrMonitor {
             number,
         };
         if self.lock().tracked.contains_key(&key) {
+            self.set_confirmed(state, &key, None);
             let _ = self.read(state, &key).await;
         }
+    }
+
+    /// Turns auto-merge off before the daemon pushes `branch` for `session_id` (a push that
+    /// opens or updates a pull request), when the session has a pull request bound on that
+    /// branch. An error means the push must not happen.
+    pub(crate) async fn disable_before_branch_push(
+        &self,
+        state: &Arc<DaemonState>,
+        session_id: &str,
+        branch: &str,
+    ) -> Result<(), String> {
+        let Some(github) = self.github.get().cloned() else {
+            return Ok(());
+        };
+        let target = {
+            let inner = self.lock();
+            inner
+                .sessions
+                .get(session_id)
+                .and_then(|binding| inner.tracked.get(&binding.key))
+                .map(|t| {
+                    (
+                        t.repo.clone(),
+                        t.number,
+                        t.status.as_ref().map(|s| s.branch.clone()),
+                    )
+                })
+        };
+        let Some((repo, number, bound_branch)) = target else {
+            return Ok(());
+        };
+        if bound_branch.is_some_and(|bound| bound != clean(branch, NAME_CHARS)) {
+            return Ok(());
+        }
+        disable_before_push(state, github.as_ref(), &repo, number).await
     }
 
     /// The session's cached status when it was read without error less than one poll interval
@@ -665,6 +801,10 @@ impl PrMonitor {
             };
             match result {
                 Ok(mut fresh) => {
+                    // Why the daemon turned auto-merge off, said once.
+                    if let Some(notice) = tracked.notice.take() {
+                        fresh.auto_merge.reason_unavailable.get_or_insert(notice);
+                    }
                     tracked.failures = 0;
                     tracked.last_error = None;
                     tracked.read_at = Some(Instant::now());
@@ -714,6 +854,9 @@ impl PrMonitor {
                     },
                 );
             }
+        }
+        if let Ok(status) = &outcome {
+            self.guard_head(state, &github, key, status).await;
         }
         // A merged or closed pull request archives its session once the session may be
         // archived, which can be some polls after the merge.
@@ -853,6 +996,13 @@ fn method_name(method: PrMergeMethod) -> &'static str {
     }
 }
 
+fn key_of(repo: &str, number: u64) -> Key {
+    Key {
+        repo: repo.to_ascii_lowercase(),
+        number,
+    }
+}
+
 /// The first characters of a commit id.
 fn short(sha: &str) -> String {
     sha.chars().take(8).collect()
@@ -924,7 +1074,7 @@ fn build(
         (PrState::Draft, _) => {
             Some("GitHub refuses auto-merge on a draft; mark it ready for review")
         }
-        _ if pr.is_in_merge_queue => Some("the branch uses a merge queue"),
+        _ if pr.is_in_merge_queue => Some("this pull request is in the merge queue"),
         (_, Some(Err(_))) => Some("this token cannot read the repository's merge settings"),
         (_, Some(Ok(s))) if !s.auto_merge => Some("the repository does not allow auto-merge"),
         (_, Some(Ok(_))) if allowed.is_empty() => Some("the repository allows no merge method"),

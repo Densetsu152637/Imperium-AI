@@ -1248,8 +1248,12 @@ reason for a draft, a merged or closed pull request, a merge queue, a repository
 allow auto-merge or whose merge settings the token cannot read, and `github.automerge.allowed =
 false`. Turning it off needs no challenge: the card, `imperium pr automerge off SESSION` and any
 local caller may. `imperium pr automerge status SESSION` shows it; there is no command that turns
-it on. The daemon's own push (Fix CI) disables auto-merge first and does not enable it again; a
-push by another writer within one poll interval of enabling is outside the guarantee. No agent
+it on. The daemon's own pushes (Fix CI, and `session.review_pull_request` on a bound branch)
+disable auto-merge first and do not enable it again. A push by anyone else after the user enabled
+it is caught at the next poll: the daemon records the head the user confirmed (kept with the
+binding), and when auto-merge is on and the head differs it turns auto-merge off and says why on
+the card; only a merge GitHub completes inside that poll interval is outside the guarantee.
+Auto-merge Imperium did not enable is left alone. No agent
 tool, hook, plugin, mod, webview frame, CLI command, project file, phone token or comment text can
 turn it on.
 
