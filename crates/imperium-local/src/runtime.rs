@@ -720,14 +720,71 @@ fn extract(archive: &Path, into: &Path) -> Result<(), InstallError> {
     let file = std::fs::File::open(archive).map_err(io(archive.display().to_string()))?;
     std::fs::create_dir_all(into).map_err(io(into.display().to_string()))?;
     if archive.extension().is_some_and(|ext| ext == "zip") {
-        zip::ZipArchive::new(file)
-            .and_then(|mut zip| zip.extract(into))
-            .map_err(|error| InstallError::Io(context(), std::io::Error::other(error)))
+        extract_zip(file, into).map_err(io(context()))
     } else {
         tar::Archive::new(flate2::read::GzDecoder::new(file))
             .unpack(into)
             .map_err(io(context()))
     }
+}
+
+/// Unpacks a zip into `into`, writing only regular files and folders beneath it.
+///
+/// Entries with an absolute path, a `..` component or a drive prefix are refused, as are symlinks
+/// and any other non-regular entry, so nothing can land or link outside `into`. Files are created
+/// exclusively, so an entry can never be written through an existing link.
+fn extract_zip(file: std::fs::File, into: &Path) -> std::io::Result<()> {
+    use std::path::Component;
+    let refuse = |name: &str, why: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("refusing zip entry {name:?}: {why}"),
+        )
+    };
+    let mut archive = zip::ZipArchive::new(file).map_err(std::io::Error::other)?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(std::io::Error::other)?;
+        let name = entry.name().to_owned();
+        if name.split(['/', '\\']).any(|part| part == "..") {
+            return Err(refuse(&name, "contains `..`"));
+        }
+        let relative = entry
+            .enclosed_name()
+            .ok_or_else(|| refuse(&name, "path escapes the destination"))?;
+        if !relative
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(refuse(&name, "path is absolute or has a prefix"));
+        }
+        let is_link = entry.is_symlink()
+            || entry
+                .unix_mode()
+                .is_some_and(|mode| mode & 0o170_000 == 0o120_000);
+        if is_link {
+            return Err(refuse(&name, "symlinks are not allowed"));
+        }
+        let target = into.join(&relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&target)?;
+            continue;
+        }
+        if !entry.is_file() {
+            return Err(refuse(&name, "not a regular file"));
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut out = std::fs::File::create_new(&target)?;
+        std::io::copy(&mut entry, &mut out)?;
+        drop(out);
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode & 0o777))?;
+        }
+    }
+    Ok(())
 }
 
 /// The folder holding `llama-server`, searched `depth` folders deep.
@@ -1497,6 +1554,93 @@ echo 'version: 6000 (abc)'
                 builder.append_data(&mut header, path, *contents).unwrap();
             }
             builder.into_inner().unwrap().finish().unwrap()
+        }
+    }
+
+    /// Writes `build`'s zip to a file under `root` and extracts it into `root/out`.
+    fn extract_crafted(
+        root: &Path,
+        build: impl FnOnce(&mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>),
+    ) -> std::io::Result<()> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        build(&mut zip);
+        let bytes = zip.finish().unwrap().into_inner();
+        let path = root.join("crafted.zip");
+        std::fs::write(&path, bytes).unwrap();
+        extract_zip(std::fs::File::open(&path).unwrap(), &root.join("out"))
+    }
+
+    fn add(zip: &mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>, name: &str) {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"payload").unwrap();
+    }
+
+    #[test]
+    fn zip_extraction_unpacks_regular_entries() {
+        let root = tempfile::tempdir().unwrap();
+        extract_crafted(root.path(), |zip| {
+            add(zip, "top/bin/llama-server");
+            zip.add_directory("top/empty", zip::write::SimpleFileOptions::default())
+                .unwrap();
+        })
+        .unwrap();
+        let out = root.path().join("out");
+        assert_eq!(
+            std::fs::read(out.join("top/bin/llama-server")).unwrap(),
+            b"payload"
+        );
+        assert!(out.join("top/empty").is_dir());
+    }
+
+    #[test]
+    fn zip_extraction_refuses_parent_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let error = extract_crafted(root.path(), |zip| add(zip, "../escaped.txt")).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(!root.path().join("escaped.txt").exists());
+        let error =
+            extract_crafted(root.path(), |zip| add(zip, "a/../../escaped.txt")).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(!root.path().join("escaped.txt").exists());
+    }
+
+    #[test]
+    fn zip_extraction_refuses_absolute_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = root.path().join("absolute.txt");
+        let name = outside.to_string_lossy().replace('\\', "/");
+        for entry in [name.as_str(), "/absolute.txt"] {
+            let error = extract_crafted(root.path(), |zip| add(zip, entry)).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{entry}");
+        }
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn zip_extraction_refuses_symlinks_pointing_outside() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let target = outside.to_string_lossy().into_owned();
+        for link_target in ["../../outside", target.as_str()] {
+            let error = extract_crafted(root.path(), |zip| {
+                zip.add_symlink(
+                    "link",
+                    link_target,
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+                add(zip, "link/escaped.txt");
+            })
+            .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData,
+                "{link_target}"
+            );
+            assert!(!root.path().join("out/link").exists());
+            assert!(!outside.join("escaped.txt").exists());
         }
     }
 
