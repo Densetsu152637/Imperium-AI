@@ -272,7 +272,7 @@ enum Pending {
 enum ReadFailure {
     Timeout,
     Eof,
-    Io(String),
+    Io,
     Frame(String),
 }
 
@@ -375,7 +375,7 @@ impl ScriptRun {
                 Err(ReadFailure::Timeout) => {
                     Some("the worker did not answer its configuration".to_owned())
                 }
-                Err(ReadFailure::Eof | ReadFailure::Io(_) | ReadFailure::Frame(_)) => {
+                Err(ReadFailure::Eof | ReadFailure::Io | ReadFailure::Frame(_)) => {
                     Some("the worker exited before it was configured".to_owned())
                 }
             },
@@ -654,7 +654,7 @@ impl ScriptRun {
         match failure {
             ReadFailure::Timeout => ScriptError::Unresponsive,
             ReadFailure::Frame(what) => ScriptError::Misbehaved(what),
-            ReadFailure::Eof | ReadFailure::Io(_) => {
+            ReadFailure::Eof | ReadFailure::Io => {
                 let status = timeout(Duration::from_secs(2), self.child.wait())
                     .await
                     .ok()
@@ -708,7 +708,7 @@ impl ScriptRun {
         .map_err(|err| match err.kind() {
             io::ErrorKind::UnexpectedEof => ReadFailure::Eof,
             io::ErrorKind::InvalidData => ReadFailure::Frame(err.to_string()),
-            _ => ReadFailure::Io(err.to_string()),
+            _ => ReadFailure::Io,
         })?;
         decode_frame_with_budget::<pb::WorkerEvent>(&body, DECODE_BUDGET)
             .map_err(|err| ReadFailure::Frame(format!("an undecodable event: {err}")))

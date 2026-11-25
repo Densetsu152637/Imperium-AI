@@ -63,6 +63,7 @@ allow = [
   "Unlicense",
   "OpenSSL",
   "CDLA-Permissive-2.0",
+  "BlueOak-1.0.0",
   # The CPython standard-library parts Monty bundles.
   "Python-2.0",
   "Python-2.0.1",
