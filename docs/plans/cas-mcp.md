@@ -1137,9 +1137,10 @@ Commands are what CI runs; nothing needs a local Rust build.
     - on macOS, the measured overshoot of the allocation worker is recorded and under the bound
       that 05 states.
   - `uv run pytest tests/test_landlock.py` on Linux:
-    - started as `python -I -m imperium_cas` with a stdin that is never written, the process has
-      already applied the ruleset: `/proc/self/status` shows it, through a test hook that reads
-      it before stdin is read;
+    - the ruleset comes before stdin is read: an AST check that the first statement of
+      `__main__.py` is the Landlock call and that `landlock.py` imports only `ctypes`, `os` and
+      `sys`; and at run time, `landlock.py` records that the ruleset was applied, and the stdin
+      reader asserts that record before its first read (a failed assertion exits the process);
     - after the rule, `execve("/bin/sh")` from the front and from a worker is refused with
       `EACCES`, while the interpreter can still start itself;
     - with an injected failure of `landlock_restrict_self` while the ABI is present, the process
