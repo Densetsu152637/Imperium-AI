@@ -1413,7 +1413,8 @@ b"
             long()
         );
         let spill = format!(
-            "This result is large (900 lines, 40000 characters). Full output saved to /tmp/r.txt; read ranges with read_file.\n{}",
+            "{} This result is large (900 lines, 40000 characters). Full output saved to /tmp/r.txt; read ranges with read_file.\n{}",
+            crate::spill::SPILL_MARKER,
             long()
         );
         let mut messages = aged();

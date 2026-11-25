@@ -90,14 +90,16 @@ impl Agent {
     /// The parsed call when it is a read that may run ahead of its turn in the order (see the
     /// module docs); `None` for every other call.
     fn concurrent_read(&self, call: &ToolCall) -> Option<Ahead> {
-        // Without tool loading `call_tool` is no tool: `run_tool` does not unwrap it, so the
-        // inner tool is not what would run, and nothing is run ahead.
-        if call.function.name == CALL_TOOL && !self.reactive() {
-            return None;
-        }
         // The call `run_tool` runs: a `call_tool` call is the tool it stands for, and a
         // variant's rename is undone, as `run_tool_once` does before any check.
         let effective = effective_call(call);
+        let arguments = effective.function.arguments.clone();
+        // Without tool loading `call_tool` is no tool: `run_tool` does not unwrap it (the
+        // effective call is a copy only for a `call_tool` call), so the inner tool is not what
+        // would run, and nothing is run ahead.
+        if matches!(effective, std::borrow::Cow::Owned(_)) && !self.reactive() {
+            return None;
+        }
         let mapped = self.engine_name(&effective.function.name);
         let name = mapped.as_deref().unwrap_or(&effective.function.name);
         let provider = self.provider_for(name);
@@ -109,7 +111,7 @@ impl Agent {
                 None
             }
             None => {
-                let invocation = Invocation::parse(name, &effective.function.arguments).ok()?;
+                let invocation = Invocation::parse(name, &arguments).ok()?;
                 if !invocation.is_file_read() {
                     return None;
                 }
@@ -131,8 +133,7 @@ impl Agent {
         if let Some(provider) = provider {
             // What `run_provider` checks before it asks or runs the call: it must be valid, not
             // a command, not asking, and not waiting for workflow context.
-            let arguments = &effective.function.arguments;
-            let check = provider.check(name, arguments).ok()?;
+            let check = provider.check(name, &arguments).ok()?;
             if check.ask || check.needs_context || check.command.is_some() {
                 return None;
             }
@@ -145,7 +146,7 @@ impl Agent {
             return matches!(judged.decision, Decision::Run).then(|| Ahead {
                 ran: Ran::Provider {
                     name: name.to_string(),
-                    arguments: arguments.clone(),
+                    arguments,
                 },
                 provider: Some(provider),
             });
