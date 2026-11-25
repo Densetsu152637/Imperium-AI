@@ -535,17 +535,14 @@ async fn a_write_access_subagent_works_in_its_environments_worktree_folder() {
     let name = name.file_name().unwrap().to_owned();
     let under_own = own.path().join(&name);
     let started = std::time::Instant::now();
-    while !under_own.is_dir() {
+    // The repository's folder is made first; the worktree appears in it a moment later.
+    while !std::fs::read_dir(&under_own).is_ok_and(|mut dir| dir.next().is_some()) {
         assert!(
             started.elapsed() < std::time::Duration::from_secs(30),
             "the writer's worktree never appeared under the environment's folder"
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert!(
-        std::fs::read_dir(&under_own).unwrap().next().is_some(),
-        "a worktree folder is in it"
-    );
     assert!(
         !global.path().join(&name).exists(),
         "none in the global folder"
