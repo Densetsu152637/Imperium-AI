@@ -321,19 +321,47 @@ fn normalise_dir(path: &str) -> String {
 /// reached through a symbolic link, a junction, an 8.3 name or a redirected config folder is
 /// still covered.
 pub fn protect_dir(dir: &std::path::Path) {
-    let mut forms = vec![normalise_dir(&dir.to_string_lossy())];
-    if let Some(resolved) = resolved_form(dir) {
+    register(&PROTECTED_DIRS, dir);
+}
+
+/// Adds `path` as given and as it resolves (see [`protect_dir`]) to `list`.
+fn register(list: &std::sync::Mutex<Vec<String>>, path: &std::path::Path) {
+    let mut forms = vec![normalise_dir(&path.to_string_lossy())];
+    if let Some(resolved) = resolved_form(path) {
         forms.push(normalise_dir(&resolved.to_string_lossy()));
     }
-    let mut dirs = PROTECTED_DIRS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut entries = list.lock().unwrap_or_else(PoisonError::into_inner);
     for form in forms {
-        if !form.is_empty() && !dirs.contains(&form) {
-            dirs.push(form);
+        if !form.is_empty() && !entries.contains(&form) {
+            entries.push(form);
         }
     }
 }
+
+/// Folders and files the file tools refuse to write, whatever the mode, rules or answers.
+static REFUSED_WRITES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Makes `write_file` and `edit_file` refuse (not ask) any write to `path`, or under it when it
+/// is a folder: the daemon uses it for what it loads as the user's own and runs or follows,
+/// the user's skills, agents, commands, mods and plugins folders and `config.toml`. A write there
+/// would plant an extension no one approved. Both the path as given and the one it resolves to
+/// are refused, as for [`protect_dir`]. A process-wide list.
+pub fn refuse_writes_under(path: &std::path::Path) {
+    register(&REFUSED_WRITES, path);
+}
+
+/// Whether a write to `absolute` is refused ([`refuse_writes_under`]).
+pub fn refused_write(absolute: &str) -> bool {
+    let path = normalise_dir(absolute);
+    REFUSED_WRITES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|entry| path == *entry || path.starts_with(&format!("{entry}/")))
+}
+
+/// What a file tool tells the agent when a write is refused ([`refused_write`]).
+pub const REFUSED_WRITE_ADVICE: &str = "this path holds what Imperium loads as the user's own configuration (skills, plugins, mods, agents, commands, config.toml), so file tools never write there, in any permission mode. To add a skill, plugin or mod use install_extension, which asks the user and then needs their approval in the Imperium desktop app; to change the configuration, ask the user to do it in the app";
 
 /// `path` with its nearest existing ancestor canonicalised and the missing rest appended.
 fn resolved_form(path: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -1410,26 +1438,32 @@ mod tests {
     }
 
     #[test]
-    fn the_floor_guards_the_whole_config_folder() {
-        protect_dir(std::path::Path::new("/floor-whole-config"));
-        let path = |absolute: &str| Target::Path {
-            absolute: absolute.to_string(),
-            relative: None,
-        };
-        for guarded in [
-            "/floor-whole-config/config.toml",
-            "/floor-whole-config/skills/x/SKILL.md",
-            "/floor-whole-config/agents/a.md",
-            "/floor-whole-config/commands/c.md",
-            "/floor-whole-config/mods/m/mod.json",
-        ] {
-            assert!(safety_floor(CallKind::Edit, &path(guarded)), "{guarded}");
-            assert!(!safety_floor(CallKind::Read, &path(guarded)), "{guarded}");
+    fn writes_to_the_extension_folders_are_refused_and_others_are_not() {
+        for name in ["skills", "agents", "commands", "mods", "plugins"] {
+            refuse_writes_under(std::path::Path::new(&format!("/refuse-config/{name}")));
         }
-        assert!(!safety_floor(
-            CallKind::Edit,
-            &path("/floor-whole-config-other/x.md")
-        ));
+        refuse_writes_under(std::path::Path::new("/refuse-config/config.toml"));
+        for refused in [
+            "/refuse-config/config.toml",
+            "/refuse-config/skills/x/SKILL.md",
+            "/refuse-config/skills",
+            "/refuse-config/agents/a.md",
+            "/refuse-config/commands/c.md",
+            "/refuse-config/mods/m/mod.json",
+            "/refuse-config/plugins/p/hooks/hooks.json",
+        ] {
+            assert!(refused_write(refused), "{refused}");
+        }
+        for allowed in [
+            "/refuse-config/workspaces/w/file.rs",
+            "/refuse-config/worktrees/t/file.rs",
+            "/refuse-config/skillset/x.md",
+            "/refuse-config/config.toml.bak",
+            "/refuse-config-other/skills/x.md",
+        ] {
+            assert!(!refused_write(allowed), "{allowed}");
+        }
+        assert!(REFUSED_WRITE_ADVICE.contains("install_extension"));
     }
 
     #[test]

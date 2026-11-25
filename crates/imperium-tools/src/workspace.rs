@@ -9,7 +9,7 @@ use crate::writer_trees::{WriterHandle, WriterStart};
 use crate::{Sandbox, ToolError, WriterTrees};
 use imperium_api::{PathGrant, PathMode};
 use imperium_policy::AgentProfile;
-use imperium_policy::permissions::{Permissions, Target, expand_home};
+use imperium_policy::permissions::{Permissions, Target, expand_home, refused_write};
 
 /// The folders an agent works in: an environment's folders, the first of which is the working
 /// directory (the root). Relative paths given to tools resolve against the root; absolute paths
@@ -662,6 +662,15 @@ impl Workspace {
             resolved = self.locate_checked(path)?;
         }
         let resolved = resolved.ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+        // What the daemon loads as the user's own configuration is never written by a file tool,
+        // in any mode and whatever a rule or an answer says: it would plant an extension no one
+        // approved (see `refuse_writes_under`).
+        if write && refused_write(&plain(&resolved).replace('\\', "/")) {
+            return Err(ToolError::Invalid(format!(
+                "{path}: {}",
+                imperium_policy::permissions::REFUSED_WRITE_ADVICE
+            )));
+        }
         // Local files only keeps to the folders and the scratch folder, however the path is
         // spelled and whatever grants or project worktrees would also open it.
         if self.profile.local_files_only()
@@ -1082,6 +1091,24 @@ mod tests {
                 "{stream} is a stream of key.pem"
             );
         }
+    }
+
+    #[test]
+    fn a_file_tool_refuses_the_configuration_folders_in_any_mode() {
+        let base = tempfile::tempdir().unwrap();
+        let project = base.path().join("project");
+        std::fs::create_dir_all(project.join("skills")).unwrap();
+        imperium_policy::permissions::refuse_writes_under(&project.join("skills"));
+        imperium_policy::permissions::refuse_writes_under(&project.join("config.toml"));
+        let workspace = Workspace::new(&project).unwrap();
+        for path in ["skills/evil/SKILL.md", "config.toml"] {
+            let error = workspace.resolve_writable(path).unwrap_err().to_string();
+            assert!(error.contains("install_extension"), "{path}: {error}");
+        }
+        // Reading them, and writing anything else, is not affected.
+        assert!(workspace.resolve("skills/evil/SKILL.md").is_ok());
+        assert!(workspace.resolve_writable("src/main.rs").is_ok());
+        assert!(workspace.resolve_writable("skills-notes.md").is_ok());
     }
 
     #[test]

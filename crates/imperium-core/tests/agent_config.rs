@@ -947,3 +947,49 @@ async fn an_approval_of_one_install_does_not_carry_over_to_the_next() {
         .expect("the withheld skill is listed");
     assert!(notes["withheld_reason"].is_string(), "{notes}");
 }
+
+#[tokio::test]
+async fn a_file_tool_never_writes_into_the_extension_folders_in_any_mode() {
+    use imperium_api::PermissionMode;
+    let home = tempfile::tempdir().unwrap();
+    // The session works in the folder that holds the config folder, so its file tools reach it.
+    let evil = imperium_config::Paths::under(home.path())
+        .config_dir()
+        .join("skills/evil/SKILL.md")
+        .display()
+        .to_string();
+    let calls = vec![
+        (
+            "write_file",
+            json!({"path": evil, "content": "---\nname: evil\ndescription: x\n---\nbody\n"}),
+        ),
+        (
+            "write_file",
+            json!({"path": home.path().join("notes.txt").display().to_string(), "content": "ok"}),
+        ),
+    ];
+    let url = fake_model(calls).await;
+    for mode in [
+        PermissionMode::Default,
+        PermissionMode::Auto,
+        PermissionMode::AcceptEdits,
+        PermissionMode::Full,
+    ] {
+        let state = daemon(home.path(), &url, "");
+        let turn = run_in_mode(&state, home.path(), mode, &[PermissionDecision::Allow]).await;
+        assert_eq!(turn.tools.len(), 2, "{mode:?}: {turn:?}");
+        // Refused whatever the mode or the answer, and the agent is told what to do instead.
+        let (tool, ok, output) = &turn.tools[0];
+        assert_eq!(tool, "write_file");
+        assert!(!ok, "{mode:?}: {output}");
+        assert!(output.contains("install_extension"), "{mode:?}: {output}");
+        assert!(!home.path().join("config/skills/evil").exists(), "{mode:?}");
+        // Other writes are not affected.
+        assert!(turn.tools[1].1, "{mode:?}: {turn:?}");
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("notes.txt")).unwrap(),
+            "ok"
+        );
+        std::fs::remove_file(home.path().join("notes.txt")).unwrap();
+    }
+}

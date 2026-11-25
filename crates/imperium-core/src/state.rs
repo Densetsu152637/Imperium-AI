@@ -201,11 +201,15 @@ struct Placement {
 /// of the user's settings. A writer agent that can reach one of those folders could otherwise plant a
 /// plugin, so a write there is always asked about.
 fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
-    use imperium_policy::permissions::protect_dir;
-    // The whole config folder: `config.toml`, the user's skills, agents, commands, mods and
-    // plugins are all things the daemon loads and runs or follows, so a write by an agent's file
-    // tool is always asked about, whatever the mode or an allow rule says.
-    protect_dir(paths.config_dir());
+    use imperium_policy::permissions::{protect_dir, refuse_writes_under};
+    // What the daemon loads as the user's own and runs or follows is never written by a file
+    // tool: `write_file` and `edit_file` refuse (they do not ask) in every mode, whatever a rule
+    // or an answer says. Only these paths, not the whole config folder: on macOS the config,
+    // data and cache folders are one folder, which also holds the workspaces and worktrees.
+    for folder in ["skills", "agents", "commands", "mods", "plugins"] {
+        refuse_writes_under(&paths.config_dir().join(folder));
+    }
+    refuse_writes_under(&paths.user_config_file());
     protect_dir(&paths.config_dir().join("mods"));
     protect_dir(&paths.config_dir().join("plugins"));
     // Pinned policy packs: agents read their files as instructions, so a write is always asked.

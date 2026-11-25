@@ -556,16 +556,22 @@ call, in every permission mode, `auto` and `full` included, past the auto classi
 allow rule or "allow for this session" exists, and no "always allow" rule is offered. A
 `deny` rule (or plan mode) still refuses the call outright. Agents have no other way to add a
 skill, plugin, MCP server, hook, mod or marketplace to the config: `set_model_card` writes a
-model's card only. What guards the other routes is exact, and less than a wall: the safety floor
-asks before a file tool (`write_file`, `edit_file`) writes anywhere under `<config>` (the whole
-folder: `config.toml`, `skills/`, `agents/`, `commands/`, `mods/`, `plugins/`) and to the
-daemon's approval stores in `<data>` (`plugin-installs.json`, `skill-installs.json`,
-`plugin-migration.json`, `mod-approvals.json`, `marketplaces.json`), always, whatever the mode
-or an allow rule says; a `deny` rule refuses. **Residual:** that is a guard on the file tools
-and on commands the floor recognises, not a boundary. Under the default `policy` isolation tier,
-in `full` mode or with an allow rule, `run_command` runs with the user's own rights, so it can
-still write those paths or reach the daemon's local socket; only the OS and container
-isolation tiers guard them. **Known, unchanged here:** a project's own files are a route too: a
+model's card only. What guards the other routes is exact, and less than a wall. The file tools
+(`write_file`, `edit_file`) **refuse** (they do not ask) any write to `<config>/skills`,
+`agents`, `commands`, `mods`, `plugins` and `<config>/config.toml`, in every permission mode and
+whatever a rule or an answer says (the tool refuses after the permission question, if one was
+asked); the refusal tells the agent to use `install_extension`, or to ask the user to change
+the config in the app. Only those paths are listed, not the whole config folder, because on
+macOS the config and data folders are one folder that also holds the workspaces and worktrees.
+The safety floor **asks** (always, whatever the mode or an allow rule says) before a file tool
+writes the daemon's approval stores in `<data>` (`plugin-installs.json`, `skill-installs.json`,
+`plugin-migration.json`, `mod-approvals.json`, `marketplaces.json`), the pinned packs and the
+marketplace clones; a `deny` rule refuses. **Residual:** these are guards on the file tools (and
+on commands the floor recognises), not a boundary. Under the default `policy` isolation tier, in
+`full` mode or with an allow rule, an agent's `run_command` runs with the user's own rights, so
+it can still write those paths or reach the daemon's local socket; only the OS and container
+isolation tiers close that. And the install question is answered by any client holding the
+daemon's token, the user's own CLI included: only the `imperium mcp-serve` harness refuses to. **Known, unchanged here:** a project's own files are a route too: a
 skill in the project's `.imperium/skills` or `.claude/skills`, an agent in `.claude/agents` (read
 only for a trusted project), and `[mcp.servers]` in a trusted project's `.imperium/config.toml`
 load without this install question, since they are repository content the user chose to trust.
