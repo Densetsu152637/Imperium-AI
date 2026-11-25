@@ -895,6 +895,7 @@ impl DaemonState {
                     .map(|eval| eval.run.tool_edits())
                     .unwrap_or_default(),
                 tool_watch: eval.as_ref().map(|eval| eval.run.tool_watch()),
+                ..imperium_engine::SessionOptions::default()
             },
         )
         .map_err(|error| CreateError::Start(error.to_string()))?;

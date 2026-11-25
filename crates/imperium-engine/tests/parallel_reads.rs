@@ -4,6 +4,9 @@
 //! model and the clients see: the same results and events as with the setting off, writes and
 //! asks keeping their place in the order.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,11 +14,11 @@ use axum::Router;
 use axum::routing::post;
 use imperium_api::{PermissionRule, RuleAction};
 use imperium_config::HarnessSettings;
-use imperium_engine::{ResolvedModel, Session, SessionConfig};
+use imperium_engine::{ReadGate, ResolvedModel, Session, SessionConfig, SessionOptions};
 use imperium_models::Endpoint;
 use imperium_policy::permissions::{Permissions, SharedRules};
 use imperium_protocol::session::{AgentEvent, PermissionDecision, SessionEvent};
-use imperium_tools::Workspace;
+use imperium_tools::{Invocation, Workspace};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
@@ -66,57 +69,72 @@ async fn serve(fake: Arc<Fake>) -> String {
 }
 
 fn start(url: &str, workspace: Workspace, parallel_reads: u32) -> Session {
+    start_gated(url, workspace, parallel_reads, None)
+}
+
+fn start_gated(
+    url: &str,
+    workspace: Workspace,
+    parallel_reads: u32,
+    read_gate: Option<Arc<dyn ReadGate>>,
+) -> Session {
     let dir = workspace.root().to_path_buf();
-    Session::spawn(SessionConfig {
-        id: "s".into(),
-        workspace,
-        model: Some(ResolvedModel {
-            spec: "a:model".into(),
-            endpoint: Endpoint {
-                base_url: url.into(),
-                api_key: None,
+    Session::spawn_with(
+        SessionConfig {
+            id: "s".into(),
+            workspace,
+            model: Some(ResolvedModel {
+                spec: "a:model".into(),
+                endpoint: Endpoint {
+                    base_url: url.into(),
+                    api_key: None,
+                },
+                model: "model".into(),
+                pricing: None,
+                local: false,
+                context_window: Some(100_000),
+                kind: "openai".into(),
+                reasoning: None,
+            }),
+            catalog: Vec::new(),
+            routing: imperium_config::RoutingSettings::default(),
+            clients: Default::default(),
+            local: None,
+            tools: Vec::new(),
+            notices: Vec::new(),
+            extensions: Default::default(),
+            memory: None,
+            context: None,
+            enforce: imperium_config::Enforce::Warn,
+            pre_approved: Vec::new(),
+            launcher: None,
+            resume: false,
+            resume_policy: imperium_engine::default_resume_policy(),
+            instructions: None,
+            personality: None,
+            max_steps: 20,
+            auto_compact: false,
+            auto_compact_at: None,
+            attended: false,
+            attachments: Default::default(),
+            auto_permissions: Default::default(),
+            harness: HarnessSettings {
+                parallel_reads,
+                ..HarnessSettings::default()
             },
-            model: "model".into(),
-            pricing: None,
-            local: false,
-            context_window: Some(100_000),
-            kind: "openai".into(),
-            reasoning: None,
-        }),
-        catalog: Vec::new(),
-        routing: imperium_config::RoutingSettings::default(),
-        clients: Default::default(),
-        local: None,
-        tools: Vec::new(),
-        notices: Vec::new(),
-        extensions: Default::default(),
-        memory: None,
-        context: None,
-        enforce: imperium_config::Enforce::Warn,
-        pre_approved: Vec::new(),
-        launcher: None,
-        resume: false,
-        resume_policy: imperium_engine::default_resume_policy(),
-        instructions: None,
-        personality: None,
-        max_steps: 20,
-        auto_compact: false,
-        auto_compact_at: None,
-        attended: false,
-        attachments: Default::default(),
-        auto_permissions: Default::default(),
-        harness: HarnessSettings {
-            parallel_reads,
-            ..HarnessSettings::default()
+            background: None,
+            checkpoints: None,
+            budget_gate: None,
+            keep_agent_state: true,
+            effort: Default::default(),
+            knowledge: Default::default(),
+            journal_path: dir.join(".sessions/s.jsonl"),
         },
-        background: None,
-        checkpoints: None,
-        budget_gate: None,
-        keep_agent_state: true,
-        effort: Default::default(),
-        knowledge: Default::default(),
-        journal_path: dir.join(".sessions/s.jsonl"),
-    })
+        SessionOptions {
+            read_gate,
+            ..SessionOptions::default()
+        },
+    )
     .unwrap()
 }
 
@@ -402,4 +420,170 @@ async fn a_denied_read_leaves_the_others_of_its_step_alone() {
         })
         .collect();
     assert_eq!(finished, ["r1", "r2", "r3"]);
+}
+
+/// A gate the test controls: it counts the reads that reached it, and what each does there is
+/// `on_read`'s (wait for the others, never finish, change a rule).
+struct Gate {
+    entered: AtomicUsize,
+    on_read: Box<dyn Fn(&Invocation) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+}
+
+impl std::fmt::Debug for Gate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Gate")
+    }
+}
+
+impl ReadGate for Gate {
+    fn before<'a>(
+        &'a self,
+        invocation: &'a Invocation,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        (self.on_read)(invocation)
+    }
+}
+
+fn gate(
+    on_read: impl Fn(&Invocation) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
+) -> Arc<Gate> {
+    Arc::new(Gate {
+        entered: AtomicUsize::new(0),
+        on_read: Box::new(on_read),
+    })
+}
+
+fn three_reads() -> Vec<(String, String, String)> {
+    vec![
+        call("r1", "read_file", json!({"path": "a.txt"})),
+        call("r2", "read_file", json!({"path": "b.txt"})),
+        call("r3", "read_file", json!({"path": "c.txt"})),
+    ]
+}
+
+async fn serve_calls(calls: Vec<(String, String, String)>) -> (Arc<Fake>, String) {
+    let fake = Arc::new(Fake {
+        calls,
+        requests: Mutex::new(Vec::new()),
+    });
+    let url = serve(Arc::clone(&fake)).await;
+    (fake, url)
+}
+
+#[tokio::test]
+async fn the_reads_of_a_step_overlap_in_the_engine() {
+    // Each read waits at the gate for the other two: the turn can only go on if all three
+    // reads of the step are running at the same time.
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let held = gate(move |_| {
+        let barrier = Arc::clone(&barrier);
+        Box::pin(async move {
+            barrier.wait().await;
+        })
+    });
+    let (fake, url) = serve_calls(three_reads()).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let session = start_gated(
+        &url,
+        Workspace::new(dir.path()).unwrap(),
+        4,
+        Some(held.clone()),
+    );
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+    let seen = to_the_end(&mut events).await;
+
+    assert_eq!(held.entered.load(Ordering::SeqCst), 3);
+    assert_well_formed(&seen, &["r1", "r2", "r3"]);
+    let results = tool_messages(&fake.requests.lock().unwrap()[1]);
+    assert!(results[0].1.contains("alpha") && results[2].1.contains("charlie"));
+}
+
+#[tokio::test]
+async fn a_stop_while_reads_run_changes_no_result() {
+    // Every read hangs at the gate until the session is stopped.
+    let held = gate(|_| Box::pin(std::future::pending()));
+    let (fake, url) = serve_calls(three_reads()).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let session = start_gated(
+        &url,
+        Workspace::new(dir.path()).unwrap(),
+        4,
+        Some(held.clone()),
+    );
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while held.entered.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("all three reads reach the gate");
+    session.stop();
+
+    // The reads that were cut off are read again in order, as in a sequential run, and the
+    // turn holds at the next model call until it is resumed.
+    let mut seen = Vec::new();
+    while seen
+        .iter()
+        .filter(|event| matches!(event, SessionEvent::ToolFinished { .. }))
+        .count()
+        < 3
+    {
+        seen.push(next(&mut events).await);
+    }
+    assert_eq!(fake.requests.lock().unwrap().len(), 1);
+    session.resume_work();
+    seen.extend(to_the_end(&mut events).await);
+    assert_well_formed(&seen, &["r1", "r2", "r3"]);
+    let results = tool_messages(&fake.requests.lock().unwrap()[1]);
+    assert!(results[0].1.contains("alpha"), "{results:?}");
+    assert!(results[1].1.contains("bravo"), "{results:?}");
+    assert!(results[2].1.contains("charlie"), "{results:?}");
+    assert!(results.iter().all(|(_, text)| !text.contains("cancelled")));
+}
+
+#[tokio::test]
+async fn a_read_that_starts_to_ask_after_the_run_is_read_again_after_the_approval() {
+    // While the reads are held at the gate the environment's rules change so that b.txt asks.
+    let environment = rules(&[]);
+    let changing = environment.clone();
+    let held = gate(move |invocation| {
+        if matches!(invocation, Invocation::ReadFile { path, .. } if path == "b.txt") {
+            changing.set(vec![PermissionRule {
+                tool: "read_file".into(),
+                pattern: "b.txt".into(),
+                action: RuleAction::Ask,
+            }]);
+        }
+        Box::pin(async {})
+    });
+    let (fake, url) = serve_calls(three_reads()).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let workspace = Workspace::new(dir.path())
+        .unwrap()
+        .with_permissions(Permissions::new(rules(&[]), environment));
+    let session = start_gated(&url, workspace, 4, Some(held));
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+
+    let request_id = loop {
+        if let SessionEvent::PermissionRequested { request_id, .. } = next(&mut events).await {
+            break request_id;
+        }
+    };
+    // The run already read b.txt; the file changes before the user answers.
+    std::fs::write(dir.path().join("b.txt"), "bravo, changed").unwrap();
+    session
+        .respond(request_id, PermissionDecision::Allow)
+        .unwrap();
+    to_the_end(&mut events).await;
+    let results = tool_messages(&fake.requests.lock().unwrap()[1]);
+    assert!(results[0].1.contains("alpha"), "{results:?}");
+    assert!(results[1].1.contains("bravo, changed"), "{results:?}");
 }

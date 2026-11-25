@@ -25,6 +25,7 @@ mod model;
 mod plan;
 mod queue;
 mod quiet;
+mod read_gate;
 mod replay;
 mod review;
 mod sampling_summary;
@@ -49,6 +50,7 @@ pub use model::{
 };
 pub use queue::QueueError;
 pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
+pub use read_gate::ReadGate;
 pub use replay::{ReplayAnswer, ReplayRequest, ReplayRole, SubagentReplay};
 pub use review::{ReviewArgs, ReviewEffort, ReviewKind, ReviewTarget, review_prompt};
 pub use session::{

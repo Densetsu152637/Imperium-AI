@@ -239,15 +239,17 @@ When a model step makes several tool calls, the file reads among them read at th
 instead of one after another (`harness.parallel_reads`, default 4, at most 8; 0 or 1 turns it
 off). Only the reading is concurrent: the calls still go through `run_tool` one by one in call
 order, so the permission judge, `tool.before`/`tool.after` hooks, approvals, events and the
-tool messages sent back to the model are what they were, and the messages are byte-identical to
-a run with the setting off.
+tool messages sent back to the model are what they were. A run with the setting off sends the
+same messages, provided the files do not change meanwhile: only a read that is still running when
+a file changes (a command or another agent writing at that moment) could see a different state
+than in a sequential run.
 
 - **Which calls.** The built-in `read_file`, `list_dir`, `glob` and `grep`
   (`Invocation::is_file_read`; `command_output` and `command_stop` count as reads for
   permissions but depend on or stop a running process, so they stay in order). A call joins a
   run only when the permission judge lets it run without asking (`CallKind::Read` and
   `Decision::Run`), no `tool.before` or `tool.after` hook matches its tool, and none of the
-  checks `run_tool_once` makes first (a fork's, a launcher's, the agent's tool list, permission
+  checks `run_tool_once` makes first (`early_refusal`, shared with the run check: a fork's, a launcher's, the agent's tool list, permission
   profile and dropped tools) would refuse it. Provider tools (`web_fetch`, MCP, browser), memory
   tools and `tool_search` are not run ahead: their kind is `Other`, which carries no read-only
   promise.
@@ -260,14 +262,18 @@ a run with the setting off.
   where it would have read the file; if the call it runs is not the one the output was kept for
   (its arguments differ), the kept output is dropped and the call reads again. A read that was
   run ahead and then refused (a rule changed meanwhile) leaves nothing visible: its output is
-  discarded.
+  discarded. A read that asks when its turn comes (a rule or the permission mode changed since
+  the run) drops its kept output and reads the file again after the approval.
 - **Events.** `tool_started` and `tool_finished` stay in call order, once per call id, as for
   sequential calls; the reported duration is how long the read took. Nothing is announced before
   its turn.
-- **Stopping.** If the session is stopped while a run is reading, every read still running is
-  cancelled and its call finishes with `error: cancelled: the session was stopped while this
-  read was running`; reads that already finished keep their output. A session already stopped
-  when the run would start runs its calls as before.
+- **Stopping.** If the session is stopped while a run is reading, the reads still running are
+  dropped and their calls are read again in call order when their turns come, exactly as a
+  sequential run would (a stop does not end the loop's tool round, so no result changes). Reads
+  that already finished keep their output. A `glob` or `grep` already walking the tree on the
+  blocking pool cannot be aborted: it finishes in the background and its result is discarded.
+  The same happens to a read whose task panicked. A session already stopped when the run would
+  start runs its calls as before.
 - **Budgets.** Tokens, steps and cost are counted as before: only the results the model sees
   count, and they are the same.
 - **Evals.** A session's default is 4, but an eval run's is 0 so comparisons are not changed
@@ -942,8 +948,9 @@ outside the session's folders or one a permission rule guards is reported and no
 
 - **Stop:** `session.control` with `action: "stop"` emits `work_stopped` from the root. The
   root and every subagent (including `delegate_chunks` agents) halt at their next safe point,
-  before their next model call. A tool call in flight finishes first, except reads running
-  together in a [parallel run](#parallel-reads-implemented), which are cancelled. A model request in
+  before their next model call. A tool call in flight finishes first (reads running together in a
+  [parallel run](#parallel-reads-implemented) are dropped and read again in order, with the
+  same results). A model request in
   flight is cancelled (a notice says so) and sent again on resume. While halted, an agent
   holds no local-model slot: it is asleep to the runtime (`waiting`), which may swap the model
   out and save the slot. `hold_while_stopped` in the engine is the single place where an

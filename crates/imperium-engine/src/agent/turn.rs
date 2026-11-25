@@ -555,6 +555,7 @@ impl Agent {
                 }
                 self.last_tool_ok.store(false, Ordering::SeqCst);
                 let output = self.run_tool(call).await;
+                self.forget_prefetched(&call.id);
                 let output = call_repair::with_close_names(
                     &output,
                     &effective_call(call).function.name,

@@ -236,7 +236,7 @@ pub(crate) struct Agent {
     ran_rewritten: Mutex<Option<String>>,
     /// Outputs of a step's file reads that ran ahead of their turn, by call id, with the call
     /// they belong to (see [`parallel`]); empty outside a step's tool round.
-    prefetched: Mutex<HashMap<String, (Invocation, parallel::Prefetch)>>,
+    prefetched: Mutex<HashMap<String, parallel::Kept>>,
     /// The root agent's structured state (see [`harness`]); read back from the conversation
     /// when it is restored.
     state: SessionState,

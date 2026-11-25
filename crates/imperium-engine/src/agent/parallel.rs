@@ -9,6 +9,13 @@
 //! would have read the file. Nothing is shown to the model, or even reported as started, ahead of
 //! its place in the order.
 //!
+//! The results the model sees are those of a sequential run. A read whose output the run did not
+//! keep (its task panicked, or the session was stopped while the run was reading) is simply read
+//! again when its call's turn comes, exactly as without the setting. A stop therefore changes
+//! nothing but time: reads still running are dropped, but a `glob` or `grep` already walking the
+//! tree on the blocking pool cannot be aborted and finishes in the background, its result
+//! discarded.
+//!
 //! A call is run ahead only when nothing in `run_tool` could stop or change it: it is a built-in
 //! file read ([`Invocation::is_file_read`]), the permission judge lets it run without asking, no
 //! `tool.before` or `tool.after` hook applies to it, and none of the refusals `run_tool_once`
@@ -28,14 +35,10 @@ const MOST_PARALLEL_READS: usize = 8;
 /// A call's output as it came back and how long the read took.
 pub(super) type ReadOutput = (Result<String, ToolError>, Duration);
 
-type ReadJob = Pin<Box<dyn Future<Output = ReadOutput> + Send>>;
+/// What the run kept for a call: the call it ran and its output.
+pub(super) type Kept = (Invocation, ReadOutput);
 
-/// What the run left for one call.
-pub(super) enum Prefetch {
-    Done(ReadOutput),
-    /// The session was stopped while the read was running; it was cancelled.
-    Cancelled,
-}
+type ReadJob = Pin<Box<dyn Future<Output = ReadOutput> + Send>>;
 
 /// Runs `jobs` with at most `limit` in flight and stores each output in `slots` at the job's
 /// position as it finishes. A job that panics leaves its slot empty. Dropping the future (the
@@ -72,29 +75,16 @@ impl Agent {
     /// The parsed call when it is a read that may run ahead of its turn in the order (see the
     /// module docs); `None` for every other call.
     fn concurrent_read(&self, call: &ToolCall) -> Option<Invocation> {
-        // The same name `run_tool_once` looks at: a variant's rename undone.
-        let mapped = self.engine_name(&call.function.name);
-        let name = mapped.as_deref().unwrap_or(&call.function.name);
+        // The call `run_tool` runs: a `call_tool` call is the tool it stands for, and a
+        // variant's rename is undone, as `run_tool_once` does before any check.
+        let effective = effective_call(call);
+        let mapped = self.engine_name(&effective.function.name);
+        let name = mapped.as_deref().unwrap_or(&effective.function.name);
         if self.provider_for(name).is_some() {
             return None;
         }
-        let invocation = Invocation::parse(name, &call.function.arguments).ok()?;
-        if !invocation.is_file_read() {
-            return None;
-        }
-        if self.fork.is_some() && fork::refusal(name).is_some() {
-            return None;
-        }
-        if self
-            .shared
-            .launcher
-            .as_ref()
-            .is_some_and(|launcher| launcher.restricted(name).is_some())
-            || self.named_refusal(name).is_some()
-            || self.profile_refusal(name).is_some()
-            || self.is_dropped(name)
-            || (self.reactive() && !self.in_universe(name))
-        {
+        let invocation = Invocation::parse(name, &effective.function.arguments).ok()?;
+        if !invocation.is_file_read() || self.early_refusal(name, false).is_some() {
             return None;
         }
         let tool = invocation.tool_name();
@@ -148,30 +138,32 @@ impl Agent {
             .iter()
             .map(|(_, invocation)| {
                 let (invocation, workspace) = (invocation.clone(), self.workspace.clone());
+                let gate = self.shared.read_gate.clone();
                 Box::pin(async move {
                     let began = Instant::now();
+                    if let Some(gate) = gate {
+                        gate.before(&invocation).await;
+                    }
                     let result = invocation.execute_in(&workspace, window).await;
                     (result, began.elapsed())
                 }) as ReadJob
             })
             .collect();
         let mut slots = Vec::new();
-        let finished = {
+        {
             let running = run_bounded(jobs, limit, &mut slots);
+            // A stop drops the reads still running and keeps the ones that finished; the rest
+            // are read again in order when their calls come, as in a sequential run.
             tokio::select! {
-                () = running => true,
-                Ok(_) = stop.wait_for(|stopped| *stopped) => false,
+                () = running => {}
+                Ok(_) = stop.wait_for(|stopped| *stopped) => {}
             }
-        };
+        }
         let mut kept = lock(&self.prefetched);
         for ((id, invocation), slot) in run.into_iter().zip(slots) {
-            let entry = match slot {
-                Some(output) => Prefetch::Done(output),
-                None if !finished => Prefetch::Cancelled,
-                // The read's task panicked: the call runs as usual.
-                None => continue,
-            };
-            kept.insert(id, (invocation, entry));
+            if let Some(output) = slot {
+                kept.insert(id, (invocation, output));
+            }
         }
         covered
     }
@@ -179,6 +171,11 @@ impl Agent {
     /// The outputs kept for calls that did not take them (one a check refused after the run).
     pub(super) fn clear_prefetched(&self) {
         lock(&self.prefetched).clear();
+    }
+
+    /// Drops the output kept for the call `id`: its turn came and it is done with it, or it asks.
+    pub(super) fn forget_prefetched(&self, id: &str) {
+        lock(&self.prefetched).remove(id);
     }
 
     /// What `invocation` returns for the call `call`: the output the run kept for it, or its
@@ -192,15 +189,9 @@ impl Agent {
     ) -> (Result<String, ToolError>, Instant) {
         let kept = lock(&self.prefetched).remove(&call.id);
         match kept {
-            Some((ran, Prefetch::Done((result, took)))) if ran == *invocation => {
+            Some((ran, (result, took))) if ran == *invocation => {
                 (result, started.checked_sub(took).unwrap_or(started))
             }
-            Some((ran, Prefetch::Cancelled)) if ran == *invocation => (
-                Err(ToolError::Io(
-                    "cancelled: the session was stopped while this read was running".into(),
-                )),
-                started,
-            ),
             _ => (
                 invocation
                     .execute_in(&self.workspace, self.expected_window())
