@@ -19,8 +19,9 @@ The language:
   character, any control character and NUL are refused.
 
 Caps: 16 KiB of text, 4,096 tokens, nesting depth 200, 8,192 tree nodes, 1,000 digits per
-number. Every tree walk in this package is iterative; the only recursion is the parser's, and it
-is bounded by the depth cap (at most three stack frames per level).
+number. Every tree walk in this package is iterative; the only recursion is the parser's. Every
+recursive call (a nested bracket, an operand, an argument) adds one to the depth, and the depth
+cap bounds the stack: a level costs at most three Python frames, so the cap is about 600 frames.
 """
 
 from dataclasses import dataclass
@@ -185,12 +186,12 @@ def is_identifier(name: object) -> bool:
 
 
 def describe_char(ch: str) -> str:
-    code = ord(ch)
-    if code < 32 or code == 127:
-        return f"control character U+{code:04X}"
-    if code < 127:
+    point = ord(ch)
+    if point < 32 or point == 127:
+        return f"control character U+{point:04X}"
+    if point < 127:
         return f"'{ch}'"
-    return f"non-ASCII character U+{code:04X}"
+    return f"non-ASCII character U+{point:04X}"
 
 
 def describe_token(tok: Token) -> str:
@@ -284,6 +285,8 @@ def tokenize(text: str) -> list[Token]:
             tokens.append(Token("op", normalise_operator(UNICODE_OPERATORS[ch]), i))
             i += 1
         elif ch in UNICODE_SUPERSCRIPTS:
+            if i > 0 and text[i - 1] in UNICODE_SUPERSCRIPTS:
+                raise fail("write a power of a power with '^' and parentheses", i)
             tokens.append(Token("op", "^", i))
             tokens.append(Token("num", (UNICODE_SUPERSCRIPTS[ch], 0), i))
             i += 1
@@ -444,14 +447,14 @@ class Parser:
                     if BP_ADD <= min_bp:
                         break
                     self.advance()
-                    right = self.expr(BP_ADD, depth)
+                    right = self.expr(BP_ADD, depth + 1)
                     self.count(tok.pos)
                     left = BinOp(value, left, right, tok.pos)
                 elif value in ("*", "/"):
                     if BP_MUL <= min_bp:
                         break
                     self.advance()
-                    right = self.expr(BP_MUL, depth)
+                    right = self.expr(BP_MUL, depth + 1)
                     self.count(tok.pos)
                     left = BinOp(value, left, right, tok.pos)
                 elif value == "^":
@@ -464,7 +467,7 @@ class Parser:
                 elif value == "(" and self.implicit_ok(tok):
                     if BP_MUL <= min_bp:
                         break
-                    right = self.expr(BP_MUL, depth)
+                    right = self.expr(BP_MUL, depth + 1)
                     self.count(tok.pos)
                     left = BinOp("*", left, right, tok.pos)
                 else:
@@ -472,7 +475,7 @@ class Parser:
             elif tok.kind in ("id", "sqrt") and self.implicit_ok(tok):
                 if BP_MUL <= min_bp:
                     break
-                right = self.expr(BP_MUL, depth)
+                right = self.expr(BP_MUL, depth + 1)
                 self.count(tok.pos)
                 left = BinOp("*", left, right, tok.pos)
             else:

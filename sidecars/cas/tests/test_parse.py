@@ -395,9 +395,48 @@ def test_the_parser_uses_few_stack_frames_per_level():
         assert parse("-" * MAX_DEPTH + "x")
         assert parse("sin(" * MAX_DEPTH + "x" + ")" * MAX_DEPTH)
         assert parse("2^" * MAX_DEPTH + "2")
-        assert parse("1+(" * MAX_DEPTH + "1" + ")" * MAX_DEPTH)
+        assert parse("1+(" * (MAX_DEPTH // 2) + "1" + ")" * (MAX_DEPTH // 2))
     finally:
         sys.setrecursionlimit(old)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1+1*sin(" * 200 + "1" + ")" * 200,
+        "1+1*[" * 200 + "1" + "]" * 200,
+        "1+(" * 300 + "1" + ")" * 300,
+        "1*sqrt(1+" * 200 + "1" + ")" * 200,
+        "-1+(" * 150 + "1" + ")" * 150,
+    ],
+    ids=lambda text: f"{text[:10]!r}x{len(text)}",
+)
+def test_every_recursive_shape_hits_the_depth_cap_not_python_s(text):
+    """Binary and implicit right-hand sides count as depth too, so frames stay bounded."""
+    old = sys.getrecursionlimit()
+    frames = 0
+    frame = sys._getframe()
+    while frame is not None:
+        frames += 1
+        frame = frame.f_back
+    sys.setrecursionlimit(frames + 3 * MAX_DEPTH + 60)
+    try:
+        with pytest.raises(CasInputError, match="nested more than"):
+            parse(text)
+    finally:
+        sys.setrecursionlimit(old)
+
+
+@pytest.mark.parametrize("text", ["1*-" * 300 + "1", "1+2^" * 300 + "1", "1+√" * 300 + "1"])
+def test_flat_chains_of_operators_do_not_nest(text):
+    assert parse(text)
+
+
+def test_a_superscript_cannot_follow_a_superscript():
+    with pytest.raises(ParseError, match="power of a power") as caught:
+        parse("x²³")
+    assert caught.value.column == 3
+    assert d("x² ³") != ""  # a space is not a superscript chain
 
 
 def test_a_long_left_leaning_chain_needs_no_recursion():

@@ -7,27 +7,41 @@ import tracemalloc
 import pytest
 
 from imperium_cas.functions import FUNCTIONS
-from imperium_cas.guard import MAX_DIGITS, Est, GuardError, Mat, check, fmt_digits
+from imperium_cas.guard import MAX_DIGITS, Est, GuardError, Mat, check, fmt_digits, size
 from imperium_cas.parse import parse
+from support import TIME_LIMIT
 
 
 def guard(text: str, *, expand: bool = False):
     return check(parse(text), expand=expand)
 
 
+def fast(func):
+    """Run `func` up to three times and require the best run under the time limit."""
+    best = None
+    for _ in range(3):
+        started = time.perf_counter()
+        try:
+            outcome = func()
+        except GuardError as error:
+            outcome = error
+        elapsed = time.perf_counter() - started
+        best = elapsed if best is None else min(best, elapsed)
+        if best < TIME_LIMIT:
+            return outcome
+    raise AssertionError(f"the guard took {best:.3f}s: it must not compute")
+
+
 def refused(text: str, *, expand: bool = False) -> GuardError:
-    started = time.perf_counter()
-    with pytest.raises(GuardError) as caught:
-        guard(text, expand=expand)
-    assert time.perf_counter() - started < 0.1, "the guard must refuse without computing"
-    return caught.value
+    outcome = fast(lambda: guard(text, expand=expand))
+    assert isinstance(outcome, GuardError), f"{text!r} was allowed"
+    return outcome
 
 
 def allowed(text: str, *, expand: bool = False):
-    started = time.perf_counter()
-    result = guard(text, expand=expand)
-    assert time.perf_counter() - started < 0.1
-    return result
+    outcome = fast(lambda: guard(text, expand=expand))
+    assert not isinstance(outcome, GuardError), f"{text!r} was refused: {outcome}"
+    return outcome
 
 
 # --- goal 2: each of these is refused, with its estimate, and nothing is computed -----------
@@ -39,10 +53,10 @@ def allowed(text: str, *, expand: bool = False):
         ("10^10^10", 1e10, "1e10"),
         ("1e999999999", 9e8, "1e9"),
         ("1e-999999999", 9e8, "1e9"),
-        ("sqrt(2)^(10^6)", 150_000, "150,516"),
-        ("factorial(factorial(20))", 1e19, "e20"),
+        ("sqrt(2)^(10^6)", 1e6, "1e6"),
+        ("factorial(factorial(20))", 1e19, "e19"),
         ("factorial(10^7)", 6e7, "6.6e7"),
-        ("[[2,1],[1,1]]^(10^6)", 1e6, "1.3e6"),
+        ("[[2,1],[1,1]]^(10^6)", 1e6, "e6"),
         ("9^9^9", 1e8, "digits"),
         ("2^(2^30)", 1e8, "digits"),
     ],
@@ -63,15 +77,16 @@ def test_a_thirty_by_thirty_symbolic_matrix_is_refused():
 
 def test_expand_of_a_big_power_is_stopped_by_limits_not_the_guard():
     # (x+y+z)^5000 is under expand's 10,000 cap: the guard passes it and D3's limits stop it.
-    assert allowed("(x+y+z)^5000", expand=True) is None
+    assert allowed("(x+y+z)^5000", expand=True).sym
     refused("(x+y+z)^10001", expand=True)
     refused("(x+y+z)^(10^5)", expand=True)
-    assert allowed("(x+y+z)^10000", expand=True) is None
+    assert allowed("(x+y+z)^10000", expand=True).sym
 
 
 def test_the_expand_rule_applies_only_to_expand():
-    assert allowed("(x+y+z)^50000") is None
-    assert allowed("(x+y+z)^(10^6)") is None
+    assert allowed("(x+y+z)^50000").sym
+    refused("(x+y+z)^(10^6)")  # about 600,000 digits once the symbols count as one
+    allowed("x^(10^6)")
     refused("(x+y+z)^(10^7)")
 
 
@@ -102,9 +117,7 @@ def test_a_numeric_base_is_not_an_expand_case():
         "pi^100",
         "E^1000",
         "x^2 + 2x + 1",
-        "(x+1)^(10^6)",
         "x^y",
-        "x^(y+10^10)",
         "1^(10^10)",
         "(-1)^(10^10)",
         "0^(10^10)",
@@ -170,7 +183,8 @@ def test_symbolic_class():
     assert allowed("Abs(-5)").val == (5, 1)
     assert allowed("sign(-5)").exact
     allowed("log(10^99999)")
-    allowed("sin(x)^1000000")
+    allowed("sin(x)^100000")
+    refused("sin(x)^1000000")
 
 
 def test_root_class_is_a_power():
@@ -187,13 +201,13 @@ def test_root_class_is_a_power():
     assert not allowed("sqrt(2)").exact
 
 
-def test_select_class_sums_its_inputs():
+def test_select_class_bounds_its_result():
     allowed("lcm(10^40000, 10^40000)")
     refused("lcm(10^60000, 10^60000)")
     refused("lcm(10^30000, 10^30000, 10^30000, 10^30000)")
     allowed("gcd(10^99990, 1)")
     allowed("floor(10^99990)")
-    refused("Max(10^60000, 10^60000)")
+    allowed("Max(10^60000, 10^60000)")  # one of its inputs, not their product
     allowed("Min(1, 2, 3)")
     allowed("Mod(7, 3)")
     allowed("floor(x)")
@@ -216,7 +230,7 @@ def test_digits_class_estimates_the_result():
     allowed("factorial(factorial(3))")
     refused("factorial(10^400)")
     allowed("factorial(x)")
-    allowed("factorial(x + 10^10)")
+    refused("factorial(x + 10^10)")  # the constant part counts
 
 
 @pytest.mark.parametrize(
@@ -237,9 +251,10 @@ def test_capped_class(ok, bad):
     refused(bad)
 
 
-def test_capped_functions_with_a_symbolic_argument_are_not_sized():
+def test_capped_functions_with_a_symbolic_argument_are_sized_as_one():
     for name in ("prime", "isprime", "harmonic", "bernoulli", "catalan"):
-        assert allowed(f"{name}(x)") is None
+        est = allowed(f"{name}(x)")
+        assert est.sym and not est.unb
 
 
 def test_every_function_in_the_table_is_reached_by_the_guard():
@@ -318,10 +333,13 @@ def test_matrix_arithmetic_is_sized():
 # --- structure, robustness and the estimate itself -------------------------------------------
 
 
-def test_a_symbolic_result_has_no_estimate():
-    assert allowed("x + 1") is None
-    assert allowed("sin(x)*2") is None
-    assert allowed("x = 1") is None
+def test_a_symbol_counts_as_an_exact_unit_constant():
+    for text in ("x", "x + 1", "sin(x)*2", "x = 1"):
+        est = allowed(text)
+        assert est.sym and not est.unb
+        assert size(est) < 5
+    assert allowed("x").exact
+    assert not allowed("3").sym
 
 
 def test_a_constant_result_has_an_estimate():
@@ -402,3 +420,111 @@ def test_nested_towers(text):
         guard(text)
     except GuardError as error:
         assert error.digits is not None or error.message
+
+
+# --- the security review's findings (F1, F2, F4) -----------------------------------------------
+
+# F1: a symbol hid its constant parts from the guard.
+SYMBOLS_HIDE_CONSTANTS = [
+    "(2x)^(10^6)",
+    "(2*x)^(10^6)",
+    "(x-x+10^60)^(10^4)",
+    "exp(10^6*log(2)+x-x)",
+    "exp(10^6*ln(2)+x-x)",
+    "(x*10^50000)^2",
+    "x^(y+10^10)",
+    "factorial(x + 10^10)",
+]
+
+# F2: an estimate was not an upper bound (signed logs, divisors that may be tiny, poles).
+UNSOUND_ESTIMATES = [
+    "2^Max(10^70,1e-70)",
+    "2^lcm(Max(10^70,1e-70),3)",
+    "2^Min(Max(10^70,1e-70),Max(10^70,1e-70))",
+    "lcm(10^60000, 10^60000)",
+    "factorial(Max(1e70,1e-70))",
+    "prime(Max(1e70,1e-70))",
+    "binomial(Max(1e70,1e-70),2)",
+    "2^(1e70/((10^70+1)-10^70))",
+    "2^floor(1e70/((pi+1e70)-1e70))",
+    "2^floor(cot(1e-70))",
+    "2^floor(csc(1e-70))",
+    "2^floor(coth(1e-70))",
+    "2^floor(tan(pi/2-1e-70))",
+    "2^ceiling(sec(pi/2-1e-70))",
+    "2^Mod(1e70/((pi+1e70)-1e70), 7)",
+    "exp(-10^6*log(1e-99999))",
+    "2^floor(gamma(1e-70))",
+    "binomial(1/3,10^6)",
+    "binomial(-10^5,2*10^5)",
+    "root(2,1e-100)",
+    "root(2,2^-300)",
+    "root(2,1/factorial(20))",
+    "root(2,pi)",
+    "prime(floor(1e70/((pi+1e70)-1e70)))",
+    "factorial(floor(tan(pi/2-1e-70)))",
+    "(1e70/((pi+1e70)-1e70))^(10^6)",
+]
+
+# F4: negative matrix powers are inverses.
+NEGATIVE_MATRIX_POWERS = ["[[2,1],[1,1]]^(-10^5)", "[[2,1],[1,1]]^(-10^6)"]
+
+
+@pytest.mark.parametrize(
+    "text", SYMBOLS_HIDE_CONSTANTS + UNSOUND_ESTIMATES + NEGATIVE_MATRIX_POWERS
+)
+def test_reviewed_inputs_are_refused(text):
+    refused(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "(x+y+z)^5000",
+        "exp(x^x^x)",
+        "x^(10^6)",
+        "1/sin(x)^2",
+        "(1/sin(x))^2",
+        "tan(x)/cos(x)",
+        "sqrt(tan(x))",
+        "[[2,1],[1,1]]^(-10^4)",
+        "[[x,1],[1,x]]^(-1000)",
+        "[[2,1],[1,1]]^(-1)",
+        "binomial(1/3, 100)",
+        "binomial(-10, 20)",
+        "gamma(1/3)",
+        "2^floor(pi)",
+        "2^Max(10, 1e-70)",
+        "log(x)",
+        "2^log(x)",
+        "exp(log(10))",
+    ],
+)
+def test_reviewed_cases_that_stay_allowed(text):
+    allowed(text)
+
+
+def test_unbounded_values_are_allowed_in_arithmetic_but_not_as_integers():
+    for text in ("1/sin(x)", "tan(x)", "gamma(x)", "1/(pi - pi)", "log(sin(x))", "x/tan(x)"):
+        assert allowed(text).unb, text
+    for text in ("2^tan(x)", "factorial(tan(x))", "prime(1/sin(x))", "binomial(10, 1/sin(x))"):
+        assert "not bounded" in refused(text).message or "bounded" in refused(text).message
+
+
+def test_select_results_use_non_negative_magnitudes():
+    est = allowed("Max(10^70, 1e-70)")
+    assert est.mag >= 70
+    assert allowed("lcm(10^30, 10^30)").mag >= 60
+
+
+def test_an_exact_values_bound_comes_from_its_digits():
+    # The divisor's magnitude is bounded by its denominator's digits, not guessed.
+    est = allowed("1e70/((10^70+1)-10^70)")
+    assert est.mag >= 70
+    refused("2^(1e70/((10^70+1)-10^70))")
+
+
+def test_negative_matrix_powers_cost_the_inverse():
+    positive = allowed("[[2,1],[1,1]]^(3*10^4)").digits
+    negative = allowed("[[2,1],[1,1]]^(-3*10^4)").digits
+    assert negative > 1.5 * positive

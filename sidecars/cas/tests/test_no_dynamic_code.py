@@ -41,12 +41,23 @@ FORBIDDEN = frozenset(
         "pickle",
         "marshal",
         "system",
+        "__builtins__",
+        "builtins",
+        "breakpoint",
+        "attrgetter",
+        "methodcaller",
+        "runpy",
+        "code",
+        "codeop",
         # Not in R1's list, but R1 grants exceptions for them, so they are forbidden elsewhere:
         "subprocess",
         "os",
         "ctypes",
     }
 )
+
+# Attribute names that reach loaded modules (`sys.modules["os"]`), forbidden as attributes only.
+FORBIDDEN_ATTRIBUTES = frozenset({"modules"})
 
 # The only exceptions, per module (plan D1 R1).
 EXCEPTIONS = {
@@ -81,7 +92,7 @@ def scan(source: str, module: str) -> list[str]:
         if isinstance(node, ast.Name) and node.id in FORBIDDEN - allowed_names:
             problems.append(f"R1 line {line}: name {node.id}")
         if isinstance(node, ast.Attribute):
-            if node.attr in FORBIDDEN - allowed_names:
+            if node.attr in (FORBIDDEN | FORBIDDEN_ATTRIBUTES) - allowed_names:
                 problems.append(f"R1 line {line}: attribute {node.attr}")
             if node.attr.startswith("_"):
                 problems.append(f"R2 line {line}: attribute {node.attr}")
@@ -131,8 +142,16 @@ def check_import(node, module: str, line: int, allowed_names: set[str]) -> list[
     return problems
 
 
-def modules() -> list[Path]:
-    return sorted(PACKAGE.glob("*.py"))
+def modules(root: Path = PACKAGE) -> list[Path]:
+    return sorted(root.rglob("*.py"))
+
+
+def test_subpackages_are_scanned(tmp_path):
+    """`rglob`, not `glob`: a module in a subpackage is scanned too."""
+    nested = tmp_path / "sub" / "deep.py"
+    nested.parent.mkdir()
+    nested.write_text("x = 1", encoding="utf-8")
+    assert nested in modules(tmp_path)
 
 
 def test_the_package_exists_and_has_its_stage_1_modules():
@@ -189,6 +208,18 @@ def test_the_scan_catches_what_it_should():
         "def f():\n    from math import pi": "R3",
         "class A:\n    def f(self):\n        import re": "R3",
         "f = lambda: __import__('os')": "R1",
+        "__builtins__['ev' + 'al']('1')": "R1",
+        "import builtins": "R1",
+        "builtins.eval('1')": "R1",
+        "breakpoint()": "R1",
+        "from operator import attrgetter": "R1",
+        "operator.attrgetter('x')(y)": "R1",
+        "operator.methodcaller('x')(y)": "R1",
+        "import runpy": "R1",
+        "import code": "R1",
+        "import codeop": "R1",
+        "code.interact()": "R1",
+        "sys.modules['os']": "R1",
     }
     for source, rule in cases.items():
         problems = scan(source, "other.py")

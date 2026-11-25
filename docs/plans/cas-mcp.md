@@ -132,7 +132,9 @@ The language (full grammar in stage 1):
   `÷`, `≤`, `≥`, `≠`, `π`, `√`, `²`, `³`). Any other non-ASCII character, a control character or
   a NUL is refused.
 - **Caps.** At most 16 KiB per expression and 4,096 tokens. Nesting depth is capped at 200,
-  checked while parsing, so Python's recursion limit is never reached. A tree has at most 8,192
+  checked while parsing. Every recursive step (a bracket, an operand, an argument) adds one to
+  the depth, and a level costs at most three Python frames, so the parser uses about 600 frames at
+  the cap and Python's recursion limit (1,000) is not reached from a worker's shallow stack. A tree has at most 8,192
   nodes: each token makes at most one node and each implicit multiplication one more, so the
   node cap is twice the token cap and is never the binding limit before the token cap. Integer
   literals have at most 1,000 digits.
@@ -148,7 +150,7 @@ test fails if the table and this list differ.
 | --- | --- | --- |
 | `symbolic` (no eager exact arithmetic; magnitude passes through for D2's estimate) | `sin cos tan cot sec csc asin acos atan acot atan2 sinh cosh tanh coth asinh acosh atanh exp log ln erf Abs sign re im arg conjugate` | SymPy leaves these unevaluated on exact constants (`sin(1)`, `exp(1000)`) or returns small exact values |
 | `root` (treated as `Pow` with a rational exponent) | `sqrt cbrt root` | `sqrt(2)^(10^6)` is an eager integer power |
-| `select` (magnitude at most the inputs' sum) | `floor ceiling Min Max Mod gcd lcm` | they compute from their inputs, and `lcm` is bounded by the product |
+| `select` (magnitude at most the inputs' largest, or for `lcm` their product) | `floor ceiling Min Max Mod gcd lcm` | they compute from their inputs, and `lcm` is bounded by the product |
 | `digits` (result size estimated; refused over 100,000 digits) | `factorial gamma binomial fibonacci lucas` | eager exact integers: `log10(n!)` by `lgamma`, `binomial` by `lgamma`, `fibonacci(n)` and `lucas(n)` about `0.209·n` digits |
 | `capped` (an argument cap, because cost grows faster than result size) | `prime` (n ≤ 10<sup>6</sup>), `nextprime`, `prevprime`, `isprime` (argument ≤ 200 digits), `harmonic` (n ≤ 10,000), `bernoulli` (n ≤ 2,000), `catalan` (n ≤ 10,000) | sieves, primality tests and big rationals |
 
@@ -253,7 +255,8 @@ Rules:
     factorial cap *is* the 100,000-digit rule (about `n ≤ 25,000`). A nested call
     (`factorial(factorial(20))`) is refused when its argument's `mag` is over 6.
   - `capped` checks its argument cap.
-  - `select` takes the sum of its inputs.
+  - `select` takes the largest input's non-negative magnitude (the sum of them for `lcm`); never
+    a sum of signed logs.
   - `symbolic` passes the magnitude through: `exp` and `cosh` grow it, since the result may be
     raised to a power later.
 - **Matrices:** at most 30 rows or columns and 400 entries. A matrix power `M^n` with a constant
@@ -1088,7 +1091,7 @@ Commands are what CI runs; nothing needs a local Rust build.
   - **Checks to tests.** Precedence, implicit multiplication, relations, matrices, caps and every
     refusal with its column: `test_parse.py`. Goal 2's guard inputs with their estimates, the
     allowed cases, each guard class and matrix caps: `test_guard.py`. The hostile corpus
-    (`hostile.txt`, 493 lines, plus 26 built-in huge inputs) with an audit hook recording every
+    (`hostile.txt`, 529 lines, plus 26 built-in huge inputs) with an audit hook recording every
     event, and four Hypothesis fuzz tests at 2,000 examples (seed printed in the pytest header,
     `CAS_FUZZ_SEED` repeats it): `test_hostile.py`. The R1 to R4 AST scan, its negative cases and
     the ruff `S` check: `test_no_dynamic_code.py`. The table equals this plan's D1 list, read
@@ -1114,15 +1117,40 @@ Commands are what CI runs; nothing needs a local Rust build.
       `Symbol`"); `sin x` is the two-names error. A relation is allowed only at the top level.
       `!` parses to a call of `factorial`, so the guard needs no separate rule.
     - `2e3` and `2E+3` are numbers; `2e` and `2E` are `2*e` and `2*E`.
-    - D2 refinements: the guard keeps an exact value for small constants (up to 64 digits), so
-      `10^6` is known exactly when it is the exponent of a matrix power. For a whole-number base
-      it estimates `p/q·log10(base)+1` digits rather than `p/q·digits(base)`, so `isprime(10^199)`
-      is allowed and `10^99999` is the largest power of ten. `select` is the sum of its inputs
-      as written, so `Mod(10^99999, 7)` (100,001 digits) is refused. A constant `exp`, `sinh` or
-      `cosh` of more than about 230,000 is refused (`exp(1000)` is allowed), because its result
-      may be raised to a power.
-      A list or matrix argument to a function is refused, and a flat list holds at most 400
-      entries.
+    - D2 refinements (the first review found the first version unsound; this is the fixed one):
+      - A symbol is an exact unit constant (`1`), so the constant parts of an expression with
+        symbols are always sized: `(2x)^(10^6)` is refused like `2^(10^6)`, and `x^(10^6)`,
+        `(x+y+z)^5000` and `exp(x^x^x)` pass. `(x+1)^(10^6)` is refused for the same reason.
+      - Every estimate is an upper bound. It carries a magnitude `mag`, a digit budget for the
+        numerator and denominator that runs through inexact values too (`(pi+1e70)-1e70` collapses
+        to `pi`), the small exact value `val` (up to 64 digits, so `10^6` is known exactly), and an
+        `unb` flag for values that may be arbitrarily large.
+      - A division by an inexact value, `tan`, `cot`, `sec`, `csc`, `coth`, `atanh`, `log` of an
+        inexact value, and `gamma` or `factorial` near a pole or with an unknown argument are
+        unbounded. Unbounded values are fine in arithmetic and refused as an exponent or as an
+        argument of a `digits` or `capped` function. A `floor`, `ceiling` or `Mod` of one is
+        unbounded.
+      - `select` no longer sums signed logs. `Max`, `Min` and `gcd` take the largest input,
+        `lcm` the sum of the inputs' non-negative magnitudes, `floor` and `ceiling` the input plus
+        one, `Mod(a, b)` the magnitude of `b`.
+      - `root(x, n)` takes the exponent `1/n` from the index's value, or from its denominator's
+        digits when the value is unknown, and refuses an inexact index.
+      - `binomial(n, k)` with a negative or fractional `n` is bounded by `2^(|n|+k)` and refuses
+        `k` over 100,000; a list or matrix argument to a function is refused, and a flat list
+        holds at most 400 entries.
+      - For a whole-number base the guard estimates `p/q*log10(base)+1` digits rather than
+        `p/q*digits(base)`, so `isprime(10^199)` is allowed and `10^99999` is the largest power
+        of ten. A constant `exp`, `sinh` or `cosh` of more than about 230,000 is refused
+        (`exp(1000)` is allowed) because its result may be raised to a power.
+      - A negative matrix power `M^(-n)` is sized as the inverse (`rows` times the digits), then
+        the power.
+    - Parser: every recursive call adds one to the depth, including the right side of a binary
+      or implicit product, so the depth cap bounds Python's stack for every shape. `x²³` is
+      refused rather than read as `x^(2^3)`.
+    - The AST scan also forbids `__builtins__`, `builtins`, `breakpoint`, `attrgetter`,
+      `methodcaller`, `runpy`, `code`, `codeop` and the attribute `modules`, and scans
+      subpackages. The fuzz seed is the commit's in CI (`GITHUB_SHA`); `CAS_FUZZ_SEED` overrides
+      it. The 100 ms per input check takes the best of three runs, with a 500 ms limit in CI.
   - **Not covered here.** The corpus runs at parse and guard level only. `test_no_string_to_sympy`
     and the audit allow-list for the worker are stage 2a. The `python-cas` job's limits tests are
     stage 2b.
@@ -1161,6 +1189,8 @@ Commands are what CI runs; nothing needs a local Rust build.
   `parse.postorder`, never recursively. The AST scan's `EXCEPTIONS` and `R4_ALLOWED` in
   `tests/test_no_dynamic_code.py` need `os._exit` for `worker.py` and the SymPy names `build.py`
   imports (see stage 1's outcome).
+  `test_no_string_to_sympy.py` must cover the string-taking methods too (`.subs`, `.solve` and the
+  like called with a string), not only `sympify`, `parse_expr` and `lambdify`.
 
 ### Stage 2b: Front-side pool, Unix limits and Landlock
 
