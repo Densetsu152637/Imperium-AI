@@ -187,8 +187,9 @@ async fn reply(lab: &Lab, body: &Value) -> String {
         if body["tools"].as_array().is_none_or(Vec::is_empty) {
             return text("one reply");
         }
+        // An explicit limit keeps the 100,000-character read ceiling, so a big file is read whole.
         // A research subagent, or a chunk agent.
-        let mut steps = vec![("read_file", json!({"path": "a.txt"}))];
+        let mut steps = vec![("read_file", json!({"path": "a.txt", "limit": 100_000}))];
         if brief.contains("web") {
             steps.push(("web_fetch", json!({"url": "https://example.com/page"})));
         }

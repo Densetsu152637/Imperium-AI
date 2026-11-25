@@ -237,6 +237,10 @@ pub struct EnvironmentInfo {
     /// (`session.create` `worktree`) and remote runtimes do not get them.
     #[serde(default = "yes")]
     pub project_worktrees: bool,
+    /// This environment's own folder for its sessions' git worktrees, as
+    /// `<folder>/<repo>/<branch>`. None: the global `sessions.worktree_dir` applies.
+    #[serde(default)]
+    pub worktree_dir: Option<String>,
     /// The built-in Home environment: always present, listed first, never deleted, and the
     /// default for a session started with no environment or project chosen. It has no project
     /// folders unless the user adds some; its sessions work in their scratch folders.

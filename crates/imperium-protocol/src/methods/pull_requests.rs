@@ -74,6 +74,70 @@ pub struct PullRequestsChangedParams {
     pub status: Option<PrStatus>,
 }
 
+/// `pull_requests.auto_merge_challenge`: the single-use challenge that `pull_requests.set_auto_merge`
+/// with `enabled: true` needs. Answered only on the local socket, to the desktop app installed
+/// beside `imperium-core`, and bound to this connection, the session's pull request `url`, the
+/// `head_sha` the user saw and the `merge_method` the user chose. It expires after two minutes.
+/// Called by the desktop app's own process, never by its webview, a paired phone, an agent, a
+/// hook, a plugin or a mod.
+#[derive(Debug)]
+pub struct PullRequestsAutoMergeChallenge;
+
+impl Method for PullRequestsAutoMergeChallenge {
+    const NAME: &'static str = "pull_requests.auto_merge_challenge";
+    type Params = PullRequestsAutoMergeChallengeParams;
+    type Result = PullRequestsAutoMergeChallengeResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestsAutoMergeChallengeParams {
+    pub session_id: String,
+    pub url: String,
+    pub head_sha: String,
+    pub merge_method: PrMergeMethod,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestsAutoMergeChallengeResult {
+    pub challenge: String,
+    // When the challenge stops being accepted, in Unix milliseconds.
+    #[ts(type = "number")]
+    pub expires_unix_ms: u64,
+}
+
+/// `pull_requests.set_auto_merge`: turns GitHub's auto-merge on or off for a session's pull
+/// request and answers with its new status. `enabled: true` needs `merge_method` and the
+/// `challenge` of `pull_requests.auto_merge_challenge` for the same session, `url`, `head_sha`
+/// and method, and is refused for any caller but the desktop app. GitHub merges the pull request
+/// itself once its own rules pass, and refuses if the branch is no longer at `head_sha`.
+/// `enabled: false` needs no challenge and any local caller may send it. A paired phone may send
+/// neither.
+#[derive(Debug)]
+pub struct PullRequestsSetAutoMerge;
+
+impl Method for PullRequestsSetAutoMerge {
+    const NAME: &'static str = "pull_requests.set_auto_merge";
+    type Params = PullRequestsSetAutoMergeParams;
+    type Result = PrStatus;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestsSetAutoMergeParams {
+    pub session_id: String,
+    pub url: String,
+    pub head_sha: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub merge_method: Option<PrMergeMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub challenge: Option<String>,
+}
+
 /// A pull request as the card shows it. Every text field came from GitHub, was written by
 /// someone there, is length-capped and free of control characters, and renders as plain text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

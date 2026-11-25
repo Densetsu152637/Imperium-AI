@@ -195,7 +195,7 @@ pub(crate) fn touched_dir(workspace: &Workspace, name: &str, arguments: &str) ->
         return None;
     }
     let (path, is_dir) = match Invocation::parse(name, arguments).ok()? {
-        Invocation::ListDir { path } => (path, true),
+        Invocation::ListDir { path, .. } => (path, true),
         // A search's folder (grep may also be given one file).
         Invocation::Glob { scope, .. } | Invocation::Grep { scope, .. } => {
             let is_dir = workspace

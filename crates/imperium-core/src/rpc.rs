@@ -230,6 +230,11 @@ pub struct Connection {
     identity: Option<Arc<crate::app_identity::Peer>>,
     /// The plugin-approval challenges issued to this connection and not yet answered.
     challenges: crate::app_identity::Challenges,
+    /// The auto-merge challenges issued to this connection and not yet answered.
+    auto_merge_challenges: crate::automerge::Challenges,
+    /// Set by a test that stands in for the desktop app: the connection counts as the app.
+    #[cfg(feature = "testing")]
+    desktop_app_for_tests: bool,
     /// Set while this connection watches resources (`system.resources_subscribe`).
     resources: Option<crate::resources::Watch>,
     /// The topics chosen with `events.subscribe`; narrows what `receives` lets through.
@@ -256,6 +261,9 @@ impl Connection {
             peer: None,
             identity: None,
             challenges: crate::app_identity::Challenges::default(),
+            auto_merge_challenges: crate::automerge::Challenges::default(),
+            #[cfg(feature = "testing")]
+            desktop_app_for_tests: false,
             resources: None,
             events: crate::events::EventFilter::default(),
             pr_watch: None,
@@ -282,6 +290,16 @@ impl Connection {
         self
     }
 
+    /// This connection, standing in for the desktop app: the identity check that only the
+    /// installed desktop app passes is skipped. For tests of what the app alone may do; there is
+    /// no such switch in a release build.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn as_desktop_app_for_tests(mut self) -> Self {
+        self.desktop_app_for_tests = true;
+        self
+    }
+
     /// A connection limited to `allowed` methods (a paired phone's scopes).
     pub fn restricted(state: Arc<DaemonState>, allowed: Vec<&'static str>) -> Self {
         Connection {
@@ -293,6 +311,9 @@ impl Connection {
             peer: None,
             identity: None,
             challenges: crate::app_identity::Challenges::default(),
+            auto_merge_challenges: crate::automerge::Challenges::default(),
+            #[cfg(feature = "testing")]
+            desktop_app_for_tests: false,
             resources: None,
             events: crate::events::EventFilter::default(),
             pr_watch: None,

@@ -1008,9 +1008,13 @@ fn gh_command(
 
 /// `session.review_pull_request`: pushes the repository's current branch and opens a pull
 /// request with `gh`. Without `gh`, it returns the commands to run instead.
+///
+/// `before_push` runs with the branch just before the push and may refuse it: the daemon turns
+/// GitHub's auto-merge off first when this session's bound pull request is on that branch.
 pub(crate) fn pull_request(
     state: &DaemonState,
     params: &SessionReviewPullRequestParams,
+    before_push: &dyn Fn(&str) -> Result<(), String>,
 ) -> Result<SessionReviewPullRequestResult, String> {
     let allowed = permitted(state, &params.session_id, PULL_REQUEST_TOOL)?;
     idle(state, &params.session_id)?;
@@ -1065,6 +1069,7 @@ pub(crate) fn pull_request(
         });
     }
     check_repository_config(&top, Step::Push, "push and open the pull request")?;
+    before_push(&branch)?;
     let refspec = format!("refs/heads/{branch}");
     run(command(&top)
         // Network transports only: never `file` or `ext` (a local program).

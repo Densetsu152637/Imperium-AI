@@ -1129,6 +1129,9 @@ async fn run(
         {
             root.restore(messages);
         }
+        shared
+            .emitter
+            .with_history(|history| root.rebuild_loaded(history, root.messages()));
         // A switch the restart came between and no turn followed is fitted by the next turn.
         if shared.emitter.switched_since_last_turn() {
             root.mark_unfitted();
@@ -1628,6 +1631,11 @@ pub(crate) struct Emitter {
 }
 
 impl Emitter {
+    /// Reads the events recorded so far.
+    pub(crate) fn with_history<R>(&self, read: impl FnOnce(&[AgentEvent]) -> R) -> R {
+        read(&self.history.lock())
+    }
+
     /// How many events the session has recorded.
     pub(crate) fn event_count(&self) -> usize {
         self.history.lock().len()

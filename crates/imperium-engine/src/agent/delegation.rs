@@ -367,6 +367,9 @@ impl Agent {
         if args.single_call {
             agent = agent.single_call();
         }
+        // The tools this agent's delegator has looked up count as looked up for it too, where
+        // it has them (it only decides what a later compaction lists).
+        agent.inherit_loaded(&self.loaded_names());
         if let Some(topic) = knowledge {
             self.shared.knowledge.expect(&task_id, topic.to_string());
         }
@@ -1489,6 +1492,9 @@ pub(crate) fn resume_subagent(
         agent = agent.writing();
     }
     agent.restore(shared.agents.conversation(agent_id));
+    shared
+        .emitter
+        .with_history(|history| agent.rebuild_loaded(history, agent.messages()));
     agent.kind = shared.agents.kind(agent_id);
     if before.knowledge.is_some() {
         agent.can_ask = false;

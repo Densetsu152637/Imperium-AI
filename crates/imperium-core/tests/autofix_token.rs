@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use imperium_github::{FailingPr, HttpGitHub, StaticToken};
+use imperium_github::{AutoMerge, FailingPr, GitHub, HttpGitHub, MergeMethod, StaticToken};
 use imperium_github_fake::FakeGithub;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -113,8 +113,6 @@ async fn the_github_token_is_absent_from_an_auto_fix_runs_journal_notifications_
     );
     let fake = FakeGithub::start(SENTINEL).await;
     fake.add_repo("owner/repo");
-    // GitHub's reply to the log request is an error that echoes the token it was sent.
-    fake.fail_next(500);
     let github = HttpGitHub::new(&fake.url(), Arc::new(StaticToken::new(SENTINEL))).unwrap();
 
     let dir = tempfile::tempdir().unwrap();
@@ -139,6 +137,23 @@ async fn the_github_token_is_absent_from_an_auto_fix_runs_journal_notifications_
     git(&clone, &["commit", "-q", "-m", "add greeting"]);
     git(&clone, &["push", "-q", "-u", "origin", "feature"]);
     let before = git(&origin, &["rev-parse", "feature"]);
+
+    // The pull request has auto-merge on: the daemon's own push must turn it off first.
+    fake.add_pr("owner/repo", 7, "Add the greeting", "feature", &before);
+    github
+        .set_auto_merge(
+            "owner/repo",
+            7,
+            &AutoMerge::Enable {
+                method: MergeMethod::Squash,
+                expected_head_oid: before.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    // GitHub's reply to the next request (the failed check's log) is an error that echoes the
+    // token it was sent.
+    fake.fail_next(500);
 
     let prompts = Arc::new(Mutex::new(Vec::new()));
     let model = fake_model(Arc::clone(&prompts)).await;
@@ -200,6 +215,15 @@ async fn the_github_token_is_absent_from_an_auto_fix_runs_journal_notifications_
         }
     }
     fixing.await.unwrap();
+
+    // The push turned auto-merge off, and nothing turned it back on.
+    assert!(fake.pr("owner/repo", 7).auto_merge.is_none());
+    let mutations: Vec<String> = fake
+        .mutations()
+        .into_iter()
+        .map(|(operation, _)| operation)
+        .collect();
+    assert_eq!(mutations, ["EnableAutoMerge", "DisableAutoMerge"]);
 
     // The run really used the token (the fake checked it), and its error text reached the prompt.
     let requests = fake.requests();

@@ -102,6 +102,11 @@ pub struct Guard {
 }
 
 impl Guard {
+    /// The first variable in the app's environment that the daemon would refuse in a peer.
+    pub fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
+    }
+
     /// Reads this process's environment.
     pub fn capture() -> Self {
         let names: Vec<String> = std::env::vars_os()
@@ -119,7 +124,7 @@ impl Guard {
 
 /// The windows that may call `plugin_approve`: the main window and the detached panels. A mod
 /// frame is no window of its own, and the access control list gives it no permission.
-fn own_window(label: &str) -> bool {
+pub(crate) fn own_window(label: &str) -> bool {
     label == "main"
         || label
             .strip_prefix("panel-")
@@ -229,7 +234,7 @@ fn check_preview(action: Action, preview: &PluginPreview) -> Result<(), String> 
 
 /// Shows a value on one line, with control characters and the characters that reorder or hide
 /// text written out (and a backslash doubled), so a command line cannot change how the dialog reads.
-fn show(value: &str) -> String {
+pub(crate) fn show(value: &str) -> String {
     let mut shown = String::with_capacity(value.len());
     for c in value.chars() {
         let hidden = c.is_control()
@@ -469,7 +474,7 @@ where
 }
 
 /// Calls one daemon method, giving up after `limit`.
-async fn ask<M: Method>(
+pub(crate) async fn ask<M: Method>(
     client: &mut Client,
     params: M::Params,
     limit: Duration,
@@ -481,7 +486,7 @@ async fn ask<M: Method>(
 }
 
 /// This app's own connection to the daemon, on its local socket.
-async fn connect(version: String) -> Result<Client, String> {
+pub(crate) async fn connect(version: String) -> Result<Client, String> {
     let file = Paths::from_env()
         .map_err(|error| error.to_string())?
         .daemon_endpoint_file();
@@ -1270,6 +1275,10 @@ mod tests {
                         "plugins.approval_challenge",
                         "approval_challenge",
                         "PluginsApprove",
+                        // Turning auto-merge on is asked for by the app's own process only; the
+                        // webview may ask for it to be turned off (`pull_requests.set_auto_merge`).
+                        "auto_merge_challenge",
+                        "PullRequestsAutoMergeChallenge",
                     ] {
                         if text.contains(method) {
                             found.push(format!("{} names {method}", path.display()));

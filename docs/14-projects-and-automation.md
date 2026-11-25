@@ -18,15 +18,15 @@ RPC:
 | Method | Params | Result |
 | --- | --- | --- |
 | `environments.list` | `{}` | `{ environments: EnvironmentInfo[], git: string[] }` (`git`: ids of local environments with a folder inside a git repository, which can start sessions on worktrees; also sent with `environments.changed`) |
-| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent?, pet?, project_worktrees? }` (`persistent_agent` is [deprecated](#persistent-agents-implemented)) | `EnvironmentInfo` |
-| `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent?, pet?, project_worktrees? }` (empty icon/colour/pet clears it; `persistent_agent` is [deprecated](#persistent-agents-implemented): `true` adds the default agent when there are none, `false` removes only that default agent and is refused with an error when the environment has more than one agent or an agent with a role) | `EnvironmentInfo` |
+| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent?, pet?, project_worktrees?, worktree_dir? }` (`persistent_agent` is [deprecated](#persistent-agents-implemented)) | `EnvironmentInfo` |
+| `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent?, pet?, project_worktrees?, worktree_dir? }` (empty icon/colour/pet/worktree_dir clears it; `persistent_agent` is [deprecated](#persistent-agents-implemented): `true` adds the default agent when there are none, `false` removes only that default agent and is refused with an error when the environment has more than one agent or an agent with a role) | `EnvironmentInfo` |
 | `environments.test_runtime` | `{ id }` | `{ ok, message }` |
 | `environments.delete` | `{ id }` | `{}` (folders and running sessions are left alone; Home is refused) |
 | `environments.add_folder` | `{ id, folder }` (an existing absolute folder) | `EnvironmentInfo` |
 | `environments.remove_folder` | `{ id, folder }` | `EnvironmentInfo` |
 
 `EnvironmentInfo` is `{ id, name, icon, color, folders, pinned, runtime, agents, persistent_agent
-(deprecated), agent_session_id (deprecated), pet, project_worktrees, builtin, plugins }`, where `plugins` is `{ enabled, disabled, dismissed_suggestions, muted_suggestion_sources }`, lists of plugin names the environment turns on or off for its sessions (set by `plugins.set_enabled` with `environment`; the last two are the offers the user dismissed and the canonical project folders whose offers are muted, set by `plugins.dismiss_suggestion`; see [06](06-extensibility.md#plugin-marketplaces)), `builtin` marks [Home](#home-implemented), and `project_worktrees` (on unless turned off)
+(deprecated), agent_session_id (deprecated), pet, project_worktrees, worktree_dir, builtin, plugins }`, where `plugins` is `{ enabled, disabled, dismissed_suggestions, muted_suggestion_sources }`, lists of plugin names the environment turns on or off for its sessions (set by `plugins.set_enabled` with `environment`; the last two are the offers the user dismissed and the canonical project folders whose offers are muted, set by `plugins.dismiss_suggestion`; see [06](06-extensibility.md#plugin-marketplaces)), `builtin` marks [Home](#home-implemented), `project_worktrees` (on unless turned off) and `worktree_dir` (the environment's own worktrees folder, or null for the global one)
 opens the folders' [git worktrees](#worktrees) to its sessions, and `pet` is the environment's default pet (an installed pet's id) for the
 [nursery](16-pets.md#imperium-nursery), or none to let the nursery decide; folders first-to-last with the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
 (the full list). `session.create` takes `environment_id`; `project_dir` still works and maps to
@@ -562,7 +562,7 @@ a git repository is replaced by a new worktree of that repository on a new branc
 repository's current `HEAD`. Folders outside git are used as they are; a subfolder of a
 repository becomes the same subfolder of its worktree. Worktrees go in
 `<sessions.worktree_dir>/<repo name>/<branch>` when that setting is set (Settings → Sessions),
-and otherwise inside the repository in `.worktrees/<branch>` (slashes in the branch become
+or in the environment's own folder when it sets one (`worktree_dir`, below), and otherwise inside the repository in `.worktrees/<branch>` (slashes in the branch become
 `-`), which is added to the repository's `.git/info/exclude` so it is never committed. The
 session records its worktrees (`worktrees: [{ folder, path, branch, repo }]` in
 `session.list` and `session.create`, a **Worktree** badge in the app), keeps them when it
@@ -601,6 +601,18 @@ OS-sandbox and container tiers (mounted like further folders). Everything else i
 paths go through the same checks as folders (`..` and links resolved, the deepest folder or
 grant decides, so a read-only grant inside a worktree still makes that part read-only), and
 deny rules still win. The system prompt names the worktrees beside the environment's folders.
+
+**Implemented: a worktree folder per environment** (roadmap item 57). An environment can set its
+own worktrees folder (`worktree_dir`, an absolute path on this machine, in `environments.create`
+and `environments.update`; the *Worktrees folder* field in the environment's window, beside
+*Project worktrees*). Its sessions that start in a worktree, and the worktrees of its
+`access: "write"` subagents, are made in `<worktree_dir>/<repo name>/<branch>` instead of the
+global `sessions.worktree_dir`; they are recorded by path, so a resumed session finds them and
+`session.delete` with `remove_worktrees` removes them there. An empty `worktree_dir` in
+`environments.update` clears the override, and the global setting applies again, as it always
+does to an environment with none. A change applies to sessions started afterwards. A relative
+path is refused. A folder inside a repository is not added to that repository's
+`.git/info/exclude`, unlike the default `.worktrees`, so `git status` shows it as untracked.
 
 The **Project worktrees** switch in the environment's window (`project_worktrees: false` in
 `environments.update`) turns this off for sessions started afterwards. A session started on its
@@ -1138,7 +1150,9 @@ anything but the one fix commit, is flagged in that request and always asks, eve
 `push = "auto"` a non-CI file that CI executes (`package.json` scripts, `build.rs`, a
 `Makefile`, tests) is pushed without asking, and then runs in CI with the repository's secrets.
 Only on approval does it push to the
-pull request's branch, as a plain push. It never force-pushes, merges, closes, or approves.
+pull request's branch, as a plain push. It never force-pushes, closes or approves, and requests
+GitHub's auto-merge only on the user's switch, turned on in the desktop app; it never calls a merge
+endpoint. Before it pushes it turns that auto-merge off (see [auto-merge](#auto-merge-implemented-stage-6-protocol-060)).
 After `max_attempts_per_pr` (default 3) failing commits on one pull request it stops and
 says so. Progress goes to every client as `autofix.event` notifications (`started`,
 `awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, `stopped`); approvals are
@@ -1227,7 +1241,41 @@ state, the allowed merge methods, the auto-fix and auto-merge switches and the l
 session it lists every running session that has a pull request bound. Both read the daemon's cache
 (`pull_requests.status`); neither calls GitHub. The CLI writes every control and direction character
 as `\u{..}` (the daemon already strips them, so this is a second line of defence for a terminal).
-Not yet: turning the auto-fix and auto-merge switches on (later stages).
+Not yet: turning the auto-fix switch on (a later stage).
+
+### Auto-merge (implemented, stage 6, protocol 0.60)
+
+**Auto-merge lands code unseen.** With it on, GitHub merges the pull request the moment the
+repository's own required checks and reviews pass, and nobody looks at the code again. It is the
+user's switch alone: off for every session and pull request until the user turns it on in the
+desktop app, with a merge method, and only the desktop app can ([05](05-tools-and-isolation.md#auto-merge-the-desktop-app-alone-implemented)
+has the mechanism: a single-use challenge answered only to the installed desktop app on the local
+socket, the same pattern as plugin approval). The card's *Auto-merge* switch asks for confirmation
+in a native dialog that names the repository, the branches, the commit and the method; it lists
+only the methods the repository allows, preselecting `github.automerge.default_method` when
+allowed and otherwise the first allowed of `squash`, `merge`, `rebase`. Imperium asks GitHub with
+`enablePullRequestAutoMerge`, pinned to the head commit shown (`expectedHeadOid`), and GitHub
+merges when its gate passes; Imperium never calls a merge endpoint. The switch is disabled with the
+reason for a draft, a merged or closed pull request, a merge queue, a repository that does not
+allow auto-merge or whose merge settings the token cannot read, and `github.automerge.allowed =
+false`. Turning it off needs no challenge: the card, `imperium pr automerge off SESSION` and any
+local caller may. `imperium pr automerge status SESSION` shows it; there is no command that turns
+it on. The daemon's own pushes (Fix CI, and `session.review_pull_request` on a bound branch)
+disable auto-merge first and do not enable it again. A push by anyone else after the user enabled
+it is caught at the next poll: the daemon records the head the user confirmed (kept with the
+binding), and when auto-merge is on and the head differs it turns auto-merge off and says why on
+the card; only a merge GitHub completes inside that poll interval is outside the guarantee.
+Auto-merge Imperium did not enable is left alone, with one exception that fails safe: after
+someone turns auto-merge off on GitHub the confirmed head is kept, so if it is later turned on
+again on GitHub at a new head, the daemon turns it off. Unbinding the last session on a pull
+request Imperium enabled turns auto-merge off first (the card's button says so, and a failed
+turn-off keeps the binding; a concurrent enable keeps the head it recorded). Deleting,
+archiving or rebinding such a session saves the pull request in a list in the data folder
+(`auto-merge-to-turn-off.json`) and turns auto-merge off at the next poll tick; a failure is
+retried with a growing wait, also after a restart, until it works or GitHub says it is already
+off, and the first failure is announced as an `autofix.event` with status `failed`. No agent
+tool, hook, plugin, mod, webview frame, CLI command, project file, phone token or comment text can
+turn it on.
 
 ### Events
 
@@ -1275,8 +1323,10 @@ push = "ask"                        # ask | auto: ask queues an approval before 
 comment = "auto"                    # replies and issue comments
 ```
 
-- **Never** force-pushes, merges, closes, or approves; those stay with people. Pushes go to the
-  pull request's own branch only, never to protected branches.
+- **Never** force-pushes, closes or approves, and requests GitHub auto-merge only on the user's
+  switch, turned on in the desktop app; it never calls a merge endpoint, and merging otherwise
+  stays with people. Pushes go to the pull request's own branch only, never to protected
+  branches.
 - Every push and comment is attributed (commit trailer and a comment footer) and recorded in the
   session journal.
 - With `push = "ask"`, the fix waits as an approval request in the desktop and phone apps.

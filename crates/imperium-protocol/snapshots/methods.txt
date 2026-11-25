@@ -87,7 +87,9 @@ method plugins.uninstall
 method plugins.update
 method projects.list
 method projects.message
+method pull_requests.auto_merge_challenge
 method pull_requests.bind
+method pull_requests.set_auto_merge
 method pull_requests.status
 method pull_requests.unbind
 method runtime.install
