@@ -44,7 +44,7 @@ pub(crate) struct LoopFlags {
 }
 
 /// The flags and what they do, for error messages.
-const FLAG_NAMES: [&str; 10] = [
+const FLAG_NAMES: [&str; 11] = [
     "max_steps",
     "effort",
     "auto_compact",
