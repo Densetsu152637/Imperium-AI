@@ -216,7 +216,7 @@ impl DaemonState {
             return;
         };
         change(&mut meta);
-        if let Err(error) = std::fs::write(&path, serde_json::Value::Object(meta).to_string()) {
+        if let Err(error) = write_meta(&path, &serde_json::Value::Object(meta).to_string()) {
             tracing::warn!(path = %path.display(), %error, "could not record the session");
         }
     }
@@ -507,7 +507,7 @@ impl DaemonState {
             let mut meta: serde_json::Value =
                 serde_json::from_str(&text).map_err(std::io::Error::other)?;
             meta["pinned"] = serde_json::Value::Bool(pinned);
-            std::fs::write(&path, meta.to_string())?;
+            write_meta(&path, &meta.to_string())?;
         }
         self.placements
             .lock()
@@ -660,7 +660,7 @@ impl DaemonState {
             // The pull request belongs to the session it was bound to.
             fields.remove("pull_request");
         }
-        std::fs::write(self.meta_path(&new_id), meta.to_string())
+        write_meta(&self.meta_path(&new_id), &meta.to_string())
             .map_err(|error| error.to_string())?;
         if let Err(error) = self.resume_from_meta(&new_id, &meta, &new_journal, false) {
             let _ = std::fs::remove_file(self.meta_path(&new_id));

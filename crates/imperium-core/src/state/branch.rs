@@ -17,7 +17,7 @@ use imperium_protocol::session::{AgentEvent, ROOT_AGENT, SessionEvent};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::DaemonState;
+use super::{DaemonState, write_meta};
 use crate::checkpoints;
 use crate::safe_git;
 
@@ -201,7 +201,7 @@ impl DaemonState {
                 fields.insert("worktrees".into(), Value::Array(Vec::new()));
             }
         }
-        if let Err(error) = std::fs::write(self.meta_path(&new_id), meta.to_string()) {
+        if let Err(error) = write_meta(&self.meta_path(&new_id), &meta.to_string()) {
             cleanup(self);
             return Err(error.to_string());
         }

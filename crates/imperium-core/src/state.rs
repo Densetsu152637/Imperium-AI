@@ -47,6 +47,26 @@ use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
 use crate::suggestions::{SuggestTool, Suggestions};
 
+/// Writes a session's `.meta.json` so a reader never sees it half written: the text goes to a
+/// sibling file first and replaces the record in one rename. A plain `fs::write` truncates the
+/// record before filling it, and a branch, fork or restart reading it in that window finds it
+/// empty and reports the session as not recorded.
+fn write_meta(path: &Path, text: &str) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let staged = path.with_file_name(name);
+    let written = std::fs::write(&staged, text).and_then(|()| std::fs::rename(&staged, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    written
+}
+
 mod agent_config;
 mod archive;
 mod branch;
@@ -1697,5 +1717,38 @@ mod attended_tests {
             initiative_agent: Some("agent".into()),
             ..SessionOptions::default()
         }));
+    }
+}
+
+#[cfg(test)]
+mod write_meta_tests {
+    use super::write_meta;
+
+    #[test]
+    fn a_reader_never_sees_a_record_half_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.meta.json");
+        let body = |n: usize| serde_json::json!({"title": "x".repeat(n), "n": n}).to_string();
+        write_meta(&path, &body(10)).unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let mut reads = 0_u32;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    serde_json::from_str::<serde_json::Value>(&text)
+                        .unwrap_or_else(|error| panic!("torn record ({error}): {text:?}"));
+                    reads += 1;
+                }
+                reads
+            });
+            for round in 0..300 {
+                write_meta(&path, &body(if round % 2 == 0 { 200_000 } else { 10 })).unwrap();
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert!(reader.join().unwrap() > 0);
+        });
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(left.len(), 1, "no staged file is left behind");
     }
 }
