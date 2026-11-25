@@ -562,7 +562,7 @@ impl Agent {
                     close,
                 )
                 .unwrap_or(output);
-                let output = self.guard_input(output, window);
+                let output = self.guard_result(call, output, window);
                 // Only a call that worked counts as opening the directory: not one that was
                 // denied, refused by a hook, or failed.
                 // The arguments the call ran with: a hook may have rewritten them.

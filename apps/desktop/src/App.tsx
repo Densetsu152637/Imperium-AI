@@ -382,7 +382,7 @@ export function App() {
           const shown = isDetached ? null : failureNotice(notification.params as AutofixEventParams, failureMemory.current, Date.now());
           if (shown) {
             setFailureToasts((all) => [...all.slice(-3), shown.toast]);
-            void notify(shown.notice, settingsRef.current);
+            if (shown.notice) void notify(shown.notice, settingsRef.current);
           }
           return;
         }

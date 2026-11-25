@@ -659,6 +659,13 @@ pub struct HarnessSettings {
     /// schema on every call (docs/plans/reactive-tools.md). `auto` is on for an agent whose
     /// own model runs on this machine. It stays `off` by default.
     pub tool_loading: HarnessMode,
+    /// Save a tool result too large for the conversation to a file in the session's results
+    /// folder and show the agent a preview and the path (docs/03-agent-engine.md#large-tool-results).
+    pub result_spill: bool,
+    /// The fewest characters of a tool result the conversation keeps whole before it is saved:
+    /// the threshold is a sixteenth of the agent's context window in tokens (four characters
+    /// each), never below this.
+    pub result_spill_min_chars: u32,
     /// Think at `low` effort on a call that follows a tool result that worked, and at the
     /// session's effort on a turn's first call and after a failure (docs/04-models-and-routing.md#per-call-effort).
     /// Off by default: every call then carries the session's effort.
@@ -691,6 +698,8 @@ impl Default for HarnessSettings {
             clarify: HarnessMode::Auto,
             clarify_below: 0.7,
             tool_loading: HarnessMode::Off,
+            result_spill: true,
+            result_spill_min_chars: 4000,
             adaptive_effort: false,
             clear_stale_results: true,
             clear_after_turns: 2,
@@ -1869,7 +1878,7 @@ pub struct RuntimeSettings {
     pub vllm: VllmSettings,
 }
 
-/// vLLM serves Hugging Face model folders (Linux, WSL2, or a remote host).
+/// vLLM serves Hugging Face model folders (Linux, WSL2 including from Windows, or a remote host).
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct VllmSettings {
@@ -1885,6 +1894,9 @@ pub struct VllmSettings {
     pub version: String,
     /// The Docker image `imperium runtime vllm setup --docker` pulls; empty is the pinned one.
     pub docker_image: String,
+    /// The WSL2 distribution vLLM runs in on Windows (`imperium runtime vllm setup --wsl`);
+    /// empty is WSL's default distribution.
+    pub wsl_distro: String,
 }
 
 impl Default for VllmSettings {
@@ -1895,6 +1907,7 @@ impl Default for VllmSettings {
             extra_args: Vec::new(),
             version: String::new(),
             docker_image: String::new(),
+            wsl_distro: String::new(),
         }
     }
 }

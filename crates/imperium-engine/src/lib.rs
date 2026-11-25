@@ -30,6 +30,7 @@ mod replay;
 mod review;
 mod sampling_summary;
 mod session;
+mod spill;
 mod status;
 mod title;
 mod tool_edits;
@@ -57,6 +58,7 @@ pub use session::{
     BridgeError, Session, SessionClosed, SessionConfig, SessionMemory, SessionOptions,
     new_session_id,
 };
+pub use spill::{SAVED_TO, SPILL_MARKER, results_dir};
 pub use status::next_attempt;
 pub use title::task_title;
 pub use tool_edits::ToolWatch;
