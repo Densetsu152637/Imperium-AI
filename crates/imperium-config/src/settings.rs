@@ -666,6 +666,10 @@ pub struct HarnessSettings {
     /// the threshold is a sixteenth of the agent's context window in tokens (four characters
     /// each), never below this.
     pub result_spill_min_chars: u32,
+    /// Think at `low` effort on a call that follows a tool result that worked, and at the
+    /// session's effort on a turn's first call and after a failure (docs/04-models-and-routing.md#per-call-effort).
+    /// Off by default: every call then carries the session's effort.
+    pub adaptive_effort: bool,
     /// When a conversation reaches `context.auto_compact_at`, first replace the results of
     /// repeatable read-only tool calls (file reads, searches, fetches) from older turns with a
     /// short stub, and skip the summary when that frees enough room. Nothing changes below the
@@ -692,6 +696,7 @@ impl Default for HarnessSettings {
             tool_loading: HarnessMode::Off,
             result_spill: true,
             result_spill_min_chars: 4000,
+            adaptive_effort: false,
             clear_stale_results: true,
             clear_after_turns: 2,
         }

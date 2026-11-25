@@ -613,6 +613,7 @@ protocol minor at its merge** and updates `PROTOCOL_VERSION`, the version line i
 | `plugins.marketplace_remove` | 2 | `{name}`; the built-in one is turned off, not freed |
 | `plugins.browse` | 2 | `{marketplace?, query?}` → `PluginListing[]` |
 | `plugins.inspect` | 3a-ii | `{id, revision?}` → `PluginPreview` (trust prompt contents, `sha256`, run summary, installed comparison) |
+| `plugins.inspect_folder` | follow-up (item 60) | `{name}` (an installed folder's own name) → `PluginPreview` read from that folder, with the gate's `sha256` and run digest; not a paired phone |
 | `plugins.install` | 3a-ii | `{id, sha256, environment?}` → `{name, path, withheld, reason, notes}`; never approves |
 | `plugins.uninstall` | 3b | `{name, delete_secrets}` |
 | `plugins.list` | 3b | `{environment?}` → plugins under `<config>/plugins` with id, origin, source, commit, approval kind (`counted`, `dialog-only`, `carried-over`, `dev`), `withheld` and its reason, effective on/off and what decided it, required and missing secrets |
@@ -1341,8 +1342,9 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   bidirectional characters out; the plugin's own description is not shown; the webview passes
   `name`, `action` and `environment` and nothing else, and gets `{approved, kind, reason,
   cancelled, installed}`; *approve* and *update* resolve a plain name through `plugins.list` to the
-  plugin's `name@marketplace`, and a plugin with no marketplace id (pre-existing, user) is
-  refused because `plugins.inspect` cannot preview it; *approve* requires the installed copy to
+  plugin's `name@marketplace`, and a plugin with no marketplace id (pre-existing, user) was
+  refused because `plugins.inspect` cannot preview it (item 60 lifts this: such a folder is previewed by
+  `plugins.inspect_folder` and takes the *approve* action only); *approve* requires the installed copy to
   equal the marketplace's current content. **`SetDefaultDllDirectories`** (user decision): no safe wrapper exists in the lock, so the one
   `unsafe` call lives in `imperium-ipc`'s allowed Windows module (`windows/dll.rs`, with a SAFETY comment) as
   `harden_dll_search() -> io::Result<()>` using `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`; the app calls it first in
@@ -1572,9 +1574,9 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
 - Handoff notes: the by-hand check on a signed macOS release candidate is replaced by an automated Linux scenario
   (`scripts/ci/presence-e2e/drive.py`, "Plugins window: install, approve, enable, update, uninstall, undo", doc 11):
   it drives the window through tauri-driver and polkit and checks each step through `imperium plugin list`; the
-  macOS presence prompt itself stays unverified (item 59). A folder that did not come from a marketplace still cannot be approved
-  from the window (the daemon has no preview for a folder; owned by [item 60](../12-roadmap.md#next-in-order), not
-  stage 11, whose scope is `install_extension`, docs and close-out); a real `update_available` flag would still replace
+  macOS presence prompt itself stays unverified (item 59). A folder that did not come from a marketplace could not be approved
+  from the window (the daemon had no preview for a folder); [item 60](../12-roadmap.md#next-in-order) added it (see
+  "Follow-up: item 60" below), outside stage 11, whose scope is `install_extension`, docs and close-out; a real `update_available` flag would still replace
   stage 9's proxy.
 
 ## Stage 11: Agents, docs and close-out
@@ -1642,9 +1644,37 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   98 are `git-subdir` (url, `path`, `ref`, `sha`), listed unsupported; 1 is `command`
   (`xcode`, `xcrun agent plugin path ...`, `mode: link`), which must stay unsupported (it runs
   a command at install). Supporting `git-subdir` is the one that matters: about a third of the
-  official marketplace. Also still open: roadmap item 60 (approving a folder that did not come
-  from a marketplace), item 59 (Windows), gating `extensions.plugin_dirs`, and the macOS
+  official marketplace. Also still open: item 59 (Windows), gating `extensions.plugin_dirs`, and the macOS
   presence prompt, which is verified only as far as the headless runner shows.
+
+## Follow-up: item 60, approving a folder that did not come from a marketplace (done)
+
+- Status: done (protocol 0.62).
+- Objective: the Plugins window can approve a withheld plugin folder that has no marketplace id (a
+  pre-existing or unrecorded one), listing exactly what it would run.
+- Outcome: `plugins.inspect_folder {name}` (`plugin_install::inspect_folder`) answers the same
+  `PluginPreview` from the installed folder, with the hash and run digest of
+  `plugin_records::content`, the function the load-time gate and `record_approval` use, so the
+  challenge binds what the gate will compare and a changed file voids the approval as for a
+  marketplace plugin. `name` is exactly the name of one entry of `<config>/plugins`: a path, a
+  separator, `..`, a drive or stream marker, a reserved device name, a trailing dot or space, another
+  letter case, a plugin name or an id is refused, and so is a link, or a folder that resolves outside
+  `<config>/plugins`. A paired phone's scopes and the mod frame's request table do not list it
+  (tests). The app's `plugin_approve` resolves a name through `plugins.list`: a plugin with an id is
+  previewed from its marketplace as before; one without is previewed by its folder name and takes only
+  the `approve` action (an install or update names a marketplace plugin). The trust view shows the
+  folder's path as the source and says the approval holds only while its files stay as they are, apart from the two things the content hash leaves
+  out (the folder's top-level `.git` and `.imperium-source.json`); a hook or server that runs a path under `.git` is
+  flagged in `notes`. Review fixes: the challenge and the approval resolve a name that is exactly an entry of
+  `<config>/plugins` to that entry only (not trimmed or case-folded, never a link), so a look-alike folder cannot take the
+  record; names with `@` or white space at either end are refused; the folder is checked again after hashing and a link
+  root is refused by `content`; files are opened without following a link; and the app refuses a name that fits more than
+  one installed plugin.
+- Tests: the preview equals the gate's hash and digest; unknown, traversal, absolute, separator,
+  device and cased names are refused; a link out of the plugins folder is refused (where the OS lets a
+  test make one); an approval through the challenge of an unrecorded folder makes the gate load it;
+  a change after the challenge, or after the approval, voids it; a phone is refused; the mod frame names no
+  plugin method; the trust view's logic (`approvalSource`, `offersApprove`, `loadFolderTrust`).
 
 ## Risks across stages
 

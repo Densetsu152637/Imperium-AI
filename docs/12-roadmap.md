@@ -694,7 +694,7 @@ and `environments.agent_update` (protocol 0.28)
     live run installs and approves a plugin of the real official marketplace
     ([11](11-ci-cd.md#live-official-marketplace-presence-liveyml)). Follow-ups: the marketplace's
     `git-subdir` sources (about a third of the official entries) are listed but not installable,
-    item 60, and item 59. The threat model, security model and its remaining gaps, storage,
+    item 59 (Windows). The threat model, security model and its remaining gaps, storage,
     protocol and fifteen stages are in the
     [plugin marketplace plan](plans/plugin-marketplace.md).
 <!-- markdownlint-disable-next-line MD029 -->
@@ -760,7 +760,13 @@ and `environments.agent_update` (protocol 0.28)
     ([plan](plans/pr-card.md), [14](14-projects-and-automation.md#github-auto-fix)).
 <!-- markdownlint-disable-next-line MD029 -->
 55. **Terminal and file panes** (planned). Claude's desktop app shows a terminal and a file
-    viewer beside the conversation; Imperium gets the same two panes. No plan yet.
+    viewer beside the conversation; Imperium gets the same two panes: a Terminal panel whose
+    shells run in the session's working folder, owned by the daemon and usable only from the
+    desktop app (agents, mods, pages and a paired phone cannot open, read or type into one), and
+    a read-only Files panel confined to the session's folders, opened at a line from links in the
+    transcript and from the Review panel. Editing in that panel is [item 66](#next-in-order).
+    Every check runs in CI, including browser checks against a fake daemon
+    ([plan](plans/terminal-file-panes.md)).
 <!-- markdownlint-disable-next-line MD029 -->
 57. **Per-environment worktree folder** (implemented). An environment can set its own git worktrees
     root folder. Sessions in that environment create and discover their worktrees there instead
@@ -799,14 +805,17 @@ and `environments.agent_update` (protocol 0.28)
     with hooks or MCP servers on Windows ([item 51](#next-in-order)); carried-over approvals and
     plugins without code keep working.
 <!-- markdownlint-disable-next-line MD029 -->
-60. **Approve a folder that did not come from a marketplace** (planned). The
+60. **Approve a folder that did not come from a marketplace** (implemented, protocol 0.62). The
     [plugin marketplace](plans/plugin-marketplace.md)'s Plugins window cannot approve a withheld
     plugin folder that has no marketplace id (a pre-existing or unrecorded one), because
     `plugins.inspect` previews only `name@marketplace`. Add a daemon method, `plugins.inspect_folder`
     (the folder's name; the same `PluginPreview` of what it runs, its content hash and run digest,
     read from the installed folder), so the trust view can list exactly what the folder would run
     and the app's `plugin_approve` can take an `approve` action for it (the challenge binds that
-    hash and digest as for any plugin). It is a protocol change, so it follows stage 11.
+    hash and digest as for any plugin). It is a protocol change, so it follows stage 11. The
+    method takes exactly the name of one installed folder (no path, separator, `..`, device name
+    or link), reads the folder with the gate's own hash and digest, and a paired phone and a mod
+    frame cannot call it ([06](06-extensibility.md#plugin-marketplaces)).
 <!-- markdownlint-disable-next-line MD029 -->
 61. **Reactive tool loading and the knowledge-source rule** (planned). Agents whose model runs on
     this machine are offered a fixed core of file and command tools plus `tool_search` (which
@@ -897,6 +906,22 @@ and `environments.agent_update` (protocol 0.28)
     filtering and compute questions, where a local 4B model now computes in its head or reads rows
     one by one, and where computing needs no shell approval
     ([plan](plans/code-mode.md); Imperium-Research R2.8).
+<!-- markdownlint-disable-next-line MD029 -->
+66. **Built-in text editor with Markdown presentation** (planned). The Files panel of
+    [item 55](#next-in-order) grows from a viewer into an editor for the person using the app.
+    It uses CodeMirror 6 with syntax highlighting, find and replace, multiple tabs and markers
+    for unsaved changes. Saves go through a new daemon method (`files.write`, or similar) with
+    the same root confinement and link-free opening as item 55's reads, so it writes only inside
+    the session's roots. It is the user's editor: agents cannot drive it and no agent tool is
+    added. If an agent changes a file that is open in the editor, the editor shows the change
+    and asks before overwriting, and saves compare file identity and content hash so neither
+    side's edit is lost. Markdown files get a live rendered preview beside the source, and a
+    presentation mode that shows a file as slides, split on `---` or headings, full screen in
+    the app. Rendering is sanitised: no raw HTML or script execution, remote images load only
+    after asking, and links open only after confirmation, consistent with item 55's link rules.
+    It builds on item 55, so it comes after it. Writes are refused to the safety-floor paths,
+    the daemon's data folder and harness folders. A paired phone gets no editor, and mods cannot
+    wrap or drive it, the same as item 55's panels. No plan yet.
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based

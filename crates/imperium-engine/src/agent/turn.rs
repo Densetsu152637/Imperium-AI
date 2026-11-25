@@ -336,7 +336,7 @@ impl Agent {
                     tools: shown_tools.as_deref().unwrap_or(&tools),
                     slot: lease.as_ref().and_then(|lease| lease.slot),
                     max_tokens: lease.as_ref().and_then(|lease| lease.max_tokens),
-                    effort: self.request_effort(),
+                    effort: self.call_effort(),
                 };
                 let capped = request.max_tokens.is_some();
                 let started = Instant::now();
@@ -432,6 +432,23 @@ impl Agent {
             // anything is stored.
             self.engine_calls(&mut completion.tool_calls);
             let usage = completion.usage.unwrap_or_default();
+            // A local model's call that the server left in the text becomes a call.
+            let offered: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+            if self.model.local
+                && !self.single_call
+                && completion.tool_calls.is_empty()
+                && let Some((calls, text)) = call_repair::from_content(&completion.text, &offered)
+            {
+                completion.tool_calls = calls;
+                completion.text = text;
+            }
+            // Arguments are repaired before the call is stored, so the history keeps the
+            // repaired form (for hosted models as well).
+            completion.tool_calls = completion
+                .tool_calls
+                .into_iter()
+                .map(call_repair::vet)
+                .collect();
             // The pool admits calls by the estimate: a prompt above it overcommits the pool.
             if self.model.local && usage.prompt_tokens > u64::from(estimate) {
                 tracing::warn!(
@@ -526,9 +543,17 @@ impl Agent {
                 .iter()
                 .any(|call| effective_call(call).function.name == ACTIVATE_PLUGIN);
             let mut touched: Vec<PathBuf> = Vec::new();
+            // With loading on, other tools are reached through `call_tool`: no names to point at.
+            let close: &[String] = if self.reactive() { &[] } else { &offered };
             for call in completion.tool_calls {
                 self.last_tool_ok.store(false, Ordering::SeqCst);
                 let output = self.run_tool(&call).await;
+                let output = call_repair::with_close_names(
+                    &output,
+                    &effective_call(&call).function.name,
+                    close,
+                )
+                .unwrap_or(output);
                 let output = self.guard_result(&call, output, window);
                 // Only a call that worked counts as opening the directory: not one that was
                 // denied, refused by a hook, or failed.

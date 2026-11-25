@@ -3,7 +3,7 @@
 // `plugin_approve` command, the only way the webview asks for an approval. Every string comes from a
 // plugin or its marketplace, so each passes through `plain`.
 
-import type { PluginHookRun, PluginPreview, PluginServerRun } from "@imperium/protocol";
+import type { InstalledPlugin, PluginHookRun, PluginPreview, PluginServerRun } from "@imperium/protocol";
 import { plain, type Api } from "./model.ts";
 
 export type ApproveAction = "install" | "update" | "approve";
@@ -78,6 +78,26 @@ export async function loadTrust(api: Pick<Api, "inspect">, action: ApproveAction
     }
   }
   return { preview, diff: diffRuns(before, preview) };
+}
+
+/** The folder's own name: the last part of the path `plugins.list` gives. */
+export const folderName = (folder: string): string => folder.split(/[\\/]+/).filter(Boolean).pop() ?? "";
+
+/**
+ * What the trust view opens for an installed plugin's Approve: a marketplace plugin by its id, and a
+ * folder that did not come from a marketplace (a pre-existing or unrecorded one) by its folder name,
+ * which the daemon previews from the folder itself (`plugins.inspect_folder`).
+ */
+export const approvalSource = (plugin: Pick<InstalledPlugin, "id" | "folder">): { name: string; folder: boolean } =>
+  plugin.id ? { name: plugin.id, folder: false } : { name: folderName(plugin.folder), folder: true };
+
+/** Whether a row offers Approve: the gate withholds it for code it runs, and this platform can approve. */
+export const offersApprove = (plugin: Pick<InstalledPlugin, "withheld" | "hooks" | "servers">, platformBlock: string | null): boolean =>
+  plugin.withheld && (plugin.hooks > 0 || plugin.servers.length > 0) && !platformBlock;
+
+/** Reads what the trust view shows for a folder that did not come from a marketplace: what it would run now, and no comparison. */
+export async function loadFolderTrust(api: Pick<Api, "inspectFolder">, folder: string): Promise<TrustData> {
+  return { preview: await api.inspectFolder(folder), diff: null };
 }
 
 /** Whether an update would change anything: the content equals what is installed. */
