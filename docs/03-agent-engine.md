@@ -78,7 +78,10 @@ rules under *Response style*, so Emperor is trained on what the engine asks for:
 - Headings, lists or tables only when the content has that shape; plain sentences otherwise;
   avoid emojis.
 - For facts that can change, search (`web_search`, `search_sessions`, memory, `list_models`)
-  instead of relying on training.
+  instead of relying on training. Settled real-world facts, arithmetic and logic may come from
+  what the model already knows; facts about the project, its files and its environment must
+  come from the tools (the base prompts of every model carry this, roadmap item 61 stage 1).
+  It changes the stock prompt hash, so eval results recorded before it do not compare directly.
 - Check results before reporting, and say plainly what was not verified.
 
 A subagent's prompt asks for the same in its report to the delegator: the result first, then

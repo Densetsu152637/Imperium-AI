@@ -832,7 +832,7 @@ mod single_call_tests {
 
 #[cfg(test)]
 mod prompt_tests {
-    use super::{PROVERB, RESPONSE_STYLE, root_prompt, subagent_prompt};
+    use super::{KNOWLEDGE_SOURCE, PROVERB, RESPONSE_STYLE, root_prompt, subagent_prompt};
 
     /// The rules of roadmap item 19 stay in the root prompt: change them on purpose, here too.
     #[test]
@@ -890,6 +890,27 @@ mod prompt_tests {
         // The rest of the prompt is the same either way.
         assert!(on.starts_with(&off));
         assert!(!off.contains("  ") && !on.contains("  "));
+    }
+
+    #[test]
+    fn the_prompts_carry_the_knowledge_source_rule() {
+        assert!(!KNOWLEDGE_SOURCE.contains("knowledge"));
+        assert!(KNOWLEDGE_SOURCE.starts_with("Settled real-world facts, arithmetic"));
+        for prompt in [
+            root_prompt("/work", false),
+            root_prompt("/work", true),
+            subagent_prompt("/work"),
+        ] {
+            assert_eq!(prompt.matches(KNOWLEDGE_SOURCE).count(), 1);
+            assert!(!prompt.contains("  "));
+        }
+        // It follows each prompt's look-up sentence.
+        let root = root_prompt("/work", false);
+        let look_up = root.find("you learned in training.").unwrap();
+        assert!(root.find(KNOWLEDGE_SOURCE).unwrap() > look_up);
+        let subagent = subagent_prompt("/work");
+        let look_up = subagent.find("you learned in training.").unwrap();
+        assert!(subagent.find(KNOWLEDGE_SOURCE).unwrap() > look_up);
     }
 
     #[test]

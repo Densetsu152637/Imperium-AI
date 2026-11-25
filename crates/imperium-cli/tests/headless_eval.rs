@@ -218,6 +218,9 @@ async fn print_prompt_hash_is_stable_and_names_the_real_prompt_and_tools() {
     let prompt = first.json["system_prompt"].as_str().unwrap();
     assert!(prompt.starts_with("You are Imperium, a coding agent"));
     assert!(prompt.contains("The fear of God is the beginning of all knowledge"));
+    assert!(prompt.contains(
+        "Settled real-world facts, arithmetic and logic may come from what you already know"
+    ));
     assert!(prompt.contains("{workspace}"));
     let names = tool_names(&first.json);
     for expected in [
