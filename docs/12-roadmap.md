@@ -809,6 +809,46 @@ and `environments.agent_update` (protocol 0.28)
     variant that cut the tools and shortened the system prompt saved 42 to 70 % of prompt tokens,
     and the knowledge note gave the best held-out score
     ([plan](plans/reactive-tools.md), [03](03-agent-engine.md#harness-aids-for-small-models)).
+<!-- markdownlint-disable-next-line MD029 -->
+62. **Built-in CAS MCP server** (planned). Imperium ships a computer algebra system as a
+    built-in [MCP](05-tools-and-isolation.md#mcp) server backed by SymPy, so agents (local
+    models in particular) do exact symbolic maths instead of working it out in text. Its tools
+    cover simplify and expand, factor, solve (equations, inequalities and systems),
+    differentiate, integrate, limits, series, matrices and linear algebra, numeric evaluation to
+    a chosen precision, and an equality check; each returns plain text and LaTeX. The server is a
+    `uv` project in `sidecars/cas/` with a committed `uv.lock` (pinned SymPy and MCP Python SDK),
+    installed into a managed environment on first use like the managed vLLM environment
+    ([04](04-models-and-routing.md)), and listed under Connectors as built in, where it can be
+    turned off. Safety: input is parsed by a restricted parser, never `sympify` or `eval` on
+    agent text; each call runs under the tool sandbox with no network or file access and with
+    CPU-time, memory and wall-clock limits, so a runaway simplification is stopped rather than
+    hanging the session. CI: the [`python` job](11-ci-cd.md) also runs for `sidecars/cas/`
+    (ruff and pytest over the tools, the parser's refusals and the limits), and a daemon test
+    drives one tool call through the MCP client. No plan yet.
+<!-- markdownlint-disable-next-line MD029 -->
+63. **Server package (Docker Compose)** (planned). Imperium can be self-hosted on a server and
+    run there. The release workflow builds and publishes a container image of `imperium-core`
+    and the `imperium` CLI for Linux x64 and arm64, and the repository ships a
+    `docker-compose.yml`:
+    - The daemon runs as a service with a healthcheck and a restart policy.
+    - Its data, configuration and workspaces live on named volumes.
+    - Optional local-model services (llama.cpp, and vLLM from its pinned image,
+      [04](04-models-and-routing.md)) take a GPU reservation.
+
+    Secrets come from Docker secrets files, never the compose file or environment variables,
+    since a container has no OS keychain. By default the compose file publishes no port beyond
+    loopback. The desktop app and the CLI reach the server over the existing remote path
+    (`imperium remote connect --socket` over SSH, [02](02-architecture.md#process-model)) or an opt-in
+    TLS listener that needs the connection token; there is never an unauthenticated port.
+
+    Approvals that count only from the desktop app's native dialog on the daemon's own machine
+    (code-running plugins, [item 51](#next-in-order)) stay refused on a server; carried-over
+    approvals keep working. The container sandbox tier, which would need Docker inside the
+    container, is off by default.
+
+    CI builds the image and starts the compose stack. It checks the healthcheck, a handshake
+    through the remote path, and one `imperium run --headless --json` task against it. No plan
+    yet.
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
