@@ -796,6 +796,11 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   enabled turns auto-merge off first and fails, keeping the binding, if that fails; deleting,
   archiving or moving a session off such a pull request turns it off best effort; a push for a
   bound branch is refused when GitHub is unavailable.
+- Round 3 (hardening): an unbind clears the confirmed head only if it still holds the head read
+  before the turn-off; a turn-off that deleting, archiving or rebinding could not do is saved in
+  `auto-merge-to-turn-off.json`, retried at each tick and at start, and announced once as an
+  `autofix.event` `failed`; the docs state that auto-merge turned off and back on at GitHub at a
+  new head is turned off again.
 - Handoff notes: the docs say plainly that auto-merge lands code unseen. A repository whose
   `allow_*` flags are missing (a token without push access) reads as "cannot be enabled here" with
   that reason, never as every method off.

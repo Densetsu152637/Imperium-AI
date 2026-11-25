@@ -53,6 +53,7 @@ fn home() -> EnvironmentInfo {
         permissions: Default::default(),
         // There are no repositories to open.
         project_worktrees: false,
+        worktree_dir: None,
         builtin: true,
         plugins: Default::default(),
     }
@@ -256,6 +257,11 @@ impl Environments {
     ) -> Result<EnvironmentInfo, EnvironmentError> {
         let name = valid_name(&params.name)?;
         let runtime = valid_runtime(params.runtime.unwrap_or_default())?;
+        let worktree_dir = params
+            .worktree_dir
+            .clone()
+            .map(valid_worktree_dir)
+            .transpose()?;
         let permissions = params
             .permissions
             .as_ref()
@@ -288,6 +294,7 @@ impl Environments {
             pinned: false,
             permissions,
             project_worktrees: params.project_worktrees.unwrap_or(true),
+            worktree_dir: worktree_dir.filter(|dir| !dir.is_empty()),
             builtin: false,
             plugins: Default::default(),
         };
@@ -309,6 +316,7 @@ impl Environments {
         params: EnvironmentUpdateParams,
     ) -> Result<EnvironmentInfo, EnvironmentError> {
         let requested = params.name.clone();
+        let worktree_dir = params.worktree_dir.map(valid_worktree_dir).transpose()?;
         let runtime = params.runtime.map(valid_runtime).transpose()?;
         let permissions = params
             .permissions
@@ -359,6 +367,9 @@ impl Environments {
             }
             if let Some(on) = params.project_worktrees {
                 env.project_worktrees = on;
+            }
+            if let Some(dir) = worktree_dir {
+                env.worktree_dir = (!dir.is_empty()).then_some(dir);
             }
             Ok(())
         })
@@ -794,6 +805,17 @@ fn save(path: &Path, list: &[EnvironmentInfo]) -> std::io::Result<()> {
         .map_err(std::io::Error::other)?;
     let temporary = path.with_extension("json.tmp");
     imperium_api::fs::replace_file(path, &temporary, text)
+}
+
+/// An environment's worktree folder, trimmed: empty (which clears it) or an absolute path.
+fn valid_worktree_dir(dir: String) -> Result<String, EnvironmentError> {
+    let dir = dir.trim();
+    if !dir.is_empty() && !Path::new(dir).is_absolute() {
+        return Err(EnvironmentError::Invalid(format!(
+            "the worktree folder {dir:?} must be an absolute path"
+        )));
+    }
+    Ok(dir.to_string())
 }
 
 /// A runtime with its fields trimmed and checked: names that are empty, contain spaces, or

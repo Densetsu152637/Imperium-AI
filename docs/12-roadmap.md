@@ -400,7 +400,7 @@ and `environments.agent_update` (protocol 0.28)
     `session.run_tool`, `session.tool_result`): `imperium mcp-serve --tools` exposes Imperium's
     own tools (`read_file`, `list_dir`, `glob`, `grep`, `memory_search`, `memory_read`,
     `web_search`, `web_fetch`, and with `--allow-write` also `write_file`, `edit_file`,
-    `run_command`, `command_output`, `command_stop`, `memory_remember`) as `imperium_<tool>` MCP
+    `run_command`, `command_output`, `command_stop`, `memory_remember`, `memory_edit`, `memory_forget`) as `imperium_<tool>` MCP
     tools. Every call runs inside an Imperium session, through the checks a model's own call
     goes through (permission rules, safety floor, agent profile and local-files-only lock,
     sandbox, hooks, journal), with no model call and so no budget spent; the session is
@@ -762,7 +762,7 @@ and `environments.agent_update` (protocol 0.28)
 55. **Terminal and file panes** (planned). Claude's desktop app shows a terminal and a file
     viewer beside the conversation; Imperium gets the same two panes. No plan yet.
 <!-- markdownlint-disable-next-line MD029 -->
-57. **Per-environment worktree folder** (planned). An environment can set its own git worktrees
+57. **Per-environment worktree folder** (implemented). An environment can set its own git worktrees
     root folder. Sessions in that environment create and discover their worktrees there instead
     of in the global worktrees folder (`sessions.worktree_dir`, Settings → Sessions;
     [worktrees](14-projects-and-automation.md#worktrees),
@@ -883,6 +883,20 @@ and `environments.agent_update` (protocol 0.28)
     [item 58](#next-in-order), so it comes after item 58. The workflow, the rejection counting
     and the handover are app work; training and building Consul and Emperor themselves are
     research work. No plan yet.
+<!-- markdownlint-disable-next-line MD029 -->
+65. **Programmatic tool calling (code mode)** (planned). An agent can write a short Python program
+    (`run_script`) in which each of its tools is a function. The program runs in Monty, a
+    Python-subset interpreter written in Rust, in a confined worker process shipped with the app.
+    It has no files, network, environment or processes of its own. Every tool call it makes goes
+    through the agent's normal dispatch: refusals, hooks, approvals, permission and plan modes, and
+    events, shown nested under the program in the transcript. Intermediate results stay in the
+    program; only its printed output (bounded) and a one-line summary of its calls enter the
+    context. Tools that delegate, ask people or change the agent's own conversation are refused
+    inside programs. It ships off (`harness.code_mode`), then becomes `auto` (local models) once
+    the guided-harness pilot's suites show it keeps accuracy and cuts calls and tokens on counting,
+    filtering and compute questions, where a local 4B model now computes in its head or reads rows
+    one by one, and where computing needs no shell approval
+    ([plan](plans/code-mode.md); Imperium-Research R2.8).
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based

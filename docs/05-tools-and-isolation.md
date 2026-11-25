@@ -764,7 +764,7 @@ In every mode, deny rules refuse first and ask rules ask, every time. "Ask, ever
 allow rules and *Always this session* approvals are ignored (tools an unattended session was
 started with pre-approved still run). Plan mode refuses without asking, whatever the rules
 allow, and tells the model to present its plan; it also refuses `start_session` (the session
-started would not be in plan mode) and `memory_remember`. Tools that never ask (searching the
+started would not be in plan mode) and `memory_remember`, `memory_edit` and `memory_forget`. Tools that never ask (searching the
 web or earlier sessions, `ask_user`, delegation) still run, and the app-config tools
 (`set_model_card`, `install_extension`, `uninstall_extension`) count as tools that ask in `ask`
 and `plan`.
@@ -994,12 +994,24 @@ change anything are that mutation and `disablePullRequestAutoMerge`.
   (that read may have been in flight before the user enabled it); a record that outlives its
   auto-merge can only cause one extra, harmless disable. Auto-merge that Imperium did not turn
   on (enabled on GitHub itself, or before this was recorded) has no confirmed head, and the
-  poll leaves it alone. A daemon that was down when someone pushed catches it at its first
-  poll. A session that cannot be watched any more turns it off too: **unbinding** the last
-  session that follows a pull request Imperium enabled turns auto-merge off first (and fails,
-  keeping the binding, when that is not possible), and **deleting or archiving** such a session
-  turns it off best effort, logged. A push by the daemon for a bound branch is refused when
-  GitHub is not available to check.
+  poll leaves it alone, with one exception that fails safe: after someone turns auto-merge off
+  on GitHub the confirmed head is kept, so if it is later turned on again on GitHub at a new
+  head, the poll turns it off. A daemon that was down when someone pushed catches it at its
+  first poll. A session that cannot be watched any more turns it off too: **unbinding** the
+  last session that follows a pull request Imperium enabled turns auto-merge off first (and
+  fails, keeping the binding, when that is not possible). The record is cleared afterwards only
+  if it still holds the head read before that turn-off, so an enable that finished meanwhile
+  (the same session, or another that bound the pull request) keeps the head it recorded.
+  **Deleting, archiving or rebinding** such a session cannot fail the action, so the pull
+  request goes on a list in the data folder (`auto-merge-to-turn-off.json`: repository, number
+  and the confirmed head) before anything is sent. The poller works through it at its next
+  tick and at daemon start, waits longer after each failure (30 s doubling to 15 min), and drops
+  an entry when the turn-off worked, when GitHub says auto-merge is already off or the pull
+  request is no longer open, or when a session follows the pull request again with a
+  confirmation of its own. The first failure in a daemon run is announced to every client as an
+  `autofix.event` with status `failed` ("auto-merge could not be turned off yet ... Imperium
+  will try again"). A push by the daemon for a bound branch is refused when GitHub is not
+  available to check.
 - **Where it is not offered**, with the reason on the card: a draft (GitHub refuses it), a
   repository that does not allow auto-merge, a repository whose merge settings the token cannot
   read (a token without push access gets no `allow_*` flags; that is "cannot be enabled here",

@@ -57,6 +57,7 @@ import {
   saveTarget,
   sectionsFor,
   type EnvironmentSectionId,
+  worktreeDirDraft,
 } from "./environmentSections";
 import { searchIcons } from "../shared/icons";
 import { EnvironmentAgents, type EnvironmentAgentsHandle } from "../panels/EnvironmentAgents";
@@ -140,6 +141,7 @@ export function EnvironmentWindow({
   const [newFolders, setNewFolders] = useState<string[]>([]);
   const [runtime, setRuntime] = useState(() => draftOf(environment?.runtime));
   const [projectWorktrees, setProjectWorktrees] = useState(environment?.project_worktrees ?? true);
+  const [worktreeDir, setWorktreeDir] = useState(environment?.worktree_dir ?? "");
   const [typedFolder, setTypedFolder] = useState("");
   const [pet, setPet] = useState(environment?.pet ?? "");
   const [installedPets, setInstalledPets] = useState<{ id: string; name: string }[]>([]);
@@ -274,6 +276,7 @@ export function EnvironmentWindow({
             folders: newFolders,
             runtime: chosen,
             project_worktrees: projectWorktrees,
+            ...(worktreeDir.trim() && !isRemote(runtime) ? { worktree_dir: worktreeDir.trim() } : {}),
             ...(pet ? { pet } : {}),
             permissions: cleaned(permissions),
           })
@@ -285,6 +288,9 @@ export function EnvironmentWindow({
             ...(runtimeChanged ? { runtime: chosen } : {}),
             ...(projectWorktrees !== (environment.project_worktrees ?? true)
               ? { project_worktrees: projectWorktrees }
+              : {}),
+            ...(worktreeDirDraft(environment.worktree_dir, worktreeDir).changed
+              ? { worktree_dir: worktreeDir.trim() }
               : {}),
             ...(pet !== (environment.pet ?? "") ? { pet } : {}),
             ...(permissionsChanged ? { permissions: cleaned(permissions) } : {}),
@@ -321,7 +327,9 @@ export function EnvironmentWindow({
     name: name !== (environment?.name ?? ""),
     icon: choice.icon !== initialChoice.icon || choice.color !== initialChoice.color,
     pet: pet !== (environment?.pet ?? ""),
-    worktrees: projectWorktrees !== (environment?.project_worktrees ?? true),
+    worktrees:
+      projectWorktrees !== (environment?.project_worktrees ?? true) ||
+      worktreeDirDraft(environment?.worktree_dir, worktreeDir).changed,
     runtime: runtimeChanged || (creating && runtime.kind !== "local"),
     folders: creating && newFolders.length > 0,
     permissions: permissionsChanged,
@@ -596,6 +604,8 @@ export function EnvironmentWindow({
             onChange={setRuntime}
             projectWorktrees={projectWorktrees}
             onProjectWorktrees={setProjectWorktrees}
+            worktreeDir={worktreeDir}
+            onWorktreeDir={setWorktreeDir}
             disabled={disabled}
             fixedLocal={builtin}
             testBlocked={creating ? "Create the environment first" : runtimeChanged ? "Save the runtime first" : null}
