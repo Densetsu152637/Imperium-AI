@@ -267,10 +267,10 @@ async fn a_low_threshold_is_clamped_and_compaction_cannot_loop() {
     let url = serve(Arc::clone(&fake), false).await;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "word ".repeat(1_500)).unwrap();
-    // 0.1 is clamped to 0.5 of the 12,000-token window (the built-in tools alone take about
-    // a third of the old 10,000-token window, so a smaller one would leave nothing worth
-    // compacting).
-    let session = start_in(&url, dir.path(), Some(0.1), None, 12_000);
+    // 0.1 is clamped to 0.5 of the 14,000-token window (the built-in tools alone take about
+    // a third of the old 10,000-token window, and the knowledge questions that are always
+    // listed add to them, so a smaller one would leave nothing worth compacting).
+    let session = start_in(&url, dir.path(), Some(0.1), None, 14_000);
 
     let events = turn(&session, "read a.txt until you are done").await;
 
