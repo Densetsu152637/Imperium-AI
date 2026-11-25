@@ -1030,8 +1030,8 @@ listed but unavailable, as before; the `problem` text says to run the command.
   it is stopped); `remove` runs `rm -rf` on the version's folder inside the distro (a distro that
   is gone is a warning, and the record is dropped), after asking.
 - **Launch.** `wsl.exe -d <distro> --exec env VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
-  <venv>/bin/vllm serve <model folder> --host 127.0.0.1 --served-model-name ... --port <port>`:
-  an argument list, no shell, the folder passed as an argument and not mounted. `env` only sets
+  VLLM_HOST_IP=127.0.0.1 <venv>/bin/vllm serve <model folder> <extras> --host 127.0.0.1
+  --port <port>`: an argument list, no shell, the folder passed as an argument and not mounted. `env` only sets
   the no-telemetry variables and `VLLM_HOST_IP`, which a Windows environment variable would
   not reach inside WSL; a program path containing `=` is refused, since `env` would read it as
   an assignment. The daemon supervises `wsl.exe`.
@@ -1066,9 +1066,10 @@ listed but unavailable, as before; the `problem` text says to run the command.
   `runtime.vllm.wsl_distro`, else the default); any other command is a Windows executable, which
   cannot run vLLM, and the models stay unavailable.
 - Docker mode, the native Linux path, and `--version` are unchanged. Tested with a fake command
-  runner and a fake `wsl.exe` script (unix-only tests; no WSL, `uv`, vLLM or GPU runs in tests); **not yet verified on
-  hardware**: the first real setup, localhost forwarding, GPU visibility in the distro, and how
-  `pkill` sees vLLM's engine processes are the things to watch.
+  runner and a fake `wsl.exe` script (unix-only tests; no WSL, `uv`, vLLM or GPU runs in
+  tests); **not yet verified on hardware**: the first real setup, localhost forwarding, GPU
+  visibility in the distro, and how `pkill` sees vLLM's engine processes are the things to
+  watch.
 
 ## Hardware awareness
 
