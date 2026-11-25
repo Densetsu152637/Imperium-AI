@@ -83,7 +83,6 @@ fn start(
                 write: MemoryWrite {
                     global: policy,
                     environment: policy,
-                    ..MemoryWrite::default()
                 },
                 ..MemorySettings::default()
             },
