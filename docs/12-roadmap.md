@@ -798,6 +798,22 @@ and `environments.agent_update` (protocol 0.28)
     read from the installed folder), so the trust view can list exactly what the folder would run
     and the app's `plugin_approve` can take an `approve` action for it (the challenge binds that
     hash and digest as for any plugin). It is a protocol change, so it follows stage 11.
+<!-- markdownlint-disable-next-line MD029 -->
+61. **Built-in CAS MCP server** (planned). Imperium ships a computer algebra system as a
+    built-in [MCP](05-tools-and-isolation.md#mcp) server backed by SymPy, so agents (local
+    models in particular) do exact symbolic maths instead of working it out in text. Its tools
+    cover simplify and expand, factor, solve (equations, inequalities and systems),
+    differentiate, integrate, limits, series, matrices and linear algebra, numeric evaluation to
+    a chosen precision, and an equality check; each returns plain text and LaTeX. The server is a
+    `uv` project in `sidecars/cas/` with a committed `uv.lock` (pinned SymPy and MCP Python SDK),
+    installed into a managed environment on first use like the managed vLLM environment
+    ([04](04-models-and-routing.md)), and listed under Connectors as built in, where it can be
+    turned off. Safety: input is parsed by a restricted parser, never `sympify` or `eval` on
+    agent text; each call runs under the tool sandbox with no network or file access and with
+    CPU-time, memory and wall-clock limits, so a runaway simplification is stopped rather than
+    hanging the session. CI: the [`python` job](11-ci-cd.md) also runs for `sidecars/cas/`
+    (ruff and pytest over the tools, the parser's refusals and the limits), and a daemon test
+    drives one tool call through the MCP client. No plan yet.
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
