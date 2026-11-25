@@ -1798,6 +1798,7 @@ async fn a_capped_turn_asks_for_everything_but_a_read() {
     assert!(results[5].0 && results[5].1.contains("AAA"), "{results:?}");
     // No subagent was started.
     assert_eq!(setup.session.agents().len(), 1);
+}
 
 /// Answers its first call with `call_tool(write_file, ...)` and every later call with "done",
 /// recording the tools it was offered.
