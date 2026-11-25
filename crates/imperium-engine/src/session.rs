@@ -1057,6 +1057,10 @@ async fn run(
     for message in config.extensions.plugins.start(&activated).await {
         emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
     }
+    // The folder the session made at its start, when large results are saved in it.
+    let spill_dir = (config.harness.result_spill && config.workspace.runtime().is_none())
+        .then(|| crate::spill::results_dir(&config.journal_path))
+        .filter(|dir| dir.is_dir());
     let shared = Arc::new(Shared {
         session_id: config.id.clone(),
         controls: Arc::clone(&emitter.controls),
