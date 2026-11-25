@@ -528,11 +528,11 @@ impl Agent {
                 .iter()
                 .any(|call| effective_call(call).function.name == ACTIVATE_PLUGIN);
             let mut touched: Vec<PathBuf> = Vec::new();
-            // With loading on, other tools are reached through `call_tool`: names are not checked.
-            let checked: &[String] = if self.reactive() { &[] } else { &offered };
+            // With loading on, other tools are reached through `call_tool`: no names to point at.
+            let close: &[String] = if self.reactive() { &[] } else { &offered };
             for call in completion.tool_calls {
                 self.last_tool_ok.store(false, Ordering::SeqCst);
-                let call = match call_repair::vet(call.clone(), checked) {
+                let call = match call_repair::vet(call.clone()) {
                     Ok(call) => call,
                     Err(error) => {
                         let name = effective_call(&call).function.name.clone();
@@ -545,6 +545,12 @@ impl Agent {
                     }
                 };
                 let output = self.run_tool(&call).await;
+                let output = call_repair::with_close_names(
+                    &output,
+                    &effective_call(&call).function.name,
+                    close,
+                )
+                .unwrap_or(output);
                 let output = self.guard_input(output, window);
                 // Only a call that worked counts as opening the directory: not one that was
                 // denied, refused by a hook, or failed.

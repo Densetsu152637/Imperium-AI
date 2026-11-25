@@ -211,10 +211,11 @@ the client (`crates/imperium-engine/src/agent/call_repair.rs`), without a model 
   tag is read), or whose whole text is one such JSON object (also in a code fence) naming an
   offered tool, is run as that call, and the text keeps what surrounds the tags. A bare object
   must name an offered tool, so quoted JSON in an answer is not mistaken for a call.
-- **Unknown tool.** A call to a tool that is not offered is not run; its result is an error
-  that names up to three close tool names (a small edit distance, or one name containing the
-  other), or lists some offered tools when none is close. With `harness.tool_loading` on the
-  check is skipped, since other tools are reached through `call_tool`.
+- **Unknown tool.** When a call fails because no such tool exists, its error result gains
+  up to three close tool names from the offered list (a small edit distance, or one name
+  containing the other), or some offered tool names when none is close. Refusals by a profile,
+  hook or permission keep their own messages. With `harness.tool_loading` on nothing is added,
+  since other tools are reached through `call_tool`.
 - **Invalid arguments.** Arguments that do not parse as JSON get one repair attempt (a code
   fence removed, trailing commas before `}` or `]` removed outside strings); if that fails the
   result is an error saying the arguments are not valid JSON. Empty arguments stay an empty

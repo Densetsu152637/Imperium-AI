@@ -4,9 +4,9 @@
 //! 1. [`from_content`]: a reply with no `tool_calls` whose text holds a call the server did
 //!    not parse (Qwen's `<tool_call>{json}</tool_call>`, or a bare JSON object with `name` and
 //!    `arguments`) becomes a call. Only for local models.
-//! 2. [`vet`]: a call to a tool that is not offered gets an error result naming the closest
-//!    valid tools, instead of running.
-//! 3. [`vet`] again: arguments that are not valid JSON get one repair attempt (code fences and
+//! 2. [`with_close_names`]: the result of a call to a tool that does not exist names the closest
+//!    valid tools.
+//! 3. [`vet`]: arguments that are not valid JSON get one repair attempt (code fences and
 //!    trailing commas removed) before an error result.
 
 use imperium_api::{FunctionCall, ToolCall};
@@ -131,13 +131,10 @@ fn remove_trailing_commas(text: &str) -> String {
     out
 }
 
-/// A call ready to run, or the error result that answers it instead. `names` are the tools
-/// offered; an empty list skips the name check.
-pub(crate) fn vet(mut call: ToolCall, names: &[String]) -> Result<ToolCall, String> {
+/// A call ready to run, or the error result that answers it instead: arguments that are not
+/// JSON get one repair, then an error result.
+pub(crate) fn vet(mut call: ToolCall) -> Result<ToolCall, String> {
     let name = call.function.name.as_str();
-    if !names.is_empty() && !names.iter().any(|offered| offered == name) {
-        return Err(unknown_tool(name, names));
-    }
     let arguments = call.function.arguments.as_str();
     // Empty arguments are an empty object, as the tools read them.
     if !arguments.trim().is_empty() && serde_json::from_str::<Value>(arguments).is_err() {
@@ -145,8 +142,7 @@ pub(crate) fn vet(mut call: ToolCall, names: &[String]) -> Result<ToolCall, Stri
             Some(fixed) => call.function.arguments = fixed,
             None => {
                 return Err(format!(
-                    "error: the arguments of {name} are not valid JSON, and it was not run. Send \
-                     one JSON object that matches the tool's schema."
+                    "error: the arguments of {name} are not valid JSON, and it was not run. Send                      one JSON object that matches the tool's schema."
                 ));
             }
         }
@@ -154,25 +150,25 @@ pub(crate) fn vet(mut call: ToolCall, names: &[String]) -> Result<ToolCall, Stri
     Ok(call)
 }
 
-/// The error result for a call to a tool that is not offered.
-fn unknown_tool(name: &str, names: &[String]) -> String {
+/// `output`, the result of a call to `name` that failed as an unknown tool, with the closest
+/// of the offered `names` added; `None` for any other result (a refusal by a profile, a hook
+/// or a permission keeps its own message) or when no names were offered to point at.
+pub(crate) fn with_close_names(output: &str, name: &str, names: &[String]) -> Option<String> {
+    if names.is_empty() || !output.contains(&format!("unknown tool {name:?}")) {
+        return None;
+    }
     let close = closest_names(name, names);
-    if close.is_empty() {
+    let hint = if close.is_empty() {
         let listed: Vec<&str> = names
             .iter()
             .take(LISTED_NAMES)
             .map(String::as_str)
             .collect();
-        format!(
-            "error: {name} is not a tool; it was not run. Tools you can call include: {}.",
-            listed.join(", ")
-        )
+        format!("Tools you can call include: {}.", listed.join(", "))
     } else {
-        format!(
-            "error: {name} is not a tool; it was not run. Closest valid names: {}.",
-            close.join(", ")
-        )
-    }
+        format!("Closest valid names: {}.", close.join(", "))
+    };
+    Some(format!("{output}\n{hint}"))
 }
 
 /// Up to three of `names` close to `name`: a small edit distance or one containing the other.
@@ -278,18 +274,19 @@ mod tests {
     }
 
     #[test]
-    fn unknown_tools_are_answered_with_the_closest_names() {
-        let error = vet(call("read_fil", "{}"), &names()).unwrap_err();
+    fn an_unknown_tool_result_gets_the_closest_names() {
+        let output = "error: unknown tool \"read_fil\"";
+        let hinted = with_close_names(output, "read_fil", &names()).unwrap();
+        assert!(hinted.starts_with(output), "{hinted}");
         assert!(
-            error.contains("was not run") || error.contains("not run"),
-            "{error}"
+            hinted.contains("Closest valid names: read_file"),
+            "{hinted}"
         );
-        assert!(error.contains("Closest valid names: read_file"), "{error}");
-        let far = vet(call("zzzzzzzz", "{}"), &names()).unwrap_err();
-        assert!(far.contains("include: read_file, write_file"), "{far}");
-        assert!(vet(call("search", "{}"), &names()).is_ok());
-        // With no list to check against, any name goes through.
-        assert!(vet(call("anything", "{}"), &[]).is_ok());
+        let far = with_close_names("error: unknown tool \"zzzzzzzz\"", "zzzzzzzz", &names());
+        assert!(far.unwrap().contains("include: read_file, write_file"));
+        // Other results, and a list with nothing to point at, are left alone.
+        assert!(with_close_names("error: permission denied", "read_fil", &names()).is_none());
+        assert!(with_close_names(output, "read_fil", &[]).is_none());
     }
 
     #[test]
@@ -302,10 +299,10 @@ mod tests {
     #[test]
     fn arguments_with_fences_or_trailing_commas_are_repaired_once() {
         let fenced = "```json\n{\"path\": \"a.rs\"}\n```";
-        let fixed = vet(call("read_file", fenced), &names()).unwrap();
+        let fixed = vet(call("read_file", fenced)).unwrap();
         assert_eq!(fixed.function.arguments, r#"{"path":"a.rs"}"#);
         let commas = r#"{"a": [1, 2,], "b": "x,}", }"#;
-        let fixed = vet(call("read_file", commas), &names()).unwrap();
+        let fixed = vet(call("read_file", commas)).unwrap();
         let value: Value = serde_json::from_str(&fixed.function.arguments).unwrap();
         assert_eq!(value["a"], serde_json::json!([1, 2]));
         assert_eq!(value["b"], "x,}");
@@ -314,15 +311,15 @@ mod tests {
     #[test]
     fn valid_and_empty_arguments_are_left_alone() {
         let spaced = r#"{ "path" : "a" }"#;
-        let kept = vet(call("read_file", spaced), &names()).unwrap();
+        let kept = vet(call("read_file", spaced)).unwrap();
         assert_eq!(kept.function.arguments, spaced);
-        let empty = vet(call("read_file", ""), &names()).unwrap();
+        let empty = vet(call("read_file", "")).unwrap();
         assert_eq!(empty.function.arguments, "");
     }
 
     #[test]
     fn arguments_that_cannot_be_repaired_are_an_error_result() {
-        let error = vet(call("read_file", "{path: a.rs"), &names()).unwrap_err();
+        let error = vet(call("read_file", "{path: a.rs")).unwrap_err();
         assert!(error.contains("not valid JSON"), "{error}");
         assert!(error.contains("read_file"), "{error}");
     }
