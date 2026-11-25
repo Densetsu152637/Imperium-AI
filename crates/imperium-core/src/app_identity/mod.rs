@@ -951,4 +951,126 @@ mod tests {
         assert_eq!(gate.withheld.len(), 1);
         assert!(gate.withheld[0].reason.contains("changed"));
     }
+    /// A copy of `home`'s plugin folder under another name.
+    fn copy_plugin(home: &Home, name: &str) -> PathBuf {
+        let copy = home.paths.config_dir().join("plugins").join(name);
+        for relative in [".claude-plugin/plugin.json", "hooks/hooks.json"] {
+            let target = copy.join(relative);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::copy(home.folder.join(relative), target).unwrap();
+        }
+        copy
+    }
+
+    #[test]
+    fn an_approval_names_the_exact_folder_not_one_that_looks_like_it() {
+        let home = home();
+        let state = state_of(&home);
+        let spaced = copy_plugin(&home, " p");
+        // The preview refuses a name with white space around it.
+        assert!(crate::plugin_install::inspect_folder(&state, &folder_params(" p")).is_err());
+        assert!(crate::plugin_install::inspect_folder(&state, &folder_params("p ")).is_err());
+        // The approval of the folder " p" (identical content to "p") lands on " p", never on "p".
+        let found = crate::plugin_install::resolve_for_approval(&state, " p").unwrap();
+        assert_eq!(found, spaced.canonicalize().unwrap());
+        let plain = crate::plugin_install::resolve_for_approval(&state, "p").unwrap();
+        assert_eq!(plain, home.folder.canonicalize().unwrap());
+        let (hash, runs) = content(&home);
+        let asked = Asked {
+            folder: &found,
+            hash: &hash,
+            runs: &runs,
+            now_ms: 0,
+        };
+        let peer = Peer::test_peer();
+        let mut challenges = Challenges::default();
+        let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
+        let result = approve(
+            &home.paths,
+            &LocalPeer,
+            &TestVerifier,
+            &Answers::new(Presence::Passed),
+            Some(&peer),
+            &mut challenges,
+            &asked,
+            &issued.challenge,
+        );
+        if cfg!(windows) {
+            assert!(!result.approved);
+            return;
+        }
+        assert!(result.approved, "{:?}", result.reason);
+        assert!(plugin_records::record_for(&home.paths, &spaced).is_some());
+        assert!(plugin_records::record_for(&home.paths, &home.folder).is_none());
+    }
+
+    #[test]
+    fn a_hook_that_runs_from_dot_git_is_flagged_because_the_hash_leaves_it_out() {
+        for text in [
+            "sh /x/p/.git/hooks/h.sh",
+            "C:\\x\\.git\\h.bat",
+            "cat /x/.git",
+            "\"/x/.git\"",
+        ] {
+            assert!(crate::plugin_install::mentions_dot_git(text), "{text}");
+        }
+        for text in [
+            "true",
+            "/x/.github/h.sh",
+            "/x/a.git/h",
+            "/x/.gitignore",
+            "git status",
+        ] {
+            assert!(!crate::plugin_install::mentions_dot_git(text), "{text}");
+        }
+        let home = home();
+        let state = state_of(&home);
+        let clean = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        assert!(clean.notes.iter().all(|note| !note.contains(".git")));
+        std::fs::write(
+            home.folder.join("hooks/hooks.json"),
+            r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"sh ${CLAUDE_PLUGIN_ROOT}/.git/h.sh"}]}]}}"#,
+        )
+        .unwrap();
+        let flagged = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        assert!(
+            flagged
+                .notes
+                .iter()
+                .any(|note| note.contains("WARNING") && note.contains(".git"))
+        );
+        // The exclusion the warning is about: a file under the top-level `.git` is not hashed.
+        std::fs::create_dir_all(home.folder.join(".git")).unwrap();
+        std::fs::write(home.folder.join(".git/h.sh"), "one").unwrap();
+        let first = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        std::fs::write(home.folder.join(".git/h.sh"), "two").unwrap();
+        let second = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        assert_eq!(first.sha256, second.sha256);
+    }
+
+    #[test]
+    fn a_folder_swapped_for_a_link_is_neither_hashed_nor_approved() {
+        let home = home();
+        let state = state_of(&home);
+        let moved = home.paths.config_dir().join("moved-away");
+        std::fs::rename(&home.folder, &moved).unwrap();
+        if !link_dir(&moved, &home.folder) {
+            eprintln!("skipped: this account cannot make a symbolic link");
+            return;
+        }
+        let error = plugin_records::content(&home.folder).unwrap_err();
+        assert!(error.contains("link"), "{error}");
+        assert!(crate::plugin_install::inspect_folder(&state, &folder_params("p")).is_err());
+        let error = plugin_records::record_approval(
+            &home.paths,
+            &TestVerifier,
+            &home.folder,
+            ApprovalKind::Counted,
+            "x",
+            "y",
+        )
+        .unwrap_err();
+        assert!(error.contains("link"), "{error}");
+        assert!(crate::plugin_install::resolve_for_approval(&state, "p").is_err());
+    }
 }

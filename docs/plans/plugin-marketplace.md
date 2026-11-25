@@ -1663,7 +1663,13 @@ stage 1 starts (threat-model case 3 relies on it). Met: #240 merged into `experi
   (tests). The app's `plugin_approve` resolves a name through `plugins.list`: a plugin with an id is
   previewed from its marketplace as before; one without is previewed by its folder name and takes only
   the `approve` action (an install or update names a marketplace plugin). The trust view shows the
-  folder's path as the source and says the approval holds only while its files stay as they are.
+  folder's path as the source and says the approval holds only while its files stay as they are, apart from the two things the content hash leaves
+  out (the folder's top-level `.git` and `.imperium-source.json`); a hook or server that runs a path under `.git` is
+  flagged in `notes`. Review fixes: the challenge and the approval resolve a name that is exactly an entry of
+  `<config>/plugins` to that entry only (not trimmed or case-folded, never a link), so a look-alike folder cannot take the
+  record; names with `@` or white space at either end are refused; the folder is checked again after hashing and a link
+  root is refused by `content`; files are opened without following a link; and the app refuses a name that fits more than
+  one installed plugin.
 - Tests: the preview equals the gate's hash and digest; unknown, traversal, absolute, separator,
   device and cased names are refused; a link out of the plugins folder is refused (where the OS lets a
   test make one); an approval through the challenge of an unrecorded folder makes the gate load it;

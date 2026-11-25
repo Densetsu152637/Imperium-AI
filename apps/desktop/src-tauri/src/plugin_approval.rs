@@ -522,15 +522,19 @@ fn folder_name(plugin: &InstalledPlugin) -> Option<String> {
 /// A plugin with an id is previewed from its marketplace; one without (a pre-existing or
 /// unrecorded folder) only by its folder, and only to approve it.
 fn pick_target(action: Action, plugins: &[InstalledPlugin], name: &str) -> Result<Target, String> {
-    let found = plugins
-        .iter()
-        .find(|plugin| plugin.id.as_deref() == Some(name))
-        .or_else(|| {
-            plugins
-                .iter()
-                .find(|plugin| folder_name(plugin).as_deref() == Some(name))
-        })
-        .or_else(|| plugins.iter().find(|plugin| plugin.name == name));
+    // A name that fits more than one plugin (one's id or plugin name, another's folder) is not
+    // guessed at.
+    let mut fits = plugins.iter().filter(|plugin| {
+        plugin.id.as_deref() == Some(name)
+            || folder_name(plugin).as_deref() == Some(name)
+            || plugin.name == name
+    });
+    let found = fits.next();
+    if fits.next().is_some() {
+        return Err(format!(
+            "{name} names more than one installed plugin: use its id or its folder name"
+        ));
+    }
     match found {
         Some(plugin) => match (&plugin.id, folder_name(plugin)) {
             (Some(id), _) => Ok(Target::Marketplace(id.clone())),
@@ -890,6 +894,13 @@ mod tests {
         let error = pick_target(Action::Update, &plugins, "my-tools").unwrap_err();
         assert!(error.contains("nothing to update"), "{error}");
         assert!(pick_target(Action::Approve, &plugins, "missing").is_err());
+        // A name that fits two plugins (one's folder, the other's name) is refused.
+        let clash = [
+            listed("b", "/config/plugins/a", Some("b@official")),
+            listed("a", "/config/plugins/b", None),
+        ];
+        let error = pick_target(Action::Approve, &clash, "a").unwrap_err();
+        assert!(error.contains("more than one"), "{error}");
         // An id that is not listed is the daemon's to refuse.
         assert_eq!(
             pick_target(Action::Approve, &plugins, "other@official"),

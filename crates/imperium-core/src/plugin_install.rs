@@ -445,11 +445,18 @@ fn check_folder_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 255 {
         return refuse("it is empty or too long");
     }
+    if name != name.trim() {
+        return refuse("it starts or ends with white space");
+    }
     if name == "." || name.contains("..") {
         return refuse("it names a parent or the folder itself");
     }
     if name.chars().any(|c| {
-        c.is_control() || matches!(c, '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*')
+        c.is_control()
+            || matches!(
+                c,
+                '/' | '\\' | '@' | ':' | '<' | '>' | '"' | '|' | '?' | '*'
+            )
     }) {
         return refuse("it holds a path separator or another character a folder name cannot have");
     }
@@ -476,14 +483,41 @@ fn check_folder_name(name: &str) -> Result<(), String> {
 /// refused rather than followed.
 fn folder_named(state: &DaemonState, name: &str) -> Result<PathBuf, String> {
     check_folder_name(name)?;
+    exact_folder(state, name)?
+        .ok_or_else(|| format!("no plugin folder named {name:?} is installed"))
+}
+
+/// The folder an approval is asked for. A `name` that is exactly the name of an entry of
+/// `<config>/plugins` (compared byte for byte, not trimmed or case-folded) is that folder, and
+/// nothing else; a link is refused, not followed. Any other `name` is looked up as `resolve` does
+/// (a plugin name or `name@marketplace`), and the folder it finds must not be a link either.
+pub(crate) fn resolve_for_approval(state: &DaemonState, name: &str) -> Result<PathBuf, String> {
+    if let Some(exact) = exact_folder(state, name)? {
+        return Ok(exact);
+    }
+    let found = resolve(state, name)?;
+    if std::fs::symlink_metadata(&found).is_ok_and(|meta| plugin_records::is_link(&meta)) {
+        return Err(format!(
+            "{name:?} is a link: a plugin folder that is a link is not approved"
+        ));
+    }
+    Ok(found)
+}
+
+/// The canonical folder of the entry of `<config>/plugins` named exactly `name`, if there is one.
+fn exact_folder(state: &DaemonState, name: &str) -> Result<Option<PathBuf>, String> {
     let dir = state.paths().config_dir().join("plugins");
     let missing = || format!("no plugin folder named {name:?} is installed");
-    let root = dir.canonicalize().map_err(|_| missing())?;
-    let entry = std::fs::read_dir(&dir)
+    let Ok(root) = dir.canonicalize() else {
+        return Ok(None);
+    };
+    let Some(entry) = std::fs::read_dir(&dir)
         .map_err(|_| missing())?
         .flatten()
         .find(|entry| entry.file_name().to_str() == Some(name))
-        .ok_or_else(missing)?;
+    else {
+        return Ok(None);
+    };
     let path = entry.path();
     let meta = std::fs::symlink_metadata(&path).map_err(|_| missing())?;
     if plugin_records::is_link(&meta) {
@@ -501,7 +535,19 @@ fn folder_named(state: &DaemonState, name: &str) -> Result<PathBuf, String> {
             dir.display()
         ));
     }
-    Ok(canon)
+    Ok(Some(canon))
+}
+
+/// Whether `text` names a path under a `.git` folder (`x/.git/hooks/h.sh`, `x\.git`), which the
+/// content hash leaves out when it is the plugin folder's own top-level `.git`.
+pub(crate) fn mentions_dot_git(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.match_indices(".git").any(|(at, _)| {
+        let before = lower[..at].chars().next_back();
+        let after = lower[at + 4..].chars().next();
+        matches!(before, Some('/' | '\\'))
+            && after.is_none_or(|c| matches!(c, '/' | '\\' | '"' | '\'') || c.is_whitespace())
+    })
 }
 
 /// `plugins.inspect_folder`: what the installed plugin folder `name` would run, read from the
@@ -513,8 +559,14 @@ pub(crate) fn inspect_folder(
 ) -> Result<PluginPreview, String> {
     let folder = folder_named(state, &params.name)?;
     let (canon, sha256, _, plugin) = plugin_records::content(&folder)?;
+    // The folder read is the folder named, and it is still that folder, not a link, now that it was
+    // hashed.
+    if canon != folder || folder_named(state, &params.name)? != canon {
+        return Err(format!("{:?} changed while it was read", params.name));
+    }
     let record = plugin_records::record_for(state.paths(), &canon);
     let shown = extension_install::display_path(&canon);
+    let shown_at = PathBuf::from(&shown);
     let Contents {
         hooks,
         servers,
@@ -524,8 +576,27 @@ pub(crate) fn inspect_folder(
         agents,
         commands_with_shell,
         runs_digest,
-    } = contents(&plugin, &canon);
+    } = contents(&plugin, &shown_at);
     let mut notes = Vec::new();
+    // The hash leaves out the folder's own top-level `.git` and `.imperium-source.json`: a hook or
+    // server that runs from `.git` can change without the approval being voided.
+    let runs_from_git = hooks
+        .iter()
+        .flat_map(|hook| std::iter::once(&hook.command).chain(hook.url.iter()))
+        .chain(servers.iter().flat_map(|server| {
+            server
+                .command
+                .iter()
+                .chain(server.args.iter())
+                .chain(server.url.iter())
+        }))
+        .any(|text| mentions_dot_git(text));
+    if runs_from_git {
+        notes.push(
+            "WARNING: a hook or server runs a path under .git, which the content hash does not cover: changing it will not withhold this plugin again"
+                .to_string(),
+        );
+    }
     match &record {
         None => notes.push(
             "Imperium has no record of this folder: it was not installed by Imperium".to_string(),

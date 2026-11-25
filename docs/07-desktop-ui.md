@@ -1070,7 +1070,8 @@ in `styles/plugins.css`. Escape steps back from the trust view or a plugin's det
   *Approve* for a withheld plugin that runs code; *Update*; *Secrets*; and *Uninstall* with a confirmation that opens on
   *Cancel* and, for a plugin with secrets, the choice to delete them too. An uninstall leaves a notice with *Undo*
   (`config.undo`). *Approve* on a folder that did not come from a marketplace opens the trust view with what the daemon read from the
-  folder itself (`plugins.inspect_folder`), and says the approval holds only while its files stay as they are.
+  folder itself (`plugins.inspect_folder`), and says the approval holds only while its files stay as they are, apart from the top-level `.git` and `.imperium-source.json`, which
+  the hash leaves out (a hook that runs from `.git` is flagged).
 
 ### Plugin trust view (implemented)
 
