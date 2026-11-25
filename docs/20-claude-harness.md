@@ -199,7 +199,7 @@ single tool calls, and a registration should say which one it is. Register it li
 
 The tools are `imperium_<tool>`. Read tools: `read_file`, `list_dir`, `glob`, `grep`,
 `memory_search`, `memory_read`, `web_search`, `web_fetch`. With `--allow-write`:
-`write_file`, `edit_file`, `run_command`, `command_output`, `command_stop`, `memory_remember`.
+`write_file`, `edit_file`, `run_command`, `command_output`, `command_stop`, `memory_remember`, `memory_edit`, `memory_forget`.
 Their descriptions and schemas are the ones models are offered (`session.tools`), with MCP
 `readOnlyHint` and `openWorldHint` annotations. Delegation (`spawn_agent`), questions to the
 user (`ask_user`), starting sessions, and MCP and plugin tools are never bridged.

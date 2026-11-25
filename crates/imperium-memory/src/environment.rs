@@ -149,6 +149,58 @@ impl EnvironmentMemory {
         Ok(replaced)
     }
 
+    /// Replaces the one occurrence of `old` in the body of the section `name` with `new` (the
+    /// rules of `edit_file`). The section's description and type stay. The limits of
+    /// [`remember`](Self::remember) hold, and the edit may not change how the file divides into
+    /// sections.
+    pub fn edit(&self, name: &str, old: &str, new: &str) -> Result<(), MemoryError> {
+        self.update(|existing| edited_text(existing, name, old, new).map(Some))
+    }
+
+    /// Whether [`edit`](Self::edit) would succeed, writing nothing; run before the user is asked
+    /// to approve it.
+    pub fn check_edit(&self, name: &str, old: &str, new: &str) -> Result<(), MemoryError> {
+        let existing = read_existing(&self.file())?;
+        edited_text(&existing, name, old, new).map(|_| ())
+    }
+
+    /// Takes the section `name` out of `Memory.md`, appending it first to `Memory.archive.md`
+    /// (so it can be moved back); false when there is no such section.
+    pub fn forget(&self, name: &str) -> Result<bool, MemoryError> {
+        let heading = format!("## {name}");
+        let mut found = false;
+        self.update(|existing| {
+            let units = units(existing);
+            let Some(at) = units.iter().position(|unit| {
+                unit.lines()
+                    .next()
+                    .is_some_and(|line| line.trim_end() == heading)
+            }) else {
+                return Ok(None);
+            };
+            found = true;
+            let removed = format!(
+                "<!-- removed by memory_forget on {} -->\n{}",
+                crate::today(),
+                units[at].trim_end()
+            );
+            self.append_archive_unlocked(&removed)?;
+            let kept: String = units
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != at)
+                .map(|(_, unit)| unit.as_str())
+                .collect();
+            let kept = kept.trim_end();
+            Ok(Some(if kept.is_empty() {
+                String::new()
+            } else {
+                format!("{kept}\n")
+            }))
+        })?;
+        Ok(found)
+    }
+
     /// Where the overflow of a migration goes: `Memory.archive.md`, beside `Memory.md`. Agents
     /// never read it into their instructions; the user can.
     pub fn archive_file(&self) -> PathBuf {
@@ -181,6 +233,11 @@ impl EnvironmentMemory {
         let _turn = WRITES
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.append_archive_unlocked(text)
+    }
+
+    /// [`append_archive`](Self::append_archive) for a caller already holding the writers' lock.
+    fn append_archive_unlocked(&self, text: &str) -> Result<(), MemoryError> {
         let file = self.archive_file();
         let mut existing = read_existing(&file)?;
         if existing.trim().is_empty() {
@@ -194,6 +251,56 @@ impl EnvironmentMemory {
         existing.push('\n');
         write_atomic(&file, &existing)
     }
+}
+
+/// `text` with the body of section `name` edited: `old` replaced by the one `new`. Refused when
+/// the section is missing, the edit is not applicable, the result breaks a limit, looks like a
+/// secret, or would change the file's structure.
+fn edited_text(text: &str, name: &str, old: &str, new: &str) -> Result<String, MemoryError> {
+    let section = sections(text)
+        .into_iter()
+        .find(|section| section.name == name)
+        .ok_or_else(|| MemoryError::Edit(format!("no section named {name:?} in Memory.md")))?;
+    let body = crate::replace_once(&section.body, old, new)?;
+    let body = body.trim();
+    if body.is_empty() {
+        return Err(MemoryError::Edit(
+            "the edit would leave the body empty; use memory_forget to remove it".into(),
+        ));
+    }
+    if body.chars().count() > MAX_BODY_CHARS {
+        return Err(MemoryError::TooLong(format!(
+            "an environment memory entry is at most {MAX_BODY_CHARS} characters; \
+             split it or keep the detail in the project's files"
+        )));
+    }
+    if let Some(reason) = looks_secret(body) {
+        return Err(MemoryError::LooksSecret(reason));
+    }
+    let rebuilt = if section.description.is_empty() {
+        format!("## {name}\n\n{body}\n")
+    } else {
+        section_text(name, &section.description, &section.kind, body)
+    };
+    let (updated, _) = upsert_section(text, name, &rebuilt);
+    within_cap(&updated)?;
+    let before = sections(text);
+    let after = sections(&updated);
+    let others_before: Vec<&Section> = before.iter().filter(|s| s.name != name).collect();
+    let others_after: Vec<&Section> = after.iter().filter(|s| s.name != name).collect();
+    let mine: Vec<&Section> = after.iter().filter(|s| s.name == name).collect();
+    let fences = body
+        .lines()
+        .filter(|line| line.trim_start().starts_with("```"))
+        .count();
+    if fences % 2 != 0 || mine.len() != 1 || mine[0].body != body || others_before != others_after {
+        return Err(MemoryError::Edit(
+            "the edit would change Memory.md's structure (a heading line or an unclosed code \
+             fence)"
+                .into(),
+        ));
+    }
+    Ok(updated)
 }
 
 /// The text of `file`: empty when it does not exist, an error for any other failure to read it
@@ -553,6 +660,60 @@ mod tests {
         let text = memory.read();
         assert!(text.contains("## uses-pnpm"));
         assert!(text.contains("Use pnpm."));
+    }
+
+    #[test]
+    fn edit_changes_one_occurrence_and_keeps_the_rest_of_the_file() {
+        let (_dir, memory) = memory();
+        std::fs::create_dir_all(memory.file().parent().unwrap()).unwrap();
+        std::fs::write(memory.file(), "# Notes\n\nhand written\n").unwrap();
+        memory.remember("a", "first", "project", "one two").unwrap();
+        memory.remember("b", "second", "project", "x\ny x").unwrap();
+        memory.edit("a", "two", "three").unwrap();
+        let text = memory.read();
+        assert!(text.starts_with("# Notes\n\nhand written"), "{text}");
+        let all = sections(&text);
+        assert_eq!(all[0].body, "one three");
+        assert_eq!(all[0].description, "first");
+        assert_eq!(all[0].kind, "project");
+        assert_eq!(all[1].body, "x\ny x");
+        // Not found, not unique, a heading, an unclosed fence, a secret, an empty body, and a
+        // missing section: all refused, the file untouched.
+        let before = memory.read();
+        for (name, old, new) in [
+            ("a", "zzz", "q"),
+            ("b", "x", "y"),
+            ("a", "one", "one\n## c\nsneaky"),
+            ("a", "one", "```\none"),
+            ("a", "one", "sk-abcdefghijklmnopqrstuvwxyz0123456789"),
+            ("a", "one three", ""),
+            ("nope", "a", "b"),
+        ] {
+            memory.edit(name, old, new).unwrap_err();
+            memory.check_edit(name, old, new).unwrap_err();
+        }
+        assert_eq!(memory.read(), before);
+        memory.check_edit("a", "one", "uno").unwrap();
+    }
+
+    #[test]
+    fn forget_removes_a_section_into_the_archive() {
+        let (_dir, memory) = memory();
+        memory.remember("a", "first", "project", "one").unwrap();
+        memory.remember("b", "second", "project", "two").unwrap();
+        assert!(memory.forget("a").unwrap());
+        assert!(!memory.forget("a").unwrap());
+        let left = sections(&memory.read());
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].name, "b");
+        let archive = std::fs::read_to_string(memory.archive_file()).unwrap();
+        assert!(
+            archive.contains("## a") && archive.contains("one"),
+            "{archive}"
+        );
+        assert!(archive.contains("memory_forget"), "{archive}");
+        assert!(memory.forget("b").unwrap());
+        assert_eq!(memory.read().trim(), "");
     }
 
     #[test]
