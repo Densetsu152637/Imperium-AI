@@ -1089,13 +1089,10 @@ mod tests {
     fn an_exact_folder_name_must_be_one_plain_name() {
         let home = home();
         let state = state_of(&home);
-        let odd = copy_plugin(&home, "a*b");
-        // A wildcard is not a folder name `check_folder_name` allows, so the entry is not matched
-        // exactly and the name is looked up as a plugin name instead, which finds nothing.
-        assert!(crate::plugin_install::resolve_for_approval(&state, "a*b").is_err());
-        assert!(odd.exists());
-        // A path never names a folder.
+        // A path or a name with a separator never names a folder, exact or not.
         assert!(crate::plugin_install::resolve_for_approval(&state, "../plugins/p").is_err());
         assert!(crate::plugin_install::resolve_for_approval(&state, "./p").is_err());
+        assert!(crate::plugin_install::resolve_for_approval(&state, "p/").is_err());
+        assert!(crate::plugin_install::resolve_for_approval(&state, "p").is_ok());
     }
 }
