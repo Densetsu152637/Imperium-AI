@@ -330,7 +330,7 @@ last lines, and how many lines were left out. The preview is bounded (half the t
 - **Not worth it.** A result whose notice would be more than 70 % of its size stays whole. A
   result that began with an error keeps its first line ahead of the notice.
 - **The marker.** Every notice starts with (after the error line, if any) the stable string
-  `[spilled tool result]` (`imperium_engine::SPILL_MARKER`). Code that clears or rewrites old
+  `[spilled tool result]` (`imperium_engine::SPILL_MARKER`) and, in the same notice, the words `Full output saved to` (`imperium_engine::SAVED_TO`). Code that clears or rewrites old
   tool results must leave a result that contains it alone, as the notice is already short and
   its path is the only way back to the output.
 - **Agent tools.** The agent-protocol tools (`await_tasks`, `spawn_agent`, `ask_agent`,

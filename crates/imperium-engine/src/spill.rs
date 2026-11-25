@@ -28,6 +28,9 @@ const HEAD_PARTS: usize = 2;
 /// The first line of the notice that stands in for a saved result: a stable marker, so code
 /// that rewrites or drops old tool results (stale clearing) can recognise one and keep it.
 pub const SPILL_MARKER: &str = "[spilled tool result]";
+/// The words in every notice that lead to the path (`<SAVED_TO> <path>; read ranges ...`): what
+/// stale clearing matches to leave a notice alone.
+pub const SAVED_TO: &str = "Full output saved to";
 /// Most characters of the output's own first line kept ahead of the marker when the output
 /// began with an error.
 const ERROR_LINE_CHARS: usize = 200;
@@ -117,50 +120,30 @@ pub(crate) fn notice(path: &Path, text: &str, threshold: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let (head, tail) = split(&lines, head_budget, budget - head_budget);
     let omitted = lines.len() - head.len() - tail.len();
-    let error = text
-        .trim_start()
+    let first = text.trim_start().lines().next().unwrap_or_default();
+    let began_with_error = first
         .get(..5)
-        .is_some_and(|start| start.eq_ignore_ascii_case("error"))
-        .then(|| {
-            cut(
-                text.trim_start().lines().next().unwrap_or_default(),
-                ERROR_LINE_CHARS,
-            )
-        });
-    let mut out = error
-        .map(|line| {
-            format!(
-                "{line}
-"
-            )
-        })
-        .unwrap_or_default();
+        .is_some_and(|start| start.eq_ignore_ascii_case("error"));
+    let mut out = String::new();
+    if began_with_error {
+        out.push_str(&cut(first, ERROR_LINE_CHARS));
+        out.push('\n');
+    }
     out.push_str(&format!(
-        "{SPILL_MARKER} This result is large ({} lines, {} characters). Full output saved to          {}; read ranges with read_file (offset and limit are in lines) or search it with          grep.
---- first lines ---
-{}",
+        "{SPILL_MARKER} This result is large ({} lines, {} characters). {SAVED_TO} {}; read \
+         ranges with read_file (offset and limit are in lines) or search it with grep.\n\
+         --- first lines ---\n{}",
         lines.len(),
         text.chars().count(),
         path.display(),
-        head.join("
-"),
+        head.join("\n"),
     ));
     if omitted > 0 {
-        out.push_str(&format!(
-            "
---- {omitted} lines omitted ---"
-        ));
+        out.push_str(&format!("\n--- {omitted} lines omitted ---"));
     }
     if !tail.is_empty() {
-        out.push_str(&format!(
-            "
---- last lines ---
-{}",
-            tail.join(
-                "
-"
-            )
-        ));
+        out.push_str("\n--- last lines ---\n");
+        out.push_str(&tail.join("\n"));
     }
     out
 }
@@ -278,7 +261,10 @@ mod tests {
     #[test]
     fn a_result_the_notice_would_barely_shorten_is_not_worth_saving() {
         let dir = Path::new("/data/sessions/x.results");
-        let barely = "x".repeat(4_100);
+        // Just over the preview's size: the notice would be nearly as long as the text.
+        let barely = "line
+"
+        .repeat(480);
         assert!(!worth_saving(dir, &barely, 4_000));
         assert!(worth_saving(
             dir,
