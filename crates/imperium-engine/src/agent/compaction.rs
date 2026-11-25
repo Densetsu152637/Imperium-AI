@@ -113,6 +113,7 @@ impl Agent {
             .agents
             .register(&self.id, &self.role, &self.model);
         self.refresh_harness_text();
+        self.refresh_loader_text();
         // The calibration related the heuristic to the old model's counts, and the exact count
         // the next local reservation starts from was the old model's.
         self.last_reported = None;
