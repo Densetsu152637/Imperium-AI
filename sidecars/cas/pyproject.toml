@@ -1,0 +1,40 @@
+[project]
+name = "imperium-cas"
+version = "0.1.0"
+description = "Imperium's built-in computer algebra MCP server (SymPy)."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "sympy==1.14.0",
+    "mpmath==1.3.0",
+    "mcp==2.3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "hypothesis==6.170.17",
+    "ruff==0.17.6",
+]
+
+[tool.uv]
+# The lock holds dependencies only: no build backend runs, so `uv sync --no-build` holds.
+package = false
+
+[tool.pytest.ini_options]
+# The package is not installed, so pytest needs `src` on its path.
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# S includes S102 (exec) and S307 (eval); the AST scan in tests/test_no_dynamic_code.py is the
+# stronger check, this keeps the common mistakes out at lint time.
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S311"]
