@@ -1,6 +1,6 @@
 # Plan: terminal and file panes
 
-Revision: 2026-11-26, revision 3 (plan-gate review: F1 to F9, then N1 to N5 and the nits folded in);
+Revision: 2026-11-26, revision 4 (plan-gate review: F1 to F9, N1 to N5 and R1 to R4 folded in);
 written against `experimental` at `3d5db869` (last updated). Roadmap
 [item 55](../12-roadmap.md#next-in-order). Status: planned (no stage started).
 
@@ -134,13 +134,23 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     loader not built) would run in the very window that holds the terminal and could type into it.
     So the terminal commands are refused while any such mod could run, the pane says why, and the
     loader's own future plan must isolate such a mod from the terminal before this rule can relax.
-    **How it is checked:** the relay never trusts a flag from the webview. On its own daemon
-    connection it calls `mods.list` and refuses every `terminal_*` command if any row has
-    `main_context` and `trusted` and is not `modified`, and the app's own settings store (read on
-    the native side, `store.rs`) has that mod on; a store it cannot read counts as on (fail
-    closed). It asks before `terminal_open` and `terminal_attach` and again at most every 5 s while
-    terminals are attached; a positive answer detaches every window and drops the relay's
-    attachments.
+    **How it is checked:** only from the daemon's install state, never from anything the webview
+    can write. The app's `enabledMods` setting is not used: the window writes it through
+    `store_write` (`allow-store-write`; `settings.ts`, `ModsSection.tsx`), and the window can also
+    call `mods.*`. On its own daemon connection the relay calls `mods.list` and refuses if any
+    installed mod has `main_context` and `trusted` and is not `modified`, whether or not it is
+    turned on. The refusal is **latched** for the life of the app's process (and so of its
+    webview): once a qualifying mod has been seen, every `terminal_*` command is refused until the
+    app restarts, even if the mod is later turned off or uninstalled, because it may already have
+    run in the window. The relay asks before `terminal_open` and `terminal_attach` and again at
+    most every 5 s while terminals are attached; a positive answer latches, detaches every window
+    and drops the relay's attachments.
+  - **The 5-second window and a requirement on the future loader.** The daemon emits no
+    mods-change notification today (`mods.*` has `list`, `inspect` and `install` only), so the
+    relay cannot re-check on one; if one is added later, the relay re-checks on it too. Until
+    then the check rests on a requirement recorded here for the main-context loader's own plan: it
+    loads a main-context mod **only on a window reload** (never into a running window), and a
+    reload re-attaches every terminal, which runs the attach-time check before any keystroke.
   - Rejected: **gating in the webview only** (the main window's token reaches loopback TCP, and so
     would anything that reads `daemon.json`); **plain token auth** (an agent's command with the
     token, an `imperium` command run by an agent, or a forwarded remote client would get an
@@ -175,15 +185,27 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     hidden subcommand, `imperium-core pty-supervisor -- <shell> <args>`. The supervisor sets
     `PR_SET_CHILD_SUBREAPER` on itself (`nix`'s safe `prctl` wrapper), starts the shell as its
     child on the same terminal (the shell sets up its own process groups for job control), reaps
-    everything that is reparented to it, and when the shell exits, on `SIGTERM` from the daemon,
-    or when the daemon dies (`PR_SET_PDEATHSIG`), sends `SIGHUP` then `SIGKILL` to every remaining
-    descendant (its children in `/proc`, walked recursively) and exits with the shell's code. So a
-    process that calls `setsid` still ends with its terminal on Linux. It is about 200 lines and
+    everything that is reparented to it, and when the shell exits, on a signal, or when the daemon
+    dies, sends `SIGHUP` then `SIGKILL` to every remaining descendant (its children in `/proc`,
+    walked recursively) and exits with the shell's code. So a process that calls `setsid` still
+    ends with its terminal on Linux.
+    - **Daemon death: a pipe, not `PR_SET_PDEATHSIG`.** The parent-death signal fires when the
+      forking *thread* exits, so a terminal spawned from a tokio blocking-pool thread would die when
+      that thread is retired. The daemon therefore spawns every terminal from **one dedicated,
+      long-lived spawner thread** (a plain `std::thread` that lives as long as the daemon), and
+      the supervisor learns of the daemon's death from a **lifeline pipe**: the daemon keeps the
+      write end (close-on-exec in every other child), the supervisor polls the read end, and EOF
+      means the daemon is gone. Chosen over `PR_SET_PDEATHSIG` plus a `getppid()` check because a
+      pipe does not depend on which thread forked and has no race between fork and `prctl`.
+    - **Signals.** The supervisor is the PTY's session leader. It catches `SIGHUP` (the master
+      closed), `SIGTERM` and `SIGINT` and runs its kill-all-descendants path; it ignores `SIGTTOU`
+      and `SIGTTIN`; it never reads, writes or changes the terminal itself (the shell owns it). It is about 200 lines and
     fits stage 1 once the shell choice moves to stage 2a; **chosen over dropping the subreaper**
     because it closes the Linux gap and also covers a daemon crash.
   - **macOS** has no subreaper: a process that deliberately leaves the session escapes
     ([goal 6](#goals)), and if the daemon crashes the shell and its jobs survive it (closing the PTY
-    master sends `SIGHUP` to the foreground job only).
+    master sends `SIGHUP` to the foreground job only). The spawner-thread rule applies on every
+    OS.
   - **Windows: a Job Object** with kill-on-close, assigned right after `portable-pty` spawns the
     shell, as background commands are. A child the shell starts in that short window is outside
     the job, so ending a terminal first walks the shell's process tree (as `processes.rs` does) and
@@ -281,15 +303,25 @@ Each records the choice, the reasons, the rejected options and when to revisit i
   - **Roots** are exactly `Workspace::roots()` (the session's folders, with worktrees when the
     session works in them) plus `Workspace::scratch()`; not path grants (they are agents'
     permissions and may name any folder), not `with_project_worktrees` (other sessions'
-    worktrees). They are canonicalised and opened as `cap_std::fs::Dir` handles
-    (`Dir::open_ambient_dir`) **when the daemon creates or loads the session**, not on the first
-    `files.*` call, held by the file service and dropped with the session, so a later swap of a
-    root's own path cannot redirect it. At creation the service records each root's file identity
-    (device and inode, or volume serial and file index, through `same-file`) in the session
-    record; on load it opens the root and compares, and a root whose identity changed is not
-    served (the pane says the folder was replaced). A root that is itself a link is resolved once,
-    at creation. On Windows the handles are opened with delete sharing (the standard library's
-    default), so holding them does not stop the user renaming or deleting the folder.
+    worktrees).
+  - **Identity at creation, handles opened lazily.** When the daemon creates a session it
+    canonicalises each root (a root that is itself a link is resolved once, here) and records its
+    file identity (device and inode, or volume serial and file index, through `same-file`) in the
+    session record (`root_ids`). A root's `cap_std::fs::Dir` handle (`Dir::open_ambient_dir`) is
+    opened on the first `files.*` call that needs it, and at that open the service checks that
+    **no component of the canonical path is a link, junction or other reparse point** and that the
+    opened directory's identity equals the recorded one.
+  - **A mismatch** is refused (the pane says the folder was replaced), except when the root is a
+    plain directory (not a link or reparse point) whose canonical path is unchanged: then the new
+    identity is accepted and re-recorded, which covers FAT and exFAT remounts and SMB shares whose
+    file IDs are not stable.
+  - **Bounded handles.** Open root handles live in an LRU of **64** directory handles across all
+    sessions (a session has a few roots; evicting only costs a re-open and a re-check), so 500
+    loaded sessions never approach the file-descriptor limit. The soft `RLIMIT_NOFILE` is not
+    raised.
+  - **Archive and delete.** A session's handles are closed before archiving or deleting removes
+    anything (its scratch folder, a worktree). On Windows the handles are opened with delete
+    sharing (the standard library's default) as well.
   - Paths are `{root, relative}` pairs, never free-form. Before opening, a relative path is refused
     if it has a drive, UNC or `\\?\` prefix, is absolute, has a Windows stream name (`:`), or has a
     component that is a reserved device name: `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`,
@@ -469,8 +501,8 @@ the same user that hold or can read the daemon's token (an agent's command at ti
    repository (direnv, prompt hooks) is the same as in any terminal opened there; the docs say so.
 5. **Path traversal and link escapes in the file pane** (D12): `..`, absolute, drive, UNC, `\\?\`,
    stream and device spellings are refused up front; `cap-std` refuses the rest at open time on
-   root handles held since the session started, so a link swapped in between a listing and a read
-   cannot lead outside; special files are refused after `fstat`. A hard link inside the folders to
+   root handles whose identity and link-free path are checked at open, so a link swapped in
+   between a listing and a read cannot lead outside; special files are refused after `fstat`. A hard link inside the folders to
    a file outside is read as the file it is (a hard link is a file of the folder; an agent that can
    make one could already read the target with its own tools); the docs say so.
 6. **Hostile file content** (D13): drawn as text through CodeMirror, never `innerHTML`; images by
@@ -624,10 +656,12 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   `resize`; `end` per D5 (Unix: by session with `sysinfo`, groups `SIGHUP` then `SIGKILL` after
   2 s; Windows: the Job Object assigned after spawn and the tree walk, the pseudo console closed
   on its own thread while the reader keeps draining, since `ClosePseudoConsole` can block until
-  output is read); the exit code. On Linux, `Spec` is wrapped so the PTY's child is
-  `<current exe> pty-supervisor -- <program> <args>`, and the crate provides
-  `supervisor::run(args)` (D5: subreaper, parent-death signal, reaping, ending every descendant,
-  the shell's exit code). `imperium-core`'s `main` dispatches the hidden `pty-supervisor`
+  output is read); the exit code. Every spawn goes through one dedicated long-lived spawner
+  thread owned by the crate (`Spawner`), never a tokio blocking-pool thread. On Linux, `Spec` is
+  wrapped so the PTY's child is `<current exe> pty-supervisor -- <program> <args>` with the read
+  end of the spawner's lifeline pipe, and the crate provides `supervisor::run(args)` (D5:
+  subreaper, the lifeline pipe, the signal set, reaping, ending every descendant, the shell's exit
+  code). `imperium-core`'s `main` dispatches the hidden `pty-supervisor`
   subcommand to it before anything else starts (no runtime, no logging, no config).
 - Depends on: none.
 - Owned paths: `crates/imperium-pty/**` (new), `crates/imperium-core/src/main.rs` (the hidden
@@ -640,10 +674,12 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     test reads the job's pid, `end` runs, and the pid is gone; on Windows, `cmd` runs
     `start /b ping -n 60 127.0.0.1` and the process is gone;
   - **Linux supervisor:** a child that calls `setsid` (`setsid sleep 60 &`) is gone after `end`;
-    killing the test's stand-in for the daemon with `SIGKILL` ends the supervisor and the shell
-    and its jobs (parent-death signal); no zombie is left under the supervisor while the shell
-    runs; the test binary's own `waitpid` of an unrelated child still gets its status (no
-    daemon-wide reaping);
+    **closing the PTY master** (as a daemon crash would) leaves no `setsid` grandchild; killing
+    the test's stand-in for the daemon with `SIGKILL` ends the supervisor, the shell and its jobs
+    (lifeline EOF); **a terminal requested from a short-lived thread that then exits keeps
+    running** (the spawner thread forked it); `SIGTERM` and `SIGINT` to the supervisor end every
+    descendant; no zombie is left under the supervisor while the shell runs; the test binary's own
+    `waitpid` of an unrelated child still gets its status (no daemon-wide reaping);
   - the exit code is reported through the supervisor; a multi-byte character split across reads
     arrives whole; a 2 MiB burst keeps the last 1 MiB in the ring and reports the drop;
   - every wait is bounded (10 s). `cargo clippy` clean.
@@ -754,9 +790,10 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     Each takes the URL the window is connected to, refused unless it is `daemon.json`'s
     (threat 11). Output reaches each attached window through a Tauri `Channel`; a window that
     closes detaches. The relay logs ids and sizes, never data.
-  - **The main-context mod check (D2):** the relay calls `mods.list` on its own connection and
-    reads the app's settings store on the native side, never a webview flag, before open and attach
-    and at most every 5 s while attached.
+  - **The main-context mod check (D2):** the relay calls `mods.list` on its own connection,
+    decides from install state only (installed, `main_context`, `trusted`, not `modified`), never
+    from the store or the webview, checks before open and attach and at most every 5 s while
+    attached, and latches the refusal until the app restarts.
   - Permissions for the seven commands in `capabilities/default.json` for `main` and `panel-*`,
     the app's origin only.
   - `WEBKIT_INSPECTOR_SERVER` and `WEBKIT_INSPECTOR_HTTP_SERVER` join
@@ -777,8 +814,10 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     **If `tauri::test` in the pinned Tauri cannot forge these origins, the stage stops and reports
     back to the plan's owner for a re-plan** rather than shipping without the test;
   - **main-context mod:** a fake daemon connection whose `mods.list` reports a mod with
-    `main_context`, `trusted` and not `modified`, with the store saying it is on, makes every
-    `terminal_*` command refuse; an unreadable store refuses too; the same mod turned off does not;
+    `main_context`, `trusted` and not `modified` makes every `terminal_*` command refuse, whatever
+    `enabledMods` in the store says; after the fake stops reporting the mod (turned off or
+    uninstalled) every command **still** refuses (latched) until a new relay is built, as on an
+    app restart; a `modified` or untrusted main-context mod does not refuse;
   - a window URL other than `daemon.json`'s is refused; with no local socket the commands say so
     and never fall back to TCP; routing sends output only to the attached window's channel (a fake
     daemon connection in process); a test log subscriber at TRACE sees no sentinel data;
@@ -871,10 +910,12 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 ### Stage 6a: File roots and reads
 
 - Objective: `files.roots` and `files.read` (protocol minor at merge) in
-  `crates/imperium-core/src/files.rs`, under D12 and D13: root `Dir` handles opened **when the
-  daemon creates or loads a session** from `Workspace::roots()` and `Workspace::scratch()`, file
-  identities recorded in the session record at creation and compared on load (refused for a
-  remote runtime or an archived session); the up-front spelling checks; every open through the
+  `crates/imperium-core/src/files.rs`, under D12 and D13: root identities from
+  `Workspace::roots()` and `Workspace::scratch()` recorded in the session record at creation;
+  root `Dir` handles opened lazily into a 64-handle LRU, each open checking the recorded identity
+  and that no path component is a link or reparse point, re-recording the identity of an
+  unchanged plain directory; a session's handles closed before archive or delete removes anything
+  (refused for a remote runtime or an archived session); the up-front spelling checks; every open through the
   held `Dir`, non-blocking with an `fstat` and regular files only; text reads of at most 1 MiB from
   an offset with UTF-8 handling, the binary rule, image sniffing up to 10 MiB, and `etag` from
   size, modification time and a hash of the first 64 KiB. Phone connections refused.
@@ -893,9 +934,16 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     otherwise a junction, which needs no privilege); a link inside to inside reads;
   - **race:** a thread swaps a directory for a link to outside in a loop while another reads, and
     never gets outside bytes; **swap before first open:** a root's path is replaced by a link to
-    outside after the session is created and before any `files.*` call, and reads still come from
-    the original folder; after a daemon restart a root whose identity changed is refused with the
-    reason;
+    outside after the session is created and before any `files.*` call, and the open is refused
+    (a link in the path, and an identity mismatch); a root replaced by a different plain folder at
+    another canonical path is refused;
+  - **accepted mismatch:** with the stored identity edited in the session record, a plain folder
+    at its unchanged canonical path is accepted and its identity re-recorded;
+  - **many sessions:** 500 sessions with two roots each are loaded and each reads one file, with
+    no `EMFILE` and at most 64 directory handles open (counted through the LRU);
+  - **archive with handles open:** a session whose roots are open is archived and its scratch
+    folder and worktree are removed (on Windows too, where an open handle would otherwise block
+    the delete);
   - **special files:** a FIFO in the folder (Unix) is refused at once, without blocking;
   - **other sessions' worktrees:** a root index naming another session's worktree of the same
     repository does not exist for this session;
@@ -903,10 +951,11 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     a PNG renamed `.txt` is an image and a text file renamed `.png` is text; an SVG is text;
   - an old session record without `root_ids` loads (identities recorded then); the phone is
     refused; protocol checks pass.
-- Size: about 700 lines.
+- Size: about 800 lines.
 - Risks: symbolic links on Windows runners need developer mode (use junctions there, and skip only
   the link case with a logged reason, never silently); `cap-std` behaviour on case-insensitive
-  file systems (tested on macOS and Windows); open directory handles per session (a few each).
+  file systems (tested on macOS and Windows); the reparse-point check per component on Windows
+  (through `symlink_metadata`, which reports junctions as links).
 - Status: pending
 - Outcome: -
 - Handoff notes: `files.read` never applies agent deny rules (D12); the docs say so. Stage 7a is
