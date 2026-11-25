@@ -100,6 +100,8 @@ export function EnvironmentRuntimeFields({
   onChange,
   projectWorktrees,
   onProjectWorktrees,
+  worktreeDir,
+  onWorktreeDir,
   disabled,
   fixedLocal = false,
   testBlocked,
@@ -110,6 +112,9 @@ export function EnvironmentRuntimeFields({
   /** Whether sessions also get the git worktrees of the folders' repositories. */
   projectWorktrees: boolean;
   onProjectWorktrees: (on: boolean) => void;
+  /** This environment's own folder for its sessions' git worktrees; empty uses Settings → Sessions. */
+  worktreeDir: string;
+  onWorktreeDir: (dir: string) => void;
   disabled?: boolean;
   /** The runtime cannot be chosen: it is this machine (the built-in Home environment). */
   fixedLocal?: boolean;
@@ -202,6 +207,19 @@ export function EnvironmentRuntimeFields({
           onChange={onProjectWorktrees}
         />
       </Row>
+      <Field
+        label="Worktrees folder"
+        hint="Where sessions of this environment started in a worktree put it, as <folder>/<repo>/<branch>, and where its writer subagents' worktrees go. Empty: the Worktree folder in Settings → Sessions. Applies to sessions started afterwards. Local folders only."
+      >
+        <input
+          type="text"
+          aria-label="Worktrees folder"
+          value={worktreeDir}
+          placeholder="Use the Settings → Sessions folder"
+          disabled={disabled || isRemote(draft)}
+          onChange={(event) => onWorktreeDir(event.target.value)}
+        />
+      </Field>
     </>
   );
 }

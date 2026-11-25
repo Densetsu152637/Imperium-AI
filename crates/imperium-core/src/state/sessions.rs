@@ -375,6 +375,17 @@ impl DaemonState {
             .filter(|dir| !dir.as_os_str().is_empty())
     }
 
+    /// Where the sessions of `environment_id` put their worktrees: the environment's own folder
+    /// when it sets one, else [`Self::worktree_dir`].
+    pub fn worktree_dir_for(&self, environment_id: Option<&str>) -> Option<PathBuf> {
+        environment_id
+            .and_then(|id| self.environments.get(id))
+            .and_then(|env| env.worktree_dir)
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| self.worktree_dir())
+    }
+
     /// Worktree folders that running and archived sessions work in.
     pub(super) fn worktree_paths_in_use(&self) -> Vec<String> {
         let mut paths: Vec<String> = self

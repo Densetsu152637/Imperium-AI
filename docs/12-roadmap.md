@@ -762,7 +762,7 @@ and `environments.agent_update` (protocol 0.28)
 55. **Terminal and file panes** (planned). Claude's desktop app shows a terminal and a file
     viewer beside the conversation; Imperium gets the same two panes. No plan yet.
 <!-- markdownlint-disable-next-line MD029 -->
-57. **Per-environment worktree folder** (planned). An environment can set its own git worktrees
+57. **Per-environment worktree folder** (implemented). An environment can set its own git worktrees
     root folder. Sessions in that environment create and discover their worktrees there instead
     of in the global worktrees folder (`sessions.worktree_dir`, Settings → Sessions;
     [worktrees](14-projects-and-automation.md#worktrees),
