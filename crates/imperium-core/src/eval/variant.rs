@@ -30,6 +30,10 @@ pub(crate) struct LoopFlags {
     /// (`harness.tool_loading`; docs/plans/reactive-tools.md). Unlike `harness`, its default
     /// is `off`, so evaluations run as before unless a run asks for it.
     pub tool_loading: HarnessMode,
+    /// Whether a tool result too large for the conversation is saved to a file
+    /// (`harness.result_spill`). Unlike the setting, its default is `false`, so evaluations
+    /// stay comparable with earlier baselines unless a run asks for it.
+    pub result_spill: bool,
     /// Whether stale tool results are stubbed before a compaction summary
     /// (`harness.clear_stale_results`); default on, as in a session.
     pub clear_stale_results: bool,
@@ -40,7 +44,7 @@ pub(crate) struct LoopFlags {
 }
 
 /// The flags and what they do, for error messages.
-const FLAG_NAMES: [&str; 10] = [
+const FLAG_NAMES: [&str; 11] = [
     "max_steps",
     "effort",
     "auto_compact",
@@ -49,6 +53,7 @@ const FLAG_NAMES: [&str; 10] = [
     "attended",
     "harness",
     "tool_loading",
+    "result_spill",
     "clear_stale_results",
     "parallel_reads",
 ];
@@ -66,6 +71,7 @@ impl LoopFlags {
             attended: false,
             harness: HarnessMode::Auto,
             tool_loading: HarnessMode::Off,
+            result_spill: false,
             clear_stale_results: true,
             parallel_reads: 0,
         };
@@ -117,6 +123,9 @@ impl LoopFlags {
                         "auto" => HarnessMode::Auto,
                         _ => return Err(bad("on, off or auto")),
                     };
+                }
+                "result_spill" => {
+                    parsed.result_spill = value.parse().map_err(|_| bad("true or false"))?;
                 }
                 "clear_stale_results" => {
                     parsed.clear_stale_results = value.parse().map_err(|_| bad("true or false"))?;

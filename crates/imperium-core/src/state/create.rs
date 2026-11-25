@@ -858,6 +858,7 @@ impl DaemonState {
                         hints: flags.harness,
                         clarify: flags.harness,
                         tool_loading: flags.tool_loading,
+                        result_spill: flags.result_spill,
                         clear_stale_results: flags.clear_stale_results,
                         parallel_reads: flags.parallel_reads,
                         ..imperium_config::HarnessSettings::default()

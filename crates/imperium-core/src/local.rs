@@ -21,8 +21,10 @@ use imperium_protocol::methods::{
 
 use crate::residency::{MachineProbe, MemoryProbe, ResidencyController};
 
-/// vLLM runs on Linux (including WSL2) only; elsewhere its models are listed but cannot load.
-const VLLM_AVAILABLE: bool = cfg!(target_os = "linux");
+/// vLLM runs natively on Linux (including inside WSL2). On Windows it runs inside a WSL2
+/// distribution when one is set up ([`imperium_local::wsl`]); elsewhere its models are listed but
+/// cannot load.
+const VLLM_NATIVE: bool = cfg!(target_os = "linux");
 
 #[derive(Debug)]
 pub struct LocalRuntime {
@@ -37,6 +39,8 @@ pub struct LocalRuntime {
     server: Arc<Mutex<(String, PathBuf)>>,
     /// Starts the servers; `None` in tests that use a fake.
     launcher: Option<Arc<ProcessLauncher>>,
+    /// Whether vLLM models can load here: Linux, or Windows with vLLM set up in WSL2.
+    vllm_available: bool,
 }
 
 fn set_server(
@@ -98,6 +102,7 @@ impl LocalRuntime {
             hardware,
             server: Arc::new(Mutex::new(("cpu".into(), PathBuf::from("llama-server")))),
             launcher: None,
+            vllm_available: VLLM_NATIVE,
         }
     }
 
@@ -132,18 +137,35 @@ impl LocalRuntime {
             paths.data_dir().join("logs"),
         )
         .with_slot_dir(paths.data_dir().join("swap"));
-        match imperium_local::vllm_env::resolve(paths.data_dir(), &vllm.command) {
+        let mut vllm_available = VLLM_NATIVE;
+        // On Windows vLLM runs in WSL2 when the managed environment was set up there (or the
+        // command points into WSL); anything else leaves its models unavailable.
+        match imperium_local::vllm_env::resolve_for(
+            paths.data_dir(),
+            vllm,
+            cfg!(windows),
+            &imperium_local::wsl::default_distro_name,
+        ) {
             imperium_local::vllm_env::Launch::Command(program) => {
                 launcher = launcher.with_program(imperium_local::backend::VLLM, program);
             }
             imperium_local::vllm_env::Launch::Docker { docker, image } => {
                 launcher = launcher.with_docker_vllm(docker, image, paths.data_dir());
             }
+            imperium_local::vllm_env::Launch::Wsl {
+                wsl,
+                distro,
+                program,
+            } => {
+                tracing::info!(%distro, %program, "vLLM runs inside WSL2");
+                launcher = launcher.with_wsl_vllm(wsl, distro, program);
+                vllm_available = true;
+            }
         }
         let launcher = Arc::new(launcher);
         let runtimes = Runtimes {
             vllm: vllm.clone(),
-            vllm_available: VLLM_AVAILABLE,
+            vllm_available,
         };
         let supervisor = Supervisor::start(
             found.models,
@@ -171,6 +193,7 @@ impl LocalRuntime {
             hardware,
             server: Arc::new(Mutex::new((pack, server))),
             launcher: Some(launcher),
+            vllm_available,
         };
         local.detect_if_missing(paths, settings);
         Some(local)
@@ -310,29 +333,29 @@ impl LocalRuntime {
 
     pub fn listing(&self) -> LocalModelListResult {
         let loaded = self.supervisor.loaded();
-        let models = self
-            .supervisor
-            .models()
-            .iter()
-            .map(|model| {
-                let footprint = self.supervisor.footprint(model);
-                let launch = self.supervisor.launch(&model.id);
-                let placement = self.supervisor.placement_when_idle(model);
-                let status = loaded.iter().find(|l| l.model_id == model.id);
-                let cpu_lane = self.supervisor.cpu_slots(&model.id).is_some();
-                let estimate = if status.is_some() {
-                    None
-                } else {
-                    self.supervisor.estimate(model)
-                };
-                // A pool cut to fit beside the loaded models is all one agent could use.
-                let planned_pool = estimate.map_or(launch.pool_tokens, |(_, pool)| pool);
-                let planned_context = if planned_pool < launch.pool_tokens {
-                    launch.context.min(planned_pool)
-                } else {
-                    launch.context
-                };
-                LocalModelRow {
+        let models =
+            self.supervisor
+                .models()
+                .iter()
+                .map(|model| {
+                    let footprint = self.supervisor.footprint(model);
+                    let launch = self.supervisor.launch(&model.id);
+                    let placement = self.supervisor.placement_when_idle(model);
+                    let status = loaded.iter().find(|l| l.model_id == model.id);
+                    let cpu_lane = self.supervisor.cpu_slots(&model.id).is_some();
+                    let estimate = if status.is_some() {
+                        None
+                    } else {
+                        self.supervisor.estimate(model)
+                    };
+                    // A pool cut to fit beside the loaded models is all one agent could use.
+                    let planned_pool = estimate.map_or(launch.pool_tokens, |(_, pool)| pool);
+                    let planned_context = if planned_pool < launch.pool_tokens {
+                        launch.context.min(planned_pool)
+                    } else {
+                        launch.context
+                    };
+                    LocalModelRow {
                     id: model.id.clone(),
                     alias: None,
                     reasoning: imperium_api::LocalModels::reasons(&*self.supervisor, &model.id)
@@ -344,10 +367,16 @@ impl LocalRuntime {
                     path: model.path.display().to_string(),
                     repo: model.repo.clone(),
                     mmproj: model.mmproj.as_ref().map(|path| path.display().to_string()),
-                    problem: (model.format == Format::Safetensors && !VLLM_AVAILABLE).then(|| {
-                        "vLLM, which serves Hugging Face folders, runs on Linux or WSL2 only; \
-                         use a GGUF build of this model here"
-                            .to_string()
+                    problem: (model.format == Format::Safetensors && !self.vllm_available).then(|| {
+                        let message = if cfg!(windows) {
+                            "vLLM, which serves Hugging Face folders, runs inside WSL2 on \
+                             Windows: run `imperium runtime vllm setup --wsl`, or use a GGUF \
+                             build of this model"
+                        } else {
+                            "vLLM, which serves Hugging Face folders, runs on Linux or WSL2 \
+                             only; use a GGUF build of this model here"
+                        };
+                        message.to_string()
                     }),
                     architecture: model.info.architecture.clone(),
                     quantization: model.info.quantization().map(str::to_string),
@@ -385,8 +414,8 @@ impl LocalRuntime {
                     // The daemon's listing marks the models the user switched off.
                     enabled: true,
                 }
-            })
-            .collect();
+                })
+                .collect();
         let budget = self.supervisor.budget();
         let scanned = self.scanned.lock().unwrap_or_else(PoisonError::into_inner);
         let (folders, skipped) = &*scanned;
@@ -618,6 +647,7 @@ mod tests {
             hardware,
             server: Arc::new(Mutex::new(("cpu".into(), PathBuf::from("llama-server")))),
             launcher: None,
+            vllm_available: VLLM_NATIVE,
         };
         let row = |listing: &LocalModelListResult, id: &str| {
             listing
