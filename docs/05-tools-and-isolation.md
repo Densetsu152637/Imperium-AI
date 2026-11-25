@@ -4,7 +4,7 @@
 
 | Tool group  | Tools                                                     | Notes                                            |
 | ----------- | --------------------------------------------------------- | ------------------------------------------------ |
-| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match unique edits; reads numbered, capped at 2,000 lines and a window-sized character budget by default and paged with `offset`/`limit`; `list_dir` capped at 500 entries and paged with `offset`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
+| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match edits (`old_string` must be unique, or `replace_all` changes every occurrence); reads numbered, capped at 2,000 lines and a window-sized character budget by default and paged with `offset`/`limit`; `list_dir` capped at 500 entries and paged with `offset`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
 | Execution   | `run_command`, `command_output`, `command_stop` (implemented) | Runs in the project root via `cmd /C` (the line passed verbatim) or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr; `background: true` [returns a process id at once](#background-commands-implemented) |
 | Web         | `web.search`, `web.fetch`                                 | Search providers: SearXNG (self-hosted), Brave, Tavily, Kagi, Exa; pluggable. Pages are [cached](#fetch-cache-and-robotstxt-implemented) and `robots.txt` is honoured |
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
@@ -1061,7 +1061,7 @@ read that stops short for any reason says the same. A first line past the budget
 a note to use `grep` for the part needed. A read with an explicit `limit` keeps the 100,000-character
 ceiling (line numbers and notes included). The defaults apply to every model and to
 calls through the MCP bridge and the Claude harness (a caller that cannot give the window gets 32,000 characters). `list_dir` returns at most 500 entries
-per call, sorted, with a note (`use offset=500 to see more`); its optional `offset` skips entries. Edits stay UTF-8. `tool.before`
+per call, sorted, with a note (`use offset=500 to see more`); its optional `offset` skips entries. Edits stay UTF-8. `edit_file` takes an optional `replace_all` (boolean, default false): false keeps the exact, unique `old_string` rule (none or several matches is an error that names `replace_all`); true replaces every occurrence, says how many, and still refuses no match. `tool.before`
 and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
 (`path`, `offset`, `limit`) whatever spelling the model used. Each reading is checked like any
 other path, and the first that lands inside a folder or grant is used. The OS tier makes every

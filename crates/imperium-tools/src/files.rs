@@ -222,34 +222,53 @@ pub(crate) async fn edit_file(
     path: &str,
     old: &str,
     new: &str,
+    replace_all: bool,
 ) -> Result<String, ToolError> {
     if old.is_empty() {
         return Err(ToolError::Invalid("old_string must not be empty".into()));
     }
     if workspace.runtime().is_some() {
         let text = remote_files::read_text(workspace, path).await?;
-        let replaced = replace_once(&text, old, new, path)?;
+        let (replaced, count) = replace_matches(&text, old, new, path, replace_all)?;
         let shown = remote_files::write(workspace, path, replaced.as_bytes()).await?;
-        return Ok(format!("edited {shown}"));
+        return Ok(edited(&shown, count, replace_all));
     }
     let full = workspace.resolve_writable(path)?;
     let text = read_text(&full, path).await?;
-    let replaced = replace_once(&text, old, new, path)?;
+    let (replaced, count) = replace_matches(&text, old, new, path, replace_all)?;
     tokio::fs::write(&full, replaced)
         .await
         .map_err(|error| ToolError::Io(format!("{path}: {error}")))?;
-    Ok(format!("edited {}", workspace.display(&full)))
+    Ok(edited(&workspace.display(&full), count, replace_all))
 }
 
-/// `text` with its one occurrence of `old` replaced; none or several is an error.
-fn replace_once(text: &str, old: &str, new: &str, path: &str) -> Result<String, ToolError> {
+/// The result line of an edit: a replace-all edit says how many places it changed.
+fn edited(shown: &str, count: usize, replace_all: bool) -> String {
+    if replace_all {
+        format!("edited {shown} ({count} replacements)")
+    } else {
+        format!("edited {shown}")
+    }
+}
+
+/// `text` with `old` replaced, and how many times. Without `replace_all` the one occurrence of
+/// `old` is replaced and none or several is an error; with it every occurrence is replaced and
+/// only none is an error.
+fn replace_matches(
+    text: &str,
+    old: &str,
+    new: &str,
+    path: &str,
+    replace_all: bool,
+) -> Result<(String, usize), ToolError> {
     match text.matches(old).count() {
         0 => Err(ToolError::Invalid(format!(
             "old_string not found in {path}"
         ))),
-        1 => Ok(text.replacen(old, new, 1)),
+        1 => Ok((text.replacen(old, new, 1), 1)),
+        n if replace_all => Ok((text.replace(old, new), n)),
         n => Err(ToolError::Invalid(format!(
-            "old_string occurs {n} times in {path}; include more context so it is unique"
+            "old_string occurs {n} times in {path}; include more context so it is unique, or set replace_all to change every occurrence"
         ))),
     }
 }
@@ -465,7 +484,7 @@ mod tests {
             .unwrap();
         assert_eq!(read, "     2\tfn b() {}\n");
 
-        edit_file(&workspace, "src/lib.rs", "fn b", "fn c")
+        edit_file(&workspace, "src/lib.rs", "fn b", "fn c", false)
             .await
             .unwrap();
         let text = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
@@ -564,7 +583,8 @@ mod tests {
                 &workspace,
                 &file(toolchain.path(), "rustc.txt"),
                 "1.89",
-                "2"
+                "2",
+                false
             )
             .await,
             Err(ToolError::ReadOnly(_))
@@ -574,7 +594,7 @@ mod tests {
             "1.89\n"
         );
         assert!(matches!(
-            edit_file(&workspace, "vendor/lib.rs", "old", "new").await,
+            edit_file(&workspace, "vendor/lib.rs", "old", "new", false).await,
             Err(ToolError::ReadOnly(_))
         ));
         assert!(
@@ -602,13 +622,59 @@ mod tests {
         let workspace = Workspace::new(dir.path()).unwrap();
         write_file(&workspace, "a.txt", "x x").await.unwrap();
         assert!(matches!(
-            edit_file(&workspace, "a.txt", "x", "y").await,
+            edit_file(&workspace, "a.txt", "x", "y", false).await,
             Err(ToolError::Invalid(message)) if message.contains("2 times")
         ));
         assert!(matches!(
-            edit_file(&workspace, "a.txt", "z", "y").await,
+            edit_file(&workspace, "a.txt", "z", "y", false).await,
             Err(ToolError::Invalid(_))
         ));
+        // Refused edits change nothing.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "x x"
+        );
+        // A unique match is replaced, as before.
+        write_file(&workspace, "b.txt", "x z").await.unwrap();
+        edit_file(&workspace, "b.txt", "x", "y", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "y z"
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_all_changes_every_occurrence_and_still_refuses_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        write_file(&workspace, "a.txt", "x x\nx").await.unwrap();
+        let result = edit_file(&workspace, "a.txt", "x", "y", true)
+            .await
+            .unwrap();
+        assert!(result.contains("(3 replacements)"), "{result}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "y y\ny"
+        );
+        // No match is still an error with replace_all, and changes nothing.
+        assert!(matches!(
+            edit_file(&workspace, "a.txt", "z", "w", true).await,
+            Err(ToolError::Invalid(message)) if message.contains("not found")
+        ));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "y y\ny"
+        );
+        // The default error points at replace_all.
+        write_file(&workspace, "c.txt", "p p").await.unwrap();
+        let Err(ToolError::Invalid(message)) =
+            edit_file(&workspace, "c.txt", "p", "r", false).await
+        else {
+            panic!("two matches without replace_all");
+        };
+        assert!(message.contains("replace_all"), "{message}");
     }
 
     fn numbered(count: usize) -> String {

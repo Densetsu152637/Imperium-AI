@@ -48,6 +48,8 @@ pub enum Invocation {
         path: String,
         old_string: String,
         new_string: String,
+        /// Replace every occurrence of `old_string`, not only a unique one.
+        replace_all: bool,
     },
     ListDir {
         path: String,
@@ -181,6 +183,8 @@ struct EditArgs {
     path: String,
     old_string: String,
     new_string: String,
+    #[serde(default)]
+    replace_all: bool,
 }
 
 #[derive(Deserialize)]
@@ -288,6 +292,7 @@ impl Invocation {
                     path: args.path,
                     old_string: args.old_string,
                     new_string: args.new_string,
+                    replace_all: args.replace_all,
                 }
             }
             "list_dir" => {
@@ -454,7 +459,8 @@ impl Invocation {
                 path,
                 old_string,
                 new_string,
-            } => files::edit_file(workspace, path, old_string, new_string).await,
+                replace_all,
+            } => files::edit_file(workspace, path, old_string, new_string, *replace_all).await,
             Invocation::ListDir { path, offset } => files::list_dir(workspace, path, *offset).await,
             Invocation::Glob { pattern, scope } => {
                 let (workspace, pattern, scope) =
@@ -515,9 +521,10 @@ pub fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "edit_file".into(),
-            description: "Replace exactly one occurrence of old_string with new_string in a file. old_string must match exactly and be unique.".into(),
+            description: "Replace exactly one occurrence of old_string with new_string in a file. old_string must match exactly and be unique, unless replace_all is true, which replaces every occurrence.".into(),
             parameters: json!({"type": "object", "properties": {
-                "path": path, "old_string": {"type": "string"}, "new_string": {"type": "string"}
+                "path": path, "old_string": {"type": "string"}, "new_string": {"type": "string"},
+                "replace_all": {"type": "boolean", "description": "Replace every occurrence of old_string; default false (it must then be unique)"}
             }, "required": ["path", "old_string", "new_string"]}),
         },
         ToolSpec {
