@@ -1231,7 +1231,7 @@ session it lists every running session that has a pull request bound. Both read 
 as `\u{..}` (the daemon already strips them, so this is a second line of defence for a terminal).
 Not yet: turning the auto-fix switch on (a later stage).
 
-#### Auto-merge (implemented, stage 6, protocol 0.59)
+### Auto-merge (implemented, stage 6, protocol 0.59)
 
 **Auto-merge lands code unseen.** With it on, GitHub merges the pull request the moment the
 repository's own required checks and reviews pass, and nobody looks at the code again. It is the
