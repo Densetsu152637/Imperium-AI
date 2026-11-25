@@ -26,7 +26,7 @@ pub(super) fn context_load_spec() -> ToolSpec {
 pub(crate) fn memory_search_spec() -> ToolSpec {
     ToolSpec {
         name: "memory_search".into(),
-        description: "Search saved memories (global, and this environment's Memory.md) by meaning words; returns names and descriptions."
+        description: "Search saved memories (global, and this environment's Memory.md) by meaning words; returns names and descriptions. Check here before re-deriving facts."
             .into(),
         parameters: json!({"type": "object", "properties": {
             "query": {"type": "string"},

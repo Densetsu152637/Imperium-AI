@@ -228,6 +228,13 @@ async fn memory_forget_moves_the_entry_aside_and_updates_the_index() {
     let session = start(&url, dir.path(), None, WritePolicy::Auto);
     let events = turn(&session, PermissionDecision::Deny).await;
     assert!(finished(&events, "memory_forget")[0].0);
+    assert!(events.iter().any(|e| matches!(e,
+        SessionEvent::Notice { message } if message.contains("Forgot global memory old-fact"))));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::MemorySaved { .. }))
+    );
     assert!(!dir.path().join("data/memory/global/old-fact.md").exists());
     let kept: Vec<_> = std::fs::read_dir(dir.path().join("data/memory/trash"))
         .unwrap()

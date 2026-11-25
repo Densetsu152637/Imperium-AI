@@ -220,12 +220,12 @@ global entry, as `memory_read` does.
 **Permissions** are those of `memory_remember`, per scope: `memory.write.global` and
 `memory.write.environment` (`ask` by default, `auto`, `off`; `off` refuses both tools), and plan
 mode refuses them without asking. Under `ask` the prompt shows the string removed and the one
-added (an edit), or the name and scope (a removal). An edit that cannot apply (no such memory, the
+added (an edit; each in full, or its first 2,000 characters marked "truncated"), or the name and scope (a removal). An edit that cannot apply (no such memory, the
 string missing or not unique, a limit broken) is refused **before** the user is asked, so they
 never approve one that fails. **Subagents cannot edit or forget**, as they cannot save: like
 `memory_remember`, the tools are offered to the root agent only (a subagent reads, and proposes a
 change through its report). Both are also offered by the MCP bridge with `--allow-write`, and
-both report a `memory_saved` event.
+`memory_edit` reports a `memory_saved` event, and `memory_forget` a notice ("Forgot ... memory ...").
 
 ## How agents use memory
 
@@ -244,9 +244,9 @@ both report a `memory_saved` event.
    events), so the user can see why an agent behaved as it did.
 
 Subagents can search and read memory in their parent's scopes; they propose new memories
-through their parent rather than writing directly. The instructions tell every agent to check
-memory before re-deriving a fact it may already hold, and the root to correct a memory with
-`memory_edit` or retire it with `memory_forget` instead of saving a near-copy.
+through their parent rather than writing directly. `memory_search` says to check memory before
+re-deriving a fact it may already hold, and the root's instructions tell it to correct a memory
+with `memory_edit` or retire it with `memory_forget` instead of saving a near-copy.
 
 ## Session search (implemented)
 

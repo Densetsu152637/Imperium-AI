@@ -274,6 +274,10 @@ mod tests {
         assert!(check("write_file", false).is_err());
         assert!(check("run_command", false).is_err());
         assert!(check("write_file", true).is_ok());
+        for name in ["memory_remember", "memory_edit", "memory_forget"] {
+            assert!(check(name, false).is_err(), "{name}");
+            assert!(check(name, true).is_ok(), "{name}");
+        }
         // Delegation, questions to the user and the like are never bridged.
         for name in ["spawn_agent", "ask_user", "start_session", "update_plan"] {
             assert!(check(name, true).is_err(), "{name}");
