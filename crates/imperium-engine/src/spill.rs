@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::artefacts::CHARS_PER_TOKEN;
 
-pub use imperium_tools::is_link;
+pub(crate) use imperium_tools::is_link;
 
 /// The window assumed when the agent's model has none in the table and no local runtime plans
 /// one.
@@ -45,7 +45,7 @@ const STDERR_MARKER: &str = "--- stderr ---";
 const STDERR_DIVISOR: usize = 4;
 /// All the results a session may save, in bytes. Past it a result stays in the conversation
 /// (as when a write fails), so a runaway tool cannot fill the disk through the results folder.
-pub const MAX_SESSION_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const MAX_SESSION_BYTES: u64 = 512 * 1024 * 1024;
 /// Most characters of the output's own first line kept ahead of the marker when the output
 /// began with an error.
 const ERROR_LINE_CHARS: usize = 200;
