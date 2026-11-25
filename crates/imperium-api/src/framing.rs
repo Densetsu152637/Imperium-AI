@@ -34,6 +34,7 @@ pub fn defuse_tool_frame(text: &str) -> String {
 /// defused before it goes into a block, so a tool result cannot close or open one.
 pub const HARNESS_TAGS: [&str; 14] = [
     "session-state",
+    "current-plan",
     "ambiguity-hints",
     "resolved-request",
     "original-message",

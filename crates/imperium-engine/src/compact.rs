@@ -12,7 +12,8 @@ use imperium_api::truncate_chars;
 
 use crate::agent::effective_call;
 use crate::breakdown::{
-    Category, KEPT_CLOSE, KEPT_OPEN, Measured, PART_SEPARATOR, Spans, restored_spans,
+    Category, KEPT_CLOSE, KEPT_OPEN, Measured, PART_SEPARATOR, Spans, estimate_tokens,
+    restored_spans,
 };
 use crate::instructions;
 
@@ -476,6 +477,146 @@ pub(crate) fn shorten(summary: &str, target: u64, current: u64) -> String {
         .take(usize::try_from(keep).unwrap_or(usize::MAX))
         .collect();
     format!("{}\n[summary shortened to fit]", kept.trim_end())
+}
+
+/// Tools whose old results may be replaced by a stub: read-only calls the model can repeat
+/// (`read_file`, `grep`, `glob`, `list_dir`, `web_fetch`, `web_search`). Never a command's
+/// output, a report, a loaded skill or workflow reference ([`PINNED_TOOLS`]), a state or plan
+/// result (the conversation reads them back), or a `tool_search` result (the schemas).
+const CLEARABLE_TOOLS: [&str; 6] = [
+    "read_file",
+    "grep",
+    "glob",
+    "list_dir",
+    "web_fetch",
+    "web_search",
+];
+
+/// Text that marks a result as a pointer to the real content (an input stored as an artefact,
+/// a large result saved to a file): the pointer is all the model has, so it is never stubbed.
+const OFFLOAD_MARKERS: [&str; 2] = ["stored as artefact", "Full output saved to"];
+
+/// What a cleared result starts with.
+pub(crate) const CLEARED_PREFIX: &str = "[result cleared: ";
+
+/// A result shorter than this stays: its stub would save next to nothing.
+const MIN_CLEAR_CHARS: usize = 400;
+
+/// Most characters of the call's arguments a stub repeats.
+const STUB_ARGUMENT_CHARS: usize = 80;
+
+/// One old tool result to replace: the message, its stub, and the tokens the swap frees.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct StaleResult {
+    pub index: usize,
+    pub stub: String,
+    pub freed_tokens: u64,
+}
+
+/// The stub that stands in for a cleared result of `name` called with `arguments`.
+fn stub(name: &str, arguments: &str) -> String {
+    let shown = serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .map(|value| {
+            ["pattern", "query", "url", "path", "glob", "offset", "limit"]
+                .iter()
+                .filter_map(|key| {
+                    let found = value.get(key)?;
+                    match found.as_str() {
+                        Some(text) => Some(text.to_string()),
+                        // A range is shown as `offset=10 limit=50`, not as bare numbers.
+                        None => found.as_u64().map(|number| format!("{key}={number}")),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| arguments.to_string());
+    let line: String = shown
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !matches!(c, '[' | ']' | '<' | '>'))
+        .take(STUB_ARGUMENT_CHARS)
+        .collect();
+    format!("{CLEARED_PREFIX}{name} {line} \u{2014} call again if needed]")
+}
+
+/// The tool results older than the last `keep_turns` user turns that may be replaced by a
+/// stub, in order. A result stays when it is recent (the last `keep_turns` turns, a turn being a
+/// user message other than an instruction file or mid-turn steering), pinned workflow context,
+/// an error, from a tool that is not repeatable ([`CLEARABLE_TOOLS`]), short, or already
+/// cleared. Only the content of a result changes, never the calls or their order, so every
+/// tool call keeps its result.
+pub(crate) fn stale_results(messages: &[ChatMessage], keep_turns: usize) -> Vec<StaleResult> {
+    let starts: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| {
+            matches!(message, ChatMessage::User { .. })
+                && !instructions::is_message(message)
+                && !crate::queue::is_steering_message(message)
+                && !crate::queue::is_background_notice(message)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let Some(boundary) = starts
+        .len()
+        .checked_sub(keep_turns.max(1))
+        .and_then(|at| starts.get(at))
+        .copied()
+    else {
+        return Vec::new();
+    };
+    let mut calls: HashMap<&str, (String, String)> = HashMap::new();
+    let mut out = Vec::new();
+    for (index, message) in messages.iter().enumerate().take(boundary).skip(1) {
+        match message {
+            ChatMessage::Assistant { tool_calls, .. } => {
+                for call in tool_calls {
+                    let inner = effective_call(call);
+                    calls.insert(
+                        &call.id,
+                        (
+                            inner.function.name.clone(),
+                            inner.function.arguments.clone(),
+                        ),
+                    );
+                }
+            }
+            ChatMessage::Tool {
+                tool_call_id,
+                content,
+            } => {
+                let Some((name, arguments)) = calls.get(tool_call_id.as_str()) else {
+                    continue;
+                };
+                if !CLEARABLE_TOOLS.contains(&name.as_str())
+                    || content.len() < MIN_CLEAR_CHARS
+                    || content.starts_with("error")
+                    || content.starts_with(CLEARED_PREFIX)
+                    || OFFLOAD_MARKERS
+                        .iter()
+                        .any(|marker| content.contains(marker))
+                {
+                    continue;
+                }
+                let stub = stub(name, arguments);
+                let freed = estimate_tokens(content).saturating_sub(estimate_tokens(&stub));
+                if freed > 0 {
+                    out.push(StaleResult {
+                        index,
+                        stub,
+                        freed_tokens: freed,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1089,5 +1230,218 @@ b"
             summary_block("notes", "").trim_end()
         );
         assert!(!summary_block("notes", "").contains("loaded-tools"));
+    }
+
+    fn call_of(id: &str, name: &str, arguments: &str) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: None,
+            tool_calls: vec![crate::agent::test_call(id, name, arguments)],
+        }
+    }
+
+    fn output_of(id: &str, content: &str) -> ChatMessage {
+        ChatMessage::Tool {
+            tool_call_id: id.into(),
+            content: content.into(),
+        }
+    }
+
+    fn long() -> String {
+        "line of a file\n".repeat(80)
+    }
+
+    /// Four turns: in the oldest two a read, a pinned load, an error, a command and a search;
+    /// a read in each of the newest.
+    fn aged() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::System {
+                content: "system".into(),
+            },
+            user("one"),
+            call_of("r1", "read_file", r#"{"path":"a.rs"}"#),
+            output_of("r1", &long()),
+            call_of("l1", "load_skill", r#"{"name":"pdf"}"#),
+            output_of("l1", &long()),
+            call_of("e1", "read_file", r#"{"path":"b.rs"}"#),
+            output_of("e1", &format!("error: {}", long())),
+            call_of("c1", "run_command", r#"{"command":"ls"}"#),
+            output_of("c1", &long()),
+            ChatMessage::Assistant {
+                content: Some("done".into()),
+                tool_calls: Vec::new(),
+            },
+            user("two"),
+            call_of("r2", "grep", r#"{"pattern":"needle","path":"src"}"#),
+            output_of("r2", &long()),
+            user("three"),
+            call_of("r3", "read_file", r#"{"path":"c.rs"}"#),
+            output_of("r3", &long()),
+            user("four"),
+            call_of("r4", "read_file", r#"{"path":"d.rs"}"#),
+            output_of("r4", &long()),
+        ]
+    }
+
+    fn cleared_indices(messages: &[ChatMessage], keep: usize) -> Vec<usize> {
+        stale_results(messages, keep)
+            .into_iter()
+            .map(|stale| stale.index)
+            .collect()
+    }
+
+    #[test]
+    fn only_old_repeatable_results_become_stubs() {
+        let messages = aged();
+        // Keeping the last two turns: the read and the search of the first two turns go; the
+        // loaded skill, the error and the command output stay.
+        let stale = stale_results(&messages, 2);
+        let at: Vec<usize> = stale.iter().map(|stale| stale.index).collect();
+        assert_eq!(at, [3, 13]);
+        assert_eq!(
+            stale[0].stub,
+            "[result cleared: read_file a.rs \u{2014} call again if needed]"
+        );
+        assert_eq!(
+            stale[1].stub,
+            "[result cleared: grep needle src \u{2014} call again if needed]"
+        );
+        assert!(stale.iter().all(|stale| stale.freed_tokens > 0));
+        // Keeping one turn adds the third; the newest turn's results are never stale, and
+        // keeping none still keeps one.
+        assert_eq!(cleared_indices(&messages, 1), [3, 13, 16]);
+        assert_eq!(cleared_indices(&messages, 0), [3, 13, 16]);
+    }
+
+    #[test]
+    fn a_conversation_with_few_turns_has_nothing_stale() {
+        assert!(stale_results(&aged()[..11], 2).is_empty());
+        assert!(stale_results(&[], 2).is_empty());
+        assert!(stale_results(&aged(), 9).is_empty());
+    }
+
+    #[test]
+    fn short_cleared_and_unknown_results_stay() {
+        let mut messages = aged();
+        messages[3] = output_of("r1", "short");
+        messages[13] = output_of(
+            "r2",
+            &format!("{CLEARED_PREFIX}grep x \u{2014} call again if needed]"),
+        );
+        assert!(stale_results(&messages, 2).is_empty());
+        // A result with no call before it is left alone.
+        let orphan = vec![
+            ChatMessage::System {
+                content: "system".into(),
+            },
+            user("one"),
+            output_of("ghost", &long()),
+            user("two"),
+            user("three"),
+        ];
+        assert!(stale_results(&orphan, 2).is_empty());
+    }
+
+    #[test]
+    fn instruction_messages_are_not_turns() {
+        let mut messages = aged();
+        let instruction =
+            instructions::wrap(&[instructions::render_block("AGENTS.md", "x", false)]);
+        messages.insert(15, ChatMessage::user(instruction));
+        // The same results are stale as before: the inserted message is not a turn.
+        assert_eq!(cleared_indices(&messages, 2), [3, 13]);
+    }
+
+    #[test]
+    fn a_stub_through_call_tool_names_the_inner_tool() {
+        use crate::agent::test_proxied;
+        let messages = vec![
+            ChatMessage::System {
+                content: "system".into(),
+            },
+            user("one"),
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: vec![test_proxied(
+                    "p1",
+                    "read_file",
+                    serde_json::json!({"path": "z.rs"}),
+                )],
+            },
+            output_of("p1", &long()),
+            user("two"),
+            user("three"),
+        ];
+        let stale = stale_results(&messages, 2);
+        assert_eq!(stale.len(), 1);
+        assert!(stale[0].stub.starts_with("[result cleared: read_file z.rs"));
+    }
+
+    #[test]
+    fn a_stub_is_one_bounded_line_without_markup() {
+        let text = stub(
+            "web_fetch",
+            &format!(r#"{{"url":"<b>{}</b>\n[x]"}}"#, "u".repeat(500)),
+        );
+        assert!(text.starts_with("[result cleared: web_fetch "));
+        assert!(text.ends_with("call again if needed]"));
+        assert!(!text.contains(['\n', '<', '>']));
+        assert!(text.chars().count() < 160);
+        // Arguments that are not JSON are shown as given, bounded.
+        assert!(stub("grep", "oops").contains("oops"));
+    }
+
+    #[test]
+    fn background_notices_are_not_turns() {
+        let mut messages = aged();
+        messages.insert(
+            15,
+            ChatMessage::user("<background-notice>\nA command ended.\n</background-notice>"),
+        );
+        messages.insert(
+            12,
+            ChatMessage::user("<background-notice>\nAnother.\n</background-notice>"),
+        );
+        // Both notices sit among the kept turns' neighbours; the same results are stale.
+        assert_eq!(cleared_indices(&messages, 2), [3, 14]);
+    }
+
+    #[test]
+    fn a_pointer_to_offloaded_content_is_never_stubbed() {
+        let handle = format!(
+            "[This input is about 9000 tokens and 400 lines, so it is stored as artefact a1b2 and is not in your context.]\n{}",
+            long()
+        );
+        let spill = format!(
+            "This result is large (900 lines, 40000 characters). Full output saved to /tmp/r.txt; read ranges with read_file.\n{}",
+            long()
+        );
+        let mut messages = aged();
+        messages[3] = output_of("r1", &handle);
+        messages[13] = output_of("r2", &spill);
+        assert!(stale_results(&messages, 2).is_empty());
+    }
+
+    #[test]
+    fn a_stub_keeps_the_range_and_the_search_scope() {
+        let mut messages = aged();
+        messages[2] = call_of(
+            "r1",
+            "read_file",
+            r#"{"path":"a.rs","offset":120,"limit":40}"#,
+        );
+        messages[12] = call_of(
+            "r2",
+            "grep",
+            r#"{"pattern":"needle","path":"src","glob":"*.rs"}"#,
+        );
+        let stale = stale_results(&messages, 2);
+        assert_eq!(
+            stale[0].stub,
+            "[result cleared: read_file a.rs offset=120 limit=40 \u{2014} call again if needed]"
+        );
+        assert_eq!(
+            stale[1].stub,
+            "[result cleared: grep needle src *.rs \u{2014} call again if needed]"
+        );
     }
 }
