@@ -325,6 +325,9 @@ impl World {
     async fn wake(&mut self, approve: impl Fn(&str, &str) -> bool) -> Seen {
         let mut seen = Seen::default();
         let mut polls = 0;
+        // Earlier notifications (session and environment changes) are not of interest, and a
+        // receiver that falls behind loses the newest ones.
+        while self.notices.try_recv().is_ok() {}
         loop {
             if seen.events.is_empty() {
                 assert!(
