@@ -4495,12 +4495,32 @@ Pull requests bound to sessions: what the desktop's pull-request card shows
 Usage: imperium help pr [COMMAND]
 
 Commands:
-  status  Show the pull request bound to a session, or to each running session when none is named
+  status     Show the pull request bound to a session, or to each running session when none is named
+  automerge  Show or turn off GitHub's auto-merge for a session's pull request. It cannot be turned on from the command line: only the desktop app does that
 
 ===== imperium help pr status =====
 Show the pull request bound to a session, or to each running session when none is named
 
 Usage: imperium help pr status
+
+===== imperium help pr automerge =====
+Show or turn off GitHub's auto-merge for a session's pull request. It cannot be turned on from the command line: only the desktop app does that
+
+Usage: imperium help pr automerge [COMMAND]
+
+Commands:
+  status  Show whether auto-merge is on for a session's pull request
+  off     Turn auto-merge off for a session's pull request
+
+===== imperium help pr automerge status =====
+Show whether auto-merge is on for a session's pull request
+
+Usage: imperium help pr automerge status
+
+===== imperium help pr automerge off =====
+Turn auto-merge off for a session's pull request
+
+Usage: imperium help pr automerge off
 
 ===== imperium help schedule =====
 Scheduled tasks the daemon runs
