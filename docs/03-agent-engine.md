@@ -250,9 +250,17 @@ than in a sequential run.
   run only when the permission judge lets it run without asking (`CallKind::Read` and
   `Decision::Run`), no `tool.before` or `tool.after` hook matches its tool, and none of the
   checks `run_tool_once` makes first (`early_refusal`, shared with the run check: a fork's, a launcher's, the agent's tool list, permission
-  profile and dropped tools) would refuse it. Provider tools (`web_fetch`, MCP, browser), memory
-  tools and `tool_search` are not run ahead: their kind is `Other`, which carries no read-only
-  promise.
+  profile and dropped tools) would refuse it. A provider tool (`web_fetch`, MCP, browser) is not
+  run ahead by default: its kind is `Other`, which carries no read-only promise. A provider opts
+  a tool in with `ToolProvider::read_only(name)` (default `false`, so nothing changes until a
+  provider says so): the call then runs ahead when its `check` is valid, does not ask, runs no
+  command and needs no workflow context, the tool does not always ask, and the judge lets it run;
+  it runs with no events from the tool and no sampling, and its output is kept and used only if
+  the call that comes has the same name and arguments. The built-in memory tools (`memory_search`,
+  `memory_read`) run in the loop itself, so they stay in order, and `tool_search` too. Where
+  tool loading is off, a `call_tool` call is not a tool (the loop does not unwrap it), so
+  nothing inside it is run ahead; with loading on it is judged as the tool it stands for.
+  The `ReadGate` seam tests use is compiled only with the engine's `testing` feature.
 - **Runs, not steps.** The loop looks at the calls from its current position and takes the
   maximal run of such reads (two or more, with distinct call ids). Anything else (a write, a
   command, a spawn, a read that asks, a hooked read) ends the run and runs in its place, so a
@@ -486,7 +494,10 @@ session's results folder, `<data>/sessions/<session id>.results/`, and the conve
 only a notice: the line and character counts, the path ("Full output saved to <path>; read
 ranges with `read_file` (offset and limit are in lines) or search it with `grep`"), the first and
 last lines, and how many lines were left out. The preview is bounded (half the threshold, at most
-6,000 characters, two thirds of it from the head; one very long line is cut).
+6,000 characters, two thirds of it from the head; one very long line is cut). A command's output
+puts its stderr after its stdout (`--- stderr ---`); when a long stdout would push the start of
+the stderr into the omitted middle, a quarter of the preview keeps the head of the stderr
+section, with the omitted lines counted either side of it.
 
 - **Threshold.** A sixteenth of the agent's own window in tokens, at four characters a token:
   8,192 characters at a 32,768-token window, 32,768 at 128,000, never below
@@ -504,21 +515,35 @@ last lines, and how many lines were left out. The preview is bounded (half the t
   conversation.
 - **Durable.** The notice, with the path, is what the conversation and its saved copy hold, so a
   resumed session still has a valid path. Archiving keeps the folder; deleting the session
-  deletes it. Saved files are not compacted away or cleaned earlier: they are the session's.
+  deletes it. Saved files are not compacted away or cleaned earlier: they are the session's. The
+  folder is created, empty, when the session spawns, whether or not anything is ever saved. A
+  session's saved results are capped at 512 MiB in all (`spill::MAX_SESSION_BYTES`); a result
+  that would pass it stays in the conversation, as when a write fails.
+- **Never a link.** The results folder must be a real folder. One that is a symbolic link, or on
+  Windows a junction or other reparse point, is looked at with `symlink_metadata` (never
+  followed) and refused: the session saves nothing (results stay in the conversation, with a
+  warning), the folder is not granted for reading, and branching never copies from or into
+  one. Each file is made with `create_new`, so a link planted under a name is not written
+  through.
 - **Not worth it.** A result whose notice would be more than 70 % of its size stays whole. A
   result that began with an error keeps its first line ahead of the notice.
 - **The marker.** Every notice starts with (after the error line, if any) the stable string
   `[spilled tool result]` (`imperium_engine::SPILL_MARKER`) and, in the same notice, the words `Full output saved to` (`imperium_engine::SAVED_TO`). Code that clears or rewrites old
-  tool results must leave a result that contains it alone, as the notice is already short and
-  its path is the only way back to the output.
+  tool results must leave a notice alone, as it is already short and its path is the only way
+  back to the output. A notice is recognised by structure (`spill::is_notice`: the first line
+  starts with the marker, or an `error` line is followed by one that does), not by the words
+  appearing anywhere, so a result that merely quotes them (a `grep` over a log) is still cleared
+  when old.
 - **Agent tools.** The agent-protocol tools (`await_tasks`, `spawn_agent`, `ask_agent`,
   `delegate_chunks`, `list_agents`, `ask_user`, `update_plan`, and the like) and the memory tools
   are never saved: their results are other agents' reports, answers or notes.
 - **Local files only.** A session limited to local files may still read its own results folder
   (read-only, like its scratch folder); no other path outside its folders opens.
 - **Branches and rewinds.** A branched, forked or rewound session gets its own copy of the
-  parent's results folder, and the copied conversation names the copy, so deleting the parent
-  leaves the child's paths valid.
+  files in the parent's results folder that its conversation names (its messages and journal,
+  by file name), not the whole folder, and the copied conversation names the copy, so deleting
+  the parent leaves the child's paths valid. A fork that fails part way removes what it made,
+  the copied files included.
 - **The prompt.** The folder is not named in the system prompt (its path is per session), so the
   prompt is identical with the setting on or off.
 - **Settings.** `harness.result_spill` (on by default) and `harness.result_spill_min_chars`.

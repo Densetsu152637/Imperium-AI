@@ -358,7 +358,8 @@ impl Workspace {
     /// reading as a grant. Unlike other grants it stays readable under local files only (the
     /// agent's own output, as the scratch folder is), and is never writable.
     pub fn with_results_dir(mut self, dir: &Path) -> Self {
-        if self.remote.is_some() {
+        // A link is never granted: it would open whatever it points at.
+        if self.remote.is_some() || is_link(dir) {
             return self;
         }
         self = self.with_grants(&[PathGrant {
@@ -998,6 +999,28 @@ fn drive_path(written: &str) -> Option<String> {
     ))
 }
 
+/// Whether `path` is itself a link: a symbolic link, or on Windows a junction or any other
+/// reparse point. Looked at without following it, so a link to a folder is a link, never the
+/// folder. A path that does not exist is not one.
+pub fn is_link(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT: junctions, symbolic links, mount points.
+        const REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
 /// A path as people write it: without Windows' `\\?\` verbatim prefix on drive paths.
 pub fn plain(path: &Path) -> String {
     let shown = path.display().to_string();
@@ -1464,6 +1487,41 @@ mod tests {
                 "{outside} should be refused for writing"
             );
         }
+    }
+
+    #[test]
+    fn a_linked_results_folder_is_not_granted() {
+        let folder = tempfile::tempdir().unwrap();
+        let area = tempfile::tempdir().unwrap();
+        let real = area.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("secret.txt"), "s").unwrap();
+        let linked = area.path().join("s.results");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&linked)
+                .arg(&real)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert!(is_link(&linked) && !is_link(&real));
+        let workspace = Workspace::new(folder.path())
+            .unwrap()
+            .with_results_dir(&linked);
+        assert_eq!(workspace.results_dir(), None);
+        let through = linked.join("secret.txt").to_string_lossy().into_owned();
+        assert!(workspace.resolve(&through).is_err());
+        // The real folder itself is granted as before.
+        let granted = Workspace::new(folder.path())
+            .unwrap()
+            .with_results_dir(&real);
+        assert!(granted.results_dir().is_some());
     }
 
     #[test]

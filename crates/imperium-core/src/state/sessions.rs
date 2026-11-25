@@ -624,26 +624,22 @@ impl DaemonState {
 
     /// Copies the tool results session `parent` saved to files into a folder for `child`, so a
     /// conversation copied from the parent (a branch, a rewind) keeps paths that stay valid
-    /// when the parent is deleted. The copied messages are rewritten with
+    /// when the parent is deleted. Only the files `referenced` (the text the child's
+    /// conversation is made of: its messages and journal) names are copied, so a branch made
+    /// early in a long session does not carry the whole folder. A folder that is a link, in
+    /// either session, is never followed. The copied messages are rewritten with
     /// [`rewrite_results_prefix`].
-    pub(crate) fn inherit_saved_results(&self, parent: &str, child: &str) -> Result<(), String> {
+    pub(crate) fn inherit_saved_results(
+        &self,
+        parent: &str,
+        child: &str,
+        referenced: &[&str],
+    ) -> Result<(), String> {
         let sessions = self.paths.data_dir().join("sessions");
         let from = imperium_engine::results_dir(&sessions.join(format!("{parent}.jsonl")));
-        if !from.is_dir() {
-            return Ok(());
-        }
         let to = imperium_engine::results_dir(&sessions.join(format!("{child}.jsonl")));
-        let copy = || -> std::io::Result<()> {
-            std::fs::create_dir_all(&to)?;
-            for entry in std::fs::read_dir(&from)? {
-                let entry = entry?;
-                if entry.file_type()?.is_file() {
-                    std::fs::copy(entry.path(), to.join(entry.file_name()))?;
-                }
-            }
-            Ok(())
-        };
-        copy().map_err(|error| format!("could not copy the session's saved tool results: {error}"))
+        copy_referenced_results(&from, &to, referenced)
+            .map_err(|error| format!("could not copy the session's saved tool results: {error}"))
     }
 
     /// Deletes the folder of the tool results a session saved.
@@ -683,42 +679,61 @@ impl DaemonState {
         let new_id = new_session_id().map_err(|error| error.to_string())?;
         let new_journal = sessions.join(format!("{new_id}.jsonl"));
         std::fs::write(&new_journal, &journal[..cut]).map_err(|error| error.to_string())?;
-        if let Err(error) = self.inherit_saved_results(id, &new_id) {
+        // Everything the fork made is removed if any step fails: the journal and its
+        // companions, the metadata and the copied tool results.
+        let cleanup = |state: &Self| {
             let _ = std::fs::remove_file(&new_journal);
-            self.forget_saved_results(&new_id);
-            return Err(error);
-        }
-        if let Some(messages) = messages {
-            let messages = match String::from_utf8(messages) {
-                Ok(text) => rewrite_results_prefix(&text, id, &new_id).into_bytes(),
-                Err(bytes) => bytes.into_bytes(),
-            };
-            std::fs::write(imperium_engine::messages_path(&new_journal), messages)
-                .map_err(|error| error.to_string())?;
-        }
-        if let Some(fields) = meta.as_object_mut() {
-            let title = fields
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .filter(|title| !title.trim().is_empty())
-                .map(|title| format!("{title} (rewound)"));
-            if let Some(title) = title {
-                fields.insert("title".into(), title.into());
+            let _ = std::fs::remove_file(imperium_engine::messages_path(&new_journal));
+            let _ = std::fs::remove_file(state.meta_path(&new_id));
+            state.forget_saved_results(&new_id);
+        };
+        let made = (|| -> Result<(), String> {
+            // The tool results the new conversation points at: its messages when it is given
+            // some, else its journal.
+            let given = messages
+                .as_deref()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+            let kept = String::from_utf8_lossy(&journal[..cut]);
+            let mut referenced: Vec<&str> = vec![kept.as_ref()];
+            if let Some(given) = &given {
+                referenced.push(given);
             }
-            fields.insert("pinned".into(), false.into());
-            fields.insert("forked_from".into(), id.into());
-            fields.remove("deferred_brief");
-            // The pull request belongs to the session it was bound to.
-            fields.remove("pull_request");
+            self.inherit_saved_results(id, &new_id, &referenced)?;
+            if let Some(messages) = messages {
+                let messages = match String::from_utf8(messages) {
+                    Ok(text) => rewrite_results_prefix(&text, id, &new_id).into_bytes(),
+                    Err(bytes) => bytes.into_bytes(),
+                };
+                std::fs::write(imperium_engine::messages_path(&new_journal), messages)
+                    .map_err(|error| error.to_string())?;
+            }
+            if let Some(fields) = meta.as_object_mut() {
+                let title = fields
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|title| !title.trim().is_empty())
+                    .map(|title| format!("{title} (rewound)"));
+                if let Some(title) = title {
+                    fields.insert("title".into(), title.into());
+                }
+                fields.insert("pinned".into(), false.into());
+                fields.insert("forked_from".into(), id.into());
+                fields.remove("deferred_brief");
+                // The pull request belongs to the session it was bound to.
+                fields.remove("pull_request");
+            }
+            write_meta(&self.meta_path(&new_id), &meta.to_string())
+                .map_err(|error| error.to_string())?;
+            self.resume_from_meta(&new_id, &meta, &new_journal, false)
+                .map_err(|error| error.to_string())
+        })();
+        match made {
+            Ok(()) => Ok(new_id),
+            Err(error) => {
+                cleanup(self);
+                Err(error)
+            }
         }
-        write_meta(&self.meta_path(&new_id), &meta.to_string())
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = self.resume_from_meta(&new_id, &meta, &new_journal, false) {
-            let _ = std::fs::remove_file(self.meta_path(&new_id));
-            self.forget_saved_results(&new_id);
-            return Err(error.to_string());
-        }
-        Ok(new_id)
     }
 
     /// A running session's browser, which the user may take over.
@@ -747,6 +762,50 @@ impl DaemonState {
     }
 }
 
+/// Copies into `to` the regular files of the saved-results folder `from` whose names any of
+/// `referenced` contains (the names are unique and have no characters JSON would escape, so
+/// the text of a conversation holds them as they are). A folder that is a link is never
+/// followed: a `from` that is one has nothing to copy, a `to` that is one is an error. Links
+/// and other non-files inside `from` are skipped.
+pub(super) fn copy_referenced_results(
+    from: &std::path::Path,
+    to: &std::path::Path,
+    referenced: &[&str],
+) -> std::io::Result<()> {
+    if imperium_tools::is_link(from) || !from.is_dir() {
+        return Ok(());
+    }
+    if imperium_tools::is_link(to) {
+        return Err(std::io::Error::other(
+            "the results folder is a link, which is never followed",
+        ));
+    }
+    let mut made = false;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name_text) = name.to_str() else {
+            continue;
+        };
+        // `DirEntry::file_type` does not follow a link, so a link is not a file here.
+        if !entry.file_type()?.is_file() || !referenced.iter().any(|text| text.contains(name_text))
+        {
+            continue;
+        }
+        if !made {
+            std::fs::create_dir_all(to)?;
+            if imperium_tools::is_link(to) {
+                return Err(std::io::Error::other(
+                    "the results folder is a link, which is never followed",
+                ));
+            }
+            made = true;
+        }
+        std::fs::copy(entry.path(), to.join(&name))?;
+    }
+    Ok(())
+}
+
 /// `text` (a saved conversation) with the folder of the parent session's saved tool results,
 /// `<parent>.results`, renamed to the child's, whose copy of the files the paths now name.
 pub(super) fn rewrite_results_prefix(text: &str, parent: &str, child: &str) -> String {
@@ -755,7 +814,92 @@ pub(super) fn rewrite_results_prefix(text: &str, parent: &str, child: &str) -> S
 
 #[cfg(test)]
 mod saved_results_tests {
-    use super::rewrite_results_prefix;
+    use super::{copy_referenced_results, rewrite_results_prefix};
+    use std::path::Path;
+
+    fn files(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[cfg(unix)]
+    fn link(target: &Path, at: &Path) {
+        std::os::unix::fs::symlink(target, at).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn link(target: &Path, at: &Path) {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(at)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    #[test]
+    fn only_the_files_the_conversation_names_are_copied() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("a.results"), dir.path().join("b.results"));
+        std::fs::create_dir(&from).unwrap();
+        for name in ["1-grep.txt", "2-grep.txt", "3-run_command.txt"] {
+            std::fs::write(from.join(name), name).unwrap();
+        }
+        let messages = r#"[{"content":"saved to /d/a.results/1-grep.txt"}]"#;
+        let journal = "{\"output\":\"Full output saved to /d/a.results/3-run_command.txt\"}";
+        copy_referenced_results(&from, &to, &[messages, journal]).unwrap();
+        assert_eq!(files(&to), ["1-grep.txt", "3-run_command.txt"]);
+        assert_eq!(
+            std::fs::read_to_string(to.join("1-grep.txt")).unwrap(),
+            "1-grep.txt"
+        );
+    }
+
+    #[test]
+    fn nothing_referenced_copies_nothing_and_makes_no_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("a.results"), dir.path().join("b.results"));
+        std::fs::create_dir(&from).unwrap();
+        std::fs::write(from.join("1-grep.txt"), "x").unwrap();
+        copy_referenced_results(&from, &to, &["no paths here"]).unwrap();
+        assert!(!to.exists());
+        // No parent folder at all is also nothing to copy.
+        copy_referenced_results(&dir.path().join("none"), &to, &["1-grep.txt"]).unwrap();
+        assert!(!to.exists());
+    }
+
+    #[test]
+    fn a_linked_folder_is_never_followed_on_either_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("1-grep.txt"), "secret").unwrap();
+        // A linked parent folder has nothing to copy.
+        let linked_from = dir.path().join("a.results");
+        link(&real, &linked_from);
+        let to = dir.path().join("b.results");
+        copy_referenced_results(&linked_from, &to, &["1-grep.txt"]).unwrap();
+        assert!(!to.exists());
+        // A linked child folder is refused, and nothing is written through it.
+        let from = dir.path().join("c.results");
+        std::fs::create_dir(&from).unwrap();
+        std::fs::write(from.join("1-grep.txt"), "x").unwrap();
+        let target = dir.path().join("elsewhere");
+        std::fs::create_dir(&target).unwrap();
+        let linked_to = dir.path().join("d.results");
+        link(&target, &linked_to);
+        assert!(copy_referenced_results(&from, &linked_to, &["1-grep.txt"]).is_err());
+        assert!(files(&target).is_empty());
+    }
 
     #[test]
     fn only_the_parents_results_folder_is_renamed() {

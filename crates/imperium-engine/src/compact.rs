@@ -494,7 +494,7 @@ const CLEARABLE_TOOLS: [&str; 6] = [
 
 /// Text that marks a result as a pointer to the real content (an input stored as an artefact,
 /// a large result saved to a file): the pointer is all the model has, so it is never stubbed.
-const OFFLOAD_MARKERS: [&str; 2] = ["stored as artefact", crate::spill::SAVED_TO];
+const OFFLOAD_MARKERS: [&str; 1] = ["stored as artefact"];
 
 /// What a cleared result starts with.
 pub(crate) const CLEARED_PREFIX: &str = "[result cleared: ";
@@ -597,6 +597,7 @@ pub(crate) fn stale_results(messages: &[ChatMessage], keep_turns: usize) -> Vec<
                     || content.len() < MIN_CLEAR_CHARS
                     || content.starts_with("error")
                     || content.starts_with(CLEARED_PREFIX)
+                    || crate::spill::is_notice(content)
                     || OFFLOAD_MARKERS
                         .iter()
                         .any(|marker| content.contains(marker))
@@ -1418,6 +1419,30 @@ b"
         let mut messages = aged();
         messages[3] = output_of("r1", &handle);
         messages[13] = output_of("r2", &spill);
+        assert!(stale_results(&messages, 2).is_empty());
+    }
+
+    #[test]
+    fn only_a_structural_spill_notice_is_kept_not_text_that_mentions_one() {
+        // Text that merely contains the words of a notice is an ordinary result, and is stubbed.
+        let quoted = format!(
+            "The log said: Full output saved to /tmp/r.txt and [spilled tool result] in the middle.
+{}",
+            long()
+        );
+        let mut messages = aged();
+        messages[3] = output_of("r1", &quoted);
+        assert_eq!(cleared_indices(&messages, 2), [3, 13]);
+        // A notice, with or without the error line a failed result keeps ahead of it, is kept.
+        let notice = format!(
+            "{} large.
+{}",
+            crate::spill::SPILL_MARKER,
+            long()
+        );
+        let mut messages = aged();
+        messages[3] = output_of("r1", &notice);
+        messages[13] = output_of("r2", &notice);
         assert!(stale_results(&messages, 2).is_empty());
     }
 

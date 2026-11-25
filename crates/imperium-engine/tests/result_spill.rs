@@ -387,3 +387,51 @@ async fn a_session_limited_to_local_files_reads_its_results_back() {
     assert!(tools[0].contains("Full output saved to "), "{}", tools[0]);
     assert!(tools[1].contains("needle line 04"), "{}", tools[1]);
 }
+
+#[tokio::test]
+async fn the_results_folder_is_made_empty_when_the_session_spawns() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let _session = start(&url, dir.path(), data.path(), false, Default::default());
+    let folder = data.path().join("sessions/s.results");
+    assert!(folder.is_dir());
+    assert!(results_files(data.path()).is_empty());
+}
+
+/// A link to a folder: a symbolic link, or on Windows a junction (no privilege needed).
+fn link_dir(target: &Path, at: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, at).unwrap();
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(at)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_linked_results_folder_is_never_written_through_and_the_result_stays_whole() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    write_files(dir.path());
+    let elsewhere = data.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir_all(data.path().join("sessions")).unwrap();
+    link_dir(&elsewhere, &data.path().join("sessions/s.results"));
+    let session = start(&url, dir.path(), data.path(), false, Default::default());
+    turn(&session, "search").await;
+
+    let tools = tool_messages(&fake, false);
+    assert_eq!(tools.len(), 1, "{tools:?}");
+    assert!(tools[0].contains("needle line 0400") && !tools[0].contains("saved to"));
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+}
