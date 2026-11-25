@@ -2528,6 +2528,7 @@ dependencies = [
  "getrandom 0.4.3",
  "imperium-api",
  "imperium-config",
+ "imperium-engine",
  "imperium-extensions",
  "imperium-mcp",
  "imperium-media",
