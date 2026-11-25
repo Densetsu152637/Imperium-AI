@@ -18,7 +18,7 @@
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use rustix::process::{Pid, Signal, getpgid, getpid, getsid, kill_process, kill_process_group};
+use rustix::process::{Pid, Signal, getpid, kill_process, kill_process_group};
 use sysinfo::{ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
 
 /// How long `SIGHUP` gets before `SIGKILL`.
@@ -27,8 +27,33 @@ const HUP_WAIT: Duration = Duration::from_secs(2);
 const KILL_WAIT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(50);
 
-/// The live (not zombie) processes whose session is `sid`.
-fn members(sid: Pid) -> Vec<Pid> {
+/// A process's session and process group ids. Linux reads `/proc` (rustix's `getsid` panics on
+/// the 0 the kernel reports for a session outside our pid namespace, as in a container); elsewhere
+/// the syscalls are used behind `catch_unwind` for the same reason.
+fn session_and_group(pid: Pid) -> Option<(i32, i32)> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_pid())).ok()?;
+        let rest = &stat[stat.rfind(')')? + 1..];
+        let mut fields = rest.split_whitespace().skip(2);
+        let group = fields.next()?.parse().ok()?;
+        let session = fields.next()?.parse().ok()?;
+        Some((session, group))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use rustix::process::{getpgid, getsid};
+        std::panic::catch_unwind(|| {
+            let session = getsid(Some(pid)).ok()?.as_raw_pid();
+            let group = getpgid(Some(pid)).ok()?.as_raw_pid();
+            Some((session, group))
+        })
+        .ok()?
+    }
+}
+
+/// The live (not zombie) processes whose session is `sid`, each with its process group.
+fn members(sid: Pid) -> Vec<(Pid, Pid)> {
     let me = getpid();
     let mut system = System::new();
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
@@ -38,7 +63,14 @@ fn members(sid: Pid) -> Vec<Pid> {
         .filter(|process| process.status() != ProcessStatus::Zombie)
         .filter_map(|process| i32::try_from(process.pid().as_u32()).ok())
         .filter_map(Pid::from_raw)
-        .filter(|&pid| pid != me && getsid(Some(pid)).is_ok_and(|found| found == sid))
+        .filter(|&pid| pid != me)
+        .filter_map(|pid| {
+            let (session, group) = session_and_group(pid)?;
+            if session != sid.as_raw_pid() {
+                return None;
+            }
+            Some((pid, Pid::from_raw(group)?))
+        })
         .collect()
 }
 
@@ -48,10 +80,7 @@ pub(crate) fn sweep(sid: Pid) {
     if first.is_empty() {
         return;
     }
-    let mut groups: Vec<Pid> = first
-        .iter()
-        .filter_map(|&pid| getpgid(Some(pid)).ok())
-        .collect();
+    let mut groups: Vec<Pid> = first.iter().map(|&(_, group)| group).collect();
     groups.sort_by_key(|group| group.as_raw_pid());
     groups.dedup();
     for group in groups {
@@ -72,7 +101,7 @@ pub(crate) fn sweep(sid: Pid) {
         if left.is_empty() {
             return;
         }
-        for pid in left {
+        for (pid, _) in left {
             let _ = kill_process(pid, Signal::KILL);
         }
         sleep(POLL);

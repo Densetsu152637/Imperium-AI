@@ -163,7 +163,9 @@ fn the_exit_code_is_reported() {
     #[cfg(windows)]
     let spec = spec(cmd(), &["/c", "exit 7"], dir.path());
     let pty = Pty::spawn(spec).unwrap();
-    let exit = pty.wait_exit(BOUND).expect("the shell ends");
+    let exit = pty
+        .wait_exit(BOUND)
+        .unwrap_or_else(|| panic!("the shell never ended; output: {:?}", common::output(&pty)));
     assert_eq!(exit.code, 7);
 }
 
@@ -183,7 +185,8 @@ fn a_character_split_across_reads_arrives_whole() {
     });
     assert!(std::str::from_utf8(&replay.data).is_ok());
     let mut all = replay.data;
-    pty.wait_exit(BOUND).expect("the shell ends");
+    pty.wait_exit(BOUND)
+        .unwrap_or_else(|| panic!("the shell never ended; output: {:?}", common::output(&pty)));
     wait_until("the output to be read", || pty.end_seq() >= 4);
     sleep(Duration::from_millis(200));
     for chunk in chunks.lock().unwrap().iter() {
