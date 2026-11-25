@@ -798,6 +798,15 @@ and `environments.agent_update` (protocol 0.28)
     read from the installed folder), so the trust view can list exactly what the folder would run
     and the app's `plugin_approve` can take an `approve` action for it (the challenge binds that
     hash and digest as for any plugin). It is a protocol change, so it follows stage 11.
+<!-- markdownlint-disable-next-line MD029 -->
+61. **Reactive tool loading and the knowledge-source rule** (planned). Agents whose model runs on
+    this machine are offered a small core of file and command tools plus `tool_search`, and load
+    the other tools on demand; loaded tools are appended to the tool list and stay for the
+    session (`harness.tool_loading`, `auto` by default). The base prompts say that settled
+    real-world facts, arithmetic and logic may come from the model's own knowledge while facts
+    about the project come from the tools. Both come from the guided-harness pilot, where the tool
+    cut saved 42 to 70 % of prompt tokens and the knowledge note gave the best held-out score
+    ([plan](plans/reactive-tools.md), [03](03-agent-engine.md#harness-aids-for-small-models)).
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
