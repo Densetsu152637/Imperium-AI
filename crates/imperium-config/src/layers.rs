@@ -507,6 +507,8 @@ mod tests {
     fn defaults_parse_into_settings() {
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
         assert_eq!(settings.daemon.port, 0);
+        // Evaluation runs and plugin approvals are refused without the local socket.
+        assert!(settings.daemon.socket);
         assert!(settings.models.suggest_downloads);
         assert!(!settings.models.suggestions.is_empty());
     }
@@ -574,6 +576,19 @@ api_key = { secret = 'Bad Name' }",
             ),
         ]);
         assert!(bad_secret.settings().is_err());
+    }
+
+    #[test]
+    fn the_socket_stays_on_unless_a_layer_turns_it_off() {
+        let socket = |text: &str| {
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), text)])
+                .settings()
+                .unwrap()
+                .daemon
+                .socket
+        };
+        assert!(socket("[daemon]\nport = 1"));
+        assert!(!socket("[daemon]\nsocket = false"));
     }
 
     #[test]

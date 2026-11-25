@@ -886,6 +886,79 @@ async fn only_the_imperium_command_may_start_an_evaluation_session() {
     }
 }
 
+/// A daemon state that never calls `allow_eval_over_tcp`, as the real daemon never does.
+fn plain_state(data: &std::path::Path) -> Arc<DaemonState> {
+    let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+    DaemonState::new(Paths::under(data), settings, None)
+}
+
+fn command_peer() -> Peer {
+    Peer {
+        name: "imperium-cli".into(),
+        version: "0".into(),
+    }
+}
+
+#[tokio::test]
+async fn the_command_evaluates_over_the_local_socket_but_not_over_tcp() {
+    let data = tempfile::tempdir().unwrap();
+    let listener = imperium_ipc::Listener::bind(data.path()).unwrap();
+    let token = AccessToken::generate().unwrap();
+    let endpoint = DaemonEndpoint {
+        url: String::new(),
+        token: token.as_str().to_string(),
+        pid: std::process::id(),
+        socket: Some(listener.address()),
+        protocol: PROTOCOL_VERSION,
+    };
+    tokio::spawn(imperium_core::serve_ipc(
+        listener,
+        token,
+        plain_state(data.path()),
+        std::future::pending(),
+    ));
+    let mut client = Client::connect(&endpoint, command_peer()).await.unwrap();
+    let outcome = run(&mut client, args(&strings(&["--print-prompt"])))
+        .await
+        .unwrap();
+    assert!(
+        outcome.json["system_prompt"].is_string(),
+        "{:#}",
+        outcome.json
+    );
+
+    // The same kind of state over loopback TCP refuses the command.
+    let tcp_data = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let token = AccessToken::generate().unwrap();
+    let endpoint = DaemonEndpoint {
+        url: format!("ws://{}/rpc", listener.local_addr().unwrap()),
+        token: token.as_str().to_string(),
+        pid: std::process::id(),
+        socket: None,
+        protocol: PROTOCOL_VERSION,
+    };
+    tokio::spawn(imperium_core::serve(
+        listener,
+        token,
+        plain_state(tcp_data.path()),
+        std::future::pending(),
+    ));
+    let mut client = Client::connect(&endpoint, command_peer()).await.unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let error = client
+        .call::<SessionEvalCreate>(eval_params(workspace.path()))
+        .await
+        .unwrap_err();
+    match error {
+        imperium_cli::client::ClientError::Rpc(error) => {
+            assert_eq!(error.code, codes::FORBIDDEN);
+            assert!(error.message.contains("daemon.socket"), "{}", error.message);
+        }
+        other => panic!("expected an RPC error, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn an_agent_file_runs_as_the_root_and_none_listed_means_no_tools() {
     let daemon = Daemon::start("").await;

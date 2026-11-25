@@ -13,8 +13,10 @@ pub(crate) const DEFAULTS: &str = r#"
 # Port for the local WebSocket listener; 0 picks a free port at each start.
 port = 0
 # Also serve the daemon on a local socket (a Unix domain socket, or a Windows named pipe) that
-# only your user can open, for forwarding over SSH. Off by default; the token is still required.
-socket = false
+# only your user can open. On by default: the `imperium` command needs it for evaluation runs
+# (`imperium run --headless`) and the desktop app for plugin approvals; it also lets an SSH
+# forward reach the daemon. The token is still required.
+socket = true
 
 [api.openai_compatible]
 # Serve the local models (and the hosted ones listed in `expose`) to other tools as an
@@ -1575,11 +1577,16 @@ pub fn same_marketplace_source(a: &str, b: &str) -> bool {
     canonical(a) == canonical(b)
 }
 
+fn socket_on() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct DaemonSettings {
     pub port: u16,
-    /// Whether the daemon also listens on a same-user local socket; see `imperium-ipc`.
-    #[serde(default)]
+    /// Whether the daemon also listens on a same-user local socket; see `imperium-ipc`. On by
+    /// default (the built-in defaults layer and a missing key alike).
+    #[serde(default = "socket_on")]
     pub socket: bool,
 }
 

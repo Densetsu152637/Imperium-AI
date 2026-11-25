@@ -487,11 +487,13 @@ async fn clients_that_start_the_daemon_at_once_share_one() {
         })
         .collect();
     let mut attached = Vec::new();
+    let mut sockets = Vec::new();
     for attaching in attaching {
         let (client, endpoint) = attaching
             .await
             .unwrap()
             .unwrap_or_else(|error| panic!("a client could not attach: {error}"));
+        sockets.push(endpoint.socket.clone());
         attached.push((client, endpoint.pid));
     }
     let daemon_pid = attached[0].1;
@@ -500,6 +502,14 @@ async fn clients_that_start_the_daemon_at_once_share_one() {
         attached.iter().all(|(_, pid)| *pid == daemon_pid),
         "every client reached the same daemon: {:?}",
         attached.iter().map(|(_, pid)| pid).collect::<Vec<_>>()
+    );
+
+    // The local socket is on by default: the endpoint the daemon wrote names one.
+    assert!(
+        sockets
+            .iter()
+            .all(|socket| socket.as_deref().is_some_and(|socket| !socket.is_empty())),
+        "the default daemon serves a local socket: {sockets:?}"
     );
 
     let status = attached[0]
