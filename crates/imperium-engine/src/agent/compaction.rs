@@ -302,6 +302,8 @@ impl Agent {
         }
         let free = aim.saturating_sub(base);
         let allowance = (free / 3).clamp(compact::MIN_SUMMARY_TOKENS, compact::MAX_SUMMARY_TOKENS);
+        // The tools looked up so far, as names, for the model to search again.
+        let loaded = self.loaded_tools_block();
         let mut cut = compact::choose_cut(
             &self.messages,
             &before,
@@ -313,7 +315,7 @@ impl Agent {
         });
         let (mut summary, mut summary_model) = self.summarise(target, cut, allowance).await?;
         for _ in 0..compact::MAX_ATTEMPTS {
-            let block = compact::summary_block(&summary);
+            let block = compact::summary_block(&summary, &loaded);
             let pinned = compact::pinned_context(&self.messages, &self.spans, cut);
             let (mut messages, mut spans) =
                 compact::rebuild(&self.messages, &self.spans, cut, &block, &pinned);
@@ -330,6 +332,8 @@ impl Agent {
                 self.spans = spans;
                 self.last_reported = None;
                 self.last_call = None;
+                // The earlier `tool_search` results are gone: parameters are advised again.
+                self.forget_schemas();
                 self.emit(SessionEvent::ContextCompacted {
                     model: target.spec.clone(),
                     before_tokens,

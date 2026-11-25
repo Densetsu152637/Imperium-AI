@@ -398,12 +398,21 @@ impl Agent {
             ));
         }
         match self.shared.extensions.plugins.activate(&args.name).await? {
-            Activation::AlreadyActive { tools } => Ok(format!(
-                "Plugin {} is already active. Its tools: {}",
-                args.name,
-                tools.join(", ")
-            )),
+            Activation::AlreadyActive { tools } => {
+                // The model now knows the names, which a later compaction lists.
+                if self.reactive() {
+                    self.add_loaded(tools.iter().cloned());
+                }
+                Ok(format!(
+                    "Plugin {} is already active. Its tools: {}",
+                    args.name,
+                    tools.join(", ")
+                ))
+            }
             Activation::Started { tools, failed } => {
+                if self.reactive() {
+                    self.add_loaded(tools.iter().cloned());
+                }
                 self.emit(SessionEvent::ExtensionLoaded {
                     kind: ExtensionKind::Plugin,
                     name: args.name.clone(),
