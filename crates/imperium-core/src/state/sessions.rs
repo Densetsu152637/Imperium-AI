@@ -39,6 +39,7 @@ impl DaemonState {
                 self.settings().agents.resume_days * 86_400,
             ))
             .unwrap_or(std::time::UNIX_EPOCH);
+        sweep_stale_meta_temps(&dir);
         let Ok(entries) = std::fs::read_dir(&dir) else {
             return 0;
         };
