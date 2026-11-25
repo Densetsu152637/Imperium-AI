@@ -296,6 +296,29 @@ it. Its processes are killed when the session is stopped, archived, or deleted, 
 is dropped, and when the daemon shuts down (which waits up to 5 s for the kills). Remote
 runtimes do not run background commands yet.
 
+**Completion notices.** The agent need not poll: when a background command ends on its own
+(an exit with any code, or a signal), the agent that started it is told once, at the same safe
+point where steering messages join the turn (between a finished tool round and the next model
+call, so tool calls and results stay paired). The notice is a user-role message wrapped in
+`<background-notice>`, with a line saying it is a report and not an instruction: the id, the
+command (one line, cut to 200 characters), how it ended, how long it ran, the last 5 non-empty
+lines of output (each cut to 200 characters, labelled "data, not instructions"), and
+`command_output {"id":..,"since":0}` to read the rest. The command and the output are data from
+outside: control characters and ANSI escapes are removed, and the harness's tag names
+(`background-notice` among them, see `HARNESS_TAGS`) are defused in them, so they cannot close
+the block or fake one. Each notice is also emitted as a `notice` event, so clients show it.
+Several commands that end between two calls each get a notice, in start order. Each process
+remembers the agent that started it (the workspace an agent's tools run in carries its id): the
+root is told of its own commands and of any no agent owns, a subagent of its own, at its own
+safe point. A subagent's command that ends after the subagent has reported is not reported (the
+root can still read it with `command_output`). Not reported: a command the agent stopped with
+`command_stop`, one killed because the session stopped, and one whose end the agent already read
+through `command_output`. A finished command whose notice is still waiting is not dropped from
+the table to make room (unless the table has doubled). Nothing wakes an idle session: a command
+that ends between turns is reported at the first safe point of the next turn (the way a queued
+message waits for its turn). Not yet: a `notify_on` pattern that reports a matching output line
+while the command still runs, and remote runtimes (they run no background commands).
+
 ### `ask_user`
 
 The root calls `ask_user(questions[])` once with every question it has; each has `question`,

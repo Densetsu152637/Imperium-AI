@@ -22,7 +22,7 @@ pub use invocation::{Access, Invocation, ToolError, specs};
 pub use mentions::{
     FileMatch, FileSearch, MAX_MATCHES, find_files, fuzzy_score, mention_withheld, read_remote_file,
 };
-pub use processes::Processes;
+pub use processes::{Finished, Processes};
 pub use runtime::{ProcessRunner, ProcessSpec, Remote, RunOutput, Runner};
 #[cfg(feature = "test-support")]
 pub use sandbox::forget_daemon_paths;
