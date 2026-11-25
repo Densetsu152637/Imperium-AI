@@ -3,10 +3,11 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use imperium_pty::{Pty, Spec};
+use imperium_pty::{Event, Pty, Spec};
 
 /// The longest any wait lasts.
 pub const BOUND: Duration = Duration::from_secs(10);
@@ -226,4 +227,32 @@ pub fn describe(pid: Option<u32>) -> String {
     {
         format!("pid {pid}")
     }
+}
+
+/// The cursor-position request ConPTY sends at start-up and waits an answer to.
+const CURSOR_QUERY: &[u8] = b"[6n";
+
+/// Starts a terminal and plays the part of the emulator that answers a cursor-position request
+/// (ConPTY holds back the shell until it is answered; xterm.js does it in the app).
+pub fn spawn_pty(spec: Spec) -> Arc<Pty> {
+    let pty = Arc::new(Pty::spawn(spec).expect("the terminal starts"));
+    let weak = Arc::downgrade(&pty);
+    let (_, replay) = pty.subscribe(0, move |event| {
+        if let Event::Data { bytes, .. } = event
+            && bytes
+                .windows(CURSOR_QUERY.len())
+                .any(|part| part == CURSOR_QUERY)
+            && let Some(pty) = weak.upgrade()
+        {
+            let _ = pty.write(b"[1;1R");
+        }
+    });
+    if replay
+        .data
+        .windows(CURSOR_QUERY.len())
+        .any(|part| part == CURSOR_QUERY)
+    {
+        let _ = pty.write(b"[1;1R");
+    }
+    pty
 }

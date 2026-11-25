@@ -29,12 +29,12 @@ fn powershell() -> std::path::PathBuf {
 
 /// An interactive shell whose own answers cannot be mistaken for the typed command: the test
 /// types `$((6*7))` or `%OS%` and waits for the expanded result.
-fn spawn_shell(dir: &std::path::Path) -> Pty {
+fn spawn_shell(dir: &std::path::Path) -> std::sync::Arc<Pty> {
     #[cfg(unix)]
     let spec = spec(SHELL, &[], dir);
     #[cfg(windows)]
     let spec = spec(cmd(), &[], dir);
-    Pty::spawn(spec).expect("the terminal starts")
+    common::spawn_pty(spec)
 }
 
 #[cfg(unix)]
@@ -81,7 +81,7 @@ fn the_child_sees_the_size_it_was_given_and_a_resize() {
     {
         let mut spec = spec(SHELL, &[], dir.path());
         (spec.cols, spec.rows) = (100, 30);
-        let pty = Pty::spawn(spec).unwrap();
+        let pty = common::spawn_pty(spec);
         pty.write(b"stty size\n").unwrap();
         wait_for(&pty, "30 100");
         pty.resize(120, 40).unwrap();
@@ -93,7 +93,7 @@ fn the_child_sees_the_size_it_was_given_and_a_resize() {
     {
         let mut spec = spec(powershell(), &["-NoLogo", "-NoProfile"], dir.path());
         (spec.cols, spec.rows) = (100, 30);
-        let pty = Pty::spawn(spec).unwrap();
+        let pty = common::spawn_pty(spec);
         let ask = "Write-Host ('SZ' + $Host.UI.RawUI.WindowSize.Width + 'x' + $Host.UI.RawUI.WindowSize.Height)\r";
         pty.write(ask.as_bytes()).unwrap();
         wait_for(&pty, "SZ100x30");
@@ -108,12 +108,11 @@ fn the_child_sees_the_size_it_was_given_and_a_resize() {
 #[test]
 fn a_background_job_dies_with_its_terminal() {
     let dir = work_dir();
-    let pty = Pty::spawn(spec(
+    let pty = common::spawn_pty(spec(
         "/bin/bash",
         &["--norc", "--noprofile", "-i"],
         dir.path(),
-    ))
-    .expect("bash starts");
+    ));
     pty.write(b"sleep 60 & echo JOB:$!:END\n").unwrap();
     let job = common::wait_for_number(&pty, "JOB:", ":END");
     assert!(common::alive(job), "the job is running before the end");
@@ -147,7 +146,7 @@ fn a_background_job_dies_with_its_terminal() {
             .count()
     };
     let dir = work_dir();
-    let pty = Pty::spawn(spec(cmd(), &[], dir.path())).unwrap();
+    let pty = common::spawn_pty(spec(cmd(), &[], dir.path()));
     pty.write(b"start /b ping -n 61 127.0.0.1 > nul\r\n")
         .unwrap();
     wait_until("the ping to start", || pings() > 0);
@@ -162,7 +161,7 @@ fn the_exit_code_is_reported() {
     let spec = spec(SHELL, &["-c", "exit 7"], dir.path());
     #[cfg(windows)]
     let spec = spec(cmd(), &["/c", "exit 7"], dir.path());
-    let pty = Pty::spawn(spec).unwrap();
+    let pty = common::spawn_pty(spec);
     let exit = pty.wait_exit(BOUND).unwrap_or_else(|| {
         panic!(
             "the shell never ended; output: {:?}; {}",
@@ -179,7 +178,7 @@ fn a_character_split_across_reads_arrives_whole() {
     let dir = work_dir();
     // F0 9F 98 80 is U+1F600, written in two pieces a third of a second apart.
     let script = "printf '\\360\\237'; sleep 0.3; printf '\\230\\200'; sleep 0.3";
-    let pty = Pty::spawn(spec(SHELL, &["-c", script], dir.path())).unwrap();
+    let pty = common::spawn_pty(spec(SHELL, &["-c", script], dir.path()));
     let chunks = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let sink = Arc::clone(&chunks);
     let (_, replay) = pty.subscribe(0, move |event| {
@@ -213,7 +212,7 @@ fn a_character_split_across_reads_arrives_whole() {
 fn a_two_mebibyte_burst_keeps_the_last_mebibyte_and_reports_the_drop() {
     let dir = work_dir();
     let script = "head -c 2097152 /dev/zero | tr '\\0' x; echo; echo BURST-END";
-    let pty = Pty::spawn(spec(SHELL, &["-c", script], dir.path())).unwrap();
+    let pty = common::spawn_pty(spec(SHELL, &["-c", script], dir.path()));
     wait_for(&pty, "BURST-END");
     let replay = pty.replay(0);
     assert!(pty.end_seq() >= 2 * 1024 * 1024);
@@ -229,7 +228,7 @@ fn a_full_input_queue_is_an_error_and_never_a_wait() {
     // In raw mode the tty holds about 4 KiB of input; `sleep` never reads it, so the writer
     // thread stalls once that is full and the queue behind it fills.
     let script = "stty raw -echo; echo RAW-SET; exec sleep 60";
-    let pty = Pty::spawn(spec(SHELL, &["-c", script], dir.path())).unwrap();
+    let pty = common::spawn_pty(spec(SHELL, &["-c", script], dir.path()));
     wait_for(&pty, "RAW-SET");
     let chunk = vec![b'x'; 64 * 1024];
     let started = Instant::now();
@@ -251,9 +250,9 @@ fn a_terminal_started_from_a_short_lived_thread_keeps_running() {
     let dir = work_dir();
     let path = dir.path().to_owned();
     #[cfg(unix)]
-    let make = move || Pty::spawn(spec(SHELL, &[], &path)).unwrap();
+    let make = move || common::spawn_pty(spec(SHELL, &[], &path));
     #[cfg(windows)]
-    let make = move || Pty::spawn(spec(cmd(), &[], &path)).unwrap();
+    let make = move || common::spawn_pty(spec(cmd(), &[], &path));
     // The thread that asked for the terminal ends; the spawner thread forked it, so it lives.
     let pty = std::thread::spawn(make).join().unwrap();
     sleep(Duration::from_millis(500));
