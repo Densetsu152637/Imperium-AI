@@ -144,7 +144,6 @@ fn a_background_job_dies_with_its_terminal() {
                         .iter()
                         .any(|argument| argument.to_string_lossy() == "61")
             })
-            .map(|process| process.pid().as_u32())
             .count()
     };
     let dir = work_dir();

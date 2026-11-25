@@ -10,11 +10,11 @@ description = "Runs a shell on a pseudo terminal, and the Linux supervisor that 
 [dependencies]
 # The pseudo terminal: openpty on Unix, ConPTY on Windows.
 portable-pty = "0.9.0"
-# Lists processes: ending a terminal by session on Unix, finding leftovers in tests on Windows.
-sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 thiserror = "2.0.21"
 
 [target.'cfg(unix)'.dependencies]
+# Lists processes to end a terminal by session.
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 # Signals, polling, process groups, sessions and the terminal's foreground group, all through
 # safe wrappers (the workspace forbids unsafe code).
 rustix = { version = "1.1.6", features = ["event", "process", "termios"] }
@@ -42,4 +42,6 @@ workspace = true
 
 [dev-dependencies]
 imperium-pty = { path = ".", features = ["test-support"] }
+# Finds the leftover `ping` of a Windows terminal in the tests.
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 tempfile = "3.27.0"

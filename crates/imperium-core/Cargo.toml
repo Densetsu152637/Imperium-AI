@@ -28,7 +28,6 @@ imperium-media = { version = "0.2.0", path = "../imperium-media" }
 imperium-memory = { version = "0.2.0", path = "../imperium-memory" }
 imperium-models = { version = "0.2.0", path = "../imperium-models" }
 imperium-pets = { version = "0.2.0", path = "../imperium-pets" }
-imperium-pty = { version = "0.2.0", path = "../imperium-pty" }
 imperium-protocol = { version = "0.2.0", path = "../imperium-protocol" }
 imperium-policy = { version = "0.2.0", path = "../imperium-policy" }
 imperium-tools = { version = "0.2.0", path = "../imperium-tools" }
@@ -48,6 +47,9 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The hidden `pty-supervisor` subcommand (`main.rs`); the terminal service of stage 2a will use
+# the library on every OS and move this to the main table.
+imperium-pty = { version = "0.2.0", path = "../imperium-pty" }
 # Identifying the desktop app for plugin approvals (`app_identity/linux.rs`) without `unsafe`:
 # rustix for pidfds, SO_PEERCRED, poll and /proc; nix only for SO_PEERPIDFD, which rustix lacks.
 nix = { version = "0.31.3", default-features = false, features = ["socket"] }
