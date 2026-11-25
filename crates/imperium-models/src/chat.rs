@@ -330,8 +330,20 @@ fn request_body(request: ChatRequest<'_>, style: ReasoningStyle) -> serde_json::
     }
     if let Some(effort) = request.effort {
         style.apply(&mut body, effort);
+        // llama.cpp has no per-request thinking budget, but its chat template switches
+        // thinking with `enable_thinking`: off at `low`, on above it. Only a request on a
+        // slot (a local llama.cpp model) carries it; an explicit `extra_body` field of the
+        // same name replaces it (see `stream_chat_with`).
+        if request.slot.is_some() {
+            body["chat_template_kwargs"] = json!({ "enable_thinking": thinking_for(effort) });
+        }
     }
     body
+}
+
+/// Whether a local model thinks at `effort`: off at `low`, on above it.
+pub fn thinking_for(effort: Effort) -> bool {
+    effort != Effort::Low
 }
 
 #[derive(Debug, Deserialize)]
@@ -782,6 +794,55 @@ mod tests {
         // Too small a cap for any budget leaves thinking off.
         let tiny = body_with(Some(Effort::Low), Some(600), anthropic);
         assert!(tiny.get("thinking").is_none());
+    }
+
+    fn slot_body(effort: Option<Effort>, slot: Option<u32>, url: &str) -> serde_json::Value {
+        request_body(
+            ChatRequest {
+                model: "m",
+                messages: &[],
+                tools: &[],
+                slot,
+                max_tokens: None,
+                effort,
+            },
+            ReasoningStyle::for_base_url(url),
+        )
+    }
+
+    #[test]
+    fn llama_cpp_calls_switch_thinking_with_the_effort() {
+        let local = "http://127.0.0.1:8080/v1";
+        for effort in Effort::ALL {
+            let body = slot_body(Some(effort), Some(0), local);
+            assert_eq!(
+                body["chat_template_kwargs"]["enable_thinking"],
+                effort != Effort::Low,
+                "{effort}"
+            );
+            // The effort itself is still sent as before.
+            assert!(body.get("reasoning_effort").is_some());
+        }
+    }
+
+    #[test]
+    fn thinking_is_sent_only_to_a_slot_and_only_to_a_model_that_reasons() {
+        let local = "http://127.0.0.1:8080/v1";
+        // A model that cannot reason is sent no effort and no thinking switch.
+        assert!(
+            slot_body(None, Some(0), local)
+                .get("chat_template_kwargs")
+                .is_none()
+        );
+        // Hosted providers have no slot, and none gets the llama.cpp field.
+        for url in [
+            "https://api.openai.com/v1",
+            "https://openrouter.ai/api/v1",
+            "https://api.anthropic.com/v1",
+        ] {
+            let body = slot_body(Some(Effort::Low), None, url);
+            assert!(body.get("chat_template_kwargs").is_none(), "{url}");
+        }
     }
 
     #[test]

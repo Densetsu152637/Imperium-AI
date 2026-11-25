@@ -40,9 +40,11 @@ use imperium_protocol::methods::{Compaction, ContextFit};
 
 mod attachments;
 mod auto;
+mod call_repair;
 mod catalog;
 mod compaction;
 mod delegation;
+mod effort_policy;
 mod fork;
 mod memory;
 mod prompts;
@@ -548,6 +550,21 @@ impl Agent {
         self.model
             .reasons(self.shared.local.as_deref())
             .then(|| self.effort.unwrap_or_else(|| self.shared.effort.get()))
+    }
+
+    /// The effort the next call of the turn loop carries: [`Agent::request_effort`], lowered
+    /// by `harness.adaptive_effort` after a tool result that worked.
+    fn call_effort(&self) -> Option<Effort> {
+        let session = self.request_effort()?;
+        let after_ok = effort_policy::follows_ok_tool(
+            &self.messages,
+            self.last_tool_ok.load(Ordering::SeqCst),
+        );
+        Some(effort_policy::call_effort(
+            self.shared.harness.adaptive_effort,
+            session,
+            after_ok,
+        ))
     }
 
     /// The model this agent calls.

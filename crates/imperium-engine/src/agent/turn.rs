@@ -330,7 +330,7 @@ impl Agent {
                     tools: &tools,
                     slot: lease.as_ref().and_then(|lease| lease.slot),
                     max_tokens: lease.as_ref().and_then(|lease| lease.max_tokens),
-                    effort: self.request_effort(),
+                    effort: self.call_effort(),
                 };
                 let capped = request.max_tokens.is_some();
                 let started = Instant::now();
@@ -412,7 +412,7 @@ impl Agent {
                 waits += 1;
                 self.emit(SessionEvent::Resumed {});
             };
-            let completion = match result {
+            let mut completion = match result {
                 Ok(completion) => completion,
                 Err(error) => {
                     let message = error.to_string();
@@ -423,6 +423,16 @@ impl Agent {
                 }
             };
             let usage = completion.usage.unwrap_or_default();
+            // A local model's call that the server left in the text becomes a call.
+            let offered: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+            if self.model.local
+                && !self.single_call
+                && completion.tool_calls.is_empty()
+                && let Some((calls, text)) = call_repair::from_content(&completion.text, &offered)
+            {
+                completion.tool_calls = calls;
+                completion.text = text;
+            }
             // The pool admits calls by the estimate: a prompt above it overcommits the pool.
             if self.model.local && usage.prompt_tokens > u64::from(estimate) {
                 tracing::warn!(
@@ -517,8 +527,22 @@ impl Agent {
                 .iter()
                 .any(|call| call.function.name == ACTIVATE_PLUGIN);
             let mut touched: Vec<PathBuf> = Vec::new();
+            // With loading on, other tools are reached through `call_tool`: names are not checked.
+            let checked: &[String] = if self.reactive() { &[] } else { &offered };
             for call in completion.tool_calls {
                 self.last_tool_ok.store(false, Ordering::SeqCst);
+                let call = match call_repair::vet(call.clone(), checked) {
+                    Ok(call) => call,
+                    Err(error) => {
+                        let name = call.function.name.clone();
+                        let output = self.tool_finished(&call, &name, false, error, None);
+                        self.messages.push(ChatMessage::Tool {
+                            tool_call_id: call.id,
+                            content: output,
+                        });
+                        continue;
+                    }
+                };
                 let output = self.run_tool(&call).await;
                 let output = self.guard_input(output, window);
                 // Only a call that worked counts as opening the directory: not one that was

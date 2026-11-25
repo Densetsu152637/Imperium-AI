@@ -104,6 +104,7 @@ listed; edit them in the file.
 | `harness.hints` | `auto` | Put guidance for messages that point at something unseen ("that file", "the issue from earlier", "deploy it") at the top of the turn they arrive in: `auto`, `on`, or `off` |
 | `harness.clarify` | `auto` | Offer the root `request_clarification` and tell it to ask instead of guessing: `auto`, `on`, or `off`. Never in unattended sessions |
 | `harness.clarify_below` | `0.7` | Confidence below which the root agent is told to ask with `request_clarification` instead of guessing |
+| `harness.adaptive_effort` | `false` | Think at `low` effort on a model call that follows a tool result that worked, and at the session's effort on a turn's first call and after a failed tool call ([per-call effort](04-models-and-routing.md#per-call-effort)); off sends the session's effort on every call |
 | `sessions.auto_archive_on_pr_close` | `true` | Archive a session once the pull request it watches is merged or closed ([archiving sessions](14-projects-and-automation.md#archiving-sessions)) |
 | `sessions.agent_state_keep` | `true` | Keep each agent's state (a subagent's conversation, plan, and usage) in `<data>/sessions/<id>.agents/`, so finished subagents can be resumed with a follow-up, also after a restart; deleted with the session ([agent state](03-agent-engine.md#agent-state)) |
 | `sessions.auto_archive_after_days` | `0` | Archive an idle session after this many days without activity; `0` never does. Working, waiting, pinned, and agent sessions are never archived |

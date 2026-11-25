@@ -200,6 +200,28 @@ small one. The state is not shown in the desktop. The tool schema export
 (`schemas/tools/index.json`) lists `update_state` and `request_clarification` as available
 because it is static; the engine offers them only as described above.
 
+### Tool-call repair (implemented)
+
+A small local model sometimes writes a call the server did not turn into `tool_calls`, names a
+tool that does not exist, or sends arguments that are not JSON. The engine handles these on
+the client (`crates/imperium-engine/src/agent/call_repair.rs`), without a model call:
+
+- **Call in the text.** For a local model, a reply with no `tool_calls` whose text holds
+  `<tool_call>{"name": ..., "arguments": {...}}</tool_call>` (one or several; a missing closing
+  tag is read), or whose whole text is one such JSON object (also in a code fence) naming an
+  offered tool, is run as that call, and the text keeps what surrounds the tags. A bare object
+  must name an offered tool, so quoted JSON in an answer is not mistaken for a call.
+- **Unknown tool.** A call to a tool that is not offered is not run; its result is an error
+  that names up to three close tool names (a small edit distance, or one name containing the
+  other), or lists some offered tools when none is close. With `harness.tool_loading` on the
+  check is skipped, since other tools are reached through `call_tool`.
+- **Invalid arguments.** Arguments that do not parse as JSON get one repair attempt (a code
+  fence removed, trailing commas before `}` or `]` removed outside strings); if that fails the
+  result is an error saying the arguments are not valid JSON. Empty arguments stay an empty
+  object, and valid arguments are untouched.
+
+Each rejection is an ordinary failed tool call, so the model sees the error and may try again.
+
 ## Planning
 
 **Implemented (phase 3):** the `update_plan` tool (a goal and steps with `pending`,

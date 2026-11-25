@@ -630,6 +630,10 @@ pub struct HarnessSettings {
     /// own model runs on this machine. Not yet a user-visible setting: evaluations read it
     /// through `--flag tool_loading`; it stays `off` by default.
     pub tool_loading: HarnessMode,
+    /// Think at `low` effort on a call that follows a tool result that worked, and at the
+    /// session's effort on a turn's first call and after a failure (docs/04-models-and-routing.md#per-call-effort).
+    /// Off by default: every call then carries the session's effort.
+    pub adaptive_effort: bool,
 }
 
 impl Default for HarnessSettings {
@@ -646,6 +650,7 @@ impl Default for HarnessSettings {
             clarify: HarnessMode::Auto,
             clarify_below: 0.7,
             tool_loading: HarnessMode::Off,
+            adaptive_effort: false,
         }
     }
 }
