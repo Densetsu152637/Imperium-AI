@@ -1055,6 +1055,7 @@ impl Agent {
             .filter(|step| step.status == StepStatus::Done)
             .count();
         let summary = format!("plan updated: {done} of {} steps done", plan.steps.len());
+        *lock(&self.plan) = Some(plan.clone());
         self.emit(SessionEvent::PlanUpdated { plan });
         Ok(summary)
     }

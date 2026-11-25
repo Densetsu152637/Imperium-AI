@@ -32,8 +32,9 @@ pub fn defuse_tool_frame(text: &str) -> String {
 
 /// The tags the harness and the rest of the conversation's framing use; text that names one is
 /// defused before it goes into a block, so a tool result cannot close or open one.
-pub const HARNESS_TAGS: [&str; 13] = [
+pub const HARNESS_TAGS: [&str; 14] = [
     "session-state",
+    "current-plan",
     "ambiguity-hints",
     "resolved-request",
     "original-message",
