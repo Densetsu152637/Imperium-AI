@@ -22,6 +22,7 @@ mod journal;
 mod knowledge;
 mod launcher;
 mod model;
+mod plan;
 mod queue;
 mod quiet;
 mod replay;
@@ -30,6 +31,7 @@ mod sampling_summary;
 mod session;
 mod status;
 mod title;
+mod tool_edits;
 
 pub use agents::agents_dir;
 pub use branch::{BranchPlan, mark_turn, plan_branch, plan_branch_at_end, turns_path};
@@ -55,6 +57,7 @@ pub use session::{
 };
 pub use status::next_attempt;
 pub use title::task_title;
+pub use tool_edits::ToolWatch;
 
 /// The resume policy used when nothing is configured: wait for the provider's reset, retrying
 /// every five minutes, for up to twelve hours.

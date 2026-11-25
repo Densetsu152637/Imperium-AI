@@ -4,7 +4,7 @@ Revision: 2026-11-25, revision 4 (plan critic round 1: findings 1 to 10; delta r
 final review: D1, D2 and notes;
 the root's answers to the first open questions recorded as [settled decisions](#settled-decisions));
 written against `experimental` at `a85f1310`. Roadmap [item 61](../12-roadmap.md#next-in-order).
-Status: planned.
+Status: stages 1 to 4 implemented; stage 5 (the measurement and the default) is open.
 
 Two changes to the agent loop, both from the guided-harness pilot (private Imperium-Research,
 `docs/human-reasoning-models/experiments/guided-harness-pilot.md`; code and per-item records in
@@ -53,7 +53,12 @@ request from a script and records every request body.
 2. **Fewer schemas on every call.** With loading on, a headless `--local` root's request offers
    exactly the core set, `tool_search` and `call_tool`, and its `tools` JSON is at most 5,700
    bytes: 40 % of the 14,261 bytes the same request carries with loading off (the 3,997 bytes of
-   the seven core tools leave 1,700 bytes for the two loader tools). Check: the eval-facing test
+   the seven core tools leave 1,700 bytes for the two loader tools). Re-measured at stage 4 from
+   the tool definitions on this branch (the compact JSON of the `tools` array, brackets and commas
+   included): 14,375 bytes off after R2.6 (14,283 and 14,261 before it; the 14,261 above is the sum of the 21 tools) and **5,328 bytes
+   on**, 37.1 % of it: the seven core tools 4,089 bytes (3,997 before R2.6), `tool_search` 807 bytes with the names
+   of the 14 deferred built-in tools in its description, `call_tool` 422 bytes. The bound stays
+   at 5,700 bytes, which leaves 372 bytes of headroom. Check: the eval-facing test
    of [stage 4](#stage-4-evaluation-surface-and-the-eval-facing-test).
 3. **Every tool stays reachable.** A tool outside the core is found with `tool_search` (which
    returns its schema) and run with `call_tool`, in the same turn, with the same result as a
@@ -675,6 +680,26 @@ Stage 5 follows the build that contains stage 4.
   tool loading* (R1 to R6 as built) linked from *Agent loop* step 1 and *Harness aids*; 05
   built-in tools lists `tool_search` and `call_tool`; 06 says how plugin activation and loading
   combine; 13 gains D28 (R1, R2) with its revisit conditions.
+- As built (differences from the list above):
+  - The engine takes the variant's `ToolEdits` (and a `ToolWatch` the evaluation implements) in
+    `SessionOptions`; drops leave the root's universe, `tools.core` replaces the default core, and
+    renames and descriptions are applied in `agent/edits.rs` and `tool_edits.rs` where the request
+    is built (specs, `tool_search` description and results, past calls, `call_tool` inner names,
+    `tool_search` `names`) and reversed where a reply arrives. A `tool_search` `query` is ranked
+    over the shown names and descriptions. Renaming or dropping `tool_search` or `call_tool` is
+    refused by variant validation; a subagent's named-agent list resolves against the universe
+    before the root's drops.
+  - `Recorder` keeps the prompt edits, the recording and the ledger, and counts the bytes of each
+    root request's `tools`; `ToolWatch` reports the catalog, what a search showed for the first
+    time, which deferred tools were called, and each dropped-tool refusal, all with the names the
+    model saw. `EvalResult.tool_loading` also has `tool_list_changes`, and `PromptPreview` has
+    `deferred_tools` and `tool_loading`.
+  - The translation of the `tool_loading` flag in `Prepared::new` and `state/create.rs` landed in
+    stage 2; the flag's default stays `off` here (the plan's "default `auto`" waits for stage 5),
+    so the loading-on runs of the tests pass `--local --flag tool_loading=auto` or
+    `--flag tool_loading=on`.
+  - The shell-lock test is an engine test (`reactive_tools.rs`), where the profile can be set; the
+    rest are in `headless_eval.rs`.
 - Depends on: stage 3. Size: about 650 lines.
 - Owned paths: `crates/imperium-core/src/{eval.rs,eval/**,state/create.rs}`,
   `crates/imperium-protocol/src/methods/eval.rs`, `crates/imperium-cli/src/{eval.rs,eval/**}`,

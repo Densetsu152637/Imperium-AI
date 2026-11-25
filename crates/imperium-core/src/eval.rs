@@ -16,16 +16,19 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use imperium_api::{Effort, PermissionMode, Pricing, ToolProvider};
 use imperium_config::HarnessMode;
-use imperium_engine::{ChatClient, ChatClients, Endpoint, ResolvedModel, Session, SubagentReplay};
+use imperium_engine::{
+    ChatClient, ChatClients, Endpoint, ResolvedModel, Session, SubagentReplay, ToolWatch,
+};
 use imperium_models::OpenAiCompatible;
 use imperium_protocol::methods::{
-    EvalEnd, EvalOptions, EvalPermission, EvalQuestion, EvalResult, EvalVariant, PromptPreview,
+    EvalEnd, EvalOptions, EvalPermission, EvalQuestion, EvalResult, EvalToolLoading, EvalVariant,
+    PromptPreview, ToolEdits,
 };
 use imperium_protocol::session::{AgentEvent, PermissionDecision, ROOT_AGENT, SessionEvent};
 use imperium_web::{SearchFuture, SearchProvider, Web, WebError, WebTools};
 use tokio::sync::broadcast::error::RecvError;
 
-use record::{Ceilings, Recorder, Shared};
+use record::{Ceilings, Recorder, Shared, Watch};
 use replay::Replay;
 use variant::{LoopFlags, Placeholders};
 
@@ -249,6 +252,19 @@ impl SearchProvider for OfflineSearch {
 }
 
 impl EvalRun {
+    /// The variant's edits of the root agent's tools, which the engine applies at its model
+    /// boundary.
+    pub(crate) fn tool_edits(&self) -> ToolEdits {
+        self.variant.tools.clone()
+    }
+
+    /// What the engine reports about the root agent's tools.
+    pub(crate) fn tool_watch(&self) -> Arc<dyn ToolWatch> {
+        Arc::new(Watch {
+            record: Arc::clone(&self.record),
+        })
+    }
+
     /// What the session recorded, with the prompt's identity from its first request.
     pub(crate) fn result(&self, workspace_root: &str) -> EvalResult {
         let record = record::lock(&self.record);
@@ -290,6 +306,7 @@ impl EvalRun {
             workspace_root: workspace_root.to_string(),
             ended: progress.ended.clone(),
             plan: progress.plan.clone(),
+            tool_loading: tool_loading(&record),
         }
     }
 
@@ -360,8 +377,65 @@ impl EvalRun {
             system_prompt: template,
             tools: first.tools,
             warnings: result.warnings,
+            deferred_tools: record::lock(&self.record)
+                .tools
+                .deferred
+                .iter()
+                .map(variant::tool_entry)
+                .collect(),
+            tool_loading: result.tool_loading,
         })
     }
+}
+
+/// The two tools a reactive list ends with.
+const LOADER_TOOLS: [&str; 2] = ["tool_search", "call_tool"];
+
+/// How the root was offered its tools in this run, from its first request and what the engine
+/// reported; `None` before the first request.
+fn tool_loading(record: &record::Record) -> Option<EvalToolLoading> {
+    let first = record.first_root.as_ref()?;
+    let offered: Vec<String> = first
+        .tools
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+        .collect();
+    let on = LOADER_TOOLS
+        .iter()
+        .all(|loader| offered.iter().any(|name| name == loader));
+    let deferred: Vec<String> = if on {
+        record
+            .tools
+            .deferred
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let core = offered
+        .into_iter()
+        .filter(|name| !(on && LOADER_TOOLS.contains(&name.as_str())))
+        .collect();
+    let catalog_hash = on.then(|| {
+        let entries: Vec<serde_json::Value> = record
+            .tools
+            .deferred
+            .iter()
+            .map(variant::tool_entry)
+            .collect();
+        variant::catalog_hash(&entries)
+    });
+    Some(EvalToolLoading {
+        mode: if on { "on" } else { "off" }.into(),
+        core,
+        deferred,
+        searched: record.tools.searched.clone(),
+        called: record.tools.called.clone(),
+        tool_bytes_by_call: record.tools.bytes_by_call.clone(),
+        tool_list_changes: record.tools.changes,
+        catalog_hash,
+    })
 }
 
 /// Answers what an evaluation session asks, because nobody is there: a permission request is
