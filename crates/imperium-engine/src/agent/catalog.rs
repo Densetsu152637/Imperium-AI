@@ -6,6 +6,8 @@
 //! the offered list is derived from it (`Agent::tool_offered`) and does not change within a
 //! session. Every call is dispatched against the universe as it is when the call runs.
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 use super::*;
@@ -14,6 +16,45 @@ use super::*;
 pub(super) const TOOL_SEARCH: &str = "tool_search";
 /// The proxy tool that runs a tool outside the offered list.
 pub(super) const CALL_TOOL: &str = "call_tool";
+
+/// The arguments of a `call_tool` call as the inner tool reads them: an object, a string of
+/// JSON, or nothing.
+fn inner_arguments(arguments: Value) -> String {
+    match arguments {
+        Value::Null => "{}".to_string(),
+        Value::String(text) if text.trim().is_empty() => "{}".to_string(),
+        Value::String(text) => text,
+        other => other.to_string(),
+    }
+}
+
+/// The call a stored call stands for: the inner tool's name and arguments for a `call_tool`
+/// call, the call itself for any other (or for a `call_tool` call whose arguments cannot be
+/// read, which ran as nothing). The conversation keeps the outer call, so every place that
+/// reads calls back out of messages by name goes through this (docs/plans/reactive-tools.md,
+/// R9).
+pub(crate) fn effective_call(call: &ToolCall) -> Cow<'_, ToolCall> {
+    if call.function.name != CALL_TOOL {
+        return Cow::Borrowed(call);
+    }
+    #[derive(Deserialize)]
+    struct Args {
+        name: String,
+        #[serde(default)]
+        arguments: Value,
+    }
+    let Ok(args) = serde_json::from_str::<Args>(&call.function.arguments) else {
+        return Cow::Borrowed(call);
+    };
+    let name = args.name.trim();
+    if name.is_empty() || name == CALL_TOOL || name == TOOL_SEARCH {
+        return Cow::Borrowed(call);
+    }
+    let mut inner = call.clone();
+    inner.function.name = name.to_string();
+    inner.function.arguments = inner_arguments(args.arguments);
+    Cow::Owned(inner)
+}
 
 /// The tools offered directly while loading is on, in the order of the full list: the file and
 /// command tools, and the loop's own protocol tools when the agent has them.
@@ -31,6 +72,9 @@ const CORE_TOOLS: [&str; 12] = [
     "request_clarification",
     "update_state",
 ];
+
+/// What the system prompt says about the two loader tools while loading is on.
+pub(super) const LOADER_SENTENCE: &str = "Tools that are not in your tool list are used in two steps: tool_search finds them and shows their parameters, and call_tool runs one by name with those arguments.";
 
 /// A loader costs more than it saves when fewer tools than this are deferred.
 const MIN_DEFERRED: usize = 3;
@@ -88,6 +132,59 @@ pub(super) fn deferred_indices(specs: &[ToolSpec]) -> Vec<usize> {
         .filter(|(_, spec)| !is_core(&spec.name))
         .map(|(index, _)| index)
         .collect()
+}
+
+/// The labelled parts of a `tool_search` result: each full schema counts under its tool's source
+/// category (`source` names it), the rest of the text as a tool result. `None` when the result
+/// holds no schema (or is not a search result).
+pub(super) fn search_spans(output: &str, source: impl Fn(&str) -> Category) -> Option<Spans> {
+    let value: Value = serde_json::from_str(output).ok()?;
+    let tools = value.get("tools")?.as_array()?;
+    let mut parts: Spans = Vec::new();
+    let mut cursor = 0;
+    for tool in tools {
+        let text = tool.to_string();
+        let Some(found) = output.get(cursor..).and_then(|rest| rest.find(&text)) else {
+            continue;
+        };
+        let start = cursor + found;
+        if start > cursor {
+            parts.push((Category::ToolResults, cursor..start));
+        }
+        let name = tool.get("name").and_then(Value::as_str).unwrap_or_default();
+        parts.push((source(name), start..start + text.len()));
+        cursor = start + text.len();
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    if cursor < output.len() {
+        parts.push((Category::ToolResults, cursor..output.len()));
+    }
+    Some(parts)
+}
+
+/// A stored call to `name`, for the tests of the code that reads calls back.
+#[cfg(test)]
+pub(crate) fn test_call(id: &str, name: &str, arguments: &str) -> ToolCall {
+    ToolCall {
+        id: id.into(),
+        kind: "function".into(),
+        function: imperium_api::FunctionCall {
+            name: name.into(),
+            arguments: arguments.into(),
+        },
+    }
+}
+
+/// A stored `call_tool` call to `inner` with `arguments`, for the same tests.
+#[cfg(test)]
+pub(crate) fn test_proxied(id: &str, inner: &str, arguments: Value) -> ToolCall {
+    test_call(
+        id,
+        CALL_TOOL,
+        &serde_json::json!({"name": inner, "arguments": arguments}).to_string(),
+    )
 }
 
 /// What a `tool_search` found.
@@ -357,6 +454,15 @@ impl Agent {
         })
     }
 
+    /// The loader sentence for the system prompt: empty unless the agent is offered the loader.
+    pub(super) fn loader_prompt(&self) -> String {
+        if self.reactive() {
+            LOADER_SENTENCE.to_string()
+        } else {
+            String::new()
+        }
+    }
+
     /// Whether `activate_plugin` stays offered for the whole session: it is when the agent
     /// could activate a plugin at the start. Without this it would leave the list after the
     /// last activation and change it.
@@ -372,16 +478,17 @@ impl Agent {
 
     /// The tools offered to the model: today's full list with loading off; with it on, the
     /// core tools in their usual order, then `tool_search` and `call_tool`.
-    pub(super) fn tool_offered(&self) -> (Vec<ToolSpec>, Vec<(Category, Range<usize>)>) {
+    pub(super) fn tool_offered(&self) -> (Vec<ToolSpec>, Vec<Category>) {
         if !self.reactive() {
             return self.tool_universe();
         }
         // Decided now, at the first list, before any plugin is active.
         self.plugin_loader();
         let (specs, groups) = self.tool_universe();
-        let (mut specs, groups) = narrow_tools(specs, groups, &core_names());
+        let (mut specs, mut groups) = narrow_tools(specs, groups, &core_names());
         specs.push(self.tool_search_spec());
         specs.push(call_tool_spec());
+        groups.extend([Category::ToolsBuiltin, Category::ToolsBuiltin]);
         (specs, groups)
     }
 
@@ -394,7 +501,7 @@ impl Agent {
                 .iter()
                 .enumerate()
                 .filter(|(index, spec)| {
-                    !is_core(&spec.name) && !groups.iter().any(|(_, range)| range.contains(index))
+                    !is_core(&spec.name) && groups.get(*index) == Some(&Category::ToolsBuiltin)
                 })
                 .map(|(_, spec)| spec.name.clone())
                 .collect();
@@ -413,6 +520,18 @@ impl Agent {
             .0
             .into_iter()
             .find(|spec| spec.name == name)
+    }
+
+    /// The labelled parts of a `tool_search` result, by the source of each tool as it is now.
+    pub(super) fn search_result_spans(&self, output: &str) -> Option<Spans> {
+        let (specs, categories) = self.tool_universe();
+        search_spans(output, |name| {
+            specs
+                .iter()
+                .position(|spec| spec.name == name)
+                .and_then(|index| categories.get(index).copied())
+                .unwrap_or(Category::ToolsBuiltin)
+        })
     }
 
     /// Whether `name` is one of the agent's tools as it is now (the universe is worked out
@@ -465,12 +584,7 @@ impl Agent {
                 "call_tool does not run {name}; call {name} directly"
             ));
         }
-        let arguments = match args.arguments {
-            Value::Null => "{}".to_string(),
-            Value::String(text) if text.trim().is_empty() => "{}".to_string(),
-            Value::String(text) => text,
-            other => other.to_string(),
-        };
+        let arguments = inner_arguments(args.arguments);
         let mut inner = call.clone();
         inner.function.name = name;
         inner.function.arguments = arguments;
@@ -519,10 +633,14 @@ impl Agent {
         if !reached {
             return output;
         }
-        if proxied {
+        // The parameters are told at most once per tool and agent: the loaded set holds the
+        // tools whose parameters the model has seen (searched, called, or already advised).
+        let seen = lock(&self.loaded_tools).contains(&spec.name);
+        let failed = !self.last_tool_ok.load(Ordering::SeqCst);
+        if proxied || (failed && !seen) {
             self.note_loaded(std::slice::from_ref(&spec.name), ToolLoadVia::Call);
         }
-        if self.last_tool_ok.load(Ordering::SeqCst) {
+        if !failed || seen {
             return output;
         }
         format!(
@@ -692,5 +810,121 @@ mod tests {
         assert_eq!(value["tools"][0]["name"], "update_plan");
         assert!(value["more"].as_array().unwrap().is_empty());
         assert!(value["unknown"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn effective_call_reads_the_inner_call_of_call_tool() {
+        let stored = test_proxied("c1", "read_file", serde_json::json!({"path": "a.txt"}));
+        let inner = effective_call(&stored);
+        assert!(matches!(inner, Cow::Owned(_)));
+        assert_eq!(inner.function.name, "read_file");
+        assert_eq!(inner.id, "c1");
+        assert_eq!(inner.function.arguments, r#"{"path":"a.txt"}"#);
+        // Arguments given as a string of JSON, and none at all.
+        let text = test_call(
+            "c2",
+            CALL_TOOL,
+            r#"{"name":" grep ","arguments":"{\"pattern\":\"x\"}"}"#,
+        );
+        let inner = effective_call(&text);
+        assert_eq!(inner.function.name, "grep");
+        assert_eq!(inner.function.arguments, r#"{"pattern":"x"}"#);
+        let bare = test_call("c3", CALL_TOOL, r#"{"name":"update_plan"}"#);
+        assert_eq!(effective_call(&bare).function.arguments, "{}");
+    }
+
+    #[test]
+    fn effective_call_leaves_every_other_call_as_it_is() {
+        for stored in [
+            test_call("a", "read_file", r#"{"path":"a.txt"}"#),
+            test_call("b", CALL_TOOL, "not json"),
+            test_call("c", CALL_TOOL, r#"{"name":""}"#),
+            test_call("d", CALL_TOOL, r#"{"name":"call_tool"}"#),
+            test_call("e", CALL_TOOL, r#"{"name":"tool_search"}"#),
+            test_call("f", TOOL_SEARCH, r#"{"query":"x"}"#),
+        ] {
+            assert!(matches!(effective_call(&stored), Cow::Borrowed(_)));
+        }
+    }
+
+    #[test]
+    fn search_spans_label_each_schema_by_its_source() {
+        let specs = universe();
+        let found = search(
+            &specs,
+            &deferred_indices(&specs),
+            "",
+            &["web_fetch".into(), "mcp__dict__lookup".into()],
+        );
+        let output = found.render();
+        let spans = search_spans(&output, |name| {
+            if name.starts_with("mcp__") {
+                Category::ToolsMcp
+            } else {
+                Category::ToolsBuiltin
+            }
+        })
+        .expect("a result with schemas");
+        // The parts are the whole result, in order.
+        let joined: String = spans
+            .iter()
+            .map(|(_, range)| &output[range.clone()])
+            .collect();
+        assert_eq!(joined, output);
+        let of = |category: Category| -> Vec<&str> {
+            spans
+                .iter()
+                .filter(|(c, _)| *c == category)
+                .map(|(_, range)| &output[range.clone()])
+                .collect()
+        };
+        let mcp = of(Category::ToolsMcp);
+        let builtin = of(Category::ToolsBuiltin);
+        assert!(
+            mcp.len() == 1 && mcp[0].contains("mcp__dict__lookup"),
+            "{mcp:?}"
+        );
+        assert!(
+            builtin.len() == 1 && builtin[0].contains("web_fetch"),
+            "{builtin:?}"
+        );
+        assert!(!mcp[0].contains("web_fetch") && !builtin[0].contains("mcp__dict"));
+        // A result without schemas, or that is not a search result, has no labelled parts.
+        let none = search(&specs, &deferred_indices(&specs), "", &["nothing".into()]);
+        assert!(search_spans(&none.render(), |_| Category::ToolsBuiltin).is_none());
+        assert!(search_spans("error: bad", |_| Category::ToolsBuiltin).is_none());
+    }
+
+    /// R9 of the plan: every reader of calls by name goes through `effective_call`. The scan
+    /// covers the code outside `catalog.rs` and `tools.rs` (which dispatch the unwrapped call).
+    #[test]
+    fn no_other_raw_call_name_comparison_remains() {
+        let files = [
+            ("compact.rs", include_str!("../compact.rs")),
+            ("knowledge.rs", include_str!("../knowledge.rs")),
+            ("breakdown.rs", include_str!("../breakdown.rs")),
+            ("harness.rs", include_str!("../harness.rs")),
+            ("agent/turn.rs", include_str!("turn.rs")),
+        ];
+        for (file, text) in files {
+            let code = text.split("#[cfg(test)]").next().unwrap();
+            let lines: Vec<&str> = code.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                if !line.contains("function.name")
+                    || line.contains("effective.function")
+                    || line.contains("Category::Assistant")
+                {
+                    continue;
+                }
+                let start = index.saturating_sub(8);
+                assert!(
+                    lines[start..=index]
+                        .iter()
+                        .any(|near| near.contains("effective_call(")),
+                    "{file}:{} reads a call's name without effective_call: {line}",
+                    index + 1
+                );
+            }
+        }
     }
 }

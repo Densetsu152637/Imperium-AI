@@ -1,7 +1,6 @@
 //! One agent's conversation and its turn loop, including planning and delegation.
 
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -55,7 +54,10 @@ mod turn;
 
 pub(crate) use auto::AutoGuard;
 use auto::{AutoGate, builtin_input, provider_input};
+pub(crate) use catalog::effective_call;
 use catalog::*;
+#[cfg(test)]
+pub(crate) use catalog::{test_call, test_proxied};
 use delegation::*;
 pub(crate) use delegation::{cancel_subagent, resume_subagent};
 pub(crate) use fork::run_fork;
@@ -232,6 +234,9 @@ pub(crate) struct Agent {
     /// The harness paragraph in the system prompt, for the model the agent has now: it is
     /// rewritten when the model is switched, so the prompt and the tools offered always agree.
     harness_text: String,
+    /// The loader sentence in the system prompt while reactive tool loading is on (its own
+    /// swappable region, beside `harness_text`).
+    loader_text: String,
     /// May ask knowledge agents questions: the root and ordinary subagents, never a
     /// `single_call` or chunk agent, a knowledge agent, or a fork (docs/21-knowledge-agents.md).
     can_ask: bool,
@@ -465,6 +470,7 @@ impl Agent {
             ran_rewritten: Mutex::new(None),
             state: SessionState::default(),
             harness_text: String::new(),
+            loader_text: String::new(),
             can_ask: true,
             kind: AgentKind::Ordinary,
             asked_this_turn: 0,

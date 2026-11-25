@@ -627,8 +627,7 @@ pub struct HarnessSettings {
     /// Offer a small fixed tool list (the core file and command tools, `tool_search` and
     /// `call_tool`) and reach every other tool on demand, instead of sending every tool's
     /// schema on every call (docs/plans/reactive-tools.md). `auto` is on for an agent whose
-    /// own model runs on this machine. Not yet a user-visible setting: evaluations read it
-    /// through `--flag tool_loading`; it stays `off` by default.
+    /// own model runs on this machine. It stays `off` by default.
     pub tool_loading: HarnessMode,
     /// Think at `low` effort on a call that follows a tool result that worked, and at the
     /// session's effort on a turn's first call and after a failure (docs/04-models-and-routing.md#per-call-effort).

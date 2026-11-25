@@ -31,6 +31,9 @@ const PLUGIN_LOOKUP: &str = "mcp__words_dict__lookup";
 const ALPHA: &str = "mcp__alpha__lookup";
 const BETA: &str = "mcp__beta__lookup";
 
+/// The loader sentence of the system prompt (its start is enough to find it).
+const LOADER_SENTENCE: &str = "Tools that are not in your tool list are used in two steps";
+
 /// The root's tool list while loading is on, in the session `start` builds.
 const ROOT_CORE: [&str; 10] = [
     "read_file",
@@ -233,6 +236,8 @@ struct Seen {
     tools_json: String,
     /// The latest tool result in the conversation, as the model reads it.
     last_result: Option<String>,
+    /// The system prompt as sent.
+    system: String,
 }
 
 impl Seen {
@@ -265,6 +270,10 @@ async fn model(root: Vec<Step>, sub: Vec<Step>, seen: Arc<Mutex<Vec<Seen>>>) -> 
                         .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
                         .collect(),
                     tools_json: body["tools"].to_string(),
+                    system: body["messages"][0]["content"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
                     last_result: body["messages"]
                         .as_array()
                         .into_iter()
@@ -308,6 +317,8 @@ struct Options {
     agents: Vec<(&'static str, String)>,
     /// Integrations besides the fixed ones.
     extra: Vec<Arc<dyn ToolProvider>>,
+    /// No person reads the session's turns.
+    unattended: bool,
 }
 
 fn options(loading: HarnessMode, root: Vec<Step>) -> Options {
@@ -405,7 +416,7 @@ async fn start(options: Options) -> Setup {
         budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
-        attended: true,
+        attended: !options.unattended,
         attachments: Default::default(),
         auto_permissions: Default::default(),
         harness: harness(options.loading),
@@ -935,7 +946,11 @@ async fn a_failed_call_to_a_deferred_tool_carries_its_parameters() {
     assert!(second.contains("error: boom"), "{second}");
     assert!(second.contains("The parameters of flaky"), "{second}");
     let third = seen[3].last_result.as_deref().unwrap();
-    assert!(third.contains("error: boom") && third.contains("The parameters of flaky"));
+    // The parameters are told once per tool: the second failure of `flaky` carries none.
+    assert!(
+        third.contains("error: boom") && !third.contains(advice),
+        "{third}"
+    );
     for index in [4, 5, 6] {
         let result = seen[index].last_result.as_deref().unwrap();
         assert!(!result.contains(advice), "{result}");
@@ -949,6 +964,78 @@ async fn a_failed_call_to_a_deferred_tool_carries_its_parameters() {
     assert_eq!(done.results[5], (true, "beta ok".to_string()));
     // The events keep the tool's own output, without the advice.
     assert!(!done.results[1].1.contains(advice), "{:?}", done.results);
+}
+
+#[tokio::test]
+async fn schema_advice_is_given_once_per_tool() {
+    let root = vec![
+        Some((
+            "call_tool",
+            json!({"name": "update_plan", "arguments": {"goal": "x"}}),
+        )),
+        Some((
+            "call_tool",
+            json!({"name": "update_plan", "arguments": {"goal": "y"}}),
+        )),
+        // A tool the model has searched for has been shown its parameters already.
+        Some(("tool_search", json!({"names": ["flaky"]}))),
+        Some(("call_tool", json!({"name": "flaky", "arguments": {}}))),
+        None,
+    ];
+    let setup = start(options(HarnessMode::On, root)).await;
+    turn(&setup.session, "go").await;
+    let seen = setup.seen.lock().unwrap().clone();
+    let advice = "The parameters of";
+    let first = seen[1].last_result.as_deref().unwrap();
+    assert!(first.contains("error: invalid arguments") && first.contains(advice));
+    let second = seen[2].last_result.as_deref().unwrap();
+    assert!(second.contains("error: invalid arguments"), "{second}");
+    assert!(!second.contains(advice), "{second}");
+    let searched = seen[4].last_result.as_deref().unwrap();
+    assert!(
+        searched.contains("error: boom") && !searched.contains(advice),
+        "{searched}"
+    );
+}
+
+#[tokio::test]
+async fn the_loader_sentence_reaches_an_unattended_root_and_a_subagent() {
+    let root = vec![
+        Some((
+            "call_tool",
+            json!({"name": "spawn_agent", "arguments": {"brief": "look"}}),
+        )),
+        Some(("call_tool", json!({"name": "await_tasks", "arguments": {}}))),
+        None,
+    ];
+    for unattended in [false, true] {
+        let mut setup = options(HarnessMode::On, root.clone());
+        setup.unattended = unattended;
+        let setup = start(setup).await;
+        turn(&setup.session, "delegate").await;
+        let seen = setup.seen.lock().unwrap().clone();
+        let roots: Vec<&Seen> = seen.iter().filter(|request| !request.subagent).collect();
+        let subs: Vec<&Seen> = seen.iter().filter(|request| request.subagent).collect();
+        assert!(!subs.is_empty(), "{seen:?}");
+        for request in roots.iter().chain(&subs) {
+            assert_eq!(
+                request.system.matches(LOADER_SENTENCE).count(),
+                1,
+                "unattended={unattended}: {}",
+                request.system
+            );
+        }
+        // The sentence is in the base part of the prompt, not after the personality or index.
+        assert!(roots[0].system.contains("call_tool runs one by name"));
+    }
+    // With loading off no prompt carries it.
+    let off = start(options(HarnessMode::Off, vec![None])).await;
+    turn(&off.session, "hello").await;
+    let seen = off.seen.lock().unwrap().clone();
+    assert!(
+        seen.iter()
+            .all(|request| !request.system.contains(LOADER_SENTENCE))
+    );
 }
 
 #[tokio::test]
@@ -1228,6 +1315,7 @@ impl LocalModels for Runtime {
 #[derive(Debug, Default)]
 struct Recorder {
     tools: Mutex<Vec<String>>,
+    systems: Mutex<Vec<String>>,
 }
 
 impl ChatClient for Recorder {
@@ -1242,6 +1330,11 @@ impl ChatClient for Recorder {
                 .lock()
                 .unwrap()
                 .push(Value::Array(wires).to_string());
+            let system = match request.messages.first() {
+                Some(imperium_api::ChatMessage::System { content }) => content.clone(),
+                _ => String::new(),
+            };
+            self.systems.lock().unwrap().push(system);
             on_text("done");
             Ok(Completion {
                 text: "done".into(),
@@ -1364,5 +1457,18 @@ async fn auto_follows_the_model_between_turns_and_the_list_returns_byte_for_byte
     assert_eq!(
         sent[3], sent[1],
         "back on a local model the fixed list returns unchanged"
+    );
+    // The loader sentence follows the mode: absent on a hosted model, present on a local one.
+    let systems = recorder.systems.lock().unwrap().clone();
+    assert_eq!(systems.len(), 4);
+    let has = |system: &str| system.matches(LOADER_SENTENCE).count();
+    assert_eq!(
+        [
+            has(&systems[0]),
+            has(&systems[1]),
+            has(&systems[2]),
+            has(&systems[3])
+        ],
+        [0, 1, 0, 1]
     );
 }

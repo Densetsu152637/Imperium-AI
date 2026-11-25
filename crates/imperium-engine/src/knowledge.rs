@@ -23,6 +23,7 @@ use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
 
 use crate::ResolvedModel;
+use crate::agent::effective_call;
 use crate::agents::{AgentKind, Frozen};
 use crate::breakdown::estimate_tokens;
 use crate::session::{Shared, lock};
@@ -274,6 +275,8 @@ fn tool_calls(conversation: &[ChatMessage]) -> Vec<(String, serde_json::Value, b
             continue;
         };
         for call in tool_calls {
+            // A `call_tool` call counts as the tool it ran.
+            let call = effective_call(call);
             let arguments =
                 serde_json::from_str(&call.function.arguments).unwrap_or(serde_json::Value::Null);
             let worked = results
@@ -1644,4 +1647,44 @@ pub(crate) async fn ask_as_user(
         untrusted_web: answer.untrusted_web,
         untrusted_tools: answer.untrusted_tools,
     })
+}
+
+#[cfg(test)]
+mod read_back_tests {
+    use super::*;
+    use crate::agent::{test_call, test_proxied};
+
+    fn conversation(call: imperium_api::ToolCall, result: &str) -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::user("go"),
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: vec![call],
+            },
+            ChatMessage::Tool {
+                tool_call_id: "c1".into(),
+                content: result.into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn a_call_tool_call_counts_as_the_tool_it_ran() {
+        let args = serde_json::json!({"url": "https://example.com"});
+        for result in ["page text", "error: no route"] {
+            let proxied = tool_calls(&conversation(
+                test_proxied("c1", "web_fetch", args.clone()),
+                result,
+            ));
+            let direct = tool_calls(&conversation(
+                test_call("c1", "web_fetch", &args.to_string()),
+                result,
+            ));
+            assert_eq!(proxied, direct);
+            assert_eq!(proxied[0].0, "web_fetch");
+            assert_eq!(proxied[0].2, !result.starts_with("error:"));
+        }
+        let web = conversation(test_proxied("c1", "web_fetch", args), "page text");
+        assert!(untrusted_of(&web).web);
+    }
 }

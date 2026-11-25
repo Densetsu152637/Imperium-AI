@@ -40,16 +40,13 @@ impl Agent {
     /// plugins') sit among them: the list it is offered with `harness.tool_loading` off. With
     /// loading on this is its universe, which calls are checked against; it is worked out
     /// again each time it is asked for.
-    pub(super) fn tool_universe(&self) -> (Vec<ToolSpec>, Vec<(Category, Range<usize>)>) {
+    pub(super) fn tool_universe(&self) -> (Vec<ToolSpec>, Vec<Category>) {
         self.build_universe(self.reactive())
     }
 
     /// [`Agent::tool_universe`]; `keep_activation` keeps `activate_plugin` listed after the
     /// last plugin is active (loading on, where the offered list must not change).
-    pub(super) fn build_universe(
-        &self,
-        keep_activation: bool,
-    ) -> (Vec<ToolSpec>, Vec<(Category, Range<usize>)>) {
+    pub(super) fn build_universe(&self, keep_activation: bool) -> (Vec<ToolSpec>, Vec<Category>) {
         if self.single_call {
             return (Vec::new(), Vec::new());
         }
@@ -133,7 +130,18 @@ impl Agent {
         {
             tools.extend([list_knowledge_agents_spec(), ask_agent_spec()]);
         }
-        let groups = vec![(Category::ToolsMcp, mcp), (Category::ToolsPlugins, plugins)];
+        // One category per tool, in step with the list.
+        let groups: Vec<Category> = (0..tools.len())
+            .map(|index| {
+                if mcp.contains(&index) {
+                    Category::ToolsMcp
+                } else if plugins.contains(&index) {
+                    Category::ToolsPlugins
+                } else {
+                    Category::ToolsBuiltin
+                }
+            })
+            .collect();
         // A named agent's file narrows what it is offered, never widens it.
         match self.named.as_ref().and_then(|named| named.tools.as_deref()) {
             Some(allowed) => narrow_tools(tools, groups, allowed),
@@ -1161,34 +1169,15 @@ pub(super) fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
     })
 }
 
-/// Keeps the tools `allowed` names, and moves the ranges of `groups` to match what is left.
+/// Keeps the tools `allowed` names, with the category of each one kept in step.
 pub(super) fn narrow_tools(
     tools: Vec<ToolSpec>,
-    groups: Vec<(Category, Range<usize>)>,
+    categories: Vec<Category>,
     allowed: &[String],
-) -> (Vec<ToolSpec>, Vec<(Category, Range<usize>)>) {
-    let keep: Vec<bool> = tools
-        .iter()
-        .map(|tool| allowed.contains(&tool.name))
-        .collect();
-    // before[i]: how many of the first i tools are kept.
-    let mut before = Vec::with_capacity(keep.len() + 1);
-    let mut kept = 0;
-    before.push(0);
-    for keeps in &keep {
-        if *keeps {
-            kept += 1;
-        }
-        before.push(kept);
-    }
-    let groups = groups
+) -> (Vec<ToolSpec>, Vec<Category>) {
+    tools
         .into_iter()
-        .map(|(category, range)| (category, before[range.start]..before[range.end]))
-        .collect();
-    let tools = tools
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(tool, keeps)| keeps.then_some(tool))
-        .collect();
-    (tools, groups)
+        .zip(categories)
+        .filter(|(tool, _)| allowed.contains(&tool.name))
+        .unzip()
 }

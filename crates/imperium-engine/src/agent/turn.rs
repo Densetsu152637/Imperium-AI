@@ -263,6 +263,7 @@ impl Agent {
             images: rendered.images,
         });
         self.checkpoint();
+        self.refresh_loader_text();
         let (mut tools, mut tool_texts) = self.offered_tools();
         self.last_tools.clone_from(&tools);
         self.asked_this_turn = 0;
@@ -525,7 +526,7 @@ impl Agent {
             let activates = completion
                 .tool_calls
                 .iter()
-                .any(|call| call.function.name == ACTIVATE_PLUGIN);
+                .any(|call| effective_call(call).function.name == ACTIVATE_PLUGIN);
             let mut touched: Vec<PathBuf> = Vec::new();
             // With loading on, other tools are reached through `call_tool`: names are not checked.
             let checked: &[String] = if self.reactive() { &[] } else { &offered };
@@ -548,15 +549,31 @@ impl Agent {
                 // Only a call that worked counts as opening the directory: not one that was
                 // denied, refused by a hook, or failed.
                 // The arguments the call ran with: a hook may have rewritten them.
-                let ran_with = lock(&self.ran_rewritten)
-                    .clone()
-                    .unwrap_or_else(|| call.function.arguments.clone());
-                if self.last_tool_ok.load(Ordering::SeqCst)
-                    && let Some(dir) =
-                        instructions::touched_dir(&self.workspace, &call.function.name, &ran_with)
+                // A call through `call_tool` is the tool it ran.
+                let (dir, searched) = {
+                    let effective = effective_call(&call);
+                    let ran_with = lock(&self.ran_rewritten)
+                        .clone()
+                        .unwrap_or_else(|| effective.function.arguments.clone());
+                    let dir = if self.last_tool_ok.load(Ordering::SeqCst) {
+                        instructions::touched_dir(
+                            &self.workspace,
+                            &effective.function.name,
+                            &ran_with,
+                        )
+                    } else {
+                        None
+                    };
+                    (dir, effective.function.name == TOOL_SEARCH)
+                };
+                if let Some(dir) = dir
                     && !touched.contains(&dir)
                 {
                     touched.push(dir);
+                }
+                // The schemas in a `tool_search` result are counted by their tools' sources.
+                if searched && let Some(parts) = self.search_result_spans(&output) {
+                    self.spans.insert(self.messages.len(), parts);
                 }
                 self.messages.push(ChatMessage::Tool {
                     tool_call_id: call.id,
@@ -826,6 +843,25 @@ impl Agent {
         if text == self.harness_text {
             return;
         }
+        let old = std::mem::replace(&mut self.harness_text, text.clone());
+        self.swap_prompt_text(&old, &text);
+    }
+
+    /// Rewrites the loader sentence of the system prompt: present while reactive tool loading
+    /// is on for this agent, whatever its attendance or role (an unattended root and a subagent
+    /// get it too), and taken out when the mode changes with the model.
+    pub(super) fn refresh_loader_text(&mut self) {
+        let text = self.loader_prompt();
+        if text == self.loader_text {
+            return;
+        }
+        let old = std::mem::replace(&mut self.loader_text, text.clone());
+        self.swap_prompt_text(&old, &text);
+    }
+
+    /// Replaces the paragraph `old` of the system prompt's base part with `new`; either may be
+    /// empty, and a new one goes at the end of the base part.
+    fn swap_prompt_text(&mut self, old: &str, new: &str) {
         // Where the base part of the system prompt ends, which is where a new paragraph goes.
         let base_end = self
             .spans
@@ -838,15 +874,13 @@ impl Agent {
             })
             .unwrap_or(usize::MAX);
         if let Some(ChatMessage::System { content }) = self.messages.first_mut() {
-            let (updated, at, delta) =
-                swap_harness_text(content, &self.harness_text, &text, base_end);
+            let (updated, at, delta) = swap_harness_text(content, old, new, base_end);
             *content = updated;
             // The labelled parts stay exact: what follows the edit moves by what it added.
             if let Some(spans) = self.spans.get_mut(&0) {
                 shift_spans(spans, at, delta);
             }
         }
-        self.harness_text = text;
     }
 
     /// The de-reference step: one small call that rewrites `text` into a standalone prompt and
