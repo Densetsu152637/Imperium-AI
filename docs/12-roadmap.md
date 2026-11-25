@@ -778,9 +778,18 @@ and `environments.agent_update` (protocol 0.28)
     (`docs/human-reasoning-models/harness-proposal.md`). The harness is chosen per session,
     environment or agent file, and switched at a turn boundary without restarting the session
     or the daemon. Headless runs take `--harness <name>`, so evals can compare harnesses on the
-    same tasks, building on the headless eval variants of [item 53](#next-in-order). Order: this
-    is the first step of the reasoning-harness line, after the 0.3.0 version bump; the Imperium
-    harness is then built as the second harness behind this switch.
+    same tasks, building on the headless eval variants of [item 53](#next-in-order). A subagent
+    can run under a different harness from its parent, and can also carry its own system prompt
+    and its own workflow (the rules or instructions it follows). These are set in an agent file,
+    as new fields beside the existing ones ([06](06-extensibility.md#named-agents-implemented)),
+    and per spawn through `spawn_agent` arguments; a value left unset inherits from the parent.
+    The parent's permission mode, permission rules and budgets still bound the subagent, and a
+    per-subagent prompt or workflow never widens what it may do. Headless evals can set the
+    harness, prompt and workflow per subagent, so harness and prompt variants can be compared on
+    subagents too. Order: this is the first step of the reasoning-harness line, after the 0.3.0
+    version bump; the Imperium harness is then built as the second harness behind this switch.
+    The switch and the per-subagent selection are app work; the content of the Imperium harness
+    itself is research work.
 <!-- markdownlint-disable-next-line MD029 -->
 59. **Windows release signing and per-machine install** (planned). Windows release builds are
     Authenticode-signed (the signing service is still to be chosen,
