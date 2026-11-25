@@ -1267,7 +1267,12 @@ mod tests {
         let mut files = Vec::new();
         sources(&base, &base, &mut files);
         assert!(files.len() > 20, "{} files", files.len());
-        let allowed = ["agent/catalog.rs", "agent/tools.rs"];
+        // `call_repair.rs` reads the raw calls a model wrote, before any `call_tool` wrapping.
+        let allowed = [
+            "agent/catalog.rs",
+            "agent/tools.rs",
+            "agent/call_repair.rs",
+        ];
         // Counts what the model was sent, so reads the stored call as it is.
         let as_sent = [
             "parts.push((Category::Assistant, &call.function.name));",
