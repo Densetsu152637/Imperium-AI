@@ -766,11 +766,14 @@ enum RuntimeCommand {
 enum VllmCommand {
     /// Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or
     /// with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the
-    /// disk and GPU requirements and asks before downloading. Linux and WSL2 only.
+    /// disk and GPU requirements and asks before downloading. Linux and WSL2 (from Windows, with `--wsl`).
     Setup {
         /// Pull the Docker image instead of making a virtual environment.
         #[arg(long)]
         docker: bool,
+        /// Windows only: make the virtual environment inside a WSL2 distribution (`runtime.vllm.wsl_distro`, else WSL's default) and run vLLM there.
+        #[arg(long, conflicts_with = "docker")]
+        wsl: bool,
         /// Approve the download without asking.
         #[arg(long)]
         yes: bool,
@@ -1073,11 +1076,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     command:
                         VllmCommand::Setup {
                             docker,
+                            wsl,
                             yes,
                             version,
                         },
                 },
-        } => vllm::setup(docker, yes, version),
+        } => vllm::setup(docker, wsl, yes, version),
         Command::Runtime {
             command:
                 RuntimeCommand::Vllm {

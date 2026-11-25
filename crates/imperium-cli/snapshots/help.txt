@@ -3386,7 +3386,7 @@ The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothi
 Usage: imperium runtime vllm [OPTIONS] <COMMAND>
 
 Commands:
-  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 (from Windows, with `--wsl`)
   status  Show what is set up and which vLLM the daemon starts
   remove  Remove the managed environment (its folder, or the Docker image)
   help    Print this message or the help of the given subcommand(s)
@@ -3399,7 +3399,7 @@ Options:
           Print help
 
 ===== imperium runtime vllm setup =====
-Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 (from Windows, with `--wsl`)
 
 Usage: imperium runtime vllm setup [OPTIONS]
 
@@ -3409,6 +3409,9 @@ Options:
 
       --remote <REMOTE>
           Talk to a remote daemon connected with `imperium remote connect`
+
+      --wsl
+          Windows only: make the virtual environment inside a WSL2 distribution (`runtime.vllm.wsl_distro`, else WSL's default) and run vLLM there
 
       --yes
           Approve the download without asking
@@ -3452,13 +3455,13 @@ Print this message or the help of the given subcommand(s)
 Usage: imperium runtime vllm help [COMMAND]
 
 Commands:
-  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 (from Windows, with `--wsl`)
   status  Show what is set up and which vLLM the daemon starts
   remove  Remove the managed environment (its folder, or the Docker image)
   help    Print this message or the help of the given subcommand(s)
 
 ===== imperium runtime vllm help setup =====
-Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 (from Windows, with `--wsl`)
 
 Usage: imperium runtime vllm help setup
 
@@ -3516,12 +3519,12 @@ The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothi
 Usage: imperium runtime help vllm [COMMAND]
 
 Commands:
-  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 (from Windows, with `--wsl`)
   status  Show what is set up and which vLLM the daemon starts
   remove  Remove the managed environment (its folder, or the Docker image)
 
 ===== imperium runtime help vllm setup =====
-Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 (from Windows, with `--wsl`)
 
 Usage: imperium runtime help vllm setup
 
@@ -4641,12 +4644,12 @@ The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothi
 Usage: imperium help runtime vllm [COMMAND]
 
 Commands:
-  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+  setup   Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 (from Windows, with `--wsl`)
   status  Show what is set up and which vLLM the daemon starts
   remove  Remove the managed environment (its folder, or the Docker image)
 
 ===== imperium help runtime vllm setup =====
-Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 only
+Set up vLLM: a `uv` virtual environment with a pinned vLLM (`runtime.vllm.version`), or with `--docker` the official Docker image (`runtime.vllm.docker_image`). Shows the disk and GPU requirements and asks before downloading. Linux and WSL2 (from Windows, with `--wsl`)
 
 Usage: imperium help runtime vllm setup
 

@@ -7,7 +7,7 @@
 | Hosted endpoint      | OpenAI-compatible Chat Completions / Responses | OpenRouter, Together, Groq, DeepInfra, self-hosted, vendor APIs |
 | Anthropic-compatible | Messages API                               | Optional adapter                            |
 | llama.cpp            | Supervised `llama-server` (OpenAI-compatible) | Native on all platforms                  |
-| vLLM                 | Supervised `vllm serve` (OpenAI-compatible) | Linux, WSL2, Docker, or remote host        |
+| vLLM                 | Supervised `vllm serve` (OpenAI-compatible) | Linux, Windows through WSL2, Docker, or remote host |
 | External local       | Ollama, LM Studio, TabbyAPI, etc.          | Registered as endpoints; not supervised     |
 
 Everything speaks OpenAI-compatible HTTP internally, so routing and telemetry are uniform.
@@ -57,8 +57,8 @@ paths are later work.
   and GGUF files that are not language models (architectures such as `flux` or `qwen_image`,
   or a header with neither layers nor context length). These are listed as skipped, not as
   models that do not fit.
-- A vLLM model on a machine that cannot run vLLM (anything but Linux and WSL2) says so
-  (`problem` in `models.local`) instead of reading *does not fit*.
+- A vLLM model on a machine that cannot run vLLM (anything but Linux, WSL2, or Windows with vLLM
+  set up in WSL2) says so (`problem` in `models.local`) instead of reading *does not fit*.
 
 ## Setting up models from the app
 
@@ -127,7 +127,7 @@ imperium models cancel dl-1
 - **Fit.** `models.hf_files` estimates whether each choice fits this machine from its size
   alone (the header is not read yet): the KV cache is taken as a fifth of the weights, and the
   answer is `gpu`, `partial`, `cpu`, or `none`, as in `models.local`. vLLM folders need Linux
-  and the GPU.
+  (or WSL2 on Windows) and the GPU.
 - **Downloading.** Each file streams to `<file>.part`; an interrupted download resumes from it
   with a `Range` request (from scratch if the server ignores the range). The SHA256 is checked
   when the listing gave one, and a mismatching file is deleted. Only then is the file renamed
@@ -914,10 +914,11 @@ offload to system memory) and served by a supervised `vllm serve <folder>
 --served-model-name <id>` on a free loopback port, with `--max-model-len` (the per-session
 context), `--max-num-seqs` (the slots; no token pool), and a `--gpu-memory-utilization` sized to the model's
 share of free VRAM plus 5%, capped by `runtime.vllm.max_gpu_memory_utilization`. vLLM is
-available on Linux (including WSL2) through `runtime.vllm.command` (default `vllm` on `PATH`);
-elsewhere such models are listed but unavailable, so routing falls back. Managed `uv`
-environments and the Docker image are later work; on another platform, run Imperium on a
-Linux host and use it through [SSH](05-tools-and-isolation.md#ssh-hosts).
+available on Linux (including inside WSL2) through `runtime.vllm.command` (default `vllm` on
+`PATH`), and on native Windows through a WSL2 distribution ([WSL mode](#vllm-in-wsl2-windows-implemented));
+elsewhere such models are listed but unavailable, so routing falls back. The managed `uv`
+environment and the Docker image are described below; on macOS, run Imperium on a Linux host
+and use it through [SSH](05-tools-and-isolation.md#ssh-hosts).
 
 The supervisor does not know either runtime by name: it holds an ordered list of runtime
 backends (`RuntimeBackend` in `imperium-local`), llama.cpp then vLLM by default, and serves a
@@ -931,10 +932,11 @@ and passing it to `Supervisor::with_backends`.
   point at their own `llama-server` build instead, and one already on the machine is used
   while none is installed.
 - **vLLM** (managed environment, implemented): installed into a managed `uv` environment on
-  Linux/WSL2, or run from the official Docker image, or used on a remote host. Imperium never
+  Linux/WSL2 (or, from native Windows, inside a WSL2 distribution: [WSL mode](#vllm-in-wsl2-windows-implemented)),
+  or run from the official Docker image, or used on a remote host. Imperium never
   bundles vLLM and never sets it up by itself: only `imperium runtime vllm setup` does, after
   showing what it needs and asking.
-  - `imperium runtime vllm setup [--docker] [--yes] [--version <v>]` prints the requirements,
+  - `imperium runtime vllm setup [--docker | --wsl] [--yes] [--version <v>]` prints the requirements,
     the GPUs found and the folder, then asks (without a terminal `--yes` is the only way to
     approve). A virtual environment mode needs `uv` on PATH and about 10 to 15 GiB of disk
     (PyTorch, CUDA libraries, vLLM), Linux or WSL2, and an NVIDIA GPU with a CUDA 12 driver
@@ -974,15 +976,16 @@ and passing it to `Supervisor::with_backends`.
     end of the failing command's output; setting up what is already recorded changes nothing,
     and another version, mode or image needs `remove` first. `--version` applies to the virtual
     environment only; with `--docker` the image names the release.
-  - `imperium runtime vllm status` shows the mode, version, folder and size and which `vllm` the
+  - `imperium runtime vllm status` shows the mode (and distro), version, folder and size and which `vllm` the
     daemon starts; `imperium runtime vllm remove` deletes the version's folder (and nothing else)
     or runs `docker rmi`, after asking, and warns when the daemon is running (models loaded
     from the environment fail once it is gone). An agent's shell command `imperium runtime vllm
     setup|remove` is left to a person to approve, as the other commands that install or remove
     software are.
   - The daemon uses it when it starts: a `runtime.vllm.command` that is set wins, `vllm`
-    included (which forces the one on PATH); else the managed environment's `vllm` (venv) or its
-    container (Docker); else `vllm` on PATH. Restart the daemon after setup or removal.
+    included (which forces the one on PATH); else the managed environment's `vllm` (venv or
+    WSL) or its container (Docker); else `vllm` on PATH. On Windows only a WSL environment (or
+    a command pointing into WSL) is usable. Restart the daemon after setup or removal.
   - Tested with a fake command runner (no `uv`, `pip`, Docker or vLLM runs in tests); not yet
     verified on hardware, so the first real setup, the container arguments and the free-space
     check (none: the requirements are shown, the disk is not measured) are the things to watch.
@@ -991,6 +994,81 @@ and passing it to `Supervisor::with_backends`.
   memory reservation. Multiple slots (`--parallel`) over one KV pool (`--kv-unified`) let one
   loaded model serve several agents concurrently; an agent holds a slot and a token reservation
   only while a model call runs.
+
+#### vLLM in WSL2 (Windows, implemented)
+
+On native Windows the daemon runs vLLM inside a WSL2 distribution; Imperium itself stays a
+Windows program. `imperium runtime vllm setup --wsl` makes the same managed `uv` environment
+inside the distro, and the daemon then serves `vllm:<folder>` models by starting `vllm serve`
+there, so routing, memory planning and the resource monitor treat them like any other local
+model. Without that setup (or a `runtime.vllm.command` pointing into WSL) vLLM models stay
+listed but unavailable, as before; the `problem` text says to run the command.
+
+- **Which distro.** `runtime.vllm.wsl_distro`, else WSL's default distro, read from
+  `wsl.exe -l -v` (its UTF-16 output is decoded, with or without a byte order mark, and a
+  localised listing parses the same). It must run under WSL2 (WSL 1 has no GPU), and Docker
+  Desktop's internal `docker-desktop` distros are refused.
+- **Setup** runs, each as `wsl.exe -d <distro> --exec <program> ...` (no shell inside WSL, and
+  no `~`, so the home folder comes from `printenv HOME`), in this order: the distro answers;
+  `uv --version` (also tried at `~/.local/bin/uv` and `~/.cargo/bin/uv`, because `--exec`
+  does not read a login shell's PATH; if none runs, setup says how to install `uv` inside the
+  distro and stops: Imperium never installs it); `nvidia-smi -L` (also at
+  `/usr/lib/wsl/lib/nvidia-smi`), which confirms a CUDA driver is visible in WSL and otherwise
+  stops with an explanation (the NVIDIA driver for Windows provides it; no Linux driver goes
+  into WSL); `rm -rf` of any leftover environment of an earlier failed run; `uv venv --python 3.12`;
+  `uv pip install --python <venv>/bin/python vllm==<version>`; `<venv>/bin/vllm --version`; and
+  last, the record. A failure removes the unfinished environment inside the distro and records
+  nothing. Setting up what is already recorded checks that its `vllm` is there and changes
+  nothing; another distro or version needs `remove` first. The same rules as the other modes
+  apply: it asks first, output is masked, a command that runs over an hour is killed, and the
+  commands run through the same fake-able runner in tests.
+- **Where it lives.** `~/.local/share/imperium/runtimes/vllm/<version>/venv` in the distro's own
+  Linux filesystem (fast, and a Windows-side environment could not run there). `managed.json`
+  on the Windows side records `mode: "wsl"`, the distro and that Linux path; a record whose
+  distro or path setup could not have written is ignored and refused by `remove`, which then
+  runs nothing. `status` asks the distro whether the `vllm` is there (which starts the distro if
+  it is stopped); `remove` runs `rm -rf` on the version's folder inside the distro (a distro that
+  is gone is a warning, and the record is dropped), after asking.
+- **Launch.** `wsl.exe -d <distro> --exec env VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
+  <venv>/bin/vllm serve <model folder> --host 127.0.0.1 --served-model-name ... --port <port>`:
+  an argument list, no shell, the folder passed as an argument and not mounted. `env` only sets
+  the no-telemetry variables and `VLLM_HOST_IP`, which a Windows environment variable would
+  not reach inside WSL; a program path containing `=` is refused, since `env` would read it as
+  an assignment. The daemon supervises `wsl.exe`.
+- **Model folders** are translated by a pure function: `C:\Models\x` becomes `/mnt/c/Models/x`
+  (WSL's default automount root; spaces are fine, being one argument), and
+  `\\wsl$\<distro>\...` or `\\wsl.localhost\<distro>\...` becomes the path inside the distro
+  (refused when it names another distro). Other UNC paths, paths relative to a drive or to the
+  current drive, and `..` are refused with a message, and the start fails before anything runs.
+  Only drives the distro auto-mounts under `/mnt/<letter>` are reachable: `subst` drives,
+  mapped network drives and a custom `automount.root` in `wsl.conf` are not. Reading a model from `/mnt/c` is slow (a 9P file system); a copy inside the distro loads
+  faster (add its `\\wsl$\<distro>\...` folder to `models.folders`).
+- **Networking.** vLLM binds `127.0.0.1` inside WSL2, whatever `runtime.vllm.extra_args` say
+  (every `--host` argument, abbreviations such as `--hos` included, is dropped and
+  `--host 127.0.0.1` is appended last), and the daemon connects to the same port on Windows
+  through WSL2's localhost forwarding. The HTTP server is never bound to `0.0.0.0`; `env` also
+  sets `VLLM_HOST_IP=127.0.0.1`, so vLLM's internal distributed endpoints do not pick the
+  distro's network address either. Before a start, `%USERPROFILE%\.wslconfig`
+  is read: `localhostForwarding=false` (or a `networkingMode` of `bridged`, `virtioproxy` or
+  `none`) without mirrored networking makes the start fail at once, naming the setting. If the
+  model does not become ready in time, the message points at forwarding too.
+- **Lifetime.** `wsl.exe` is only a relay, and killing it does not reliably end the `vllm`
+  behind it, so stopping a model (and a failed or cancelled start, and dropping the server)
+  signals the process inside the distro: `pkill -TERM -f` of its own command line (the `vllm`
+  path, `serve`, the translated model folder and the port, so another model is never matched
+  even on the same port), then `pgrep -f`
+  for up to 10 s, then `pkill -KILL -f` if it is still there. A daemon that is killed outright
+  leaves the `vllm` running in the distro; `wsl.exe --exec pkill -f vllm` (or `wsl --shutdown`)
+  ends it. The server's pid in the resource monitor is `wsl.exe`'s, so its CPU, RAM and GPU
+  figures are the relay's, not vLLM's.
+- **Command pointing into WSL.** `runtime.vllm.command` set to `/path/to/vllm` or
+  `\\wsl$\<distro>\path\to\vllm` is used the same way (a plain `/path` takes the distro from
+  `runtime.vllm.wsl_distro`, else the default); any other command is a Windows executable, which
+  cannot run vLLM, and the models stay unavailable.
+- Docker mode, the native Linux path, and `--version` are unchanged. Tested with a fake command
+  runner and a fake `wsl.exe` script (unix-only tests; no WSL, `uv`, vLLM or GPU runs in tests); **not yet verified on
+  hardware**: the first real setup, localhost forwarding, GPU visibility in the distro, and how
+  `pkill` sees vLLM's engine processes are the things to watch.
 
 ## Hardware awareness
 
