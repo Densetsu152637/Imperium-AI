@@ -108,10 +108,11 @@ pub(crate) async fn list(
         .filter(|line| !line.is_empty())
         .collect();
     entries.sort();
-    if entries.is_empty() {
-        return Ok(format!("{} is empty", workspace.display_remote(&full)));
-    }
-    Ok(entries.join("\n"))
+    Ok(crate::files::page_listing(
+        &workspace.display_remote(&full),
+        &entries,
+        offset,
+    ))
 }
 
 /// Runs a command line in the root folder inside the runtime.

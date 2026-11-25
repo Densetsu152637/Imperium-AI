@@ -267,10 +267,7 @@ pub(crate) async fn list_dir(
         entries.push(if is_dir { format!("{name}/") } else { name });
     }
     entries.sort();
-    if entries.is_empty() {
-        return Ok(format!("{} is empty", workspace.display(&full)));
-    }
-    Ok(entries.join("\n"))
+    Ok(page_listing(&workspace.display(&full), &entries, offset))
 }
 
 async fn read_text(full: &Path, shown: &str) -> Result<String, ToolError> {
