@@ -87,6 +87,14 @@
     {
       "name": "uninstall_extension",
       "status": "available"
+    },
+    {
+      "name": "tool_search",
+      "status": "available"
+    },
+    {
+      "name": "call_tool",
+      "status": "available"
     }
   ]
 }

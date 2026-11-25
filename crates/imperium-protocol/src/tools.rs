@@ -72,6 +72,8 @@ pub fn all() -> Vec<ToolDefinition> {
         set_model_card(),
         install_extension(),
         uninstall_extension(),
+        tool_search(),
+        call_tool(),
     ]
 }
 
@@ -400,6 +402,34 @@ pub fn uninstall_extension() -> ToolDefinition {
             "kind": {"type": "string", "enum": ["skill", "plugin", "mod"], "description": "What to remove"},
             "name": {"type": "string", "description": "Its name: the skill's, plugin's, or mod's id"}
         }, "required": ["kind", "name"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Find the tools that are not in the tool list (reactive tool loading, roadmap item 61). The
+/// engine appends the names of the deferred built-in tools to this description when it builds
+/// the tool, so the sentence here is the fixed part.
+pub fn tool_search() -> ToolDefinition {
+    ToolDefinition {
+        name: "tool_search",
+        description: "Find tools that are not in your tool list and get their parameters; run one with call_tool.",
+        parameters: json!({"type": "object", "properties": {
+            "query": {"type": "string", "description": "Words to match against tool names and descriptions; returns the best matches with their parameters"},
+            "names": {"type": "array", "items": {"type": "string"}, "description": "Exact tool names (or mcp__<server>__* for all of a server's tools) to get the parameters of"}
+        }}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Run a tool that is not in the tool list.
+pub fn call_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "call_tool",
+        description: "Run a tool that is not in your tool list, by name, with the arguments its parameters (from tool_search) describe.",
+        parameters: json!({"type": "object", "properties": {
+            "name": {"type": "string", "description": "The tool's exact name"},
+            "arguments": {"type": "object", "description": "The tool's arguments, as its parameters describe them"}
+        }, "required": ["name", "arguments"]}),
         status: ToolStatus::Available,
     }
 }

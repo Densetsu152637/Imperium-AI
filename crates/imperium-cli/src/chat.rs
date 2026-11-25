@@ -984,6 +984,13 @@ impl Chat {
                     println!("\n{tag}· activated plugin {name} ({} tools)", tools.len());
                 }
             },
+            SessionEvent::ToolsLoaded { names, via } => {
+                let how = match via {
+                    imperium_protocol::session::ToolLoadVia::Search => "looked up tools",
+                    imperium_protocol::session::ToolLoadVia::Call => "ran through call_tool",
+                };
+                println!("\n{tag}· {how}: {}", names.join(", "));
+            }
             SessionEvent::MessageQueued { id, text, steer } => {
                 let first = text.lines().next().unwrap_or_default();
                 if steer {

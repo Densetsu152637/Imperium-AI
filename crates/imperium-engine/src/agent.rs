@@ -22,6 +22,7 @@ use imperium_protocol::patterns;
 use imperium_protocol::session::{
     AgentStatus, Attachment, ContextItem, ContextPointer, ExtensionKind, PauseCause,
     PermissionDecision, Plan, PlanStep, Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
+    ToolLoadVia,
 };
 use imperium_protocol::tools as contract;
 use imperium_tools::{Access, Invocation, ToolError, Workspace, specs};
@@ -39,6 +40,7 @@ use imperium_protocol::methods::{Compaction, ContextFit};
 
 mod attachments;
 mod auto;
+mod catalog;
 mod compaction;
 mod delegation;
 mod fork;
@@ -51,6 +53,7 @@ mod turn;
 
 pub(crate) use auto::AutoGuard;
 use auto::{AutoGate, builtin_input, provider_input};
+use catalog::*;
 use delegation::*;
 pub(crate) use delegation::{cancel_subagent, resume_subagent};
 pub(crate) use fork::run_fork;
@@ -243,6 +246,22 @@ pub(crate) struct Agent {
     /// list (never more than the delegator had); the profile, the rules and the safety floor
     /// still apply to every call.
     named: Option<NamedAgent>,
+    /// Reactive tool loading (docs/plans/reactive-tools.md): whether the agent's deferred
+    /// tools are numerous enough to be worth a loader; decided once.
+    loader_worth: std::sync::OnceLock<bool>,
+    /// Whether `activate_plugin` stays offered for the whole session; decided once.
+    plugin_loader: std::sync::OnceLock<bool>,
+    /// The fixed description of `tool_search`; written once.
+    search_text: std::sync::OnceLock<String>,
+    /// The tools whose parameters this agent has seen in a `tool_search` result or that it
+    /// ran through `call_tool`.
+    loaded_tools: Mutex<Vec<String>>,
+    /// Whether the call in flight got as far as running (it started), and whether its
+    /// arguments were judged and rejected before that; both are false for a call a refusal
+    /// stopped. Set by [`Agent::tool_started`] and the argument checks, read by
+    /// `with_schema_advice`.
+    call_started: std::sync::atomic::AtomicBool,
+    call_args_failed: std::sync::atomic::AtomicBool,
 }
 
 impl Agent {
@@ -450,6 +469,12 @@ impl Agent {
             last_tools: Vec::new(),
             fork: None,
             named: None,
+            loader_worth: std::sync::OnceLock::new(),
+            plugin_loader: std::sync::OnceLock::new(),
+            search_text: std::sync::OnceLock::new(),
+            loaded_tools: Mutex::new(Vec::new()),
+            call_started: std::sync::atomic::AtomicBool::new(false),
+            call_args_failed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -489,8 +514,10 @@ impl Agent {
         self,
         def: &imperium_extensions::AgentDef,
     ) -> (Self, Vec<String>) {
+        // The agent's file narrows what the agent has (its universe), not what it is offered
+        // first: with reactive loading on, that is only the core.
         let offered: Vec<String> = self
-            .offered_tools()
+            .tool_universe()
             .0
             .into_iter()
             .map(|tool| tool.name)

@@ -348,6 +348,8 @@ struct Options {
     /// A local runtime: the session's model runs on it.
     local: Option<Arc<dyn LocalModels>>,
     pricing: Option<Pricing>,
+    /// `harness.tool_loading` for the session; unset leaves the default.
+    loading: Option<imperium_config::HarnessMode>,
 }
 
 fn model(url: &str, spec: &str, name: &str, window: Option<u64>) -> ResolvedModel {
@@ -412,7 +414,12 @@ fn start(url: &str, dir: &std::path::Path, options: Options) -> Session {
         attended: true,
         attachments: Default::default(),
         auto_permissions: Default::default(),
-        harness: Default::default(),
+        harness: imperium_config::HarnessSettings {
+            tool_loading: options
+                .loading
+                .unwrap_or(imperium_config::HarnessSettings::default().tool_loading),
+            ..Default::default()
+        },
         keep_agent_state: true,
         background: None,
         checkpoints: None,
@@ -668,6 +675,75 @@ async fn a_fork_repeats_the_prefix_byte_for_byte_and_the_conversation_stays() {
     // Nothing was added to the kept conversation.
     assert_eq!(session.agents()[1].messages, before);
     assert_eq!(card(&session, "t1").unwrap().questions, 3);
+}
+
+#[tokio::test]
+async fn a_fork_of_a_reactive_agent_keeps_the_list_may_search_and_is_refused_through_the_proxy() {
+    let lab = Arc::new(Lab::default());
+    let url = serve(Arc::clone(&lab)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let session = start(
+        &url,
+        dir.path(),
+        Options {
+            loading: Some(imperium_config::HarnessMode::On),
+            ..Options::default()
+        },
+    );
+    let mut events = session.subscribe();
+    research(&session, &mut events, "research the alpha module").await;
+    let research_request = lab
+        .all()
+        .into_iter()
+        .rfind(|body| is_subagent(body) && !is_fork(body))
+        .unwrap();
+    let offered: Vec<&str> = research_request["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(offered.contains(&"tool_search") && offered.contains(&"call_tool"));
+
+    // A search runs in a fork: it only reads the agent's own tool list.
+    say(
+        &session,
+        &mut events,
+        &ask("t1", "tool tool_search {\"names\": [\"update_plan\"]}"),
+    )
+    .await;
+    let answer = tool_output(&session, "root", "ask_agent").unwrap();
+    assert!(
+        answer.contains("saw: ") && answer.contains("update_plan"),
+        "{answer}"
+    );
+    assert!(
+        !answer.contains("is not available while you answer"),
+        "{answer}"
+    );
+
+    // A call through the proxy meets the fork's limits on the inner name.
+    let write = json!({"name": "write_file", "arguments": {"path": "x.txt", "content": "hacked"}});
+    say(
+        &session,
+        &mut events,
+        &ask("t1", &format!("tool call_tool {write}")),
+    )
+    .await;
+    let answer = tool_output(&session, "root", "ask_agent").unwrap();
+    assert!(
+        answer.contains("saw: write_file is not available while you answer"),
+        "{answer}"
+    );
+    assert!(!dir.path().join("x.txt").exists());
+
+    // The frozen list is sent byte for byte, loaders included.
+    let forks = lab.forks();
+    assert!(forks.len() >= 2);
+    for fork in &forks {
+        assert_eq!(fork["tools"], research_request["tools"]);
+    }
 }
 
 #[tokio::test]

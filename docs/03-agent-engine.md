@@ -69,7 +69,8 @@ results." It is a single shared constant (`PROVERB` in `agent/prompts.rs`), not 
 **Implemented:** the root agent's system prompt carries a short style contract
 ([roadmap item 19](12-roadmap.md)), and
 [`emperor-root.md`](../crates/imperium-protocol/schemas/prompts/emperor-root.md) has the same
-rules under *Response style*, so Emperor is trained on what the engine asks for:
+rules under *Response style*; the vendored Emperor prompt carries them, and a trained model
+learns them only at a later training round:
 
 - Lead with the result; keep replies short, the big picture first and more detail only when
   the user asks.
@@ -1033,9 +1034,22 @@ max_steps = 30
 
 `--prompt-overlay <file>` appends a file's text last. The flags are `max_steps` (default 50),
 `effort`, `auto_compact` (default false), `auto_compact_at` (0 to 1), `knowledge` (default
-true), `attended` (default false) and `harness` (`on`, `off`, `auto`; the aids need
-`attended=true`). An unknown flag is an error. The variant id and a `config_hash` (over the
+true), `attended` (default false), `harness` (`on`, `off`, `auto`; the aids need
+`attended=true`) and `tool_loading` (`on`, `off`, `auto`, default `off`; `auto` is on with
+`--local`: the fixed tool list of `harness.tool_loading`, see
+[the plan](plans/reactive-tools.md), is offered instead of every tool). An unknown flag is an error. The variant id and a `config_hash` (over the
 edits, flags and overlay, not the name) are in the output next to the prompt hash.
+
+**Reactive tool loading (roadmap item 61, stage 2a).** `harness.tool_loading` (`auto`, `on`,
+`off`; default `off`) is not yet a user-facing setting: it has no settings-registry entry or
+settings UI, but the engine reads it from `[harness]` in the configuration if it is set, and
+evaluations set it with `--flag tool_loading`. With it on, an agent is offered the core file
+and command tools, `tool_search` and `call_tool` (see [the plan](plans/reactive-tools.md)).
+Whether an agent gets the loader at all (at least three deferred tools) and whether
+`activate_plugin` stays offered are decided once per session, at the agent's first tool list,
+so MCP servers that connect or change their tools later do not change the list or the
+description of `tool_search`; their tools are found with `tool_search` and run with
+`call_tool`.
 
 ### Subagent recordings
 

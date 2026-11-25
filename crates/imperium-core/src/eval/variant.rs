@@ -28,10 +28,14 @@ pub(crate) struct LoopFlags {
     pub knowledge: bool,
     pub attended: bool,
     pub harness: HarnessMode,
+    /// Whether the tool list is the small fixed one with `tool_search` and `call_tool`
+    /// (`harness.tool_loading`; docs/plans/reactive-tools.md). Unlike `harness`, its default
+    /// is `off`, so evaluations run as before unless a run asks for it.
+    pub tool_loading: HarnessMode,
 }
 
 /// The flags and what they do, for error messages.
-const FLAG_NAMES: [&str; 7] = [
+const FLAG_NAMES: [&str; 8] = [
     "max_steps",
     "effort",
     "auto_compact",
@@ -39,6 +43,7 @@ const FLAG_NAMES: [&str; 7] = [
     "knowledge",
     "attended",
     "harness",
+    "tool_loading",
 ];
 
 impl LoopFlags {
@@ -53,6 +58,7 @@ impl LoopFlags {
             knowledge: true,
             attended: false,
             harness: HarnessMode::Auto,
+            tool_loading: HarnessMode::Off,
         };
         for (key, value) in flags {
             let bad = |what: &str| format!("flag {key}={value}: expected {what}");
@@ -89,6 +95,14 @@ impl LoopFlags {
                 }
                 "harness" => {
                     parsed.harness = match value.as_str() {
+                        "on" => HarnessMode::On,
+                        "off" => HarnessMode::Off,
+                        "auto" => HarnessMode::Auto,
+                        _ => return Err(bad("on, off or auto")),
+                    };
+                }
+                "tool_loading" => {
+                    parsed.tool_loading = match value.as_str() {
                         "on" => HarnessMode::On,
                         "off" => HarnessMode::Off,
                         "auto" => HarnessMode::Auto,
