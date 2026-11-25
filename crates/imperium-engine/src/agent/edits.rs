@@ -29,7 +29,7 @@ impl Agent {
             return Some(resolved).filter(|resolved| !resolved.is_empty());
         }
         let mut known: Vec<String> = self
-            .universe_before_edits(self.reactive())
+            .universe_before_edits(!self.reactive())
             .0
             .into_iter()
             .map(|spec| spec.name)
