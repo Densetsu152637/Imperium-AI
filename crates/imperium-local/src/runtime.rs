@@ -1973,6 +1973,7 @@ echo 'version: 6000 (abc)'
 
     fn untar(files: &[(&str, &[u8])], limits: Limits, root: &Path) -> std::io::Result<()> {
         let bytes = archive("crafted.tar.gz", files);
+        std::fs::create_dir_all(root.join("out")).unwrap();
         extract_tar(
             flate2::read::GzDecoder::new(std::io::Cursor::new(bytes)),
             &root.join("out"),
@@ -2031,6 +2032,7 @@ echo 'version: 6000 (abc)'
         header.set_cksum();
         builder.append(&header, &b"x"[..]).unwrap();
         let bytes = builder.into_inner().unwrap();
+        std::fs::create_dir_all(root.path().join("out")).unwrap();
         let error = extract_tar(
             std::io::Cursor::new(bytes),
             &root.path().join("out"),
