@@ -799,7 +799,18 @@ and `environments.agent_update` (protocol 0.28)
     and the app's `plugin_approve` can take an `approve` action for it (the challenge binds that
     hash and digest as for any plugin). It is a protocol change, so it follows stage 11.
 <!-- markdownlint-disable-next-line MD029 -->
-61. **Built-in CAS MCP server** (planned). Imperium ships a computer algebra system as a
+61. **Reactive tool loading and the knowledge-source rule** (planned). Agents whose model runs on
+    this machine are offered a fixed core of file and command tools plus `tool_search` (which
+    returns other tools' schemas) and `call_tool` (which runs any of the agent's tools through the
+    usual checks), so the tool list never changes and the prompt cache holds
+    (`harness.tool_loading`; `off` until measured, then `auto`). The base prompts say that settled
+    real-world facts, arithmetic and logic may come from the model's own knowledge while facts
+    about the project come from the tools. Both come from the guided-harness pilot, where a
+    variant that cut the tools and shortened the system prompt saved 42 to 70 % of prompt tokens,
+    and the knowledge note gave the best held-out score
+    ([plan](plans/reactive-tools.md), [03](03-agent-engine.md#harness-aids-for-small-models)).
+<!-- markdownlint-disable-next-line MD029 -->
+62. **Built-in CAS MCP server** (planned). Imperium ships a computer algebra system as a
     built-in [MCP](05-tools-and-isolation.md#mcp) server backed by SymPy, so agents (local
     models in particular) do exact symbolic maths instead of working it out in text. Its tools
     cover simplify and expand, factor, solve (equations, inequalities and systems),
@@ -815,7 +826,7 @@ and `environments.agent_update` (protocol 0.28)
     (ruff and pytest over the tools, the parser's refusals and the limits), and a daemon test
     drives one tool call through the MCP client. No plan yet.
 <!-- markdownlint-disable-next-line MD029 -->
-62. **Server package (Docker Compose)** (planned). Imperium can be self-hosted on a server and
+63. **Server package (Docker Compose)** (planned). Imperium can be self-hosted on a server and
     run there. The release workflow builds and publishes a container image of `imperium-core`
     and the `imperium` CLI for Linux x64 and arm64, and the repository ships a
     `docker-compose.yml`:

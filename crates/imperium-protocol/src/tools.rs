@@ -500,6 +500,9 @@ mod tests {
         ] {
             assert!(root.contains(rule), "{rule} missing from the root prompt");
         }
+        // The knowledge-source rule (roadmap item 61, stage 1), which the engine's prompts carry.
+        let flat = root.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("Settled real-world facts, arithmetic and logic"));
         assert!(prompt("brief.md").contains("knowledge"));
         assert!(prompt("questions.md").contains("recommended"));
         // The harness aids: the root prompt names them, and the patterns are written out.

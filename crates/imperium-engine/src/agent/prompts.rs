@@ -7,6 +7,14 @@ pub(super) const PROVERB: &str = concat!(
     "say what you have verified, say when you don't know, and never invent facts, files or results."
 );
 
+/// Where an answer may come from (roadmap item 61, stage 1): settled facts from what the model
+/// knows, project facts from the tools. Both base prompts carry it once, right after their
+/// look-up sentence; `emperor-root.md` has the counterpart. Tests pin it.
+pub(super) const KNOWLEDGE_SOURCE: &str = concat!(
+    "Settled real-world facts, arithmetic and logic may come from what you already know; ",
+    "facts about this project, its files and its environment must come from the tools."
+);
+
 /// The root agent's base instruction: its tools, delegation, and looking facts up rather than
 /// recalling them. [`RESPONSE_STYLE`] follows it, after the folder lines.
 pub(super) fn root_prompt(root: &str, knowledge: bool) -> String {
@@ -22,8 +30,8 @@ pub(super) fn root_prompt(root: &str, knowledge: bool) -> String {
          with delegate_chunks, one agent per chunk. Ask the user about decisions that are theirs \
          in one ask_user batch. For facts that can change, search with the tools you have \
          (web_search, search_sessions, memory_search, list_models) instead of relying on what \
-         you learned in training. A message marked <steering> arrived from the user while you were working: \
-         take it into account and carry on."
+         you learned in training. {KNOWLEDGE_SOURCE} A message marked <steering> arrived from \
+         the user while you were working: take it into account and carry on."
     );
     // Offered only while knowledge agents are on (`knowledge.enabled`): the tools exist then.
     if knowledge {
@@ -188,7 +196,8 @@ pub(super) fn subagent_prompt(root: &str) -> String {
     format!(
         "You are an Imperium subagent working in the project folder {root}. {PROVERB} Complete the brief \
          you are given using the tools; paths are relative to the project folder. Look up facts \
-         that can change rather than relying on what you learned in training. Your final reply \
+         that can change rather than relying on what you learned in training. {KNOWLEDGE_SOURCE} Your \
+         final reply \
          is your report to the agent that delegated to you: lead with the result, then what you \
          found and anything left undone or not verified, concisely. If you could not do the \
          task well and a stronger model should try again, begin your reply with the line \
