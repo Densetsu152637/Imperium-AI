@@ -241,10 +241,15 @@ pub(crate) struct Agent {
     plan: Mutex<Option<Plan>>,
     /// The harness paragraph in the system prompt, for the model the agent has now: it is
     /// rewritten when the model is switched, so the prompt and the tools offered always agree.
+    /// It sits in the swappable tail at the very end of the system message (see `fixed_len`).
     harness_text: String,
     /// The loader sentence in the system prompt while reactive tool loading is on (its own
-    /// swappable region, beside `harness_text`).
+    /// swappable region, beside `harness_text`, in the same tail).
     loader_text: String,
+    /// Where the system message's fixed part ends. What follows is the swappable tail (the
+    /// harness paragraph, then the loader sentence), so a swap changes only the end of the
+    /// prompt and the prefix a provider or a local runtime has cached stays as it was.
+    fixed_len: usize,
     /// May ask knowledge agents questions: the root and ordinary subagents, never a
     /// `single_call` or chunk agent, a knowledge agent, or a fork (docs/21-knowledge-agents.md).
     can_ask: bool,
@@ -367,16 +372,13 @@ impl Agent {
             ));
         }
         // How the root agent answers the user; it closes the base instruction. The personality
-        // follows the reply rules, so it sets the tone without replacing them.
+        // follows the reply rules, so it sets the tone without replacing them. The harness
+        // paragraph is not here: it depends on the model, so it goes last (`set_tail`).
         let mut harness_text = String::new();
         if can_delegate {
             system.push_str("\n\n");
             system.push_str(RESPONSE_STYLE);
             harness_text = harness_prompt(&shared.harness, model.local, is_attended(&shared));
-            if !harness_text.is_empty() {
-                system.push_str("\n\n");
-                system.push_str(&harness_text);
-            }
             if let Some(personality) = &shared.personality {
                 system.push_str("\n\n");
                 system.push_str(personality);
@@ -426,7 +428,7 @@ impl Agent {
         let (system, spans) = join_parts(parts);
         let inbox = shared.inboxes.open(&id);
         shared.agents.register(&id, &role, &model);
-        Agent {
+        let mut agent = Agent {
             spans: HashMap::from([(0, spans)]),
             can_delegate,
             role,
@@ -439,7 +441,9 @@ impl Agent {
                 model,
                 vec![ChatMessage::System { content: system }],
             )
-        }
+        };
+        agent.set_tail();
+        agent
     }
 
     /// An agent with nothing of its own yet: the given conversation and no tasks, plan, state
@@ -452,6 +456,11 @@ impl Agent {
         model: ResolvedModel,
         messages: Vec<ChatMessage>,
     ) -> Self {
+        // A system message the agent is given is all fixed: it has no tail of its own.
+        let fixed_len = match messages.first() {
+            Some(ChatMessage::System { content }) => content.len(),
+            _ => 0,
+        };
         Agent {
             id,
             inbox,
@@ -488,6 +497,7 @@ impl Agent {
             plan: Mutex::new(None),
             harness_text: String::new(),
             loader_text: String::new(),
+            fixed_len,
             can_ask: true,
             kind: AgentKind::Ordinary,
             asked_this_turn: 0,
@@ -509,6 +519,9 @@ impl Agent {
     /// when its file listed tools only those are offered and run. Nothing here grants a
     /// permission: every call still goes through the profile, the rules and the safety floor.
     pub(crate) fn with_named(mut self, named: NamedAgent) -> Self {
+        // The swappable tail stays last: it comes off, the agent's text is added, and it goes
+        // back after it.
+        self.cut_tail();
         if let Some(ChatMessage::System { content }) = self.messages.first_mut() {
             content.push_str(crate::breakdown::PART_SEPARATOR);
             let start = content.len();
@@ -528,7 +541,9 @@ impl Agent {
                 .entry(0)
                 .or_default()
                 .push((Category::SystemBase, start..end));
+            self.fixed_len = end;
         }
+        self.set_tail();
         self.named = Some(named);
         self
     }
@@ -659,8 +674,11 @@ impl Agent {
         let root = self.workspace.root_display();
         let system = single_call_prompt(&root);
         let (system, spans) = join_parts(vec![(Category::SystemBase, system)]);
+        self.fixed_len = system.len();
         self.messages = vec![ChatMessage::System { content: system }];
         self.spans = HashMap::from([(0, spans)]);
+        self.harness_text.clear();
+        self.loader_text.clear();
         self.single_call = true;
         self.can_ask = false;
         self.kind = AgentKind::SingleCall;
@@ -1079,56 +1097,57 @@ mod harness_tests {
     }
 
     #[test]
+    fn a_swap_changes_only_the_end_of_the_prompt() {
+        use crate::breakdown::join_parts;
+        let settings = HarnessSettings::default();
+        let local = harness_prompt(&settings, true, true);
+        let loader = "Tools that are not in your tool list are used in two steps.";
+        let (mut content, mut spans) = join_parts(vec![
+            (Category::SystemBase, "You are Imperium.".into()),
+            (Category::SystemSkills, "skills index".into()),
+            (Category::SystemProject, "project rules".into()),
+        ]);
+        let fixed = content.len();
+        let fixed_text = content.clone();
+        // Hosted to local with loading on: both paragraphs are added after everything.
+        retail(&mut content, &mut spans, fixed, &[&local, loader]);
+        assert_eq!(content, format!("{fixed_text}\n\n{local}\n\n{loader}"));
+        // Back to a hosted model with loading off: the tail is gone, nothing else moved.
+        retail(&mut content, &mut spans, fixed, &["", ""]);
+        assert_eq!(content, fixed_text);
+        // Only the loader: it is the whole tail, and swapping the harness paragraph in later
+        // leaves the text before it alone.
+        retail(&mut content, &mut spans, fixed, &["", loader]);
+        let loader_only = content.clone();
+        retail(&mut content, &mut spans, fixed, &[&local, loader]);
+        assert!(content.starts_with(&fixed_text));
+        assert!(content.ends_with(loader));
+        assert_ne!(content, loader_only);
+        // Every labelled part still holds the text it was made from.
+        let texts: Vec<&str> = spans
+            .iter()
+            .map(|(_, range)| &content[range.clone()])
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "You are Imperium.",
+                "skills index",
+                "project rules",
+                local.as_str(),
+                loader
+            ]
+        );
+    }
+
+    #[test]
     fn the_paragraph_follows_the_model_when_it_is_switched() {
         let settings = HarnessSettings::default();
         let hosted = harness_prompt(&settings, false, true);
         let local = harness_prompt(&settings, true, true);
         assert!(hosted.is_empty() && !local.is_empty());
-        let base = "You are Imperium.\n\nReplies: short.";
-        // Hosted to local: the paragraph is added; and back, it is taken out again.
-        let (to_local, _, _) = swap_harness_text(base, &hosted, &local, base.len());
-        assert!(to_local.starts_with(base) && to_local.contains("request_clarification"));
-        assert_eq!(
-            swap_harness_text(&to_local, &local, &hosted, base.len()).0,
-            base
-        );
-        // Mid-prompt (a personality follows it) it is replaced in place.
-        let with_personality = format!("{base}\n\n{local}\n\nBe Marcus.");
-        assert_eq!(
-            swap_harness_text(&with_personality, &local, "", base.len()).0,
-            format!("{base}\n\nBe Marcus.")
-        );
         // The tools follow the model through the same rule.
         assert!(!mode_on(settings.clarify, false) && mode_on(settings.clarify, true));
-    }
-
-    #[test]
-    fn the_labelled_parts_stay_exact_across_the_swap() {
-        use crate::breakdown::join_parts;
-        let settings = HarnessSettings::default();
-        let local = harness_prompt(&settings, true, true);
-        let base = "You are Imperium.\n\nReplies: short.";
-        for (old, new) in [("", local.as_str()), (local.as_str(), "")] {
-            let first = if old.is_empty() {
-                base.to_string()
-            } else {
-                format!("{base}\n\n{old}")
-            };
-            let (content, mut spans) = join_parts(vec![
-                (Category::SystemBase, first),
-                (Category::SystemSkills, "skills index".into()),
-                (Category::SystemProject, "project rules".into()),
-            ]);
-            let end = spans[0].1.end;
-            let (updated, at, delta) = swap_harness_text(&content, old, new, end);
-            shift_spans(&mut spans, at, delta);
-            // Every part still holds the text it was made from.
-            let base_part = &updated[spans[0].1.clone()];
-            assert!(base_part.starts_with(base), "{base_part}");
-            assert_eq!(base_part.contains("request_clarification"), !new.is_empty());
-            assert_eq!(&updated[spans[1].1.clone()], "skills index");
-            assert_eq!(&updated[spans[2].1.clone()], "project rules");
-        }
     }
 
     fn state_with_goal() -> SessionState {

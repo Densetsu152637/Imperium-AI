@@ -412,9 +412,10 @@ design left open, or differs from it:
   knowledge agent's record.
 - **Which tools are offered.** `keep_as_knowledge` is offered to the root whenever
   `knowledge.enabled`. `ask_agent` and `list_knowledge_agents` are offered to the root and to
-  ordinary subagents while the session has at least one knowledge agent (a subagent sees them from
-  its next turn), so a session without knowledge agents keeps its tool list, and its cached prefix,
-  as it was. A call to them from any agent that may not ask (a chunk or `single_call` agent, a
+  ordinary subagents whenever `knowledge.enabled` and the agent is offered the whole list (loading
+  off), so keeping the first knowledge agent does not change the tool list and its cached prefix
+  (before there is one they answer that there is none); with tool loading on they are in the
+  universe once the session has at least one knowledge agent. A call to them from any agent that may not ask (a chunk or `single_call` agent, a
   knowledge agent resumed for more work, a fork) is refused.
 - **Frozen prefix.** A subagent notes its system message, the tools it was offered and the reasoning
   effort its request carried (forks use the same effort) at every safe point, in memory; promotion records them with the card. A subagent that finished before a

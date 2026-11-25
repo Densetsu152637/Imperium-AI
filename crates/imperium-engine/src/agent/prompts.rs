@@ -85,59 +85,23 @@ pub(super) fn is_attended(shared: &Shared) -> bool {
     shared.attended && shared.launcher.is_none()
 }
 
-/// `content` (a system prompt) with its harness paragraph `old` replaced by `new`; either may
-/// be empty (no paragraph), and a new one goes at the end of the base part, `base_end`.
-/// Returns the new text, where the edit happened, and how many bytes it added (negative: took).
-pub(super) fn swap_harness_text(
-    content: &str,
-    old: &str,
-    new: &str,
-    base_end: usize,
-) -> (String, usize, isize) {
-    let size = |text: &str| isize::try_from(text.len()).unwrap_or(0);
-    if old.is_empty() {
-        if new.is_empty() {
-            return (content.to_string(), 0, 0);
-        }
-        let at = base_end.min(content.len());
-        let added = format!("\n\n{new}");
-        let mut out = content.to_string();
-        out.insert_str(at, &added);
-        // The part that ends at `at` grows, so the edit counts as inside it.
-        return (out, at.saturating_sub(1), size(&added));
-    }
-    let from = format!("\n\n{old}");
-    let Some(at) = content.find(&from) else {
-        return (content.to_string(), 0, 0);
-    };
-    let to = if new.is_empty() {
-        String::new()
-    } else {
-        format!("\n\n{new}")
-    };
-    let mut out = content.to_string();
-    out.replace_range(at..at + from.len(), &to);
-    (out, at, size(&to) - size(&from))
-}
-
-/// Moves the labelled parts of a message after an edit at `at` that added `delta` bytes: a
-/// part that reaches past `at` grows or shrinks, and one that starts after it moves.
-pub(super) fn shift_spans(spans: &mut Spans, at: usize, delta: isize) {
-    let shift = |value: usize| {
-        usize::try_from(
-            isize::try_from(value)
-                .unwrap_or(isize::MAX)
-                .saturating_add(delta),
-        )
-        .unwrap_or(0)
-    };
-    for (_, range) in spans.iter_mut() {
-        if range.start > at {
-            range.start = shift(range.start);
-        }
-        if range.end > at {
-            range.end = shift(range.end);
-        }
+/// Puts the swappable tail at the end of a system message whose fixed part is its first `fixed`
+/// bytes: whatever tail it had comes off, and each of `paragraphs` that is not empty goes on
+/// after a blank line, as its own labelled part. Only the end of the message changes, so the
+/// prefix a provider or a local runtime has cached stays what it was.
+pub(super) fn retail(
+    content: &mut String,
+    spans: &mut crate::breakdown::Spans,
+    fixed: usize,
+    paragraphs: &[&str],
+) {
+    content.truncate(fixed);
+    spans.retain(|(_, range)| range.end <= fixed);
+    for text in paragraphs.iter().filter(|text| !text.is_empty()) {
+        content.push_str(crate::breakdown::PART_SEPARATOR);
+        let start = content.len();
+        content.push_str(text);
+        spans.push((crate::breakdown::Category::SystemBase, start..content.len()));
     }
 }
 

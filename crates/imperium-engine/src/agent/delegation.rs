@@ -78,7 +78,7 @@ impl Agent {
                 // A variant's drops are the root's alone, so they do not narrow what a subagent's
                 // file may list.
                 let parent: Vec<String> = self
-                    .universe_before_edits(self.reactive())
+                    .universe_before_edits(!self.reactive())
                     .0
                     .into_iter()
                     .map(|tool| tool.name)
