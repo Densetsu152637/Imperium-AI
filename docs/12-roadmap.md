@@ -817,7 +817,7 @@ and `environments.agent_update` (protocol 0.28)
     about the project come from the tools. Both come from the guided-harness pilot, where a
     variant that cut the tools and shortened the system prompt saved 42 to 70 % of prompt tokens,
     and the knowledge note gave the best held-out score
-    ([plan](plans/reactive-tools.md), [03](03-agent-engine.md#harness-aids-for-small-models)).
+    ([plan](plans/reactive-tools.md), [03](03-agent-engine.md#reactive-tool-loading-implemented)).
 <!-- markdownlint-disable-next-line MD029 -->
 62. **Built-in CAS MCP server** (planned). Imperium ships a computer algebra system as a
     built-in [MCP](05-tools-and-isolation.md#mcp) server backed by SymPy, so agents (local
@@ -883,6 +883,20 @@ and `environments.agent_update` (protocol 0.28)
     [item 58](#next-in-order), so it comes after item 58. The workflow, the rejection counting
     and the handover are app work; training and building Consul and Emperor themselves are
     research work. No plan yet.
+<!-- markdownlint-disable-next-line MD029 -->
+65. **Programmatic tool calling (code mode)** (planned). An agent can write a short Python program
+    (`run_script`) in which each of its tools is a function. The program runs in Monty, a
+    Python-subset interpreter written in Rust, in a confined worker process shipped with the app.
+    It has no files, network, environment or processes of its own. Every tool call it makes goes
+    through the agent's normal dispatch: refusals, hooks, approvals, permission and plan modes, and
+    events, shown nested under the program in the transcript. Intermediate results stay in the
+    program; only its printed output (bounded) and a one-line summary of its calls enter the
+    context. Tools that delegate, ask people or change the agent's own conversation are refused
+    inside programs. It ships off (`harness.code_mode`), then becomes `auto` (local models) once
+    the guided-harness pilot's suites show it keeps accuracy and cuts calls and tokens on counting,
+    filtering and compute questions, where a local 4B model now computes in its head or reads rows
+    one by one, and where computing needs no shell approval
+    ([plan](plans/code-mode.md); Imperium-Research R2.8).
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based

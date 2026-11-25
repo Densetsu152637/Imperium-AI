@@ -70,6 +70,10 @@ pub const FLAGS: &[(&str, &str)] = &[
         "tool_loading",
         "on, off or auto: a small fixed tool list with tool_search and call_tool (default off)",
     ),
+    (
+        "clear_stale_results",
+        "true or false: stub old file reads, searches and fetches before a compaction summary          (default true)",
+    ),
 ];
 
 /// An on/off switch on the command line.
@@ -144,7 +148,8 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE")]
     pub prompt_overlay: Option<PathBuf>,
     /// A loop flag, `key=value`; repeatable. The flags are listed in docs/03-agent-engine.md:
-    /// max_steps, effort, auto_compact, auto_compact_at, knowledge, attended, harness, tool_loading.
+    /// max_steps, effort, auto_compact, auto_compact_at, knowledge, attended, harness, tool_loading,
+    /// clear_stale_results.
     #[arg(long = "flag", value_name = "KEY=VALUE")]
     pub flags: Vec<String>,
     /// Answer subagents from this recordings file instead of running them (no model calls for
@@ -226,6 +231,8 @@ pub async fn run(client: &mut Client, args: RunArgs) -> anyhow::Result<Outcome> 
                 "system_prompt": preview.system_prompt,
                 "workspace_placeholder": WORKSPACE_PLACEHOLDER,
                 "tools": preview.tools,
+                "deferred_tools": preview.deferred_tools,
+                "tool_loading": preview.tool_loading,
             }),
             code: 0,
         });
@@ -277,6 +284,7 @@ pub async fn run(client: &mut Client, args: RunArgs) -> anyhow::Result<Outcome> 
         "prompt_hash": result.prompt_hash,
         "system_prompt": result.last_request.as_ref().map(|request| request.system_prompt.clone()),
         "tools": result.first_request.as_ref().map_or_else(Vec::new, |request| request.tools.clone()),
+        "tool_loading": result.tool_loading,
         "transcript": transcript(&result),
         "final_reply": final_reply(&result),
         "plan": result

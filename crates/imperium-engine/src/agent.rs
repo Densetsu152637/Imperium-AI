@@ -43,6 +43,7 @@ mod background;
 mod catalog;
 mod compaction;
 mod delegation;
+mod edits;
 mod fork;
 mod memory;
 mod prompts;
@@ -53,8 +54,8 @@ mod turn;
 
 pub(crate) use auto::AutoGuard;
 use auto::{AutoGate, builtin_input, provider_input};
-pub(crate) use catalog::effective_call;
 use catalog::*;
+pub(crate) use catalog::{CALL_TOOL, TOOL_SEARCH, effective_call, first_sentence};
 #[cfg(test)]
 pub(crate) use catalog::{test_call, test_proxied};
 use delegation::*;
@@ -233,6 +234,9 @@ pub(crate) struct Agent {
     /// The root agent's structured state (see [`harness`]); read back from the conversation
     /// when it is restored.
     state: SessionState,
+    /// The latest plan the agent set with `update_plan`, carried across a compaction (see
+    /// [`crate::plan`]); read back from the conversation when it is restored.
+    plan: Mutex<Option<Plan>>,
     /// The harness paragraph in the system prompt, for the model the agent has now: it is
     /// rewritten when the model is switched, so the prompt and the tools offered always agree.
     harness_text: String,
@@ -479,6 +483,7 @@ impl Agent {
             rewritten_from: Mutex::new(None),
             ran_rewritten: Mutex::new(None),
             state: SessionState::default(),
+            plan: Mutex::new(None),
             harness_text: String::new(),
             loader_text: String::new(),
             can_ask: true,
@@ -664,6 +669,7 @@ impl Agent {
         if self.can_delegate {
             self.state = harness::latest_state(&self.messages);
         }
+        *lock(&self.plan) = crate::plan::latest_plan(&self.messages);
     }
 
     fn emit(&self, event: SessionEvent) {
