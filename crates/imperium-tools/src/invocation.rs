@@ -51,6 +51,7 @@ pub enum Invocation {
     },
     ListDir {
         path: String,
+        offset: Option<usize>,
     },
     Glob {
         pattern: String,
@@ -291,7 +292,10 @@ impl Invocation {
             }
             "list_dir" => {
                 let args = parse_path_args(arguments)?;
-                Invocation::ListDir { path: args.path }
+                Invocation::ListDir {
+                    path: args.path,
+                    offset: args.offset,
+                }
             }
             "glob" => {
                 let args: SearchArgs = parse(arguments)?;
@@ -359,7 +363,9 @@ impl Invocation {
                 offset,
                 limit,
             } => Some(json!({"path": path, "offset": offset, "limit": limit}).to_string()),
-            Invocation::ListDir { path } => Some(json!({"path": path}).to_string()),
+            Invocation::ListDir { path, offset } => {
+                Some(json!({"path": path, "offset": offset}).to_string())
+            }
             _ => None,
         }
     }
@@ -370,7 +376,7 @@ impl Invocation {
             Invocation::ReadFile { path, .. }
             | Invocation::WriteFile { path, .. }
             | Invocation::EditFile { path, .. }
-            | Invocation::ListDir { path } => Some(path),
+            | Invocation::ListDir { path, .. } => Some(path),
             Invocation::Glob { scope, .. } | Invocation::Grep { scope, .. } => Some(&scope.path),
             Invocation::RunCommand { .. }
             | Invocation::CommandOutput { .. }
@@ -400,7 +406,7 @@ impl Invocation {
                 format!("write {path} ({} bytes)", content.len())
             }
             Invocation::EditFile { path, .. } => format!("edit {path}"),
-            Invocation::ListDir { path } => format!("list {path}"),
+            Invocation::ListDir { path, .. } => format!("list {path}"),
             Invocation::Glob { pattern, scope } => format!("find {pattern} in {}", scope.path),
             Invocation::Grep { query, scope } => {
                 format!("search {} for {}", scope.path, query.pattern)
@@ -417,6 +423,16 @@ impl Invocation {
     }
 
     pub async fn execute(&self, workspace: &Workspace) -> Result<String, ToolError> {
+        self.execute_in(workspace, None).await
+    }
+
+    /// Runs the call for an agent whose model has a context window of `window_tokens`, when
+    /// known; a `read_file` with no `limit` sizes its character budget from it.
+    pub async fn execute_in(
+        &self,
+        workspace: &Workspace,
+        window_tokens: Option<u64>,
+    ) -> Result<String, ToolError> {
         // An agent limited to local files runs no commands, whatever offered or approved the call.
         if imperium_policy::SHELL_TOOLS.contains(&self.tool_name())
             && !workspace.profile().allows_shell()
@@ -430,7 +446,7 @@ impl Invocation {
                 path,
                 offset,
                 limit,
-            } => files::read_file(workspace, path, *offset, *limit).await,
+            } => files::read_file_in(workspace, path, *offset, *limit, window_tokens).await,
             Invocation::WriteFile { path, content } => {
                 files::write_file(workspace, path, content).await
             }
@@ -439,7 +455,7 @@ impl Invocation {
                 old_string,
                 new_string,
             } => files::edit_file(workspace, path, old_string, new_string).await,
-            Invocation::ListDir { path } => files::list_dir(workspace, path).await,
+            Invocation::ListDir { path, offset } => files::list_dir(workspace, path, *offset).await,
             Invocation::Glob { pattern, scope } => {
                 let (workspace, pattern, scope) =
                     (workspace.clone(), pattern.clone(), scope.clone());
@@ -485,7 +501,7 @@ pub fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "read_file".into(),
-            description: "Read a text file (UTF-8, or UTF-16 with a byte order mark). Lines are numbered; use offset (1-based line) and limit to page through large files.".into(),
+            description: "Read a text file (UTF-8, or UTF-16 with a byte order mark). Lines are numbered; returns up to 2000 lines unless limit is set; use offset (1-based line) and limit to read more.".into(),
             parameters: json!({"type": "object", "properties": {
                 "path": path, "offset": {"type": "integer"}, "limit": {"type": "integer"}
             }, "required": ["path"]}),
@@ -506,8 +522,8 @@ pub fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "list_dir".into(),
-            description: "List a directory's entries; directories end with /.".into(),
-            parameters: json!({"type": "object", "properties": {"path": path}, "required": ["path"]}),
+            description: "List a directory's entries (500 per call, page with offset); directories end with /.".into(),
+            parameters: json!({"type": "object", "properties": {"path": path, "offset": {"type": "integer"}}, "required": ["path"]}),
         },
         ToolSpec {
             name: "glob".into(),
@@ -616,7 +632,7 @@ mod tests {
 
     fn path_of(name: &str, arguments: &str) -> String {
         match Invocation::parse(name, arguments).unwrap() {
-            Invocation::ReadFile { path, .. } | Invocation::ListDir { path } => path,
+            Invocation::ReadFile { path, .. } | Invocation::ListDir { path, .. } => path,
             other => panic!("{other:?}"),
         }
     }
@@ -673,6 +689,43 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&hooked).unwrap(),
             json!({"path": "a.rs", "offset": null, "limit": 2})
         );
+    }
+
+    #[test]
+    fn list_dir_takes_an_optional_offset_and_old_calls_still_parse() {
+        assert!(matches!(
+            Invocation::parse("list_dir", r#"{"path":"src"}"#).unwrap(),
+            Invocation::ListDir { offset: None, .. }
+        ));
+        assert!(matches!(
+            Invocation::parse("list_dir", r#"{"path":"src","offset":"500"}"#).unwrap(),
+            Invocation::ListDir {
+                offset: Some(500),
+                ..
+            }
+        ));
+        let hooked = Invocation::parse("list_dir", r#"{"file_path":"src","offset":5}"#)
+            .unwrap()
+            .hook_arguments()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&hooked).unwrap(),
+            json!({"path": "src", "offset": 5})
+        );
+    }
+
+    #[test]
+    fn the_paging_tools_describe_their_caps_in_the_schema() {
+        let specs = specs();
+        let text = |name: &str| {
+            let spec = specs.iter().find(|spec| spec.name == name).unwrap();
+            format!("{} {}", spec.description, spec.parameters)
+        };
+        assert!(text("read_file").contains("2000 lines"));
+        assert!(text("list_dir").contains("500 per call"));
+        assert!(text("list_dir").contains("offset"));
+        assert!(text("glob").contains("Default 100"));
+        assert!(text("grep").contains("default 100"));
     }
 
     #[test]

@@ -37,8 +37,12 @@ fn repository() -> tempfile::TempDir {
 }
 
 fn daemon(home: &Path, worktree_dir: Option<&Path>) -> Arc<DaemonState> {
-    let mut config = String::from(
-        "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"http://127.0.0.1:9/v1\"\n\
+    daemon_at(home, worktree_dir, "http://127.0.0.1:9/v1")
+}
+
+fn daemon_at(home: &Path, worktree_dir: Option<&Path>, url: &str) -> Arc<DaemonState> {
+    let mut config = format!(
+        "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"{url}\"\n\
          [workflow]\nenabled = false\n[memory]\nenabled = false\n",
     );
     if let Some(dir) = worktree_dir {
@@ -360,5 +364,191 @@ async fn deleting_a_session_removes_only_its_recorded_worktree() {
         std::fs::read_to_string(theirs.join("work.txt")).unwrap(),
         "uncommitted\n",
         "their worktree is untouched"
+    );
+}
+
+#[tokio::test]
+async fn an_environments_own_worktree_folder_replaces_the_global_one_for_its_sessions() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = repository();
+    let global = tempfile::tempdir().unwrap();
+    let own = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), Some(global.path()));
+    let mut connection = connect(&state);
+    let name = repo.path().canonicalize().unwrap();
+    let name = name.file_name().unwrap().to_owned();
+    let own_dir = own.path().display().to_string();
+    let with_own = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Own", "folders": [repo.path()], "worktree_dir": own_dir}),
+    );
+    assert_eq!(with_own["worktree_dir"], own_dir.as_str());
+    let without = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Plain", "folders": [repo.path()]}),
+    );
+    assert_eq!(without["worktree_dir"], Value::Null);
+
+    // A relative folder is refused.
+    let refused = call_error(
+        &mut connection,
+        "environments.update",
+        json!({"id": with_own["id"], "worktree_dir": "relative/trees"}),
+    );
+    assert!(refused.contains("absolute"), "{refused}");
+
+    // 1. The session of the environment with an override creates its worktree there.
+    let created = call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": with_own["id"], "worktree": true, "worktree_branch": "feature/a"}),
+    );
+    let id = created["session_id"].as_str().unwrap().to_string();
+    let tree = own.path().join(&name).join("feature-a");
+    assert!(same(created["folders"][0].as_str().unwrap(), &tree));
+    assert_eq!(git(&tree, &["branch", "--show-current"]), "feature/a");
+    assert!(
+        !global.path().join(&name).exists(),
+        "nothing is made in the global folder"
+    );
+
+    // 3. Another environment, with no override, still uses the global folder.
+    let other = call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": without["id"], "worktree": true, "worktree_branch": "feature/b"}),
+    );
+    let other_id = other["session_id"].as_str().unwrap().to_string();
+    let other_tree = global.path().join(&name).join("feature-b");
+    assert!(same(other["folders"][0].as_str().unwrap(), &other_tree));
+
+    // 2. After a restart the session is back on its worktree there, and deleting it removes it.
+    drop(connection);
+    drop(state);
+    let state = daemon(home.path(), Some(global.path()));
+    assert_eq!(state.resume_sessions(), 2);
+    let summary = state.summary(&state.session(&id).unwrap());
+    assert!(same(&summary.folders[0], &tree));
+    assert_eq!(summary.worktrees.len(), 1);
+    let mut connection = connect(&state);
+    let deleted = call(
+        &mut connection,
+        "session.delete",
+        json!({"session_id": id, "remove_worktrees": true}),
+    );
+    assert_eq!(deleted["removed_worktrees"].as_array().unwrap().len(), 1);
+    assert!(!tree.exists());
+    assert!(other_tree.exists(), "the other session's worktree stays");
+
+    // 4. Clearing the override falls back to the global folder.
+    let cleared = call(
+        &mut connection,
+        "environments.update",
+        json!({"id": with_own["id"], "worktree_dir": ""}),
+    );
+    assert_eq!(cleared["worktree_dir"], Value::Null);
+    let after = call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": with_own["id"], "worktree": true, "worktree_branch": "feature/c"}),
+    );
+    let fallen_back = global.path().join(&name).join("feature-c");
+    assert!(same(after["folders"][0].as_str().unwrap(), &fallen_back));
+    assert!(!own.path().join(&name).join("feature-c").exists());
+    call(
+        &mut connection,
+        "session.delete",
+        json!({"session_id": other_id, "remove_worktrees": true}),
+    );
+}
+
+/// A model that, told `delegate`, starts a write-access subagent; the subagent just answers.
+async fn delegating_model() -> String {
+    let app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(|axum::Json(body): axum::Json<Value>| async move {
+            let messages = body["messages"].as_array().cloned().unwrap_or_default();
+            let subagent = messages[0]["content"]
+                .as_str()
+                .is_some_and(|system| system.starts_with("You are an Imperium subagent"));
+            let last = messages.last().cloned().unwrap_or_default();
+            let said = last["content"].as_str().unwrap_or_default().to_string();
+            let tool = |id: &str, name: &str, arguments: Value| {
+                json!({"tool_calls": [{"index": 0, "id": id,
+                    "function": {"name": name, "arguments": arguments.to_string()}}]})
+            };
+            let delta = if subagent {
+                json!({"content": "done"})
+            } else if said == "delegate" {
+                tool(
+                    "spawn",
+                    "spawn_agent",
+                    json!({"brief": "write", "access": "write"}),
+                )
+            } else if said.starts_with("started ") {
+                tool("await", "await_tasks", json!({}))
+            } else {
+                json!({"content": "ok"})
+            };
+            let chunk = json!({"choices": [{"delta": delta}]});
+            (
+                [("content-type", "text/event-stream")],
+                format!("data: {chunk}\n\ndata: [DONE]\n\n"),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    url
+}
+
+#[tokio::test]
+async fn a_write_access_subagent_works_in_its_environments_worktree_folder() {
+    let url = delegating_model().await;
+    let home = tempfile::tempdir().unwrap();
+    let repo = repository();
+    let global = tempfile::tempdir().unwrap();
+    let own = tempfile::tempdir().unwrap();
+    let state = daemon_at(home.path(), Some(global.path()), &url);
+    let mut connection = connect(&state);
+    let env = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Own", "folders": [repo.path()],
+               "worktree_dir": own.path().display().to_string()}),
+    );
+    let created = call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": env["id"]}),
+    );
+    let id = created["session_id"].as_str().unwrap();
+    call(
+        &mut connection,
+        "session.send",
+        json!({"session_id": id, "text": "delegate"}),
+    );
+    let name = repo.path().canonicalize().unwrap();
+    let name = name.file_name().unwrap().to_owned();
+    let under_own = own.path().join(&name);
+    let started = std::time::Instant::now();
+    // The repository's folder is made first; the worktree appears in it a moment later.
+    while !std::fs::read_dir(&under_own).is_ok_and(|mut dir| dir.next().is_some()) {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the writer's worktree never appeared under the environment's folder"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        !global.path().join(&name).exists(),
+        "none in the global folder"
+    );
+    assert!(
+        !repo.path().join(".worktrees").exists(),
+        "none in the repository"
     );
 }
