@@ -2,13 +2,12 @@
 //! the root agent's requests, keeps what was sent and what came back, and keeps the token and
 //! cost ledger the ceilings read.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use imperium_api::{ChatMessage, Pricing, ToolCall, ToolSpec, Usage};
-use imperium_engine::{BudgetGate, BudgetVerdict, ChatClient, ChatRequest};
+use imperium_engine::{BudgetGate, BudgetVerdict, ChatClient, ChatRequest, ToolWatch};
 use imperium_models::{ChatFuture, Completion, ModelError};
-use imperium_protocol::methods::{EvalLedger, EvalRequest, EvalVariant};
+use imperium_protocol::methods::{EvalCalled, EvalLedger, EvalRequest, EvalSearched, EvalVariant};
 
 use super::variant::{self, Placeholders};
 
@@ -38,6 +37,73 @@ pub(crate) struct Record {
     pub errors: Vec<String>,
     /// Set when a ceiling stopped the run: `cost_ceiling` or `token_ceiling`.
     pub ceiling: Option<&'static str>,
+    /// What the root agent was offered and reached on demand.
+    pub tools: ToolRecord,
+}
+
+/// The root agent's tools over a run, from its requests and the engine's [`ToolWatch`]. Names
+/// are the ones the model saw.
+#[derive(Debug, Default)]
+pub(crate) struct ToolRecord {
+    /// The tools reached through `tool_search` and `call_tool`, as the latest list had them.
+    pub deferred: Vec<ToolSpec>,
+    pub searched: Vec<EvalSearched>,
+    pub called: Vec<EvalCalled>,
+    /// The compact JSON size of each root request's `tools`.
+    pub bytes_by_call: Vec<u64>,
+    /// How often a root request's `tools` differed from the one before.
+    pub changes: u64,
+    last_json: Option<String>,
+}
+
+impl ToolRecord {
+    /// Notes the `tools` array of a root request.
+    fn note_request(&mut self, tools: &[serde_json::Value]) {
+        let json = serde_json::to_string(tools).unwrap_or_default();
+        self.bytes_by_call.push(json.len() as u64);
+        if self.last_json.as_ref().is_some_and(|last| *last != json) {
+            self.changes += 1;
+        }
+        self.last_json = Some(json);
+    }
+}
+
+/// What the engine tells an evaluation about the root's tools, kept in the record.
+#[derive(Debug)]
+pub(crate) struct Watch {
+    pub record: Shared,
+}
+
+impl ToolWatch for Watch {
+    fn catalog(&self, _offered: &[ToolSpec], deferred: &[ToolSpec]) {
+        lock(&self.record).tools.deferred = deferred.to_vec();
+    }
+
+    fn searched(&self, names: &[String]) {
+        // The root's reply that asked has been counted, and no later call has started.
+        let mut record = lock(&self.record);
+        let call = record.root.calls;
+        record.tools.searched.push(EvalSearched {
+            names: names.to_vec(),
+            call,
+        });
+    }
+
+    fn called(&self, name: &str) {
+        let mut record = lock(&self.record);
+        let call = record.root.calls;
+        record.tools.called.push(EvalCalled {
+            name: name.to_string(),
+            call,
+        });
+    }
+
+    fn warn(&self, message: &str) {
+        let mut record = lock(&self.record);
+        if !record.warnings.iter().any(|known| known == message) {
+            record.warnings.push(message.to_string());
+        }
+    }
 }
 
 /// The record a session's client and ceilings share.
@@ -127,18 +193,15 @@ impl Recorder {
             Some(ChatMessage::System { content }) if content.starts_with(ROOT_PREFIX)
         );
         let mut messages = request.messages.to_vec();
-        let mut tools = request.tools.to_vec();
-        let mut back: HashMap<String, String> = HashMap::new();
+        // The variant's tool edits were applied by the engine, which reverses them on the
+        // reply: what arrives here is what the model is sent, and what it answers.
+        let tools = request.tools.to_vec();
         if root {
             let mut warnings = Vec::new();
             if let Some(ChatMessage::System { content }) = messages.first_mut() {
                 *content =
                     variant::edit_prompt(&self.variant, content, self.placeholders, &mut warnings);
             }
-            let (edited, reverse) = variant::edit_tools(&self.variant, &tools, &mut warnings);
-            tools = edited;
-            back = reverse;
-            variant::rename_calls(&back, &mut messages);
             self.remember_request(&messages, &tools, warnings);
         }
         let sent = ChatRequest {
@@ -156,7 +219,7 @@ impl Recorder {
                 ..Completion::default()
             }),
         };
-        let mut completion = match result {
+        let completion = match result {
             Ok(completion) => completion,
             Err(error) => {
                 lock(&self.record).errors.push(error.to_string());
@@ -168,11 +231,6 @@ impl Recorder {
         self.account(root, &usage, reported.is_none());
         if root {
             self.remember_reply(&completion);
-            for call in &mut completion.tool_calls {
-                if let Some(original) = back.get(&call.function.name) {
-                    call.function.name.clone_from(original);
-                }
-            }
         }
         Ok(completion)
     }
@@ -193,6 +251,7 @@ impl Recorder {
             tools: tools.iter().map(ToolSpec::to_wire).collect(),
         };
         let mut record = lock(&self.record);
+        record.tools.note_request(&request.tools);
         for warning in warnings {
             if !record.warnings.contains(&warning) {
                 record.warnings.push(warning);

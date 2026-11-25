@@ -43,6 +43,7 @@ mod background;
 mod catalog;
 mod compaction;
 mod delegation;
+mod edits;
 mod fork;
 mod memory;
 mod prompts;
@@ -53,8 +54,8 @@ mod turn;
 
 pub(crate) use auto::AutoGuard;
 use auto::{AutoGate, builtin_input, provider_input};
-pub(crate) use catalog::effective_call;
 use catalog::*;
+pub(crate) use catalog::{CALL_TOOL, TOOL_SEARCH, effective_call, first_sentence};
 #[cfg(test)]
 pub(crate) use catalog::{test_call, test_proxied};
 use delegation::*;
