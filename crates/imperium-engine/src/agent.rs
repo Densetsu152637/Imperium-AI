@@ -46,6 +46,7 @@ mod delegation;
 mod edits;
 mod fork;
 mod memory;
+mod parallel;
 mod prompts;
 mod sampling;
 mod specs;
@@ -231,6 +232,9 @@ pub(crate) struct Agent {
     rewritten_from: Mutex<Option<String>>,
     /// The arguments the latest call ran with when a hook rewrote them.
     ran_rewritten: Mutex<Option<String>>,
+    /// Outputs of a step's file reads that ran ahead of their turn, by call id, with the call
+    /// they belong to (see [`parallel`]); empty outside a step's tool round.
+    prefetched: Mutex<HashMap<String, (Invocation, parallel::Prefetch)>>,
     /// The root agent's structured state (see [`harness`]); read back from the conversation
     /// when it is restored.
     state: SessionState,
@@ -482,6 +486,7 @@ impl Agent {
             pending_rewrite: Mutex::new(None),
             rewritten_from: Mutex::new(None),
             ran_rewritten: Mutex::new(None),
+            prefetched: Mutex::new(HashMap::new()),
             state: SessionState::default(),
             plan: Mutex::new(None),
             harness_text: String::new(),

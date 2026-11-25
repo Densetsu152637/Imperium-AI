@@ -1066,8 +1066,9 @@ impl Agent {
             }
         }
         let started = self.tool_started(call, tool, summary);
-        let window = self.expected_window();
-        let (ok, output) = match invocation.execute_in(&self.workspace, window).await {
+        // A read that ran with the others of its step already has its output.
+        let (result, started) = self.read_result(call, &invocation, started).await;
+        let (ok, output) = match result {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
