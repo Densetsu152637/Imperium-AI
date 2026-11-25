@@ -495,10 +495,10 @@ pub(crate) fn resolve_for_approval(state: &DaemonState, name: &str) -> Result<Pa
     // An exact folder name is one plain name (`check_folder_name`); white space around it is the one
     // thing allowed, because an approval names the folder byte for byte. Any other name is looked
     // up as a plugin name or id.
-    if check_folder_name(name.trim()).is_ok() {
-        if let Some(exact) = exact_folder(state, name)? {
-            return Ok(exact);
-        }
+    if check_folder_name(name.trim()).is_ok()
+        && let Some(exact) = exact_folder(state, name)?
+    {
+        return Ok(exact);
     }
     let found = resolve(state, name)?;
     if std::fs::symlink_metadata(&found).is_ok_and(|meta| plugin_records::is_link(&meta)) {
