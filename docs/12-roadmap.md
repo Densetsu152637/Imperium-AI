@@ -694,7 +694,7 @@ and `environments.agent_update` (protocol 0.28)
     live run installs and approves a plugin of the real official marketplace
     ([11](11-ci-cd.md#live-official-marketplace-presence-liveyml)). Follow-ups: the marketplace's
     `git-subdir` sources (about a third of the official entries) are listed but not installable,
-    item 60, and item 59. The threat model, security model and its remaining gaps, storage,
+    item 59 (Windows). The threat model, security model and its remaining gaps, storage,
     protocol and fifteen stages are in the
     [plugin marketplace plan](plans/plugin-marketplace.md).
 <!-- markdownlint-disable-next-line MD029 -->
@@ -799,14 +799,17 @@ and `environments.agent_update` (protocol 0.28)
     with hooks or MCP servers on Windows ([item 51](#next-in-order)); carried-over approvals and
     plugins without code keep working.
 <!-- markdownlint-disable-next-line MD029 -->
-60. **Approve a folder that did not come from a marketplace** (planned). The
+60. **Approve a folder that did not come from a marketplace** (implemented, protocol 0.62). The
     [plugin marketplace](plans/plugin-marketplace.md)'s Plugins window cannot approve a withheld
     plugin folder that has no marketplace id (a pre-existing or unrecorded one), because
     `plugins.inspect` previews only `name@marketplace`. Add a daemon method, `plugins.inspect_folder`
     (the folder's name; the same `PluginPreview` of what it runs, its content hash and run digest,
     read from the installed folder), so the trust view can list exactly what the folder would run
     and the app's `plugin_approve` can take an `approve` action for it (the challenge binds that
-    hash and digest as for any plugin). It is a protocol change, so it follows stage 11.
+    hash and digest as for any plugin). It is a protocol change, so it follows stage 11. The
+    method takes exactly the name of one installed folder (no path, separator, `..`, device name
+    or link), reads the folder with the gate's own hash and digest, and a paired phone and a mod
+    frame cannot call it ([06](06-extensibility.md#plugin-marketplaces)).
 <!-- markdownlint-disable-next-line MD029 -->
 61. **Reactive tool loading and the knowledge-source rule** (planned). Agents whose model runs on
     this machine are offered a fixed core of file and command tools plus `tool_search` (which

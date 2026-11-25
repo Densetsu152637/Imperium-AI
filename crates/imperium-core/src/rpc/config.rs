@@ -178,6 +178,20 @@ impl Connection {
                     }
                 })
             }
+            // Reads and hashes one folder, so it runs off the connection's thread.
+            PluginsInspectFolder::NAME => {
+                call_later::<PluginsInspectFolder, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            crate::plugin_install::inspect_folder(&state, &params)
+                        })
+                        .await
+                        .map_err(|error| refused(error.to_string()))?
+                        .map_err(refused)
+                    }
+                })
+            }
             PluginsInstall::NAME => {
                 call_later::<PluginsInstall, _>(c.params.take(), c.later, |params| {
                     let state = Arc::clone(&self.state);
@@ -245,8 +259,9 @@ impl Connection {
                 c.params.take(),
                 |params: PluginsApprovalChallengeParams| {
                     crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
-                    let folder = crate::plugin_install::resolve(&self.state, &params.name)
-                        .map_err(refused)?;
+                    let folder =
+                        crate::plugin_install::resolve_for_approval(&self.state, &params.name)
+                            .map_err(refused)?;
                     let asked = crate::app_identity::Asked {
                         folder: &folder,
                         hash: &params.sha256,
@@ -286,7 +301,8 @@ impl Connection {
     fn plugins_approve(&mut self, c: &mut Dispatch<'_>) -> Result<Value, ErrorObject> {
         let params: PluginsApproveParams = decode::<PluginsApprove>(c.params.take())?;
         crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
-        let folder = crate::plugin_install::resolve(&self.state, &params.name).map_err(refused)?;
+        let folder = crate::plugin_install::resolve_for_approval(&self.state, &params.name)
+            .map_err(refused)?;
         let asked = crate::app_identity::Asked {
             folder: &folder,
             hash: &params.sha256,

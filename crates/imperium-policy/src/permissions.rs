@@ -84,9 +84,16 @@ impl SharedMode {
     }
 
     pub fn uncap(&self) {
-        let _ = self
-            .1
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+        let mut current = self.1.load(Ordering::SeqCst);
+        while current > 0 {
+            match self
+                .1
+                .compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => break,
+                Err(now) => current = now,
+            }
+        }
     }
 
     pub fn get(&self) -> PermissionMode {

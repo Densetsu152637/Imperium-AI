@@ -579,7 +579,7 @@ pub(crate) fn check_name(name: &str) -> Result<String, String> {
     }
 }
 
-fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     let text = path.display().to_string();
     // `canonicalize` gives `\\?\C:\...` on Windows.
     text.strip_prefix(r"\\?\")

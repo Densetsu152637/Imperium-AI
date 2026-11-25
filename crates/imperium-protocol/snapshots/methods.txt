@@ -73,6 +73,7 @@ method plugins.browse
 method plugins.delete_secret
 method plugins.dismiss_suggestion
 method plugins.inspect
+method plugins.inspect_folder
 method plugins.install
 method plugins.list
 method plugins.marketplace_add
