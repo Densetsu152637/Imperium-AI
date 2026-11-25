@@ -121,6 +121,55 @@ jobs:
     if: needs.detect.outputs.presence == 'true'
     uses: ./.github/workflows/presence-e2e.yml
 
+  # Supply chain (docs/plans/code-mode.md, C1): advisories, licences and sources by cargo-deny, and
+  # the Monty pin agreeing across runtimes/monty.env, the manifests and Cargo.lock.
+  deny:
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Monty pin
+        run: bash scripts/ci/check-monty-pin.sh
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+
+  # The script worker and its driver on every OS CI has, including Linux on aarch64 (the seccomp
+  # allowlist differs per architecture). The `rust` job runs the same tests with the workspace; this
+  # job names them, adds the arm runner, and records the cold start and size measurements.
+  script-worker:
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -p imperium-script -p imperium-script-worker --features imperium-script-worker/test-support -- -D warnings
+      - name: Tests
+        run: cargo test --locked -p imperium-script -p imperium-script-worker --features imperium-script-worker/test-support -- --nocapture --test-threads=2
+      - name: Measurements (release build)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --release -p imperium-script-worker --features test-support --test measure -- --nocapture 2>&1 | tee measure.log
+          grep MEASURE measure.log >> "$GITHUB_STEP_SUMMARY" || true
+
   # Work lands on experimental; main only takes experimental, once it has been released there.
   source:
     name: source branch
@@ -142,7 +191,7 @@ jobs:
   gate:
     name: CI gate
     if: always()
-    needs: [detect, docs, workflows, rust, web, python, presence-e2e, source]
+    needs: [detect, docs, workflows, rust, deny, script-worker, web, python, presence-e2e, source]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

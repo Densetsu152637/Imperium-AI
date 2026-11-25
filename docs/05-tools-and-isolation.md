@@ -1223,6 +1223,32 @@ runs a real sandbox in CI (Linux and macOS) to show that the endpoint file is un
 sockets cannot be opened, a hidden file cannot be renamed or linked out, and a workspace of the
 home folder cannot write `<config>` or `<data>`.
 
+### Programs (`run_script`): the interpreter worker (implemented in part)
+
+Code mode ([plan](plans/code-mode.md), roadmap item 65) is **not reachable yet**: there is no
+`run_script` tool and no setting. What exists is the worker that will run the programs and the
+daemon-side driver, built and tested but not wired into the engine.
+
+- **The worker** is `crates/imperium-script-worker` (binary `imperium-script`): the Monty
+  interpreter behind `monty-proto`'s worker loop, in a process of its own, one per program. The
+  Monty crates are pinned to one release, exactly, in `runtimes/monty.env` and Imperium's
+  `Cargo.lock`.
+- **Confinement is applied by the worker to itself before it reads any request**, and the worker
+  exits when any part cannot be applied (fail closed). On Linux it sets `PR_SET_NO_NEW_PRIVS`,
+  `RLIMIT_DATA` (twice the program's memory budget), Landlock where the kernel has it (no file
+  access at all) and a seccomp allowlist: reads from stdin, writes to stdout and stderr, memory,
+  futexes, clocks, `getrandom`, signals, exit, `kill` of itself and `clone` for threads only. Every
+  other system call fails, `clone3` with `ENOSYS`; another architecture kills the process. On macOS
+  it calls `sandbox_init` with a profile that starts from `(deny default)` and allows reading its
+  own binary and the system libraries and a few `sysctl` keys, so there is no file access, network,
+  process creation or `mach-lookup` (no pasteboard). The Windows launch (restricted token, job
+  object, labels) is stage 1b; until then the worker refuses to run there.
+- **The driver** is `crates/imperium-script`. It starts one worker per program with an empty
+  environment, accepts only the events of the plan's allowlist (anything else kills the worker),
+  answers every OS call with an error, counts every suspension against `script_suspensions` and
+  ends the program with `AbortFeed` past it, times out a worker that stops answering, and kills the
+  worker when the program ends.
+
 ### Environment runtimes (implemented)
 
 An [environment's runtime](14-projects-and-automation.md#runtimes-implemented) can move a

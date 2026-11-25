@@ -13,6 +13,7 @@ updates.
 | `release.yml`       | Tags `v*` (for example `v0.4.0`, `v0.5.0-beta.1`)    | Main-channel GitHub Release                   |
 | `experimental.yml`  | Pushes to `experimental`, manual run on it           | Experimental-channel GitHub pre-release       |
 | `presence-e2e.yml`  | Called by `ci.yml` when plugin approval changes, manual run | Plugin approval end to end with the OS presence check |
+| `advisories.yml`    | Weekly, manual run, pull requests that change it | `cargo deny check advisories` over the whole lock file, and an issue for each new GitHub security advisory on a Monty crate |
 | `github-live.yml`   | Pushes to `experimental`, weekly, manual run, same-repository pull requests that change it | Read-only check of the GitHub client against the real API (informational) |
 
 ### Checks (`ci.yml`)
@@ -25,6 +26,8 @@ always-running `CI gate` job fails if any job failed, so it can be the single re
 | `docs`      | Always               | markdownlint, relative-link check                             |
 | `workflows` | Always               | actionlint                                                    |
 | `rust`      | `Cargo.toml` exists  | fmt, clippy (`-D warnings`), tests on Linux, Windows, macOS   |
+| `deny`      | `Cargo.toml` exists  | `cargo deny check` (advisories, licences, sources; `deny.toml`) and the Monty pin check (`scripts/ci/check-monty-pin.sh`) |
+| `script-worker` | `Cargo.toml` exists | The script worker and its driver: clippy and tests on Linux x86-64, Linux aarch64, macOS and Windows, then a release build that logs cold start, binary size and resident memory (`MEASURE` lines in the step summary) |
 | `web`       | `package.json` exists | pnpm install (frozen), lint, typecheck, test, build          |
 | `python`    | `sidecars/media/pyproject.toml` exists | uv sync (locked), ruff, pytest              |
 
