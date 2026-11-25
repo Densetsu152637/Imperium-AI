@@ -12,7 +12,7 @@ mod queries;
 mod secret;
 mod types;
 
-pub use http::{API_BASE, HttpGitHub};
+pub use http::{API_BASE, HttpGitHub, split_repo};
 pub use secret::{GhAuthToken, Secret, StaticToken, TokenFuture, TokenSource, scrub};
 pub use types::{
     AutoMerge, Check, MergeMethod, MergeSettings, Permission, PrStatus, ReviewComment, ReviewThread,

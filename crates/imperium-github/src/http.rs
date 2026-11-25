@@ -62,7 +62,8 @@ impl fmt::Debug for HttpGitHub {
     }
 }
 
-fn split_repo(repo: &str) -> Result<(&str, &str), String> {
+/// Splits `owner/name`, accepting only the characters GitHub allows in each part.
+pub fn split_repo(repo: &str) -> Result<(&str, &str), String> {
     let valid = |part: &str| {
         !part.is_empty()
             && part
