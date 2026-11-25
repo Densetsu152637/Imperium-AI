@@ -19,7 +19,7 @@ use imperium_policy::permissions::{CallKind, Decision, Judgement, Refusal, Targe
 use imperium_policy::{SHELL_TOOLS, ToolSource};
 use imperium_protocol::patterns;
 use imperium_protocol::session::{
-    AgentStatus, Attachment, ContextItem, ContextPointer, ExtensionKind, PauseCause,
+    AgentEvent, AgentStatus, Attachment, ContextItem, ContextPointer, ExtensionKind, PauseCause,
     PermissionDecision, Plan, PlanStep, Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
     ToolLoadVia,
 };
@@ -39,6 +39,7 @@ use imperium_protocol::methods::{Compaction, ContextFit};
 
 mod attachments;
 mod auto;
+mod background;
 mod catalog;
 mod compaction;
 mod delegation;
@@ -63,7 +64,10 @@ use memory::*;
 use prompts::*;
 use sampling::*;
 use specs::*;
-pub(crate) use specs::{memory_read_spec, memory_remember_spec, memory_search_spec};
+pub(crate) use specs::{
+    memory_edit_spec, memory_forget_spec, memory_read_spec, memory_remember_spec,
+    memory_search_spec,
+};
 pub(crate) use tools::shown;
 use tools::*;
 pub(crate) use turn::effective_window;
@@ -261,6 +265,12 @@ pub(crate) struct Agent {
     /// The tools whose parameters this agent has seen in a `tool_search` result or that it
     /// ran through `call_tool`.
     loaded_tools: Mutex<Vec<String>>,
+    /// The tools whose parameters the model has seen first-hand since the last compaction
+    /// (searched, run through `call_tool`, or already advised): schema advice is given once
+    /// per tool, and again after a compaction removed the earlier result.
+    schema_seen: Mutex<HashSet<String>>,
+    /// The tools already reported in a `tools_loaded` event (once per tool and agent).
+    reported_tools: Mutex<HashSet<String>>,
     /// Whether the call in flight got as far as running (it started), and whether its
     /// arguments were judged and rejected before that; both are false for a call a refusal
     /// stopped. Set by [`Agent::tool_started`] and the argument checks, read by
@@ -292,6 +302,8 @@ impl Agent {
         workspace: Workspace,
         writer_note: Option<&str>,
     ) -> Self {
+        // Its background commands are reported to it.
+        let workspace = workspace.with_owner(&id);
         let root = workspace.root_display();
         let mut system = if can_delegate {
             root_prompt(&root, shared.knowledge.enabled())
@@ -479,6 +491,8 @@ impl Agent {
             plugin_loader: std::sync::OnceLock::new(),
             search_text: std::sync::OnceLock::new(),
             loaded_tools: Mutex::new(Vec::new()),
+            schema_seen: Mutex::new(HashSet::new()),
+            reported_tools: Mutex::new(HashSet::new()),
             call_started: std::sync::atomic::AtomicBool::new(false),
             call_args_failed: std::sync::atomic::AtomicBool::new(false),
         }

@@ -61,6 +61,11 @@ permissions: PermissionSet,
  */
 project_worktrees: boolean, 
 /**
+ * This environment's own folder for its sessions' git worktrees, as
+ * `<folder>/<repo>/<branch>`. None: the global `sessions.worktree_dir` applies.
+ */
+worktree_dir: string | null, 
+/**
  * The built-in Home environment: always present, listed first, never deleted, and the
  * default for a session started with no environment or project chosen. It has no project
  * folders unless the user adds some; its sessions work in their scratch folders.

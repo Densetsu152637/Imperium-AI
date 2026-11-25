@@ -358,10 +358,15 @@ fn without_pinned(content: &str) -> String {
 
 /// The summary as it is put into the conversation, tagged so a restored conversation's
 /// breakdown recognises it.
-pub(crate) fn summary_block(summary: &str) -> String {
+pub(crate) fn summary_block(summary: &str, loaded_tools: &str) -> String {
+    let loaded = if loaded_tools.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}", loaded_tools.trim_end())
+    };
     format!(
         "<conversation-summary>\nThe earlier part of this conversation, summarised to fit the \
-         context window:\n\n{summary}\n</conversation-summary>"
+         context window:\n\n{summary}{loaded}\n</conversation-summary>"
     )
 }
 
@@ -551,7 +556,7 @@ mod tests {
     fn rebuilding_merges_the_summary_into_the_first_kept_user_message() {
         let messages = conversation();
         let spans = HashMap::from([(5, vec![(Category::User, 0..3)])]);
-        let block = summary_block("earlier work");
+        let block = summary_block("earlier work", "");
         let (rebuilt, new_spans) = rebuild(&messages, &spans, 5, &block, "");
         assert_eq!(rebuilt.len(), 5);
         let ChatMessage::User { content, .. } = &rebuilt[1] else {
@@ -599,8 +604,13 @@ mod tests {
             .position(|m| matches!(m, ChatMessage::User { content, .. } if content == "two"))
             .unwrap();
         let pinned = pinned_context(&messages, &spans, at);
-        let (rebuilt, new_spans) =
-            rebuild(&messages, &spans, at, &summary_block("earlier"), &pinned);
+        let (rebuilt, new_spans) = rebuild(
+            &messages,
+            &spans,
+            at,
+            &summary_block("earlier", ""),
+            &pinned,
+        );
         let ChatMessage::User { content, .. } = &rebuilt[1] else {
             panic!("a user message")
         };
@@ -627,7 +637,13 @@ mod tests {
             conversation.push(reply("ok"));
             let cut = conversation.len() - 2;
             let carried = pinned_context(&conversation, &restored, cut);
-            let (next, _) = rebuild(&conversation, &restored, cut, &summary_block("t"), &carried);
+            let (next, _) = rebuild(
+                &conversation,
+                &restored,
+                cut,
+                &summary_block("t", ""),
+                &carried,
+            );
             let ChatMessage::User { content, .. } = &next[1] else {
                 panic!("a user message")
             };
@@ -737,7 +753,8 @@ mod tests {
         }
         assert!(!pinned.contains("ordinary output"));
 
-        let (rebuilt, new_spans) = rebuild(&messages, &spans, cut, &summary_block("s"), &pinned);
+        let (rebuilt, new_spans) =
+            rebuild(&messages, &spans, cut, &summary_block("s", ""), &pinned);
         // The system prompt is untouched, byte for byte.
         assert_eq!(rebuilt[0], messages[0]);
         let ChatMessage::User { content, .. } = &rebuilt[1] else {
@@ -760,7 +777,7 @@ mod tests {
         for text in [&manifest, &loaded, &skill] {
             assert_eq!(carried.matches(text.as_str()).count(), 1, "{text}");
         }
-        let (second, _) = rebuild(&again, &new_spans, 3, &summary_block("t"), &carried);
+        let (second, _) = rebuild(&again, &new_spans, 3, &summary_block("t", ""), &carried);
         assert_eq!(second[0], messages[0]);
         let ChatMessage::User { content, .. } = &second[1] else {
             panic!("a user message")
@@ -776,7 +793,7 @@ mod tests {
     fn carried_context_survives_restarts_and_repeated_compactions() {
         let (messages, spans, [manifest, loaded, skill]) = with_context();
         let pinned = pinned_context(&messages, &spans, 9);
-        let (rebuilt, _) = rebuild(&messages, &spans, 9, &summary_block("s"), &pinned);
+        let (rebuilt, _) = rebuild(&messages, &spans, 9, &summary_block("s", ""), &pinned);
         // After a restart the parts are recognised from the text alone.
         let restored = HashMap::new();
         assert_eq!(pinned_context(&rebuilt, &restored, 2), pinned);
@@ -802,7 +819,7 @@ mod tests {
                 &conversation,
                 &restored,
                 conversation.len() - 2,
-                &summary_block("t"),
+                &summary_block("t", ""),
                 &carried,
             );
             assert_eq!(next[0], messages[0]);
@@ -841,7 +858,8 @@ mod tests {
         assert_eq!(pinned.matches(ITEM_SEP).count(), 0);
 
         // Through a restart and two more compactions it stays one intact item.
-        let (mut conversation, _) = rebuild(&messages, &restored, 5, &summary_block("s"), &pinned);
+        let (mut conversation, _) =
+            rebuild(&messages, &restored, 5, &summary_block("s", ""), &pinned);
         for round in 0..2 {
             let carried = pinned_context(&conversation, &restored, 2);
             assert_eq!(carried, pinned, "round {round}");
@@ -858,7 +876,13 @@ mod tests {
             conversation.push(user("again"));
             conversation.push(reply("done"));
             let cut = conversation.len() - 2;
-            let (next, _) = rebuild(&conversation, &restored, cut, &summary_block("t"), &carried);
+            let (next, _) = rebuild(
+                &conversation,
+                &restored,
+                cut,
+                &summary_block("t", ""),
+                &carried,
+            );
             conversation = next;
         }
     }
@@ -983,5 +1007,25 @@ mod tests {
         // A tool that is not pinned is not carried, through the proxy or not.
         let (other, _) = proxied_and_direct("read_file", serde_json::json!({"path": "a.txt"}));
         assert!(pinned_context(&other, &spans, other.len()).is_empty());
+    }
+
+    #[test]
+    fn the_loaded_tools_block_sits_inside_the_summary() {
+        let loaded = "<loaded-tools>
+- web_fetch: Fetch a page.
+</loaded-tools>
+";
+        let block = summary_block("notes", loaded);
+        assert!(block.starts_with("<conversation-summary>"));
+        assert!(block.ends_with(
+            "</loaded-tools>
+</conversation-summary>"
+        ));
+        assert!(block.find("notes") < block.find("<loaded-tools>"));
+        assert_eq!(
+            summary_block("notes", ""),
+            summary_block("notes", "").trim_end()
+        );
+        assert!(!summary_block("notes", "").contains("loaded-tools"));
     }
 }
