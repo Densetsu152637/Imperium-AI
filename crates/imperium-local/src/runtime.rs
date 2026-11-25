@@ -720,8 +720,10 @@ async fn stage(
 /// llama.cpp's largest release (a CUDA build plus its runtime libraries) unpacks to a few GiB in
 /// a few hundred files, so the real limits leave generous headroom while still stopping a
 /// decompression bomb or an archive of millions of entries from filling the disk. Sizes are
-/// counted from the bytes actually written or decompressed, never from sizes the archive
-/// declares.
+/// counted from the bytes actually written or decompressed, never from sizes an entry declares.
+/// The one declared figure used is a zip entry's compressed size, which bounds the ratio check
+/// (the zip crate reads no more than that from the file). Sparse tar entries, whose holes would
+/// expand without being counted, are refused.
 #[derive(Clone, Copy)]
 struct Limits {
     /// Total bytes unpacked from one archive (for a tar, decompressed bytes including headers).
@@ -790,10 +792,41 @@ impl<R: std::io::Read> std::io::Read for CappedReader<R> {
     }
 }
 
+/// Refuses tar entries other than regular files, folders and links that stay inside the archive:
+/// sparse files, devices, FIFOs and unknown types (which the tar crate would write as regular
+/// files), and symlinks or hard links whose target is absolute or contains `..`.
+fn check_tar_entry<R: std::io::Read>(entry: &tar::Entry<'_, R>) -> std::io::Result<()> {
+    use std::path::Component;
+    let kind = entry.header().entry_type();
+    let name = || String::from_utf8_lossy(&entry.path_bytes()).into_owned();
+    let refuse = |why: &str| over_limit(format!("refusing tar entry {:?}: {why}", name()));
+    if kind.is_gnu_sparse() {
+        return Err(refuse("sparse files are not allowed"));
+    }
+    if kind.is_symlink() || kind.is_hard_link() {
+        let target = entry
+            .link_name()?
+            .ok_or_else(|| refuse("link has no target"))?;
+        if !target
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(refuse("link target is absolute or contains `..`"));
+        }
+        return Ok(());
+    }
+    if kind.is_file() || kind.is_dir() || kind.is_contiguous() {
+        return Ok(());
+    }
+    Err(refuse("not a regular file, folder or link"))
+}
+
 /// Unpacks a tar stream into `into`. The tar crate's own path checks apply to each entry
 /// (`unpack_in` skips an entry that would leave `into`, which is refused here), the entry count
 /// is capped, and the decompressed stream is capped, so a small archive cannot expand without
-/// bound.
+/// bound. Long-name and pax headers are read whole by the tar crate, but only from that capped
+/// stream. Entries are unpacked one at a time, so the crate's deferred handling of read-only
+/// folders (applied after the whole archive) is lost; llama.cpp's folders are 0755.
 fn extract_tar(reader: impl std::io::Read, into: &Path, limits: Limits) -> std::io::Result<()> {
     let tripped = std::rc::Rc::new(std::cell::Cell::new(false));
     let capped = CappedReader {
@@ -811,6 +844,7 @@ fn extract_tar(reader: impl std::io::Read, into: &Path, limits: Limits) -> std::
                 )));
             }
             let mut entry = entry?;
+            check_tar_entry(&entry)?;
             if !entry.unpack_in(into)? {
                 let name = entry.path_bytes().into_owned();
                 return Err(over_limit(format!(
@@ -928,7 +962,8 @@ fn extract_zip(file: std::fs::File, into: &Path, limits: Limits) -> std::io::Res
 /// The folder holding `llama-server`, searched `depth` folders deep.
 fn find_server_dir(dir: &Path, depth: usize) -> Option<PathBuf> {
     let exe = format!("llama-server{}", std::env::consts::EXE_SUFFIX);
-    if dir.join(&exe).is_file() {
+    // A symlinked server or folder is not followed.
+    if std::fs::symlink_metadata(dir.join(&exe)).is_ok_and(|meta| meta.is_file()) {
         return Some(dir.to_path_buf());
     }
     if depth == 0 {
@@ -937,8 +972,8 @@ fn find_server_dir(dir: &Path, depth: usize) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
         .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
         .collect();
     dirs.sort();
     dirs.iter()
@@ -2027,6 +2062,87 @@ echo 'version: 6000 (abc)'
                 .metadata()
                 .map_or(true, |meta| meta.len() < 100_000)
         );
+    }
+
+    /// A tar holding one header of `kind` named `name` (linking to `link`), with no data.
+    fn tar_entry(kind: tar::EntryType, name: &str, link: &str) -> Vec<u8> {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(kind);
+        header.set_path(name).unwrap();
+        header.set_size(0);
+        header.set_mode(0o644);
+        // Written to the header directly, as `set_link_name` is not meant for hostile targets.
+        header.as_old_mut().linkname[..link.len()].copy_from_slice(link.as_bytes());
+        header.set_cksum();
+        let mut builder = tar::Builder::new(Vec::new());
+        builder.append(&header, std::io::empty()).unwrap();
+        builder.into_inner().unwrap()
+    }
+
+    fn untar_bytes(bytes: Vec<u8>, root: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        extract_tar(std::io::Cursor::new(bytes), &root.join("out"), LIMITS)
+    }
+
+    #[test]
+    fn tar_extraction_refuses_unsafe_entry_types() {
+        use tar::EntryType;
+        let cases = [
+            ("sparse file", EntryType::GNUSparse, "x", ""),
+            ("fifo", EntryType::Fifo, "x", ""),
+            ("character device", EntryType::Char, "x", ""),
+            ("block device", EntryType::Block, "x", ""),
+            (
+                "symlink to outside",
+                EntryType::Symlink,
+                "link",
+                "../../outside",
+            ),
+            (
+                "symlink to absolute path",
+                EntryType::Symlink,
+                "link",
+                "/etc",
+            ),
+            (
+                "hard link outside",
+                EntryType::Link,
+                "hard",
+                "../../etc/passwd",
+            ),
+            (
+                "hard link to absolute path",
+                EntryType::Link,
+                "hard",
+                "/etc/passwd",
+            ),
+        ];
+        for (what, kind, name, link) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let error = untar_bytes(tar_entry(kind, name, link), root.path()).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{what}");
+            assert!(
+                std::fs::read_dir(root.path().join("out"))
+                    .unwrap()
+                    .next()
+                    .is_none(),
+                "{what}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_extraction_keeps_links_that_stay_inside() {
+        use tar::EntryType;
+        let root = tempfile::tempdir().unwrap();
+        untar_bytes(
+            tar_entry(EntryType::Symlink, "lib.so", "lib.so.1"),
+            root.path(),
+        )
+        .unwrap();
+        let link = root.path().join("out/lib.so");
+        assert_eq!(std::fs::read_link(link).unwrap(), Path::new("lib.so.1"));
     }
 
     #[test]
