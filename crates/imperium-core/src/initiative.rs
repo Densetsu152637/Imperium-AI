@@ -1896,6 +1896,8 @@ mod tests {
             "web_fetch",
             "web_search",
             "memory_remember",
+            "memory_edit",
+            "memory_forget",
             "install_extension",
             "set_model_card",
             "activate_plugin",

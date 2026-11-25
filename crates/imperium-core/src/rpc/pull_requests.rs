@@ -51,7 +51,7 @@ impl Connection {
                         let session = session?;
                         state
                             .pr_monitor()
-                            .release(&params.session_id)
+                            .release(&state, &params.session_id)
                             .await
                             .map_err(refused)?;
                         Ok(PullRequestsUnbindResult {

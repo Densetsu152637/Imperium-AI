@@ -302,7 +302,7 @@ impl DaemonState {
         }
         self.forget_session(id);
         // A pull request it had turned auto-merge on for is not watched any more: off.
-        self.pr_monitor().forget(id);
+        self.pr_monitor().forget(self, id);
         self.forget_eval(id);
         // Files copied into its attachments folder go with it.
         let _ = std::fs::remove_dir_all(crate::attachments::store_dir(self.paths.data_dir(), id));
@@ -380,6 +380,17 @@ impl DaemonState {
             .worktree_dir
             .clone()
             .filter(|dir| !dir.as_os_str().is_empty())
+    }
+
+    /// Where the sessions of `environment_id` put their worktrees: the environment's own folder
+    /// when it sets one, else [`Self::worktree_dir`].
+    pub fn worktree_dir_for(&self, environment_id: Option<&str>) -> Option<PathBuf> {
+        environment_id
+            .and_then(|id| self.environments.get(id))
+            .and_then(|env| env.worktree_dir)
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| self.worktree_dir())
     }
 
     /// Worktree folders that running and archived sessions work in.

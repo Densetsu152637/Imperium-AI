@@ -420,6 +420,7 @@ providers, are outside the contract.
 | `spawn_agent`, `await_tasks`, `update_plan`, `web_search`, `web_fetch` | implemented |
 | `steer_agent`, `queue_agent`, `list_agents`, `resume_agent` ([queueing and steering](#queueing-and-steering), [agent state](#agent-state)) | implemented; root only |
 | `suggest_local_model` ([model download suggestions](04-models-and-routing.md#model-download-suggestions)) | implemented; daemon sessions |
+| `memory_search`, `memory_read` (every agent), `memory_remember`, `memory_edit(name, old_string, new_string, scope?)`, `memory_forget(name, scope?)` (root only; edit and forget keep what they change recoverable) | implemented, outside the protocol contract ([17](17-memory.md#editing-and-forgetting-implemented)) |
 | `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | implemented, root only ([large inputs](#large-inputs-and-delegate_chunks)) |
 | `ask_user(questions[])`: each question has text, optional options, and a recommended answer | implemented, root only ([05](05-tools-and-isolation.md#ask_user)) |
 | `request_clarification(missing_parameter, options)`, `update_state(...)` | implemented, root only ([harness aids](#harness-aids-for-small-models), [05](05-tools-and-isolation.md#request_clarification)) |

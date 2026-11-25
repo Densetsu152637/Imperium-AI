@@ -25,4 +25,10 @@ permissions?: PermissionSet,
 /**
  * Turns the project's git worktrees on or off for sessions started afterwards.
  */
-project_worktrees?: boolean, };
+project_worktrees?: boolean, 
+/**
+ * Sets the folder this environment's sessions put their git worktrees in, for sessions
+ * started afterwards; an empty path clears it, so the global `sessions.worktree_dir`
+ * applies again.
+ */
+worktree_dir?: string, };

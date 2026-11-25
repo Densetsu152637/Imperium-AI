@@ -117,6 +117,10 @@ pub enum MemoryError {
     LooksSecret(&'static str),
     #[error("{0}")]
     TooLong(String),
+    /// An edit that cannot be applied: no such memory, or `old_string` is missing, not unique,
+    /// or the same as the replacement.
+    #[error("{0}")]
+    Edit(String),
     #[error("{0}: {1}")]
     Io(String, std::io::Error),
 }
@@ -229,6 +233,71 @@ impl Store {
         }
     }
 
+    /// Replaces the one occurrence of `old` in the body of the global entry `name` with `new`
+    /// (the rules of `edit_file`: `old` must match exactly and be unique). The description, type
+    /// and creation date stay; `source` becomes the editor's. Refuses text that looks like a
+    /// secret. The scope's `INDEX.md` is rewritten.
+    pub fn edit(
+        &self,
+        name: &str,
+        old: &str,
+        new: &str,
+        source: &str,
+    ) -> Result<Entry, MemoryError> {
+        let mut entry = self.edited(name, old, new)?;
+        entry.source = source.to_string();
+        std::fs::write(&entry.path, entry.to_markdown()).map_err(|error| io(&entry.path, error))?;
+        self.write_index(entry.scope)?;
+        Ok(entry)
+    }
+
+    /// Whether [`edit`](Self::edit) would succeed, writing nothing; run before the user is asked
+    /// to approve it.
+    pub fn check_edit(&self, name: &str, old: &str, new: &str) -> Result<(), MemoryError> {
+        self.edited(name, old, new).map(|_| ())
+    }
+
+    fn edited(&self, name: &str, old: &str, new: &str) -> Result<Entry, MemoryError> {
+        let mut entry = self
+            .get(name)
+            .ok_or_else(|| MemoryError::Edit(format!("no global memory named {name:?}")))?;
+        entry.body = replace_once(&entry.body, old, new)?;
+        if let Some(reason) = looks_secret(&entry.body) {
+            return Err(MemoryError::LooksSecret(reason));
+        }
+        Ok(entry)
+    }
+
+    /// Takes the global entry `name` out of memory, to `<data>/memory/trash/<name>.<date>.md`
+    /// rather than deleting it (the user can move it back), and rewrites the index. Returns the
+    /// file it went to, or `None` when there was no such entry.
+    pub fn trash(&self, name: &str, scope: Scope) -> Result<Option<PathBuf>, MemoryError> {
+        if scope != Scope::Global {
+            return Ok(None);
+        }
+        let Some(entry) = self.get(name) else {
+            return Ok(None);
+        };
+        let Some(trash) = self.global.parent().map(|memory| memory.join("trash")) else {
+            return Ok(None);
+        };
+        std::fs::create_dir_all(&trash).map_err(|error| io(&trash, error))?;
+        let stem = entry
+            .path
+            .file_stem()
+            .map_or_else(|| name.to_string(), |s| s.to_string_lossy().into_owned());
+        let date = today();
+        let mut target = trash.join(format!("{stem}.{date}.md"));
+        let mut n = 2;
+        while target.exists() {
+            target = trash.join(format!("{stem}.{date}-{n}.md"));
+            n += 1;
+        }
+        std::fs::rename(&entry.path, &target).map_err(|error| io(&entry.path, error))?;
+        self.write_index(scope)?;
+        Ok(Some(target))
+    }
+
     /// The index lines agents always see, cut at `max_chars`.
     pub fn index(&self, max_chars: usize) -> String {
         let mut text = String::new();
@@ -265,6 +334,28 @@ impl Store {
         }
         let path = dir.join("INDEX.md");
         std::fs::write(&path, text).map_err(|error| io(&path, error))
+    }
+}
+
+/// `text` with its one occurrence of `old` replaced by `new`; none, several, an empty `old` or
+/// an unchanged result is an error.
+pub fn replace_once(text: &str, old: &str, new: &str) -> Result<String, MemoryError> {
+    if old.is_empty() {
+        return Err(MemoryError::Edit("old_string must not be empty".into()));
+    }
+    if old == new {
+        return Err(MemoryError::Edit(
+            "old_string and new_string are the same".into(),
+        ));
+    }
+    match text.matches(old).count() {
+        0 => Err(MemoryError::Edit(
+            "old_string not found in the memory".into(),
+        )),
+        1 => Ok(text.replacen(old, new, 1)),
+        n => Err(MemoryError::Edit(format!(
+            "old_string occurs {n} times in the memory; include more context so it is unique"
+        ))),
     }
 }
 
@@ -408,6 +499,72 @@ mod tests {
             body: body.into(),
             source: "test".into(),
         }
+    }
+
+    #[test]
+    fn edit_replaces_one_occurrence_and_keeps_the_rest() {
+        let data = tempfile::tempdir().unwrap();
+        let store = Store::new(data.path());
+        store
+            .save(entry(
+                "tools",
+                Scope::Global,
+                "Tool choices",
+                "Use pnpm.\nUse vitest.",
+            ))
+            .unwrap();
+        let created = store.get("tools").unwrap().created;
+        let edited = store.edit("tools", "pnpm", "bun", "session x").unwrap();
+        assert_eq!(edited.body, "Use bun.\nUse vitest.");
+        let again = store.get("tools").unwrap();
+        assert_eq!(again.description, "Tool choices");
+        assert_eq!(again.kind, "feedback");
+        assert_eq!(again.created, created);
+        assert_eq!(again.source, "session x");
+        // Missing, non-unique, empty, unchanged and secret-looking edits change nothing.
+        let missing = store.edit("tools", "yarn", "bun", "s").unwrap_err();
+        assert!(missing.to_string().contains("not found"), "{missing}");
+        let twice = store.edit("tools", "Use ", "Prefer ", "s").unwrap_err();
+        assert!(twice.to_string().contains("2 times"), "{twice}");
+        store.edit("tools", "", "x", "s").unwrap_err();
+        store.edit("tools", "bun", "bun", "s").unwrap_err();
+        store
+            .edit(
+                "tools",
+                "bun",
+                "sk-abcdefghijklmnopqrstuvwxyz0123456789",
+                "s",
+            )
+            .unwrap_err();
+        store.edit("absent", "a", "b", "s").unwrap_err();
+        assert_eq!(store.get("tools").unwrap().body, "Use bun.\nUse vitest.");
+    }
+
+    #[test]
+    fn trash_moves_an_entry_aside_and_updates_the_index() {
+        let data = tempfile::tempdir().unwrap();
+        let store = Store::new(data.path());
+        store
+            .save(entry("a", Scope::Global, "first", "one"))
+            .unwrap();
+        store
+            .save(entry("b", Scope::Global, "second", "two"))
+            .unwrap();
+        let moved = store.trash("a", Scope::Global).unwrap().unwrap();
+        assert!(moved.starts_with(data.path().join("memory/trash")));
+        assert!(std::fs::read_to_string(&moved).unwrap().contains("one"));
+        assert!(store.get("a").is_none());
+        let index = std::fs::read_to_string(data.path().join("memory/global/INDEX.md")).unwrap();
+        assert!(index.contains("[b](b.md)"), "{index}");
+        assert!(!index.contains("[a](a.md)"), "{index}");
+        assert!(store.trash("a", Scope::Global).unwrap().is_none());
+        // The same name saved and trashed again does not overwrite the first copy.
+        store
+            .save(entry("a", Scope::Global, "again", "three"))
+            .unwrap();
+        let second = store.trash("a", Scope::Global).unwrap().unwrap();
+        assert_ne!(moved, second);
+        assert!(moved.exists() && second.exists());
     }
 
     #[test]
