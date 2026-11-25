@@ -28,10 +28,12 @@ mod replay;
 mod review;
 mod sampling_summary;
 mod session;
+mod spill;
 mod status;
 mod title;
 
 pub use agents::agents_dir;
+pub use spill::results_dir;
 pub use branch::{BranchPlan, mark_turn, plan_branch, plan_branch_at_end, turns_path};
 pub use budget_gate::{BudgetGate, BudgetVerdict};
 pub use checkpoints::TurnCheckpoints;

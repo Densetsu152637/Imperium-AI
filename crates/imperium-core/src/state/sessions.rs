@@ -321,6 +321,13 @@ impl DaemonState {
         {
             tracing::warn!(path = %agents.display(), %error, "could not delete the session's agent state");
         }
+        // So do the large tool results it saved to files.
+        let results = imperium_engine::results_dir(&sessions.join(format!("{id}.jsonl")));
+        if results.exists()
+            && let Err(error) = std::fs::remove_dir_all(&results)
+        {
+            tracing::warn!(path = %results.display(), %error, "could not delete the session's saved tool results");
+        }
         let mut result = SessionDeleteResult::default();
         // The worktrees of its writer subagents go first (they were made from the session's
         // folders, which may be its own worktrees), on the same terms; branches stay.

@@ -299,6 +299,36 @@ titles have none: records derive one from the brief, and the desktop shows the b
 line. `task_spawned`, `task_resumed`, `task_paused`, and `task_finished` also carry `at_ms`
 (Unix milliseconds) so clients can show how long a subagent has run.
 
+### Large tool results
+
+**Implemented** (roadmap R2.5). `read_file` and `list_dir` bound their own output to the agent's
+window, but `run_command`, `grep` with context, `web_fetch`, MCP tools, `command_output` and the
+rest can still return a great deal. A result longer than a threshold is written to a file in the
+session's results folder, `<data>/sessions/<session id>.results/`, and the conversation keeps
+only a notice: the line and character counts, the path ("Full output saved to <path>; read
+ranges with `read_file` (offset and limit are in lines) or search it with `grep`"), the first and
+last lines, and how many lines were left out. The preview is bounded (half the threshold, at most
+6,000 characters, two thirds of it from the head; one very long line is cut).
+
+- **Threshold.** A sixteenth of the agent's own window in tokens, at four characters a token:
+  8,192 characters at a 32,768-token window, 32,768 at 128,000, never below
+  `harness.result_spill_min_chars` (4,000) and never above 64,000. The window is the one
+  `expected_window()` finds for the agent's model (the table's, else what a local runtime plans,
+  else 32,768 tokens), so a subagent on a small model saves earlier than the root.
+- **Every agent.** The root and subagents (read-only and writer alike) save their results the
+  same way; the folder is a read-only path grant of the session's workspace, so `read_file`,
+  `grep` and commands can read it wherever the session's folders are. A session on a remote
+  runtime keeps its results in the conversation, as the runtime cannot read this machine's folder.
+- **Left alone.** `read_file` and `list_dir` (already bounded, and reading the saved file would
+  save it again), `context_load` and `load_skill` (workflow context that compaction keeps
+  verbatim), and `tool_search`; any result under the threshold, errors included; and a result
+  the root would store as an artefact (above). A failed write keeps the result in the
+  conversation.
+- **Durable.** The notice, with the path, is what the conversation and its saved copy hold, so a
+  resumed session still has a valid path. Archiving keeps the folder; deleting the session
+  deletes it. Saved files are not compacted away or cleaned earlier: they are the session's.
+- **Settings.** `harness.result_spill` (on by default) and `harness.result_spill_min_chars`.
+
 ### Large inputs and `delegate_chunks`
 
 **Implemented.** An input that would take more than 75 % of the root's context window never enters the
@@ -528,8 +558,10 @@ turn. The desktop shows it in the session's *Context and outputs* section
   delimiters is backslash-escaped, so no item can end the block or split itself. The carried
   context counts against the budget, so a conversation whose kept context alone is too large is
   refused like one whose system prompt is.
-- Large tool outputs are stored as artefacts; the model receives a truncated view plus a
-  handle it can page through.
+- Large tool outputs never fill the conversation: one past a sixteenth of the agent's window is
+  saved to a file and the model keeps a preview and the path ([large tool
+  results](#large-tool-results)); one that would fill the root's window is an artefact
+  ([large inputs](#large-inputs-and-delegate_chunks)).
 
 ## Sessions waiting for a model
 

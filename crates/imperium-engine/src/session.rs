@@ -283,7 +283,18 @@ impl Session {
     }
 
     /// [`Session::spawn`] with [`SessionOptions`]: hooks only an evaluation harness uses.
-    pub fn spawn_with(config: SessionConfig, options: SessionOptions) -> std::io::Result<Self> {
+    pub fn spawn_with(mut config: SessionConfig, options: SessionOptions) -> std::io::Result<Self> {
+        // Large tool results are saved in a folder beside the journal, which every agent of a
+        // session on this machine may read.
+        let spill_dir = (config.harness.result_spill && config.workspace.runtime().is_none())
+            .then(|| crate::spill::results_dir(&config.journal_path))
+            .filter(|dir| std::fs::create_dir_all(dir).is_ok());
+        if let Some(dir) = &spill_dir {
+            config.workspace = config.workspace.with_grants(&[imperium_api::PathGrant {
+                path: dir.display().to_string(),
+                mode: imperium_api::PathMode::Read,
+            }]);
+        }
         let timed = if config.resume {
             crate::journal::read_timed_events(&config.journal_path)
         } else {
@@ -843,6 +854,9 @@ pub(crate) struct Shared {
     pub http: reqwest::Client,
     pub clients: ChatClients,
     pub workspace: Workspace,
+    /// Where tool results too large for the conversation are saved (`harness.result_spill`);
+    /// `None` when they stay in it.
+    pub spill_dir: Option<PathBuf>,
     pub catalog: Vec<CatalogModel>,
     pub routing: RoutingSettings,
     pub local: Option<Arc<dyn LocalModels>>,
@@ -1051,6 +1065,7 @@ async fn run(
         http: reqwest::Client::new(),
         clients: config.clients,
         workspace: config.workspace,
+        spill_dir,
         catalog: config.catalog,
         routing: config.routing,
         local: config.local,

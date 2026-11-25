@@ -659,6 +659,13 @@ pub struct HarnessSettings {
     /// schema on every call (docs/plans/reactive-tools.md). `auto` is on for an agent whose
     /// own model runs on this machine. It stays `off` by default.
     pub tool_loading: HarnessMode,
+    /// Save a tool result too large for the conversation to a file in the session's results
+    /// folder and show the agent a preview and the path (docs/03-agent-engine.md#large-tool-results).
+    pub result_spill: bool,
+    /// The fewest characters of a tool result the conversation keeps whole before it is saved:
+    /// the threshold is a sixteenth of the agent's context window in tokens (four characters
+    /// each), never below this.
+    pub result_spill_min_chars: u32,
 }
 
 impl Default for HarnessSettings {
@@ -675,6 +682,8 @@ impl Default for HarnessSettings {
             clarify: HarnessMode::Auto,
             clarify_below: 0.7,
             tool_loading: HarnessMode::Off,
+            result_spill: true,
+            result_spill_min_chars: 4000,
         }
     }
 }

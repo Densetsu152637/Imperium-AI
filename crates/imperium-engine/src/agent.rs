@@ -78,6 +78,7 @@ use crate::breakdown::{
 };
 use crate::compact::{self, SwitchError};
 use crate::harness::{self, SessionState, StateUpdate};
+use crate::spill;
 use crate::instructions;
 use crate::queue::{Inbox, QueueError, steering_text};
 use crate::session::{SessionMemory, Shared, lock};
