@@ -166,6 +166,7 @@ Why agent text cannot reach `eval`, `exec`, `__import__` or attribute access:
      `sympify`, `parse_expr`, `parse_latex`, `lambdify`, `S`, `importlib`, `pickle`, `marshal`
      or `system`. The only exceptions are listed per module in the test:
      - `pool.py` may use `subprocess` and `os`;
+     - `worker.py` may use `os` for `os._exit` and `os.getpid` only (and R2 allows its `_exit`);
      - `limits_macos.py` and `landlock.py` may use `ctypes`. They take no agent data.
    - **R2.** An `Attribute` whose attribute name starts with `_`.
    - **R3.** An `import` inside a function.
@@ -1206,7 +1207,7 @@ Commands are what CI runs; nothing needs a local Rust build.
     path lines in a `.pth` are read under `-I`, and on Windows the venv redirector's PID differs.
 
   About 600 lines.
-- Status: pending.
+- Status: done (pull request pending merge; see the outcome).
 - Handoff notes: record the measured warm-up time, memory and allow-list in the outcome; stage
   2b's default limits and stage 5's warm-up allowance use them.
   The tree can be 2,000 levels deep (a long `1+1+1+...`), so `build.py` walks it with
@@ -1215,6 +1216,59 @@ Commands are what CI runs; nothing needs a local Rust build.
   imports (see stage 1's outcome).
   `test_no_string_to_sympy.py` must cover the string-taking methods too (`.subs`, `.solve` and the
   like called with a string), not only `sympify`, `parse_expr` and `lambdify`.
+- Outcome (2026-11-26):
+  - **Delivered.** `build.py` (`Builder`: the frozen `BUILDERS` table with the same 50 names as
+    `FUNCTIONS`, `assume`, `symbol()` for `variable` and `variables`, `at()`, `expression()` and
+    `text()`), `framing.py` (4-byte big-endian length, then one JSON object; the prefix is
+    checked against the cap before the body is read) and `worker.py` (`run(handler, argv)` and
+    `main()`), with `test_build.py`, `test_no_string_to_sympy.py`, `test_worker.py`,
+    `test_audit_hook.py`, `test_pid.py` and the test-only worker `tests/workers/audit_probe.py`.
+  - **Checks to tests.** Every table entry builds to a known value, names in `assume`, `variable`,
+    `at` and hand-made `Sym` nodes are refused with the schema bypassed, and a 2,000-term sum and a
+    4,000-deep `!` chain build without recursion: `test_build.py`. The string trap (conftest,
+    whole session) catches `sympify`, `parse_expr`, `lambdify`, `.subs`, `solve`, `solveset`,
+    `diff`, `integrate`, `evalf(subs=)` and `Matrix` with a string; the table and corpus build
+    with no trapped call and no `compile` or `exec` event; an AST check finds no string literal
+    passed to a string-taking SymPy call: `test_no_string_to_sympy.py`. One call, one reply,
+    exit; a 4 GiB prefix exits `FRAME` without waiting for a body: `test_worker.py`. `open`,
+    `socket`, `subprocess`, `compile`, `exec` and a new import each exit `REFUSED` inside
+    `try`/`except BaseException`, and the whole table plus corpus runs inside one hooked worker:
+    `test_audit_hook.py`. `test_pid.py` as planned; its two `.pth` cases write into the base
+    interpreter's `site-packages`, so they run only where `CI` is set.
+  - **Measured** (printed under "cas measurements" in each `python-cas` log; the worker is the
+    base interpreter, so the PID and memory are its own):
+    MEASUREMENTS_PLACEHOLDER
+    The warm-up after the import is about 0.1 s; nearly all of "ready" is importing SymPy.
+  - **Audit allow-list:** `array.__new__` only, which SymPy's prime sieve raises whenever it grows
+    (`factorial(25000)`, `prime(10^6)`). Nothing else is raised by a warmed worker over the table
+    and the corpus on any OS. Two lazy paths had to join the warm-up: printing an integer over
+    about 4,300 digits imports CPython's `_pylong` (so `set_int_max_str_digits(100_000)` comes
+    before the warm-up, not after), and the sieve's first growth.
+  - **Choices the plan left open.**
+    - Exit codes: `0` ok, `64` bad command line, `65` bad request frame, `66` `MemoryError`
+      (stage 2b maps it to `limit`), `77` `REFUSED`. The worker writes a ready frame
+      (`pid`, `warmup_seconds`, `max_rss_bytes` on Unix, the parsed limits) after the hook is
+      installed and before it reads the call, for 2b's and the broker's `arm`. Every exit is
+      `os._exit`, so no interpreter shutdown runs under the hook.
+    - Limits on the command line: `--cpu-seconds` (1 to 120) and `--memory-mib` (64 to 8,192),
+      parsed and range-checked, not applied (2b).
+    - Stage 2a's one call is `{"tool": "build", "expression", "assume"}`, returning SymPy's
+      `sstr`; stage 3 replaces `HANDLERS` with the eleven tools. Replies carry
+      `ok`, `category` and the rendered one-line `message`.
+    - `build.py` also imports `Tuple` (a flat list), `true` and `false` (`isprime`'s result, so
+      `isprime(7) + 1` is a `math` error, not `2`), and `sstr`; `framing.py` imports `json`;
+      `worker.py` imports `os`, `sys`, `time` and, on Unix, `resource`. `gcd` and `lcm` fold
+      pairwise (SymPy reads a third argument as a generator). `prime`, `nextprime` and
+      `prevprime` return Python `int`s and are wrapped in `Integer`.
+    - SymPy's `ValueError`, `TypeError`, `ArithmeticError` and `NotImplementedError` while
+      building, and a `RecursionError` while printing a 4,000-deep tree, are `math` errors.
+  - **Found on the way.** `0e999999999` passed the guard (it is 0) but the builder computed
+    `10**999999999`; a zero mantissa now builds `0` directly. The guard refuses a `!` chain over
+    an unbounded value, so the 4,000-deep tree is only reachable from the parser.
+  - **For later stages.** Workers run with `-B`, so stage 6's `uv sync` should compile bytecode
+    (`--compile-bytecode`), or every worker compiles SymPy from source. Stage 3 must keep the
+    worker's warm-up covering every tool's lazy imports; a missed one fails closed with
+    `REFUSED`.
 
 ### Stage 2b: Front-side pool, Unix limits and Landlock
 
