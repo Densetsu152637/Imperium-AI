@@ -488,12 +488,29 @@ SECOND_REVIEW = [
     "binomial(10^6, Min(500000, 500001))",
 ]
 
+# R1 (third review): floor, ceiling and Mod of an unbounded value are exact integers.
+THIRD_REVIEW = [
+    "floor(1/exp(-10^5))^14000",
+    "floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))*floor(1/exp(-2*10^5))",
+    "ceiling(1/(exp(-10^5)+exp(-10^5)))^10000",
+    "floor(1/sin(exp(-10^5)))^10000",
+    "Mod(floor(1/exp(-2*10^5)), 10^50000+1)",
+    "Mod(1/exp(-10^5), 7)",
+    "gcd(1/exp(-10^5), 4)",
+    "lcm(1/exp(-10^5), 4)",
+]
+
 # F4: negative matrix powers are inverses.
 NEGATIVE_MATRIX_POWERS = ["[[2,1],[1,1]]^(-10^5)", "[[2,1],[1,1]]^(-10^6)"]
 
 
 @pytest.mark.parametrize(
-    "text", SYMBOLS_HIDE_CONSTANTS + UNSOUND_ESTIMATES + SECOND_REVIEW + NEGATIVE_MATRIX_POWERS
+    "text",
+    SYMBOLS_HIDE_CONSTANTS
+    + UNSOUND_ESTIMATES
+    + SECOND_REVIEW
+    + THIRD_REVIEW
+    + NEGATIVE_MATRIX_POWERS,
 )
 def test_reviewed_inputs_are_refused(text):
     refused(text)
@@ -597,3 +614,11 @@ def test_select_keeps_small_exact_values():
 def test_the_limit_is_exclusive():
     allowed("10^99998")
     refused("10^99999")
+
+
+def test_integer_functions_refuse_an_unbounded_argument():
+    for name in ("floor", "ceiling"):
+        assert "not bounded" in refused(f"{name}(1/exp(-10^5))").message
+    assert "not bounded" in refused("Mod(1/sin(x), 7)").message
+    allowed("Max(1/sin(x), 2)")  # Min and Max keep the value, so it stays unbounded
+    allowed("floor(sin(x))")

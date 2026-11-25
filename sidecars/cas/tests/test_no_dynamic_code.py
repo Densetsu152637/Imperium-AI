@@ -138,7 +138,7 @@ def check_import(node, module: str, line: int, allowed_names: set[str]) -> list[
         if target.split(".")[0] in FORBIDDEN - allowed_names:
             problems.append(f"R1 line {line}: imports {target}")
     for name in names:
-        if name in FORBIDDEN - allowed_names:
+        if name in (FORBIDDEN | FORBIDDEN_ATTRIBUTES) - allowed_names:
             problems.append(f"R1 line {line}: imports the name {name}")
     allowed = R4_ALLOWED.get(module)
     if allowed is None:
@@ -237,6 +237,12 @@ def test_the_scan_catches_what_it_should():
         "import codeop": "R1",
         "code.interact()": "R1",
         "sys.modules['os']": "R1",
+        "from typing import get_type_hints": "R1",
+        "from typing import ForwardRef as F": "R1",
+        "from dataclasses import make_dataclass": "R1",
+        "from pkgutil import resolve_name": "R1",
+        "from pydoc import locate": "R1",
+        "from sys import modules": "R1",
         "import pkgutil": "R4",
         "pkgutil.resolve_name('os.system')": "R1",
         "import timeit": "R4",

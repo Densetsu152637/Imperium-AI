@@ -429,7 +429,7 @@ def function_est(node: Call, kids: list) -> Est:
     if function.guard_class == ROOT:
         return root_est(name, kids, pos, sym)
     if function.guard_class == SELECT:
-        return select_est(name, kids, sym)
+        return select_est(name, kids, pos, sym)
     for kid in kids:
         if kid.unb:
             raise refuse(f"the argument of '{name}' is not bounded: it could be huge", pos)
@@ -540,7 +540,7 @@ def select_val(name: str, kids: list) -> tuple | None:
     return keep_val(p1 * q2 - p2 * (top // bottom) * q1, q1 * q2)
 
 
-def select_est(name: str, kids: list, sym: bool) -> Est:
+def select_est(name: str, kids: list, pos: int, sym: bool) -> Est:
     """floor, ceiling, Min, Max, Mod, gcd and lcm.
 
     Magnitudes are sums or maxima of the inputs' non-negative parts (a signed log can be
@@ -548,6 +548,10 @@ def select_est(name: str, kids: list, sym: bool) -> Est:
     """
     num_in, den_in = budget(kids)
     if any(kid.unb for kid in kids):
+        if name in ("floor", "ceiling", "Mod", "gcd", "lcm"):
+            # These turn their input into an exact integer, and SymPy evaluates the input first:
+            # 1/exp(-10^5) is exp(10^5), far above the budget an unbounded value carries.
+            raise refuse(f"the argument of '{name}' is not bounded: it could be huge", pos)
         return unbounded(sym, num_in, den_in)
     exact = all(kid.exact for kid in kids)
     top = max(kid.mag for kid in kids)

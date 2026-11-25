@@ -1141,7 +1141,7 @@ Commands are what CI runs; nothing needs a local Rust build.
         `k` over 100,000; a list or matrix argument to a function is refused, and a flat list
         holds at most 400 entries.
       - For a whole-number base the guard estimates `p/q*log10(base)+1` digits rather than
-        `p/q*digits(base)`, so `isprime(10^199)` is allowed and `10^99999` is the largest power
+        `p/q*digits(base)`, so `isprime(10^199)` is allowed and `10^99998` is the largest power
         of ten. A constant `exp`, `sinh` or `cosh` of more than about 230,000 is refused
         (`exp(1000)` is allowed) because its result may be raised to a power.
       - A negative matrix power `M^(-n)` is sized as the inverse (`rows` times the digits), then
@@ -1157,6 +1157,9 @@ Commands are what CI runs; nothing needs a local Rust build.
         value), not from its magnitude estimate.
       - `floor`, `ceiling`, `Min`, `Max`, `gcd`, `lcm` and `Mod` keep the exact value of small
         exact inputs, and `binomial(n, k)` with an untracked `k` is bounded by `2^(|n|+k)`.
+      - `floor`, `ceiling`, `Mod`, `gcd` and `lcm` refuse an unbounded argument: they give SymPy an
+        exact integer, and `1/exp(-10^5)` is `exp(10^5)`, far above the budget an unbounded value
+        carries.
       - The limit is exclusive: a result of 100,000 digits or more is refused (`10^99998` is the
         largest power of ten).
       - Conservative refusals: a symbol counts as 1, so `(x+1)^(10^6)` is refused like
