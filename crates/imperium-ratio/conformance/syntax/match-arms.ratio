@@ -1,0 +1,8 @@
+// expect: lex-ok
+// tokens: kw:fn ident:m ( ident:x : ident:Int ) {block kw:match ident:x {match ident:Denied {record ident:by } kw:if ident:by == ident:user => int:1 , ident:B => ident:y } ;! } ;!
+fn m(x: Int) {
+  match x {
+    Denied { by } if by == user => 1,
+    B => y
+  }
+}

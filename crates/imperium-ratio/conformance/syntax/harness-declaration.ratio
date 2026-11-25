@@ -1,0 +1,9 @@
+// expect: lex-ok
+// tokens: doc:" The root agent." @ ident:turn ;! kw:pub kw:harness ident:turn ( ident:t : ident:Turn ) -> ident:Reply kw:with {record ident:context : ident:main } {block ident:t ;! } ;!
+/// The root agent.
+@turn
+pub harness turn(t: Turn) -> Reply
+  with { context: main }
+{
+  t
+}

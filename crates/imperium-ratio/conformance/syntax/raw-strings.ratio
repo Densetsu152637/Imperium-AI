@@ -1,0 +1,6 @@
+// expect: lex-ok
+// tokens: kw:let ident:a = raw:"C:\\path\\{not}" ;! kw:let ident:b = raw3:"raw {x}" ;!
+let a = r"C:\path\{not}"
+let b = r"""
+  raw {x}
+  """

@@ -1,0 +1,3 @@
+// expect: lex-error L0011 at 3:4
+// option: max_interpolation_depth 1
+"{"{x}"}"
