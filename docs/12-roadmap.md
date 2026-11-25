@@ -764,8 +764,9 @@ and `environments.agent_update` (protocol 0.28)
     shells run in the session's working folder, owned by the daemon and usable only from the
     desktop app (agents, mods, pages and a paired phone cannot open, read or type into one), and
     a read-only Files panel confined to the session's folders, opened at a line from links in the
-    transcript and from the Review panel. Every check runs in CI, including browser checks
-    against a fake daemon ([plan](plans/terminal-file-panes.md)).
+    transcript and from the Review panel. Editing in that panel is [item 66](#next-in-order).
+    Every check runs in CI, including browser checks against a fake daemon
+    ([plan](plans/terminal-file-panes.md)).
 <!-- markdownlint-disable-next-line MD029 -->
 57. **Per-environment worktree folder** (implemented). An environment can set its own git worktrees
     root folder. Sessions in that environment create and discover their worktrees there instead
@@ -841,7 +842,7 @@ and `environments.agent_update` (protocol 0.28)
     CPU-time, memory and wall-clock limits, so a runaway simplification is stopped rather than
     hanging the session. CI: the [`python` job](11-ci-cd.md) also runs for `sidecars/cas/`
     (ruff and pytest over the tools, the parser's refusals and the limits), and a daemon test
-    drives one tool call through the MCP client. No plan yet.
+    drives one tool call through the MCP client ([plan](plans/cas-mcp.md)).
 <!-- markdownlint-disable-next-line MD029 -->
 63. **Server package (Docker Compose)** (planned). Imperium can be self-hosted on a server and
     run there. The release workflow builds and publishes a container image of `imperium-core`
@@ -905,6 +906,22 @@ and `environments.agent_update` (protocol 0.28)
     filtering and compute questions, where a local 4B model now computes in its head or reads rows
     one by one, and where computing needs no shell approval
     ([plan](plans/code-mode.md); Imperium-Research R2.8).
+<!-- markdownlint-disable-next-line MD029 -->
+66. **Built-in text editor with Markdown presentation** (planned). The Files panel of
+    [item 55](#next-in-order) grows from a viewer into an editor for the person using the app.
+    It uses CodeMirror 6 with syntax highlighting, find and replace, multiple tabs and markers
+    for unsaved changes. Saves go through a new daemon method (`files.write`, or similar) with
+    the same root confinement and link-free opening as item 55's reads, so it writes only inside
+    the session's roots. It is the user's editor: agents cannot drive it and no agent tool is
+    added. If an agent changes a file that is open in the editor, the editor shows the change
+    and asks before overwriting, and saves compare file identity and content hash so neither
+    side's edit is lost. Markdown files get a live rendered preview beside the source, and a
+    presentation mode that shows a file as slides, split on `---` or headings, full screen in
+    the app. Rendering is sanitised: no raw HTML or script execution, remote images load only
+    after asking, and links open only after confirmation, consistent with item 55's link rules.
+    It builds on item 55, so it comes after it. Writes are refused to the safety-floor paths,
+    the daemon's data folder and harness folders. A paired phone gets no editor, and mods cannot
+    wrap or drive it, the same as item 55's panels. No plan yet.
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
