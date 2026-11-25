@@ -311,8 +311,10 @@ the block or fake one. Each notice is also emitted as a `notice` event, so clien
 Several commands that end between two calls each get a notice, in start order. Each process
 remembers the agent that started it (the workspace an agent's tools run in carries its id): the
 root is told of its own commands and of any no agent owns, a subagent of its own, at its own
-safe point. A subagent's command that ends after the subagent has reported is not reported (the
-root can still read it with `command_output`). Not reported: a command the agent stopped with
+safe point. When a subagent finishes, its background commands are released: the ones still
+running are stopped (with everything they started; they are not handed to the root, which was never
+told of them) and all its entries leave the table, so a subagent's command never lingers or
+outlives it. Not reported: a command the agent stopped with
 `command_stop`, one killed because the session stopped, and one whose end the agent already read
 through `command_output`. A finished command whose notice is still waiting is not dropped from
 the table to make room (unless the table has doubled). Nothing wakes an idle session: a command

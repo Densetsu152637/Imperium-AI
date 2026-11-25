@@ -1365,6 +1365,9 @@ pub(super) async fn run_subagent(
             outcome.text = format!("{note}\n\n{}", truncate(&outcome.text, room));
         }
     }
+    // A finished subagent can no longer read or stop its background commands, so the ones still
+    // running are stopped and all its entries leave the session's table.
+    agent.workspace.processes().release_owner(&id);
     shared
         .hook_in(
             &agent.workspace,
