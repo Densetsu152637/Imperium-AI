@@ -776,7 +776,7 @@ async fn follow(
     id: &str,
     started: &mut bool,
     reply: &mut String,
-    on_start: &dyn Fn(),
+    on_start: &(dyn Fn() + Sync),
 ) -> Result<bool, String> {
     loop {
         let event = match events.recv().await {
@@ -864,7 +864,7 @@ async fn owner_turn(
     state: &Arc<DaemonState>,
     session: &Arc<Session>,
     prompt: &str,
-    on_start: &dyn Fn(),
+    on_start: &(dyn Fn() + Sync),
 ) -> Owned {
     let Some(cap) = crate::permissions::TurnCap::apply(session) else {
         return Owned::Raced;
