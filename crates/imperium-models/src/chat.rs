@@ -342,7 +342,7 @@ fn request_body(request: ChatRequest<'_>, style: ReasoningStyle) -> serde_json::
 }
 
 /// Whether a local model thinks at `effort`: off at `low`, on above it.
-pub fn thinking_for(effort: Effort) -> bool {
+fn thinking_for(effort: Effort) -> bool {
     effort != Effort::Low
 }
 
