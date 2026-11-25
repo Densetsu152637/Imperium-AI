@@ -257,7 +257,9 @@ pub(super) fn replay_loaded(
     };
     for event in history.iter().filter(|event| event.agent_id == agent_id) {
         match &event.event {
-            SessionEvent::ToolsLoaded { names, .. } => names.iter().for_each(|name| add(name.as_str())),
+            SessionEvent::ToolsLoaded { names, .. } => {
+                names.iter().for_each(|name| add(name.as_str()))
+            }
             SessionEvent::ExtensionLoaded {
                 kind: ExtensionKind::Plugin,
                 tools,
