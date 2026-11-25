@@ -26,6 +26,7 @@ use imperium_models::{ChatClient, ModelError, Tokenizer};
 use imperium_protocol::session::{ContextCategory, SessionEvent, TokenCountMethod};
 
 use crate::ResolvedModel;
+use crate::agent::effective_call;
 use crate::session::lock;
 
 /// The longest a breakdown may spend asking the model's server before it falls back to
@@ -214,35 +215,35 @@ pub(crate) fn restored_spans(content: &str) -> Spans {
     spans
 }
 
-/// The tool definitions as sent, one JSON array per category: built-in tools, then each of
-/// `groups` (outside tools: MCP servers' and activated plugins'), whose specs occupy the given
-/// ranges of `specs`.
-pub(crate) fn tool_texts(
-    specs: &[ToolSpec],
-    groups: &[(Category, Range<usize>)],
-) -> Vec<(Category, String)> {
-    let wire = |category: Category, tools: Vec<&ToolSpec>| {
-        let array: Vec<_> = tools.into_iter().map(ToolSpec::to_wire).collect();
+/// The tool definitions as sent, one JSON array per category: built-in tools, then MCP
+/// servers' and activated plugins'. `categories` holds the category of each spec (a spec past
+/// its end is built in).
+pub(crate) fn tool_texts(specs: &[ToolSpec], categories: &[Category]) -> Vec<(Category, String)> {
+    [
+        Category::ToolsBuiltin,
+        Category::ToolsMcp,
+        Category::ToolsPlugins,
+    ]
+    .into_iter()
+    .filter_map(|category| {
+        let array: Vec<_> = specs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                categories
+                    .get(*index)
+                    .copied()
+                    .unwrap_or(Category::ToolsBuiltin)
+                    == category
+            })
+            .map(|(_, spec)| spec.to_wire())
+            .collect();
         (!array.is_empty()).then(|| {
             let text = serde_json::to_string(&array).unwrap_or_default();
             (category, text)
         })
-    };
-    let in_group = |index: usize| groups.iter().any(|(_, range)| range.contains(&index));
-    let builtin = specs
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| !in_group(*index))
-        .map(|(_, spec)| spec)
-        .collect();
-    std::iter::once(wire(Category::ToolsBuiltin, builtin))
-        .chain(
-            groups
-                .iter()
-                .map(|(category, range)| wire(*category, specs[range.clone()].iter().collect())),
-        )
-        .flatten()
-        .collect()
+    })
+    .collect()
 }
 
 /// Whether a category is outside tools' definitions (rendered after the built-in ones).
@@ -280,7 +281,7 @@ impl<'a> Request<'a> {
                 _ => None,
             })
             .flatten()
-            .filter(|call| call.function.name == LOAD_SKILL)
+            .filter(|call| effective_call(call).function.name == LOAD_SKILL)
             .map(|call| call.id.as_str())
             .collect();
         for (index, message) in self.messages.iter().enumerate() {
@@ -311,12 +312,18 @@ impl<'a> Request<'a> {
                     content,
                     tool_call_id,
                 } => {
-                    let category = if skill_loads.contains(tool_call_id.as_str()) {
-                        Category::SkillsLoaded
-                    } else {
-                        Category::ToolResults
-                    };
-                    parts.push((category, content));
+                    match recorded {
+                        // A `tool_search` result: each schema under its tool's source.
+                        Some(spans) => slices(content, spans, &mut parts),
+                        None => {
+                            let category = if skill_loads.contains(tool_call_id.as_str()) {
+                                Category::SkillsLoaded
+                            } else {
+                                Category::ToolResults
+                            };
+                            parts.push((category, content));
+                        }
+                    }
                 }
             }
             segments.extend(
@@ -542,13 +549,32 @@ impl TokenCounter {
                 }
                 // The tools as the template renders them, not as the JSON sent; outside tools
                 // are split between MCP and plugin tools as their JSON is.
+                // Only the tool block is replaced: the schemas inside `tool_search` results are
+                // message text, counted under the same categories, and stay as counted.
                 if let Some((builtin, outside)) = rendered_tools {
-                    totals[Category::ToolsBuiltin.index()] = builtin;
-                    let mcp = totals[Category::ToolsMcp.index()];
-                    let plugins = totals[Category::ToolsPlugins.index()];
+                    let skip = segments.len().saturating_sub(request.tools.len());
+                    let block = |category: Category| -> u64 {
+                        segments
+                            .iter()
+                            .zip(counts)
+                            .skip(skip)
+                            .filter(|((c, _), _)| *c == category)
+                            .map(|(_, count)| *count)
+                            .sum()
+                    };
+                    let (json_builtin, mcp, plugins) = (
+                        block(Category::ToolsBuiltin),
+                        block(Category::ToolsMcp),
+                        block(Category::ToolsPlugins),
+                    );
                     let split = calibrate(&[mcp, plugins], outside);
-                    totals[Category::ToolsMcp.index()] = split[0];
-                    totals[Category::ToolsPlugins.index()] = split[1];
+                    let replace = |totals: &mut [u64], category: Category, old: u64, new: u64| {
+                        let slot = &mut totals[category.index()];
+                        *slot = slot.saturating_sub(old) + new;
+                    };
+                    replace(&mut totals, Category::ToolsBuiltin, json_builtin, builtin);
+                    replace(&mut totals, Category::ToolsMcp, mcp, split[0]);
+                    replace(&mut totals, Category::ToolsPlugins, plugins, split[1]);
                 }
             }
             None => {
@@ -946,7 +972,11 @@ mod tests {
         let spans = HashMap::from([(0, system_spans), (1, user_spans)]);
         let tools = tool_texts(
             &[spec("read_file"), spec("mcp__s__t"), spec("mcp__p_s__t")],
-            &[(Category::ToolsMcp, 1..2), (Category::ToolsPlugins, 2..3)],
+            &[
+                Category::ToolsBuiltin,
+                Category::ToolsMcp,
+                Category::ToolsPlugins,
+            ],
         );
         let request = Request {
             messages: &messages,
@@ -1061,5 +1091,77 @@ mod tests {
         assert_eq!(estimate_tokens(r#"{"a":1}"#), 5);
         assert_eq!(estimate_tokens("a\n\n    b"), 4);
         assert_eq!(estimate_tokens("日本"), 2);
+    }
+
+    #[test]
+    fn a_skill_loaded_through_call_tool_counts_as_a_loaded_skill() {
+        use crate::agent::test_proxied;
+        let messages = vec![
+            ChatMessage::System {
+                content: "base".into(),
+            },
+            ChatMessage::user("go"),
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: vec![test_proxied("a", "load_skill", json!({"name": "pdf"}))],
+            },
+            ChatMessage::Tool {
+                tool_call_id: "a".into(),
+                content: "# Skill: pdf".into(),
+            },
+        ];
+        let spans = HashMap::new();
+        let request = Request {
+            messages: &messages,
+            spans: &spans,
+            tools: &[],
+        };
+        assert!(
+            request
+                .segments()
+                .contains(&(Category::SkillsLoaded, "# Skill: pdf"))
+        );
+    }
+
+    #[test]
+    fn the_schemas_in_a_tool_search_result_count_under_their_sources() {
+        let result = r#"{"more":[],"tools":[{"name":"a"},{"name":"mcp__s__t"}],"unknown":[]}"#;
+        let (a, b) = (r#"{"name":"a"}"#, r#"{"name":"mcp__s__t"}"#);
+        let first = result.find(a).unwrap();
+        let second = result.find(b).unwrap();
+        let messages = vec![
+            ChatMessage::System {
+                content: "base".into(),
+            },
+            ChatMessage::user("go"),
+            ChatMessage::Tool {
+                tool_call_id: "s1".into(),
+                content: result.into(),
+            },
+        ];
+        let spans = HashMap::from([(
+            2,
+            vec![
+                (Category::ToolResults, 0..first),
+                (Category::ToolsBuiltin, first..first + a.len()),
+                (Category::ToolResults, first + a.len()..second),
+                (Category::ToolsMcp, second..second + b.len()),
+                (Category::ToolResults, second + b.len()..result.len()),
+            ],
+        )]);
+        let request = Request {
+            messages: &messages,
+            spans: &spans,
+            tools: &[],
+        };
+        let segments = request.segments();
+        assert!(segments.contains(&(Category::ToolsBuiltin, a)));
+        assert!(segments.contains(&(Category::ToolsMcp, b)));
+        // The text around them stays a tool result.
+        assert!(
+            segments
+                .iter()
+                .any(|(c, text)| *c == Category::ToolResults && text.starts_with(r#"{"more""#))
+        );
     }
 }
