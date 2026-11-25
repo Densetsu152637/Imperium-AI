@@ -359,10 +359,12 @@ impl Agent {
     /// The tools offered to the model: today's full list with loading off; with it on, the
     /// core tools in their usual order, then `tool_search` and `call_tool`.
     pub(super) fn tool_offered(&self) -> (Vec<ToolSpec>, Vec<(Category, Range<usize>)>) {
-        let (specs, groups) = self.tool_universe();
         if !self.reactive() {
-            return (specs, groups);
+            return self.tool_universe();
         }
+        // Decided now, at the first list, before any plugin is active.
+        self.plugin_loader();
+        let (specs, groups) = self.tool_universe();
         let (mut specs, groups) = narrow_tools(specs, groups, &core_names());
         specs.push(self.tool_search_spec());
         specs.push(call_tool_spec());

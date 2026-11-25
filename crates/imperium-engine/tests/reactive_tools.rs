@@ -804,15 +804,14 @@ async fn a_hook_sees_rewrites_and_blocks_the_inner_tool() {
     // The hook saw the inner tool: it ran on the call as made and once more on the rewritten
     // call, which it cannot rewrite again, and the rewritten call is the same inner tool.
     assert_eq!(rewrites.load(Ordering::SeqCst), 2);
+    assert!(done.results[0].0, "{:?}", done.results);
+    let seen = setup.seen.lock().unwrap().clone();
+    let told = seen[1].last_result.as_deref().unwrap();
     assert!(
-        done.results[0].0
-            && done.results[0]
-                .1
-                .contains("A hook rewrote this call's arguments"),
-        "{:?}",
-        done.results
+        told.contains("A hook rewrote this call's arguments"),
+        "{told}"
     );
-    assert!(done.results[0].1.contains("fetched"), "{:?}", done.results);
+    assert!(told.contains("fetched"), "{told}");
     assert!(done.events.iter().any(|event| matches!(
         event,
         SessionEvent::Notice { message } if message.contains("web_fetch")
