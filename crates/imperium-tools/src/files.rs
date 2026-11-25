@@ -13,6 +13,12 @@ const DEFAULT_READ_LINES: usize = 2000;
 /// Character budget of a read with no `limit` and no known context window.
 const DEFAULT_READ_BUDGET: usize = 32_000;
 
+/// The context window a hosted model is assumed to have when the model table does not give
+/// one: hosted models read far more than the 32k-character default allows, so a read with no
+/// `limit` gets the full [`MAX_READ_CHARS`] budget (an eighth of this window, 4 characters a
+/// token). A local model with an unknown window keeps the default.
+pub const HOSTED_UNKNOWN_WINDOW_TOKENS: u64 = 200_000;
+
 /// Smallest character budget a window can give a read with no `limit`.
 const MIN_READ_BUDGET: usize = 8_000;
 
@@ -408,6 +414,42 @@ mod tests {
             .await
             .unwrap();
         assert!(!small.contains("[truncated:"));
+    }
+
+    #[test]
+    fn a_hosted_model_with_an_unknown_window_reads_the_full_budget() {
+        // Unknown window (a local model): the small default.
+        assert_eq!(read_budget(None, None), DEFAULT_READ_BUDGET);
+        // Unknown window on a hosted model: the engine passes the assumed hosted window.
+        assert_eq!(
+            read_budget(None, Some(HOSTED_UNKNOWN_WINDOW_TOKENS)),
+            MAX_READ_CHARS
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_with_the_hosted_window_is_not_cut_at_the_local_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let lines = "z".repeat(99)
+            + "
+";
+        std::fs::write(dir.path().join("big.txt"), lines.repeat(900)).unwrap();
+        let local = read_file_in(&workspace, "big.txt", None, None, None)
+            .await
+            .unwrap();
+        assert!(local.contains("32000-character read budget"), "{local}");
+        let hosted = read_file_in(
+            &workspace,
+            "big.txt",
+            None,
+            None,
+            Some(HOSTED_UNKNOWN_WINDOW_TOKENS),
+        )
+        .await
+        .unwrap();
+        assert!(!hosted.contains("read budget"), "{hosted}");
+        assert!(hosted.contains("   900	"), "{hosted}");
     }
 
     #[tokio::test]

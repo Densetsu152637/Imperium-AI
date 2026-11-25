@@ -1066,7 +1066,10 @@ impl Agent {
             }
         }
         let started = self.tool_started(call, tool, summary);
-        let window = self.expected_window();
+        // A hosted model whose window is unknown reads as a large-window model, not a local one.
+        let window = self.expected_window().or_else(|| {
+            (!self.model.local).then_some(imperium_tools::HOSTED_UNKNOWN_WINDOW_TOKENS)
+        });
         let (ok, output) = match invocation.execute_in(&self.workspace, window).await {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),

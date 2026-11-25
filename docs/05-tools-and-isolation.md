@@ -1052,12 +1052,12 @@ as binary, and a folder is refused with a pointer to `list_dir`, in a remote wor
 A read without a `limit` returns at most 2,000 lines and also stops at a character budget sized
 from the calling agent's context window: about an eighth of the window in tokens at 4 characters
 a token (at least 8,000 characters, at most 100,000), or 32,000 characters when the window is not
-known. The engine passes the window to the call (`Invocation::execute_in`); it is not a model-visible
+known. A hosted model with no window in the model table is assumed to have a large one, so its read gets the 100,000-character ceiling; a local model with an unknown window keeps 32,000. The engine passes the window to the call (`Invocation::execute_in`); it is not a model-visible
 parameter. The budget ends the read on a whole line, and a note gives the exact offset to continue
 (`[lines 1-19 of 400; stopped at the 8000-character read budget; use offset=20 to read more]`); a
 read that stops short for any reason says the same. A first line past the budget is shown cut, with
 a note to use `grep` for the part needed. A read with an explicit `limit` keeps the 100,000-character
-ceiling (line numbers and notes included). The defaults apply to every model, hosted ones too, and to
+ceiling (line numbers and notes included). The defaults apply to every model and to
 calls through the MCP bridge and the Claude harness (a caller that cannot give the window gets 32,000 characters). `list_dir` returns at most 500 entries
 per call, sorted, with a note (`use offset=500 to see more`); its optional `offset` skips entries. Edits stay UTF-8. `tool.before`
 and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
