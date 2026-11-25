@@ -95,7 +95,15 @@ pub fn check_invariants(src: &str, lexed: &Lexed) -> Result<(), String> {
             Err("an oversized source produced tokens".to_owned())
         };
     }
-    if last.kind != TokenKind::Eof || last.span.start != src.len() || last.span.end != src.len() {
+    // After too many errors the reader stops where it is; otherwise Eof is at the end.
+    let stopped = lexed
+        .diagnostics
+        .last()
+        .is_some_and(|d| d.code == imperium_ratio::Code::TooManyErrors);
+    let eof_ok = last.span.start == last.span.end
+        && last.span.end <= src.len()
+        && (stopped || last.span.end == src.len());
+    if last.kind != TokenKind::Eof || !eof_ok {
         return Err(format!("the stream does not end in Eof at {}", src.len()));
     }
     if tokens.iter().filter(|t| t.kind == TokenKind::Eof).count() != 1 {
