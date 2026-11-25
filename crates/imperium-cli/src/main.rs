@@ -644,6 +644,26 @@ enum PrCommand {
         /// The session's id (see `imperium session list`).
         session: Option<String>,
     },
+    /// Show or turn off GitHub's auto-merge for a session's pull request. It cannot be turned on
+    /// from the command line: only the desktop app does that.
+    Automerge {
+        #[command(subcommand)]
+        command: PrAutomergeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PrAutomergeCommand {
+    /// Show whether auto-merge is on for a session's pull request.
+    Status {
+        /// The session's id (see `imperium session list`).
+        session: String,
+    },
+    /// Turn auto-merge off for a session's pull request.
+    Off {
+        /// The session's id (see `imperium session list`).
+        session: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1171,14 +1191,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ApprovalsCommand::Approve { id } => approvals::respond(id, true),
             ApprovalsCommand::Deny { id } => approvals::respond(id, false),
         },
-        Command::Pr {
-            command: PrCommand::Status { session },
-        } => block_on(async {
+        Command::Pr { command } => block_on(async {
             let (mut client, _) = connect().await?;
-            print!(
-                "{}",
-                imperium_cli::pr::status(&mut client, session.as_deref()).await?
-            );
+            let text = match command {
+                PrCommand::Status { session } => {
+                    imperium_cli::pr::status(&mut client, session.as_deref()).await?
+                }
+                PrCommand::Automerge {
+                    command: PrAutomergeCommand::Status { session },
+                } => imperium_cli::pr::automerge_status(&mut client, &session).await?,
+                PrCommand::Automerge {
+                    command: PrAutomergeCommand::Off { session },
+                } => imperium_cli::pr::automerge_off(&mut client, &session).await?,
+            };
+            print!("{text}");
             Ok(())
         }),
         Command::Schedule {
@@ -1477,6 +1503,91 @@ fn delete_secret(name: &SecretName) -> anyhow::Result<()> {
         println!("{name} was not stored");
     }
     Ok(())
+}
+
+/// Auto-merge lands code without another look, so the command line must have no way to turn it
+/// on. These tests read the command tree and the source.
+#[cfg(test)]
+mod no_enabling_path {
+    use clap::CommandFactory;
+
+    use super::Cli;
+
+    /// Every subcommand path under `command`, as `pr automerge off`.
+    fn paths(command: &clap::Command, prefix: &str, out: &mut Vec<(String, Vec<String>)>) {
+        for sub in command.get_subcommands() {
+            let path = format!("{prefix} {}", sub.get_name());
+            let args = sub
+                .get_arguments()
+                .map(|arg| arg.get_id().to_string())
+                .collect();
+            out.push((path.clone(), args));
+            paths(sub, &path, out);
+        }
+    }
+
+    #[test]
+    fn no_subcommand_can_ask_for_auto_merge() {
+        let mut root = Cli::command();
+        root.build();
+        let mut all = Vec::new();
+        paths(&root, "", &mut all);
+        for (path, args) in &all {
+            // `pr automerge` has exactly `status` and `off`, each taking only the session.
+            if path.starts_with(" pr automerge ") && !path.contains(" help") {
+                assert!(
+                    matches!(path.as_str(), " pr automerge status" | " pr automerge off"),
+                    "{path}"
+                );
+                let named: Vec<&str> = args
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|id| !matches!(*id, "help" | "version" | "remote"))
+                    .collect();
+                assert_eq!(named, ["session"], "{path}");
+            }
+            // No command or argument anywhere is about turning it on.
+            let spelled = format!("{path} {}", args.join(" ")).to_ascii_lowercase();
+            for word in ["enable-auto", "merge-method", "merge_method", "challenge"] {
+                assert!(!spelled.contains(word), "{path} has {word}");
+            }
+        }
+        assert!(all.iter().any(|(path, _)| path == " pr automerge off"));
+    }
+
+    /// The only auto-merge call the command line makes is the one that turns it off, and it
+    /// never asks for the challenge that turning it on needs.
+    #[test]
+    fn the_source_sends_no_enabling_call() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            // This test's own text names them.
+            let source = source.split("mod no_enabling_path").next().unwrap();
+            assert!(
+                !source.contains("AutoMergeChallenge") && !source.contains("auto_merge_challenge"),
+                "{} asks for an auto-merge challenge",
+                path.display()
+            );
+            if source.contains("PullRequestsSetAutoMerge") {
+                seen += 1;
+                assert!(
+                    path.ends_with("pr.rs"),
+                    "{} sends set_auto_merge",
+                    path.display()
+                );
+                assert!(source.contains("enabled: false"));
+                assert!(!source.contains("enabled: true"));
+                assert!(!source.contains("enabled,"));
+            }
+        }
+        assert_eq!(seen, 1);
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

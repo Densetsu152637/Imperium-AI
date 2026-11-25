@@ -259,7 +259,22 @@ impl Connection {
                 c.later,
                 |params: SessionReviewPullRequestParams| {
                     let state = Arc::clone(&self.state);
-                    async move { blocking(move || crate::review::pull_request(&state, &params)).await }
+                    let runtime = tokio::runtime::Handle::current();
+                    async move {
+                        blocking(move || {
+                            // A push to a branch with a pull request bound turns its auto-merge
+                            // off first; if that cannot be done, nothing is pushed.
+                            let before_push = |branch: &str| {
+                                runtime.block_on(state.pr_monitor().disable_before_branch_push(
+                                    &state,
+                                    &params.session_id,
+                                    branch,
+                                ))
+                            };
+                            crate::review::pull_request(&state, &params, &before_push)
+                        })
+                        .await
+                    }
                 },
             ),
             SessionAgentAsk::NAME => call_later::<SessionAgentAsk, _>(

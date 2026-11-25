@@ -296,6 +296,29 @@ it. Its processes are killed when the session is stopped, archived, or deleted, 
 is dropped, and when the daemon shuts down (which waits up to 5 s for the kills). Remote
 runtimes do not run background commands yet.
 
+**Completion notices.** The agent need not poll: when a background command ends on its own
+(an exit with any code, or a signal), the agent that started it is told once, at the same safe
+point where steering messages join the turn (between a finished tool round and the next model
+call, so tool calls and results stay paired). The notice is a user-role message wrapped in
+`<background-notice>`, with a line saying it is a report and not an instruction: the id, the
+command (one line, cut to 200 characters), how it ended, how long it ran, the last 5 non-empty
+lines of output (each cut to 200 characters, labelled "data, not instructions"), and
+`command_output {"id":..,"since":0}` to read the rest. The command and the output are data from
+outside: control characters and ANSI escapes are removed, and the harness's tag names
+(`background-notice` among them, see `HARNESS_TAGS`) are defused in them, so they cannot close
+the block or fake one. Each notice is also emitted as a `notice` event, so clients show it.
+Several commands that end between two calls each get a notice, in start order. Each process
+remembers the agent that started it (the workspace an agent's tools run in carries its id): the
+root is told of its own commands and of any no agent owns, a subagent of its own, at its own
+safe point. A subagent's command that ends after the subagent has reported is not reported (the
+root can still read it with `command_output`). Not reported: a command the agent stopped with
+`command_stop`, one killed because the session stopped, and one whose end the agent already read
+through `command_output`. A finished command whose notice is still waiting is not dropped from
+the table to make room (unless the table has doubled). Nothing wakes an idle session: a command
+that ends between turns is reported at the first safe point of the next turn (the way a queued
+message waits for its turn). Not yet: a `notify_on` pattern that reports a matching output line
+while the command still runs, and remote runtimes (they run no background commands).
+
 ### `ask_user`
 
 The root calls `ask_user(questions[])` once with every question it has; each has `question`,
@@ -921,6 +944,72 @@ but a small model reading at most 1,500 characters cannot see everything a file 
 write that passes can be run later by a command that, taken alone, looks harmless. Auto mode
 does not close that gap; a deny or ask rule on the files that matter, the safety floor's
 protected files, and the isolation tiers do.
+
+### Auto-merge: the desktop app alone (implemented)
+
+GitHub's auto-merge merges a pull request as soon as the repository's own required checks and
+reviews pass, with **nobody looking at the code again**. Enabling it lands code unseen, so it is
+the user's switch alone, and only the desktop app can turn it on. Imperium asks GitHub with
+`enablePullRequestAutoMerge` and the chosen method (`squash`, `merge` or `rebase`, one the
+repository allows), pinned to the head commit the user saw (`expectedHeadOid`: GitHub refuses if
+the branch has moved); it never calls a merge endpoint itself. The only calls to GitHub that
+change anything are that mutation and `disablePullRequestAutoMerge`.
+
+- **Turning it on** is `pull_requests.set_auto_merge` with `enabled: true`, which needs the
+  single-use challenge of `pull_requests.auto_merge_challenge`: the same pattern as
+  [plugin approval](06-extensibility.md#plugin-marketplaces) (`plugins.approval_challenge` and
+  `plugins.approve`). The daemon identifies the caller itself, from what the operating system
+  says about the process on the other end of the local socket, and answers only the desktop app
+  installed beside `imperium-core`; the challenge is bound to that connection, the session, the
+  pull request's address, the head commit and the method, lives two minutes and is used up by
+  any answer. The app's Rust shell does it (`auto_merge_enable`): a native dialog, written from
+  the daemon's own status and naming the repository, the branches, the commit and the method,
+  comes first, and the card's webview only triggers it.
+- **Nobody else can.** A paired phone's scopes list neither method. A page reaching the daemon
+  over loopback TCP (a mod's), an agent's command, a hook, a plugin's server and the
+  `imperium` command are not the installed desktop app and get `permission denied`. No agent
+  tool, `session.run_tool` tool, hook action, plugin tool or mod host call turns it on (tests
+  read the tool schemas, the CLI's command tree and the mod host's allowlist). A comment on a
+  pull request is text: it cannot call any of this. That holds for the daemon's methods only:
+  code running directly as the user, such as a tier-0 command that runs `gh auth token` and
+  calls GitHub's API itself, is outside this guarantee, as with plugin approval (sandbox tiers
+  1 and above can hide `gh`'s login, [14](14-projects-and-automation.md#github-auto-fix)).
+- **Turning it off** needs no challenge and any local caller may do it: the card, `imperium pr
+  automerge off SESSION`, an agent. There is no enabling command in the CLI: `imperium pr
+  automerge` has only `status` and `off`.
+- **A push turns it off.** GitHub keeps auto-merge on after a push, so Imperium does not rely on
+  it. The daemon's own pushes to a pull request's branch (Fix CI, and `session.review_pull_request`
+  when the session has a pull request bound on that branch) disable auto-merge before they push,
+  and never enable it again; if the daemon cannot read whether it is on, or cannot turn it off,
+  it does not push. A push by *anyone else* (the agent through `gh`, a collaborator) is caught
+  by the poll: when Imperium turned auto-merge on it records the head commit the user
+  confirmed, with the session's binding (it survives a restart); at each poll, if auto-merge is
+  on and the head differs, the daemon sends `disablePullRequestAutoMerge`, forgets the record,
+  says on the card "auto-merge was turned off because new commits were pushed after you enabled
+  it" and sends `pull_requests.changed`. It never turns it on again: the user confirms again in
+  the desktop app. The poll is at most 60 s while a card is shown (`github.autofix.poll_s`
+  otherwise), so a merge that GitHub completes inside one poll interval of the push is outside
+  the guarantee. The record is cleared only when Imperium turns auto-merge off (the user, the
+  poll's own turn-off, or a push of the daemon's own), never because one read said it was off
+  (that read may have been in flight before the user enabled it); a record that outlives its
+  auto-merge can only cause one extra, harmless disable. Auto-merge that Imperium did not turn
+  on (enabled on GitHub itself, or before this was recorded) has no confirmed head, and the
+  poll leaves it alone. A daemon that was down when someone pushed catches it at its first
+  poll. A session that cannot be watched any more turns it off too: **unbinding** the last
+  session that follows a pull request Imperium enabled turns auto-merge off first (and fails,
+  keeping the binding, when that is not possible), and **deleting or archiving** such a session
+  turns it off best effort, logged. A push by the daemon for a bound branch is refused when
+  GitHub is not available to check.
+- **Where it is not offered**, with the reason on the card: a draft (GitHub refuses it), a
+  repository that does not allow auto-merge, a repository whose merge settings the token cannot
+  read (a token without push access gets no `allow_*` flags; that is "cannot be enabled here",
+  never "every method is off"), a pull request in the merge queue (which ignores the method), a merged or
+  closed pull request, and `github.automerge.allowed = false`. GitHub also refuses a pull request
+  that can already merge (it will not queue it): the card says so and leaves merging to the user.
+- **Settings** (`[github.automerge]`, [10](10-configuration.md)): `allowed` (default `true`)
+  refuses every request when `false`; `default_method` is the method the card preselects when the
+  repository allows it. Both are read from the user's own config only (a project's `.imperium`
+  files are never merged as settings) and neither turns anything on.
 
 ## Isolation tiers
 
