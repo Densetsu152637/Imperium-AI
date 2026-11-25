@@ -1511,7 +1511,7 @@ it would split, or *CPU · 6.2 GB RAM* on the CPU lane. The context meter below 
 a local model's conversation against that per-agent ceiling, so compaction starts near the
 ceiling, not near the current reservation. The Local models panel shows the layers on the GPU
 (*36/36 layers on GPU*), says when the rest run on the CPU, and when a fixed KV pool was cut to
-fit the GPU. A local model that cannot run here (a vLLM folder off Linux) is
+fit the GPU. A local model that cannot run here (a vLLM folder off Linux, or on Windows before `imperium runtime vllm setup --wsl`) is
 listed but cannot be chosen. The new-session composer's model list is the same.
 
 **Favourite and hidden models (implemented):** every row of the Models panel (the model table,

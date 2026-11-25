@@ -319,7 +319,9 @@ and `environments.agent_update` (protocol 0.28)
     hardware. The managed vLLM environment is built: `imperium runtime vllm
     setup|status|remove` makes a `uv` virtual environment with a pinned vLLM, or pulls and runs
     the official Docker image, only on the user's command after showing disk and GPU
-    requirements, and the daemon uses it when present ([04](04-models-and-routing.md#runtimes)).
+    requirements, and the daemon uses it when present ([04](04-models-and-routing.md#runtimes)); on native
+    Windows `setup --wsl` makes it inside a WSL2 distribution and the daemon serves `vllm:` models from there
+    ([04](04-models-and-routing.md#vllm-in-wsl2-windows-implemented)).
     Not built: a desktop action for it; GPU utilisation and temperature on Windows
     (`intel_gpu_top` and the engine counters); and checks on real hardware, which the vLLM
     setup, the Windows probes and the AMD and Intel parsers still need.

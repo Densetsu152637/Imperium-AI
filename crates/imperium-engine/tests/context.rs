@@ -340,9 +340,10 @@ async fn a_llamacpp_model_is_counted_exactly_with_its_tokenizer() {
     assert_eq!(second.tokens("tool_results"), words(result) as i64);
     assert_eq!(second.cached_tokens, 7);
 
-    // Unchanged parts were tokenized once: four on the first call (base, instructions, tools,
-    // user), then only the tool call's name and arguments and the result. Props once.
-    assert_eq!(server.tokenize_calls.load(Ordering::SeqCst), 7);
+    // Unchanged parts were tokenized once: five on the first call (base, instructions, the
+    // harness paragraph at the end of the system message, tools, user), then only the tool
+    // call's name and arguments and the result. Props once.
+    assert_eq!(server.tokenize_calls.load(Ordering::SeqCst), 8);
     assert_eq!(server.props_calls.load(Ordering::SeqCst), 1);
 }
 
