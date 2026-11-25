@@ -3,7 +3,7 @@
 Revision: 2026-11-26, revision 3 (plan-gate review round 2: R2-1 to R2-5 and the nits folded in;
 revision 2 folded in F1 to F11 and decided the four open questions); written against
 `experimental` at `56ce2da9` (last updated). Roadmap [item 62](../12-roadmap.md#next-in-order).
-Status: planned (no stage started).
+Status: in progress (stage 1 done in review; no other stage started).
 
 Imperium ships a computer algebra system as a built-in [MCP](../05-tools-and-isolation.md#mcp)
 server backed by SymPy, so agents (local models in particular) do exact symbolic maths instead of
@@ -132,7 +132,9 @@ The language (full grammar in stage 1):
   `÷`, `≤`, `≥`, `≠`, `π`, `√`, `²`, `³`). Any other non-ASCII character, a control character or
   a NUL is refused.
 - **Caps.** At most 16 KiB per expression and 4,096 tokens. Nesting depth is capped at 200,
-  checked while parsing, so Python's recursion limit is never reached. A tree has at most 8,192
+  checked while parsing. Every recursive step (a bracket, an operand, an argument) adds one to
+  the depth, and a level costs at most three Python frames, so the parser uses about 600 frames at
+  the cap and Python's recursion limit (1,000) is not reached from a worker's shallow stack. A tree has at most 8,192
   nodes: each token makes at most one node and each implicit multiplication one more, so the
   node cap is twice the token cap and is never the binding limit before the token cap. Integer
   literals have at most 1,000 digits.
@@ -148,7 +150,7 @@ test fails if the table and this list differ.
 | --- | --- | --- |
 | `symbolic` (no eager exact arithmetic; magnitude passes through for D2's estimate) | `sin cos tan cot sec csc asin acos atan acot atan2 sinh cosh tanh coth asinh acosh atanh exp log ln erf Abs sign re im arg conjugate` | SymPy leaves these unevaluated on exact constants (`sin(1)`, `exp(1000)`) or returns small exact values |
 | `root` (treated as `Pow` with a rational exponent) | `sqrt cbrt root` | `sqrt(2)^(10^6)` is an eager integer power |
-| `select` (magnitude at most the inputs' sum) | `floor ceiling Min Max Mod gcd lcm` | they compute from their inputs, and `lcm` is bounded by the product |
+| `select` (magnitude at most the inputs' largest, or for `lcm` their product) | `floor ceiling Min Max Mod gcd lcm` | they compute from their inputs, and `lcm` is bounded by the product |
 | `digits` (result size estimated; refused over 100,000 digits) | `factorial gamma binomial fibonacci lucas` | eager exact integers: `log10(n!)` by `lgamma`, `binomial` by `lgamma`, `fibonacci(n)` and `lucas(n)` about `0.209·n` digits |
 | `capped` (an argument cap, because cost grows faster than result size) | `prime` (n ≤ 10<sup>6</sup>), `nextprime`, `prevprime`, `isprime` (argument ≤ 200 digits), `harmonic` (n ≤ 10,000), `bernoulli` (n ≤ 2,000), `catalan` (n ≤ 10,000) | sieves, primality tests and big rationals |
 
@@ -253,7 +255,8 @@ Rules:
     factorial cap *is* the 100,000-digit rule (about `n ≤ 25,000`). A nested call
     (`factorial(factorial(20))`) is refused when its argument's `mag` is over 6.
   - `capped` checks its argument cap.
-  - `select` takes the sum of its inputs.
+  - `select` takes the largest input's non-negative magnitude (the sum of them for `lcm`); never
+    a sum of signed logs.
   - `symbolic` passes the magnitude through: `exp` and `cosh` grow it, since the result may be
     raised to a power later.
 - **Matrices:** at most 30 rows or columns and 400 entries. A matrix power `M^n` with a constant
@@ -1074,9 +1077,107 @@ Commands are what CI runs; nothing needs a local Rust build.
   - the existing `python` job is unchanged and still skipped (no `sidecars/media`).
 
   About 750 lines.
-- Status: pending.
+- Status: done (pull request pending merge; see the outcome).
 - Handoff notes: the media sidecar's job must stay Ubuntu-only. `check-python.sh` with no
   argument keeps its old behaviour.
+- Outcome (2026-11-26):
+  - **Delivered.** `sidecars/cas/` (Python 3.12.14, `package = false`, every dependency pinned
+    exactly and locked with hashes: `sympy` 1.14.0, `mpmath` 1.3.0, `mcp` 2.3.0, and `pytest`,
+    `hypothesis` and `ruff` as dev dependencies), `parse.py`, `guard.py`, `functions.py`, an
+    empty `__init__.py`, the tests below, the `python-cas` job on the three-OS matrix,
+    `scripts/check-python.sh <sidecar>`, the `python_cas` detect output with its
+    `test-detect.sh` case, and the notes in 05 and 11. The `python-cas` job also runs
+    `ruff format --check`.
+  - **Checks to tests.** Precedence, implicit multiplication, relations, matrices, caps and every
+    refusal with its column: `test_parse.py`. Goal 2's guard inputs with their estimates, the
+    allowed cases, each guard class and matrix caps: `test_guard.py`. The hostile corpus
+    (`hostile.txt`, 529 lines, plus 26 built-in huge inputs) with an audit hook recording every
+    event, and four Hypothesis fuzz tests at 2,000 examples (seed printed in the pytest header,
+    `CAS_FUZZ_SEED` repeats it): `test_hostile.py`. The R1 to R4 AST scan, its negative cases and
+    the ruff `S` check: `test_no_dynamic_code.py`. The table equals this plan's D1 list, read
+    from this file: `test_functions_table.py`.
+  - **Audit events.** Parsing and guarding raise no audit event at all, so stage 1's allow-list is
+    empty (`support.ALLOWED_EVENTS`). The guard avoids `id()` for this reason: Python 3.12
+    audits `builtins.id`.
+  - **Choices the plan left open.**
+    - R4 as written forbids every import but `re`, `math`, `dataclasses` and `typing`, which would
+      forbid `guard.py` using `parse.py`'s tree and `parse.py` using the function table. The test
+      allows the sibling modules `functions` (parse, guard) and `parse` (guard), and nothing else.
+    - R1 grants exceptions for `subprocess`, `os` and `ctypes` but does not list them, so the scan
+      treats them as forbidden everywhere else. Two consequences for later stages: `worker.py`
+      needs an exception for `os._exit` (R2 forbids `_` attributes), and `landlock.py` imports
+      `os` and `sys` per stage 2b, while only `ctypes` is excepted. Adjust the test's
+      `EXCEPTIONS` with the stage that needs it.
+    - `re.compile` is `compile` to R1, so the tokenizer scans by hand and uses no regular
+      expression. `is_identifier` is hand-written and tested against the published pattern.
+    - The function table also records each function's argument count (`Min`, `Max`, `gcd` and
+      `lcm` are variadic) and the `capped` caps. D1 lists no cap for `nextprime` and `prevprime`:
+      they get `isprime`'s 200 digits.
+    - A function name with no `(` after it is a symbol (D1: "any other identifier is a
+      `Symbol`"); `sin x` is the two-names error. A relation is allowed only at the top level.
+      `!` parses to a call of `factorial`, so the guard needs no separate rule.
+    - `2e3` and `2E+3` are numbers; `2e` and `2E` are `2*e` and `2*E`.
+    - D2 refinements (two reviews found the first versions unsound; this is the current one). The
+      guard is a first line of defence, built to be conservative for every case the reviews
+      found; it is not a proof, and D3's limits remain the backstop:
+      - A symbol is an exact unit constant (`1`), so the constant parts of an expression with
+        symbols are always sized: `(2x)^(10^6)` is refused like `2^(10^6)`, and `x^(10^6)`,
+        `(x+y+z)^5000` and `exp(x^x^x)` pass. `(x+1)^(10^6)` is refused for the same reason.
+      - Every estimate is meant as an upper bound. It carries a magnitude `mag`, a digit budget for the
+        numerator and denominator that runs through inexact values too (`(pi+1e70)-1e70` collapses
+        to `pi`), the small exact value `val` (up to 64 digits, so `10^6` is known exactly), and an
+        `unb` flag for values that may be arbitrarily large.
+      - A division by an inexact value, `tan`, `cot`, `sec`, `csc`, `coth`, `atanh`, `log` of an
+        inexact value, and `gamma` or `factorial` near a pole or with an unknown argument are
+        unbounded. Unbounded values are fine in arithmetic and refused as an exponent or as an
+        argument of a `digits` or `capped` function. A `floor`, `ceiling` or `Mod` of one is
+        unbounded.
+      - `select` no longer sums signed logs. `Max`, `Min` and `gcd` take the largest input,
+        `lcm` the sum of the inputs' non-negative magnitudes, `floor` and `ceiling` the input plus
+        one, `Mod(a, b)` the magnitude of `b`.
+      - `root(x, n)` takes the exponent `1/n` from the index's value, or from its denominator's
+        digits when the value is unknown, and refuses an inexact index.
+      - `binomial(n, k)` with a negative or fractional `n` is bounded by `2^(|n|+k)` and refuses
+        `k` over 100,000; a list or matrix argument to a function is refused, and a flat list
+        holds at most 400 entries.
+      - For a whole-number base the guard estimates `p/q*log10(base)+1` digits rather than
+        `p/q*digits(base)`, so `isprime(10^199)` is allowed and `10^99998` is the largest power
+        of ten. A constant `exp`, `sinh` or `cosh` of more than about 230,000 is refused
+        (`exp(1000)` is allowed) because its result may be raised to a power.
+      - A negative matrix power `M^(-n)` is sized as the inverse (`rows` times the digits), then
+        the power. How far a matrix with symbolic entries grows under a product is bounded only
+        by D3's limits (stage 2b).
+      - Inverse pairs collapse in SymPy (`sin(asin(z))`, `tan(atan(z))`, `log(exp(z))`,
+        `sin(pi - asin(z))`), so a function's result never claims to be smaller than its
+        arguments: the magnitude and the digit budget pass through every function, and an
+        unbounded value carries its budget instead of 1.
+      - A negative or unknown-sign power of a tiny base is huge: for an exact base the magnitude
+        uses the denominator's digits, for an inexact base the result is unbounded. An exact
+        value's bound for an exponent comes from its numerator's digits (or its small exact
+        value), not from its magnitude estimate.
+      - `floor`, `ceiling`, `Min`, `Max`, `gcd`, `lcm` and `Mod` keep the exact value of small
+        exact inputs, and `binomial(n, k)` with an untracked `k` is bounded by `2^(|n|+k)`.
+      - `floor`, `ceiling`, `Mod`, `gcd` and `lcm` refuse an unbounded argument: they give SymPy an
+        exact integer, and `1/exp(-10^5)` is `exp(10^5)`, far above the budget an unbounded value
+        carries.
+      - The limit is exclusive: a result of 100,000 digits or more is refused (`10^99998` is the
+        largest power of ten).
+      - Conservative refusals: a symbol counts as 1, so `(x+1)^(10^6)` is refused like
+        `2^(10^6)`, and so is `sin(x)^(10^6)`; the error text says so.
+    - Parser: every recursive call adds one to the depth, including the right side of a binary
+      or implicit product, so the depth cap bounds Python's stack for every shape. `x²³` is
+      refused rather than read as `x^(2^3)`.
+    - The AST scan imports from a per-module allowlist (the default is `re`, `math`,
+      `dataclasses`, `typing`, `types` and the package's own modules; `pool.py`, `limits_macos.py`
+      and `landlock.py` get their listed exceptions), so `pkgutil`, `timeit`, `cProfile`,
+      `pydoc`, `posix`, `nt` and the like are refused. It also forbids the names `__builtins__`,
+      `builtins`, `breakpoint`, `attrgetter`, `methodcaller`, `runpy`, `code` and `codeop`, the
+      attributes `modules`, `get_type_hints`, `make_dataclass`, `ForwardRef`, `resolve_name` and
+      `locate`, and scans subpackages. The fuzz seed is the commit's in CI (`GITHUB_SHA`); `CAS_FUZZ_SEED` overrides
+      it. The 100 ms per input check takes the best of three runs, with a 500 ms limit in CI.
+  - **Not covered here.** The corpus runs at parse and guard level only. `test_no_string_to_sympy`
+    and the audit allow-list for the worker are stage 2a. The `python-cas` job's limits tests are
+    stage 2b.
 
 ### Stage 2a: Builder, worker and the audit hook
 
@@ -1108,6 +1209,12 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Status: pending.
 - Handoff notes: record the measured warm-up time, memory and allow-list in the outcome; stage
   2b's default limits and stage 5's warm-up allowance use them.
+  The tree can be 2,000 levels deep (a long `1+1+1+...`), so `build.py` walks it with
+  `parse.postorder`, never recursively (a chain of `!` about 4,000 deep is a valid tree). The AST scan's `EXCEPTIONS` and `R4_ALLOWED` in
+  `tests/test_no_dynamic_code.py` need `os._exit` for `worker.py` and the SymPy names `build.py`
+  imports (see stage 1's outcome).
+  `test_no_string_to_sympy.py` must cover the string-taking methods too (`.subs`, `.solve` and the
+  like called with a string), not only `sympify`, `parse_expr` and `lambdify`.
 
 ### Stage 2b: Front-side pool, Unix limits and Landlock
 
@@ -1150,6 +1257,9 @@ Commands are what CI runs; nothing needs a local Rust build.
   About 650 lines.
 - Status: pending.
 - Handoff notes: on Windows these tests skip; the Windows limits are covered by stages 5 and 7.
+  `imperium_cas/__init__.py` must stay empty, or import nothing: importing the package must not
+  import `pool`, `worker` or the SDK before the Landlock statement. Stage 1 creates it empty and
+  `test_no_dynamic_code.py::test_init_is_empty` enforces it; the AST check covers it.
 
 ### Stage 3: MCP front and the eleven tools
 
@@ -1267,6 +1377,10 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Status: pending.
 - Handoff notes: `windows-sys` features are added to `imperium-ipc` only. No `unsafe` appears
   outside `imperium-ipc`.
+  The broker sends `arm` when the call is handed to the worker, not when the worker reports ready.
+  An unarmed spare therefore has no wall clock, only CPU, memory and active-process limits, so
+  the "never armed" test becomes "an unarmed worker is stopped at the default CPU limit". (D3's
+  `arm` and wall-clock wording, which count from "ready", needs this change when stage 5 edits it.)
 
 ### Stage 6: Managed environment and the CLI
 
@@ -1308,6 +1422,9 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Status: pending.
 - Handoff notes: the real setup runs first in stage 7's `cas_mcp`. Record the measured download
   and disk sizes there.
+  The `.pth` is written as `import site; site.addsitedir("<venv site-packages>")` plus the
+  project's `src` path line, so that `pywin32.pth` is processed; or this stage proves that
+  `pywin32` is never imported by the server (D5 says the `.pth` holds the two paths).
 
 ### Stage 7: Daemon wiring, protocol and the end-to-end test
 
@@ -1367,6 +1484,8 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Status: pending.
 - Handoff notes: take the protocol minor at merge time. `state/create.rs` changes only where
   `session_servers` is called and its notices are merged; the evaluation branch stays as it is.
+  The Windows launch needs the same `.pth` rule as stage 6: `site.addsitedir` of the venv's
+  `site-packages`, so `pywin32.pth` is processed, or a proof that `pywin32` is never imported.
 
 ### Stage 8: Connectors UI, docs and close-out
 

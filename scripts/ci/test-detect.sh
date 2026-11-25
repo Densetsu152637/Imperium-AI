@@ -30,10 +30,10 @@ presence() {
 expect() {
   local what="$1" want="$2" got="$3"
   if [ "$got" != "$want" ]; then
-    echo "FAILED: $what: presence=$got, expected $want" >&2
+    echo "FAILED: $what: got $got, expected $want" >&2
     exit 1
   fi
-  echo "ok: $what: presence=$got"
+  echo "ok: $what: $got"
 }
 
 printf 'more\n' >> docs/notes.md
@@ -52,3 +52,20 @@ git commit -qm lock
 expect "an edit of a watched file" true "$(presence "$(git rev-parse HEAD~1)")"
 expect "an unreadable base" true "$(presence deadbeefdeadbeefdeadbeefdeadbeefdeadbeef)"
 expect "no base" true "$(presence "")"
+
+# The sidecar outputs: each job runs only when its own sidecar exists.
+output() {
+  local out
+  out="$(mktemp)"
+  DIFF_BASE="" GITHUB_OUTPUT="$out" bash "$detect"
+  sed -n "s/^$1=//p" "$out"
+  rm -f "$out"
+}
+expect "no CAS sidecar" false "$(output python_cas)"
+mkdir -p sidecars/cas
+printf '[project]\n' > sidecars/cas/pyproject.toml
+expect "the CAS sidecar" true "$(output python_cas)"
+expect "the media job ignores the CAS sidecar" false "$(output python)"
+mkdir -p sidecars/media
+printf '[project]\n' > sidecars/media/pyproject.toml
+expect "the media sidecar" true "$(output python)"

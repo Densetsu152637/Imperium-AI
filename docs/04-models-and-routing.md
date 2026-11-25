@@ -1037,19 +1037,20 @@ listed but unavailable, as before; the `problem` text says to run the command.
   it is stopped); `remove` runs `rm -rf` on the version's folder inside the distro (a distro that
   is gone is a warning, and the record is dropped), after asking.
 - **Launch.** `wsl.exe -d <distro> --exec env VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
-  <venv>/bin/vllm serve <model folder> --host 127.0.0.1 --served-model-name ... --port <port>`:
-  an argument list, no shell, the folder passed as an argument and not mounted. `env` only sets
-  the no-telemetry variables and `VLLM_HOST_IP`, which a Windows environment variable would
-  not reach inside WSL; a program path containing `=` is refused, since `env` would read it as
-  an assignment. The daemon supervises `wsl.exe`.
+  VLLM_HOST_IP=127.0.0.1 <venv>/bin/vllm serve <model folder> <extras> --host 127.0.0.1
+  --port <port>`: an argument list, no shell, the folder passed as an argument and not
+  mounted. `env` only sets the no-telemetry variables and `VLLM_HOST_IP`, which a Windows
+  environment variable would not reach inside WSL; a program path containing `=` is refused,
+  since `env` would read it as an assignment. The daemon supervises `wsl.exe`.
 - **Model folders** are translated by a pure function: `C:\Models\x` becomes `/mnt/c/Models/x`
   (WSL's default automount root; spaces are fine, being one argument), and
   `\\wsl$\<distro>\...` or `\\wsl.localhost\<distro>\...` becomes the path inside the distro
   (refused when it names another distro). Other UNC paths, paths relative to a drive or to the
   current drive, and `..` are refused with a message, and the start fails before anything runs.
   Only drives the distro auto-mounts under `/mnt/<letter>` are reachable: `subst` drives,
-  mapped network drives and a custom `automount.root` in `wsl.conf` are not. Reading a model from `/mnt/c` is slow (a 9P file system); a copy inside the distro loads
-  faster (add its `\\wsl$\<distro>\...` folder to `models.folders`).
+  mapped network drives and a custom `automount.root` in `wsl.conf` are not. Reading a model
+  from `/mnt/c` is slow (a 9P file system); a copy inside the distro loads faster (add its
+  `\\wsl$\<distro>\...` folder to `models.folders`).
 - **Networking.** vLLM binds `127.0.0.1` inside WSL2, whatever `runtime.vllm.extra_args` say
   (every `--host` argument, abbreviations such as `--hos` included, is dropped and
   `--host 127.0.0.1` is appended last), and the daemon connects to the same port on Windows
@@ -1073,9 +1074,10 @@ listed but unavailable, as before; the `problem` text says to run the command.
   `runtime.vllm.wsl_distro`, else the default); any other command is a Windows executable, which
   cannot run vLLM, and the models stay unavailable.
 - Docker mode, the native Linux path, and `--version` are unchanged. Tested with a fake command
-  runner and a fake `wsl.exe` script (unix-only tests; no WSL, `uv`, vLLM or GPU runs in tests); **not yet verified on
-  hardware**: the first real setup, localhost forwarding, GPU visibility in the distro, and how
-  `pkill` sees vLLM's engine processes are the things to watch.
+  runner and a fake `wsl.exe` script (unix-only tests; no WSL, `uv`, vLLM or GPU runs in
+  tests); **not yet verified on hardware**: the first real setup, localhost forwarding, GPU
+  visibility in the distro, and how `pkill` sees vLLM's engine processes are the things to
+  watch.
 
 ## Hardware awareness
 

@@ -1,0 +1,5 @@
+// expect: lex-ok
+// tokens: kw:let ident:a = ident:model . ident:loop ;! kw:let ident:b = ident:x ?. ident:match ;! kw:let ident:c = ident:Foo :: ident:fn ;!
+let a = model.loop
+let b = x?.match
+let c = Foo::fn

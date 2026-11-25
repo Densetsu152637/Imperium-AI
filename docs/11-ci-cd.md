@@ -27,6 +27,7 @@ always-running `CI gate` job fails if any job failed, so it can be the single re
 | `rust`      | `Cargo.toml` exists  | fmt, clippy (`-D warnings`), tests on Linux, Windows, macOS   |
 | `web`       | `package.json` exists | pnpm install (frozen), lint, typecheck, test, build          |
 | `python`    | `sidecars/media/pyproject.toml` exists | uv sync (locked), ruff, pytest              |
+| `python-cas` | `sidecars/cas/pyproject.toml` exists | uv sync (locked, no build), ruff check and format, pytest on Linux, Windows, macOS |
 
 On Linux the `rust` job's tests also exercise how the daemon identifies the desktop app for plugin
 approvals ([06](06-extensibility.md#plugin-marketplaces)): pidfds from the socket (`SO_PEERPIDFD`,
