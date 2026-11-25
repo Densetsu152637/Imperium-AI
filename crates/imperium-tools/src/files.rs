@@ -3,21 +3,56 @@ use std::path::Path;
 use crate::{ToolError, Workspace, remote_files};
 
 /// Largest text returned to the model from one read, in characters (the line numbers and
-/// notes count; a longer line is cut where this ends).
+/// notes count), and the budget of a read that gives a `limit`.
 const MAX_READ_CHARS: usize = 100_000;
 
 /// Lines one read returns when the call gives no `limit`, so a small model's context is not
 /// filled by a large file; a note says how to read on.
-const DEFAULT_READ_LINES: usize = 500;
+const DEFAULT_READ_LINES: usize = 2000;
+
+/// Character budget of a read with no `limit` and no known context window.
+const DEFAULT_READ_BUDGET: usize = 32_000;
+
+/// Smallest character budget a window can give a read with no `limit`.
+const MIN_READ_BUDGET: usize = 8_000;
 
 /// Entries one `list_dir` call returns; a longer folder is paged with `offset`.
 const MAX_LIST_ENTRIES: usize = 500;
 
+/// What one read may return, in characters: with an explicit `limit` the ceiling; without
+/// one, about an eighth of the agent's context window (4 characters a token, at least
+/// [`MIN_READ_BUDGET`]), or [`DEFAULT_READ_BUDGET`] when the window is not known.
+fn read_budget(limit: Option<usize>, window_tokens: Option<u64>) -> usize {
+    if limit.is_some() {
+        return MAX_READ_CHARS;
+    }
+    match window_tokens {
+        Some(window) => usize::try_from(window / 8 * 4)
+            .unwrap_or(usize::MAX)
+            .clamp(MIN_READ_BUDGET, MAX_READ_CHARS),
+        None => DEFAULT_READ_BUDGET,
+    }
+}
+
+/// [`read_file_in`] for a caller that does not know the agent's context window.
+#[cfg(test)]
 pub(crate) async fn read_file(
     workspace: &Workspace,
     path: &str,
     offset: Option<usize>,
     limit: Option<usize>,
+) -> Result<String, ToolError> {
+    read_file_in(workspace, path, offset, limit, None).await
+}
+
+/// Reads a text file as numbered lines. `window_tokens` is the calling agent's context window,
+/// when known; it sizes the character budget of a read that gives no `limit`.
+pub(crate) async fn read_file_in(
+    workspace: &Workspace,
+    path: &str,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    window_tokens: Option<u64>,
 ) -> Result<String, ToolError> {
     let bytes = if workspace.runtime().is_some() {
         remote_files::read_bytes(workspace, path).await?
@@ -36,6 +71,7 @@ pub(crate) async fn read_file(
             .map_err(|error| ToolError::Io(format!("{path}: {error}")))?
     };
     let (text, note) = readable_text(bytes, path)?;
+    let budget = read_budget(limit, window_tokens);
     let start = offset.unwrap_or(1).max(1) - 1;
     let total = text.lines().count();
     let lines = text
@@ -45,46 +81,46 @@ pub(crate) async fn read_file(
         .enumerate();
     let mut out = String::new();
     if let Some(note) = note {
-        out.push_str(&format!(
-            "[note: {note}]
-"
-        ));
+        out.push_str(&format!("[note: {note}]\n"));
     }
     let mut chars = out.chars().count();
-    // The last line number shown (whole or cut), and whether the character budget ended the read.
+    // The last whole line shown, and why the read stopped early, if the budget did it.
     let mut last = start;
-    let mut cut = false;
+    let mut stopped_by_budget = false;
+    let mut oversize = false;
     for (index, line) in lines {
-        let numbered = format!(
-            "{:>6}	{line}
-",
-            start + index + 1
-        );
+        let number = start + index + 1;
+        let numbered = format!("{number:>6}\t{line}\n");
         let length = numbered.chars().count();
-        last = start + index + 1;
-        if chars + length > MAX_READ_CHARS {
-            // A line past the budget is cut where the budget ends, so one huge line (a minified
-            // file) still shows its start.
-            out.extend(numbered.chars().take(MAX_READ_CHARS - chars));
-            cut = true;
+        if chars + length > budget {
+            if last == start {
+                // The first line alone is past the budget (a minified file): its start is shown.
+                out.extend(numbered.chars().take(budget.saturating_sub(chars)));
+                out.push('\n');
+                oversize = true;
+            }
+            stopped_by_budget = true;
             break;
         }
         out.push_str(&numbered);
         chars += length;
+        last = number;
     }
-    if last == start {
-        out.push_str(&format!("[no lines in that range; the file has {total}]"));
-    } else if cut {
+    if oversize {
         out.push_str(&format!(
-            "
-[truncated: lines {}-{last} of {total} at the character limit; read a smaller range with offset and limit]
-",
+            "[truncated: line {} is longer than the {budget}-character read budget; use grep to find the part you need]\n",
             start + 1
         ));
+    } else if last == start {
+        out.push_str(&format!("[no lines in that range; the file has {total}]"));
     } else if last < total {
+        let why = if stopped_by_budget {
+            format!("; stopped at the {budget}-character read budget")
+        } else {
+            String::new()
+        };
         out.push_str(&format!(
-            "[lines {}-{last} of {total}; use offset={} to read more]
-",
+            "[lines {}-{last} of {total}{why}; use offset={} to read more]\n",
             start + 1,
             last + 1
         ));
@@ -229,14 +265,10 @@ pub(crate) fn page_listing(shown: &str, entries: &[String], offset: usize) -> St
         return format!("[no entries past offset {offset} ({total} in all)]");
     }
     let last = offset + page.len();
-    let mut out = page.join(
-        "
-",
-    );
+    let mut out = page.join("\n");
     if last < total {
         out.push_str(&format!(
-            "
-[entries {}-{last} of {total}; use offset={last} to see more]",
+            "\n[entries {}-{last} of {total}; use offset={last} to see more]",
             offset + 1
         ));
     }
@@ -295,11 +327,10 @@ mod tests {
         let read = read_file(&workspace, "log.txt", None, None).await.unwrap();
         assert_eq!(read, "     1\tone\n     2\ttwo \u{e9}\n");
         // BOM-less UTF-16 is valid UTF-8 full of NULs: binary, not garbage.
-        let bomless: Vec<u8> = "hello
-"
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect();
+        let bomless: Vec<u8> = "hello\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
         std::fs::write(dir.path().join("nobom.txt"), bomless).unwrap();
         assert!(matches!(
             read_file(&workspace, "nobom.txt", None, None).await,
@@ -362,14 +393,16 @@ mod tests {
         assert!(read.contains("[truncated:"));
         assert!(read.chars().count() < MAX_READ_CHARS + 300);
         // Many long lines stop at the budget too (a limit above the default line cap).
-        let lines = "y".repeat(99)
-            + "
-";
+        let lines = "y".repeat(99) + "\n";
         std::fs::write(dir.path().join("many.txt"), lines.repeat(2000)).unwrap();
         let read = read_file(&workspace, "many.txt", None, Some(2000))
             .await
             .unwrap();
-        assert!(read.contains("[truncated: lines 1-"), "{read}");
+        assert!(read.contains("[lines 1-"), "{read}");
+        assert!(
+            read.contains("-character read budget; use offset="),
+            "{read}"
+        );
         assert!(read.chars().count() < MAX_READ_CHARS + 200);
         let small = read_file(&workspace, "many.txt", Some(1), Some(2))
             .await
@@ -537,57 +570,98 @@ mod tests {
     }
 
     fn numbered(count: usize) -> String {
-        (1..=count)
-            .map(|n| {
-                format!(
-                    "row {n}
-"
-                )
-            })
-            .collect()
+        (1..=count).map(|n| format!("row {n}\n")).collect()
     }
+
+    /// A window big enough that the character budget is the 100,000-character ceiling.
+    const BIG_WINDOW: Option<u64> = Some(1_000_000);
 
     #[tokio::test]
     async fn a_read_without_a_limit_stops_at_the_default_line_cap_with_a_note() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = Workspace::new(dir.path()).unwrap();
-        std::fs::write(dir.path().join("big.txt"), numbered(1200)).unwrap();
-        let read = read_file(&workspace, "big.txt", None, None).await.unwrap();
+        std::fs::write(dir.path().join("big.txt"), numbered(5000)).unwrap();
+        let read = read_file_in(&workspace, "big.txt", None, None, BIG_WINDOW)
+            .await
+            .unwrap();
+        assert!(read.contains("  2000\trow 2000\n"), "{read}");
+        assert!(!read.contains("row 2001"), "{read}");
         assert!(
-            read.contains(
-                "   500	row 500
-"
-            ),
-            "{read}"
-        );
-        assert!(!read.contains("row 501"), "{read}");
-        assert!(
-            read.contains("[lines 1-500 of 1200; use offset=501 to read more]"),
+            read.contains("[lines 1-2000 of 5000; use offset=2001 to read more]"),
             "{read}"
         );
         // Following the note reads the next page, and the last page has no note.
-        let next = read_file(&workspace, "big.txt", Some(501), None)
+        let next = read_file_in(&workspace, "big.txt", Some(2001), None, BIG_WINDOW)
             .await
             .unwrap();
-        assert!(
-            next.starts_with(
-                "   501	row 501
-"
-            ),
-            "{next}"
-        );
-        assert!(next.contains("[lines 501-1000 of 1200; use offset=1001 to read more]"));
-        let last = read_file(&workspace, "big.txt", Some(1001), None)
+        assert!(next.starts_with("  2001\trow 2001\n"), "{next}");
+        assert!(next.contains("[lines 2001-4000 of 5000; use offset=4001 to read more]"));
+        let last = read_file_in(&workspace, "big.txt", Some(4001), None, BIG_WINDOW)
             .await
             .unwrap();
-        assert!(
-            last.contains(
-                "  1200	row 1200
-"
-            ),
-            "{last}"
-        );
+        assert!(last.contains("  5000\trow 5000\n"), "{last}");
         assert!(!last.contains("[lines"), "{last}");
+    }
+
+    #[tokio::test]
+    async fn the_character_budget_follows_the_window_and_stops_on_a_whole_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        // 400 lines of 400 characters; each numbered line is 408 characters.
+        let line = "x".repeat(400);
+        std::fs::write(dir.path().join("wide.txt"), format!("{line}\n").repeat(400)).unwrap();
+        // A small window gets the 8,000-character floor: 19 whole lines fit, the 20th does not.
+        let small = read_file_in(&workspace, "wide.txt", None, None, Some(8_000))
+            .await
+            .unwrap();
+        assert!(small.contains("    19\t"), "{small}");
+        assert!(!small.contains("    20\t"), "{small}");
+        assert!(
+            small.ends_with(
+                "[lines 1-19 of 400; stopped at the 8000-character read budget; use offset=20 to read more]\n"
+            ),
+            "{small}"
+        );
+        // Without a known window the budget is 32,000 characters: 78 lines.
+        let unknown = read_file_in(&workspace, "wide.txt", None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            unknown.contains("[lines 1-78 of 400; stopped at the 32000-character read budget; use offset=79 to read more]"),
+            "{unknown}"
+        );
+        // A window of 160,000 tokens gives 80,000 characters.
+        let large = read_file_in(&workspace, "wide.txt", None, None, Some(160_000))
+            .await
+            .unwrap();
+        assert!(large.contains("; stopped at the 80000-character read budget; use offset="));
+        // An explicit limit keeps the ceiling whatever the window.
+        let limited = read_file_in(&workspace, "wide.txt", None, Some(400), Some(8_000))
+            .await
+            .unwrap();
+        assert!(limited.contains("stopped at the 100000-character read budget"));
+        // The next offset the note gives continues exactly where the read stopped.
+        let next = read_file_in(&workspace, "wide.txt", Some(20), None, Some(8_000))
+            .await
+            .unwrap();
+        assert!(next.starts_with("    20\t"), "{next}");
+    }
+
+    #[tokio::test]
+    async fn one_line_past_the_budget_points_to_grep() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        std::fs::write(dir.path().join("min.js"), "z".repeat(50_000) + "\nnext\n").unwrap();
+        let read = read_file_in(&workspace, "min.js", None, None, Some(8_000))
+            .await
+            .unwrap();
+        assert!(read.starts_with("     1\tzzz"), "{read}");
+        assert!(
+            read.ends_with(
+                "[truncated: line 1 is longer than the 8000-character read budget; use grep to find the part you need]\n"
+            ),
+            "{read}"
+        );
     }
 
     #[tokio::test]
@@ -598,20 +672,8 @@ mod tests {
         let read = read_file(&workspace, "f.txt", Some(10), Some(5))
             .await
             .unwrap();
-        assert!(
-            read.starts_with(
-                "    10	row 10
-"
-            ),
-            "{read}"
-        );
-        assert!(
-            read.contains(
-                "    14	row 14
-"
-            ),
-            "{read}"
-        );
+        assert!(read.starts_with("    10\trow 10\n"), "{read}");
+        assert!(read.contains("    14\trow 14\n"), "{read}");
         assert!(!read.contains("row 15"), "{read}");
         assert!(read.contains("[lines 10-14 of 40; use offset=15 to read more]"));
         // A range that reaches the end, and a whole small file, carry no note.
@@ -629,14 +691,7 @@ mod tests {
     }
 
     fn numbered_lines(count: usize) -> String {
-        (1..=count)
-            .map(|n| {
-                format!(
-                    "{n:>6}	row {n}
-"
-                )
-            })
-            .collect()
+        (1..=count).map(|n| format!("{n:>6}\trow {n}\n")).collect()
     }
 
     #[tokio::test]
@@ -647,30 +702,12 @@ mod tests {
             std::fs::write(dir.path().join(format!("f{n:04}.txt")), "").unwrap();
         }
         let first = list_dir(&workspace, ".", None).await.unwrap();
-        assert!(
-            first.starts_with(
-                "f0000.txt
-"
-            ),
-            "{first}"
-        );
-        assert!(
-            first.contains(
-                "f0499.txt
-"
-            ),
-            "{first}"
-        );
+        assert!(first.starts_with("f0000.txt\n"), "{first}");
+        assert!(first.contains("f0499.txt\n"), "{first}");
         assert!(!first.contains("f0500.txt"), "{first}");
         assert!(first.ends_with("[entries 1-500 of 620; use offset=500 to see more]"));
         let second = list_dir(&workspace, ".", Some(500)).await.unwrap();
-        assert!(
-            second.starts_with(
-                "f0500.txt
-"
-            ),
-            "{second}"
-        );
+        assert!(second.starts_with("f0500.txt\n"), "{second}");
         assert!(second.contains("f0619.txt"), "{second}");
         assert!(!second.contains("use offset"), "{second}");
         let past = list_dir(&workspace, ".", Some(900)).await.unwrap();

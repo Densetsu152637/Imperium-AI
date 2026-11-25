@@ -4,7 +4,7 @@
 
 | Tool group  | Tools                                                     | Notes                                            |
 | ----------- | --------------------------------------------------------- | ------------------------------------------------ |
-| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match unique edits; reads numbered, capped at 500 lines by default and paged with `offset`/`limit`; `list_dir` capped at 500 entries and paged with `offset`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
+| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match unique edits; reads numbered, capped at 2,000 lines and a window-sized character budget by default and paged with `offset`/`limit`; `list_dir` capped at 500 entries and paged with `offset`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
 | Execution   | `run_command`, `command_output`, `command_stop` (implemented) | Runs in the project root via `cmd /C` (the line passed verbatim) or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr; `background: true` [returns a process id at once](#background-commands-implemented) |
 | Web         | `web.search`, `web.fetch`                                 | Search providers: SearXNG (self-hosted), Brave, Tavily, Kagi, Exa; pluggable. Pages are [cached](#fetch-cache-and-robotstxt-implemented) and `robots.txt` is honoured |
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
@@ -947,10 +947,16 @@ note); a UTF-8 file with invalid bytes and no NUL bytes is read with U+FFFD for 
 (not to rewrite the file from that text: `edit_file` refuses it), a file with NUL bytes (in the
 first 8 KB when the bytes are valid UTF-8, so BOM-less UTF-16 is not shown as garbage) is refused
 as binary, and a folder is refused with a pointer to `list_dir`, in a remote workspace too.
-A read without a `limit` returns at most 500 lines, and a note (`[lines 1-500 of 1200; use offset=501
-to read more]`) says where to continue; a read that stops short of the end says the same. One read also
-returns at most 100,000 characters (line numbers and notes included); a longer line is
-cut where that ends, with a note to page by `offset` and `limit`. `list_dir` returns at most 500 entries
+A read without a `limit` returns at most 2,000 lines and also stops at a character budget sized
+from the calling agent's context window: about an eighth of the window in tokens at 4 characters
+a token (at least 8,000 characters, at most 100,000), or 32,000 characters when the window is not
+known. The engine passes the window to the call (`Invocation::execute_in`); it is not a model-visible
+parameter. The budget ends the read on a whole line, and a note gives the exact offset to continue
+(`[lines 1-19 of 400; stopped at the 8000-character read budget; use offset=20 to read more]`); a
+read that stops short for any reason says the same. A first line past the budget is shown cut, with
+a note to use `grep` for the part needed. A read with an explicit `limit` keeps the 100,000-character
+ceiling (line numbers and notes included). The defaults apply to every model, hosted ones too, and to
+calls through the MCP bridge and the Claude harness (which pass no window, so 32,000 characters). `list_dir` returns at most 500 entries
 per call, sorted, with a note (`use offset=500 to see more`); its optional `offset` skips entries. Edits stay UTF-8. `tool.before`
 and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
 (`path`, `offset`, `limit`) whatever spelling the model used. Each reading is checked like any

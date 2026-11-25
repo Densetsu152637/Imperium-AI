@@ -244,3 +244,34 @@ async fn a_real_wsl_distribution_runs_commands_and_file_tools() {
     .unwrap();
     assert!(read.contains("from windows"), "{read}");
 }
+
+#[tokio::test]
+async fn a_long_remote_folder_listing_is_paged_with_offset() {
+    let fake = Arc::new(Fake::default());
+    let workspace = Workspace::remote(
+        Remote::Docker {
+            container: "web".into(),
+        },
+        &["/app".into()],
+        fake.clone(),
+    )
+    .unwrap();
+    let names: String = (0..620).map(|n| format!("f{n:04}.txt\n")).collect();
+    fake.answer(&names);
+    let first = call(&workspace, "list_dir", r#"{"path":"."}"#)
+        .await
+        .unwrap();
+    assert!(first.starts_with("f0000.txt\n"), "{first}");
+    assert!(first.contains("f0499.txt\n"), "{first}");
+    assert!(!first.contains("f0500.txt"), "{first}");
+    assert!(first.ends_with("[entries 1-500 of 620; use offset=500 to see more]"));
+    let second = call(&workspace, "list_dir", r#"{"path":".","offset":500}"#)
+        .await
+        .unwrap();
+    assert!(second.starts_with("f0500.txt\n"), "{second}");
+    assert!(second.ends_with("f0619.txt"), "{second}");
+    let past = call(&workspace, "list_dir", r#"{"path":".","offset":900}"#)
+        .await
+        .unwrap();
+    assert_eq!(past, "[no entries past offset 900 (620 in all)]");
+}

@@ -423,6 +423,16 @@ impl Invocation {
     }
 
     pub async fn execute(&self, workspace: &Workspace) -> Result<String, ToolError> {
+        self.execute_in(workspace, None).await
+    }
+
+    /// Runs the call for an agent whose model has a context window of `window_tokens`, when
+    /// known; a `read_file` with no `limit` sizes its character budget from it.
+    pub async fn execute_in(
+        &self,
+        workspace: &Workspace,
+        window_tokens: Option<u64>,
+    ) -> Result<String, ToolError> {
         // An agent limited to local files runs no commands, whatever offered or approved the call.
         if imperium_policy::SHELL_TOOLS.contains(&self.tool_name())
             && !workspace.profile().allows_shell()
@@ -436,7 +446,7 @@ impl Invocation {
                 path,
                 offset,
                 limit,
-            } => files::read_file(workspace, path, *offset, *limit).await,
+            } => files::read_file_in(workspace, path, *offset, *limit, window_tokens).await,
             Invocation::WriteFile { path, content } => {
                 files::write_file(workspace, path, content).await
             }
@@ -491,7 +501,7 @@ pub fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "read_file".into(),
-            description: "Read a text file (UTF-8, or UTF-16 with a byte order mark). Lines are numbered; returns 500 lines unless limit is set; use offset (1-based line) and limit to read more.".into(),
+            description: "Read a text file (UTF-8, or UTF-16 with a byte order mark). Lines are numbered; returns up to 2000 lines unless limit is set; use offset (1-based line) and limit to read more.".into(),
             parameters: json!({"type": "object", "properties": {
                 "path": path, "offset": {"type": "integer"}, "limit": {"type": "integer"}
             }, "required": ["path"]}),
@@ -711,7 +721,7 @@ mod tests {
             let spec = specs.iter().find(|spec| spec.name == name).unwrap();
             format!("{} {}", spec.description, spec.parameters)
         };
-        assert!(text("read_file").contains("500 lines"));
+        assert!(text("read_file").contains("2000 lines"));
         assert!(text("list_dir").contains("500 per call"));
         assert!(text("list_dir").contains("offset"));
         assert!(text("glob").contains("Default 100"));
