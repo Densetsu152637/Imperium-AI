@@ -1,5 +1,5 @@
 //! Test binary: a worker that speaks the protocol wrongly, to prove the daemon's event allowlist
-//! kills it. The first argument names the misbehaviour. It answers `Configure` with `Ok`, then
+//! kills it. The last argument names the misbehaviour (the driver puts `--memory-mb` first). It answers `Configure` with `Ok`, then
 //! misbehaves on the first `Feed`. Built only with `test-support`.
 
 use std::{
@@ -23,7 +23,7 @@ fn send(event: &pb::WorkerEvent) {
 }
 
 fn main() -> ExitCode {
-    let mode = std::env::args().nth(1).unwrap_or_default();
+    let mode = std::env::args().last().unwrap_or_default();
     let mut reader = FrameReader::new(io::stdin().lock());
 
     // Configure -> Ok.
