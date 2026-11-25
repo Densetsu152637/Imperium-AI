@@ -241,6 +241,13 @@ impl Hooks {
         self.hooks.is_empty()
     }
 
+    /// Whether any hook would run for `event` and `tool` (what [`Hooks::run`] would run).
+    pub fn applies(&self, event: HookEvent, tool: Option<&str>) -> bool {
+        self.hooks
+            .iter()
+            .any(|hook| hook.event == event && hook.matches(tool))
+    }
+
     pub fn len(&self) -> usize {
         self.hooks.len()
     }

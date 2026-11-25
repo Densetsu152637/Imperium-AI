@@ -20,8 +20,9 @@
    and the two loader tools, see [reactive tool loading](#reactive-tool-loading-implemented)),
    and conversation.
 2. Call the model (streaming). Record tokens, latency, throughput, and cost as they arrive.
-3. Execute tool calls. Independent calls run concurrently; each passes through hooks and
-   permission checks ([06](06-extensibility.md#hooks)).
+3. Execute tool calls. Each passes through hooks and permission checks
+   ([06](06-extensibility.md#hooks)), in call order; a run of file reads in one step reads
+   at the same time ([parallel reads](#parallel-reads-implemented)).
 4. Append results; repeat until the model ends its turn, the budget is exhausted, or the task
    is cancelled.
 
@@ -232,6 +233,52 @@ the client (`crates/imperium-engine/src/agent/call_repair.rs`), without a model 
   model's calls, hosted ones included, before the assistant message is stored, so the history
   keeps the repaired arguments.
 
+## Parallel reads (implemented)
+
+When a model step makes several tool calls, the file reads among them read at the same time
+instead of one after another (`harness.parallel_reads`, default 4, at most 8; 0 or 1 turns it
+off). Only the reading is concurrent: the calls still go through `run_tool` one by one in call
+order, so the permission judge, `tool.before`/`tool.after` hooks, approvals, events and the
+tool messages sent back to the model are what they were. A run with the setting off sends the
+same messages, provided the files do not change meanwhile: only a read that is still running when
+a file changes (a command or another agent writing at that moment) could see a different state
+than in a sequential run.
+
+- **Which calls.** The built-in `read_file`, `list_dir`, `glob` and `grep`
+  (`Invocation::is_file_read`; `command_output` and `command_stop` count as reads for
+  permissions but depend on or stop a running process, so they stay in order). A call joins a
+  run only when the permission judge lets it run without asking (`CallKind::Read` and
+  `Decision::Run`), no `tool.before` or `tool.after` hook matches its tool, and none of the
+  checks `run_tool_once` makes first (`early_refusal`, shared with the run check: a fork's, a launcher's, the agent's tool list, permission
+  profile and dropped tools) would refuse it. Provider tools (`web_fetch`, MCP, browser), memory
+  tools and `tool_search` are not run ahead: their kind is `Other`, which carries no read-only
+  promise.
+- **Runs, not steps.** The loop looks at the calls from its current position and takes the
+  maximal run of such reads (two or more, with distinct call ids). Anything else (a write, a
+  command, a spawn, a read that asks, a hooked read) ends the run and runs in its place, so a
+  read after a write still sees the write. After that call the loop looks for the next run.
+- **Execution.** The run reads with at most `parallel_reads` reads in flight and keeps each
+  output by call id. Each call then runs through `run_tool` in order and takes its kept output
+  where it would have read the file; if the call it runs is not the one the output was kept for
+  (its arguments differ), the kept output is dropped and the call reads again. A read that was
+  run ahead and then refused (a rule changed meanwhile) leaves nothing visible: its output is
+  discarded. A read that asks when its turn comes (a rule or the permission mode changed since
+  the run) drops its kept output and reads the file again after the approval.
+- **Events.** `tool_started` and `tool_finished` stay in call order, once per call id, as for
+  sequential calls; the reported duration is how long the read took. Nothing is announced before
+  its turn.
+- **Stopping.** If the session is stopped while a run is reading, the reads still running are
+  dropped and their calls are read again in call order when their turns come, exactly as a
+  sequential run would (a stop does not end the loop's tool round, so no result changes). Reads
+  that already finished keep their output. A `glob` or `grep` already walking the tree on the
+  blocking pool cannot be aborted: it finishes in the background and its result is discarded.
+  The same happens to a read whose task panicked. A session already stopped when the run would
+  start runs its calls as before.
+- **Budgets.** Tokens, steps and cost are counted as before: only the results the model sees
+  count, and they are the same.
+- **Evals.** A session's default is 4, but an eval run's is 0 so comparisons are not changed
+  unless the run sets the `parallel_reads` flag ([flags](#harness-variants)).
+
 ## Reactive tool loading (implemented)
 
 Roadmap [item 61](12-roadmap.md#next-in-order); the design and its reasons are in
@@ -429,6 +476,53 @@ section labels (`Context:`) and role preambles (`You are a subagent…`), droppi
 titles have none: records derive one from the brief, and the desktop shows the brief's first
 line. `task_spawned`, `task_resumed`, `task_paused`, and `task_finished` also carry `at_ms`
 (Unix milliseconds) so clients can show how long a subagent has run.
+
+### Large tool results
+
+**Implemented** (roadmap R2.5). `read_file` and `list_dir` bound their own output to the agent's
+window, but `run_command`, `grep` with context, `web_fetch`, MCP tools, `command_output` and the
+rest can still return a great deal. A result longer than a threshold is written to a file in the
+session's results folder, `<data>/sessions/<session id>.results/`, and the conversation keeps
+only a notice: the line and character counts, the path ("Full output saved to <path>; read
+ranges with `read_file` (offset and limit are in lines) or search it with `grep`"), the first and
+last lines, and how many lines were left out. The preview is bounded (half the threshold, at most
+6,000 characters, two thirds of it from the head; one very long line is cut).
+
+- **Threshold.** A sixteenth of the agent's own window in tokens, at four characters a token:
+  8,192 characters at a 32,768-token window, 32,768 at 128,000, never below
+  `harness.result_spill_min_chars` (4,000) and never above 64,000. The window is the one
+  `expected_window()` finds for the agent's model (the table's, else what a local runtime plans,
+  else 32,768 tokens), so a subagent on a small model saves earlier than the root.
+- **Every agent.** The root and subagents (read-only and writer alike) save their results the
+  same way; the folder is a read-only path grant of the session's workspace, so `read_file`,
+  `grep` and commands can read it wherever the session's folders are. A session on a remote
+  runtime keeps its results in the conversation, as the runtime cannot read this machine's folder.
+- **Left alone.** `read_file` and `list_dir` (already bounded, and reading the saved file would
+  save it again), `context_load` and `load_skill` (workflow context that compaction keeps
+  verbatim), and `tool_search`; any result under the threshold, errors included; and a result
+  the root would store as an artefact (above). A failed write keeps the result in the
+  conversation.
+- **Durable.** The notice, with the path, is what the conversation and its saved copy hold, so a
+  resumed session still has a valid path. Archiving keeps the folder; deleting the session
+  deletes it. Saved files are not compacted away or cleaned earlier: they are the session's.
+- **Not worth it.** A result whose notice would be more than 70 % of its size stays whole. A
+  result that began with an error keeps its first line ahead of the notice.
+- **The marker.** Every notice starts with (after the error line, if any) the stable string
+  `[spilled tool result]` (`imperium_engine::SPILL_MARKER`) and, in the same notice, the words `Full output saved to` (`imperium_engine::SAVED_TO`). Code that clears or rewrites old
+  tool results must leave a result that contains it alone, as the notice is already short and
+  its path is the only way back to the output.
+- **Agent tools.** The agent-protocol tools (`await_tasks`, `spawn_agent`, `ask_agent`,
+  `delegate_chunks`, `list_agents`, `ask_user`, `update_plan`, and the like) and the memory tools
+  are never saved: their results are other agents' reports, answers or notes.
+- **Local files only.** A session limited to local files may still read its own results folder
+  (read-only, like its scratch folder); no other path outside its folders opens.
+- **Branches and rewinds.** A branched, forked or rewound session gets its own copy of the
+  parent's results folder, and the copied conversation names the copy, so deleting the parent
+  leaves the child's paths valid.
+- **The prompt.** The folder is not named in the system prompt (its path is per session), so the
+  prompt is identical with the setting on or off.
+- **Settings.** `harness.result_spill` (on by default) and `harness.result_spill_min_chars`.
+  Evaluations take the `result_spill` flag instead, default off.
 
 ### Large inputs and `delegate_chunks`
 
@@ -680,8 +774,10 @@ turn. The desktop shows it in the session's *Context and outputs* section
   delimiters is backslash-escaped, so no item can end the block or split itself. The carried
   context counts against the budget, so a conversation whose kept context alone is too large is
   refused like one whose system prompt is.
-- Large tool outputs are stored as artefacts; the model receives a truncated view plus a
-  handle it can page through.
+- Large tool outputs never fill the conversation: one past a sixteenth of the agent's window is
+  saved to a file and the model keeps a preview and the path ([large tool
+  results](#large-tool-results)); one that would fill the root's window is an artefact
+  ([large inputs](#large-inputs-and-delegate_chunks)).
 
 ## Sessions waiting for a model
 
@@ -901,7 +997,9 @@ outside the session's folders or one a permission rule guards is reported and no
 
 - **Stop:** `session.control` with `action: "stop"` emits `work_stopped` from the root. The
   root and every subagent (including `delegate_chunks` agents) halt at their next safe point,
-  before their next model call. A tool call in flight finishes first. A model request in
+  before their next model call. A tool call in flight finishes first (reads running together in a
+  [parallel run](#parallel-reads-implemented) are dropped and read again in order, with the
+  same results). A model request in
   flight is cancelled (a notice says so) and sent again on resume. While halted, an agent
   holds no local-model slot: it is asleep to the runtime (`waiting`), which may swap the model
   out and save the slot. `hold_while_stopped` in the engine is the single place where an
@@ -1214,7 +1312,13 @@ true), `attended` (default false), `harness` (`on`, `off`, `auto`; the aids need
 `attended=true`), `tool_loading` (`on`, `off`, `auto`, default `off`; `auto` is on with
 `--local`: the fixed tool list of `harness.tool_loading`, see
 [reactive tool loading](#reactive-tool-loading-implemented), is offered instead of every
-tool) and `clear_stale_results` (default true: `harness.clear_stale_results`, for A/B runs). An
+tool), `clear_stale_results` (default true: `harness.clear_stale_results`, for A/B runs),
+`result_spill` (`true` or `false`, default `false`: [large tool results](#large-tool-results)
+saved to a file; unlike `harness.result_spill` it is off unless asked for, so evaluations stay
+comparable with earlier baselines) and
+`parallel_reads` (0 to 8, default 0 for evals: `harness.parallel_reads`, see
+[parallel reads](#parallel-reads-implemented); unlike a session's default of 4, off unless a run
+asks for it). An
 unknown flag is an error. The variant id and a `config_hash` (over the edits, flags and overlay,
 not the name) are in the output next to the prompt hash.
 

@@ -1019,10 +1019,12 @@ change anything are that mutation and `disablePullRequestAutoMerge`.
   strict `owner/name`, or a number that is not positive, is skipped with a warning, and past 100
   entries the oldest are dropped with a warning. The first failure in a daemon run is sent as an
   `autofix.event` with status `failed` ("auto-merge could not be turned off yet ... Imperium
-  will try again"); the desktop app shows it as a toast and, while it is in the background, a
-  system notification (text only, an identical failure is shown at most once in 10 minutes), and
-  the phone page shows it too. Other clients see the notification only if they handle it. A push by the daemon for a bound branch is refused when GitHub is not
-  available to check.
+  will try again"); the desktop app shows it as a toast and a system notification per the
+  user's notification settings (`notifyFailed`, `notifyOnlyInBackground`; text only, an
+  identical failure is shown at most once in 10 minutes, at most 50 distinct failures are
+  remembered, and system notifications are at least 5 seconds apart), and the phone page shows
+  it too. Other clients see the notification only if they handle it. A push by the daemon for
+  a bound branch is refused when GitHub is not available to check.
 - **Where it is not offered**, with the reason on the card: a draft (GitHub refuses it), a
   repository that does not allow auto-merge, a repository whose merge settings the token cannot
   read (a token without push access gets no `allow_*` flags; that is "cannot be enabled here",

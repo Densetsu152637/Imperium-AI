@@ -48,6 +48,7 @@ mod edits;
 mod effort_policy;
 mod fork;
 mod memory;
+mod parallel;
 mod prompts;
 mod sampling;
 mod specs;
@@ -87,6 +88,7 @@ use crate::harness::{self, SessionState, StateUpdate};
 use crate::instructions;
 use crate::queue::{Inbox, QueueError, steering_text};
 use crate::session::{SessionMemory, Shared, lock};
+use crate::spill;
 use crate::{ResolvedModel, TaskRequest, escalate, route, route_noted};
 use imperium_api::{LocalLease, LocalModels, LocalPresence};
 
@@ -233,6 +235,9 @@ pub(crate) struct Agent {
     rewritten_from: Mutex<Option<String>>,
     /// The arguments the latest call ran with when a hook rewrote them.
     ran_rewritten: Mutex<Option<String>>,
+    /// Outputs of a step's file reads that ran ahead of their turn, by call id, with the call
+    /// they belong to (see [`parallel`]); empty outside a step's tool round.
+    prefetched: Mutex<HashMap<String, parallel::Kept>>,
     /// The root agent's structured state (see [`harness`]); read back from the conversation
     /// when it is restored.
     state: SessionState,
@@ -352,11 +357,18 @@ impl Agent {
                 imperium_tools::plain_path(scratch)
             ));
         }
-        // Paths outside the environment that grants open (package caches, toolchains).
+        // Paths outside the environment that grants open (package caches, toolchains). The
+        // folder of saved tool results is named where a result is saved, not here: its path
+        // is the session's own, and would make every session's prompt differ.
+        let results = shared
+            .spill_dir
+            .as_ref()
+            .and_then(|dir| std::fs::canonicalize(dir).ok());
         let grants: Vec<String> = workspace
             .grants()
             .iter()
             .filter(|grant| workspace.scratch() != Some(grant.path.as_path()))
+            .filter(|grant| results.as_deref() != Some(grant.path.as_path()))
             .map(|grant| grant.describe())
             .collect();
         if !grants.is_empty() {
@@ -484,6 +496,7 @@ impl Agent {
             pending_rewrite: Mutex::new(None),
             rewritten_from: Mutex::new(None),
             ran_rewritten: Mutex::new(None),
+            prefetched: Mutex::new(HashMap::new()),
             state: SessionState::default(),
             plan: Mutex::new(None),
             harness_text: String::new(),

@@ -10,6 +10,7 @@ use imperium_local::hardware::probe;
 use imperium_local::vllm_env::{
     self, Event, Launch, Mode, Plan, SystemRunner, pinned_image, pinned_version,
 };
+use imperium_local::wsl;
 
 use crate::block_on;
 
@@ -77,24 +78,46 @@ fn installer_variables(vars: impl Iterator<Item = (String, String)>) -> Vec<Stri
     names
 }
 
-pub fn setup(docker: bool, yes: bool, version: Option<String>) -> anyhow::Result<()> {
+pub fn setup(docker: bool, in_wsl: bool, yes: bool, version: Option<String>) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
-    if !cfg!(target_os = "linux") {
+    if in_wsl && !cfg!(windows) {
         bail!(
-            "vLLM runs on Linux, including WSL2; run this inside WSL2 (or on a Linux machine, or \
-             use a remote vLLM endpoint)"
+            "--wsl is for Imperium running on Windows; on Linux, or inside WSL2, run this without \
+             it"
         );
     }
-    let mode = if docker { Mode::Docker } else { Mode::Venv };
+    if !in_wsl && !cfg!(target_os = "linux") {
+        bail!(
+            "vLLM runs on Linux, including WSL2; on Windows run `imperium runtime vllm setup \
+             --wsl` to set it up inside a WSL2 distribution (or run this inside WSL2, on a Linux \
+             machine, or use a remote vLLM endpoint)"
+        );
+    }
+    let mode = if docker {
+        Mode::Docker
+    } else if in_wsl {
+        Mode::Wsl
+    } else {
+        Mode::Venv
+    };
     if docker && version.is_some() {
         println!(
             "note: --version applies to the virtual environment; with --docker the image \
              (runtime.vllm.docker_image) names the release"
         );
     }
-    let plan =
+    let mut plan =
         Plan::new(mode, &settings.runtime.vllm, version.as_deref()).map_err(anyhow::Error::msg)?;
+    if mode == Mode::Wsl {
+        // `wsl.exe -l -v`: the configured distribution, else the default one; it must be WSL2.
+        let distros = wsl::list_distros(std::time::Duration::from_secs(20))
+            .map_err(anyhow::Error::msg)
+            .context("could not list the WSL distributions")?;
+        let chosen = wsl::choose_distro(&distros, plan.distro.as_deref().unwrap_or(""))
+            .map_err(anyhow::Error::msg)?;
+        plan.distro = Some(chosen.name);
+    }
     vllm_env::check_existing(paths.data_dir(), &plan)?;
     println!(
         "Managed vLLM ({}), pinned {} / {}",
@@ -117,6 +140,17 @@ pub fn setup(docker: bool, yes: bool, version: Option<String>) -> anyhow::Result
             mib(gpu.vram_total_bytes)
         );
     }
+    if mode == Mode::Wsl {
+        if !hardware.gpus.iter().any(|gpu| gpu.vendor == "nvidia") {
+            println!(
+                "  - no NVIDIA GPU was detected; vLLM in WSL2 needs one (setup checks that \
+                 nvidia-smi works inside the distribution)"
+            );
+        }
+        if let Some(problem) = wsl::forwarding_problem_here() {
+            println!("  - warning: {problem}");
+        }
+    }
     if mode == Mode::Venv && !hardware.gpus.iter().any(|gpu| gpu.vendor == "nvidia") {
         println!(
             "  - the PyPI build of vLLM targets NVIDIA CUDA; on AMD or Intel use --docker with \
@@ -130,7 +164,13 @@ pub fn setup(docker: bool, yes: bool, version: Option<String>) -> anyhow::Result
             variables.join(", ")
         );
     }
-    println!("  - where: {}", vllm_env::root(paths.data_dir()).display());
+    match &plan.distro {
+        Some(distro) => println!(
+            "  - where: inside the WSL2 distribution {distro}, under ~/{}",
+            wsl::HOME_SUBDIR
+        ),
+        None => println!("  - where: {}", vllm_env::root(paths.data_dir()).display()),
+    }
     if !confirm("Download and set this up now?", yes)? {
         println!("Nothing was changed.");
         return Ok(());
@@ -159,7 +199,10 @@ pub fn setup(docker: bool, yes: bool, version: Option<String>) -> anyhow::Result
 pub fn status() -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
-    let status = vllm_env::status(paths.data_dir());
+    let runner = SystemRunner {
+        timeout: std::time::Duration::from_secs(30),
+    };
+    let status = vllm_env::status_checked(&runner, paths.data_dir());
     match &status.managed {
         None => {
             println!("No managed vLLM environment. Set one up with `imperium runtime vllm setup`");
@@ -167,6 +210,9 @@ pub fn status() -> anyhow::Result<()> {
         }
         Some(record) => {
             println!("Managed vLLM {} ({})", record.version, record.mode.name());
+            if let Some(distro) = &record.distro {
+                println!("  WSL2 distribution: {distro}");
+            }
             if let Some(path) = &status.path {
                 println!("  environment: {}", path.display());
             }
@@ -183,9 +229,22 @@ pub fn status() -> anyhow::Result<()> {
             }
         }
     }
-    let used = match vllm_env::resolve(paths.data_dir(), &settings.runtime.vllm.command) {
+    let used = match vllm_env::resolve_for(
+        paths.data_dir(),
+        &settings.runtime.vllm,
+        cfg!(windows),
+        &wsl::default_distro_name,
+    ) {
+        Launch::Command(program) if cfg!(windows) => format!(
+            "the command {}, which cannot run on Windows (run `imperium runtime vllm setup \
+             --wsl`); vLLM models are unavailable",
+            program.display()
+        ),
         Launch::Command(program) => format!("the command {}", program.display()),
         Launch::Docker { image, .. } => format!("Docker image {image}"),
+        Launch::Wsl {
+            distro, program, ..
+        } => format!("{program} inside the WSL2 distribution {distro}"),
     };
     println!("The daemon starts vLLM models with {used} (read when it starts).");
     Ok(())
@@ -208,8 +267,13 @@ pub fn remove(yes: bool) -> anyhow::Result<()> {
         "This removes the managed vLLM {} ({}) {}.",
         record.version,
         record.mode.name(),
-        match (&record.mode, &record.image) {
-            (Mode::Docker, Some(image)) => format!("by removing the Docker image {image}"),
+        match (&record.mode, &record.image, &record.distro) {
+            (Mode::Docker, Some(image), _) => format!("by removing the Docker image {image}"),
+            (Mode::Wsl, _, Some(distro)) => format!(
+                "from inside the WSL2 distribution {distro} (~/{}/{})",
+                wsl::HOME_SUBDIR,
+                record.version
+            ),
             _ => format!("under {}", vllm_env::root(paths.data_dir()).display()),
         }
     );
