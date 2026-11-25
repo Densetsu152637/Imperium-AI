@@ -1,6 +1,7 @@
 # Plan: reactive tool loading and the knowledge-source rule
 
-Revision: 2026-11-25, revision 3 (plan critic round 1: findings 1 to 10; delta review: N1 to N6;
+Revision: 2026-11-25, revision 4 (plan critic round 1: findings 1 to 10; delta review: N1 to N6;
+final review: D1, D2 and notes;
 the root's answers to the first open questions recorded as [settled decisions](#settled-decisions));
 written against `experimental` at `a85f1310`. Roadmap [item 61](../12-roadmap.md#next-in-order).
 Status: planned.
@@ -274,9 +275,10 @@ endpoints that do not constrain names, and in recorded scripts), is dispatched i
 5. Today's dispatch: hooks, approvals, events (with the inner tool's name and arguments), and the
    tool's own argument parsing (`Invocation::parse` in `run_builtin`, each agent tool's `parse`,
    each provider's own handling), so `call_tool` accepts exactly the arguments a direct call
-   accepts. There is no separate schema validation: when that parsing fails for a call through
-   `call_tool` or a direct call to a deferred name, the error result gets the tool's schema
-   appended, as advice.
+   accepts. There is no separate schema validation. The rule: **any failed result** of a call that
+   came through `call_tool`, or of a direct call to a deferred name, gets the tool's schema
+   appended, as advice. It is keyed on failure, not on a parse error, because MCP servers and
+   providers report argument errors and other failures alike.
 
 The journal and the transcript keep the call as the model made it (the outer `call_tool`), so the
 history sent back to the model shows the calling form its grammar allows; `tool_started` and
@@ -298,7 +300,9 @@ shows each still runs when loading is off (for example `ask_agent` with `can_ask
   descriptions and returns up to five full schemas, then up to ten more as `name: first sentence`
   lines; neither returns the catalog as `name: first sentence` lines. A result holds at most
   8,000 bytes of full schemas: schemas past the cap become `name: first sentence` lines in
-  `more` ("ask for these by name"). The result is JSON (`{"tools": [{"name", "description",
+  `more` ("ask for these by name"). The cap never hides a schema on its own: the first requested
+  or best-matching schema is always returned in full whatever its size, and a request by exact
+  `names` returns every named schema in full. The result is JSON (`{"tools": [{"name", "description",
   "parameters"}], "more": [...], "unknown": [...]}`) so the evaluation boundary can rewrite names
   ([R7](#r7-evaluations)). An unknown name gets up to three close names. It is read-only, needs no
   approval, and is allowed in plan mode and in a question fork.
@@ -342,9 +346,11 @@ shows each still runs when loading is off (for example `ask_agent` with `can_ask
   list itself needs no restoring: it is fixed (goal 4).
 - **Compaction** removes old `tool_search` results with the rest of the summarised turns. Schema
   text can come from MCP servers and plugins, so it is never put back at user-message trust (not
-  in a user message, not in the state block). After a compaction the engine appends to the
-  summary a list of the loaded tools still in the universe, **names only** with each description
-  cut to its first sentence (at most 120 characters), inside a delimited `<loaded-tools>` block
+  in the state block, and not as descriptions in the summary, which `compact.rs` inserts as a
+  user-role message). After a compaction the engine appends to the summary a list of the loaded
+  tools still in the universe: MCP and plugin tools by **name only**, built-in tools by name with
+  their description cut to its first sentence (at most 120 characters; built-in text is
+  Imperium's own), inside a delimited `<loaded-tools>` block
   marked as reference data ("tools you used before; search again for their parameters"), at most
   1,500 bytes, most recently used first. The model gets full schemas again only through a new
   `tool_search`, whose result has tool-result trust.
@@ -431,6 +437,7 @@ forbids). Audited on `a85f1310`:
 | `knowledge.rs` (about line 282) | Calls and whether they worked, for a knowledge card | The inner name and arguments |
 | `breakdown.rs` (about line 283) | `load_skill` call ids, to count their results as `skills_loaded` | The inner name (`load_skill` is core, but a call through `call_tool` still counts) |
 | `harness.rs` (about line 238) | Whether a result came from `update_state` | The inner name |
+| `harness.rs` (about line 363) | `[called <name> ...]` lines in the de-reference step's history | The inner name and arguments |
 | `turn.rs` (`activates`, `touched_dir`) | `activate_plugin` rounds and directories touched | The effective call (R4 step 1) |
 | Recorder and transcript export | Eval `last_reply`, exported transcripts | Unchanged: they show what the model sent |
 
@@ -547,8 +554,11 @@ Stage 5 follows the build that contains stage 4.
     `ToolDefinition`s in `tools.rs` (in `all()`, exported to `schemas/tools/` by the export
     test); `SessionEvent::ToolsLoaded { names, via }` with `ToolLoadVia` `search`, `call`; the 02
     version paragraph.
-  - Config: `HarnessSettings.tool_loading: HarnessMode`, default `Off` in this stage; registry
-    entry `harness.tool_loading` ("Reach tools on demand"); the 10 table row.
+  - Config: `HarnessSettings.tool_loading: HarnessMode`, default `Off`. It stays **hidden** while
+    only 2a is merged: 2a adds the field (readable by evaluations through `--flag tool_loading`)
+    but no registry entry, settings UI or 10 row, because without 2b's `effective_call` helper the
+    name-keyed code would misread `call_tool` calls. 2b adds the registry entry
+    `harness.tool_loading` ("Reach tools on demand") and the 10 table row.
   - Engine: `tool_universe()` (today's list and filters, unchanged, computed at dispatch time)
     and `offered_tools()` (the universe when off; core, `tool_search`, `call_tool` when on, fixed
     at session start); a new `agent/catalog.rs` with the core rule, the fixed `tool_search`
@@ -578,7 +588,12 @@ Stage 5 follows the build that contains stage 4.
   `call_tool(run_command)` is refused; a model switch local to hosted to local (exception a)
   swaps the list and the loader sentence; the loader sentence is in the system prompt of an
   unattended root and of a subagent in on mode; fewer than three deferred tools means no loader;
-  a `tool_search` result over 8,000 bytes of schemas spills into `more` lines; the breakdown
+  a `tool_search` result over 8,000 bytes of schemas spills into `more` lines, while a single
+  MCP-style schema larger than the cap is still returned in full (first match, and by exact
+  name); a failed result of an MCP-style tool called through `call_tool` carries the schema;
+  `tool_search` results keep their tool-result framing when the compaction summariser renders
+  them; a compacted session's `<loaded-tools>` block holds no MCP or plugin description text
+  (a fixture plugin tool with a marker in its description; the marker is absent); the breakdown
   labels a `tool_search` result's schemas per source category; one test per R9 row that the
   `call_tool` form reads back like the direct form, and the source-scan test of R9.
 - Depends on: none. Size: about 1,000 lines, so it is two pull requests: 2a, the protocol and
@@ -670,8 +685,10 @@ Stage 5 follows the build that contains stage 4.
   model as well once one is available (S2). Record accuracy (strict scorer), prompt and cached
   tokens per item, model calls, the tools searched and called, `call_tool` argument errors, direct
   calls to deferred names, and **misses**: items where the model answered or stopped without a
-  tool it needed (judged from the trace, for example an "Unknown" with no search). Report in
-  Imperium-Research beside the pilot.
+  tool it needed (judged from the trace, for example an "Unknown" with no search). Also record,
+  per session, the bytes of `tool_search` results against the schema bytes saved per call times
+  the calls made, to find the break-even point from real traces. Report in Imperium-Research
+  beside the pilot.
 - Acceptance: loading on within two items of off on each suite with fewer prompt tokens per item;
   K1 leaves at most two of 15 general-knowledge dev items answered "Unknown".
 - Then, in one small pull request: the default becomes `auto` (settings default, registry text,
