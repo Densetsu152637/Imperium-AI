@@ -877,7 +877,7 @@ async fn a_deleted_or_archived_owner_gets_a_new_unattended_session() {
                 .daemon
                 .archived_sessions()
                 .iter()
-                .any(|s| s.id == owner_id),
+                .any(|s| s.session_id == owner_id),
             archive
         );
         // One new session, the replacement.
