@@ -1,7 +1,7 @@
 # Plan: server package (Docker Compose)
 
-Revision: 2026-11-26, revision 2 (plan-gate review F1 to F10 and nits folded in); written
-against `experimental` at `2cb50590`, merged with `experimental` at revision 2 (last updated).
+Revision: 2026-11-26, revision 3 (plan-gate round 2: A1 `pid: host` and A2 pre-auth lockout under a
+shared address, folded in over revision 2's F1 to F10); written against `experimental` at `2cb50590`, merged with `experimental` at revision 2 (last updated).
 Roadmap [item 63](../12-roadmap.md#next-in-order). Status: planned (no stage started).
 
 Imperium runs today as one daemon per user on a desktop or an SSH host. This plan packages it to
@@ -34,8 +34,9 @@ a real model. "The server job" is the CI job built in
    address. Check: `deploy/server/check-compose.py` in the server job reads
    `docker compose config --format json` for the base file and for every shipped override and
    fails on a published port whose host address is not loopback, on a missing `read_only`,
-   `cap_drop` or `user`, on a mounted Docker socket, and on any change to the `prepare` service's
-   fixed shape ([D2](#d2-the-daemon-in-a-container)).
+   `cap_drop` or `user`, on a mounted Docker socket, on `pid: host`, `privileged: true`,
+   `network_mode: host`, `userns_mode: host` or `ipc: host` on the `imperium` service, and on any
+   change to the `prepare` service's fixed shape ([D2](#d2-the-daemon-in-a-container)).
 4. **The SSH path works into the container.** `imperium remote connect <host> --socket
    --server-dir <dir>` from the runner, through the runner's own `sshd`, reaches the daemon in
    the container and completes `system.handshake`. Check: the server job.
@@ -261,17 +262,35 @@ These are the design choices this plan makes. Each records why and what was reje
     failure counters say: an attacker who knows only the address cannot lock the owner out by
     failing on purpose, which matters because behind Docker's userland proxy every client may
     show the same source address. Failures only **delay the 401 reply**: after 5 failures a minute
-    from one address, each further 401 is sent after double the last delay, up to 30 s (the
-    connection is held, then closed); the delay never applies to a request whose token matches.
-    Resources are bounded separately, before authentication:
-    - at most 16 new TLS handshakes a second per address and 64 overall (excess connections are
-      closed at accept);
-    - at most 32 connections that have not yet authenticated, each closed if TLS and the upgrade
-      are not finished within 10 s;
-    - 64 connections in all, of which 16 slots are reserved for authenticated connections, so
-      unauthenticated traffic can never fill the listener.
+    from one address, each further 401 is sent after double the last delay, up to 30 s; the delay
+    never applies to a request whose token matches. Resources are bounded separately, and no
+    bound refuses a newcomer outright:
+    - **Handshake rate.** At most 16 new TLS handshakes a second per address and 64 overall. A
+      connection over the rate waits in a short accept queue (at most 64 entries, each waiting at
+      most 2 s) instead of being closed; when the queue is full its **oldest** entry is dropped
+      for the newcomer.
+    - **Pre-auth pool.** At most 32 connections that have not yet authenticated, each closed if
+      TLS and the upgrade are not finished within 10 s. When the pool is full, a newcomer
+      **evicts a random** unauthenticated connection rather than being refused (random, so an
+      attacker cannot time its connections to always be the youngest).
+    - **Tarpit pool.** A connection whose token failed leaves the pre-auth pool at once and waits
+      out its delayed 401 in a separate pool of at most 16; when it is full the oldest entry is
+      closed (its 401 sent early or not at all). Delayed 401s therefore never hold pre-auth
+      slots.
+    - **Reserved slots.** 64 connections in all, of which 16 are reserved for authenticated
+      connections, so unauthenticated traffic can never fill the listener.
 
-    The 256-bit token makes guessing hopeless; the limits protect the daemon's resources.
+    **What this guarantees, and what it does not.** Under a flood of `r` new connections a second
+    from the owner's address, the accept queue lets through 16 a second, so an attempt by the
+    owner gets past it with probability about `16 / r`; once through, it survives random
+    eviction from a full pre-auth pool with probability about `(1 - 1/32)^k`, where `k` (small,
+    since at most 16 a second enter) is the number of newcomers during its TLS handshake and
+    upgrade. The CLI and desktop retry a dropped or reset connection with back-off, so at
+    `r = 100` a correct-token client gets in within 30 attempts more than 99 % of the time. A flood from the owner's own (shared) address therefore **degrades service**: it
+    makes lockout probabilistic and costly for the attacker, not impossible. Blocking it outright
+    needs a firewall in front of the listener or a private network (the docs recommend an
+    overlay such as Tailscale for exposure beyond the LAN). The 256-bit token makes guessing
+    hopeless; the limits protect the daemon's resources.
   - **Paths.** The listener serves only `/rpc`. It does not serve the phone web app, `/pair` or
     the OpenAI-compatible API.
   - **What it is not.** A TLS connection is not the local socket, so the calls the daemon takes
@@ -372,8 +391,23 @@ On top of that structural refusal, a **server mode** gives clear errors early an
 the setting `daemon.server` (set by the image as `IMPERIUM_DAEMON__SERVER=true`; environment
 variables are the last layer, so a `config.toml` on the volume cannot unset it) makes the daemon
 answer these with `-32010` (`UNAVAILABLE_ON_SERVER`) and a `feature` in the error's data, and
-report `server: true` in the handshake. Server mode only ever removes capabilities; turning it
-off grants nothing, because the structural checks above still fail.
+report `server: true` in the handshake. Server mode **refuses terminal grants and app-identity
+approvals unconditionally**, before any peer is looked at. It only ever removes capabilities.
+
+**Turning server mode off grants nothing only in a nested PID namespace.** There the
+nested-namespace rule refuses grants and approvals by itself. The exception is a container started
+with `pid: host` (or `--pid=host`): the daemon then shares the host's PID namespace, its `NSpid`
+line has a single entry, the nested-namespace rule does not fire, and the ancestry walk runs as on
+a desktop. Three things cover it:
+
+- `check-compose.py` refuses `pid: host`, `privileged: true`, `network_mode: host`,
+  `userns_mode: host` and `ipc: host` on the `imperium` service, in the base file and every
+  override, so no shipped stack runs that way;
+- server mode, which the image sets through the environment, still refuses unconditionally;
+- a server-mode daemon whose `NSpid` line has a single entry logs a warning at start ("running
+  in the host's PID namespace: the structural refusal of grants does not apply; only server mode
+  refuses them"). The image does not refuse to start, since a single entry is also what a
+  daemon run outside a container sees.
 
 | Feature | On a server | `feature` |
 | --- | --- | --- |
@@ -589,9 +623,12 @@ the internet, a world-readable secret file, a weak token).
    the TLS listener needs the override, a non-loopback bind chosen by the operator, and a token
    secret of at least 256 bits, without which it does not start; the token is checked first once
    TLS is up, in constant time, before the WebSocket upgrade; only `/rpc` is served; failures
-   delay only their own 401 replies, so an attacker cannot lock the owner out, while handshake
-   rates, a pre-authentication cap, reserved authenticated slots and a 10 s timeout bound
-   resources. The healthcheck uses no network route. Published ports bypass host firewalls such
+   delay only their own 401 replies from a separate tarpit pool, and a full pre-auth pool evicts
+   a random connection rather than refusing the newcomer, so an attacker cannot lock the owner
+   out by failing on purpose; a connection flood from the owner's own address degrades service
+   (lockout becomes probabilistic and costly, not impossible, D3), while handshake rates with a
+   short queue, the pre-authentication cap, reserved authenticated slots and a 10 s timeout
+   bound resources. The healthcheck uses no network route. Published ports bypass host firewalls such
    as `ufw` (Docker writes its own iptables rules), so a non-loopback `IMPERIUM_TLS_BIND` is
    reachable whatever `ufw` says; the docs say so.
 2. **Interception and impersonation.** TLS 1.3 only; clients verify through the platform
@@ -621,7 +658,11 @@ the internet, a world-readable secret file, a weak token).
    SSH-forwarded peer reads as PID 0 and fails closed. The presence check is not a barrier: where
    it is unavailable it would record `dialog-only`. A derived image that adds a file named
    `imperium-desktop` still gets no approval, because the nested-namespace rule refuses before the
-   app is matched, and server mode refuses before both.
+   app is matched, and server mode refuses before both. **Exception:** a container run with
+   `pid: host` shares the host's PID namespace, so the nested-namespace rule does not fire there;
+   server mode still refuses unconditionally, `check-compose.py` refuses `pid: host` (and
+   `privileged`, host network, host user namespace and host IPC) on the `imperium` service, and
+   the daemon warns at start (D5).
 7. **Host compromise through the container.** Non-root user, every capability dropped,
    `no-new-privileges`, read-only root, default seccomp and AppArmor kept, no Docker socket, no
    privileged mode, no Docker-in-Docker. The `prepare` service is the only root process: no
@@ -716,7 +757,7 @@ estimates of changed lines, tests included.
 | --- | --- | --- | --- |
 | 1 | Server mode, refusals and the nested-namespace rule | none | 750 |
 | 2 | Read-only directory secrets | 1 | 600 |
-| 3 | Landlock backend for tier 1, hooks and workspace MCP servers | none | 850 (split 3a/3b if past 800) |
+| 3 | Landlock backend for tier 1, hooks and workspace MCP servers | none (3b: 1) | 850 (split 3a/3b if past 800) |
 | 4 | Socket folder and the SSH path into a container | none | 450 |
 | 5 | TLS listener | 1, 2 | 800 |
 | 6 | Pinned TLS client in the CLI | 5 | 500 |
@@ -735,8 +776,10 @@ estimates of changed lines, tests included.
   `isolation.tier = "container"` (config validation and session start) and Docker-mode vLLM; the
   **nested-PID-namespace rule** of D5 on Linux: `peer::may_grant` and `app_identity` refuse every
   terminal grant and app-identity approval when the daemon's own `NSpid` line has more than one
-  entry, whatever any setting says; SIGTERM on Unix runs the same shutdown as Ctrl+C. Protocol
-  minor bump.
+  entry, whatever any setting says; server mode refuses every terminal grant and app-identity
+  approval unconditionally, whatever the namespace; a server-mode daemon whose `NSpid` line has a
+  single entry logs the start-up warning of D5 and starts normally; SIGTERM on Unix runs the same
+  shutdown as Ctrl+C. Protocol minor bump.
 - Depends on: none.
 - Owned paths: `crates/imperium-protocol/src/{lib.rs,jsonrpc.rs,methods/system.rs}`,
   `packages/protocol/src/generated/`, `crates/imperium-config/src/{settings.rs,registry.rs}`,
@@ -754,8 +797,11 @@ estimates of changed lines, tests included.
   one): an `NSpid` line with one entry allows today's checks to run, two or more entries refuse a
   `trusted` grant and a plugin approval even for a peer the ancestry walk would accept, a missing
   or unreadable line refuses (fail closed), and `IMPERIUM_*` variables and every config layer
-  leave the answer unchanged. A peer reported as PID 0 is refused (existing behaviour, now
-  tested). The handshake snapshot shows `server`. `cargo clippy` clean.
+  leave the answer unchanged. With server mode on and an injected single-entry `NSpid` (the
+  `pid: host` case), a `trusted` grant from a peer the walk would accept is still refused, and the
+  start-up warning is logged once; with server mode off and a single entry, nothing is logged. A
+  peer reported as PID 0 is refused (existing behaviour, now tested). The handshake snapshot shows
+  `server`. `cargo clippy` clean.
 - Status: pending.
 - Outcome:
 - Handoff notes: server mode's refusals sit at the RPC boundary before any challenge is issued.
@@ -798,13 +844,29 @@ estimates of changed lines, tests included.
   a CI probe that Docker's default seccomp profile allows the Landlock calls on the runner (a
   tiny static test binary in `docker run --rm` with the default profile); if not, add
   `deploy/server/seccomp.json` (default plus the three calls) and say so in D7 before going on.
-- Depends on: none (the server image consumes it in stage 7).
+- Depends on: none for the backend; stage 1 for the hook and MCP part (`daemon.server`). The
+  server image consumes it in stage 7.
 - Owned paths: `crates/imperium-tools/src/{sandbox.rs,sandbox_landlock.rs (new)}`,
   `crates/imperium-tools/Cargo.toml` (`landlock` crate, Linux only),
   `crates/imperium-config/src/settings.rs`, the spawn points of command hooks
   (`crates/imperium-extensions/src/lib.rs`) and MCP servers (`crates/imperium-mcp/src/servers.rs`),
+  `crates/imperium-mcp/Cargo.toml` (a new path dependency on `imperium-tools`, which
+  `imperium-mcp` does not have today; `imperium-tools` depends only on `imperium-api` and
+  `imperium-policy`, so no cycle), the launch builder in `crates/imperium-core/src/mcp.rs`,
   `.github/workflows/ci.yml` (probe step), docs 05. If the hook and MCP part pushes the stage past
-  about 800 lines it is split into 3a (backend) and 3b (hooks and MCP servers).
+  about 800 lines it is split into 3a (backend) and 3b (hooks and MCP servers); 3b depends on
+  stage 1 for `daemon.server`.
+- How the decision reaches the spawn points: the spawners decide nothing themselves.
+  `Launch::Stdio` gains an optional `confine: Option<imperium_tools::Confinement>` (the ruleset
+  value `sandbox_landlock` builds, applied in the child before `exec`), and the command-hook
+  runner in `imperium-extensions` (which already depends on `imperium-tools`) takes the same
+  value. `imperium-core` fills it where it builds launches and hook invocations: `Some` only when
+  `daemon.server` is set, `isolation.os_backend` is `landlock`, and the server is a **workspace
+  server**, meaning it was loaded from a project's `.imperium` files (the environment layer
+  already records that origin) or its `cwd` resolves inside one of the session's folders; for a
+  hook, when it comes from a project's files or runs in a session's folder. User-level servers
+  and hooks get `None`. The flag is read once per launch from the daemon's settings, never from
+  the server's own config.
 - Acceptance checks: `cargo test -p imperium-tools -p imperium-extensions -p imperium-mcp` on the
   Linux CI runner: a command can write in the workspace and its `TMPDIR`; reading a file under a
   stand-in for `/run/secrets`, the data folder and the socket folder (its `endpoint.json`
@@ -857,10 +919,17 @@ estimates of changed lines, tests included.
   `allow_non_loopback` is refused; with a test client: the right token and pin connect and
   handshake; no token and a wrong token get 401 before any frame; the sixth failure in a minute
   from one address gets its 401 late; **while that address is in back-off, a client from it with
-  the correct token connects and completes the handshake within 1 s**; with 32 unauthenticated
-  connections held open, a 33rd unauthenticated one is closed while an authenticated client still
-  connects (the reserved slots); handshakes over the per-address rate are closed at accept; an
-  idle TLS handshake is closed at 10 s; TLS 1.2 is refused; any path but `/rpc` is 404 after authentication and 401 before it;
+  the correct token connects and completes the handshake within 1 s**; **with the pre-auth stage
+  flooded** (a test flooder from the same address keeping the pre-auth pool full and opening
+  100 new connections a second, all idle after TLS), a correct-token client from that address
+  connects within 30 attempts and within 60 s, in at least 99 of 100 runs of the scenario (the
+  expected rate is about 16 % an attempt, D3); with 32 unauthenticated
+  connections held open, a 33rd evicts one of them rather than being refused; a flood of failed
+  tokens fills only the tarpit pool (pre-auth slots stay free, its oldest entry is dropped at the
+  17th); a handshake over the per-address rate waits in the queue and completes once the rate
+  allows, and the queue drops its oldest entry when full; an authenticated client still connects
+  with all unauthenticated slots taken (the reserved slots); an idle TLS handshake is closed at
+  10 s; TLS 1.2 is refused; any path but `/rpc` is 404 after authentication and 401 before it;
   the generated key is `0600` and kept across restarts; a desktop-only call over TLS returns
   `-32010` in server mode and is refused as not-local outside it.
 - Status: pending.
@@ -904,7 +973,9 @@ estimates of changed lines, tests included.
   `ubuntu-22.04-arm` (arm64); `check-compose.py` passes on every
   shipped file and fails on fixtures with a public port, a Docker socket mount, a secret in
   `environment`, a missing `read_only`, a second root service, an extra capability on `prepare`,
-  `prepare` given a network, a secret or another command, and an override that changes `prepare`;
+  `prepare` given a network, a secret or another command, an override that changes `prepare`, and
+  one fixture each for `pid: host`, `privileged: true`, `network_mode: host`, `userns_mode: host`
+  and `ipc: host` on the `imperium` service;
   `python3 -m pytest deploy/server` covers it; `prepare-volumes` under a test with a symbolic link
   to a file outside the volume leaves the target's owner unchanged, and with the roots already
   owned by the target UID it walks nothing (no recursive `chown` is run);
