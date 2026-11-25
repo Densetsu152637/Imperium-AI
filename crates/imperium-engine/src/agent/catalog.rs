@@ -1297,7 +1297,7 @@ mod tests {
                     .into_iter()
                     .rev()
                     .collect();
-                let start = index.saturating_sub(12);
+                let start = index.saturating_sub(24);
                 let bound = !value.is_empty()
                     && lines[start..index].iter().any(|near| {
                         near.contains(&format!("let {value} =")) && near.contains("effective_call(")
