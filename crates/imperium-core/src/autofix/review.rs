@@ -1067,7 +1067,7 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
                     ledger.give_back(&state, &before);
                     state.pr_monitor().announce_flags(&state, &repo, number);
                     let times = ledger.note_raced(&repo, number);
-                    if times % RACED_LIMIT == 0 {
+                    if times.is_multiple_of(RACED_LIMIT) {
                         tracing::warn!(%repo, pr = number, times, "the session could not be woken");
                         say(
                             "failed",
