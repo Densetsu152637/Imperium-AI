@@ -13,9 +13,9 @@ use serde_json::Value;
 use super::*;
 
 /// The proxy tool that finds tools outside the offered list.
-pub(super) const TOOL_SEARCH: &str = "tool_search";
+pub(crate) const TOOL_SEARCH: &str = "tool_search";
 /// The proxy tool that runs a tool outside the offered list.
-pub(super) const CALL_TOOL: &str = "call_tool";
+pub(crate) const CALL_TOOL: &str = "call_tool";
 
 /// The arguments of a `call_tool` call as the inner tool reads them: an object, a string of
 /// JSON, or nothing.
@@ -93,7 +93,7 @@ pub(super) fn is_core(name: &str) -> bool {
 }
 
 /// The names kept in the offered list while loading is on.
-fn core_names() -> Vec<String> {
+pub(super) fn core_names() -> Vec<String> {
     CORE_TOOLS.iter().map(|name| (*name).to_string()).collect()
 }
 
@@ -124,7 +124,9 @@ fn tool_search_spec(deferred: &[String]) -> ToolSpec {
     }
 }
 
-/// The positions in `specs` of the tools that are deferred while loading is on.
+/// The positions in `specs` of the tools that are deferred while loading is on, with the
+/// default core (an agent decides its own: `Agent::deferred_of`).
+#[cfg(test)]
 pub(super) fn deferred_indices(specs: &[ToolSpec]) -> Vec<usize> {
     specs
         .iter()
@@ -325,7 +327,7 @@ fn entry(spec: &ToolSpec) -> Value {
 }
 
 /// The first sentence of a description (at most its first line).
-fn first_sentence(description: &str) -> &str {
+pub(crate) fn first_sentence(description: &str) -> &str {
     let end = [
         description.find(". ").map(|at| at + 1),
         description.find('\n'),
@@ -512,6 +514,44 @@ pub(super) fn search(
     found
 }
 
+/// A search made over the shown tools, with every name and description the engine's again.
+fn unshow(mut found: Found, specs: &[ToolSpec], renames: &crate::tool_edits::Resolved) -> Found {
+    let own = |name: &str| specs.iter().find(|spec| spec.name == renames.engine(name));
+    found.tools = found
+        .tools
+        .into_iter()
+        .map(|value| {
+            let spec = value["name"].as_str().and_then(own);
+            spec.map_or(value.clone(), entry)
+        })
+        .collect();
+    found.more = found
+        .more
+        .into_iter()
+        .map(
+            |line| match line.split_once(": ").and_then(|(name, _)| own(name)) {
+                Some(spec) => listed(spec),
+                None => line,
+            },
+        )
+        .collect();
+    found.shown = found
+        .shown
+        .iter()
+        .map(|name| renames.engine(name).to_string())
+        .collect();
+    for item in &mut found.unknown {
+        if let Some(Value::Array(close)) = item.get_mut("close") {
+            for name in close {
+                if let Some(text) = name.as_str() {
+                    *name = Value::from(renames.engine(text));
+                }
+            }
+        }
+    }
+    found
+}
+
 /// What `tool_search` takes: `names` may be one name or a list.
 #[derive(Deserialize)]
 struct SearchArgs {
@@ -554,7 +594,7 @@ impl Agent {
         }
         *self.loader_worth.get_or_init(|| {
             let (specs, _) = self.build_universe(false);
-            deferred_indices(&specs).len() >= MIN_DEFERRED
+            self.deferred_of(&specs).len() >= MIN_DEFERRED
         })
     }
 
@@ -589,7 +629,7 @@ impl Agent {
         // Decided now, at the first list, before any plugin is active.
         self.plugin_loader();
         let (specs, groups) = self.tool_universe();
-        let (mut specs, mut groups) = narrow_tools(specs, groups, &core_names());
+        let (mut specs, mut groups) = narrow_tools(specs, groups, &self.core_list());
         specs.push(self.tool_search_spec());
         specs.push(call_tool_spec());
         groups.extend([Category::ToolsBuiltin, Category::ToolsBuiltin]);
@@ -605,9 +645,10 @@ impl Agent {
                 .iter()
                 .enumerate()
                 .filter(|(index, spec)| {
-                    !is_core(&spec.name) && groups.get(*index) == Some(&Category::ToolsBuiltin)
+                    !self.core_here(&spec.name)
+                        && groups.get(*index) == Some(&Category::ToolsBuiltin)
                 })
-                .map(|(_, spec)| spec.name.clone())
+                .map(|(_, spec)| self.shown_name(&spec.name))
                 .collect();
             tool_search_spec(&names).description
         });
@@ -653,14 +694,20 @@ impl Agent {
             None => Vec::new(),
         };
         let (specs, _) = self.tool_universe();
-        let catalog = deferred_indices(&specs);
-        let found = search(
-            &specs,
-            &catalog,
-            args.query.as_deref().unwrap_or(""),
-            &names,
-        );
-        self.note_loaded(&found.shown, ToolLoadVia::Search);
+        let catalog = self.deferred_of(&specs);
+        let query = args.query.as_deref().unwrap_or("");
+        // A query is ranked over the names and descriptions the model reads (a variant's), and
+        // the result is mapped back to the engine's.
+        let found = match self.tool_renames() {
+            Some(renames) if names.is_empty() => {
+                let shown: Vec<ToolSpec> =
+                    specs.iter().map(|spec| renames.show_spec(spec)).collect();
+                unshow(search(&shown, &catalog, query, &names), &specs, renames)
+            }
+            _ => search(&specs, &catalog, query, &names),
+        };
+        let fresh = self.note_loaded(&found.shown, ToolLoadVia::Search);
+        self.report_search(&fresh);
         Ok(found.render())
     }
 
@@ -697,7 +744,7 @@ impl Agent {
 
     /// Records the tools whose parameters the model has seen or that it ran through
     /// `call_tool`, once each, and reports them.
-    pub(super) fn note_loaded(&self, names: &[String], via: ToolLoadVia) {
+    pub(super) fn note_loaded(&self, names: &[String], via: ToolLoadVia) -> Vec<String> {
         let mut loaded = lock(&self.loaded_tools);
         let mut reported = lock(&self.reported_tools);
         let mut fresh: Vec<String> = Vec::new();
@@ -713,8 +760,12 @@ impl Agent {
         drop(reported);
         lock(&self.schema_seen).extend(names.iter().cloned());
         if !fresh.is_empty() {
-            self.emit(SessionEvent::ToolsLoaded { names: fresh, via });
+            self.emit(SessionEvent::ToolsLoaded {
+                names: fresh.clone(),
+                via,
+            });
         }
+        fresh
     }
 
     /// Adds names the model has seen (an activated plugin's tools, a parent's loaded tools, a
@@ -788,7 +839,7 @@ impl Agent {
         output: String,
     ) -> String {
         let name = call.function.name.as_str();
-        if !self.reactive() || name == TOOL_SEARCH || (!proxied && is_core(name)) {
+        if !self.reactive() || name == TOOL_SEARCH || (!proxied && self.core_here(name)) {
             return output;
         }
         let Some(spec) = self.universe_spec(name) else {
@@ -1218,6 +1269,87 @@ mod tests {
         );
     }
 
+    /// The composition a subagent's compaction runs: the parent's loaded set filtered to the
+    /// subagent's universe, then the block built from the tools it still has.
+    #[test]
+    fn a_query_finds_a_redescribed_tool_by_a_word_only_in_its_new_description() {
+        let specs = vec![
+            spec("read_file", "Read."),
+            spec("update_plan", "Keep a plan."),
+            spec("ask_user", "Ask the user."),
+            spec("web_fetch", "Fetch a page."),
+        ];
+        let edits = imperium_protocol::methods::ToolEdits {
+            description: [(
+                "update_plan".to_string(),
+                "Maintain the checklist.".to_string(),
+            )]
+            .into(),
+            rename: [("ask_user".to_string(), "consult".to_string())].into(),
+            ..Default::default()
+        };
+        let known: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
+        let (renames, _) = crate::tool_edits::resolve(&edits, &known);
+        let catalog = vec![1, 2, 3];
+        let shown: Vec<ToolSpec> = specs.iter().map(|s| renames.show_spec(s)).collect();
+        let by_word = unshow(search(&shown, &catalog, "checklist", &[]), &specs, &renames);
+        assert_eq!(by_word.shown, ["update_plan"]);
+        assert_eq!(by_word.tools[0]["name"], "update_plan");
+        assert_eq!(by_word.tools[0]["description"], "Keep a plan.");
+        let by_new_name = unshow(search(&shown, &catalog, "consult", &[]), &specs, &renames);
+        assert_eq!(by_new_name.shown, ["ask_user"]);
+        // The engine's own wording no longer matches what the model reads.
+        let gone = unshow(search(&shown, &catalog, "keep", &[]), &specs, &renames);
+        assert!(gone.shown.is_empty(), "{:?}", gone.shown);
+    }
+
+    #[test]
+    fn a_subagents_compaction_block_lists_the_names_it_inherited() {
+        let parent: Vec<String> = ["web_fetch", "spawn_agent", "mcp__dict__lookup"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let universe = [
+            spec("web_fetch", "Fetch a web page. It follows redirects."),
+            spec("mcp__dict__lookup", "SECRET-MCP-TEXT."),
+            spec("update_plan", "Plan."),
+        ];
+        let loaded = inherited(&parent, |name| universe.iter().any(|s| s.name == name));
+        let entries: Vec<(&ToolSpec, Category)> = loaded
+            .iter()
+            .rev()
+            .filter_map(|name| {
+                let tool = universe.iter().find(|s| &s.name == name)?;
+                let category = if name.starts_with("mcp__") {
+                    Category::ToolsMcp
+                } else {
+                    Category::ToolsBuiltin
+                };
+                Some((tool, category))
+            })
+            .collect();
+        let block = loaded_block(&entries);
+        assert!(
+            block.contains(
+                "- web_fetch: Fetch a web page.
+"
+            ),
+            "{block}"
+        );
+        assert!(
+            block.contains(
+                "- mcp__dict__lookup
+"
+            ),
+            "{block}"
+        );
+        assert!(
+            !block.contains("spawn_agent") && !block.contains("update_plan"),
+            "{block}"
+        );
+        assert!(!block.contains("SECRET"), "{block}");
+    }
+
     #[test]
     fn a_subagent_inherits_the_loaded_tools_it_also_has() {
         let parent: Vec<String> = ["web_fetch", "spawn_agent", "mcp__dict__lookup"]
@@ -1255,8 +1387,8 @@ mod tests {
     }
 
     /// R9 of the plan: every reader of a call's name or arguments goes through
-    /// `effective_call`. The scan covers every source file of the engine except the two that
-    /// dispatch the unwrapped call (`catalog.rs`, `tools.rs`) and test modules: a read of
+    /// `effective_call`. The scan covers every source file of the engine except the three that
+    /// dispatch the unwrapped call (`catalog.rs`, `tools.rs`) or translate the outer call's names (`tool_edits.rs`) and test modules: a read of
     /// `<value>.function.name` or `.function.arguments` must be on a value bound from
     /// `effective_call(..)` (a `let <value> = effective_call(..)` just above) or on the same
     /// line as the call. The one stored-text reader that counts the call as it was sent is
@@ -1267,7 +1399,7 @@ mod tests {
         let mut files = Vec::new();
         sources(&base, &base, &mut files);
         assert!(files.len() > 20, "{} files", files.len());
-        let allowed = ["agent/catalog.rs", "agent/tools.rs"];
+        let allowed = ["agent/catalog.rs", "agent/tools.rs", "tool_edits.rs"];
         // Counts what the model was sent, so reads the stored call as it is.
         // The raw-parse sites of `call_repair.rs`: it reads what a model wrote, before any
         // `call_tool` wrapping and before the call is stored, so these lines are exact.
@@ -1284,42 +1416,89 @@ mod tests {
             if allowed.contains(&file.as_str()) {
                 continue;
             }
-            let code = text.split("#[cfg(test)]").next().unwrap();
-            let lines: Vec<&str> = code.lines().collect();
-            for (index, line) in lines.iter().enumerate() {
-                let Some(at) = ["function.name", "function.arguments"]
-                    .iter()
-                    .filter_map(|needle| line.find(needle))
-                    .min()
-                else {
-                    continue;
-                };
-                if line.contains("effective_call(")
-                    || as_sent.contains(&line.trim())
-                    || (file == "agent/call_repair.rs" && raw_parse.contains(&line.trim()))
-                {
-                    continue;
-                }
-                let value: String = line[..at]
-                    .chars()
-                    .rev()
-                    .skip_while(|c| *c == '.')
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                let start = index.saturating_sub(24);
-                let bound = !value.is_empty()
-                    && lines[start..index].iter().any(|near| {
-                        near.contains(&format!("let {value} =")) && near.contains("effective_call(")
-                    });
-                assert!(
-                    bound,
-                    "{file}:{} reads a call's name or arguments without effective_call: {line}",
-                    index + 1
-                );
+            let found = if file == "agent/call_repair.rs" {
+                raw_call_reads(&text, &[&raw_parse[..], &as_sent[..]].concat())
+            } else {
+                raw_call_reads(&text, &as_sent)
+            };
+            assert!(found.is_empty(), "{file}: {found:?}");
+        }
+    }
+
+    /// The code of a source file: everything before its test module (`#[cfg(test)]` followed
+    /// by `mod`), so a test-only item early in a file does not hide the code after it.
+    fn production_code(text: &str) -> &str {
+        let mut from = 0;
+        while let Some(at) = text[from..].find("#[cfg(test)]") {
+            let at = from + at;
+            let after = text[at + "#[cfg(test)]".len()..].trim_start();
+            if after.starts_with("mod ") {
+                return &text[..at];
+            }
+            from = at + 1;
+        }
+        text
+    }
+
+    /// The reads of a call's name or arguments in `text`'s production code that are not on a
+    /// value bound from `effective_call(..)`, as `line: text`.
+    fn raw_call_reads(text: &str, as_sent: &[&str]) -> Vec<String> {
+        let lines: Vec<&str> = production_code(text).lines().collect();
+        let mut found = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            let Some(at) = ["function.name", "function.arguments"]
+                .iter()
+                .filter_map(|needle| line.find(needle))
+                .min()
+            else {
+                continue;
+            };
+            if line.contains("effective_call(") || as_sent.contains(&line.trim()) {
+                continue;
+            }
+            let value: String = line[..at]
+                .chars()
+                .rev()
+                .skip_while(|c| *c == '.')
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let start = index.saturating_sub(24);
+            let bound = !value.is_empty()
+                && lines[start..index].iter().any(|near| {
+                    near.contains(&format!("let {value} =")) && near.contains("effective_call(")
+                });
+            if !bound {
+                found.push(format!("{}: {line}", index + 1));
             }
         }
+        found
+    }
+
+    #[test]
+    fn the_scan_reads_past_an_early_test_only_item_and_flags_a_raw_read() {
+        let source = "#[cfg(test)]
+use std::fmt;
+
+fn f(call: &ToolCall) -> bool {
+    call.function.name == \"x\"
+}
+
+#[cfg(test)]
+mod tests {
+    fn g(call: &ToolCall) { call.function.name.len(); }
+}
+";
+        let found = raw_call_reads(source, &[]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("call.function.name == "), "{found:?}");
+        let bound = "fn f(call: &ToolCall) -> bool {
+    let call = effective_call(call);
+    call.function.name == \"x\"
+}
+";
+        assert!(raw_call_reads(bound, &[]).is_empty());
     }
 }

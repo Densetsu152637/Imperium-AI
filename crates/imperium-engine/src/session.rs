@@ -130,6 +130,12 @@ pub struct SessionOptions {
     pub replay: Option<Arc<dyn crate::SubagentReplay>>,
     /// Runs this agent file as the root agent instead of the standard one.
     pub root_agent: Option<imperium_extensions::AgentDef>,
+    /// A harness variant's edits of the root agent's tools (drops, renames, descriptions and
+    /// the core), applied where the engine builds a request and reversed where a reply
+    /// arrives.
+    pub tool_edits: imperium_protocol::methods::ToolEdits,
+    /// Told what the root agent's tools are and which of them it reaches on demand.
+    pub tool_watch: Option<Arc<dyn crate::ToolWatch>>,
 }
 
 /// The answer to a model switch or a compaction.
@@ -344,6 +350,8 @@ impl Session {
                 bridge: Arc::clone(&bridge),
                 replay: options.replay,
                 root_agent: options.root_agent,
+                tool_edits: options.tool_edits,
+                tool_watch: options.tool_watch,
             },
             Arc::clone(&model),
         ));
@@ -909,6 +917,8 @@ pub(crate) struct Shared {
     pub knowledge: crate::knowledge::Knowledge,
     /// Answers subagents from recordings (an evaluation harness), when set.
     pub replay: Option<Arc<dyn crate::SubagentReplay>>,
+    /// The variant's edits of the root agent's tools, when an evaluation sets any or watches.
+    pub tool_edits: Option<crate::tool_edits::ToolEditing>,
     /// Whether the files-before-the-turn checkpoint is taken: `false` while it is being taken
     /// beside the turn's first model call, `true` otherwise. Tools wait for it
     /// ([`Shared::snapshot_ready`]) so none changes a file before it is recorded.
@@ -1007,6 +1017,8 @@ struct Started {
     effort: SessionEffort,
     replay: Option<Arc<dyn crate::SubagentReplay>>,
     root_agent: Option<imperium_extensions::AgentDef>,
+    tool_edits: imperium_protocol::methods::ToolEdits,
+    tool_watch: Option<Arc<dyn crate::ToolWatch>>,
 }
 
 /// The root agent's task: one turn at a time, in message order, while
@@ -1026,6 +1038,8 @@ async fn run(
         effort,
         replay,
         root_agent,
+        tool_edits,
+        tool_watch,
     } = started;
     let checkpoints = config.checkpoints.clone();
     for message in config.notices {
@@ -1086,6 +1100,9 @@ async fn run(
         effort,
         knowledge: crate::knowledge::Knowledge::new(config.knowledge),
         replay,
+        tool_edits: (tool_watch.is_some()
+            || tool_edits != imperium_protocol::methods::ToolEdits::default())
+        .then(|| crate::tool_edits::ToolEditing::new(tool_edits, tool_watch)),
         inboxes,
         // Task ids continue after those of earlier runs, whose state is kept.
         next_task: AtomicU32::new(agents.last_task_number()),

@@ -446,6 +446,7 @@ async fn a_run_replays_subagents_and_prints_the_documented_json() {
             "subagents",
             "system_prompt",
             "task",
+            "tool_loading",
             "tools",
             "transcript",
             "variant",
@@ -1221,4 +1222,498 @@ async fn the_daemon_stops_a_session_at_its_deadline() {
         .await
         .expect("the daemon ends the run at its deadline");
     assert_eq!(record.ended.unwrap().reason, "timeout");
+}
+
+// Stage 4 of docs/plans/reactive-tools.md: reactive tool loading and variant tool edits in
+// headless evaluations.
+
+/// The names in a request's `tools`.
+fn offered(body: &Value) -> Vec<String> {
+    body["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A request's `tools` array as sent, as compact JSON.
+fn tools_text(body: &Value) -> String {
+    serde_json::to_string(&body["tools"]).unwrap()
+}
+
+/// The content of the latest tool result in a request.
+fn last_result(body: &Value) -> String {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "tool")
+        .and_then(|message| message["content"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+const CORE: [&str; 7] = [
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_dir",
+    "glob",
+    "grep",
+    "run_command",
+];
+
+fn plan_arguments() -> Value {
+    json!({"goal": "fix the bug", "steps": [{"title": "reproduce", "status": "pending"}]})
+}
+
+#[tokio::test]
+async fn reactive_loading_sends_fewer_schemas_and_reaches_tools_on_demand() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let (url, on_seen) = endpoint(vec![
+        tool_call_body("tool_search", &json!({"names": ["update_plan"]})),
+        tool_call_body(
+            "call_tool",
+            &json!({"name": "update_plan", "arguments": plan_arguments()}),
+        ),
+        text_body("Planned."),
+    ])
+    .await;
+    let on = daemon
+        .run(&run_args(
+            "Plan it.",
+            workspace.path(),
+            &url,
+            &["--local", "--flag", "tool_loading=auto"],
+        ))
+        .await;
+    let out = &on.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    let requests = on_seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 3);
+    // Request 1 offers the core and the two loader tools, in a list a third the size.
+    let mut expected: Vec<String> = CORE.iter().map(|name| (*name).to_string()).collect();
+    expected.extend(strings(&["tool_search", "call_tool"]));
+    assert_eq!(offered(&requests[0]), expected);
+    let first_bytes = tools_text(&requests[0]).len();
+    assert!(first_bytes <= 5_700, "{first_bytes} bytes");
+    // Every request of the run carries the same list, and the searched schema is in the
+    // conversation instead.
+    assert!(
+        requests
+            .iter()
+            .all(|request| tools_text(request) == tools_text(&requests[0]))
+    );
+    let found = last_result(&requests[1]);
+    assert!(
+        found.contains("\"update_plan\"") && found.contains("\"parameters\""),
+        "{found}"
+    );
+    assert_eq!(out["plan"]["goal"], "fix the bug");
+
+    let loading = &out["tool_loading"];
+    assert_eq!(loading["mode"], "on");
+    assert_eq!(loading["core"], json!(CORE));
+    let deferred = loading["deferred"].as_array().unwrap();
+    assert!(deferred.iter().any(|name| name == "update_plan"));
+    assert!(deferred.iter().any(|name| name == "spawn_agent"));
+    assert_eq!(
+        loading["searched"],
+        json!([{"names": ["update_plan"], "call": 1}])
+    );
+    assert_eq!(
+        loading["called"],
+        json!([{"name": "update_plan", "call": 2}])
+    );
+    assert!(
+        loading["catalog_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert_eq!(loading["tool_list_changes"], 0);
+    assert_eq!(
+        loading["tool_bytes_by_call"],
+        json!([first_bytes, first_bytes, first_bytes])
+    );
+
+    // The same task with loading off: the whole list, and a list the size of today's.
+    let (url, off_seen) = endpoint(vec![plan_call(), text_body("Planned.")]).await;
+    let off = daemon
+        .run(&run_args(
+            "Plan it.",
+            workspace.path(),
+            &url,
+            &["--local", "--flag", "tool_loading=off"],
+        ))
+        .await;
+    assert_eq!(off.json["exit_reason"], "completed", "{:#}", off.json);
+    let off_requests = off_seen.lock().unwrap().clone();
+    let off_names = offered(&off_requests[0]);
+    assert!(off_names.iter().any(|name| name == "update_plan"));
+    assert!(!off_names.iter().any(|name| name == "tool_search"));
+    let off_bytes = tools_text(&off_requests[0]).len();
+    assert!(off_bytes >= 14_000, "{off_bytes} bytes");
+    assert!(
+        first_bytes * 100 <= off_bytes * 40,
+        "{first_bytes} of {off_bytes}"
+    );
+    assert_eq!(off.json["tool_loading"]["mode"], "off");
+    assert_eq!(off.json["tool_loading"]["deferred"], json!([]));
+    assert_eq!(off.json["tool_loading"]["catalog_hash"], Value::Null);
+    assert_ne!(on.json["prompt_hash"], off.json["prompt_hash"]);
+}
+
+#[tokio::test]
+async fn auto_turns_loading_on_for_a_local_model_only_and_off_is_the_default() {
+    let daemon = Daemon::start("").await;
+    let mode = |outcome: &Outcome| outcome.json["tool_loading"]["mode"].clone();
+    assert_eq!(mode(&daemon.print_prompt(&[]).await), "off");
+    assert_eq!(
+        mode(&daemon.print_prompt(&["--flag", "tool_loading=auto"]).await),
+        "off"
+    );
+    assert_eq!(
+        mode(
+            &daemon
+                .print_prompt(&["--local", "--flag", "tool_loading=auto"])
+                .await
+        ),
+        "on"
+    );
+    assert_eq!(
+        mode(&daemon.print_prompt(&["--flag", "tool_loading=on"]).await),
+        "on"
+    );
+    assert_eq!(
+        mode(
+            &daemon
+                .print_prompt(&["--local", "--flag", "tool_loading=off"])
+                .await
+        ),
+        "off"
+    );
+}
+
+#[tokio::test]
+async fn print_prompt_shows_the_deferred_tools_with_their_schemas() {
+    let daemon = Daemon::start("").await;
+    let on = daemon.print_prompt(&["--flag", "tool_loading=on"]).await;
+    let names = tool_names(&on.json);
+    assert!(names.contains(&"tool_search".to_string()));
+    assert!(!names.contains(&"update_plan".to_string()));
+    let deferred = on.json["deferred_tools"].as_array().unwrap();
+    let plan = deferred
+        .iter()
+        .find(|tool| tool["name"] == "update_plan")
+        .expect("update_plan is deferred");
+    assert!(plan["description"].as_str().is_some());
+    assert_eq!(plan["parameters"]["type"], "object");
+    assert_eq!(on.json["tool_loading"]["mode"], "on");
+    assert_eq!(
+        on.json["tool_loading"]["deferred"]
+            .as_array()
+            .unwrap()
+            .len(),
+        deferred.len()
+    );
+    let off = daemon.print_prompt(&[]).await;
+    assert_eq!(off.json["deferred_tools"], json!([]));
+    assert_eq!(off.json["tool_loading"]["mode"], "off");
+}
+
+#[tokio::test]
+async fn a_direct_call_to_a_deferred_tool_runs_like_call_tool() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let (url, seen) = endpoint(vec![plan_call(), text_body("Planned.")]).await;
+    let outcome = daemon
+        .run(&run_args(
+            "Plan it.",
+            workspace.path(),
+            &url,
+            &["--flag", "tool_loading=on"],
+        ))
+        .await;
+    let out = &outcome.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    // The tool is not in the list, and the call ran all the same.
+    let requests = seen.lock().unwrap().clone();
+    assert!(!offered(&requests[0]).contains(&"update_plan".to_string()));
+    assert_eq!(out["plan"]["goal"], "fix the bug");
+    assert!(!last_result(&requests[1]).starts_with("error"));
+    assert_eq!(out["failed_tool_calls"], 0);
+    assert_eq!(
+        out["tool_loading"]["called"],
+        json!([{"name": "update_plan", "call": 1}])
+    );
+    assert_eq!(out["tool_loading"]["searched"], json!([]));
+    assert_eq!(tools_text(&requests[0]), tools_text(&requests[1]));
+}
+
+#[tokio::test]
+async fn a_dropped_tool_cannot_be_found_or_run() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let variant = write(&files, "drop.toml", "[tools]\ndrop = [\"update_plan\"]\n");
+    let (url, seen) = endpoint(vec![
+        tool_call_body("tool_search", &json!({"names": ["update_plan"]})),
+        tool_call_body(
+            "call_tool",
+            &json!({"name": "update_plan", "arguments": plan_arguments()}),
+        ),
+        plan_call(),
+        text_body("Could not."),
+    ])
+    .await;
+    let outcome = daemon
+        .run(&run_args(
+            "Plan it.",
+            workspace.path(),
+            &url,
+            &["--variant", &variant, "--flag", "tool_loading=on"],
+        ))
+        .await;
+    let out = &outcome.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    let requests = seen.lock().unwrap().clone();
+    // The search does not know it, and neither form of call runs it.
+    let searched: Value = serde_json::from_str(&last_result(&requests[1])).unwrap();
+    assert_eq!(searched["tools"], json!([]));
+    assert_eq!(searched["unknown"][0]["name"], "update_plan");
+    for request in &requests[2..] {
+        assert!(
+            last_result(request).contains("is not one of your tools"),
+            "{}",
+            last_result(request)
+        );
+    }
+    assert_eq!(out["plan"], Value::Null);
+    // The refusal is reported; dropping a tool that is only deferred warns of nothing else.
+    assert_eq!(
+        out["variant"]["warnings"],
+        json!(["dropped tool update_plan was called and refused"])
+    );
+    assert!(
+        !out["tool_loading"]["deferred"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "update_plan")
+    );
+
+    // With loading off the tool is hidden and refused too (it used to run).
+    let (url, seen) = endpoint(vec![plan_call(), text_body("Could not.")]).await;
+    let off = daemon
+        .run(&run_args(
+            "Plan it.",
+            workspace.path(),
+            &url,
+            &["--variant", &variant],
+        ))
+        .await;
+    assert_eq!(off.json["plan"], Value::Null, "{:#}", off.json);
+    let requests = seen.lock().unwrap().clone();
+    assert!(!offered(&requests[0]).contains(&"update_plan".to_string()));
+    assert!(last_result(&requests[1]).contains("is not one of your tools"));
+    assert_eq!(
+        off.json["variant"]["warnings"],
+        json!(["dropped tool update_plan was called and refused"])
+    );
+}
+
+#[tokio::test]
+async fn a_renamed_tool_is_searched_and_called_by_its_new_name_and_stored_by_the_engine_name() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let variant = write(
+        &files,
+        "rename.toml",
+        "[tools.rename]\nupdate_plan = \"plan\"\n[tools.description]\nupdate_plan = \"Keep the checklist.\"\n",
+    );
+    let journal = files.path().join("events.jsonl");
+    let (url, seen) = endpoint(vec![
+        tool_call_body("tool_search", &json!({"names": ["plan"]})),
+        tool_call_body(
+            "call_tool",
+            &json!({"name": "plan", "arguments": plan_arguments()}),
+        ),
+        text_body("Planned."),
+    ])
+    .await;
+    let outcome = daemon
+        .run(&run_args(
+            "Plan it.",
+            workspace.path(),
+            &url,
+            &[
+                "--variant",
+                &variant,
+                "--flag",
+                "tool_loading=on",
+                "--journal",
+                &journal.display().to_string(),
+            ],
+        ))
+        .await;
+    let out = &outcome.json;
+    assert_eq!(out["exit_reason"], "completed", "{out:#}");
+    assert_eq!(out["variant"]["warnings"], json!([]));
+    // The engine ran its own update_plan.
+    assert_eq!(out["plan"]["goal"], "fix the bug");
+    let requests = seen.lock().unwrap().clone();
+    // The search description names the new name; the search result shows it with the new
+    // description.
+    let search = requests[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["function"]["name"] == "tool_search")
+        .unwrap()["function"]["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        search.contains("plan,") && !search.contains("update_plan"),
+        "{search}"
+    );
+    let found: Value = serde_json::from_str(&last_result(&requests[1])).unwrap();
+    assert_eq!(found["tools"][0]["name"], "plan");
+    assert_eq!(found["tools"][0]["description"], "Keep the checklist.");
+    // The earlier calls come back to the model under the new name.
+    let calls = requests[2]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message["tool_calls"].as_array())
+        .flatten()
+        .map(|call| call["function"].to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        calls.contains("plan") && !calls.contains("update_plan"),
+        "{calls}"
+    );
+    // The result shows the new name; the events keep the engine's.
+    let loading = &out["tool_loading"];
+    assert_eq!(loading["searched"], json!([{"names": ["plan"], "call": 1}]));
+    assert_eq!(loading["called"], json!([{"name": "plan", "call": 2}]));
+    let events = std::fs::read_to_string(&journal).unwrap();
+    assert!(events.contains(r#""tool":"update_plan""#), "{events}");
+    assert!(!events.contains(r#""tool":"plan""#), "{events}");
+}
+
+#[tokio::test]
+async fn variant_tool_edits_reach_the_root_only() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let variant = write(
+        &files,
+        "edits.toml",
+        "[tools]\ndrop = [\"grep\"]\n[tools.rename]\nread_file = \"view\"\n",
+    );
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&root_calls);
+    let (url, seen) = endpoint_with(move |_, body| {
+        let system = body["messages"][0]["content"].as_str().unwrap_or_default();
+        if system.contains("Imperium subagent") {
+            return text_body("The parser fails on empty input.");
+        }
+        match counted.fetch_add(1, Ordering::SeqCst) {
+            0 => spawn_call(),
+            1 => tool_call_body("await_tasks", &json!({})),
+            _ => text_body("Done."),
+        }
+    })
+    .await;
+    let outcome = daemon
+        .run(&run_args(
+            "Look into it.",
+            workspace.path(),
+            &url,
+            &["--variant", &variant],
+        ))
+        .await;
+    assert_eq!(
+        outcome.json["exit_reason"], "completed",
+        "{:#}",
+        outcome.json
+    );
+    let requests = seen.lock().unwrap().clone();
+    let (subagent, root): (Vec<&Value>, Vec<&Value>) = requests.iter().partition(|body| {
+        body["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|system| system.contains("Imperium subagent"))
+    });
+    assert!(!subagent.is_empty() && !root.is_empty());
+    for request in &root {
+        let names = offered(request);
+        assert!(names.contains(&"view".to_string()), "{names:?}");
+        assert!(!names.contains(&"read_file".to_string()));
+        assert!(!names.contains(&"grep".to_string()));
+    }
+    for request in &subagent {
+        let names = offered(request);
+        assert!(names.contains(&"read_file".to_string()), "{names:?}");
+        assert!(names.contains(&"grep".to_string()));
+        assert!(!names.contains(&"view".to_string()));
+    }
+}
+
+#[tokio::test]
+async fn tools_core_sets_the_core() {
+    let daemon = Daemon::start("").await;
+    let files = tempfile::tempdir().unwrap();
+    let variant = write(
+        &files,
+        "core.toml",
+        "[tools]\ncore = [\"read_file\", \"grep\", \"list_dir\", \"run_command\"]\n",
+    );
+    let preview = daemon
+        .print_prompt(&["--variant", &variant, "--flag", "tool_loading=on"])
+        .await;
+    assert_eq!(preview.json["variant"]["warnings"], json!([]));
+    let mut names = tool_names(&preview.json);
+    let loaders = names.split_off(names.len() - 2);
+    assert_eq!(loaders, ["tool_search", "call_tool"]);
+    names.sort();
+    assert_eq!(names, ["grep", "list_dir", "read_file", "run_command"]);
+    let deferred: Vec<&str> = preview.json["deferred_tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    for name in [
+        "write_file",
+        "edit_file",
+        "glob",
+        "update_plan",
+        "spawn_agent",
+    ] {
+        assert!(deferred.contains(&name), "{name} in {deferred:?}");
+    }
+    assert!(!deferred.contains(&"read_file"));
+    // A name that is not a tool warns.
+    let bad = write(
+        &files,
+        "bad.toml",
+        "[tools]\ncore = [\"nope\", \"read_file\"]\n",
+    );
+    let warned = daemon
+        .print_prompt(&["--variant", &bad, "--flag", "tool_loading=on"])
+        .await;
+    assert_eq!(
+        warned.json["variant"]["warnings"].as_array().unwrap().len(),
+        1
+    );
 }
