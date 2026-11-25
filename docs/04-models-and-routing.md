@@ -226,6 +226,13 @@ llama.cpp* in the app) installs llama.cpp's own release build from
   `github.com/.../releases/download` links have returned 504 for hours at a time). Every asset
   is checked against the SHA-256 `digest` GitHub publishes for it; an asset without one, or
   with a different hash, is refused and nothing is replaced.
+- **Unpacking.** Each archive (`.zip` or `.tar.gz`) is unpacked into a staging folder, writing
+  only regular files and folders beneath it: an entry with an absolute path, a `..` component,
+  a drive prefix or a NUL, a symlink, or any other non-regular entry (a FIFO or device) is
+  refused, and files keep their executable bit. Unpacking is bounded by what is actually written,
+  not by sizes the archive declares: at most 8 GiB in total, 20 000 entries, and no zip entry
+  over 100 MB that expands more than 200:1. An archive past any limit fails the install with
+  invalid data and the staging folder is removed, so no partial build is left.
 - **Fallback.** After unpacking, the build is checked as in [runtime readiness](#runtime-readiness).
   A build that does not start is removed and the next one tried; one that starts but does not
   see the GPU is kept only if no later build does better. A failed download stops the install.

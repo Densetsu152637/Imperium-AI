@@ -714,26 +714,131 @@ async fn stage(
     Ok(built)
 }
 
-/// Unpacks a `.zip` or `.tar.gz`; both refuse entries that would land outside `into`.
+/// What one archive may unpack to. An archive that goes past any limit is refused with
+/// `InvalidData` and the staging folder holding the partial tree is removed.
+///
+/// llama.cpp's largest release (a CUDA build plus its runtime libraries) unpacks to a few GiB in
+/// a few hundred files, so the real limits leave generous headroom while still stopping a
+/// decompression bomb or an archive of millions of entries from filling the disk. Sizes are
+/// counted from the bytes actually written or decompressed, never from sizes the archive
+/// declares.
+#[derive(Clone, Copy)]
+struct Limits {
+    /// Total bytes unpacked from one archive (for a tar, decompressed bytes including headers).
+    bytes: u64,
+    /// Entries (files, folders and links) in one archive.
+    entries: usize,
+    /// A zip entry over this many bytes must not expand more than `ratio` times its compressed
+    /// size.
+    ratio_floor: u64,
+    /// The largest uncompressed-to-compressed ratio allowed for a zip entry over `ratio_floor`.
+    ratio: u64,
+}
+
+/// The limits for real installs: 8 GiB, 20 000 entries, and no entry over 100 MB that expands
+/// more than 200:1.
+const LIMITS: Limits = Limits {
+    bytes: 8 << 30,
+    entries: 20_000,
+    ratio_floor: 100_000_000,
+    ratio: 200,
+};
+
+fn over_limit(message: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
+fn too_many_bytes(limits: Limits) -> std::io::Error {
+    over_limit(format!(
+        "archive unpacks to more than {} bytes",
+        limits.bytes
+    ))
+}
+
+/// Unpacks a `.zip` or `.tar.gz`; both refuse entries that would land outside `into` and
+/// archives that go past [`LIMITS`].
 fn extract(archive: &Path, into: &Path) -> Result<(), InstallError> {
     let context = || format!("unpacking {}", archive.display());
     let file = std::fs::File::open(archive).map_err(io(archive.display().to_string()))?;
     std::fs::create_dir_all(into).map_err(io(into.display().to_string()))?;
     if archive.extension().is_some_and(|ext| ext == "zip") {
-        extract_zip(file, into).map_err(io(context()))
+        extract_zip(file, into, LIMITS).map_err(io(context()))
     } else {
-        tar::Archive::new(flate2::read::GzDecoder::new(file))
-            .unpack(into)
-            .map_err(io(context()))
+        extract_tar(flate2::read::GzDecoder::new(file), into, LIMITS).map_err(io(context()))
     }
+}
+
+/// Fails with `InvalidData` once more than `left` bytes have been read through it, and records
+/// that it did so in `tripped` so the cause survives whatever wraps the error.
+struct CappedReader<R> {
+    inner: R,
+    left: u64,
+    tripped: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl<R: std::io::Read> std::io::Read for CappedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        match self.left.checked_sub(read as u64) {
+            Some(left) => self.left = left,
+            None => {
+                self.tripped.set(true);
+                return Err(over_limit("archive is over the byte limit".into()));
+            }
+        }
+        Ok(read)
+    }
+}
+
+/// Unpacks a tar stream into `into`. The tar crate's own path checks apply to each entry
+/// (`unpack_in` skips an entry that would leave `into`, which is refused here), the entry count
+/// is capped, and the decompressed stream is capped, so a small archive cannot expand without
+/// bound.
+fn extract_tar(reader: impl std::io::Read, into: &Path, limits: Limits) -> std::io::Result<()> {
+    let tripped = std::rc::Rc::new(std::cell::Cell::new(false));
+    let capped = CappedReader {
+        inner: reader,
+        left: limits.bytes,
+        tripped: tripped.clone(),
+    };
+    let unpack = || -> std::io::Result<()> {
+        let mut archive = tar::Archive::new(capped);
+        for (count, entry) in archive.entries()?.enumerate() {
+            if count >= limits.entries {
+                return Err(over_limit(format!(
+                    "archive holds more than {} entries",
+                    limits.entries
+                )));
+            }
+            let mut entry = entry?;
+            if !entry.unpack_in(into)? {
+                let name = entry.path_bytes().into_owned();
+                return Err(over_limit(format!(
+                    "refusing tar entry {:?}: path escapes the destination",
+                    String::from_utf8_lossy(&name)
+                )));
+            }
+        }
+        Ok(())
+    };
+    unpack().map_err(|error| {
+        if tripped.get() {
+            too_many_bytes(limits)
+        } else {
+            error
+        }
+    })
 }
 
 /// Unpacks a zip into `into`, writing only regular files and folders beneath it.
 ///
 /// Entries with an absolute path, a `..` component or a drive prefix are refused, as are symlinks
-/// and any other non-regular entry, so nothing can land or link outside `into`. Files are created
-/// exclusively, so an entry can never be written through an existing link.
-fn extract_zip(file: std::fs::File, into: &Path) -> std::io::Result<()> {
+/// and any other non-regular entry (a FIFO or device entry, which the zip crate would otherwise
+/// write as an ordinary file), so nothing can land or link outside `into`. Files are created
+/// exclusively, so an entry can never be written through an existing link. The entry count and
+/// the bytes actually written are held to `limits`.
+fn extract_zip(file: std::fs::File, into: &Path, limits: Limits) -> std::io::Result<()> {
+    use std::io::Read;
     use std::path::Component;
     let refuse = |name: &str, why: &str| {
         std::io::Error::new(
@@ -742,6 +847,13 @@ fn extract_zip(file: std::fs::File, into: &Path) -> std::io::Result<()> {
         )
     };
     let mut archive = zip::ZipArchive::new(file).map_err(std::io::Error::other)?;
+    if archive.len() > limits.entries {
+        return Err(over_limit(format!(
+            "archive holds more than {} entries",
+            limits.entries
+        )));
+    }
+    let mut written_total = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(std::io::Error::other)?;
         let name = entry
@@ -764,12 +876,16 @@ fn extract_zip(file: std::fs::File, into: &Path) -> std::io::Result<()> {
         {
             return Err(refuse(&name, "path is absolute or has a prefix"));
         }
-        let is_link = entry.is_symlink()
-            || entry
-                .unix_mode()
-                .is_some_and(|mode| mode & 0o170_000 == 0o120_000);
-        if is_link {
+        // Only regular files and folders. `is_file` is just "not a folder and not a symlink", so
+        // a FIFO or device entry has to be refused by its unix file type.
+        if entry.is_symlink() {
             return Err(refuse(&name, "symlinks are not allowed"));
+        }
+        if let Some(kind) = entry.unix_mode().map(|mode| mode & 0o170_000) {
+            let allowed = kind == 0 || kind == 0o100_000 || (kind == 0o040_000 && entry.is_dir());
+            if !allowed {
+                return Err(refuse(&name, "not a regular file or folder"));
+            }
         }
         let target = into.join(&relative);
         if entry.is_dir() {
@@ -782,9 +898,24 @@ fn extract_zip(file: std::fs::File, into: &Path) -> std::io::Result<()> {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // Read one byte past the allowance, so exceeding it is seen without writing much more.
+        let remaining = limits.bytes - written_total;
+        let ratio_cap = entry
+            .compressed_size()
+            .saturating_mul(limits.ratio)
+            .max(limits.ratio_floor);
+        let allowed = remaining.min(ratio_cap);
         let mut out = std::fs::File::create_new(&target)?;
-        std::io::copy(&mut entry, &mut out)?;
+        let written = std::io::copy(&mut (&mut entry).take(allowed + 1), &mut out)?;
         drop(out);
+        if written > allowed {
+            return Err(if allowed == remaining {
+                too_many_bytes(limits)
+            } else {
+                refuse(&name, "expands too much for its compressed size")
+            });
+        }
+        written_total += written;
         #[cfg(unix)]
         if let Some(mode) = entry.unix_mode() {
             use std::os::unix::fs::PermissionsExt;
@@ -1569,13 +1700,36 @@ echo 'version: 6000 (abc)'
         root: &Path,
         build: impl FnOnce(&mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>),
     ) -> std::io::Result<()> {
+        extract_crafted_with(root, LIMITS, build)
+    }
+
+    fn extract_crafted_with(
+        root: &Path,
+        limits: Limits,
+        build: impl FnOnce(&mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>),
+    ) -> std::io::Result<()> {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         build(&mut zip);
-        let bytes = zip.finish().unwrap().into_inner();
+        extract_zip_bytes(root, zip.finish().unwrap().into_inner(), limits)
+    }
+
+    fn extract_zip_bytes(root: &Path, bytes: Vec<u8>, limits: Limits) -> std::io::Result<()> {
         let path = root.join("crafted.zip");
         std::fs::write(&path, bytes).unwrap();
-        extract_zip(std::fs::File::open(&path).unwrap(), &root.join("out"))
+        extract_zip(
+            std::fs::File::open(&path).unwrap(),
+            &root.join("out"),
+            limits,
+        )
     }
+
+    /// Small limits so the caps can be hit with a few bytes.
+    const SMALL: Limits = Limits {
+        bytes: 1_000,
+        entries: 2,
+        ratio_floor: 100,
+        ratio: 4,
+    };
 
     fn add(zip: &mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>, name: &str) {
         zip.start_file(name, zip::write::SimpleFileOptions::default())
@@ -1649,6 +1803,242 @@ echo 'version: 6000 (abc)'
             assert!(!root.path().join("out/link").exists());
             assert!(!outside.join("escaped.txt").exists());
         }
+    }
+
+    #[test]
+    fn zip_extraction_refuses_backslash_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        for entry in ["..\\escaped.txt", "a\\..\\..\\escaped.txt"] {
+            let error = extract_crafted(root.path(), |zip| add(zip, entry)).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{entry}");
+            assert!(!root.path().join("escaped.txt").exists());
+        }
+    }
+
+    #[test]
+    fn zip_extraction_refuses_drive_relative_names() {
+        let root = tempfile::tempdir().unwrap();
+        for entry in ["C:x", "C:\\x", "c:/x"] {
+            let error = extract_crafted(root.path(), |zip| add(zip, entry)).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{entry}");
+        }
+        assert!(!root.path().join("out/x").exists());
+    }
+
+    #[test]
+    fn zip_extraction_refuses_nul_in_names() {
+        let root = tempfile::tempdir().unwrap();
+        let error = extract_crafted(root.path(), |zip| add(zip, "bin/llama\0-server")).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(!root.path().join("out/bin").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_extraction_keeps_the_exec_bit_of_regular_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        extract_crafted(root.path(), |zip| {
+            zip.start_file(
+                "llama-server",
+                zip::write::SimpleFileOptions::default().unix_permissions(0o755),
+            )
+            .unwrap();
+            zip.write_all(b"payload").unwrap();
+            zip.start_file(
+                "plain.txt",
+                zip::write::SimpleFileOptions::default().unix_permissions(0o644),
+            )
+            .unwrap();
+            zip.write_all(b"payload").unwrap();
+        })
+        .unwrap();
+        let mode = |name: &str| {
+            std::fs::metadata(root.path().join("out").join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode("llama-server"), 0o755);
+        assert_eq!(mode("plain.txt"), 0o644);
+    }
+
+    /// Rewrites the unix file type of the only entry in `zip`'s bytes, as an archive made
+    /// elsewhere could carry it.
+    fn with_file_type(mut zip: Vec<u8>, file_type: u32) -> Vec<u8> {
+        let central = zip
+            .windows(4)
+            .rposition(|window| window == b"PK\x01\x02")
+            .unwrap();
+        zip[central + 5] = 3; // made by: unix
+        let mode = (file_type | 0o644) << 16;
+        zip[central + 38..central + 42].copy_from_slice(&mode.to_le_bytes());
+        zip
+    }
+
+    #[test]
+    fn zip_extraction_refuses_non_regular_unix_entries() {
+        let build = || {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            add(&mut zip, "pipe");
+            zip.finish().unwrap().into_inner()
+        };
+        for (kind, file_type) in [
+            ("fifo", 0o010_000),
+            ("character device", 0o020_000),
+            ("block device", 0o060_000),
+            ("socket", 0o140_000),
+            ("folder type on a file", 0o040_000),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let error = extract_zip_bytes(root.path(), with_file_type(build(), file_type), LIMITS)
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{kind}");
+            assert!(!root.path().join("out/pipe").exists(), "{kind}");
+        }
+        let root = tempfile::tempdir().unwrap();
+        extract_zip_bytes(root.path(), with_file_type(build(), 0o100_000), LIMITS).unwrap();
+        assert!(root.path().join("out/pipe").is_file());
+    }
+
+    #[test]
+    fn zip_extraction_caps_the_entry_count() {
+        let root = tempfile::tempdir().unwrap();
+        extract_crafted_with(root.path(), SMALL, |zip| {
+            add(zip, "a");
+            add(zip, "b");
+        })
+        .unwrap();
+        let error = extract_crafted_with(root.path(), SMALL, |zip| {
+            add(zip, "c");
+            add(zip, "d");
+            add(zip, "e");
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(!root.path().join("out/e").exists());
+    }
+
+    #[test]
+    fn zip_extraction_caps_the_bytes_written() {
+        let root = tempfile::tempdir().unwrap();
+        let limits = Limits {
+            bytes: 10,
+            entries: 100,
+            ..SMALL
+        };
+        // Two 7-byte entries pass one at a time but not together.
+        extract_crafted_with(root.path(), limits, |zip| add(zip, "a")).unwrap();
+        let error = extract_crafted_with(root.path(), limits, |zip| {
+            add(zip, "b");
+            add(zip, "c");
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        // The entry that crossed the line is cut off, not written in full.
+        assert!(
+            root.path()
+                .join("out/c")
+                .metadata()
+                .map_or(true, |meta| meta.len() <= 4)
+        );
+    }
+
+    #[test]
+    fn zip_extraction_caps_the_expansion_ratio() {
+        let deflated = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let limits = Limits {
+            bytes: 1 << 20,
+            entries: 10,
+            ..SMALL
+        };
+        // 10 000 zeros deflate to a few bytes: far past 4:1 and over the 100-byte floor.
+        let root = tempfile::tempdir().unwrap();
+        let error = extract_crafted_with(root.path(), limits, |zip| {
+            zip.start_file("zeros", deflated).unwrap();
+            zip.write_all(&[0; 10_000]).unwrap();
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        // Under the floor the ratio does not matter.
+        let root = tempfile::tempdir().unwrap();
+        extract_crafted_with(root.path(), limits, |zip| {
+            zip.start_file("zeros", deflated).unwrap();
+            zip.write_all(&[0; 90]).unwrap();
+        })
+        .unwrap();
+    }
+
+    fn untar(files: &[(&str, &[u8])], limits: Limits, root: &Path) -> std::io::Result<()> {
+        let bytes = archive("crafted.tar.gz", files);
+        extract_tar(
+            flate2::read::GzDecoder::new(std::io::Cursor::new(bytes)),
+            &root.join("out"),
+            limits,
+        )
+    }
+
+    #[test]
+    fn tar_extraction_unpacks_regular_entries() {
+        let root = tempfile::tempdir().unwrap();
+        untar(&[("top/bin/llama-server", b"payload")], LIMITS, root.path()).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("out/top/bin/llama-server")).unwrap(),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn tar_extraction_caps_the_entry_count() {
+        let root = tempfile::tempdir().unwrap();
+        untar(&[("a", b"x"), ("b", b"x")], SMALL, root.path()).unwrap();
+        let error =
+            untar(&[("c", b"x"), ("d", b"x"), ("e", b"x")], SMALL, root.path()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(!root.path().join("out/e").exists());
+    }
+
+    #[test]
+    fn tar_extraction_caps_the_decompressed_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let limits = Limits {
+            bytes: 4_000,
+            entries: 100,
+            ..SMALL
+        };
+        // 100 KB of zeros compress to almost nothing but unpack past the cap.
+        let error = untar(&[("big", &[0; 100_000])], limits, root.path()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            root.path()
+                .join("out/big")
+                .metadata()
+                .map_or(true, |meta| meta.len() < 100_000)
+        );
+    }
+
+    #[test]
+    fn tar_extraction_refuses_parent_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(1);
+        header.set_mode(0o644);
+        // `append_data` rejects `..`, so the name goes into the header directly.
+        header.as_old_mut().name[..13].copy_from_slice(b"../escaped.tx");
+        header.set_cksum();
+        builder.append(&header, &b"x"[..]).unwrap();
+        let bytes = builder.into_inner().unwrap();
+        let error = extract_tar(
+            std::io::Cursor::new(bytes),
+            &root.path().join("out"),
+            LIMITS,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(!root.path().join("escaped.tx").exists());
     }
 
     /// Serves `files` at `/assets/<name>` and a release listing them at the API path.
