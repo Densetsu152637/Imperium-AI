@@ -102,6 +102,8 @@ struct World {
     next_id: u64,
     /// Held back before the next `PrStatus` reply is sent (the reply itself is already decided).
     delay_next_status: Option<std::time::Duration>,
+    /// The same for the next `DisableAutoMerge` reply (the mutation is applied at once).
+    delay_next_disable: Option<std::time::Duration>,
 }
 
 type Shared = Arc<Mutex<World>>;
@@ -347,6 +349,12 @@ impl FakeGithub {
         self.w().delay_next_status = Some(delay);
     }
 
+    /// Sends the next `DisableAutoMerge` reply after `delay`. GitHub has applied the change by
+    /// then, so something else can happen between the change and the caller hearing of it.
+    pub fn delay_next_disable(&self, delay: std::time::Duration) {
+        self.w().delay_next_disable = Some(delay);
+    }
+
     /// The cost, remaining points and seconds-to-reset every GraphQL reply reports.
     pub fn set_graphql_cost(&self, cost: u32, remaining: u32, reset_in: u64) {
         self.w().graphql_cost = (cost, remaining, reset_in);
@@ -573,8 +581,11 @@ async fn graphql(
 ) -> Response {
     let delay = {
         let mut held = world.lock().expect("fake world lock");
-        if String::from_utf8_lossy(&body).contains("\"operationName\":\"PrStatus\"") {
+        let text = String::from_utf8_lossy(&body);
+        if text.contains("\"operationName\":\"PrStatus\"") {
             held.delay_next_status.take()
+        } else if text.contains("\"operationName\":\"DisableAutoMerge\"") {
+            held.delay_next_disable.take()
         } else {
             None
         }
