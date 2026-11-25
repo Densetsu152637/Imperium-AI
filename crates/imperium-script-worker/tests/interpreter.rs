@@ -200,7 +200,7 @@ async fn ending_a_run_mid_program_leaves_no_worker() {
     let launcher = launcher();
     let mut run = launcher.start("lookup()", &quick_limits()).await.unwrap();
     let pid = run.pid().unwrap();
-    assert!(matches!(run.next().await, ScriptEvent::NameLookup(_)));
+    assert!(matches!(run.next().await, ScriptEvent::Call(_)));
     run.finish().await;
     assert!(gone(pid));
     assert_eq!(launcher.free_slots(), 8, "the worker slot was not returned");
@@ -210,11 +210,11 @@ async fn ending_a_run_mid_program_leaves_no_worker() {
 async fn a_killed_worker_is_reported_crashed_and_the_next_program_runs() {
     let launcher = launcher();
     let mut run = launcher.start("lookup()", &quick_limits()).await.unwrap();
-    assert!(matches!(run.next().await, ScriptEvent::NameLookup(_)));
+    assert!(matches!(run.next().await, ScriptEvent::Call(_)));
     let pid = rustix::process::Pid::from_raw(i32::try_from(run.pid().unwrap()).unwrap()).unwrap();
     rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
     // The answer may go to a dead worker; either way the program ends crashed.
-    let _ = run.resume_name(Some("lookup")).await;
+    let _ = run.resume_value(MontyObject::string("x")).await;
     match run.next().await {
         ScriptEvent::Done(Err(ScriptError::Crashed(_))) => {}
         other => panic!("expected a crash, got {other:?}"),
@@ -257,7 +257,7 @@ async fn a_held_call_outlives_the_request_timeout() {
 async fn the_workers_environment_is_empty() {
     let mut run = launcher().start("lookup()", &quick_limits()).await.unwrap();
     let pid = run.pid().unwrap();
-    assert!(matches!(run.next().await, ScriptEvent::NameLookup(_)));
+    assert!(matches!(run.next().await, ScriptEvent::Call(_)));
     let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap();
     assert!(
         environ.is_empty(),

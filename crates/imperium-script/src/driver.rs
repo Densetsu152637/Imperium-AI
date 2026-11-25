@@ -225,6 +225,7 @@ impl Launcher {
             request_timeout: limits.request_timeout(),
             send_buf: Vec::new(),
             pending: None,
+            call_name: String::new(),
             suspensions: 0,
             finished: false,
             startup: Duration::ZERO,
@@ -289,6 +290,8 @@ pub struct ScriptRun {
     request_timeout: Duration,
     send_buf: Vec<u8>,
     pending: Option<Pending>,
+    /// The function name of the call waiting for an answer.
+    call_name: String,
     suspensions: usize,
     finished: bool,
     startup: Duration,
@@ -453,6 +456,7 @@ impl ScriptRun {
                     }
                     let call_id = call.call_id;
                     let function = call.function_name.clone();
+                    self.call_name.clone_from(&function);
                     let args = match call.into_call_args() {
                         Ok(args) => args,
                         Err(err) => {
@@ -574,6 +578,26 @@ impl ScriptRun {
         };
         let exception = MontyException::new(ExcType::RuntimeError, Some(message.to_owned()));
         let (result, values) = ext_result_to_proto(ExtFunctionResult::Error(exception));
+        let resume = pb::ResumeCall {
+            call_id,
+            result: Some(result),
+            values,
+        };
+        self.answer(pb::client_request::Kind::ResumeCall(resume))
+            .await
+    }
+
+    /// Answers a call to a name that is not a function the program may call: `NameError`.
+    /// A program that calls a bare name reaches the host as a call by that name, with no name
+    /// lookup before it, so the host decides at call time.
+    pub async fn resume_not_found(&mut self) -> Result<(), ScriptError> {
+        let Some(Pending::Call(call_id)) = self.pending else {
+            return Err(ScriptError::Misuse(
+                "no call is waiting for an answer".to_owned(),
+            ));
+        };
+        let (result, values) =
+            ext_result_to_proto(ExtFunctionResult::NotFound(self.call_name.clone()));
         let resume = pb::ResumeCall {
             call_id,
             result: Some(result),

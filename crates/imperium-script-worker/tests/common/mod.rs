@@ -61,9 +61,14 @@ pub async fn run(launcher: &Launcher, code: &str, limits: &Limits, host: &[&str]
                     .expect("the lookup is answered");
             }
             ScriptEvent::Call(call) => {
-                let value = MontyObject::string(format!("result of {}", call.function));
-                outcome.calls.push(call);
-                run.resume_value(value).await.expect("the call is answered");
+                // A bare-name call arrives as a call by name; unknown names are NameError.
+                if host.contains(&call.function.as_str()) {
+                    let value = MontyObject::string(format!("result of {}", call.function));
+                    outcome.calls.push(call);
+                    run.resume_value(value).await.expect("the call is answered");
+                } else {
+                    run.resume_not_found().await.expect("the call is answered");
+                }
             }
             ScriptEvent::Done(result) => {
                 outcome.result = result;
