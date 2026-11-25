@@ -496,7 +496,7 @@ impl Agent {
             return output;
         };
         if proxied {
-            self.note_loaded(&[spec.name.clone()], ToolLoadVia::Call);
+            self.note_loaded(std::slice::from_ref(&spec.name), ToolLoadVia::Call);
         }
         if self.last_tool_ok.load(Ordering::SeqCst) {
             return output;
