@@ -296,6 +296,22 @@ it. Its processes are killed when the session is stopped, archived, or deleted, 
 is dropped, and when the daemon shuts down (which waits up to 5 s for the kills). Remote
 runtimes do not run background commands yet.
 
+**Completion notices.** The agent need not poll: when a background command ends on its own
+(an exit with any code, or a signal), the root agent is told once, at the same safe point where
+steering messages join the turn (between a finished tool round and the next model call, so tool
+calls and results stay paired). The notice is a user-role message wrapped in
+`<background-notice>`, so it reads as a system notice and not the user's words: the id, the
+command, how it ended, how long it ran, the last 5 non-empty lines of output (each cut to 200
+characters), and `command_output {"id":..,"since":0}` to read the rest. Several commands that
+end between two calls each get a notice, in start order. Not reported: a command the agent
+stopped with `command_stop`, one killed because the session stopped, and one whose end the
+agent already read through `command_output`. Nothing wakes an idle session: a command that ends
+between turns is reported at the first safe point of the next turn (the way a queued message
+waits for its turn). Only the root is told (subagents may share its process table). The notice
+is model context only; it adds no protocol event, so clients do not show it. Not yet: a
+`notify_on` pattern that reports a matching output line while the command still runs, and
+remote runtimes (they run no background commands).
+
 ### `ask_user`
 
 The root calls `ask_user(questions[])` once with every question it has; each has `question`,

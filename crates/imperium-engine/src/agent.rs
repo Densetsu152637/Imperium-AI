@@ -39,6 +39,7 @@ use imperium_protocol::methods::{Compaction, ContextFit};
 
 mod attachments;
 mod auto;
+mod background;
 mod catalog;
 mod compaction;
 mod delegation;

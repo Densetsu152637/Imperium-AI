@@ -889,3 +889,115 @@ async fn only_the_root_prompt_carries_the_personality_after_the_reply_rules() {
         assert!(!system.contains("MARKER-7f3a"), "{system}");
     }
 }
+
+/// A fake endpoint like [`scripted_endpoint`] that also records every request body.
+async fn recording_endpoint(
+    bodies: Vec<String>,
+) -> (Endpoint, Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bodies = Arc::new(bodies);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |axum::Json(request): axum::Json<serde_json::Value>| {
+            let index = calls.fetch_add(1, Ordering::SeqCst);
+            let body = bodies[index.min(bodies.len() - 1)].clone();
+            recorded.lock().unwrap().push(request);
+            async move { ([("content-type", "text/event-stream")], body) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    (
+        Endpoint {
+            base_url,
+            api_key: None,
+        },
+        seen,
+    )
+}
+
+/// The text of every message in `request` that carries a background-command notice.
+fn notices(request: &serde_json::Value) -> Vec<String> {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "user")
+        .filter_map(|message| message["content"].as_str())
+        .filter(|text| text.contains("<background-notice>"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_background_command_that_ends_is_reported_to_the_agent_once() {
+    let (background, wait) = if cfg!(windows) {
+        (
+            "ping -n 2 127.0.0.1 > NUL & echo finished-ok & exit 2",
+            "ping -n 4 127.0.0.1 > NUL",
+        )
+    } else {
+        ("sleep 1; echo finished-ok; exit 2", "sleep 3")
+    };
+    let (endpoint, requests) = recording_endpoint(vec![
+        tool_call_body(
+            "run_command",
+            &serde_json::json!({"command": background, "background": true}).to_string(),
+        ),
+        // A foreground command that outlasts the background one.
+        tool_call_body(
+            "run_command",
+            &serde_json::json!({"command": wait}).to_string(),
+        ),
+        text_body("Noted."),
+        text_body("Still noted."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(endpoint, dir.path());
+    session.set_permission_mode(PermissionMode::Full);
+    let mut events = session.subscribe();
+    session.send("serve".into()).unwrap();
+    let (_, asked) = run_turn(&session, &mut events, PermissionDecision::Deny).await;
+    assert!(asked.is_empty(), "{asked:?}");
+    session.send("anything else?".into()).unwrap();
+    run_turn(&session, &mut events, PermissionDecision::Deny).await;
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    // Still running when the second call is made: nothing to report yet.
+    assert!(notices(&requests[1]).is_empty());
+    // Ended during the foreground command: told at the next safe point, as a user message
+    // after the complete tool round.
+    let told = notices(&requests[2]);
+    assert_eq!(told.len(), 1, "{told:?}");
+    for part in ["p1", "exited with code 2", "finished-ok", "command_output"] {
+        assert!(told[0].contains(part), "{part}: {}", told[0]);
+    }
+    let messages = requests[2]["messages"].as_array().unwrap();
+    assert_eq!(messages.last().unwrap()["role"], "user");
+    assert_eq!(messages[messages.len() - 2]["role"], "tool");
+    // The next turn carries it in the history, and nothing new: it is never told twice.
+    assert_eq!(notices(&requests[3]).len(), 1);
+}
+
+#[tokio::test]
+async fn a_foreground_command_gets_no_notice() {
+    let (endpoint, requests) = recording_endpoint(vec![
+        tool_call_body("run_command", r#"{"command":"echo hi && exit 1"}"#),
+        text_body("Done."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(endpoint, dir.path());
+    session.set_permission_mode(PermissionMode::Full);
+    let mut events = session.subscribe();
+    session.send("run it".into()).unwrap();
+    run_turn(&session, &mut events, PermissionDecision::Deny).await;
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| notices(request).is_empty()));
+}
