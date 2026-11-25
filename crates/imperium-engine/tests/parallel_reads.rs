@@ -221,18 +221,11 @@ fn assert_well_formed(events: &[SessionEvent], ids: &[&str]) {
     }
 }
 
-/// `body` with the directory's path (as given and as the system spells it) replaced, so two
-/// runs in different directories can be compared.
+/// `body` with the directory's unique name replaced, so two runs in different directories can
+/// be compared (the rest of the path is the same however the system spells it).
 fn without_dir(body: &Value, dir: &std::path::Path) -> Value {
-    let mut text = body.to_string();
-    let spellings = [Some(dir.to_path_buf()), dir.canonicalize().ok()];
-    for path in spellings.into_iter().flatten() {
-        let shown = path.to_string_lossy().to_string();
-        // JSON escapes the backslashes of a Windows path.
-        text = text.replace(&shown.replace('\\', "\\\\"), "<dir>");
-        text = text.replace(&shown, "<dir>");
-    }
-    serde_json::from_str(&text).unwrap()
+    let name = dir.file_name().unwrap().to_string_lossy().to_string();
+    serde_json::from_str(&body.to_string().replace(&name, "<dir>")).unwrap()
 }
 
 /// Runs one step of `calls` and returns the first and second requests (the directory's path
