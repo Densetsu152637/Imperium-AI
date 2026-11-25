@@ -232,16 +232,27 @@ fn ctrl_c_is_ignored_by_a_shell_that_ignores_it() {
 #[test]
 fn ctrl_c_right_after_spawn_does_not_end_the_terminal() {
     let dir = work_dir();
+    let trace = dir.path().join("trace.txt");
     // The handover of the terminal is held back for 1.5 s, so the Ctrl+C certainly arrives while
-    // the supervisor's group is the foreground group and reaches only the supervisor.
+    // the supervisor's group is the foreground group and reaches only the supervisor. It is sent
+    // as soon as the supervisor says its handlers are in place and the shell runs (before that,
+    // a few milliseconds after `exec`, the default action would apply).
     let pty = Pty::spawn(spec_with_flags(
         SHELL,
         &["-c", "sleep 30"],
         dir.path(),
-        &["--test-delay-handover-ms", "1500"],
+        &[
+            "--test-delay-handover-ms",
+            "1500",
+            "--test-trace",
+            trace.to_str().unwrap(),
+        ],
     ))
     .unwrap();
-    pty.write(b"\x03").unwrap();
+    wait_until("the shell to start", || {
+        std::fs::read_to_string(&trace).is_ok_and(|text| text.contains("shell started"))
+    });
+    pty.write(b"").unwrap();
     sleep(Duration::from_millis(2500));
     assert!(pty.exit().is_none(), "the early Ctrl+C ended the terminal");
     pty.end();
@@ -321,6 +332,7 @@ fn tcsetpgrp_is_called_once_and_only_while_the_supervisor_is_foreground() {
     assert_eq!(
         lines,
         [
+            "shell started",
             "handover: foreground=true",
             "tcsetpgrp: ok",
             "sigcont: sent"

@@ -378,6 +378,8 @@ fn supervise(args: impl IntoIterator<Item = OsString>) -> Result<i32, Failure> {
 /// in the moment before the call reaches only the supervisor's group, which discards it. The
 /// supervisor reads, writes and changes nothing on the terminal after this.
 fn hand_over_terminal(shell: Pid, hooks: &Hooks) {
+    // Handlers are in place and the shell runs: a Ctrl+C from here on reaches only us.
+    hooks.trace("shell started");
     hooks.delay_handover();
     let tty = io::stdin();
     match tcgetpgrp(&tty) {
