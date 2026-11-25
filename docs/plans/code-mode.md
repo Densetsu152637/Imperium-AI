@@ -1,6 +1,6 @@
 # Plan: programmatic tool calling (code mode)
 
-Revision: 2026-11-26, revision 3 (plan critic round 1: findings F1 to F12, all accepted, with the root's decisions on F3 and F4; the root's answers recorded as [settled decisions](#settled-decisions)); written against `experimental`
+Revision: 2026-11-26, revision 4 (delta review of revision 3: N1 to N7 and the F12 follow-up; plan critic round 1: findings F1 to F12, all accepted, with the root's decisions on F3 and F4; the root's answers recorded as [settled decisions](#settled-decisions)); written against `experimental`
 at `1c066512`. Roadmap [item 65](../12-roadmap.md#next-in-order); Imperium-Research roadmap R2.8.
 Status: planned.
 
@@ -199,27 +199,41 @@ next program takes; it is still used once. Stage 1 measures cold start (A4).
 **OS confinement, applied before the worker reads any program** (root decision on F3, F4, F10):
 
 - **Linux.** The worker confines itself at start: `PR_SET_NO_NEW_PRIVS`, then a seccomp-bpf
-  allowlist (reads and writes on its two pipes, memory management, futexes, clocks, signals
-  needed by the runtime, exit), so `open`, `openat`, `socket`, `connect`, `execve`, `clone` of a
-  new process and `ptrace` fail. Landlock (no file access at all) is applied as well where the
-  kernel has it. Memory is capped with `RLIMIT_DATA` (not `RLIMIT_AS`, which large virtual
+  allowlist built with `seccompiler` (N3). The filter first checks the architecture
+  (`AUDIT_ARCH_X86_64` or `AUDIT_ARCH_AARCH64`, anything else kills the process) and rejects x32
+  system calls on x86-64. It allows reads and writes on its two pipes, memory management,
+  futexes, clocks, `getrandom`, signal handling, `exit` and `exit_group`; `kill` and `tgkill` only
+  with the worker's own process id; `clone` only with thread flags, and `clone3` returns `ENOSYS`
+  so the runtime falls back to `clone`. Everything else fails, including `open`, `openat`,
+  `socket`, `connect`, `execve`, a process-creating `clone` and `ptrace`. The filter is installed
+  before any thread is started; if a thread exists by then, it is installed with
+  `SECCOMP_FILTER_FLAG_TSYNC`, and the worker fails closed if that flag is refused. Landlock (no
+  file access at all) is applied as well where the kernel has it. Memory is capped with `RLIMIT_DATA` (not `RLIMIT_AS`, which large virtual
   reservations trip) at twice `script_memory_mb`, and with the cgroup v2 memory controller when
   the daemon runs in a delegated cgroup. Namespaces are not required, so the worker does not
   depend on unprivileged user namespaces (restricted by AppArmor on Ubuntu 24.04).
-- **macOS.** The worker calls `sandbox_init` with a profile that denies network, process
-  creation, file writes and **file reads except its own binary and the system libraries and
-  dyld cache it loads**, then sets `RLIMIT_DATA`.
+- **macOS.** The worker calls `sandbox_init` with a profile that starts from `(deny default)`
+  and allows only what the worker needs (N3): `file-read*` of its own binary and the system
+  libraries and dyld shared cache it loads, `sysctl-read` of the few keys the Rust runtime asks
+  for, and nothing else. Network, process creation, file writes, other file reads, `mach-lookup`
+  (so no pasteboard, no launch services, no other system service), IPC and IOKit are all denied
+  by the default. It then sets `RLIMIT_DATA`.
 - **Windows.** The daemon launches the worker **suspended**, with a restricted token
   (`CreateRestrictedToken`: privileged groups disabled, all privileges removed) at **Low**
   integrity, assigns it to a Job Object (memory limit at twice `script_memory_mb`,
   active-process limit 1, kill-on-job-close, UI restrictions), and only then resumes it. Its
-  environment is empty, its working folder an empty low-integrity folder, and it inherits no
-  handles except its pipes. So that a low-integrity process cannot read the daemon's secrets, the
-  daemon sets a **`NO_READ_UP` mandatory label at Medium integrity** on `daemon.json`,
-  `devices.json`, the `remotes/` folder, `secrets.key`, `secrets.enc`, `secrets.lock` and the
-  session journals (and the `.results/` folders beside them), when it starts and when it creates
-  them. Its named pipe keeps the default Medium label (`NO_WRITE_UP`), so a low-integrity
-  process cannot connect.
+  environment is empty and its working folder an empty low-integrity folder. It inherits exactly
+  its two pipe handles: the launch uses `STARTUPINFOEX` with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
+  naming only them (N6), so no other inheritable handle the daemon holds leaks into it.
+  So that a Low process cannot read what the daemon and its sessions keep, the daemon sets one
+  **inheritable `NO_READ_UP` mandatory label at Medium integrity** (object inherit and container
+  inherit) at start on the **data folder**, the **config folder**, and each environment's
+  **sessions folder and scratch folder** (N2). Inheritance covers every file and folder in them,
+  including temporary files, renamed files and files created later: the endpoint file, the secret
+  store, journals and their `.results/` folders, `history.json`, logs, memory, attachments, and
+  the config files that hold MCP servers' environment variables and headers in plain text. The
+  label is re-applied when a new environment is added. The daemon's named pipe keeps the default
+  Medium label (`NO_WRITE_UP`), so a Low process cannot connect.
 - Everywhere: empty environment, no inherited handles beyond the pipes, empty working folder.
 
 **Fail closed.** If any part of a platform's confinement cannot be applied (seccomp unavailable,
@@ -322,13 +336,23 @@ WebAssembly sandbox.
   violation: the worker is killed and the program fails with "the interpreter misbehaved". The
   host sends only `Configure`, `Feed`, `ResumeCall`, `ResumeNameLookup`, `AbortFeed`, `Shutdown`
   and `Pong`; never `InstallDependencies`, `Dump` or `Load`. `Configure` never carries a
-  `MountSpec`, an `OSAccess` handler or external modules, type checking is off, the clock is the
-  real one, `random` is seeded from the outer call id, and `max_total_sleep` is 1 s.
+  `MountSpec`, an `OSAccess` handler or external modules, and type checking is off. Its OS
+  policy keeps the worker-side clock and entropy (so `datetime.now()`, `time.time()` and `random`
+  work without suspending) and sets the sleep mode to `zero`: `time.sleep()` returns at once,
+  since a program has nothing to wait for (tools are synchronous). `max_total_sleep` is 0. A
+  `system_sleep` or any other `OsCall` that still arrives is answered with an error, like every
+  `OsCall`.
+- **Suspension budget, enforced by the driver** (N1). `monty.proto` makes `max_suspensions` and
+  `max_total_sleep` the client's to enforce; the worker only echoes them. The driver therefore
+  counts every suspension it answers (`FunctionCall`, `NameLookup` and `OsCall`) against
+  `script_suspensions` (C5), and at the first one over the budget sends `AbortFeed` instead of an
+  answer, so the program ends with "the program made too many requests". Tool calls are also
+  counted separately against `script_calls`.
 - **The driver** (`agent/script.rs`, engine). It runs inside `run_tool_once`'s `run_script` arm,
   on the agent's task:
-  1. Save the agent's per-call state (below), set `in_program`, and start the program with the
-     limits (C5).
-  2. Loop on `next()`:
+  1. Save the agent's per-call state (below) and set `in_program`, both through an RAII guard
+     (N7), then start the program with the limits (C5).
+  2. Loop on `next()` (each event first counted against the suspension budget, N1):
      - `NameLookup(name)`: resolve through C2 and C4. A callable tool gets a host function whose
        identity the driver records in a **handle table** (function name to engine tool name).
      - `Call { function, .. }` (F1): the worker is untrusted, so the driver trusts nothing it
@@ -342,8 +366,13 @@ WebAssembly sandbox.
        since its lookup are all refused at dispatch. The driver then resumes with the text, or with
        the error.
      - `Print`: append to the bounded buffer.
-  3. On `Done`, restore the saved state, clear `in_program`, assemble the result (C2) and return
-     it through `tool_finished` for the outer call.
+  3. On `Done`, assemble the result (C2), let the guard restore the state, and return the
+     result through `tool_finished` for the outer call.
+
+  The guard restores the six saved fields and clears `in_program` when it is dropped, so it
+  happens on every exit path: `Done`, a stop, a budget, a worker error, a protocol violation and
+  the outer future being dropped mid-program (N7). Without it, a cancelled program would leave
+  `in_program` set and the agent's next direct `spawn_agent` would be refused.
 - **Per-call state around inner calls** (F2). `run_tool` and the turn loop keep per-call state on
   the agent: `pending_rewrite`, `rewritten_from`, `ran_rewritten`, `call_started`,
   `call_args_failed` and `last_tool_ok`. The driver saves all six and clears them before the
@@ -356,14 +385,18 @@ WebAssembly sandbox.
 - **Inner calls are sequential.** The dispatch takes `&mut self`, so one inner call at a time is
   sound. No async host functions are offered (`asyncio.gather` over tools suspends on each call
   in turn; `ResolveFutures` and `StreamedCalls` are protocol violations). Revisit with R2.9.
-- **Waiting on approvals** (F8). A worker whose program waits on an approval stays alive and idle
-  (its execution clock is paused) and holds one of the `script_workers` slots. It is not freed
-  and later restored: that would mean loading a snapshot, which Monty says to trust only from a
-  trusted producer, and the worker is not one. The starvation this allows (eight programs all
-  waiting on approvals block a ninth) is bounded by the slot count and by each program's wall
-  budget, and the desktop shows the waiting approvals. The driver's per-turn worker timeout
-  (`request_timeout`, below) runs only while the worker is executing, never while the host is
-  answering.
+- **Waiting on approvals** (F8, N4). A worker whose program waits on an approval stays alive and
+  idle (its execution clock is paused) and holds one of the `script_workers` slots. It is not
+  freed and later restored: that would mean loading a snapshot, which Monty says to trust only
+  from a trusted producer, and the worker is not one. The wall budget excludes approval waits, so
+  it does not bound them. Instead each program has a total approval-wait budget,
+  `script_approval_wait_secs` (default 600 s, C5): once a program has waited that long in all,
+  the pending request is withdrawn and answered as a denial, and every later approval the
+  program needs is denied at once. So a slot is held by approval waits for at most ten minutes
+  per program; eight programs waiting together can still hold every slot for that long, and a
+  ninth program waits for a slot (that wait counts against its wall budget). The desktop shows the
+  waiting approvals. The driver's per-turn worker timeout (`request_timeout`, C5) runs only while
+  the worker is executing, never while the host is answering.
 
 ### C4. What a program can call
 
@@ -408,9 +441,12 @@ and it can carry on.
 **Auto mode is stricter for inner calls** (F6). Inside a program, values from earlier tool
 results can flow into a later call's arguments without the model ever reading them (a path or
 URL taken from a file, a command built from a search result). So in auto mode an inner call of
-kind Execute or Edit, or a provider or MCP call that reaches the network, is **not** settled by
-the classifier: it is decided as in `default` mode (a rule or a session allowance, otherwise the
-user is asked; headless, denied). Inner reads are classified as direct ones are, and the
+kind Execute or Edit, or **any call to a provider or MCP tool** (a `ToolGroup::Builtin` provider
+or a `ToolGroup::External` server, activated plugins' tools included; "reaches the network" is
+not judged per tool, N5), is **not** settled by the classifier: it is decided as in `default`
+mode (a rule or a session allowance, otherwise the user is asked; headless, denied). The check
+sits in `auto_gate`, beside the existing `bridged` check, and returns `AutoGate::NotApplicable`
+for those calls while `in_program` is set, so the ordinary approval path runs. Inner reads are classified as direct ones are, and the
 classifier's input then also carries the program's code (cut to 4,000 characters) as data.
 Why not classify them: the classifier sees the code and the final arguments, but not where an
 argument's value came from, and that is exactly what an injection controls.
@@ -421,7 +457,9 @@ New `[harness]` keys, defaults chosen for a small local model; all are per progr
 
 | Key | Default | Enforced by |
 | --- | --- | --- |
-| `script_calls` | 40 inner tool calls | Engine counts calls; Monty's `max_suspensions` set to calls plus name lookups as a backstop |
+| `script_calls` | 40 inner tool calls | Driver counts `FunctionCall` events that run a tool |
+| `script_suspensions` | 200 suspensions of any kind | Driver counts every `FunctionCall`, `NameLookup` and `OsCall` and sends `AbortFeed` past it (N1); also sent to the worker as `max_suspensions` |
+| `script_approval_wait_secs` | 600 s in total per program | Driver; past it the pending approval and every later one in the program are denied (N4) |
 | `script_exec_secs` | 10 s of interpreter time | Monty `max_feed_duration` (paused during host calls) |
 | `script_wall_secs` | 300 s, excluding time waiting on approvals | Engine deadline, checked between events |
 | (fixed) `request_timeout` | `script_exec_secs` + 5 s per worker turn | Driver timeout from each request it sends to the worker's next event; a worker that does not answer is killed (F8) |
@@ -512,26 +550,36 @@ boundaries as `tool_loading` does. The default is `off` until stage 6, then `aut
 | Capability through the bindings | Every inner call is `run_tool`: same refusals, rules, hooks, approvals as direct calls; script-refused set (C4) | A program chains read-then-send in one model step (read a secret, `web_fetch` a URL with it in the query). Today the model can do the same in two steps; code mode removes the pause between them, not a check. Auto mode does not settle inner sends, writes or commands (C4); the desktop shows each inner call live |
 | Prompt injection from tool results | **The control is per-call dispatch**: whatever a program does, each call it makes is judged on its own name and actual arguments by the same rules, hooks and approvals as a direct call, and the stricter auto-mode rule for inner sends, writes and commands (C4). Removing `eval` and `exec` (A2) is hygiene, not a boundary: without them a program can still pass tool output on as data. The printed output enters the context as a tool result with the existing untrusted-data framing | **Data to arguments**: a value from one result (an injected URL, path or command) can become a later call's argument without the model reading it. Each such call is still judged, and in auto mode it is asked rather than classified, but a person approving it sees only the final arguments. The tests that a renamed or aliased tool cannot bypass a refusal stay (stage 2, stage 5) |
 | Resource exhaustion | C5 budgets; memory limit in the worker plus an OS limit; at most `script_workers` workers; code length cap; output cap; `request_timeout` | Many programs at once queue for workers, bounded by each wall budget |
-| Secrets | Worker environment cleared, so no `GH_TOKEN`, API keys or daemon token; no file access on Linux and macOS; on Windows `NO_READ_UP` labels on the daemon's secrets and journals; files reach the program only through `read_file` and its path checks | Windows: user files without the label are readable after an escape (below) |
+| Secrets | Worker environment cleared, so no `GH_TOKEN`, API keys or daemon token; no file access on Linux and macOS; on Windows an inheritable `NO_READ_UP` label on the data, config, sessions and scratch folders; files reach the program only through `read_file` and its path checks | Windows: user files outside those folders are readable after an escape, and the OS keyring depends on the stage 1 test (below) |
 | Network | None inside the interpreter; Linux and macOS confinement deny it; web tools go through their own rules | Windows: an escaped worker can open connections (below) |
 | Denial through approvals | A program that asks 40 times is bounded by `script_calls`, and a denial is an ordinary error the program sees | The user sees up to 40 prompts. Approve-for-session works as today |
 
 #### Windows confinement: mitigation and accepted risk
 
-Mitigation (C1, root decision on F3): a restricted, Low-integrity token, so the worker cannot
-write the user's files, registry or medium-integrity processes; a Job Object (memory,
-one process, kill on close, UI limits); an empty environment and folder; and `NO_READ_UP` Medium
-labels on `daemon.json`, `devices.json`, `remotes/`, `secrets.key`, `secrets.enc`,
-`secrets.lock`, the session journals and their `.results/` folders, so a Low process cannot read
-the daemon's token, its secret store or other sessions' transcripts. The daemon's named pipe keeps
-its Medium `NO_WRITE_UP` label, so a Low process cannot connect, and the loopback listener needs
-the token it cannot read.
+Mitigation (C1, root decisions on F3 and N2): a restricted, Low-integrity token, so the worker
+cannot write the user's files, registry or medium-integrity processes; a Job Object (memory, one
+process, kill on close, UI limits); an empty environment and folder; only its two pipes inherited
+(N6); and one inheritable Medium `NO_READ_UP` label on the data folder, the config folder and
+every environment's sessions and scratch folders. Everything Imperium keeps there is unreadable to
+a Low process whatever its name or age: the endpoint file and token, the encrypted secret store
+and its key, journals, results, history, logs, memory, attachments, and the plaintext MCP
+environment variables and headers in the config files. The daemon's named pipe keeps its Medium
+`NO_WRITE_UP` label, so a Low process cannot connect, and the loopback listener needs the token it
+cannot read.
+
+**The OS keyring.** On Windows the keychain backend is Credential Manager. Stage 1 tests whether a
+Low worker can `CredRead` an Imperium entry. If it cannot, the keyring is covered. If it can,
+secrets in the keyring are part of the accepted residual below, accepted **only while
+`harness.code_mode` is off by default**: the stage 6 default change is then blocked until the
+secrets are moved out of reach of Low processes (for example into the labelled encrypted store) or
+the worker moves to an AppContainer, and 13 records this revisit.
 
 What remains: an escape from the language-level sandbox on Windows is a **user-level read
-compromise**. The escaped code could read any file the user can read that carries no label (the
-user's documents, SSH keys, browser profiles, other tools' tokens) and send it over the network,
-and it could use CPU and memory up to the job's limits. It cannot write the user's files, start
-processes, read the daemon's token or secret store, or drive the daemon. The risk is accepted
+compromise**. The escaped code could read any file the user can read outside the labelled
+folders (the user's documents and projects, SSH keys, browser profiles, other tools' tokens) and,
+subject to the keyring test, Imperium's keyring entries, and send it over the network; and it
+could use CPU and memory up to the job's limits. It cannot write the user's files, start
+processes, read anything in Imperium's labelled folders, or drive the daemon. The risk is accepted
 because:
 
 1. An escape needs a memory-safety bug in Monty's VM followed by native code execution. Monty has
@@ -652,25 +700,37 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
     A2) `eval`/`exec` fail, and the `OsCall` behind `open()` and `os.getenv` is answered with an
     error by the driver.
   - Limits: `while True: pass` ends on the time budget; `x = [0] * 10**9` ends on the memory
-    budget; more suspensions than allowed abort with an uncatchable error; `time.sleep(5)` is
-    refused past the sleep budget; a worker that stops answering is killed at `request_timeout`.
+    budget; a program looping on lookups of an undefined name, and one looping
+    `try: open("x") except OSError: pass` (an `OsCall` loop), are each stopped by the driver's
+    `AbortFeed` at `script_suspensions`, not by the worker (N1); `time.sleep(5)` returns at once
+    and the program completes; `datetime.now()` and `random.random()` work; a worker that stops
+    answering is killed at `request_timeout`.
   - Protocol: a test worker build (`cfg(test)` feature) that sends `ResolveFutures`,
-    `StreamedCalls`, `DumpResult` and an unknown tag each gets killed and the program fails as a
-    protocol violation.
+    `StreamedCalls`, `DumpResult`, `TypingError`, `Ok` outside `Configure`, an unanswered
+    out-of-order event and an unknown tag each gets killed and the program fails as a protocol
+    violation. If stage 1 chooses the owned loop over `monty::MontyRun` (F12), the same allowlist
+    tests run against its own event set.
   - Processes (F4, F5): two programs run in workers with different PIDs; dropping a run
     mid-program leaves no worker process (PID checked after the confirmed exit); a killed worker
     is reported as crashed and the next program runs; shutdown stops every worker; the worker's
     environment is empty; a long simulated approval (the host holds a `FunctionCall` for 20 s,
     beyond `request_timeout`) then resumes and the program completes (F8).
-  - Confinement, Linux: the worker cannot `open` a file it would otherwise read, cannot create a
-    socket, cannot `execve`; `RLIMIT_DATA` is set.
+  - Confinement, Linux (x86-64 and aarch64 runners, N3): the worker cannot `open` a file it would
+    otherwise read, cannot create a socket, cannot `execve`, cannot `kill` another process id;
+    `clone3` returns `ENOSYS` and threads still start; an x32 system call is rejected (x86-64);
+    `getrandom` works; `RLIMIT_DATA` is set.
   - Confinement, macOS: the worker cannot read a file in the user's home folder or the daemon's
-    data folder, cannot connect to a loopback port, cannot spawn a process.
+    data folder, cannot connect to a loopback port, cannot spawn a process, and cannot reach the
+    pasteboard or any other `mach-lookup` service (N3).
   - Confinement, Windows: the worker runs at Low integrity with no privileges; a write to the
     user's profile fails; a read of a file labelled `NO_READ_UP` (a fixture standing in for
     `daemon.json` and `secrets.enc`) fails; it cannot open the daemon's named pipe; its job
-    refuses a second process; the daemon's real `daemon.json`, `secrets.*` and a journal carry
-    the label after start.
+    refuses a second process; after start, the data, config, sessions and scratch folders carry
+    the inheritable label, and a file created afterwards in each (and a file renamed into one) is
+    unreadable to a Low process (N2); the worker holds no handle beyond its two pipes (an
+    inheritable test handle opened by the daemon before launch is absent in the worker, N6); a
+    Low worker's `CredRead` of an Imperium Credential Manager entry is tested and its outcome
+    recorded in C9 (N2).
   - Fail closed (F10): with confinement forced to fail (a test hook on each OS), no program runs,
     `run_script` is reported unavailable, and the reason names what failed.
   - Measurements (A4, F12): cold start, binary size and resident memory with and without
@@ -718,14 +778,20 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
     payload carries `parent_call_id` and `from_program`; approval asked for an inner
     `run_command` with the prefixed summary, then allowed, then denied; the prefix composed with
     the bridge marker in that order; in auto mode an inner `run_command`, `write_file` and
-    `web_fetch` are asked (headless: denied) rather than classified, while an inner `read_file`
-    is classified with the code in the classifier's input; pre-approved tools in an unattended
+    `web_fetch`, and an MCP tool and a plugin tool, are asked (headless: denied) rather than
+    classified, with `auto_gate` returning `NotApplicable` for them, while an inner `read_file`
+    is classified with the code in the classifier's input (N5); pre-approved tools in an unattended
     session run without asking.
   - Untrusted worker (F1, fake runner): a `Call` for `spawn_agent` with no prior lookup is refused
     and `spawn_agent` never runs; a `Call` naming a handle that was never issued is refused; a
     `Call` through a handle for `call_tool` whose inner name is `ask_user` is refused after
     unwrapping; a tool looked up, then removed from the universe (profile change), then called is
     refused at dispatch.
+  - Guard (N7): a session stopped mid-program, a worker error, a protocol violation and a dropped
+    outer future each leave `in_program` cleared and the six fields restored; after a stop
+    mid-program, the agent's next direct `spawn_agent` is not refused.
+  - Approval wait cap (N4): with `script_approval_wait_secs` at 1 s, an inner approval left
+    unanswered is denied after 1 s, and the program's next call that asks is denied at once.
   - Per-call state (F2): a `tool.before` hook rewrites the program, and inside it a second hook
     rewrites an inner call; the inner call runs rewritten, the outer result has exactly one
     rewrite note (the program's) and the summary line none; after the program the turn loop sees
@@ -793,8 +859,12 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
 
 - Objective: an independent review of stages 1 to 3 against C9 before evaluations run programs
   at scale.
-- Work: a security reviewer (not the implementer) reviews the worker confinement on each OS, the
-  dispatch twins, the resolver, the budgets and the approval prefix, and tries an escape suite.
+- Work: a security reviewer (not the implementer) reviews the worker confinement on each OS
+  (the seccomp filter, the macOS profile, the Windows token, job, handle list and labels), the
+  protocol driver and its event allowlist, the worker loop (upstream's `monty_proto::worker`, or
+  the owned loop over `monty::MontyRun` if stage 1 chose it, F12), the dispatch twins, the
+  resolver, the suspension and approval-wait budgets, the RAII guard and the approval prefix, and
+  tries an escape suite.
   Findings are fixed in this stage's pull request.
 - Pass criteria (recorded in this plan; S2): no open finding that lets a program reach a file,
   the network, a process or a refused tool except through dispatch; the Windows accepted risk
@@ -877,7 +947,7 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
   fails, the default stays `off` and 13 records why. If programs fail mainly on the subset, the next
   step is a prompt line listing what is unsupported; if the model rarely writes programs, the next
   step is the sentence's wording; neither changes the runtime choice.
-- Depends on: stage 5 released, and the stage 4 review recorded as passed (S2).
+- Depends on: stage 5 released, and the stage 4 review recorded as passed (S2); and, if the stage 1 keyring test found a Low worker can read Imperium's Credential Manager entries, that fixed first ([C9](#windows-confinement-mitigation-and-accepted-risk)).
 
 ## Rollout
 
@@ -904,8 +974,8 @@ adds a sidecar; root checks the `Experimental` run for that merge and that the r
   per program and fail-closed OS confinement contain the risk. The WebAssembly runtime is the
   fallback.
 - **Windows confinement.** A Low-integrity restricted token, a job object and `NO_READ_UP`
-  labels on the daemon's files stop writes, child processes, memory abuse and access to the
-  daemon's secrets; reads of unlabelled user files and network use after an escape are a
+  label on Imperium's data, config, sessions and scratch folders stop writes, child processes,
+  memory abuse and access to everything Imperium keeps; reads of unlabelled user files and network use after an escape are a
   user-level read compromise, accepted with its rationale
   ([C9](#windows-confinement-mitigation-and-accepted-risk)) and restated in 05.
 - **Seccomp allowlist drift.** A Monty or Rust standard library update can need a new system
