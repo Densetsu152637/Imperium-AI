@@ -1,0 +1,6 @@
+// expect: lex-ok
+// tokens: kw:fn ident:g ( ) {block ident:f ( ident:x ) ;! kw:with {record ident:tools : [ ] } {block ident:run ( ) } ;! } ;!
+fn g() {
+  f(x)
+  with { tools: [] } { run() }
+}

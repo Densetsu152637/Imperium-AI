@@ -798,6 +798,10 @@ and `environments.agent_update` (protocol 0.28)
     version bump; the Imperium harness is then built as the second harness behind this switch.
     The switch and the per-subagent selection are app work; the content of the Imperium harness
     itself is research work.
+    Ratio, the language harnesses are written in, is specified in the separate Ratio repository
+    (pinned by `crates/imperium-ratio/ratio-spec.lock`) and implemented in `crates/imperium-ratio`
+    in stages. Stage 1, the token reader, is in the crate; nothing is wired into the engine yet
+    and there is no switch to select a Ratio harness.
 <!-- markdownlint-disable-next-line MD029 -->
 59. **Windows release signing and per-machine install** (planned). Windows release builds are
     Authenticode-signed (the signing service is still to be chosen,

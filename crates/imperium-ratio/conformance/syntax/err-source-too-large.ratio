@@ -1,0 +1,3 @@
+// expect: lex-error L0013 at 1:1
+// option: max_source_bytes 4
+abcdef
