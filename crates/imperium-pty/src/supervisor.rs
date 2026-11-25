@@ -26,7 +26,7 @@ use rustix::fd::OwnedFd;
 use rustix::io::Errno;
 use rustix::process::{
     Pid, PidfdFlags, Signal, WaitOptions, WaitStatus, getpgrp, getpid, kill_process_group,
-    pidfd_open, pidfd_send_signal, set_child_subreaper, waitpid,
+    pidfd_open, pidfd_send_signal, set_child_subreaper, wait,
 };
 use rustix::termios::{tcgetpgrp, tcsetpgrp};
 use signal_hook::SigId;
@@ -409,11 +409,11 @@ fn exit_code(status: WaitStatus) -> i32 {
         .unwrap_or(1)
 }
 
-/// Reaps every child that ended (`waitpid(-1, WNOHANG)` until nothing is left), noting the
+/// Reaps every child that ended (`wait4(-1, WNOHANG)` until nothing is left), noting the
 /// shell's status. It never blocks.
 fn reap(shell: Pid, status: &mut Option<i32>) {
     loop {
-        match waitpid(None, WaitOptions::NOHANG) {
+        match wait(WaitOptions::NOHANG) {
             Ok(Some((pid, found))) => {
                 if pid == shell {
                     *status = Some(exit_code(found));
