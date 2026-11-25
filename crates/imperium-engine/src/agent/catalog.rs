@@ -1401,6 +1401,13 @@ mod tests {
         assert!(files.len() > 20, "{} files", files.len());
         let allowed = ["agent/catalog.rs", "agent/tools.rs", "tool_edits.rs"];
         // Counts what the model was sent, so reads the stored call as it is.
+        // The raw-parse sites of `call_repair.rs`: it reads what a model wrote, before any
+        // `call_tool` wrapping and before the call is stored, so these lines are exact.
+        let raw_parse = [
+            "names.contains(&call.function.name)",
+            "let arguments = call.function.arguments.as_str();",
+            "call.function.arguments = fixed;",
+        ];
         let as_sent = [
             "parts.push((Category::Assistant, &call.function.name));",
             "parts.push((Category::Assistant, &call.function.arguments));",
@@ -1409,7 +1416,11 @@ mod tests {
             if allowed.contains(&file.as_str()) {
                 continue;
             }
-            let found = raw_call_reads(&text, &as_sent);
+            let found = if file == "agent/call_repair.rs" {
+                raw_call_reads(&text, &[&raw_parse[..], &as_sent[..]].concat())
+            } else {
+                raw_call_reads(&text, &as_sent)
+            };
             assert!(found.is_empty(), "{file}: {found:?}");
         }
     }

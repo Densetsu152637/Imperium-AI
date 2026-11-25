@@ -17,7 +17,7 @@ use imperium_protocol::methods::SESSION_UPDATED;
 use imperium_protocol::session::{AgentEvent, ROOT_AGENT, SessionEvent};
 use tokio::sync::broadcast;
 
-use super::DaemonState;
+use super::{DaemonState, write_meta};
 
 /// Words a title has at most; a model's longer answer is cut.
 const MAX_WORDS: usize = 6;
@@ -88,7 +88,7 @@ impl DaemonState {
             serde_json::from_str(&text).map_err(std::io::Error::other)?;
         meta["title"] = title.into();
         meta["title_by_user"] = (by_user && title.is_some()).into();
-        std::fs::write(&path, meta.to_string())
+        write_meta(&path, &meta.to_string())
     }
 
     /// The local runtime, as models are asked through it.
