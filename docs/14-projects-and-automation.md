@@ -1155,7 +1155,7 @@ GitHub's auto-merge only on the user's switch, turned on in the desktop app; it 
 endpoint. Before it pushes it turns that auto-merge off (see [auto-merge](#auto-merge-implemented-stage-6-protocol-060)).
 After `max_attempts_per_pr` (default 3) failing commits on one pull request it stops and
 says so. Progress is sent to every connected client as `autofix.event` notifications (`started`,
-`awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, `stopped`); the phone page lists them all, and the desktop app shows only `failed` ones, as a toast and, in the background, a system notification; approvals are
+`awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, `stopped`); the phone page lists them all, and the desktop app shows only `failed` ones, as a toast and a system notification per the user's notification settings (`notifyFailed`, `notifyOnlyInBackground`); approvals are
 answered in the desktop app's Approvals panel or with `imperium approvals list|approve|deny`
 (`approvals.list` and `approvals.respond`, with `approval.requested` notifications). When the
 daemon cannot list a repository's pull requests and waiting will not fix it (no `gh` login and no

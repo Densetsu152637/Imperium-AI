@@ -5,7 +5,7 @@ import { test } from "node:test";
 
 import type { AutofixEventParams } from "@imperium/protocol";
 
-import { failureNotice, REPEAT_QUIET_MS, type FailureMemory } from "../src/shared/failureNotices.ts";
+import { failureNotice, MAX_REMEMBERED, NOTICE_MIN_GAP_MS, REPEAT_QUIET_MS, type FailureMemory } from "../src/shared/failureNotices.ts";
 
 const event = (over: Partial<AutofixEventParams> = {}): AutofixEventParams => ({
   repo: "owner/repo",
@@ -69,4 +69,24 @@ test("only shown failures are remembered, and old ones are forgotten", () => {
   failureNotice(event(), memory, 0);
   failureNotice(event({ pull_request: 9 }), memory, REPEAT_QUIET_MS + 1);
   assert.equal(memory.size, 1);
+});
+
+test("the memory holds at most its cap, forgetting the oldest first", () => {
+  const memory: FailureMemory = new Map();
+  for (let n = 0; n < MAX_REMEMBERED + 10; n++) failureNotice(event({ summary: `reason ${n}` }), memory, n);
+  assert.equal(memory.size, MAX_REMEMBERED);
+  assert.ok(failureNotice(event({ summary: "reason 0" }), memory, 100), "the oldest was forgotten, so it shows again");
+  assert.equal(memory.size, MAX_REMEMBERED);
+  assert.equal(failureNotice(event({ summary: `reason ${MAX_REMEMBERED + 9}` }), memory, 101), null, "a recent one is still remembered");
+});
+
+test("system notifications keep a minimum gap, while the toast still shows", () => {
+  const memory: FailureMemory = new Map();
+  const first = failureNotice(event({ summary: "one" }), memory, 1000);
+  assert.ok(first?.notice);
+  const second = failureNotice(event({ summary: "two" }), memory, 1000 + NOTICE_MIN_GAP_MS - 1);
+  assert.ok(second?.toast);
+  assert.equal(second.notice, null);
+  const third = failureNotice(event({ summary: "three" }), memory, 1000 + NOTICE_MIN_GAP_MS);
+  assert.ok(third?.notice);
 });
