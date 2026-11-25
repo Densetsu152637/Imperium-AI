@@ -172,6 +172,8 @@ pub(crate) fn restored_spans(content: &str) -> Spans {
         // The harness's session state and ambiguity hints lead a turn's message; they count as
         // recalled context.
         (Category::Memories, "<session-state>", "</session-state>"),
+        // A compaction carries the plan right after it.
+        (Category::Memories, "<current-plan>", "</current-plan>"),
         (
             Category::Memories,
             "<ambiguity-hints>",

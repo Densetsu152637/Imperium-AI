@@ -11,6 +11,7 @@
 | Agents      | `spawn_agent`, `await_tasks`, `send_to_task`, `cancel_task` | See [agent engine](03-agent-engine.md)        |
 | Media       | `media.generate`, `media.transcribe`                      | See [media](09-media-generation.md)              |
 | Interaction | `ask_user`, `request_clarification`, `update_state` (implemented) | Pause the agent until the user answers; keep the session state |
+| Loaders     | `tool_search`, `call_tool` (implemented, offered only with `harness.tool_loading` on) | Find tools that are not in the agent's list and run one by name, through the checks of a direct call; see [reactive tool loading](03-agent-engine.md#reactive-tool-loading-implemented) |
 | App config  | `set_model_card`, `install_extension`, `uninstall_extension` (implemented) | Change the user's Imperium config through the daemon, journalled and undoable; see [06](06-extensibility.md#agents-manage-the-app-config-implemented) |
 
 Implemented in phase 8 (`imperium-web`): `web_fetch` reads an http(s) page as text (title,

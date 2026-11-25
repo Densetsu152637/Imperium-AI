@@ -855,6 +855,7 @@ impl DaemonState {
                         hints: flags.harness,
                         clarify: flags.harness,
                         tool_loading: flags.tool_loading,
+                        clear_stale_results: flags.clear_stale_results,
                         ..imperium_config::HarnessSettings::default()
                     },
                     None => self.settings().harness.clone(),
@@ -888,6 +889,11 @@ impl DaemonState {
             imperium_engine::SessionOptions {
                 replay: eval.as_ref().and_then(|eval| eval.subagent_replay.clone()),
                 root_agent,
+                tool_edits: eval
+                    .as_ref()
+                    .map(|eval| eval.run.tool_edits())
+                    .unwrap_or_default(),
+                tool_watch: eval.as_ref().map(|eval| eval.run.tool_watch()),
             },
         )
         .map_err(|error| CreateError::Start(error.to_string()))?;
