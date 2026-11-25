@@ -105,3 +105,30 @@ pub async fn commits_ahead(worktree: &Path, branch: &str) -> Result<u64, String>
 pub async fn head(worktree: &Path) -> Result<String, String> {
     git(worktree, &["rev-parse", "HEAD"]).await
 }
+
+/// Fetches `origin/<branch>`, so a later comparison is with the remote branch as it is now.
+pub async fn fetch(dir: &Path, branch: &str) -> Result<(), String> {
+    git(dir, &["fetch", "origin", branch]).await.map(|_| ())
+}
+
+/// The branch checked out in `dir` (`HEAD` when it is detached).
+pub async fn current_branch(dir: &Path) -> Result<String, String> {
+    git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await
+}
+
+/// Whether `origin/<branch>` is `HEAD` or one of its ancestors, so a push would add commits to
+/// the remote branch and never replace any. False when it is not (behind, diverged) or cannot
+/// be told.
+pub async fn descends_from_origin(dir: &Path, branch: &str) -> bool {
+    let base = format!("origin/{branch}");
+    git(dir, &["merge-base", "--is-ancestor", &base, "HEAD"])
+        .await
+        .is_ok()
+}
+
+/// Whether `dir` has no uncommitted change and no untracked file.
+pub async fn is_clean(dir: &Path) -> Result<bool, String> {
+    git(dir, &["status", "--porcelain"])
+        .await
+        .map(|out| out.is_empty())
+}

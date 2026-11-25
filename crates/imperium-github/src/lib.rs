@@ -95,6 +95,30 @@ pub trait GitHub: Send + Sync + fmt::Debug {
     ) -> GhFuture<'a, Vec<ReviewComment>> {
         unsupported("new_comments")
     }
+    /// Reviews with a body, other than pending ones, with an id above `since`, oldest first. A
+    /// review's inline comments come from [`GitHub::new_comments`].
+    fn new_reviews<'a>(
+        &'a self,
+        _repo: &'a str,
+        _number: u64,
+        _since: Option<u64>,
+    ) -> GhFuture<'a, Vec<ReviewComment>> {
+        unsupported("new_reviews")
+    }
+    /// Comments on the pull request's conversation (not on its diff) with an id above `since`,
+    /// oldest first.
+    fn new_issue_comments<'a>(
+        &'a self,
+        _repo: &'a str,
+        _number: u64,
+        _since: Option<u64>,
+    ) -> GhFuture<'a, Vec<ReviewComment>> {
+        unsupported("new_issue_comments")
+    }
+    /// Whether the signed-in user opened the pull request.
+    fn is_own_pull_request<'a>(&'a self, _repo: &'a str, _number: u64) -> GhFuture<'a, bool> {
+        unsupported("is_own_pull_request")
+    }
     /// What `login` may do in the repository; `None` for a non-collaborator.
     fn collaborator_permission<'a>(
         &'a self,
@@ -236,6 +260,28 @@ impl GitHub for DaemonGitHub {
         since: Option<u64>,
     ) -> GhFuture<'a, Vec<ReviewComment>> {
         self.api.new_comments(repo, number, since)
+    }
+
+    fn new_reviews<'a>(
+        &'a self,
+        repo: &'a str,
+        number: u64,
+        since: Option<u64>,
+    ) -> GhFuture<'a, Vec<ReviewComment>> {
+        self.api.new_reviews(repo, number, since)
+    }
+
+    fn new_issue_comments<'a>(
+        &'a self,
+        repo: &'a str,
+        number: u64,
+        since: Option<u64>,
+    ) -> GhFuture<'a, Vec<ReviewComment>> {
+        self.api.new_issue_comments(repo, number, since)
+    }
+
+    fn is_own_pull_request<'a>(&'a self, repo: &'a str, number: u64) -> GhFuture<'a, bool> {
+        self.api.is_own_pull_request(repo, number)
     }
 
     fn collaborator_permission<'a>(

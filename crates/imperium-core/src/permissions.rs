@@ -526,8 +526,98 @@ fn shown(path: &Path, home: Option<&Path>) -> String {
     path.display().to_string()
 }
 
+/// The mode a woken turn runs in: the stricter of `mode` and `ask`. `ask` ignores allow rules and
+/// the session's own approvals ("always allow"), asks before every edit, command and tool that
+/// would ask, and still applies deny rules and the safety floor; `plan` is stricter still and
+/// stays. So `default`, `auto`, `accept_edits` and `full` all become `ask`.
+pub(crate) fn capped_mode(mode: imperium_api::PermissionMode) -> imperium_api::PermissionMode {
+    match mode {
+        imperium_api::PermissionMode::Plan => imperium_api::PermissionMode::Plan,
+        _ => imperium_api::PermissionMode::Ask,
+    }
+}
+
+/// Holds a session at [`capped_mode`] for one turn that the daemon started from text written by
+/// others (a review comment). The session's own mode comes back when this is dropped, also on an
+/// error, a timeout or a cancelled task, unless the user changed the mode meanwhile (their
+/// choice stands). Nothing is pre-approved and no rule is added: only the mode changes, so the
+/// user's rules and the session's approvals are intact for the turns after.
+pub(crate) struct TurnCap {
+    session: std::sync::Arc<imperium_engine::Session>,
+    original: imperium_api::PermissionMode,
+    capped: imperium_api::PermissionMode,
+}
+
+impl TurnCap {
+    pub(crate) fn apply(session: &std::sync::Arc<imperium_engine::Session>) -> Self {
+        let original = session.permission_mode();
+        let capped = capped_mode(original);
+        session.set_permission_mode(capped);
+        Self {
+            session: std::sync::Arc::clone(session),
+            original,
+            capped,
+        }
+    }
+}
+
+impl Drop for TurnCap {
+    fn drop(&mut self) {
+        if self.session.permission_mode() == self.capped {
+            self.session.set_permission_mode(self.original);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use imperium_api::PermissionMode;
+    use imperium_policy::permissions::{CallKind, Decision, Refusal, decide_call};
+
+    /// A woken turn asks for every edit and command, whatever the session's mode and allow
+    /// rules say, and `plan` stays `plan`.
+    #[test]
+    fn a_capped_turn_asks_for_edits_and_commands_and_plan_stays_plan() {
+        for original in [
+            PermissionMode::Ask,
+            PermissionMode::Default,
+            PermissionMode::Auto,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Full,
+        ] {
+            let mode = capped_mode(original);
+            assert_eq!(mode, PermissionMode::Ask, "{original:?}");
+            for kind in [
+                CallKind::Edit,
+                CallKind::Execute,
+                CallKind::Other { asks: true },
+            ] {
+                for rule in [None, Some(RuleAction::Allow)] {
+                    assert_eq!(
+                        decide_call(mode, kind, rule, false),
+                        Decision::Ask { sticky: false },
+                        "{original:?} {kind:?} {rule:?}"
+                    );
+                }
+                // A deny rule still refuses, and the floor still asks.
+                assert_eq!(
+                    decide_call(mode, kind, Some(RuleAction::Deny), false),
+                    Decision::Refuse(Refusal::Rule)
+                );
+            }
+            assert_eq!(
+                decide_call(mode, CallKind::Read, None, false),
+                Decision::Run
+            );
+        }
+        let plan = capped_mode(PermissionMode::Plan);
+        assert_eq!(plan, PermissionMode::Plan);
+        assert_eq!(
+            decide_call(plan, CallKind::Edit, Some(RuleAction::Allow), false),
+            Decision::Refuse(Refusal::Plan)
+        );
+    }
+
     use super::*;
 
     #[test]

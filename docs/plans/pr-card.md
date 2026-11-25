@@ -854,10 +854,24 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   Suspending allowances touches permission code shared with every session: the cap is scoped to
   the wake turn and tested for restoration on error and cancel. The N2 checks depend on #267's
   helpers keeping their names; if #267 renames them, only this plan's references change.
-- Status: pending
-- Outcome: -
+- Status: in review (one pull request; not split)
+- Outcome: `pull_requests.set_monitor`, `github.autofix.responders`, the review poll with the
+  write-access check, the capped wake (`permissions::TurnCap`), the N2 checks with the D5
+  fallback, the daemon-side commit and the always-asking push, persistence of cursors, attempts
+  and the card flag, and the card switch and notice, with tests in `tests/review_wake.rs`.
+  Protocol 0.63. Deviations: (1) the state lives in a ledger file in the data folder
+  (`pr-review.json`), not the session record, because D5 must work after the owning session's
+  record is gone; (2) `PrStatus.ignored_comments` is added so that comments from people without
+  write access "show on the card"; (3) `autofix.rs` keeps Fix CI in place and the review wake is
+  `autofix/review.rs` (no `ci.rs`); (4) the cursors baseline when the switch is turned on, so
+  earlier comments do not wake; (5) Fix CI's attempt count stays in memory (stage 8 moves it
+  onto the wake path); (6) `set_monitor` checks the author with a new `is_own_pull_request`
+  client call. `ask` mode runs a tool that never asks by default (searching the web) without
+  asking, so such a tool still runs in a wake turn.
 - Handoff notes: no tool is added for the agent; the envelope and the capped mode are the only
-  changes to what the model sees and can do.
+  changes to what the model sees and can do. Stage 8 adds the reply ledger beside the cursors
+  (`REPLY_MARKER` already keeps the daemon's own replies from waking it) and moves Fix CI onto
+  `autofix::review`'s wake path.
 
 ## Stage 8: Replies and injection corpus
 

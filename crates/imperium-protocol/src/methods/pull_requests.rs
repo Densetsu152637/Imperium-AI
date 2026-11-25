@@ -138,6 +138,38 @@ pub struct PullRequestsSetAutoMergeParams {
     pub challenge: Option<String>,
 }
 
+/// `pull_requests.set_monitor`: sets what the daemon does for a session's pull request, and
+/// answers with its new status. `auto_fix` (the card's "Fix CI and review comments" switch;
+/// `address_comments` is the same switch) lets new review comments, reviews and comments from
+/// people with write access wake the session, and is refused for a pull request the signed-in
+/// account did not open. `auto_archive_on_close` archives the session when the pull request
+/// merges or closes. `ack_untrusted` clears the notice that the session handled untrusted
+/// comment text. A paired phone may not call it.
+#[derive(Debug)]
+pub struct PullRequestsSetMonitor;
+
+impl Method for PullRequestsSetMonitor {
+    const NAME: &'static str = "pull_requests.set_monitor";
+    type Params = PullRequestsSetMonitorParams;
+    type Result = PrStatus;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestsSetMonitorParams {
+    pub session_id: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auto_fix: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auto_archive_on_close: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ack_untrusted: Option<bool>,
+}
+
 /// A pull request as the card shows it. Every text field came from GitHub, was written by
 /// someone there, is length-capped and free of control characters, and renders as plain text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -163,12 +195,16 @@ pub struct PrStatus {
     // The merge methods the repository allows, in the order `squash`, `merge`, `rebase`; empty
     // when they could not be read.
     pub allowed_methods: Vec<PrMergeMethod>,
-    // Inert until the review-comment stage; always false now.
+    // Whether new review comments from people with write access wake the session.
     pub auto_fix: bool,
     pub auto_merge: PrAutoMerge,
     pub auto_archive_on_close: bool,
-    // Inert until the review-comment stage; always false now.
+    // The session handled review text written by others, until the user acknowledges it
+    // (`pull_requests.set_monitor` with `ack_untrusted`).
     pub untrusted_handled: bool,
+    // Comments from people without write access that did not wake the session, since the user
+    // last acknowledged.
+    pub ignored_comments: u32,
     // When the status last changed, in milliseconds since the Unix epoch.
     #[ts(type = "number")]
     pub updated_at: u64,

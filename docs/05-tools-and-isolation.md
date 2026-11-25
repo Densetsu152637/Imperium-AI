@@ -769,6 +769,19 @@ web or earlier sessions, `ask_user`, delegation) still run, and the app-config t
 (`set_model_card`, `install_extension`, `uninstall_extension`) count as tools that ask in `ask`
 and `plan`.
 
+**Woken turns are capped (implemented, pull-request card stage 7).** When the daemon wakes a
+session because someone wrote a review comment on its pull request
+([14](14-projects-and-automation.md#review-comment-wake-implemented-stage-7-protocol-063)), the
+turn runs in the stricter of the session's mode and `ask`: every mode but `plan` becomes `ask`
+(allow rules, *Always this session* approvals, `accept_edits`, `full` and `auto` do not apply
+during the turn), and `plan` stays `plan`. Deny rules and the safety floor apply as always, and
+nothing is pre-approved, so every edit, command and tool that asks waits for the user; reads run as
+they do in `ask`. Only the mode changes (`permissions::TurnCap`): the session's rules and
+approvals are untouched, and the session's own mode comes back when the turn ends, also on an
+error, a timeout or a cancel (unless the user changed the mode meanwhile, whose choice stands).
+The user's later messages are **not** capped, with the comment text still in the history; the
+card says so until it is acknowledged.
+
 **The safety floor** is a built-in check that applies everywhere: no mode, allow rule, session
 approval, or unattended session's pre-approved tools lift it (plan mode refuses the call
 anyway). Each call it covers asks every time; in an unattended session (auto-fix, schedules,

@@ -77,6 +77,10 @@ pub struct Pr {
     /// `(name, status, conclusion)` as the check-run API reports them.
     pub checks: Vec<(String, String, Option<String>)>,
     pub threads: Vec<Thread>,
+    /// Reviews with a body (`/pulls/{n}/reviews`).
+    pub reviews: Vec<Comment>,
+    /// Comments on the conversation (`/issues/{n}/comments`).
+    pub issue_comments: Vec<Comment>,
     /// The method and head OID of the last accepted `enablePullRequestAutoMerge`.
     pub auto_merge: Option<(String, String)>,
 }
@@ -231,6 +235,8 @@ impl FakeGithub {
             in_merge_queue: false,
             checks: Vec::new(),
             threads: Vec::new(),
+            reviews: Vec::new(),
+            issue_comments: Vec::new(),
             auto_merge: None,
         };
         self.w()
@@ -313,6 +319,48 @@ impl FakeGithub {
             });
         });
         (thread, id)
+    }
+
+    /// Adds a review with a body; returns its id.
+    pub fn add_review(
+        &self,
+        repo: &str,
+        number: u64,
+        login: &str,
+        association: &str,
+        body: &str,
+    ) -> u64 {
+        let id = self.next_id();
+        let comment = Comment {
+            id,
+            login: login.to_string(),
+            association: association.to_string(),
+            body: body.to_string(),
+            reply_to: None,
+        };
+        self.with_pr(repo, number, |pr| pr.reviews.push(comment));
+        id
+    }
+
+    /// Adds a comment on the pull request's conversation; returns its id.
+    pub fn add_issue_comment(
+        &self,
+        repo: &str,
+        number: u64,
+        login: &str,
+        association: &str,
+        body: &str,
+    ) -> u64 {
+        let id = self.next_id();
+        let comment = Comment {
+            id,
+            login: login.to_string(),
+            association: association.to_string(),
+            body: body.to_string(),
+            reply_to: None,
+        };
+        self.with_pr(repo, number, |pr| pr.issue_comments.push(comment));
+        id
     }
 
     fn next_id(&self) -> u64 {
@@ -483,6 +531,31 @@ fn comment_json(pr: u64, thread: &Thread, comment: &Comment) -> Value {
            "in_reply_to_id": comment.reply_to})
 }
 
+fn plain_comment_json(pr: u64, comment: &Comment, review: bool) -> Value {
+    let mut json = json!({"id": comment.id, "user": {"login": comment.login},
+           "author_association": comment.association, "body": comment.body,
+           "created_at": "2026-01-01T00:00:00Z",
+           "html_url": format!("https://github.com/x/y/pull/{pr}#c{}", comment.id)});
+    if review {
+        json["state"] = json!("COMMENTED");
+    }
+    json
+}
+
+fn page_of(all: Vec<Value>, query: &HashMap<String, String>) -> Response {
+    let page: usize = query.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+    let per_page: usize = query
+        .get("per_page")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(30);
+    let slice: Vec<Value> = all
+        .into_iter()
+        .skip(page.saturating_sub(1) * per_page)
+        .take(per_page)
+        .collect();
+    reply(200, Value::Array(slice))
+}
+
 async fn rest(State(world): State<Shared>, uri: Uri, headers: HeaderMap) -> Response {
     let mut world = world.lock().expect("fake world lock");
     if let Some(early) = admit(&mut world, "GET", &uri, &headers, "", None) {
@@ -541,6 +614,41 @@ async fn rest(State(world): State<Shared>, uri: Uri, headers: HeaderMap) -> Resp
                 .take(per_page)
                 .collect();
             reply(200, Value::Array(slice))
+        }
+        ["repos", _, _, "pulls", number, "reviews"] => {
+            let (Some(repo), Ok(number)) = (repo, number.parse::<u64>()) else {
+                return not_found();
+            };
+            let all = repo.prs.get(&number).map_or_else(Vec::new, |pr| {
+                pr.reviews
+                    .iter()
+                    .map(|c| plain_comment_json(number, c, true))
+                    .collect()
+            });
+            page_of(all, &query)
+        }
+        ["repos", _, _, "issues", number, "comments"] => {
+            let (Some(repo), Ok(number)) = (repo, number.parse::<u64>()) else {
+                return not_found();
+            };
+            let all = repo.prs.get(&number).map_or_else(Vec::new, |pr| {
+                pr.issue_comments
+                    .iter()
+                    .map(|c| plain_comment_json(number, c, false))
+                    .collect()
+            });
+            page_of(all, &query)
+        }
+        ["repos", _, _, "pulls", number] => {
+            let (Some(repo), Ok(number)) = (repo, number.parse::<u64>()) else {
+                return not_found();
+            };
+            repo.prs.get(&number).map_or_else(not_found, |pr| {
+                reply(
+                    200,
+                    json!({"number": number, "user": {"login": pr.author}, "state": pr.state}),
+                )
+            })
         }
         ["repos", _, _, "actions", "jobs", job, "logs"] => {
             let mut response = StatusCode::FOUND.into_response();

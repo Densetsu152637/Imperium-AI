@@ -4,4 +4,14 @@ export type AutofixEventParams = { repo: string, pull_request: number,
 /**
  * `started`, `awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, or `stopped`.
  */
-status: string, session_id: string | null, summary: string, };
+status: string, session_id: string | null, summary: string, 
+/**
+ * What started the work: `ci` (a failing check), `review` (a review comment or review) or
+ * `conflict`.
+ */
+trigger: string, 
+/**
+ * For a `review` trigger, the ids of the comments and reviews that woke the session (their
+ * text is not sent). Empty otherwise.
+ */
+comment_ids: Array<number>, };
