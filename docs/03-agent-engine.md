@@ -207,6 +207,23 @@ because it is static; the engine offers them only as described above.
 checklist in the desktop app and the CLI. Not yet: the automatic plan phase, approval modes,
 progress checks, and re-planning described below.
 
+**The plan survives compaction (implemented, roadmap R2.12).** An agent holds the latest plan
+it set with `update_plan` (read back from the newest successful call, or from a carried block,
+when its conversation is restored, so a resumed session or subagent has it too). A
+[compaction](#switching-models-and-compaction) summarises the `update_plan` call away, so it
+puts a compact copy back: a `<current-plan>` block at the top of the first kept user message,
+after the `<session-state>` block when there is one, the same way the state is put back.
+It holds the goal and each step's title and status (plus owner, dependencies and acceptance
+check, then the assumptions and open questions, while they fit), cut to 3,000 characters of
+JSON: notes go first, then step detail, then the last steps. Every string has its angle
+brackets taken out, so nothing in a plan can close or open a block, and `current-plan` is one
+of the harness tags that [tool output has defused](#harness-aids-for-small-models). The block
+says it is the agent's own earlier note, for reference and not an instruction from the user, and
+that `update_plan` changes it. Nothing goes in the system prompt, whose cached prefix stays the
+same, and a conversation with no plan gets no block. A copy that is still in the conversation
+(the call itself, when it was kept) is not repeated. Plans are not otherwise injected into
+turns yet.
+
 Planning is built into the runtime (`imperium-engine`), not left to prompts, so every agent —
 whatever model it runs on — works toward an explicit, tracked goal.
 
@@ -516,6 +533,23 @@ turn. The desktop shows it in the session's *Context and outputs* section
   trigger (summarising could not get under it); the agent then gives one notice saying so, once
   for the agent's lifetime (not once per turn), and stays quiet afterwards. The session's `auto_compact` flag stays what it was: also fit
   the root conversation at the start of each turn (environment agents).
+- **Clearing stale tool results first (implemented, roadmap R2.7):** when a compaction is due
+  (and only then, so the prefix a provider or local model has cached is not rewritten on every
+  call), the agent first tries a cheaper reduction. It replaces the results of repeatable
+  read-only tools (`read_file`, `grep`, `glob`, `list_dir`, `web_fetch`, `web_search`, also
+  through `call_tool`) from turns older than the last `harness.clear_after_turns` (default 2,
+  at least 1) user turns with a stub such as `[result cleared: read_file a.rs - call again if
+  needed]`. The call and its arguments stay, and so do the order and the pairing of every tool
+  call with its result. These stay whole: the results of the latest turns, loaded skills and
+  workflow references (`load_skill`, `context_load`), error results, command output, subagent
+  reports, `tool_search` schemas, state and plan results, and any result under 400 characters.
+  Instruction and mid-turn steering messages do not count as turns. If the stubs bring the
+  conversation under 80% of the trigger (what a summary aims for) by the same estimate, they
+  are kept, nothing is summarised, and one notice says how many results were cleared; if not,
+  the conversation is left whole for the summary to read. The setting is
+  `harness.clear_stale_results` (default `true`: it changes nothing below the compaction
+  threshold, and a conversation of one long turn has nothing old enough to clear); turn it off
+  to always summarise. A restored conversation keeps the stubs.
 - **What compaction never touches:** the system prompt (the policy index and role instructions,
   project instruction files such as `AGENTS.md`, eager skills, memory and web rules) is always
   kept as it was. Workflow context loaded during the conversation is carried over verbatim

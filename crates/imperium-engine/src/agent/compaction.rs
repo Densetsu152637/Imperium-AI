@@ -55,6 +55,12 @@ impl Agent {
         if tokens < trigger {
             return;
         }
+        // Old results of repeatable tools are cheaper to give up than the conversation is to
+        // summarise: when stubbing them gets the conversation well under the trigger, that is
+        // all that happens.
+        if self.clear_stale_results(tokens, trigger) {
+            return;
+        }
         // What compaction cannot shrink: the system prompt, the tools, and the carried context.
         let fixed = estimate_tokens(&serde_json::to_string(&self.messages[0]).unwrap_or_default())
             + tools
@@ -100,6 +106,40 @@ impl Agent {
                 });
             }
         }
+    }
+
+    /// Replaces the results of repeatable tools from older turns with stubs
+    /// ([`compact::stale_results`]) when that brings a conversation of `tokens` under
+    /// `BELOW_TRIGGER_PERCENT` of `trigger`, the same room a summary aims for. Otherwise the
+    /// conversation is left as it was (the summary reads the full results). Only runs when a
+    /// compaction is due, so the prompt prefix a provider or local model has cached is not
+    /// rewritten on every call. Returns whether it cleared.
+    fn clear_stale_results(&mut self, tokens: u64, trigger: u64) -> bool {
+        if !self.shared.harness.clear_stale_results {
+            return false;
+        }
+        let keep = self.shared.harness.clear_after_turns.max(1) as usize;
+        let stale = compact::stale_results(&self.messages, keep);
+        let freed: u64 = stale.iter().map(|result| result.freed_tokens).sum();
+        let after = tokens.saturating_sub(freed);
+        if stale.is_empty() || after >= trigger * compact::BELOW_TRIGGER_PERCENT / 100 {
+            return false;
+        }
+        for result in &stale {
+            if let ChatMessage::Tool { content, .. } = &mut self.messages[result.index] {
+                *content = result.stub.clone();
+            }
+        }
+        self.last_reported = None;
+        self.last_call = None;
+        self.checkpoint();
+        self.emit(SessionEvent::Notice {
+            message: format!(
+                "cleared {} old tool results (about {freed} tokens) instead of summarising the conversation; the calls stay, and a result can be fetched again",
+                stale.len()
+            ),
+        });
+        true
     }
 
     /// Switches this agent to `target` from its next turn, without loading or calling it: the
@@ -322,6 +362,7 @@ impl Agent {
             if self.can_delegate {
                 reattach_state(&mut messages, &mut spans, &self.state);
             }
+            crate::plan::reattach(&mut messages, &mut spans, lock(&self.plan).as_ref());
             let after = self
                 .measure_for(target, &messages, &spans, &tools, scale)
                 .await?;
