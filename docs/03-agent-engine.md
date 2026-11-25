@@ -69,7 +69,8 @@ results." It is a single shared constant (`PROVERB` in `agent/prompts.rs`), not 
 **Implemented:** the root agent's system prompt carries a short style contract
 ([roadmap item 19](12-roadmap.md)), and
 [`emperor-root.md`](../crates/imperium-protocol/schemas/prompts/emperor-root.md) has the same
-rules under *Response style*, so Emperor is trained on what the engine asks for:
+rules under *Response style*; the vendored Emperor prompt carries them, and a trained model
+learns them only at a later training round:
 
 - Lead with the result; keep replies short, the big picture first and more detail only when
   the user asks.
@@ -1033,8 +1034,10 @@ max_steps = 30
 
 `--prompt-overlay <file>` appends a file's text last. The flags are `max_steps` (default 50),
 `effort`, `auto_compact` (default false), `auto_compact_at` (0 to 1), `knowledge` (default
-true), `attended` (default false) and `harness` (`on`, `off`, `auto`; the aids need
-`attended=true`). An unknown flag is an error. The variant id and a `config_hash` (over the
+true), `attended` (default false), `harness` (`on`, `off`, `auto`; the aids need
+`attended=true`) and `tool_loading` (`on`, `off`, `auto`, default `off`; `auto` is on with
+`--local`: the fixed tool list of `harness.tool_loading`, see
+[the plan](plans/reactive-tools.md), is offered instead of every tool). An unknown flag is an error. The variant id and a `config_hash` (over the
 edits, flags and overlay, not the name) are in the output next to the prompt hash.
 
 ### Subagent recordings

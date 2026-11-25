@@ -194,6 +194,12 @@ impl Prepared {
                 HarnessMode::Auto if options.model.local => HarnessMode::On,
                 other => other,
             },
+            // The same for the reactive tool list; unlike `harness` its default is `off`.
+            tool_loading: match flags.tool_loading {
+                HarnessMode::Auto if options.model.local => HarnessMode::On,
+                HarnessMode::Auto => HarnessMode::Off,
+                other => other,
+            },
             ..flags
         };
         Ok(Prepared {

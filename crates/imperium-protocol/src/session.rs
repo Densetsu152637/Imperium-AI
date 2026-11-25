@@ -206,6 +206,14 @@ pub enum SessionEvent {
         #[ts(as = "Option<Vec<String>>", optional)]
         tools: Vec<String>,
     },
+    /// With reactive tool loading on, the agent looked up tools it is not offered directly
+    /// (`via: search`: a `tool_search` result showed their parameters) or ran one through
+    /// `call_tool` (`via: call`). Reported once per tool and agent; only names, never the
+    /// schemas, which are outside text.
+    ToolsLoaded {
+        names: Vec<String>,
+        via: ToolLoadVia,
+    },
     /// The agent's browser after an action: page, title, and a JPEG screenshot (base64), so
     /// clients can mirror it. `tab` is the tab the page belongs to and `tabs` lists every open
     /// tab, so a client keeps one mirror per tab; both are absent from a daemon older than
@@ -569,6 +577,17 @@ pub struct ContextCategory {
 pub enum ExtensionKind {
     Skill,
     Plugin,
+}
+
+/// How a `tools_loaded` event came about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ToolLoadVia {
+    /// A `tool_search` result showed the tools' parameters.
+    Search,
+    /// The tools were run through `call_tool`.
+    Call,
 }
 
 /// How a context breakdown was counted.

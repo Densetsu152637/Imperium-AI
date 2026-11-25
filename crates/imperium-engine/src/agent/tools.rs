@@ -31,14 +31,25 @@ impl Agent {
     /// plugins' tools join from the call after their activation.
     pub(super) fn offered_tools(&self) -> (Vec<ToolSpec>, Vec<(Category, String)>) {
         self.enforce_lock();
-        let (specs, groups) = self.tool_specs();
+        let (specs, groups) = self.tool_offered();
         let texts = tool_texts(&specs, &groups);
         (specs, texts)
     }
 
-    /// The tools offered to the model, and where the outside tools (MCP servers', activated
-    /// plugins') sit among them.
-    pub(super) fn tool_specs(&self) -> (Vec<ToolSpec>, Vec<(Category, Range<usize>)>) {
+    /// Every tool this agent may use, and where the outside tools (MCP servers', activated
+    /// plugins') sit among them: the list it is offered with `harness.tool_loading` off. With
+    /// loading on this is its universe, which calls are checked against; it is worked out
+    /// again each time it is asked for.
+    pub(super) fn tool_universe(&self) -> (Vec<ToolSpec>, Vec<(Category, Range<usize>)>) {
+        self.build_universe(self.reactive())
+    }
+
+    /// [`Agent::tool_universe`]; `keep_activation` keeps `activate_plugin` listed after the
+    /// last plugin is active (loading on, where the offered list must not change).
+    pub(super) fn build_universe(
+        &self,
+        keep_activation: bool,
+    ) -> (Vec<ToolSpec>, Vec<(Category, Range<usize>)>) {
         if self.single_call {
             return (Vec::new(), Vec::new());
         }
@@ -73,6 +84,7 @@ impl Agent {
             .plugins()
             .iter()
             .any(|plugin| !lazy.is_active(&plugin.name) && profile.allows_plugin(&plugin.name))
+            || (keep_activation && self.plugin_loader() && profile.allows_any_plugin())
         {
             tools.push(activate_plugin_spec());
         }
@@ -389,15 +401,24 @@ impl Agent {
                     name: args.name.clone(),
                     tools: tools.clone(),
                 });
-                let mut text = format!(
-                    "Plugin {} is active. Its tools, offered from now on: {}",
-                    args.name,
-                    if tools.is_empty() {
-                        "none".to_string()
-                    } else {
-                        tools.join(", ")
-                    }
-                );
+                let names = if tools.is_empty() {
+                    "none".to_string()
+                } else {
+                    tools.join(", ")
+                };
+                // The list the model is offered does not change with loading on: the tools
+                // are found with `tool_search` and run with `call_tool`.
+                let mut text = if self.reactive() {
+                    format!(
+                        "Plugin {} is active. Its tools, reached with tool_search and call_tool from now on: {names}",
+                        args.name
+                    )
+                } else {
+                    format!(
+                        "Plugin {} is active. Its tools, offered from now on: {names}",
+                        args.name
+                    )
+                };
                 if !failed.is_empty() {
                     text.push_str(&format!(
                         "\nThese servers did not start: {}",
@@ -655,6 +676,26 @@ impl Agent {
     /// permission rules and the safety floor, then approval), and the user is shown both
     /// versions. It stays the same tool: a hook cannot turn a call into another tool's.
     pub(super) async fn run_tool(&mut self, call: &ToolCall) -> String {
+        // A call through `call_tool` becomes the call it stands for before anything else looks
+        // at it, so hooks, refusals, approvals and events all see the inner tool.
+        let (effective, proxied) = match self.unwrap_call(call) {
+            Ok(unwrapped) => unwrapped,
+            Err(error) => {
+                return self.tool_finished(
+                    call,
+                    &call.function.name,
+                    false,
+                    format!("error: {error}"),
+                    None,
+                );
+            }
+        };
+        let output = self.run_effective(&effective).await;
+        self.with_schema_advice(&effective, proxied, output)
+    }
+
+    /// Runs the call `run_tool` settled on, with the rewrite retry described there.
+    async fn run_effective(&mut self, call: &ToolCall) -> String {
         *lock(&self.pending_rewrite) = None;
         *lock(&self.ran_rewritten) = None;
         let output = self.run_tool_once(call).await;
@@ -687,6 +728,16 @@ impl Agent {
         if !self.shared.snapshot_ready().await {
             return self.tool_finished(call, name, false, STOPPED_BEFORE_RUNNING.into(), None);
         }
+        // `tool_search` only reads the agent's own tool list, so neither a question's fork nor
+        // an initiative review limits it (the tools it leads to are limited when they run).
+        if name == TOOL_SEARCH && self.reactive() {
+            let started = self.tool_started(call, name, "search for tools".to_string());
+            let (ok, output) = match self.tool_search(arguments) {
+                Ok(output) => (true, output),
+                Err(error) => (false, format!("error: {error}")),
+            };
+            return self.tool_finished(call, name, ok, output, Some(started));
+        }
         // A question's fork may read and search, and nothing else: checked here, where a call
         // is dispatched, so the tool list it was given (and its cached prefix) stays as it was.
         if self.fork.is_some()
@@ -715,6 +766,18 @@ impl Agent {
                 format!(
                     "This agent's permission profile does not allow this: {why}. {name} was not run."
                 ),
+                None,
+            );
+        }
+        // With loading on, the offered list says nothing of what may be called, so a call is
+        // checked against the agent's tools as they are now. With it off the call runs as it
+        // always has.
+        if self.reactive() && !self.in_universe(name) {
+            return self.tool_finished(
+                call,
+                name,
+                false,
+                format!("error: {name} is not one of your tools; it was not run"),
                 None,
             );
         }
@@ -1090,7 +1153,7 @@ pub(super) fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
 }
 
 /// Keeps the tools `allowed` names, and moves the ranges of `groups` to match what is left.
-fn narrow_tools(
+pub(super) fn narrow_tools(
     tools: Vec<ToolSpec>,
     groups: Vec<(Category, Range<usize>)>,
     allowed: &[String],
