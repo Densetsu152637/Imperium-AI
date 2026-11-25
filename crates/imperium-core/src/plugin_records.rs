@@ -256,7 +256,7 @@ fn read_store(paths: &Paths) -> Stored {
 
 /// Writes through a temporary file in the same folder and a rename, so a crash leaves the old
 /// file or the new one.
-fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
+pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     use std::io::Write;
 
     let fail = |error: std::io::Error| format!("{}: {error}", path.display());
@@ -637,8 +637,8 @@ pub(crate) struct Gate {
 /// 2. has a folder name, recorded name and manifest name that are not all equal,
 /// 3. is, or holds, a symbolic link or reparse point,
 /// 4. hashes differently from its record, or
-/// 5. has hooks or servers without an approval the verifier honours whose hash and run summary
-///    equal what is there now.
+/// 5. has hooks or servers, or was installed by an agent (`origin = agent`), without an approval
+///    the verifier honours whose hash and run summary equal what is there now.
 ///
 /// An unrecorded folder with neither hooks nor servers loads (unless it holds a link).
 pub(crate) fn gate(paths: &Paths, verifier: &dyn ApprovalVerifier) -> Gate {
@@ -712,11 +712,15 @@ fn judge(
     if seen.hash != record.hash {
         return Some("its content changed since Imperium recorded it".to_string());
     }
-    if !code {
+    // What an agent installed adds agents, skills and commands to every later session, so it
+    // loads only once approved, with code or without; a marketplace or user install without
+    // code loads as it always did.
+    if !code && record.origin != Origin::Agent {
         return None;
     }
     let digest = plugins::runs(&plugin).digest();
     match &record.approval {
+        None if !code => Some(AGENT_UNAPPROVED.to_string()),
         None => Some("not approved: approve to load".to_string()),
         Some(approval) if !verifier.honours(approval.kind) => {
             Some("its approval does not count here".to_string())
@@ -725,6 +729,30 @@ fn judge(
             Some("what it runs changed since it was approved: approve to load".to_string())
         }
         Some(_) => None,
+    }
+}
+
+/// Why a plugin an agent installed is withheld before the user approved it, whether or not it
+/// has hooks or servers.
+pub(crate) const AGENT_UNAPPROVED: &str = "an agent installed it and you have not approved it: approve it in the Imperium desktop app (Plugins, Installed) to load its agents, skills and commands";
+
+/// What an approval is for: a plugin folder or a skill folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Subject {
+    #[default]
+    Plugin,
+    Skill,
+}
+
+impl Subject {
+    /// The subject a request's `kind` names: a plugin when it is left out or `plugin`, a skill for
+    /// `skill`.
+    pub(crate) fn parse(kind: Option<&str>) -> Result<Subject, String> {
+        match kind {
+            None | Some("plugin") => Ok(Subject::Plugin),
+            Some("skill") => Ok(Subject::Skill),
+            Some(other) => Err(format!("kind must be plugin or skill, not {other:?}")),
+        }
     }
 }
 
@@ -803,7 +831,11 @@ fn record_present(paths: &Paths, disabled: &[String]) -> (Store, Vec<String>) {
             continue;
         }
         let runs = plugins::runs(&plugin).digest();
-        let approval = (!disabled.contains(&plugin.name)).then(|| Approval {
+        let agent = plugins::agent_installed(&folder);
+        // What an agent installed without code is not carried over: it adds agents, skills and
+        // commands to every session and loads only once approved (`judge`).
+        let carried = !disabled.contains(&plugin.name) && (!agent || has_code(&plugin));
+        let approval = carried.then(|| Approval {
             hash: seen.hash.clone(),
             runs: runs.clone(),
             at_unix_ms: unix_ms(),
@@ -812,7 +844,7 @@ fn record_present(paths: &Paths, disabled: &[String]) -> (Store, Vec<String>) {
         store.plugins.insert(
             canon.to_string_lossy().into_owned(),
             Record {
-                origin: if plugins::agent_installed(&folder) {
+                origin: if agent {
                     Origin::Agent
                 } else {
                     Origin::Preexisting
@@ -1372,5 +1404,70 @@ mod tests {
         // `hash_files` is handed a list that names the link, as when a file is swapped after the walk.
         let stamps = vec![("link.txt".to_string(), 6, None)];
         assert!(hash_files(dir.path(), &stamps).is_err());
+    }
+
+    #[test]
+    fn an_agent_installed_plugin_without_code_loads_only_once_approved() {
+        let home = home();
+        let agent = plugin(&home, "agentic", "agentic", false);
+        record(&home, &agent, Origin::Agent, None);
+        // No approval: withheld although it has no hooks or servers, with how to approve.
+        let withheld_now = reasons(&home, &TestVerifier);
+        assert_eq!(withheld_now.len(), 1, "{withheld_now:?}");
+        assert_eq!(withheld_now[0].0, "agentic");
+        assert_eq!(withheld_now[0].1, AGENT_UNAPPROVED);
+        assert!(withheld_now[0].1.contains("desktop app"));
+        // An approval of what is there, honoured by the verifier, lets it load.
+        record(&home, &agent, Origin::Agent, Some(ApprovalKind::Counted));
+        assert!(withheld(&home).is_empty());
+        // One the verifier does not honour (a development approval in a release build) does not.
+        record(&home, &agent, Origin::Agent, Some(ApprovalKind::Dev));
+        assert_eq!(reasons(&home, &ReleaseVerifier).len(), 1);
+        // A change after the approval withholds it again.
+        record(&home, &agent, Origin::Agent, Some(ApprovalKind::Counted));
+        write(
+            &agent.join("skills/s/SKILL.md"),
+            "---
+name: s
+description: x
+---
+edited
+",
+        );
+        assert_eq!(withheld(&home), ["agentic"]);
+    }
+
+    #[test]
+    fn a_marketplace_or_user_plugin_without_code_still_loads_unapproved() {
+        let home = home();
+        let market = plugin(&home, "market", "market", false);
+        let user = plugin(&home, "user", "user", false);
+        let before = plugin(&home, "pre", "pre", false);
+        record(&home, &market, Origin::Marketplace, None);
+        record(&home, &user, Origin::User, None);
+        record(&home, &before, Origin::Preexisting, None);
+        assert!(withheld(&home).is_empty());
+    }
+
+    #[test]
+    fn the_first_start_migration_does_not_carry_over_an_agent_plugin_without_code() {
+        let home = home();
+        let skills_only = plugin(&home, "skillful", "skillful", false);
+        write(
+            &skills_only.join(plugins::SOURCE_FILE),
+            r#"{"session_id": "s1"}"#,
+        );
+        let own = plugin(&home, "own", "own", false);
+        migrate(&home.paths, &[]).unwrap();
+        let reasons = reasons(&home, &ReleaseVerifier);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert_eq!(reasons[0].0, "skillful");
+        assert!(record_for(&home.paths, &own).unwrap().approval.is_some());
+        assert!(
+            record_for(&home.paths, &skills_only)
+                .unwrap()
+                .approval
+                .is_none()
+        );
     }
 }

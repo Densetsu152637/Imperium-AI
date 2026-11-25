@@ -54,6 +54,7 @@ mod runtimes;
 mod safe_git;
 mod scheduler;
 mod server;
+mod skill_records;
 mod state;
 mod suggestions;
 mod token;

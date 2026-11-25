@@ -88,6 +88,8 @@ function Diff({ diff }: { diff: RunDiff }) {
   );
 }
 
+const runLinesCount = (preview: PluginPreview): number => preview.hooks.length + preview.servers.length;
+
 export function TrustView({
   preview,
   action,
@@ -148,12 +150,16 @@ export function TrustView({
           <div className="connector-form-subtitle">{plain(preview.id)}</div>
         </div>
       </div>
-      {approvable && (
+      {approvable && (runLinesCount(preview) > 0 ? (
         <Notice tone="warn" title="Approving lets this plugin run what is listed below">
           It runs on your computer with your permissions, outside Imperium's tool sandbox. This list shows what the plugin declares. Any script it
           runs can still fetch and run more code.
         </Notice>
-      )}
+      ) : (
+        <Notice tone="warn" title={`Approving lets this ${preview.source_kind === "skill" ? "skill" : "plugin"} add to every later session`}>
+          An agent installed it. It runs no hook or server, but the agents, skills and commands listed below reach every session, and agents follow what they say.
+        </Notice>
+      ))}
       {preview.source_kind === "folder" && (
         <Notice tone="info" title="This folder did not come from a marketplace">
           The list below is read from the folder as it is now. Approval is for exactly these files: if any file changes afterwards, the plugin is

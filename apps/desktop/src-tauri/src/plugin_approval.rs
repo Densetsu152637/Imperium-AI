@@ -166,7 +166,22 @@ fn inspect_params(id: &str) -> PluginsInspectParams {
 fn inspect_folder_params(name: &str) -> PluginsInspectFolderParams {
     PluginsInspectFolderParams {
         name: name.to_string(),
+        kind: None,
     }
+}
+
+/// The preview of an installed skill folder (`<config>/skills/<name>`), which an agent installed.
+fn inspect_skill_params(name: &str) -> PluginsInspectFolderParams {
+    PluginsInspectFolderParams {
+        name: name.to_string(),
+        kind: Some("skill".to_string()),
+    }
+}
+
+/// The `kind` of the challenge and approval: `skill` when the daemon's own preview is of a skill
+/// folder, so what is approved is what the dialog showed, never what the webview named.
+fn approval_kind(preview: &PluginPreview) -> Option<String> {
+    (preview.source_kind == "skill").then(|| "skill".to_string())
 }
 
 /// The install of exactly the content the dialog showed: the daemon refuses another hash.
@@ -193,6 +208,7 @@ fn challenge_params(name: &str, preview: &PluginPreview) -> PluginsApprovalChall
         name: name.to_string(),
         sha256: preview.sha256.clone(),
         runs_digest: preview.runs_digest.clone(),
+        kind: approval_kind(preview),
     }
 }
 
@@ -202,12 +218,18 @@ fn approve_params(name: &str, preview: &PluginPreview, challenge: &str) -> Plugi
         sha256: preview.sha256.clone(),
         runs_digest: preview.runs_digest.clone(),
         challenge: challenge.to_string(),
+        kind: approval_kind(preview),
     }
 }
 
 /// Whether the preview is something this action can approve.
 fn check_preview(action: Action, preview: &PluginPreview) -> Result<(), String> {
-    if preview.hooks.is_empty() && preview.servers.is_empty() {
+    // A folder that adds only agents, skills or commands is approved too when it is withheld: an
+    // agent installed it, and what it adds reaches every later session. A marketplace plugin with
+    // no code loads without approval, so there is nothing to approve.
+    let folder =
+        action == Action::Approve && matches!(preview.source_kind.as_str(), "folder" | "skill");
+    if preview.hooks.is_empty() && preview.servers.is_empty() && !folder {
         return Err(format!(
             "{} runs no hook or server, so there is nothing to approve",
             preview.id
@@ -261,10 +283,18 @@ pub(crate) fn show(value: &str) -> String {
 /// from, every hook and server command line with launchers flagged, and what the servers use.
 fn summary(preview: &PluginPreview) -> String {
     let mut text = String::new();
-    text.push_str(
-        "Approving lets this plugin run the commands below on your computer, outside Imperium's \
-         tool sandbox, with your permissions.\n\n",
-    );
+    if preview.hooks.is_empty() && preview.servers.is_empty() {
+        text.push_str(&format!(
+            "Approving lets this {} add the agents, skills and commands listed below to every \
+             later session, which follow what they say. It runs no hook or server.\n\n",
+            kind_word(preview)
+        ));
+    } else {
+        text.push_str(
+            "Approving lets this plugin run the commands below on your computer, outside \
+             Imperium's tool sandbox, with your permissions.\n\n",
+        );
+    }
     text.push_str(&format!(
         "Source: {} {}\n",
         show(&preview.source_kind),
@@ -331,10 +361,33 @@ fn summary(preview: &PluginPreview) -> String {
             }
         }
     }
+    for (title, names) in [
+        ("Skills", &preview.skills),
+        ("Commands", &preview.commands),
+        ("Agents", &preview.agents),
+    ] {
+        if !names.is_empty() {
+            let shown: Vec<String> = names.iter().map(|name| show(name)).collect();
+            text.push_str(&format!(
+                "\n{title} ({}): {}\n",
+                shown.len(),
+                shown.join(", ")
+            ));
+        }
+    }
     for note in &preview.notes {
         text.push_str(&format!("\nNote: {}\n", show(note)));
     }
     text
+}
+
+/// What the dialog calls the thing approved: a skill, or a plugin.
+fn kind_word(preview: &PluginPreview) -> &'static str {
+    if preview.source_kind == "skill" {
+        "skill"
+    } else {
+        "plugin"
+    }
 }
 
 /// The length of the escape `show` wrote at the start of `text` (which starts with a backslash):
@@ -444,9 +497,13 @@ fn dialog_pages(action: Action, preview: &PluginPreview) -> Result<Vec<Page>, St
         .enumerate()
         .map(|(index, chunk)| Page {
             title: if count == 1 {
-                "Approve plugin".to_string()
+                format!("Approve {}", kind_word(preview))
             } else {
-                format!("Approve plugin - page {} of {count}", index + 1)
+                format!(
+                    "Approve {} - page {} of {count}",
+                    kind_word(preview),
+                    index + 1
+                )
             },
             text: header
                 .iter()
@@ -509,6 +566,8 @@ pub(crate) async fn connect(version: String) -> Result<Client, String> {
 enum Target {
     Marketplace(String),
     Folder(String),
+    /// The folder of an installed skill, by name.
+    Skill(String),
 }
 
 /// The folder's own name: the last part of the path `plugins.list` shows.
@@ -590,9 +649,30 @@ async fn flow<R: Runtime>(
     name: &str,
     action: Action,
     environment: Option<&str>,
+    skill: bool,
 ) -> Result<Outcome, String> {
     let mut client = connect(app.package_info().version.to_string()).await?;
-    let (id, preview) = match resolve_target(&mut client, action, name).await? {
+    let target = if skill {
+        // A skill an agent installed: previewed from its folder, and only to approve it.
+        if action != Action::Approve {
+            return Err(
+                "a skill is approved as installed: there is nothing to install or update".into(),
+            );
+        }
+        Target::Skill(name.to_string())
+    } else {
+        resolve_target(&mut client, action, name).await?
+    };
+    let (id, preview) = match target {
+        Target::Skill(folder) => {
+            let preview = ask::<PluginsInspectFolder>(
+                &mut client,
+                inspect_skill_params(&folder),
+                FETCH_TIMEOUT,
+            )
+            .await?;
+            (folder, preview)
+        }
         Target::Marketplace(id) => {
             let preview =
                 ask::<PluginsInspect>(&mut client, inspect_params(&id), FETCH_TIMEOUT).await?;
@@ -689,6 +769,7 @@ pub async fn plugin_approve<R: Runtime>(
     name: String,
     action: Action,
     environment: Option<String>,
+    kind: Option<String>,
 ) -> Result<Outcome, String> {
     if !own_window(window.label()) {
         return Err("plugins are approved only from the app's own windows".into());
@@ -703,7 +784,12 @@ pub async fn plugin_approve<R: Runtime>(
     let environment = environment
         .map(|environment| plain(&environment, "the environment"))
         .transpose()?;
-    flow(&app, &window, &name, action, environment.as_deref()).await
+    let skill = match kind.as_deref() {
+        None | Some("plugin") => false,
+        Some("skill") => true,
+        Some(_) => return Err("kind must be plugin or skill".into()),
+    };
+    flow(&app, &window, &name, action, environment.as_deref(), skill).await
 }
 
 #[cfg(test)]
@@ -1304,5 +1390,43 @@ mod tests {
             &mut found,
         );
         assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_withheld_folder_that_runs_no_code_is_approved_and_a_skill_carries_its_kind() {
+        let mut found = preview();
+        found.id = "from-url".into();
+        found.source_kind = "folder".into();
+        found.hooks.clear();
+        found.servers.clear();
+        found.launcher = false;
+        found.agents = vec!["helper".into()];
+        found.skills = vec!["style".into()];
+        found.installed = installed(true);
+        // A folder with only agents, skills and commands is approved as installed, never installed
+        // or updated by this command, and the dialog says what it adds.
+        assert!(check_preview(Action::Approve, &found).is_ok());
+        assert!(check_preview(Action::Update, &found).is_err());
+        let text = shown(Action::Approve, &found);
+        assert!(text.contains("Agents (1): helper"), "{text}");
+        assert!(text.contains("It runs no hook or server."), "{text}");
+        assert_eq!(challenge_params("from-url", &found).kind, None);
+        // A skill's preview names its kind, so the challenge and approval carry it.
+        found.source_kind = "skill".into();
+        assert!(check_preview(Action::Approve, &found).is_ok());
+        assert_eq!(
+            challenge_params("from-url", &found).kind.as_deref(),
+            Some("skill")
+        );
+        assert_eq!(
+            approve_params("from-url", &found, "c").kind.as_deref(),
+            Some("skill")
+        );
+        assert_eq!(inspect_skill_params("notes").kind.as_deref(), Some("skill"));
+        let pages = dialog_pages(Action::Approve, &found).unwrap();
+        assert_eq!(pages[0].title, "Approve skill");
+        // A marketplace plugin with no code has nothing to approve.
+        found.source_kind = "github".into();
+        assert!(check_preview(Action::Approve, &found).is_err());
     }
 }

@@ -382,7 +382,7 @@ pub fn set_model_card() -> ToolDefinition {
 pub fn install_extension() -> ToolDefinition {
     ToolDefinition {
         name: "install_extension",
-        description: "Install a skill (a folder with SKILL.md), a plugin (a folder with .claude-plugin/plugin.json), or a UI mod (a folder with mod.json) into the user's Imperium config, from a git repository or a folder on this machine, or a plugin by name@marketplace from a marketplace the user added. Nothing in it runs at install: skills and plugins are listed for agents and load when first used, a plugin with hooks or MCP servers stays off (activate_plugin cannot start it) and is withheld until the user approves it in the Imperium desktop app; a plugin installed from a git URL or folder cannot be approved there yet (roadmap item 60), and a mod shows only after the user turns it on. Where it came from (URL and commit, or folder) is recorded, and the user can undo the install. Install only from sources the user asked for or that you have good reason to trust.",
+        description: "Install a skill (a folder with SKILL.md), a plugin (a folder with .claude-plugin/plugin.json), or a UI mod (a folder with mod.json) into the user's Imperium config, from a git repository or a folder on this machine, or a plugin by name@marketplace from a marketplace the user added. Every install asks the user first, in every permission mode, naming the kind and the source; no rule or earlier approval skips that, so never install anything the user did not ask for or agree to. Nothing in it runs at install. A skill or plugin you install is withheld, adding no skills, commands, agents, hooks or servers to any session, until the user approves it in the Imperium desktop app (a plugin with hooks or MCP servers also stays off, and activate_plugin cannot start it). A mod shows only after the user turns it on. Where it came from (URL and commit, or folder) is recorded, and the user can undo the install.",
         parameters: json!({"type": "object", "properties": {
             "kind": {"type": "string", "enum": ["skill", "plugin", "mod"], "description": "What to install"},
             "source": {"type": "string", "description": "A git URL (https://, ssh://, git@host:path, or file://), a folder on this machine, or for a plugin name@marketplace (a plugin of a marketplace the user added)"},
@@ -397,7 +397,7 @@ pub fn install_extension() -> ToolDefinition {
 pub fn uninstall_extension() -> ToolDefinition {
     ToolDefinition {
         name: "uninstall_extension",
-        description: "Remove a skill, plugin, or UI mod from the user's Imperium config folder. Its folder is kept aside, so the user can undo the removal. Removing one an agent did not install asks the user first.",
+        description: "Remove a skill, plugin, or UI mod from the user's Imperium config folder. Its folder is kept aside, so the user can undo the removal. Every removal asks the user first, in every permission mode.",
         parameters: json!({"type": "object", "properties": {
             "kind": {"type": "string", "enum": ["skill", "plugin", "mod"], "description": "What to remove"},
             "name": {"type": "string", "description": "Its name: the skill's, plugin's, or mod's id"}

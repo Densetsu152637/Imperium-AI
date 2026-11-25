@@ -62,6 +62,20 @@ pub struct Sources {
     /// Folders of `plugin_dirs` outside `<config_dir>/plugins` are not affected. `None` gates
     /// nothing.
     pub allowed: Option<Vec<PathBuf>>,
+    /// The daemon's gate for the skills in `<config_dir>/skills` that an agent installed.
+    pub skill_gate: SkillGate,
+}
+
+/// Which skill folders of `<config_dir>/skills` the daemon's gate keeps out or ranks last: the
+/// ones an agent installed. A skill there that is in neither list is the user's own.
+#[derive(Debug, Clone, Default)]
+pub struct SkillGate {
+    /// Skill folders an agent installed that the user has not approved: not loaded at all.
+    pub withheld: Vec<PathBuf>,
+    /// Skill folders an agent installed and the user approved: loaded after every project and
+    /// plugin skill (origin `agent`), so one never shadows a skill of the same name from those
+    /// or from the user.
+    pub agent: Vec<PathBuf>,
 }
 
 /// Everything extensions contribute to a session.
@@ -312,7 +326,11 @@ pub fn load_with_secrets(
             });
         }
     }
-    let (mut skills, mut skill_problems) = skills::discover(&skill_dirs);
+    let (mut skills, mut skill_problems) = skills::discover_gated(
+        &skill_dirs,
+        &sources.skill_gate.withheld,
+        &sources.skill_gate.agent,
+    );
     for skill in &mut skills {
         skill.eager = eager(&skill.name);
     }
@@ -378,6 +396,7 @@ mod tests {
             eager: eager.iter().map(|name| name.to_string()).collect(),
             downloaded: Vec::new(),
             allowed: None,
+            skill_gate: SkillGate::default(),
         }
     }
 

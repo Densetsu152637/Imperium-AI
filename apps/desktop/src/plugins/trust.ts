@@ -19,8 +19,9 @@ export type Invoke = (command: string, args: Record<string, unknown>) => Promise
  * webview passes a name, an action and an environment, and gets the outcome; it never holds a
  * challenge or a hash of its own.
  */
-export async function approvePlugin(invoke: Invoke, name: string, action: ApproveAction, environment?: string | null): Promise<Outcome> {
+export async function approvePlugin(invoke: Invoke, name: string, action: ApproveAction, environment?: string | null, kind?: "skill"): Promise<Outcome> {
   const args: Record<string, unknown> = environment ? { name, action, environment } : { name, action };
+  if (kind) args.kind = kind;
   return (await invoke("plugin_approve", args)) as Outcome;
 }
 
@@ -91,20 +92,29 @@ export const folderName = (folder: string): string => folder.split(/[\\/]+/).fil
 export const approvalSource = (plugin: Pick<InstalledPlugin, "id" | "folder">): { name: string; folder: boolean } =>
   plugin.id ? { name: plugin.id, folder: false } : { name: folderName(plugin.folder), folder: true };
 
-/** Whether a row offers Approve: the gate withholds it for code it runs, and this platform can approve. */
-export const offersApprove = (plugin: Pick<InstalledPlugin, "withheld" | "hooks" | "servers">, platformBlock: string | null): boolean =>
-  plugin.withheld && (plugin.hooks > 0 || plugin.servers.length > 0) && !platformBlock;
+/**
+ * Whether a row offers Approve: the gate withholds it for code it runs, or because an agent installed it (which
+ * it withholds whether or not it has code), and this platform can approve.
+ */
+export const offersApprove = (
+  plugin: Pick<InstalledPlugin, "withheld" | "hooks" | "servers"> & { origin?: string | null },
+  platformBlock: string | null,
+): boolean => plugin.withheld && (plugin.hooks > 0 || plugin.servers.length > 0 || plugin.origin === "agent") && !platformBlock;
 
 /** Reads what the trust view shows for a folder that did not come from a marketplace: what it would run now, and no comparison. */
-export async function loadFolderTrust(api: Pick<Api, "inspectFolder">, folder: string): Promise<TrustData> {
-  return { preview: await api.inspectFolder(folder), diff: null };
+export async function loadFolderTrust(api: Pick<Api, "inspectFolder">, folder: string, kind?: "skill"): Promise<TrustData> {
+  return { preview: kind ? await api.inspectFolder(folder, kind) : await api.inspectFolder(folder), diff: null };
 }
 
 /** Whether an update would change anything: the content equals what is installed. */
 export const isUpToDate = (preview: PluginPreview): boolean => !!preview.installed?.same_content;
 
-/** A plugin that runs nothing (skills and commands only) has nothing to approve. */
-export const needsApproval = (preview: PluginPreview): boolean => preview.hooks.length > 0 || preview.servers.length > 0;
+/**
+ * A marketplace plugin that runs nothing (skills and commands only) has nothing to approve. A folder or skill an agent
+ * installed is approved whether or not it has code, since what it adds reaches every later session.
+ */
+export const needsApproval = (preview: PluginPreview): boolean =>
+  preview.hooks.length > 0 || preview.servers.length > 0 || preview.source_kind === "folder" || preview.source_kind === "skill";
 
 /** The reason a platform cannot approve at all, or null. Windows counts no approval before signed releases (U7). */
 export function platformReason(userAgent: string): string | null {
