@@ -426,7 +426,7 @@ async fn a_linked_results_folder_is_never_written_through_and_the_result_stays_w
     let elsewhere = data.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
     std::fs::create_dir_all(data.path().join("sessions")).unwrap();
-    link_dir(&elsewhere, &data.path().join("sessions/s.results"));
+    link_dir(&elsewhere, &data.path().join("sessions").join("s.results"));
     let session = start(&url, dir.path(), data.path(), false, Default::default());
     turn(&session, "search").await;
 
