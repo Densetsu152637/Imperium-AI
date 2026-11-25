@@ -924,7 +924,7 @@ impl DaemonState {
                 "agent_permissions": bound.as_ref().map(|(_, permissions)| permissions),
             });
             let path = self.meta_path(&id);
-            if let Err(error) = std::fs::write(&path, meta.to_string()) {
+            if let Err(error) = write_meta(&path, &meta.to_string()) {
                 tracing::warn!(path = %path.display(), %error, "could not record the session");
             }
         }
