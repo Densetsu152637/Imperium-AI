@@ -344,11 +344,18 @@ impl Agent {
                 imperium_tools::plain_path(scratch)
             ));
         }
-        // Paths outside the environment that grants open (package caches, toolchains).
+        // Paths outside the environment that grants open (package caches, toolchains). The
+        // folder of saved tool results is named where a result is saved, not here: its path
+        // is the session's own, and would make every session's prompt differ.
+        let results = shared
+            .spill_dir
+            .as_ref()
+            .and_then(|dir| std::fs::canonicalize(dir).ok());
         let grants: Vec<String> = workspace
             .grants()
             .iter()
             .filter(|grant| workspace.scratch() != Some(grant.path.as_path()))
+            .filter(|grant| results.as_deref() != Some(grant.path.as_path()))
             .map(|grant| grant.describe())
             .collect();
         if !grants.is_empty() {
