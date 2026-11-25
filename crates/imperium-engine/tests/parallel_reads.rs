@@ -607,18 +607,20 @@ async fn a_read_that_starts_to_ask_after_the_run_is_read_again_after_the_approva
     assert!(results[1].1.contains("bravo, changed"), "{results:?}");
 }
 
-/// A file of 60,000 characters, past the 32,000 a read gets when the window is unknown and
-/// within the 100,000 a hosted model with an unknown window is given.
+/// A file of 1,000 lines and about 60,000 characters: under the 2,000-line cap of a read, past
+/// the 32,000 characters a read gets when the window is unknown, and within the 100,000 a
+/// hosted model with an unknown window is given.
 fn big_file(dir: &std::path::Path) {
-    let text: String = (0..6000)
+    let filler = "x".repeat(50);
+    let text: String = (0..1000)
         .map(|n| {
             format!(
-                "row {n:05}
+                "row {n:04} {filler}
 "
             )
         })
         .collect();
-    assert!(text.len() > 32_000 && text.len() < 100_000);
+    assert!(text.len() > 32_000 && text.len() < 90_000);
     std::fs::write(dir.join("big.txt"), text).unwrap();
 }
 
@@ -661,7 +663,7 @@ async fn a_hosted_model_with_no_known_window_reads_a_large_file_with_the_large_b
     // One call at a time: `run_tool` sizes the read.
     let alone = unknown_window_results(vec![read("c1")], 0).await;
     assert!(
-        alone[0].1.contains("row 05999"),
+        alone[0].1.contains("row 0999"),
         "cut short: {}",
         alone[0].1.len()
     );
@@ -669,7 +671,7 @@ async fn a_hosted_model_with_no_known_window_reads_a_large_file_with_the_large_b
     let together = unknown_window_results(vec![read("c1"), read("c2")], 4).await;
     for (id, content) in &together {
         assert!(
-            content.contains("row 05999"),
+            content.contains("row 0999"),
             "{id} cut short: {}",
             content.len()
         );
