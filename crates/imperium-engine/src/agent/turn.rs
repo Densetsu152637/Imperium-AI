@@ -288,6 +288,7 @@ impl Agent {
                 return self.pause_turn(total, step - 1, &reply);
             }
             self.take_steering().await;
+            self.take_background_notices();
             // A compaction is a model call too: a used-up budget stops it, and the turn.
             if let Some(message) = self.budget_stop().await {
                 self.emit(SessionEvent::TurnFailed {

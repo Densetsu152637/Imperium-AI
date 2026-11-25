@@ -39,6 +39,7 @@ use imperium_protocol::methods::{Compaction, ContextFit};
 
 mod attachments;
 mod auto;
+mod background;
 mod call_repair;
 mod catalog;
 mod compaction;
@@ -294,6 +295,8 @@ impl Agent {
         workspace: Workspace,
         writer_note: Option<&str>,
     ) -> Self {
+        // Its background commands are reported to it.
+        let workspace = workspace.with_owner(&id);
         let root = workspace.root_display();
         let mut system = if can_delegate {
             root_prompt(&root, shared.knowledge.enabled())

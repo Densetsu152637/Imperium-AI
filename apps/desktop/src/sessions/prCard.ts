@@ -30,11 +30,43 @@ export type SwitchView = {
   /** The switch's accessible name. */
   label: string;
   on: boolean;
-  /** Why it cannot be changed; both switches are disabled until the stages that build them. */
+  /** What the switch does, or why it cannot be changed (the auto-fix switch is not built yet). */
   reason: string;
   /** What GitHub or the repository says about it for this pull request, when anything. */
   hint: string | null;
+  /** Whether turning it on is offered now. */
+  canTurnOn: boolean;
+  /** Whether turning it off is offered now. */
+  canTurnOff: boolean;
 };
+
+/** The user's `github.automerge.*` settings, as the card needs them. */
+export type AutoMergeSettings = {
+  /** `github.automerge.allowed`: false refuses every request to turn auto-merge on. */
+  allowed: boolean;
+  /** `github.automerge.default_method`: preselected when the repository allows it; never turns anything on. */
+  preferred: PrMergeMethod | null;
+};
+
+export const DEFAULT_AUTO_MERGE_SETTINGS: AutoMergeSettings = { allowed: true, preferred: null };
+
+const METHODS: readonly PrMergeMethod[] = ["squash", "merge", "rebase"];
+
+/** The settings from `config.describe` entries; anything missing or odd is the default. */
+export function autoMergeSettings(entries: ReadonlyArray<{ key: string; value: unknown }>): AutoMergeSettings {
+  const value = (key: string): unknown => entries.find((entry) => entry.key === key)?.value;
+  const preferred = value("github.automerge.default_method");
+  return {
+    allowed: value("github.automerge.allowed") !== false,
+    preferred: METHODS.find((method) => method === preferred) ?? null,
+  };
+}
+
+/** The method the picker preselects: the preference when the repository allows it, else the first allowed of squash, merge, rebase. */
+export function chooseMethod(allowed: readonly PrMergeMethod[], preferred: PrMergeMethod | null): PrMergeMethod | null {
+  if (preferred && allowed.includes(preferred)) return preferred;
+  return METHODS.find((method) => allowed.includes(method)) ?? null;
+}
 
 export type MethodOption = { value: PrMergeMethod; label: string };
 
@@ -134,7 +166,10 @@ const MERGE_NOTES: Record<string, string> = {
 };
 
 const AUTO_FIX_PENDING = "Fixing from review comments is not available yet.";
-const AUTO_MERGE_PENDING = "Turning on auto-merge is not available yet.";
+const AUTO_MERGE_OFF = "GitHub will merge it when its own rules pass, with nobody looking at the code again. Imperium never merges it itself.";
+const AUTO_MERGE_ON = "GitHub merges it when its checks and reviews pass. Imperium never merges it itself, and turns this off before it pushes to the branch.";
+const AUTO_MERGE_SETTING_OFF = "Auto-merge is turned off in your settings (github.automerge.allowed).";
+const METHODS_UNKNOWN = "The repository's merge methods could not be read.";
 
 export const DRAFT_HINT = "GitHub does not allow auto-merge on a draft. Mark the pull request ready for review first.";
 
@@ -146,7 +181,23 @@ function autoMergeHint(status: PrStatus): string | null {
   return reason || null;
 }
 
-function methodView(status: PrStatus): Pick<PrCardView, "methods" | "method" | "methodNote"> {
+function autoMergeView(status: PrStatus, settings: AutoMergeSettings): SwitchView {
+  const on = status.auto_merge.enabled;
+  const ended = status.state === "merged" || status.state === "closed";
+  let hint = autoMergeHint(status);
+  if (!hint && !settings.allowed) hint = AUTO_MERGE_SETTING_OFF;
+  if (!hint && status.allowed_methods.length === 0) hint = METHODS_UNKNOWN;
+  return {
+    label: "Auto-merge",
+    on,
+    reason: on ? AUTO_MERGE_ON : AUTO_MERGE_OFF,
+    hint,
+    canTurnOn: !on && !hint,
+    canTurnOff: on && !ended,
+  };
+}
+
+function methodView(status: PrStatus, settings: AutoMergeSettings): Pick<PrCardView, "methods" | "method" | "methodNote"> {
   const methods = status.allowed_methods.map((value) => ({ value, label: METHOD_LABELS[value] }));
   const requested = status.auto_merge.method ?? null;
   if (methods.length === 0) {
@@ -155,11 +206,11 @@ function methodView(status: PrStatus): Pick<PrCardView, "methods" | "method" | "
   if (requested && !status.allowed_methods.includes(requested)) {
     return { methods, method: requested, methodNote: `${METHOD_LABELS[requested]} is not allowed in this repository.` };
   }
-  return { methods, method: requested ?? methods[0].value, methodNote: null };
+  return { methods, method: requested ?? chooseMethod(status.allowed_methods, settings.preferred), methodNote: null };
 }
 
 /** Everything the card draws, from one `PrStatus`. */
-export function describePr(status: PrStatus): PrCardView {
+export function describePr(status: PrStatus, settings: AutoMergeSettings = DEFAULT_AUTO_MERGE_SETTINGS): PrCardView {
   const state = status.state === "open" && status.draft ? STATE.draft : STATE[status.state];
   const ended = status.state === "merged" || status.state === "closed";
   const branch = oneLine(status.branch);
@@ -175,9 +226,9 @@ export function describePr(status: PrStatus): PrCardView {
     merge: MERGEABLE[status.mergeable],
     mergeNote: MERGE_NOTES[status.merge_state] ?? null,
     ended,
-    autoFix: { label: "Fix CI and review comments", on: status.auto_fix, reason: AUTO_FIX_PENDING, hint: null },
-    autoMerge: { label: "Auto-merge", on: status.auto_merge.enabled, reason: AUTO_MERGE_PENDING, hint: autoMergeHint(status) },
-    ...methodView(status),
+    autoFix: { label: "Fix CI and review comments", on: status.auto_fix, reason: AUTO_FIX_PENDING, hint: null, canTurnOn: false, canTurnOff: false },
+    autoMerge: autoMergeView(status, settings),
+    ...methodView(status, settings),
     error: status.error ? oneLine(status.error) : null,
   };
 }

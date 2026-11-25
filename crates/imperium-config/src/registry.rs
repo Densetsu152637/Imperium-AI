@@ -190,6 +190,8 @@ pub static SETTINGS: &[SettingDef] = &[
     def("github.autofix.enabled", "GitHub auto-fix", Bool, "Fix your pull requests whose checks fail."),
     choice("github.autofix.push", "Auto-fix pushes", &["ask", "auto"], "Ask before each push, or push without asking."),
     def("github.autofix.max_attempts_per_pr", "Auto-fix attempts", Integer, "Failing commits per pull request before auto-fix stops."),
+    def("github.automerge.allowed", "Allow auto-merge", Bool, "Whether the desktop app may ask GitHub to auto-merge a pull request when you turn the switch on. Off refuses every request. It never turns auto-merge on by itself, and only this file (not a project's) is read for it."),
+    choice("github.automerge.default_method", "Preferred merge method", &["squash", "merge", "rebase"], "The merge method the pull-request card preselects when the repository allows it; otherwise the first allowed of squash, merge and rebase. It never turns auto-merge on."),
     def("github.session_gh", "Environments that keep gh's login", StringList, "Ids of environments whose sessions keep the GitHub CLI's login: their commands keep GH_TOKEN, GITHUB_TOKEN and GH_CONFIG_DIR and the OS sandbox does not hide gh's config folder. Off for every other environment."),
     def("github.autofix.poll_s", "Auto-fix polling (seconds)", Integer, "How often pull requests are checked."),
     def("github.autofix.model", "Auto-fix model", STRING, "Model for fix sessions; empty uses the default model."),
@@ -715,6 +717,57 @@ mod tests {
         set_user_setting(&paths, "github.session_gh", &Json::from(vec!["env-a"]), []).unwrap();
         let config = load(&paths, None, owned(&[])).unwrap();
         assert_eq!(config.settings().unwrap().github.session_gh, ["env-a"]);
+    }
+
+    #[test]
+    fn automerge_allows_by_default_and_a_project_file_does_not_change_it() {
+        let (home, paths) = home();
+        let config = load(&paths, None, owned(&[])).unwrap();
+        let settings = config.settings().unwrap();
+        assert!(settings.github.automerge.allowed);
+        assert_eq!(settings.github.automerge.default_method, "squash");
+
+        // A project's own file is never merged as settings: it cannot set the preference either.
+        let project = home.path().join("project");
+        std::fs::create_dir_all(project.join(".imperium")).unwrap();
+        std::fs::write(
+            project.join(".imperium/config.toml"),
+            "[github.automerge]
+allowed = false
+default_method = \"rebase\"
+",
+        )
+        .unwrap();
+        let config = load(&paths, Some(&project), owned(&[])).unwrap();
+        assert!(!config.warnings().is_empty());
+        let settings = config.settings().unwrap();
+        assert!(settings.github.automerge.allowed);
+        assert_eq!(settings.github.automerge.default_method, "squash");
+
+        // The user's own file does.
+        set_user_setting(&paths, "github.automerge.allowed", &Json::from(false), []).unwrap();
+        set_user_setting(
+            &paths,
+            "github.automerge.default_method",
+            &Json::from("rebase"),
+            [],
+        )
+        .unwrap();
+        let settings = load(&paths, Some(&project), owned(&[]))
+            .unwrap()
+            .settings()
+            .unwrap();
+        assert!(!settings.github.automerge.allowed);
+        assert_eq!(settings.github.automerge.default_method, "rebase");
+        assert!(
+            set_user_setting(
+                &paths,
+                "github.automerge.default_method",
+                &Json::from("fast"),
+                []
+            )
+            .is_err()
+        );
     }
 
     #[test]

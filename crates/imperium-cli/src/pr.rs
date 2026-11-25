@@ -1,4 +1,8 @@
-//! `imperium pr status`: the pull requests bound to sessions, as the desktop's card shows them.
+//! `imperium pr status` and `imperium pr automerge`: the pull requests bound to sessions, as the
+//! desktop's card shows them, and whether GitHub's auto-merge is on for one. The command line can
+//! show auto-merge and turn it off, never on: asking GitHub to auto-merge lands code without
+//! another look, so only the desktop app can (docs/14-projects-and-automation.md#github-auto-fix).
+//! There is no call in this module that enables it.
 //!
 //! The daemon's cached `PrStatus` is the only source. Every text in it was written on GitHub, so
 //! it is printed escaped: a control character (a terminal escape sequence, a carriage return) or
@@ -9,8 +13,9 @@ use std::fmt::Write as _;
 
 use anyhow::anyhow;
 use imperium_protocol::methods::{
-    PrConflictState, PrMergeMethod, PrReview, PrState, PrStatus, PullRequestsStatus,
-    PullRequestsStatusParams, SessionList, SessionListParams,
+    PrConflictState, PrMergeMethod, PrReview, PrState, PrStatus, PullRequestsSetAutoMerge,
+    PullRequestsSetAutoMergeParams, PullRequestsStatus, PullRequestsStatusParams, SessionList,
+    SessionListParams,
 };
 
 use crate::client::Client;
@@ -45,6 +50,58 @@ pub async fn status(client: &mut Client, session: Option<&str>) -> anyhow::Resul
         return Ok("No session has a pull request bound.\n".to_string());
     }
     Ok(blocks.join("\n"))
+}
+
+/// What `imperium pr automerge status SESSION` prints: whether auto-merge is on for the session's
+/// pull request, with the method, or why it cannot be turned on.
+pub async fn automerge_status(client: &mut Client, session: &str) -> anyhow::Result<String> {
+    let status = read(client, session)
+        .await
+        .map_err(|error| anyhow!(escape(&error)))?;
+    Ok(format!(
+        "{}#{}: auto-merge {}\n",
+        escape(&status.repo),
+        status.number,
+        auto_merge_text(&status)
+    ))
+}
+
+/// What `imperium pr automerge off SESSION` prints after it asks the daemon to turn auto-merge
+/// off. Nothing is sent to GitHub when it was already off.
+pub async fn automerge_off(client: &mut Client, session: &str) -> anyhow::Result<String> {
+    let status = read(client, session)
+        .await
+        .map_err(|error| anyhow!(escape(&error)))?;
+    let after = client
+        .call::<PullRequestsSetAutoMerge>(PullRequestsSetAutoMergeParams {
+            session_id: session.to_string(),
+            url: status.url.clone(),
+            head_sha: status.head_sha.clone(),
+            enabled: false,
+            merge_method: None,
+            challenge: None,
+        })
+        .await
+        .map_err(|error| anyhow!(escape(&error.to_string())))?;
+    Ok(format!(
+        "{}#{}: auto-merge {}\n",
+        escape(&after.repo),
+        after.number,
+        auto_merge_text(&after)
+    ))
+}
+
+/// `on (squash)`, `off`, or `off: <why it cannot be turned on>`; the reason is GitHub's or the
+/// daemon's text, so it is escaped.
+fn auto_merge_text(status: &PrStatus) -> String {
+    let mut text = on_off(status.auto_merge.enabled).to_string();
+    if let Some(chosen) = status.auto_merge.method {
+        let _ = write!(text, " ({})", method(chosen));
+    }
+    if let Some(reason) = &status.auto_merge.reason_unavailable {
+        let _ = write!(text, ": {}", escape(reason));
+    }
+    text
 }
 
 async fn read(client: &mut Client, session_id: &str) -> Result<PrStatus, String> {
@@ -124,14 +181,7 @@ pub fn render(status: &PrStatus) -> String {
         "  auto-fix:   {} (not available yet)",
         on_off(status.auto_fix)
     );
-    let mut auto_merge = on_off(status.auto_merge.enabled).to_string();
-    if let Some(chosen) = status.auto_merge.method {
-        let _ = write!(auto_merge, " ({})", method(chosen));
-    }
-    if let Some(reason) = &status.auto_merge.reason_unavailable {
-        let _ = write!(auto_merge, ": {}", escape(reason));
-    }
-    let _ = writeln!(out, "  auto-merge: {auto_merge}");
+    let _ = writeln!(out, "  auto-merge: {}", auto_merge_text(status));
     if let Some(error) = &status.error {
         let _ = writeln!(
             out,
