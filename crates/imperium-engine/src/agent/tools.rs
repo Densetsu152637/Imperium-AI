@@ -1003,7 +1003,8 @@ impl Agent {
             }
         }
         let started = self.tool_started(call, tool, summary);
-        let (ok, output) = match invocation.execute(&self.workspace).await {
+        let window = self.expected_window();
+        let (ok, output) = match invocation.execute_in(&self.workspace, window).await {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
