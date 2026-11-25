@@ -1,6 +1,6 @@
 # Plan: terminal and file panes
 
-Revision: 2026-11-26, revision 2 (plan-gate review: findings F1 to F9 and the nits folded in);
+Revision: 2026-11-26, revision 3 (plan-gate review: F1 to F9, then N1 to N5 and the nits folded in);
 written against `experimental` at `3d5db869` (last updated). Roadmap
 [item 55](../12-roadmap.md#next-in-order). Status: planned (no stage started).
 
@@ -20,7 +20,7 @@ command of the same user at isolation tier 0 reaching the terminal device direct
 [residual risk](#residual-risks).
 
 Each stage below is one pull request against `experimental` of at most about 800 changed lines
-(ten stages), with the docs it changes. No stage changes the research session's files
+(eleven stages), with the docs it changes. No stage changes the research session's files
 (`crates/imperium-engine/src/agent/{tools.rs,turn.rs,compact.rs}`, `eval/record.rs`,
 `eval/variant.rs`): agents get no terminal tool and no file-pane tool, so the engine is untouched.
 
@@ -61,11 +61,11 @@ OS sandbox and container tiers; a tier-0 command runs as the user and is covered
 6. **No terminal process outlives its terminal.** Closing a terminal, archiving or deleting its
    session and stopping the daemon end the shell, its background jobs and their children. Check:
    stage 1 and 2a tests on the matrix with a job-control shell running `sleep 60 &` (and its
-   Windows equivalent). Known gap: on macOS, and on Linux without the subreaper, a process that
+   Windows equivalent), and on Linux a child that calls `setsid`. Known gap: on macOS a process that
    deliberately calls `setsid` and leaves the shell's session escapes (as it does from background
    commands, [05](../05-tools-and-isolation.md#background-commands-implemented)). If the daemon
-   itself crashes, Unix children survive it; Windows children die with the Job Object when the
-   daemon's last handle to it closes.
+   itself crashes, the Linux supervisor and the Windows Job Object still end the terminal's
+   processes (D5); on macOS the shell and its jobs survive it.
 7. **The file pane reads only inside the session's folders.** No path, `..`, absolute or UNC
    spelling, symbolic link, junction, Windows stream or device name, special file, other session's
    worktree, and no race that swaps a link in, makes `files.*` return bytes or names from outside
@@ -132,9 +132,15 @@ Each records the choice, the reasons, the rejected options and when to revisit i
   - **Main-context mods.** A trusted main-context mod
     ([06](../06-extensibility.md#trusted-main-context-mods-trust-implemented-loader-not-built),
     loader not built) would run in the very window that holds the terminal and could type into it.
-    So the terminal commands are refused while any trusted main-context mod is loaded, the pane says
-    why, and the loader's own future plan must isolate such a mod from the terminal before this
-    rule can relax.
+    So the terminal commands are refused while any such mod could run, the pane says why, and the
+    loader's own future plan must isolate such a mod from the terminal before this rule can relax.
+    **How it is checked:** the relay never trusts a flag from the webview. On its own daemon
+    connection it calls `mods.list` and refuses every `terminal_*` command if any row has
+    `main_context` and `trusted` and is not `modified`, and the app's own settings store (read on
+    the native side, `store.rs`) has that mod on; a store it cannot read counts as on (fail
+    closed). It asks before `terminal_open` and `terminal_attach` and again at most every 5 s while
+    terminals are attached; a positive answer detaches every window and drops the relay's
+    attachments.
   - Rejected: **gating in the webview only** (the main window's token reaches loopback TCP, and so
     would anything that reads `daemon.json`); **plain token auth** (an agent's command with the
     token, an `imperium` command run by an agent, or a forwarded remote client would get an
@@ -159,32 +165,46 @@ Each records the choice, the reasons, the rejected options and when to revisit i
   scrollback to `<data>` (secrets at rest, and the shell it described is dead anyway).
 - **D5. Ending a terminal's processes.** A job-control shell on a PTY puts each background job in
   a process group of its own, so killing the shell's group misses `sleep 60 &`.
-  - **Unix: by session.** The shell leads a new session (its sid is its pid). To end a terminal the
-    daemon lists the processes whose sid is the shell's pid (`sysinfo`), sends `SIGHUP` to each of
-    their process groups, waits 2 s, then `SIGKILL`s what is left. On Linux the daemon is also a
-    child subreaper (`PR_SET_CHILD_SUBREAPER`, set once at start), so a process that calls `setsid`
-    and is orphaned is reparented to the daemon and is ended with its terminal: the daemon
-    kills each re-parented child whose environment (`/proc/<pid>/environ`) carries that terminal's
-    `IMPERIUM_TERMINAL_ID`. macOS has no subreaper: a process
-    that deliberately leaves the session escapes ([goal 6](#goals)).
-  - **Windows: a Job Object** with kill-on-close. Where `portable-pty` lets the spawn pass a
-    `PROC_THREAD_ATTRIBUTE_JOB_LIST`, the shell starts inside the job atomically; otherwise it is
-    assigned right after spawn, as background commands are, and a child the shell starts in that
-    short window is outside the job (it is then killed by walking the shell's process tree first,
-    as `processes.rs` does).
-  - **If the daemon crashes:** Unix shells and their jobs survive it (the PTY master closes, which
-    sends `SIGHUP` to the foreground job only); Windows jobs die when the last handle closes, which
-    the crash does.
+  - **Unix: by session.** The PTY's child leads a new session (its sid is its pid). To end a
+    terminal the daemon lists the processes whose sid is that pid (`sysinfo`), sends `SIGHUP` to
+    each of their process groups, waits 2 s, then `SIGKILL`s what is left.
+  - **Linux: a per-terminal supervisor, not a daemon-wide subreaper.** Making the daemon itself a
+    child subreaper would reparent every orphan below it (agents' background commands, MCP
+    servers, hooks) to the daemon, leaving zombies or letting a reaper steal exit statuses that
+    tokio and std wait for. Instead the PTY's child is the daemon's own executable re-run with a
+    hidden subcommand, `imperium-core pty-supervisor -- <shell> <args>`. The supervisor sets
+    `PR_SET_CHILD_SUBREAPER` on itself (`nix`'s safe `prctl` wrapper), starts the shell as its
+    child on the same terminal (the shell sets up its own process groups for job control), reaps
+    everything that is reparented to it, and when the shell exits, on `SIGTERM` from the daemon,
+    or when the daemon dies (`PR_SET_PDEATHSIG`), sends `SIGHUP` then `SIGKILL` to every remaining
+    descendant (its children in `/proc`, walked recursively) and exits with the shell's code. So a
+    process that calls `setsid` still ends with its terminal on Linux. It is about 200 lines and
+    fits stage 1 once the shell choice moves to stage 2a; **chosen over dropping the subreaper**
+    because it closes the Linux gap and also covers a daemon crash.
+  - **macOS** has no subreaper: a process that deliberately leaves the session escapes
+    ([goal 6](#goals)), and if the daemon crashes the shell and its jobs survive it (closing the PTY
+    master sends `SIGHUP` to the foreground job only).
+  - **Windows: a Job Object** with kill-on-close, assigned right after `portable-pty` spawns the
+    shell, as background commands are. A child the shell starts in that short window is outside
+    the job, so ending a terminal first walks the shell's process tree (as `processes.rs` does) and
+    then closes the job. Rejected: atomic assignment with `PROC_THREAD_ATTRIBUTE_JOB_LIST`, which
+    would mean replacing `portable-pty`'s ConPTY spawn with an unsafe `CreateProcessW` of our own in
+    `imperium-ipc` for a window that the tree walk already covers. A daemon crash closes its last
+    handle to the job, which ends the job's processes.
 - **D6. The shell and its environment.**
   - **Program.** `terminal.shell` (user layer only; not on the environment layer's allow-list, so a
     repository's `.imperium/config.toml` cannot choose what runs). Otherwise, on Unix the
     account's shell (`getpwuid` → `pw_shell`) when it is listed in `/etc/shells`, else `$SHELL`,
-    started as a login shell (`-l`, so a macOS app gets the user's `PATH`). On Windows `pwsh.exe`
-    found in its install locations (`%ProgramFiles%\PowerShell\<n>\`, read through
-    `SHGetKnownFolderPath`) or its App Paths registry key, never by a `PATH` search; else
-    `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`; else
-    `%SystemRoot%\System32\cmd.exe` (not `%ComSpec%`, which the environment controls), with
-    `%SystemRoot%` from `GetSystemWindowsDirectoryW`.
+    started as a login shell (`-l`, so a macOS app gets the user's `PATH`); `$SHELL` must also be
+    listed in `/etc/shells`, and with neither the shell is `/bin/sh`. On Windows `pwsh.exe` found in
+    its install locations (`<Program Files>\PowerShell\<n>\`) or its App Paths registry key,
+    never by a `PATH` search; else `<Windows>\System32\WindowsPowerShell\v1.0\powershell.exe`;
+    else `<Windows>\System32\cmd.exe` (not `%ComSpec%`, which the environment controls).
+  - **No new unsafe code.** The workspace forbids `unsafe` outside `imperium-ipc`'s opt-in modules.
+    `<Program Files>` and `<Windows>` come from `dirs_sys::known_folder` (`FOLDERID_ProgramFiles`,
+    `FOLDERID_Windows`), the safe wrapper `imperium-core` already uses for the signed-build rule,
+    so neither `SHGetKnownFolderPath` nor `GetSystemWindowsDirectoryW` is called directly; App Paths
+    are read with the `winreg` crate; the account's shell with `nix::unistd::User`.
   - The program is always an **absolute path** chosen without the working folder or a relative
     `PATH` entry: Windows' `CreateProcess` looks in the current folder first for a bare name, and
     the working folder is a repository that may hold a planted `pwsh.exe`. A `terminal.shell` that
@@ -195,7 +215,7 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     was not asked to (`ENV`, `BASH_ENV`, `ZDOTDIR`, `PROMPT_COMMAND`, `NODE_OPTIONS`, every
     `LD_*` and `DYLD_*`) and the daemon's internal `IMPERIUM_*` variables, plus
     `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=Imperium`,
-    `TERM_PROGRAM_VERSION`, `IMPERIUM_SESSION_ID`, `IMPERIUM_TERMINAL_ID` and the kept spawn mark
+    `TERM_PROGRAM_VERSION`, `IMPERIUM_SESSION_ID` and the kept spawn mark
     `IMPERIUM_SPAWNED_BY_DAEMON=1`. The user's own start-up files set their own values again.
   - It is **not** stripped of `GH_TOKEN`, `GITHUB_TOKEN` or `GH_CONFIG_DIR` (that stripping
     protects agents' commands; this shell is the user's), and it runs **outside every isolation
@@ -250,17 +270,26 @@ Each records the choice, the reasons, the rejected options and when to revisit i
   application": for `.bat`, `.lnk`, `.desktop`, `.app` or a script that runs it, and an agent can
   write such a file. **Reveal** is done by the app's native side, which asks the daemon for the
   session's roots itself and resolves `{root, path}` (never a path from the webview), then:
-  Windows `SHOpenFolderAndSelectItems` (or `explorer.exe /select,` with the path quoted as one
-  argument); Linux the D-Bus `org.freedesktop.FileManager1.ShowItems` call, falling back to
-  opening the **parent folder** only, never `xdg-open` on the file; macOS `open -R`. Revisit with
+  Windows `SHOpenFolderAndSelectItems` (with `ILCreateFromPathW` and `ILFree`), in a new opt-in
+  unsafe module `imperium-ipc/src/windows/reveal.rs` beside the pipe and Hello modules (the
+  workspace allows `unsafe` only there); its fallback is `explorer.exe /select,"<path>"` built
+  with `CommandExt::raw_arg`, because Explorer misparses Rust's argument quoting. Linux: the D-Bus
+  `org.freedesktop.FileManager1.ShowItems` call (`zbus`, already in the lock), falling back to
+  opening the **parent folder** only, never `xdg-open` on the file. macOS: `open -R`. Revisit with
   [open question 3](#open-questions).
 - **D12. Scope and safe opening.**
   - **Roots** are exactly `Workspace::roots()` (the session's folders, with worktrees when the
     session works in them) plus `Workspace::scratch()`; not path grants (they are agents'
     permissions and may name any folder), not `with_project_worktrees` (other sessions'
-    worktrees). They are canonicalised and opened once per session as `cap_std::fs::Dir` handles
-    (`Dir::open_ambient_dir`), held by the file service and dropped with the session, so a later
-    swap of a root's own path cannot redirect it.
+    worktrees). They are canonicalised and opened as `cap_std::fs::Dir` handles
+    (`Dir::open_ambient_dir`) **when the daemon creates or loads the session**, not on the first
+    `files.*` call, held by the file service and dropped with the session, so a later swap of a
+    root's own path cannot redirect it. At creation the service records each root's file identity
+    (device and inode, or volume serial and file index, through `same-file`) in the session
+    record; on load it opens the root and compares, and a root whose identity changed is not
+    served (the pane says the folder was replaced). A root that is itself a link is resolved once,
+    at creation. On Windows the handles are opened with delete sharing (the standard library's
+    default), so holding them does not stop the user renaming or deleting the folder.
   - Paths are `{root, relative}` pairs, never free-form. Before opening, a relative path is refused
     if it has a drive, UNC or `\\?\` prefix, is absolute, has a Windows stream name (`:`), or has a
     component that is a reserved device name: `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`,
@@ -469,10 +498,14 @@ the same user that hold or can read the daemon's token (an agent's command at ti
 12. **Processes left behind** (D5, goal 6): every terminal's session of processes is ended on
     close, session end, detach timeout and daemon stop; tested with a background job on the
     matrix.
-13. **The app started with a debugging or module hook.** `WEBKIT_INSPECTOR_SERVER` (WebKitGTK's
-    remote inspector) and `GTK_MODULES` (loads code into the app) would let another process drive
+13. **The app started with a remote inspector.** `WEBKIT_INSPECTOR_SERVER` and
+    `WEBKIT_INSPECTOR_HTTP_SERVER` (WebKitGTK's remote inspector) would let another process drive
     the window that types into terminals; stage 3 adds both to `imperium_ipc::refused_variable`,
-    which the plugin approval also uses (the stricter list helps both).
+    which the plugin approval also uses (the stricter list helps both). `GTK_MODULES` is **not**
+    refused: GNOME and Ubuntu export it by default (`gail:atk-bridge` and others) for
+    accessibility, and refusing it would lock those users out of terminals and plugin approvals;
+    re-executing the app without it would break screen readers. It stays a
+    [residual risk](#residual-risks).
 
 ### Residual risks
 
@@ -481,9 +514,12 @@ the same user that hold or can read the daemon's token (an agent's command at ti
   kernel still allows it, inject input); on Windows it can `AttachConsole` to the shell and
   `WriteConsoleInput`. No protocol gate stops that; tier 0 is documented as giving code the
   user's full rights. Stage 2b adds a matrix test that a command at the OS sandbox tier cannot open
-  the terminal's pts device where that tier hides `/dev/pts` (bubblewrap, Seatbelt); if a tier
-  does not hide it, the test records it as a finding for the sandbox owner instead of passing
-  silently.
+  the terminal's pts device (bubblewrap, Seatbelt). The test **fails** if the tier does not hide
+  it. If that failure is real, it becomes a named known failure (`#[ignore]` with an issue and an
+  owner, the sandbox's), and until it is fixed goals 2 to 4, which rest on it for agents' commands
+  at the OS sandbox tier, are narrowed in this plan to the container tier and protocol callers.
+- **`GTK_MODULES`** (threat 13): a process that can set the app's environment at start can load a
+  GTK module into it on Linux. Such a process already runs code as the user.
 - **`may_grant` is not a boundary against an evading process** (D2): a same-user process that
   detaches from the daemon and clears its environment, then drives the desktop app's window, is
   not caught.
@@ -508,11 +544,11 @@ is text frames only). Neither namespace is open to a paired phone or to a mod fr
 | `terminal.output` (notification) | 2b | `{terminal_id, seq, data}` or `{terminal_id, lagged: true}`, to attached connections only |
 | `terminal.changed` (notification) | 2b | `{info}` on title change, exit and close, to attached connections only |
 | `TerminalInfo` | 2b | `{terminal_id, session_id, title, cwd, shell, cols, rows, state (running, exited), exit_code?, created_at}` |
-| `files.roots` | 6 | `{session_id}` → `{roots: [{index, label, path, kind (folder, worktree, scratch)}]}` |
-| `files.list` | 6 | `{session_id, root, dir, show_ignored?}` → `{entries: [{name, kind (file, dir, link, other), size?, link_outside?, ignored}], truncated}` |
-| `files.read` | 6 | `{session_id, root, path, offset?, length?}` → `FileContent` |
-| `files.locate` | 6 | `{session_id, path}` (absolute, or relative to the working folder) → `{root, path}`, or `-32602` with the reason |
-| `FileContent` | 6 | `{kind (text, binary, image), size, modified_ms, etag, encoding?, text?, offset, next_offset?, note?, image?: {mime, data}}` |
+| `files.roots` | 6a | `{session_id}` → `{roots: [{index, label, path, kind (folder, worktree, scratch)}]}` |
+| `files.list` | 6b | `{session_id, root, dir, show_ignored?}` → `{entries: [{name, kind (file, dir, link, other), size?, link_outside?, ignored}], truncated}` |
+| `files.read` | 6a | `{session_id, root, path, offset?, length?}` → `FileContent` |
+| `files.locate` | 6b | `{session_id, path}` (absolute, or relative to the working folder) → `{root, path}`, or `-32602` with the reason |
+| `FileContent` | 6a | `{kind (text, binary, image), size, modified_ms, etag, encoding?, text?, offset, next_offset?, note?, image?: {mime, data}}` |
 
 Every `terminal.*` method is answered only to the identified desktop app (D2); otherwise
 `-32005` with the reason. `files.*` is answered to any full client (the window's own loopback
@@ -532,7 +568,7 @@ or project key for either pane.
   `openpty` on Linux and macOS, from a process with no console (the daemon the app starts is
   detached from any console). On an older Windows the pane says the terminal needs 1809 or later.
   Whether it lets a spawn pass a job list is checked in stage 1 (D5 says what happens if not).
-- `cap-std` refuses escapes on all three OSes, junctions included on Windows; stage 6 tests that
+- `cap-std` refuses escapes on all three OSes, junctions included on Windows; stage 6a tests that
   rather than trusting it.
 - xterm.js 5 ignores OSC 52 without its clipboard add-on and keeps `windowOptions` off by default;
   stage 5 tests both in a browser.
@@ -551,8 +587,9 @@ or project key for either pane.
 `crates/imperium-core/src/app_identity/`, `crates/imperium-core/src/peer.rs`,
 `crates/imperium-core/src/state/` (session end), `crates/imperium-core/tests/terminal.rs`,
 `files.rs` and `phone.rs`, `crates/imperium-protocol/src/methods/`,
-`crates/imperium-client/src/lib.rs`, `crates/imperium-ipc/src/loader_env.rs`,
-`crates/imperium-config/src/settings.rs` and `registry.rs`, `apps/desktop/src-tauri/src/terminal.rs`
+`crates/imperium-client/src/lib.rs`, `crates/imperium-ipc/src/loader_env.rs` and
+`src/windows/reveal.rs` (new), `crates/imperium-core/src/main.rs` (the hidden supervisor
+subcommand), `crates/imperium-config/src/settings.rs` and `registry.rs`, `apps/desktop/src-tauri/src/terminal.rs`
 and `reveal.rs` (new), `main.rs`, `build.rs`, `capabilities/default.json`, `tauri.conf.json`,
 `apps/desktop/src/terminal/` and `src/files/` (new), `src/panels/TerminalPanel.tsx` and
 `FilesPanel.tsx` (new), `App.tsx`, `src/panels/ReviewPanel.tsx`, `src/sessions/` (transcript
@@ -577,7 +614,7 @@ until a stage merges and updates the lasting docs.
 Each stage is one pull request against `experimental`, with the docs it changes. Sizes are
 estimates of changed lines, tests included; a stage that grows past about 800 lines splits.
 
-### Stage 1: PTY library
+### Stage 1: PTY library and the Linux supervisor
 
 - Objective: a small crate that runs a shell on a pseudo terminal on all three OSes, with no
   daemon wiring. `crates/imperium-pty` over `portable-pty`: `Pty::spawn(Spec)` (program,
@@ -585,61 +622,76 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   (1 MiB) addressed by a running byte offset (`seq`), with a subscriber callback; `write` through
   a writer thread with a bounded queue (1 MiB; full is an error, not a block of the caller);
   `resize`; `end` per D5 (Unix: by session with `sysinfo`, groups `SIGHUP` then `SIGKILL` after
-  2 s, the Linux subreaper set by the caller; Windows: the Job Object, atomic where the spawn
-  allows, the pseudo console closed on its own thread while the reader keeps draining, since
-  `ClosePseudoConsole` can block until output is read); the exit code; and `resolve_shell` and
-  `shell_env` per D6.
+  2 s; Windows: the Job Object assigned after spawn and the tree walk, the pseudo console closed
+  on its own thread while the reader keeps draining, since `ClosePseudoConsole` can block until
+  output is read); the exit code. On Linux, `Spec` is wrapped so the PTY's child is
+  `<current exe> pty-supervisor -- <program> <args>`, and the crate provides
+  `supervisor::run(args)` (D5: subreaper, parent-death signal, reaping, ending every descendant,
+  the shell's exit code). `imperium-core`'s `main` dispatches the hidden `pty-supervisor`
+  subcommand to it before anything else starts (no runtime, no logging, no config).
 - Depends on: none.
-- Owned paths: `crates/imperium-pty/**` (new), workspace `Cargo.toml`, `Cargo.lock`.
+- Owned paths: `crates/imperium-pty/**` (new), `crates/imperium-core/src/main.rs` (the hidden
+  subcommand only), workspace `Cargo.toml`, `Cargo.lock`.
 - Acceptance checks: `cargo test -p imperium-pty` on the matrix:
   - echo round trip (`contains` rather than equality because ConPTY adds start-up sequences);
   - the child sees the size it was given and a resize (`stty size` on Unix;
     `$Host.UI.RawUI.WindowSize` in Windows PowerShell); the working folder reaches the child;
   - **a background job dies:** an interactive `bash -i` (Linux, macOS) runs `sleep 60 &`, the
     test reads the job's pid, `end` runs, and the pid is gone; on Windows, `cmd` runs
-    `start /b ping -n 60 127.0.0.1` and the process is gone; on Linux a child that calls `setsid`
-    is gone too (subreaper);
-  - the exit code is reported; a multi-byte character split across reads arrives whole; a 2 MiB
-    burst keeps the last 1 MiB in the ring and reports the drop;
-  - `resolve_shell` never returns a path in the working folder when `PATH` holds `.`, an empty
-    entry or an absolute entry inside the session's folders and that folder holds a file named
-    like the shell; on Unix it takes the account's shell over `$SHELL` and refuses one missing
-    from `/etc/shells`; on Windows it ignores `ComSpec` and a `PATH` entry with `pwsh.exe`;
-  - `shell_env` drops `ENV`, `BASH_ENV`, `ZDOTDIR`, `PROMPT_COMMAND`, `NODE_OPTIONS`, `LD_*`,
-    `DYLD_*` and internal `IMPERIUM_*` variables and keeps the spawn mark;
+    `start /b ping -n 60 127.0.0.1` and the process is gone;
+  - **Linux supervisor:** a child that calls `setsid` (`setsid sleep 60 &`) is gone after `end`;
+    killing the test's stand-in for the daemon with `SIGKILL` ends the supervisor and the shell
+    and its jobs (parent-death signal); no zombie is left under the supervisor while the shell
+    runs; the test binary's own `waitpid` of an unrelated child still gets its status (no
+    daemon-wide reaping);
+  - the exit code is reported through the supervisor; a multi-byte character split across reads
+    arrives whole; a 2 MiB burst keeps the last 1 MiB in the ring and reports the drop;
   - every wait is bounded (10 s). `cargo clippy` clean.
 - Size: about 800 lines.
 - Risks: ConPTY differences between Windows builds (contained text and bounded waits);
   `portable-pty` uses `unsafe` internally (a dependency, allowed; the workspace's own crates stay
-  `forbid(unsafe_code)`, so the subreaper call uses `nix`'s safe `prctl` wrapper and the
-  `getpwuid` read `nix::unistd::User`).
+  `forbid(unsafe_code)`, so `prctl` goes through `nix`'s safe wrappers); the supervisor must stay
+  tiny, because it runs for every Linux terminal.
 - Status: pending
 - Outcome: -
-- Handoff notes: the crate knows nothing of sessions or protocol. Changing `Cargo.lock` runs the
-  presence end-to-end job (detect lists it); expect it.
+- Handoff notes: the crate knows nothing of sessions or protocol; the shell choice and
+  environment are stage 2a's. Changing `Cargo.lock` runs the presence end-to-end job (detect
+  lists it); expect it.
 
-### Stage 2a: Terminal service
+### Stage 2a: Terminal service and the shell
 
 - Objective: the daemon owns terminals, with no protocol yet. A `TerminalService` in
   `crates/imperium-core/src/terminal.rs` holds terminals per session (four) and per daemon
-  (sixteen), starts them with the session workspace's root and the D6 shell and environment,
-  refuses sessions with a remote runtime or archived, and ends them on close, on the session's
-  stop, archive and delete, after 60 minutes with no attachment, and at daemon shutdown (within
-  the existing 5 s shutdown wait). The daemon becomes a child subreaper on Linux at start. Settings
-  `terminal.enabled` and `terminal.shell` in the registry (user layer only; absent from the
-  environment layer's allow-list). Terminal bytes are written nowhere but the ring and the
-  subscribers (no `tracing` of data, only ids and sizes).
+  (sixteen), starts them with the session workspace's root and the D6 shell and environment
+  (`resolve_shell` and `shell_env` in `terminal/shell.rs`, with `dirs_sys::known_folder`,
+  `winreg` and `nix::unistd::User`), refuses sessions with a remote runtime or archived, and ends
+  them on close, on the session's stop, archive and delete, after 60 minutes with no attachment,
+  and at daemon shutdown (within the existing 5 s shutdown wait). Settings `terminal.enabled` and
+  `terminal.shell` in the registry (user layer only; absent from the environment layer's
+  allow-list). Terminal bytes are written nowhere but the ring and the subscribers (no `tracing`
+  of data, only ids and sizes).
 - Depends on: stage 1.
-- Owned paths: `crates/imperium-core/src/terminal.rs` (new), the daemon start (subreaper), the
-  session stop, archive and delete paths in `state/` (one call each),
-  `crates/imperium-core/tests/terminal.rs` (new), `crates/imperium-config/src/settings.rs` and
-  `registry.rs`, `docs/10-configuration.md`.
+- Owned paths: `crates/imperium-core/src/terminal.rs` and `terminal/shell.rs` (new), the session
+  stop, archive and delete paths in `state/` (one call each), `crates/imperium-core/Cargo.toml`
+  (`winreg` on Windows), `Cargo.lock`, `crates/imperium-core/tests/terminal.rs` (new),
+  `crates/imperium-config/src/settings.rs` and `registry.rs`, `docs/10-configuration.md`.
 - Acceptance checks: `cargo test -p imperium-core --test terminal` on the matrix, calling the
-  service in process: a terminal starts in the workspace root; the fifth in a session and the
-  seventeenth in the daemon are refused; archive, delete, the detach timeout (on the daemon's test
-  clock) and daemon shutdown each end a terminal and its background job; `terminal.shell` in an
-  environment's `.imperium/config.toml` is ignored; a remote-runtime session is refused.
-- Size: about 600 lines.
+  service in process:
+  - a terminal starts in the workspace root; the fifth in a session and the seventeenth in the
+    daemon are refused; archive, delete, the detach timeout (on the daemon's test clock) and
+    daemon shutdown each end a terminal and its background job; `terminal.shell` in an
+    environment's `.imperium/config.toml` is ignored; a remote-runtime session is refused;
+  - `resolve_shell` never returns a path in the working folder when `PATH` holds `.`, an empty
+    entry or an absolute entry inside the session's folders and that folder holds a file named
+    like the shell;
+  - **Unix shell choice, each case explicit:** the account's shell is taken over `$SHELL`; an
+    account shell missing from `/etc/shells` is skipped for `$SHELL`; a `$SHELL` missing from
+    `/etc/shells` is refused too, giving `/bin/sh`; both listed gives the account's shell;
+  - on Windows it ignores `ComSpec` and a `PATH` entry holding `pwsh.exe`, and finds the runner's
+    installed `pwsh.exe` or falls back to Windows PowerShell;
+  - `shell_env` drops `ENV`, `BASH_ENV`, `ZDOTDIR`, `PROMPT_COMMAND`, `NODE_OPTIONS`, `LD_*`,
+    `DYLD_*` and internal `IMPERIUM_*` variables and keeps the spawn mark.
+- Size: about 800 lines.
 - Risks: shutdown ordering (terminals end before the runtime stops); the timer uses the daemon's
   clock abstraction so tests do not wait.
 - Status: pending
@@ -674,10 +726,11 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     daemon's log captured at TRACE;
   - detach then attach with `since` replays exactly the missed bytes; a lagging connection gets
     `lagged`;
-  - **sandbox tier:** a command run at the OS sandbox tier (where the job requires it,
-    `IMPERIUM_REQUIRE_OS_SANDBOX=1`) cannot open the terminal's pts device; where the tier does
-    not hide `/dev/pts`, the test prints a finding and is marked for the sandbox owner rather than
-    passing silently;
+  - **sandbox tier:** a command run at the OS sandbox tier (Linux and macOS, where the job sets
+    `IMPERIUM_REQUIRE_OS_SANDBOX=1`) cannot open the terminal's pts device. The test **fails** if it
+    can. If that is a real gap of the tier, it becomes a named known failure (`#[ignore]` naming
+    the issue and the sandbox's owner) and the goals are narrowed as the
+    [residual risks](#residual-risks) say; it never passes silently;
   - protocol snapshot and type checks pass.
 - Size: about 750 lines.
 - Risks: per-connection notification plumbing touches the connection's sender (keep it to one
@@ -699,12 +752,15 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     start-up `Guard` reused, and the commands `terminal_open`, `terminal_attach`,
     `terminal_detach`, `terminal_input`, `terminal_resize`, `terminal_close` and `terminal_list`.
     Each takes the URL the window is connected to, refused unless it is `daemon.json`'s
-    (threat 11), and is refused while a trusted main-context mod is loaded (D2). Output reaches
-    each attached window through a Tauri `Channel`; a window that closes detaches. The relay logs
-    ids and sizes, never data.
+    (threat 11). Output reaches each attached window through a Tauri `Channel`; a window that
+    closes detaches. The relay logs ids and sizes, never data.
+  - **The main-context mod check (D2):** the relay calls `mods.list` on its own connection and
+    reads the app's settings store on the native side, never a webview flag, before open and attach
+    and at most every 5 s while attached.
   - Permissions for the seven commands in `capabilities/default.json` for `main` and `panel-*`,
     the app's origin only.
-  - `WEBKIT_INSPECTOR_SERVER` and `GTK_MODULES` join `imperium_ipc::refused_variable`.
+  - `WEBKIT_INSPECTOR_SERVER` and `WEBKIT_INSPECTOR_HTTP_SERVER` join
+    `imperium_ipc::refused_variable`; `GTK_MODULES` does not (threat 13).
 - Depends on: stage 2b.
 - Owned paths: `crates/imperium-client/src/lib.rs`, `crates/imperium-ipc/src/loader_env.rs`,
   `apps/desktop/src-tauri/src/terminal.rs` (new), `main.rs` (handlers), `build.rs` and
@@ -717,12 +773,18 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     test** builds the app with `mock_builder` and the real capability files and sends each
     `terminal_*` command through `get_ipc_response` from a null origin, an opaque (sandboxed
     frame) origin, `imperium-mod://`, `http://imperium-mod.localhost` and
-    `http://localhost:3000`: all refused; from the app's own origin in `main`: accepted;
+    `http://localhost:3000`: all refused; from the app's own origin in `main`: accepted.
+    **If `tauri::test` in the pinned Tauri cannot forge these origins, the stage stops and reports
+    back to the plan's owner for a re-plan** rather than shipping without the test;
+  - **main-context mod:** a fake daemon connection whose `mods.list` reports a mod with
+    `main_context`, `trusted` and not `modified`, with the store saying it is on, makes every
+    `terminal_*` command refuse; an unreadable store refuses too; the same mod turned off does not;
   - a window URL other than `daemon.json`'s is refused; with no local socket the commands say so
     and never fall back to TCP; routing sends output only to the attached window's channel (a fake
     daemon connection in process); a test log subscriber at TRACE sees no sentinel data;
-  - `cargo test -p imperium-ipc` covers the two new refused variables.
-- Size: about 750 lines.
+  - `cargo test -p imperium-ipc`: the two inspector variables are refused, and
+    `GTK_MODULES=gail:atk-bridge` does not refuse identity.
+- Size: about 800 lines.
 - Risks: Tauri `Channel` ordering and back-pressure (sequence numbers from the daemon let the
   window detect a gap and re-attach); the relay must not block the Tauri main thread.
 - Status: pending
@@ -806,45 +868,74 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 - Handoff notes: `policy.ts`'s link function is reused by stage 8 for `file:` links. Keep
   `TerminalPanel` free of daemon calls other than through `bridge.ts`.
 
-### Stage 6: File access in the daemon
+### Stage 6a: File roots and reads
 
-- Objective: `files.roots`, `files.list`, `files.read` and `files.locate` (protocol minor at
-  merge) in `crates/imperium-core/src/files.rs`, under D12 and D13: root `Dir` handles opened once
-  per session from `Workspace::roots()` and `Workspace::scratch()` (refused for a remote runtime or
-  an archived session), the up-front spelling checks, every open through the held `Dir`,
-  non-blocking with an `fstat` and regular files only, listings with `read_dir` and gitignore
-  matchers (`show_ignored`) and link marks, at most 2000 entries, text reads of at most 1 MiB from
-  an offset with UTF-8 handling, the binary rule, image sniffing up to 10 MiB, `etag` from size,
-  modification time and a hash of the first 64 KiB, and `locate` for absolute or relative paths
-  (refusing anything outside with the reason). Phone connections refused.
+- Objective: `files.roots` and `files.read` (protocol minor at merge) in
+  `crates/imperium-core/src/files.rs`, under D12 and D13: root `Dir` handles opened **when the
+  daemon creates or loads a session** from `Workspace::roots()` and `Workspace::scratch()`, file
+  identities recorded in the session record at creation and compared on load (refused for a
+  remote runtime or an archived session); the up-front spelling checks; every open through the
+  held `Dir`, non-blocking with an `fstat` and regular files only; text reads of at most 1 MiB from
+  an offset with UTF-8 handling, the binary rule, image sniffing up to 10 MiB, and `etag` from
+  size, modification time and a hash of the first 64 KiB. Phone connections refused.
 - Depends on: none (it may land in parallel with stages 1 to 5).
-- Owned paths: `crates/imperium-core/src/files.rs` (new), `rpc.rs` and a new `rpc/files.rs`,
-  `crates/imperium-core/tests/files.rs` (new), `tests/phone.rs`,
+- Owned paths: `crates/imperium-core/src/files.rs` (new), the session create and load paths in
+  `state/` (one call each, and the record's new optional `root_ids` key), `rpc.rs` and a new
+  `rpc/files.rs`, `crates/imperium-core/tests/files.rs` (new), `tests/phone.rs`,
   `crates/imperium-protocol/src/methods/files.rs` (new), protocol snapshots and generated types,
-  `crates/imperium-core/Cargo.toml` (`cap-std`), `Cargo.lock`, `docs/02-architecture.md`.
+  `crates/imperium-core/Cargo.toml` (`cap-std`, `same-file`), `Cargo.lock`,
+  `docs/02-architecture.md`.
 - Acceptance checks: `cargo test -p imperium-core --test files --test phone` on the matrix:
-  - reads and lists inside work; `../`, an absolute path, a drive or UNC path, `\\?\`,
-    `a.txt:stream`, `NUL.txt`, `con`, `CONIN$`, `COM¹`, `LPT³.log` and `nul.` (and `nul` with a trailing space) are refused;
-  - a symbolic link to outside is refused to read and marked in the listing (Unix, and Windows
-    where the runner may create links: otherwise a junction, which needs no privilege); a link
-    inside to inside reads;
+  - reads inside work; `../`, an absolute path, a drive or UNC path, `\\?\`, `a.txt:stream`,
+    `NUL.txt`, `con`, `CONIN$`, `COM¹`, `LPT³.log`, `nul.` and `nul` with a trailing space are
+    refused;
+  - a symbolic link to outside is refused (Unix, and Windows where the runner may create links:
+    otherwise a junction, which needs no privilege); a link inside to inside reads;
   - **race:** a thread swaps a directory for a link to outside in a loop while another reads, and
-    never gets outside bytes; renaming a root's path after the session opened it changes nothing
-    the service reads;
+    never gets outside bytes; **swap before first open:** a root's path is replaced by a link to
+    outside after the session is created and before any `files.*` call, and reads still come from
+    the original folder; after a daemon restart a root whose identity changed is refused with the
+    reason;
   - **special files:** a FIFO in the folder (Unix) is refused at once, without blocking;
-  - **other sessions' worktrees:** a path in another session's worktree of the same repository is
-    refused by `locate` and cannot be named as a root;
+  - **other sessions' worktrees:** a root index naming another session's worktree of the same
+    repository does not exist for this session;
   - a 3 MiB file pages in 1 MiB reads; NUL bytes make it binary; UTF-16 with a BOM reads as text;
     a PNG renamed `.txt` is an image and a text file renamed `.png` is text; an SVG is text;
-  - an ignored file is hidden unless `show_ignored`; the phone is refused; protocol checks pass.
-- Size: about 800 lines.
+  - an old session record without `root_ids` loads (identities recorded then); the phone is
+    refused; protocol checks pass.
+- Size: about 700 lines.
 - Risks: symbolic links on Windows runners need developer mode (use junctions there, and skip only
   the link case with a logged reason, never silently); `cap-std` behaviour on case-insensitive
-  file systems (tested on macOS and Windows).
+  file systems (tested on macOS and Windows); open directory handles per session (a few each).
 - Status: pending
 - Outcome: -
-- Handoff notes: `files.read` never applies agent deny rules (D12); the docs say so. Stages 7a and
-  7b are the clients.
+- Handoff notes: `files.read` never applies agent deny rules (D12); the docs say so. Stage 7a is
+  the client.
+
+### Stage 6b: File listing and locate
+
+- Objective: `files.list` and `files.locate` (protocol minor at merge) on stage 6a's held roots:
+  listings with the `Dir`'s `read_dir` and `ignore::gitignore::Gitignore` matchers built from the
+  `.gitignore` files read through the same `Dir` (`show_ignored`), link marks with
+  `link_outside`, `other` for special files, at most 2000 entries; `locate` maps an absolute path
+  or one relative to the working folder to `{root, path}` by comparing against the roots' recorded
+  identities and canonical paths, and refuses anything outside with the reason.
+- Depends on: stage 6a.
+- Owned paths: `crates/imperium-core/src/files.rs` (listing and locate), `rpc/files.rs`,
+  `tests/files.rs`, `tests/phone.rs`, `crates/imperium-protocol/src/methods/files.rs`, protocol
+  snapshots and generated types, `docs/02-architecture.md`.
+- Acceptance checks: `cargo test -p imperium-core --test files --test phone` on the matrix:
+  listings inside work; an ignored file is hidden unless `show_ignored`; a nested `.gitignore`
+  applies to its folder only; a link to outside is listed with `link_outside` and its target's
+  names are never listed; a FIFO lists as `other`; 2500 entries list as 2000 with `truncated`;
+  `locate` maps a path in a worktree root, refuses a path in another session's worktree and a
+  path outside with a message; the phone is refused; protocol checks pass.
+- Size: about 450 lines.
+- Risks: gitignore semantics differ slightly from git's for negations across folders (the same
+  crate `session.files` uses, so the two agree).
+- Status: pending
+- Outcome: -
+- Handoff notes: stages 7b and 8 are the clients.
 
 ### Stage 7a: File viewer
 
@@ -855,7 +946,7 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   zero-width markers; *Copy path* and *Copy relative path*. The open file is re-read on a
   `tool_result` of `write_file` or `edit_file` naming it, on window focus and on *Refresh*,
   skipped when the `etag` is unchanged. Follows the open session.
-- Depends on: stages 4 and 6.
+- Depends on: stages 4 and 6a.
 - Owned paths: `apps/desktop/src/panels/FilesPanel.tsx` (new), `src/files/viewer*` and
   `src/files/content.ts` (new), `App.tsx` (panel entry and `PANELS`), `src/settings/shortcuts.ts`,
   `src/styles/panels.css`, `apps/desktop/package.json` and `pnpm-lock.yaml` (`@codemirror/*`),
@@ -879,13 +970,18 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   text with direction characters marked), keyboard navigation between tree and viewer, and
   *Reveal in folder* (D11): a native command `reveal_file {session_id, root, path}` in
   `src-tauri/src/reveal.rs` that fetches the session's roots from the daemon itself, resolves the
-  path under one, and calls `SHOpenFolderAndSelectItems` (or a quoted `explorer.exe /select,`),
-  the `org.freedesktop.FileManager1.ShowItems` D-Bus call (else opening the parent folder only),
-  or `open -R`.
-- Depends on: stage 7a.
+  path under one, and on Windows calls `imperium_ipc::windows::reveal` (a new opt-in unsafe module:
+  `ILCreateFromPathW`, `SHOpenFolderAndSelectItems`, `ILFree`, with the `windows-sys` features
+  `Win32_UI_Shell` and `Win32_System_Com`), falling back to `explorer.exe` with
+  `/select,"<path>"` passed through `CommandExt::raw_arg`; on Linux the
+  `org.freedesktop.FileManager1.ShowItems` D-Bus call through `zbus`, else opening the parent
+  folder only; on macOS `open -R`.
+- Depends on: stages 6b and 7a.
 - Owned paths: `apps/desktop/src/files/tree*` (new), `FilesPanel.tsx`,
   `apps/desktop/src-tauri/src/reveal.rs` (new), `main.rs`, `build.rs` and
-  `capabilities/default.json`, `apps/desktop/e2e/files.spec.ts`, `docs/07-desktop-ui.md`.
+  `capabilities/default.json`, `crates/imperium-ipc/src/windows/reveal.rs` (new),
+  `crates/imperium-ipc/src/windows.rs` and `Cargo.toml` (the module and features),
+  `apps/desktop/e2e/files.spec.ts`, `docs/07-desktop-ui.md`.
 - Acceptance checks: browser checks: the tree lists, expands and opens files; a file named with a
   right-to-left override shows the marker; *Show ignored* reveals an ignored file; keyboard focus
   moves between tree and viewer. `cargo test -p imperium-desktop reveal` on the matrix, with the
@@ -893,12 +989,16 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   daemon did not return are refused **before** the opener is called; for an accepted file the
   opener receives the folder-and-selection call (Windows, macOS) or the D-Bus call or the parent
   folder (Linux), and **no file path is ever passed to an opener as the thing to open**; the
-  `tauri::test` access-control test of stage 3 covers `reveal_file` too.
-- Size: about 600 lines.
-- Risks: file managers without `FileManager1` on Linux (the parent-folder fallback).
+  Windows fallback's command line, read back from the built `Command`, is exactly
+  `/select,"<path>"` for a path with spaces and commas; the `tauri::test` access-control test of
+  stage 3 covers `reveal_file` too.
+- Size: about 700 lines.
+- Risks: file managers without `FileManager1` on Linux (the parent-folder fallback); COM
+  initialisation on the calling thread (the module initialises and uninitialises it itself).
 - Status: pending
 - Outcome: -
-- Handoff notes: changing `main.rs` and `capabilities/` runs the presence end-to-end job.
+- Handoff notes: changing `main.rs`, `capabilities/` and `imperium-ipc` runs the presence
+  end-to-end job.
 
 ### Stage 8: Links, review, end to end and docs
 
@@ -947,7 +1047,7 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 - **Webview differences** (WebView2, WebKitGTK, WKWebView): Playwright's Chromium and WebKit, plus
   the Linux real-app run; macOS and Windows real-app runs are not in CI, and on those two the
   frame refusals rest on the `tauri::test` access-control test.
-- **Protocol minors.** Stages 2b and 6 take the next free minor at their merge; merge
+- **Protocol minors.** Stages 2b, 6a and 6b take the next free minor at their merge; merge
   `experimental`, never rebase.
 - **Users expect terminals to survive closing the app.** D3 ends them with the daemon; the pane's
   empty state and the close dialog say so.
