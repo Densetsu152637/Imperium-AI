@@ -963,6 +963,13 @@ model, the transcript and the tool's finish event carry. The rules:
 - **Chained.** Several hooks replace in order, each seeing the last one's result as its
   `tool_output`. The hooks see the result cut to 8,000 characters, so a hook cannot rely on
   seeing a long result whole.
+- **Failure is kept.** A replacement changes the text only: a result that failed stays failed
+  (`ok` is false in the finish event and the transcript) with the replacement as its text.
+- **Large replacements are saved like any result.** The replacement then goes through the same
+  check as a tool's own output (`harness.result_spill`, docs/03), so one past the agent's
+  threshold is saved to a file and the model sees its preview and the path.
+- **An echo is no replacement.** A hook that answers with the `tool_output` it was shown (cut
+  to 8,000 characters) changes nothing; the full result is kept, not the cut copy.
 - **Journalled.** A replacement adds a transcript notice (`A hook replaced the result of
   <tool>`) with the result before and after, each cut to 1,000 characters, like a rewritten call.
 - **Trust.** The same as for rewrites: only hooks from the user's own configuration may replace;

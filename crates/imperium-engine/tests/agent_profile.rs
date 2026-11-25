@@ -695,6 +695,58 @@ async fn an_oversized_replacement_from_a_tool_after_hook_is_refused() {
 }
 
 #[tokio::test]
+async fn replacing_a_failed_result_keeps_it_failed() {
+    let hook = after_hook("read_file", json!({"updated_output": "REDACTED"})).await;
+    let setup = start_with(
+        vec![Some(("read_file", json!({"path": "missing.txt"}))), None],
+        Vec::new(),
+        Vec::new(),
+        rules(Allowlist::All, Allowlist::All, false),
+        vec![hook],
+    )
+    .await;
+    let results = turn(&setup.session, "read it").await;
+    assert_eq!(results[0], (false, "REDACTED".to_string()), "{results:?}");
+}
+
+#[tokio::test]
+async fn a_replacement_past_the_save_threshold_is_saved_like_any_large_result() {
+    // 20,000 characters in short lines: past the 8,192 a result may keep when the window is
+    // unknown, and within what a hook may return.
+    let long: String = (0..2500)
+        .map(|n| {
+            format!(
+                "row {n:04}
+"
+            )
+        })
+        .collect();
+    assert!(
+        long.len() > 8_192
+            && long.len() <= imperium_extensions::hooks::MAX_OUTPUT_REPLACEMENT_BYTES
+    );
+    let hook = after_hook("run_command", json!({"updated_output": long})).await;
+    let setup = start_with(
+        vec![Some(("run_command", json!({"command": "echo hi"}))), None],
+        Vec::new(),
+        Vec::new(),
+        rules(Allowlist::All, Allowlist::All, false),
+        vec![hook],
+    )
+    .await;
+    turn(&setup.session, "run it").await;
+    let seen = setup.seen.lock().unwrap();
+    let read = seen
+        .iter()
+        .filter(|request| !request.subagent)
+        .filter_map(|request| request.last_result.clone())
+        .next_back()
+        .expect("the model read the result");
+    assert!(read.contains(imperium_engine::SAVED_TO), "{read}");
+    assert!(read.len() < 8_192, "{}", read.len());
+}
+
+#[tokio::test]
 async fn a_rewrite_cannot_get_a_call_past_a_deny_rule() {
     let (hook, hits) = rewriting_hook("run_command", json!({"command": "rm -rf build"})).await;
     let deny = PermissionRule {

@@ -172,6 +172,26 @@ fn lenient_count<'de, D: serde::Deserializer<'de>>(
     Ok((count > 0).then_some(count))
 }
 
+/// A flag as models write it: a boolean, or the word in quotes (`"true"`, `"false"`); `null`
+/// and an empty string are false.
+fn lenient_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    use serde::de::Error;
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => Ok(false),
+        serde_json::Value::Bool(flag) => Ok(flag),
+        serde_json::Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "" | "false" => Ok(false),
+            "true" => Ok(true),
+            _ => Err(D::Error::custom(format!(
+                "expected true or false, got {text:?}"
+            ))),
+        },
+        other => Err(D::Error::custom(format!(
+            "expected true or false, got {other}"
+        ))),
+    }
+}
+
 #[derive(Deserialize)]
 struct WriteArgs {
     path: String,
@@ -183,7 +203,7 @@ struct EditArgs {
     path: String,
     old_string: String,
     new_string: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_flag")]
     replace_all: bool,
 }
 
@@ -535,10 +555,10 @@ pub fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "edit_file".into(),
-            description: "Replace exactly one occurrence of old_string with new_string in a file. old_string must match exactly and be unique, unless replace_all is true, which replaces every occurrence.".into(),
+            description: "Replace exactly one occurrence of old_string with new_string in a file. old_string must match exactly and be unique unless replace_all is true, which replaces every occurrence.".into(),
             parameters: json!({"type": "object", "properties": {
                 "path": path, "old_string": {"type": "string"}, "new_string": {"type": "string"},
-                "replace_all": {"type": "boolean", "description": "Replace every occurrence of old_string; default false (it must then be unique)"}
+                "replace_all": {"type": "boolean", "description": "Replace every occurrence of old_string instead of one; default false"}
             }, "required": ["path", "old_string", "new_string"]}),
         },
         ToolSpec {
@@ -599,6 +619,26 @@ pub fn specs() -> Vec<ToolSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edit_file_takes_replace_all_as_a_flag_or_the_word_in_quotes() {
+        let flag = |value: &str| {
+            let arguments = format!(
+                r#"{{"path": "a", "old_string": "x", "new_string": "y", "replace_all": {value}}}"#
+            );
+            match Invocation::parse("edit_file", &arguments) {
+                Ok(Invocation::EditFile { replace_all, .. }) => Ok(replace_all),
+                Ok(_) => unreachable!(),
+                Err(error) => Err(error.to_string()),
+            }
+        };
+        assert_eq!(flag("true"), Ok(true));
+        assert_eq!(flag(r#""true""#), Ok(true));
+        assert_eq!(flag(r#""False""#), Ok(false));
+        assert_eq!(flag("null"), Ok(false));
+        assert!(flag(r#""yes""#).is_err());
+        assert!(flag("1").is_err());
+    }
 
     #[test]
     fn every_spec_parses_into_an_invocation() {

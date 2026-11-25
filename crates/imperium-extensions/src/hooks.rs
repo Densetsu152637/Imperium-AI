@@ -381,8 +381,12 @@ impl Hooks {
                         }
                         updated_prompt = Some(new);
                     }
+                    // An echo of the `tool_output` the hook was shown is a pass-through: the
+                    // payload carries the result cut short, so taking it would replace the full
+                    // result with the cut one.
                     if allowed
                         && event == HookEvent::ToolAfter
+                        && !again_output
                         && let Some(new) = answer.updated_output
                     {
                         if let Some(object) = input.as_object_mut() {
@@ -1039,6 +1043,10 @@ mod tests {
             let output = seen["tool_output"].as_str().unwrap_or_default();
             axum::Json(json!({"updated_output": format!("[{output}]")}))
         }
+        async fn echo(body: String) -> axum::Json<Value> {
+            let seen: Value = serde_json::from_str(&body).unwrap();
+            axum::Json(json!({"updated_output": seen["tool_output"]}))
+        }
         async fn nothing() -> axum::Json<Value> {
             axum::Json(json!({}))
         }
@@ -1058,6 +1066,7 @@ mod tests {
             .route("/chain", post(chain))
             .route("/not-an-object", post(not_an_object))
             .route("/replace", post(replace))
+            .route("/echo", post(echo))
             .route("/nothing", post(nothing))
             .route("/prompt", post(prompt))
             .route("/slow", post(slow))
@@ -1377,6 +1386,37 @@ X-Injected: 1"
             )
             .await;
         assert_eq!(outcome.updated_output, None);
+    }
+
+    #[tokio::test]
+    async fn a_tool_after_hook_that_echoes_the_result_it_was_shown_replaces_nothing() {
+        let (base, _seen) = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        // The payload carries the result cut short; the caller's full result is longer.
+        let payload = json!({"tool_input": {}, "ok": true, "tool_output": "cut"});
+        let outcome = Hooks::new(vec![after(format!("{base}/echo"))])
+            .run_rewriting(
+                HookEvent::ToolAfter,
+                Some("read_file"),
+                &payload,
+                dir.path(),
+            )
+            .await;
+        assert_eq!(outcome.verdict, Verdict::Allow);
+        assert_eq!(outcome.updated_output, None);
+        // An echo after a real replacement keeps the replacement.
+        let outcome = Hooks::new(vec![
+            after(format!("{base}/replace")),
+            after(format!("{base}/echo")),
+        ])
+        .run_rewriting(
+            HookEvent::ToolAfter,
+            Some("read_file"),
+            &payload,
+            dir.path(),
+        )
+        .await;
+        assert_eq!(outcome.updated_output.as_deref(), Some("[cut]"));
     }
 
     #[tokio::test]

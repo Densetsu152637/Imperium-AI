@@ -78,6 +78,26 @@ fn start_gated(
     parallel_reads: u32,
     read_gate: Option<Arc<dyn ReadGate>>,
 ) -> Session {
+    start_sized(
+        url,
+        workspace,
+        HarnessSettings {
+            parallel_reads,
+            ..HarnessSettings::default()
+        },
+        Some(100_000),
+        read_gate,
+    )
+}
+
+/// A hosted model with `context_window` (`None`: unknown) and the given harness settings.
+fn start_sized(
+    url: &str,
+    workspace: Workspace,
+    harness: HarnessSettings,
+    context_window: Option<u64>,
+    read_gate: Option<Arc<dyn ReadGate>>,
+) -> Session {
     let dir = workspace.root().to_path_buf();
     Session::spawn_with(
         SessionConfig {
@@ -92,7 +112,7 @@ fn start_gated(
                 model: "model".into(),
                 pricing: None,
                 local: false,
-                context_window: Some(100_000),
+                context_window,
                 kind: "openai".into(),
                 reasoning: None,
             }),
@@ -118,10 +138,7 @@ fn start_gated(
             attended: false,
             attachments: Default::default(),
             auto_permissions: Default::default(),
-            harness: HarnessSettings {
-                parallel_reads,
-                ..HarnessSettings::default()
-            },
+            harness,
             background: None,
             checkpoints: None,
             budget_gate: None,
@@ -588,4 +605,73 @@ async fn a_read_that_starts_to_ask_after_the_run_is_read_again_after_the_approva
     let results = tool_messages(&fake.requests.lock().unwrap()[1]);
     assert!(results[0].1.contains("alpha"), "{results:?}");
     assert!(results[1].1.contains("bravo, changed"), "{results:?}");
+}
+
+/// A file of 60,000 characters, past the 32,000 a read gets when the window is unknown and
+/// within the 100,000 a hosted model with an unknown window is given.
+fn big_file(dir: &std::path::Path) {
+    let text: String = (0..6000)
+        .map(|n| {
+            format!(
+                "row {n:05}
+"
+            )
+        })
+        .collect();
+    assert!(text.len() > 32_000 && text.len() < 100_000);
+    std::fs::write(dir.join("big.txt"), text).unwrap();
+}
+
+/// The results of one step of `calls` against a hosted model with no known context window.
+async fn unknown_window_results(
+    calls: Vec<(String, String, String)>,
+    parallel_reads: u32,
+) -> Vec<(String, String)> {
+    let fake = Arc::new(Fake {
+        calls,
+        requests: Mutex::new(Vec::new()),
+    });
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    big_file(dir.path());
+    let harness = HarnessSettings {
+        parallel_reads,
+        // Saving a large result would hide what the read itself returned.
+        result_spill: false,
+        ..HarnessSettings::default()
+    };
+    let session = start_sized(
+        &url,
+        Workspace::new(dir.path()).unwrap(),
+        harness,
+        None,
+        None,
+    );
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+    to_the_end(&mut events).await;
+    let requests = fake.requests.lock().unwrap();
+    tool_messages(&requests[1])
+}
+
+#[tokio::test]
+async fn a_hosted_model_with_no_known_window_reads_a_large_file_with_the_large_budget() {
+    let read = |id: &str| call(id, "read_file", json!({"path": "big.txt"}));
+    // One call at a time: `run_tool` sizes the read.
+    let alone = unknown_window_results(vec![read("c1")], 0).await;
+    assert!(
+        alone[0].1.contains("row 05999"),
+        "cut short: {}",
+        alone[0].1.len()
+    );
+    // Two reads of a step run ahead together: the prefetch sizes them the same way.
+    let together = unknown_window_results(vec![read("c1"), read("c2")], 4).await;
+    for (id, content) in &together {
+        assert!(
+            content.contains("row 05999"),
+            "{id} cut short: {}",
+            content.len()
+        );
+    }
 }
