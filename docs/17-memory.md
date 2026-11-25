@@ -204,7 +204,7 @@ the root agent also has two tools (item R2.11 of the research roadmap):
   including what the user wrote by hand, is untouched. The limits of `memory_remember` hold for
   the result (body at most 2,000 characters for an environment section, file at most 24,000, no
   text that looks like a secret), and an environment edit may not change how `Memory.md`
-  divides into sections (a `## ` heading line or an unclosed code fence in the new text is
+  divides into sections (a second-level heading line or an unclosed code fence in the new text is
   refused). The entries carry no `updated` date; `created` is the date of first save.
 - **`memory_forget(name, scope?)`** removes a memory that is wrong or obsolete, **without erasing
   it**: a global entry moves to `<data>/memory/trash/<name>.<date>.md` (a number is added when
