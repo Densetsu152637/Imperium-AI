@@ -1218,6 +1218,55 @@ mod tests {
         );
     }
 
+    /// The composition a subagent's compaction runs: the parent's loaded set filtered to the
+    /// subagent's universe, then the block built from the tools it still has.
+    #[test]
+    fn a_subagents_compaction_block_lists_the_names_it_inherited() {
+        let parent: Vec<String> = ["web_fetch", "spawn_agent", "mcp__dict__lookup"]
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let universe = [
+            spec("web_fetch", "Fetch a web page. It follows redirects."),
+            spec("mcp__dict__lookup", "SECRET-MCP-TEXT."),
+            spec("update_plan", "Plan."),
+        ];
+        let loaded = inherited(&parent, |name| universe.iter().any(|s| s.name == name));
+        let entries: Vec<(&ToolSpec, Category)> = loaded
+            .iter()
+            .rev()
+            .filter_map(|name| {
+                let tool = universe.iter().find(|s| &s.name == name)?;
+                let category = if name.starts_with("mcp__") {
+                    Category::ToolsMcp
+                } else {
+                    Category::ToolsBuiltin
+                };
+                Some((tool, category))
+            })
+            .collect();
+        let block = loaded_block(&entries);
+        assert!(
+            block.contains(
+                "- web_fetch: Fetch a web page.
+"
+            ),
+            "{block}"
+        );
+        assert!(
+            block.contains(
+                "- mcp__dict__lookup
+"
+            ),
+            "{block}"
+        );
+        assert!(
+            !block.contains("spawn_agent") && !block.contains("update_plan"),
+            "{block}"
+        );
+        assert!(!block.contains("SECRET"), "{block}");
+    }
+
     #[test]
     fn a_subagent_inherits_the_loaded_tools_it_also_has() {
         let parent: Vec<String> = ["web_fetch", "spawn_agent", "mcp__dict__lookup"]
@@ -1277,39 +1326,85 @@ mod tests {
             if allowed.contains(&file.as_str()) {
                 continue;
             }
-            let code = text.split("#[cfg(test)]").next().unwrap();
-            let lines: Vec<&str> = code.lines().collect();
-            for (index, line) in lines.iter().enumerate() {
-                let Some(at) = ["function.name", "function.arguments"]
-                    .iter()
-                    .filter_map(|needle| line.find(needle))
-                    .min()
-                else {
-                    continue;
-                };
-                if line.contains("effective_call(") || as_sent.contains(&line.trim()) {
-                    continue;
-                }
-                let value: String = line[..at]
-                    .chars()
-                    .rev()
-                    .skip_while(|c| *c == '.')
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                let start = index.saturating_sub(24);
-                let bound = !value.is_empty()
-                    && lines[start..index].iter().any(|near| {
-                        near.contains(&format!("let {value} =")) && near.contains("effective_call(")
-                    });
-                assert!(
-                    bound,
-                    "{file}:{} reads a call's name or arguments without effective_call: {line}",
-                    index + 1
-                );
+            let found = raw_call_reads(&text, &as_sent);
+            assert!(found.is_empty(), "{file}: {found:?}");
+        }
+    }
+
+    /// The code of a source file: everything before its test module (`#[cfg(test)]` followed
+    /// by `mod`), so a test-only item early in a file does not hide the code after it.
+    fn production_code(text: &str) -> &str {
+        let mut from = 0;
+        while let Some(at) = text[from..].find("#[cfg(test)]") {
+            let at = from + at;
+            let after = text[at + "#[cfg(test)]".len()..].trim_start();
+            if after.starts_with("mod ") {
+                return &text[..at];
+            }
+            from = at + 1;
+        }
+        text
+    }
+
+    /// The reads of a call's name or arguments in `text`'s production code that are not on a
+    /// value bound from `effective_call(..)`, as `line: text`.
+    fn raw_call_reads(text: &str, as_sent: &[&str]) -> Vec<String> {
+        let lines: Vec<&str> = production_code(text).lines().collect();
+        let mut found = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            let Some(at) = ["function.name", "function.arguments"]
+                .iter()
+                .filter_map(|needle| line.find(needle))
+                .min()
+            else {
+                continue;
+            };
+            if line.contains("effective_call(") || as_sent.contains(&line.trim()) {
+                continue;
+            }
+            let value: String = line[..at]
+                .chars()
+                .rev()
+                .skip_while(|c| *c == '.')
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let start = index.saturating_sub(24);
+            let bound = !value.is_empty()
+                && lines[start..index].iter().any(|near| {
+                    near.contains(&format!("let {value} =")) && near.contains("effective_call(")
+                });
+            if !bound {
+                found.push(format!("{}: {line}", index + 1));
             }
         }
+        found
+    }
+
+    #[test]
+    fn the_scan_reads_past_an_early_test_only_item_and_flags_a_raw_read() {
+        let source = "#[cfg(test)]
+use std::fmt;
+
+fn f(call: &ToolCall) -> bool {
+    call.function.name == \"x\"
+}
+
+#[cfg(test)]
+mod tests {
+    fn g(call: &ToolCall) { call.function.name.len(); }
+}
+";
+        let found = raw_call_reads(source, &[]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("call.function.name == "), "{found:?}");
+        let bound = "fn f(call: &ToolCall) -> bool {
+    let call = effective_call(call);
+    call.function.name == \"x\"
+}
+";
+        assert!(raw_call_reads(bound, &[]).is_empty());
     }
 }

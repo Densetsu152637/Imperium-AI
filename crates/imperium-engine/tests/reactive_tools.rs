@@ -1719,3 +1719,119 @@ async fn the_loader_text_is_the_same_in_every_request_and_ends_the_base_prompt()
         assert!(after.is_empty() || after.starts_with("\n\n"), "{after}");
     }
 }
+
+/// Answers its first call with `call_tool(write_file, ...)` and every later call with "done",
+/// recording the tools it was offered.
+#[derive(Debug, Default)]
+struct WritesThroughProxy {
+    calls: AtomicUsize,
+    tools: Mutex<Vec<String>>,
+}
+
+impl ChatClient for WritesThroughProxy {
+    fn stream<'a>(
+        &'a self,
+        request: ChatRequest<'a>,
+        _on_text: &'a mut (dyn FnMut(&str) + Send),
+    ) -> ChatFuture<'a> {
+        Box::pin(async move {
+            let wires: Vec<Value> = request.tools.iter().map(ToolSpec::to_wire).collect();
+            self.tools
+                .lock()
+                .unwrap()
+                .push(Value::Array(wires).to_string());
+            let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+            let tool_calls = if first {
+                vec![imperium_api::ToolCall {
+                    id: "call0".into(),
+                    kind: "function".into(),
+                    function: imperium_api::FunctionCall {
+                        name: "call_tool".into(),
+                        arguments: json!({"name": "write_file",
+                            "arguments": {"path": "x.txt", "content": "c"}})
+                        .to_string(),
+                    },
+                }]
+            } else {
+                Vec::new()
+            };
+            Ok(Completion {
+                text: if first { String::new() } else { "done".into() },
+                tool_calls,
+                usage: Some(Usage {
+                    prompt_tokens: 100,
+                    completion_tokens: 1,
+                    cached_tokens: 0,
+                }),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            })
+        })
+    }
+}
+
+/// An initiative review on a local model with `auto`: the list is the fixed one, and the inner
+/// tool of `call_tool` is still held to the review's limits.
+#[tokio::test]
+async fn a_review_on_a_local_model_with_auto_is_offered_the_loaders_and_refused_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(WritesThroughProxy::default());
+    let mut clients = ChatClients::default();
+    let shared = Arc::clone(&recorder);
+    clients.register("scripted", move |_http, _endpoint| {
+        Arc::clone(&shared) as Arc<dyn ChatClient>
+    });
+    let local: Arc<dyn LocalModels> = Arc::new(Runtime);
+    let session = Session::spawn(SessionConfig {
+        id: "auto-review".into(),
+        workspace: Workspace::new(dir.path()).unwrap(),
+        model: Some(scripted("llamacpp:m", true)),
+        catalog: Vec::new(),
+        clients,
+        routing: imperium_config::RoutingSettings::default(),
+        local: Some(local),
+        tools: Vec::new(),
+        notices: Vec::new(),
+        extensions: Default::default(),
+        memory: None,
+        context: None,
+        enforce: imperium_config::Enforce::Warn,
+        pre_approved: Vec::new(),
+        launcher: Some(Arc::new(Review)),
+        resume: false,
+        resume_policy: imperium_engine::default_resume_policy(),
+        instructions: None,
+        personality: None,
+        max_steps: 5,
+        background: None,
+        checkpoints: None,
+        budget_gate: None,
+        auto_compact: false,
+        auto_compact_at: None,
+        attended: true,
+        attachments: Default::default(),
+        auto_permissions: Default::default(),
+        harness: harness(HarnessMode::Auto),
+        keep_agent_state: true,
+        effort: Default::default(),
+        knowledge: Default::default(),
+        journal_path: dir.path().join("journal.jsonl"),
+    })
+    .unwrap();
+    session
+        .workspace()
+        .permissions()
+        .set_mode(PermissionMode::Full);
+    let done = turn(&session, "review").await;
+    let sent = recorder.tools.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(names(&sent[0]).ends_with(&["tool_search".to_string(), "call_tool".to_string()]));
+    assert_eq!(sent[0], sent[1]);
+    let (ok, output) = &done.results[0];
+    assert!(
+        !ok && output.contains("this turn only reads and suggests"),
+        "{:?}",
+        done.results
+    );
+    assert!(!dir.path().join("x.txt").exists());
+}
