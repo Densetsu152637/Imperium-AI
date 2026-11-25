@@ -1543,8 +1543,7 @@ async fn resume_and_compact(
     }
     setup.session.compact().await.expect("a compaction");
     turn(&setup.session, "after").await;
-    let seen = setup.seen.lock().unwrap().clone();
-    seen
+    setup.seen.lock().unwrap().clone()
 }
 
 /// Removes the journal's records of plugin activations, as if the plugin were never activated.
