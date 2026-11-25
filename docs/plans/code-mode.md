@@ -2,7 +2,7 @@
 
 Revision: 2026-11-26, revision 5 (final review: D1, and the label and call-state refinements; delta review of revision 3: N1 to N7 and the F12 follow-up; plan critic round 1: findings F1 to F12, all accepted, with the root's decisions on F3 and F4; the root's answers recorded as [settled decisions](#settled-decisions)); written against `experimental`
 at `1c066512`. Roadmap [item 65](../12-roadmap.md#next-in-order); Imperium-Research roadmap R2.8.
-Status: planned.
+Status: stage 1a built (pull request #303), stages 1b to 6 planned.
 
 The model gets one more tool, `run_script`, whose argument is a short Python program. Inside the
 program every tool the agent may use is a Python function. Each such call goes through the agent's
@@ -656,6 +656,8 @@ Each is checked in stage 1 and its outcome recorded in this plan before stage 2 
   OS (cold start, F5), and the binary is under 20 MB, with and without `monty-type-checking` (F12).
   Stage 1 records the measurements here. If cold start fails by more than 2×, the one-ahead
   spawned worker (C1) is turned on; if size fails, the type checker is left out.
+  Stage 1a measured: cold start 0.8 to 1.7 ms (passes, no one-ahead spawn); size 40 to 43 MiB
+  (fails; the owned `MontyRun` loop in 1b removes the type checker, see the stage 1a Outcome).
 - **A5.** Qwen3.5-4B writes short Python programs that stay inside Monty's subset often enough.
   Stage 6 measures syntax, `NotImplementedError` and `NameError` rates.
 - **A6.** The guided-harness pilot's failures on aggregation are reachable by code: the knowledge
@@ -764,6 +766,65 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
 - Risks: a target where the pinned version does not build (Windows arm64 is the likeliest), or
   where confinement cannot be applied; then code mode is unavailable on that target and the
   setting says so (fail closed), rather than blocking the stage.
+
+### Stage 1a: Status and Outcome
+
+Status: built in pull request #303 (`feat/code-mode-1a`), default-off and unreachable: there is
+no `run_script` tool and no setting yet.
+
+Built: `crates/imperium-script-worker` (Monty 1.6.0 pinned exactly in `runtimes/monty.env` and
+the lock; the worker loop; self-confinement before any request is read, failing closed),
+`crates/imperium-script` (the driver: event allowlist, suspension budget with `AbortFeed`,
+`OsCall` answered with an error, `request_timeout`, kill on drop), `deny.toml`, the `deny` CI job,
+the weekly advisory workflow and the Monty pin check, and a `script-worker` CI job on four OSes.
+
+Confinement per OS:
+
+| OS | Confinement | State |
+| --- | --- | --- |
+| Linux (x86-64, aarch64) | `PR_SET_NO_NEW_PRIVS`, `RLIMIT_DATA` at twice the memory budget, Landlock (no file access) where the kernel has it, seccomp allowlist (`clone3` gives `ENOSYS`, x32 rejected, other architectures killed) | built and tested in CI |
+| macOS | `sandbox_init` from `(deny default)`; `RLIMIT_CORE` 0 (must hold); `RLIMIT_DATA` best-effort | built and tested in CI; see the note below |
+| Windows | none: the worker refuses to run | stage 1b |
+
+macOS note: Darwin does not enforce `RLIMIT_DATA` and the release on the CI runner refuses to set
+it (`EINVAL`), which failed all three confinement tests. It is now best-effort and reported as
+`rlimit_data=unavailable (...)`; the memory bound on macOS is Monty's `max_memory` and the
+`monty-alloc` hard limit inside the worker. The core-dump limit and the sandbox profile remain
+mandatory stages.
+
+Findings that refute or change assumptions:
+
+- **A4 failed on size.** The release binary is 40 MiB on Linux aarch64 and 43 MiB on Linux
+  x86-64, against the target of under 20 MB. Monty's `worker` feature forces in the type checker
+  (ruff and ty) and `zip` 8.6.0, which carries 8 RUSTSEC advisories that `deny.toml` ignores with
+  reasons; `salsa` is pinned to 0.28.2. Resolution: stage 1b builds the owned `monty::MontyRun`
+  loop (F12) instead of `monty-proto`'s `worker` feature, which drops the type checker and `zip`,
+  and then removes the advisory ignores. Until then the ignores are reviewed by the weekly
+  advisory workflow.
+- **A2: `eval` and `exec` exist** and run inside Monty. The engine must refuse programs that
+  name them (stage 1b or 2 requirement, with a test). They add no host capability, since every
+  host effect still passes through the driver, but they defeat any static check of what a
+  program calls.
+- **Bare-name calls arrive as `FunctionCall` with no `NameLookup`.** The F1 handle table
+  therefore cannot be the only gate: the engine must resolve the name and re-check it at call
+  time (`in_program`) on every `FunctionCall`, not only on lookup.
+- **A4/F5 cold start is 0.8 ms (Linux x86-64) and 1.7 ms (Linux aarch64)**, resident memory 10
+  to 12 MiB, against a 50 ms target. The one-ahead spawned worker is dropped from the plan.
+
+Moved to stage 1b (the plan permits each: stage 1a's scope above lists the worker crate, the
+driver, the event allowlist, Linux and macOS confinement and the supply-chain checks):
+
+- The `ScriptRunner` trait and the fake runner. They exist for the engine's tests (stage 2) and
+  are best shaped together with the owned `MontyRun` loop, which changes the driver's event set;
+  building them on the `worker`-feature protocol now would be rewritten.
+- The cgroup v2 memory limit. C1 makes it conditional on a delegated cgroup, so it is an extra
+  behind `RLIMIT_DATA` and Monty's own limit, and it is not needed to meet a 1a test.
+- The Windows launch, token, job and labels, the fail-closed availability check, bundling in
+  `build-desktop.sh`, and the measurements for the shipped (type-checker-free) binary.
+
+Stage 1b changes from the findings: build the owned `MontyRun` loop and re-run the allowlist tests
+against its own event set; refuse programs that name `eval` or `exec`; re-check every
+`FunctionCall` name against the program's handle table at call time; no one-ahead spawn.
 
 ## Stage 2: The tool, the driver and dispatch
 
@@ -1013,6 +1074,12 @@ adds a sidecar; root checks the `Experimental` run for that merge and that the r
   program near its limits can make a turn much longer than one tool call; the summary line and
   events make it visible.
 - **Protocol minor collisions.** Concurrent pull requests take the next free minor at merge.
+
+- **The `worker` feature's weight.** Until 1b, the binary is 40 to 43 MiB and carries `zip` 8.6.0
+  with eight ignored advisories; unreachable from a program, but it is dead weight and an audit
+  burden. The owned loop in 1b removes it.
+- **`eval` and `exec` inside Monty** must be refused by the engine, and every `FunctionCall`
+  must be re-checked at call time, not only at name lookup (stage 1a findings).
 
 ## Open questions
 
