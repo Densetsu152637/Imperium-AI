@@ -451,6 +451,12 @@ impl Settings {
         if !matches!(self.github.autofix.push.as_str(), "ask" | "auto") {
             return Err("github.autofix.push must be ask or auto".into());
         }
+        if !matches!(
+            self.github.automerge.default_method.as_str(),
+            "squash" | "merge" | "rebase"
+        ) {
+            return Err("github.automerge.default_method must be squash, merge or rebase".into());
+        }
         if let Some(dir) = &self.models.download_dir
             && !dir.is_absolute()
         {
@@ -488,6 +494,30 @@ pub struct GithubSettings {
     /// Empty (the default) for every other environment (docs/14, "GitHub auto-fix").
     #[serde(default)]
     pub session_gh: Vec<String>,
+    #[serde(default)]
+    pub automerge: AutomergeSettings,
+}
+
+/// `[github.automerge]`: whether the desktop app may ask GitHub to auto-merge a pull request, and
+/// which merge method it offers first. Neither key turns auto-merge on for anything: only the
+/// user's switch in the desktop app does. Read from the user's own config only (a project's
+/// `.imperium` files are never merged as settings).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AutomergeSettings {
+    /// `false` refuses every request to turn auto-merge on.
+    pub allowed: bool,
+    /// `squash`, `merge` or `rebase`: preselected when the repository allows it.
+    pub default_method: String,
+}
+
+impl Default for AutomergeSettings {
+    fn default() -> Self {
+        AutomergeSettings {
+            allowed: true,
+            default_method: "squash".into(),
+        }
+    }
 }
 
 /// One `[[github.watch]]` entry: a repository and the local clone fixes are made from.

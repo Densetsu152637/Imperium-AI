@@ -901,3 +901,96 @@ async fn a_submodule_with_a_hostile_config_does_not_run_during_review() {
     .await;
     assert!(!marker.exists(), "the submodule's config did not run");
 }
+
+/// `session.review_pull_request` pushes the branch, which updates a pull request already bound on
+/// it: GitHub's auto-merge is turned off before that push, and the push does not happen when
+/// that cannot be done.
+#[tokio::test]
+async fn a_push_for_a_bound_pull_request_turns_its_auto_merge_off_first() {
+    use imperium_github::{AutoMerge, GitHub, HttpGitHub, MergeMethod, StaticToken};
+
+    let tools = tempfile::tempdir().unwrap();
+    let (gh, log) = fake_gh(tools.path());
+    let repo = repository();
+    let dir = repo.path().to_path_buf();
+    git(
+        &dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ],
+    );
+    // Nothing is pushed to GitHub: the push goes to a port nobody listens on.
+    git(
+        &dir,
+        &[
+            "config",
+            "remote.origin.pushurl",
+            "ssh://127.0.0.1:1/owner/repo.git",
+        ],
+    );
+    let model = serve(dir.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon_with(home.path(), &model, &[("open_pull_request", "allow")]);
+    state.use_gh(gh);
+    let mut connection = connect(&state).await;
+    let id = edited(&state, &dir).await;
+    let root =
+        ok::<SessionReviewResult>(&mut connection, "session.review", json!({"session_id": id}))
+            .await
+            .repos[0]
+            .clone();
+
+    const TOKEN: &str = "ghp_REVIEWPUSHSENTINEL0123456789abcdef";
+    let fake = imperium_github_fake::FakeGithub::start(TOKEN).await;
+    fake.add_repo("owner/repo");
+    fake.add_pr("owner/repo", 7, "Add the thing", "main", "abc123");
+    let github = || HttpGitHub::new(&fake.url(), Arc::new(StaticToken::new(TOKEN))).unwrap();
+    state.pr_monitor().attach(Arc::new(github()));
+    state
+        .pr_monitor()
+        .bind_opened(&state, &id, "https://github.com/owner/repo/pull/7")
+        .unwrap();
+    let enable = AutoMerge::Enable {
+        method: MergeMethod::Squash,
+        expected_head_oid: "abc123".into(),
+    };
+    github()
+        .set_auto_merge("owner/repo", 7, &enable)
+        .await
+        .unwrap();
+
+    // A status it cannot read: the push is refused before it starts.
+    fake.fail_next(500);
+    let params = json!({"session_id": id, "repo": root, "title": "PR"});
+    let refused = call(
+        &mut connection,
+        "session.review_pull_request",
+        params.clone(),
+    )
+    .await;
+    let message = refused.unwrap_err();
+    assert!(
+        message.contains("could not check whether auto-merge is on"),
+        "{message}"
+    );
+    assert!(fake.pr("owner/repo", 7).auto_merge.is_some());
+
+    // Readable: auto-merge goes off, then the push is tried (and fails to connect).
+    let failed = call(&mut connection, "session.review_pull_request", params).await;
+    let message = failed.unwrap_err();
+    assert!(
+        !message.contains("auto-merge"),
+        "the push was the failure: {message}"
+    );
+    let operations: Vec<String> = fake
+        .mutations()
+        .into_iter()
+        .map(|(operation, _)| operation)
+        .collect();
+    assert_eq!(operations, ["EnableAutoMerge", "DisableAutoMerge"]);
+    assert!(fake.pr("owner/repo", 7).auto_merge.is_none());
+    assert!(!log.exists(), "gh never ran");
+}

@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { PrStatus } from "@imperium/protocol";
 
-import { describePr, isFirstRead, nextStatus, oneLine, parseBindInput, refOfUrl, safeLink } from "../src/sessions/prCard.ts";
+import { autoMergeSettings, chooseMethod, describePr, isFirstRead, nextStatus, oneLine, parseBindInput, refOfUrl, safeLink } from "../src/sessions/prCard.ts";
 
 const status = (over: Partial<PrStatus> = {}): PrStatus => ({
   url: "https://github.com/owner/repo/pull/7",
@@ -106,15 +106,72 @@ test("an error keeps the last good data and shows the reason", () => {
   assert.equal(view.checks.label, "All 4 passing");
 });
 
-test("both switches stay off and say why until their stages", () => {
+test("auto-fix stays off and says why; auto-merge is offered and says it lands code unseen", () => {
   const view = describePr(status({ auto_fix: false }));
   assert.match(view.autoFix.reason, /not available yet/);
-  assert.match(view.autoMerge.reason, /not available yet/);
+  assert.equal(view.autoFix.canTurnOn, false);
+  assert.equal(view.autoFix.canTurnOff, false);
   assert.equal(view.autoFix.on, false);
   assert.equal(view.autoMerge.on, false);
-  // A repository's own reason is shown beside it.
+  assert.equal(view.autoMerge.hint, null);
+  assert.equal(view.autoMerge.canTurnOn, true);
+  assert.equal(view.autoMerge.canTurnOff, false);
+  assert.match(view.autoMerge.reason, /nobody looking at the code again/);
+  assert.match(view.autoMerge.reason, /never merges it itself/);
+  // A repository's own reason is shown beside it, and the switch cannot be turned on.
   const refused = describePr(status({ auto_merge: { enabled: false, reason_unavailable: "The repository does not allow auto-merge." } }));
   assert.equal(refused.autoMerge.hint, "The repository does not allow auto-merge.");
+  assert.equal(refused.autoMerge.canTurnOn, false);
+});
+
+test("auto-merge cannot be turned on for a draft, an ended pull request, unreadable methods or when the settings forbid it", () => {
+  for (const hinted of [
+    describePr(status({ state: "draft", draft: true })),
+    describePr(status({ state: "merged" })),
+    describePr(status({ state: "closed" })),
+    describePr(status({ allowed_methods: [] })),
+    describePr(status(), { allowed: false, preferred: null }),
+  ]) {
+    assert.equal(hinted.autoMerge.canTurnOn, false);
+    assert.ok(hinted.autoMerge.hint);
+  }
+  assert.match(describePr(status({ allowed_methods: [] })).autoMerge.hint ?? "", /could not be read/);
+  assert.match(describePr(status(), { allowed: false, preferred: null }).autoMerge.hint ?? "", /turned off in your settings/);
+});
+
+test("an auto-merge request that is on can be turned off, and says GitHub merges", () => {
+  const view = describePr(status({ auto_merge: { enabled: true, method: "squash" } }));
+  assert.equal(view.autoMerge.on, true);
+  assert.equal(view.autoMerge.canTurnOn, false);
+  assert.equal(view.autoMerge.canTurnOff, true);
+  assert.match(view.autoMerge.reason, /GitHub merges it/);
+  assert.equal(view.method, "squash");
+  // Once the pull request is merged there is nothing left to turn off.
+  assert.equal(describePr(status({ state: "merged", auto_merge: { enabled: true, method: "squash" } })).autoMerge.canTurnOff, false);
+  // The setting that forbids turning it on does not stop turning it off.
+  assert.equal(describePr(status({ auto_merge: { enabled: true, method: "squash" } }), { allowed: false, preferred: null }).autoMerge.canTurnOff, true);
+});
+
+test("the preselected method is the preference when allowed, else the first allowed of squash, merge, rebase", () => {
+  assert.equal(chooseMethod(["squash", "merge", "rebase"], null), "squash");
+  assert.equal(chooseMethod(["merge", "rebase"], null), "merge");
+  assert.equal(chooseMethod(["squash", "merge", "rebase"], "rebase"), "rebase");
+  assert.equal(chooseMethod(["squash", "merge"], "rebase"), "squash");
+  assert.equal(chooseMethod([], "squash"), null);
+  assert.equal(describePr(status(), { allowed: true, preferred: "merge" }).method, "merge");
+  assert.equal(describePr(status({ allowed_methods: ["squash", "merge"] }), { allowed: true, preferred: "rebase" }).method, "squash");
+});
+
+test("the settings come from the daemon's entries, and anything odd is the default", () => {
+  assert.deepEqual(autoMergeSettings([]), { allowed: true, preferred: null });
+  assert.deepEqual(
+    autoMergeSettings([
+      { key: "github.automerge.allowed", value: false },
+      { key: "github.automerge.default_method", value: "rebase" },
+    ]),
+    { allowed: false, preferred: "rebase" },
+  );
+  assert.deepEqual(autoMergeSettings([{ key: "github.automerge.default_method", value: "fast-forward" }]), { allowed: true, preferred: null });
 });
 
 test("the method picker offers only the allowed methods", () => {

@@ -255,6 +255,14 @@ pub async fn fix_ci(
             return;
         }
     }
+    // A push changes what the user confirmed when they turned GitHub's auto-merge on, so it is
+    // turned off first and stays off until they confirm it again in the desktop app. If it
+    // cannot be checked or turned off, nothing is pushed.
+    if let Err(error) = crate::pr_monitor::disable_before_push(state, github, repo, pr.number).await
+    {
+        announce(state, repo, pr.number, "failed", session_id, error);
+        return;
+    }
     match git::push(&worktree, &pr.branch).await {
         Ok(()) => {
             // The fix session now watches the pull request until it merges.
