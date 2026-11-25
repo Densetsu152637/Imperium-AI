@@ -1,6 +1,6 @@
 # Plan: programmatic tool calling (code mode)
 
-Revision: 2026-11-26, revision 1 (first draft, not yet critiqued); written against `experimental`
+Revision: 2026-11-26, revision 2 (the root's answers recorded as [settled decisions](#settled-decisions); plan critique pending); written against `experimental`
 at `1c066512`. Roadmap [item 65](../12-roadmap.md#next-in-order); Imperium-Research roadmap R2.8.
 Status: planned.
 
@@ -34,6 +34,23 @@ Imperium-Models `experiments/guided-harness-pilot/`):
 Each stage below is one pull request against `experimental`. Every merge into `experimental`
 publishes a build, so the mode ships **off** and is turned on only by
 [stage 6](#stage-6-measurement-and-the-default).
+
+## Settled decisions
+
+Recorded from the root's answers (2026-11-26):
+
+- **S1.** `harness.code_mode = auto` means on for agents whose own model runs on this machine and
+  off for hosted models ([C7](#c7-the-setting-and-which-agents-get-it)). Hosted models get
+  `run_script` only with `on`.
+- **S2.** Shipping the Monty worker is accepted on two conditions. `harness.code_mode` stays `off`
+  by default until the [stage 4](#stage-4-security-review-pass) independent security review has
+  passed, so stage 6 cannot change the default before then. The Windows confinement gap is
+  mitigated where it can be and the rest is recorded as an accepted risk with its rationale
+  ([C9, Windows](#windows-confinement-mitigation-and-accepted-risk)).
+- **S3.** Memory writes (`memory_remember`, `memory_edit`, `memory_forget`) are refused inside
+  programs ([C4](#c4-what-a-program-can-call)). `memory_search` and `memory_read` stay callable.
+- **S4.** Stage 6 adds a harder aggregation suite, generated with gold answers computed by script,
+  so accuracy gains can be measured ([stage 6](#stage-6-measurement-and-the-default)).
 
 ## Goals
 
@@ -277,14 +294,16 @@ is on or off) minus the **script-refused** tools:
   `keep_as_knowledge`, `ask_agent`, `list_knowledge_agents`, `ask_user`,
   `request_clarification`, `start_session`;
 - tools that change the agent's own conversation or tool list: `update_plan`, `update_state`,
-  `load_skill`, `activate_plugin`, `context_load`.
+  `load_skill`, `activate_plugin`, `context_load`;
+- memory writes: `memory_remember`, `memory_edit`, `memory_forget` (S3), so every change to
+  memory is a visible step in the conversation.
 
 Reasons: a program's results are hidden from the conversation, so anything whose effect is meant
 to be seen by the model or the user in the conversation (a plan, a loaded skill, a question)
 belongs outside it. A subagent started from a program would outlive the program's budgets.
 Activating a plugin would change the offered list mid-turn. Everything else is callable: file
 tools (reads and writes), `run_command` (foreground and background) with `command_output` and
-`command_stop`, web, browser and media providers, memory tools (writes ask as usual), MCP tools and
+`command_stop`, web, browser and media providers, `memory_search` and `memory_read`, MCP tools and
 activated plugins' tools.
 
 A refused name resolves to a function that raises `RuntimeError("<name> cannot be called from a
@@ -392,13 +411,46 @@ boundaries as `tool_loading` does. The default is `off` until stage 6, then `aut
 
 | Threat | Mitigation | Residual risk |
 | --- | --- | --- |
-| Sandbox escape from the interpreter (VM bug) | Monty's language-level sandbox; the worker process, not the daemon; empty environment and working folder; OS confinement per platform (C1); pinned version, escape tests on every update | A memory-safety bug in Monty plus a confinement gap. Weakest on Windows (job object only, no file or network confinement), where the language level is the only boundary against file or network access |
+| Sandbox escape from the interpreter (VM bug) | Monty's language-level sandbox; the worker process, not the daemon; empty environment and working folder; OS confinement per platform (C1); pinned version, escape tests on every update | A memory-safety bug in Monty plus a confinement gap. Weakest on Windows: see [below](#windows-confinement-mitigation-and-accepted-risk) |
 | Capability through the bindings | Every inner call is `run_tool`: same refusals, rules, hooks, approvals as direct calls; script-refused set (C4) | A program chains read-then-send in one model step (read a secret, `web_fetch` a URL with it in the query). Today the model can do the same in two steps; code mode removes the pause between them, not a check. Auto mode sees the code; the desktop shows each inner call live |
 | Prompt injection from tool results into the program | Results are values in variables; they never become code unless the program evaluates them. `eval` and `exec` are made unavailable in programs (A2), so text from a tool cannot run as code. The printed output enters the context as a tool result with the existing untrusted-data framing | The model reads injected text that the program printed, as with any tool result |
 | Resource exhaustion | C5 budgets; memory limit in the worker plus an OS limit; pool size cap (4 workers); code length cap; output cap | Many sessions at once queue for workers (bounded wait inside the wall budget) |
 | Secrets | Worker environment cleared, so no `GH_TOKEN`, API keys or daemon token; no file access except through `read_file`, whose path checks hide the daemon's files as today; the worker runs outside the OS tier's hidden paths list only because it has no file access at all | None beyond the tools' own rules |
-| Network | None inside the interpreter; Linux and macOS confinement also deny it at the OS level; web tools go through their own rules | Windows has no OS-level network block for the worker (A3) |
+| Network | None inside the interpreter; Linux and macOS confinement also deny it at the OS level; web tools go through their own rules | Windows has no OS-level network block for the worker: accepted, [below](#windows-confinement-mitigation-and-accepted-risk) |
 | Denial through approvals | A program that asks 40 times is bounded by `script_calls`, and a denial is an ordinary error the program sees | The user sees up to 40 prompts. Approve-for-session works as today |
+
+#### Windows confinement: mitigation and accepted risk
+
+Windows has no equivalent of bubblewrap or Seatbelt that an unprivileged process can apply to a
+child without new infrastructure (05 lists AppContainer as not yet done). The worker gets, in
+stage 1:
+
+- a **restricted, low-integrity token** (`CreateRestrictedToken` with privileged groups disabled
+  and all privileges removed, integrity level Low): under Windows' mandatory integrity control
+  the worker cannot write to the user's files, the user's registry hive or medium-integrity
+  processes, even if code runs in it;
+- a **Job Object**: memory limit (twice `script_memory_mb`), active-process limit 1 (no child
+  processes), kill-on-job-close, and UI restrictions (no clipboard, no desktop switching);
+- an **empty environment**, an empty low-integrity working folder, and no inherited handles
+  except the pool's pipes.
+
+What remains, accepted: a worker whose sandbox is escaped could still **read** files the user can
+read, and **open network connections**. Rationale:
+
+1. An escape needs a memory-safety bug in Monty's VM followed by native code execution. Monty has
+   no C dependencies and no FFI, implements no file, network or process operation, and has a
+   private-disclosure and bounty programme; the stage 4 escape suite and the pin-update rule
+   (rerun on every version) test the boundary directly.
+2. The worker holds no secrets: its environment is empty and the daemon's token file is read only
+   by the daemon. Reading user files is what `read_file` already does under path checks, so the
+   new exposure is reads outside the workspace and network use, not writes or persistence.
+3. The mode is off by default until stage 4 passes (S2), then on only for local models (S1).
+4. Stage 1 tests that the token and job apply (a worker write to the user's profile fails; a
+   second process cannot start).
+
+Revisit (move to an AppContainer profile with no network capability, or to Monty's WebAssembly
+runtime under wasmtime on Windows) if the stage 4 review finds a practical escape, if a Monty
+escape advisory is published, or when 05's AppContainer work lands for commands.
 
 ### C10. Evaluations
 
@@ -496,7 +548,8 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
   budget; `x = [0] * 10**9` ends on the memory budget; more suspensions than allowed abort with an
   uncatchable error; dropping a run mid-program leaves no worker process (checked by PID); a
   killed worker is reported as crashed and the next program runs; the pool stops its workers on
-  shutdown; the worker's environment is empty. A measurement test logs warm and cold start and
+  shutdown; the worker's environment is empty; on Windows the worker runs at low integrity (a
+  write to the user's profile fails) and its job refuses a second process. A measurement test logs warm and cold start and
   binary size (A4).
 - Docs: 05 gains *Programs (`run_script`)*, with the interpreter and confinement subsection
   (implemented part only); 11 lists the worker build; 13 gains the next free decision number (C1).
@@ -637,13 +690,25 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
 - Work (manual, on the experimental build containing stage 5; one model at a time, on an idle
   machine): run the pilot's suites (Imperium-Models `experiments/guided-harness-pilot/`, dev 135
   items and hard 72) through `imperium run --headless --local` with Qwen3.5-4B in **`default`
-  permission mode** (the product default, where the shell is denied), as four arms:
+  permission mode** (the product default, where the shell is denied), plus the new aggregation
+  suite below, as four arms:
   `code_mode` off and on, each with `tool_loading` at its released default and at `on`. Add a
   `harness_code` arm to `imperium_backend.py`/`arms.py` that passes `--flag code_mode=...`; the
   task prompts are unchanged (no "compute with the shell" policy). Record: accuracy (strict
   scorer), prompt and cached tokens per item, model calls per item, programs per item, inner calls
   per program, program outcomes (done, Python error by type, budget, crash), `NotImplementedError`
   and `NameError` rates (A5), and wall time. Report in Imperium-Research beside the pilot.
+- **Aggregation suite (S4)**, built first, in Imperium-Models
+  `experiments/guided-harness-pilot/suite/` beside the existing builders (`build_aggregate.py`,
+  `aggregate_tasks.jsonl`, `aggregate_kb/`). Generated from a seeded structured world: tables of
+  60 to 400 rows written as CSV files and as one-fact-per-line text files (both forms, so a
+  program has to parse either); 60 items over counts with two or three conditions, grouped sums
+  and means, top-k by a computed value, joins across two tables, and unit or currency conversion
+  over many rows. Gold answers are computed by the builder script from the structured world, never
+  written by hand or by a model, and `validate_suite.py` checks each gold answer is unique and
+  reproducible from the files. Its items are too large to answer by reading every row within the
+  20-step limit, so it separates computing from reading. The suite is evaluation data, not
+  training data.
 - Acceptance for `auto`. The stock `harness` arm is near the ceiling on most of these categories
   (14/15 `compare_aggregate`, 14/15 `compute`, 9/9 `hard_filter`, 5/9 `hard_compute`: 42 of 48),
   so the bar is mostly about not losing accuracy and about cost:
@@ -655,18 +720,20 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
     item by at least 20 %; across each whole suite, prompt tokens per item do not rise by more
     than 10 %;
   - no step-limit stop in those four categories;
+  - on the aggregation suite, code mode on scores at least 15 items (of 60) above code mode off;
   - at most 20 % of programs end in a Python error, and none in a crash.
 - Then, in one small pull request: the default becomes `auto` (settings default, registry text,
   10, 03, roadmap item 65 marked implemented with the measured numbers, this plan's status). If it
   fails, the default stays `off` and 13 records why. If programs fail mainly on the subset, the next
   step is a prompt line listing what is unsupported; if the model rarely writes programs, the next
   step is the sentence's wording; neither changes the runtime choice.
-- Depends on: stage 5 released.
+- Depends on: stage 5 released, and the stage 4 review recorded as passed (S2).
 
 ## Rollout
 
 - Stages 1 to 5 ship `harness.code_mode = off`. Stage 1 adds a binary to every bundle, unused
-  until the setting or `--flag code_mode` turns the mode on.
+  until the setting or `--flag code_mode` turns the mode on. The default cannot change before the
+  stage 4 review has passed (S2).
 - Stage 6's pull request sets `auto` (on for local models, Emperor and Consul included; off for
   hosted ones). `off` restores today's behaviour; `on` enables hosted models too.
 
@@ -684,9 +751,9 @@ adds a sidecar; root checks the `Experimental` run for that merge and that the r
 - **A young dependency.** Monty is 11 months old with 22 releases. Pinning, a 14-day minimum age,
   the escape suite on every update, the worker process boundary and OS confinement contain the
   risk. The WebAssembly runtime is the fallback.
-- **Windows confinement.** Only the language-level sandbox stops file and network access there.
-  This is the same boundary Monty's own Python and JavaScript users rely on, plus a process
-  boundary and a job object; the residual risk is stated in 05.
+- **Windows confinement.** A low-integrity restricted token and a job object stop writes, child
+  processes and memory abuse; file reads and network use after an escape are an accepted risk
+  ([C9](#windows-confinement-mitigation-and-accepted-risk)), restated in 05.
 - **A check skipped for inner calls.** Inner calls go through `run_tool` itself, and every
   direct-call refusal has a program twin test.
 - **The small model writes programs badly.** Stage 6 measures it before any default changes.
@@ -700,20 +767,7 @@ adds a sidecar; root checks the `Experimental` run for that merge and that the r
 
 ## Open questions
 
-For the user:
+None for the user; the first round's are [settled](#settled-decisions).
 
-1. **Hosted models.** `auto` is local-only (C7). Should hosted models get `run_script` by default
-   too? Anthropic's reported savings are for hosted models with many MCP tools.
-2. **Shipping Monty.** Is a third-party interpreter worker, 11 months old and pinned, acceptable in
-   every bundle, given the Windows confinement limit (C9)? The alternative that avoids it is the
-   WebAssembly runtime, at about 16 ms or more per program and a larger bundle.
-3. **Memory writes from programs.** C4 allows `memory_remember`, `memory_edit` and
-   `memory_forget` inside programs, gated by their usual approval. Should memory changes stay
-   direct-only, so each is a visible step in the conversation?
-4. **A harder aggregation suite.** The pilot suites leave little headroom (42 of 48 stock in the
-   target categories), so stage 6 can show that code mode costs less but hardly that it is more
-   accurate. Should stage 6 also author a small aggregation suite (larger tables, counts over 50
-   or more rows, grouped sums) in Imperium-Models before the default changes?
-
-Settled inside this plan (recorded for review): the runtime (C1), local-only `auto` (C7), reviews
-refuse `run_script` (C8), and the budget defaults (C5, tunable by flags in stage 6).
+Settled inside this plan (recorded for review): the runtime (C1), reviews refuse `run_script`
+(C8), and the budget defaults (C5, tunable by flags in stage 6).
