@@ -1042,7 +1042,8 @@ listed but unavailable, as before; the `problem` text says to run the command.
   current drive, and `..` are refused with a message, and the start fails before anything runs.
   Only drives the distro auto-mounts under `/mnt/<letter>` are reachable: `subst` drives,
   mapped network drives and a custom `automount.root` in `wsl.conf` are not. Reading a model
-  from `/mnt/c` is slow (a 9P file system); a copy inside the distro loads faster (add its `\\wsl$\<distro>\...` folder to `models.folders`).
+  from `/mnt/c` is slow (a 9P file system); a copy inside the distro loads faster (add its
+  `\\wsl$\<distro>\...` folder to `models.folders`).
 - **Networking.** vLLM binds `127.0.0.1` inside WSL2, whatever `runtime.vllm.extra_args` say
   (every `--host` argument, abbreviations such as `--hos` included, is dropped and
   `--host 127.0.0.1` is appended last), and the daemon connects to the same port on Windows
