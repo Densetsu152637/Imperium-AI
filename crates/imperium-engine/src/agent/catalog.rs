@@ -13,9 +13,9 @@ use serde_json::Value;
 use super::*;
 
 /// The proxy tool that finds tools outside the offered list.
-pub(super) const TOOL_SEARCH: &str = "tool_search";
+pub(crate) const TOOL_SEARCH: &str = "tool_search";
 /// The proxy tool that runs a tool outside the offered list.
-pub(super) const CALL_TOOL: &str = "call_tool";
+pub(crate) const CALL_TOOL: &str = "call_tool";
 
 /// The arguments of a `call_tool` call as the inner tool reads them: an object, a string of
 /// JSON, or nothing.
@@ -93,7 +93,7 @@ pub(super) fn is_core(name: &str) -> bool {
 }
 
 /// The names kept in the offered list while loading is on.
-fn core_names() -> Vec<String> {
+pub(super) fn core_names() -> Vec<String> {
     CORE_TOOLS.iter().map(|name| (*name).to_string()).collect()
 }
 
@@ -124,7 +124,9 @@ fn tool_search_spec(deferred: &[String]) -> ToolSpec {
     }
 }
 
-/// The positions in `specs` of the tools that are deferred while loading is on.
+/// The positions in `specs` of the tools that are deferred while loading is on, with the
+/// default core (an agent decides its own: `Agent::deferred_of`).
+#[cfg(test)]
 pub(super) fn deferred_indices(specs: &[ToolSpec]) -> Vec<usize> {
     specs
         .iter()
@@ -325,7 +327,7 @@ fn entry(spec: &ToolSpec) -> Value {
 }
 
 /// The first sentence of a description (at most its first line).
-fn first_sentence(description: &str) -> &str {
+pub(crate) fn first_sentence(description: &str) -> &str {
     let end = [
         description.find(". ").map(|at| at + 1),
         description.find('\n'),
@@ -554,7 +556,7 @@ impl Agent {
         }
         *self.loader_worth.get_or_init(|| {
             let (specs, _) = self.build_universe(false);
-            deferred_indices(&specs).len() >= MIN_DEFERRED
+            self.deferred_of(&specs).len() >= MIN_DEFERRED
         })
     }
 
@@ -589,7 +591,7 @@ impl Agent {
         // Decided now, at the first list, before any plugin is active.
         self.plugin_loader();
         let (specs, groups) = self.tool_universe();
-        let (mut specs, mut groups) = narrow_tools(specs, groups, &core_names());
+        let (mut specs, mut groups) = narrow_tools(specs, groups, &self.core_list());
         specs.push(self.tool_search_spec());
         specs.push(call_tool_spec());
         groups.extend([Category::ToolsBuiltin, Category::ToolsBuiltin]);
@@ -605,9 +607,10 @@ impl Agent {
                 .iter()
                 .enumerate()
                 .filter(|(index, spec)| {
-                    !is_core(&spec.name) && groups.get(*index) == Some(&Category::ToolsBuiltin)
+                    !self.core_here(&spec.name)
+                        && groups.get(*index) == Some(&Category::ToolsBuiltin)
                 })
-                .map(|(_, spec)| spec.name.clone())
+                .map(|(_, spec)| self.shown_name(&spec.name))
                 .collect();
             tool_search_spec(&names).description
         });
@@ -653,14 +656,15 @@ impl Agent {
             None => Vec::new(),
         };
         let (specs, _) = self.tool_universe();
-        let catalog = deferred_indices(&specs);
+        let catalog = self.deferred_of(&specs);
         let found = search(
             &specs,
             &catalog,
             args.query.as_deref().unwrap_or(""),
             &names,
         );
-        self.note_loaded(&found.shown, ToolLoadVia::Search);
+        let fresh = self.note_loaded(&found.shown, ToolLoadVia::Search);
+        self.report_search(&fresh);
         Ok(found.render())
     }
 
@@ -697,7 +701,7 @@ impl Agent {
 
     /// Records the tools whose parameters the model has seen or that it ran through
     /// `call_tool`, once each, and reports them.
-    pub(super) fn note_loaded(&self, names: &[String], via: ToolLoadVia) {
+    pub(super) fn note_loaded(&self, names: &[String], via: ToolLoadVia) -> Vec<String> {
         let mut loaded = lock(&self.loaded_tools);
         let mut reported = lock(&self.reported_tools);
         let mut fresh: Vec<String> = Vec::new();
@@ -713,8 +717,12 @@ impl Agent {
         drop(reported);
         lock(&self.schema_seen).extend(names.iter().cloned());
         if !fresh.is_empty() {
-            self.emit(SessionEvent::ToolsLoaded { names: fresh, via });
+            self.emit(SessionEvent::ToolsLoaded {
+                names: fresh.clone(),
+                via,
+            });
         }
+        fresh
     }
 
     /// Adds names the model has seen (an activated plugin's tools, a parent's loaded tools, a
@@ -788,7 +796,7 @@ impl Agent {
         output: String,
     ) -> String {
         let name = call.function.name.as_str();
-        if !self.reactive() || name == TOOL_SEARCH || (!proxied && is_core(name)) {
+        if !self.reactive() || name == TOOL_SEARCH || (!proxied && self.core_here(name)) {
             return output;
         }
         let Some(spec) = self.universe_spec(name) else {
@@ -1304,8 +1312,8 @@ mod tests {
     }
 
     /// R9 of the plan: every reader of a call's name or arguments goes through
-    /// `effective_call`. The scan covers every source file of the engine except the two that
-    /// dispatch the unwrapped call (`catalog.rs`, `tools.rs`) and test modules: a read of
+    /// `effective_call`. The scan covers every source file of the engine except the three that
+    /// dispatch the unwrapped call (`catalog.rs`, `tools.rs`) or translate the outer call's names (`tool_edits.rs`) and test modules: a read of
     /// `<value>.function.name` or `.function.arguments` must be on a value bound from
     /// `effective_call(..)` (a `let <value> = effective_call(..)` just above) or on the same
     /// line as the call. The one stored-text reader that counts the call as it was sent is
@@ -1316,7 +1324,7 @@ mod tests {
         let mut files = Vec::new();
         sources(&base, &base, &mut files);
         assert!(files.len() > 20, "{} files", files.len());
-        let allowed = ["agent/catalog.rs", "agent/tools.rs"];
+        let allowed = ["agent/catalog.rs", "agent/tools.rs", "tool_edits.rs"];
         // Counts what the model was sent, so reads the stored call as it is.
         let as_sent = [
             "parts.push((Category::Assistant, &call.function.name));",

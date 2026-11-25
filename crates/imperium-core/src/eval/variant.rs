@@ -1,8 +1,6 @@
 //! Applying a harness variant to the root agent's requests (see [`EvalVariant`]).
 
-use std::collections::HashMap;
-
-use imperium_api::{ChatMessage, Effort, ToolSpec, encoding::hex};
+use imperium_api::{Effort, ToolSpec, encoding::hex};
 use imperium_config::HarnessMode;
 use imperium_protocol::methods::EvalVariant;
 use sha2::{Digest, Sha256};
@@ -133,6 +131,9 @@ pub(crate) fn validate(variant: &EvalVariant) -> Result<LoopFlags, String> {
     if targets.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err("two tools.rename entries give the same new name".into());
     }
+    if variant.tools.core.iter().any(|name| name.trim().is_empty()) {
+        return Err("a tools.core entry is empty".into());
+    }
     Ok(flags)
 }
 
@@ -153,6 +154,21 @@ pub(crate) fn config_hash(variant: &EvalVariant) -> String {
 pub(crate) fn prompt_hash(system_prompt: &str, tools: &[serde_json::Value]) -> String {
     let value = serde_json::json!({"system_prompt": system_prompt, "tools": tools});
     let bytes = serde_json::to_vec(&value).unwrap_or_default();
+    format!("sha256:{}", hex(&Sha256::digest(&bytes)))
+}
+
+/// A tool as `tool_search` returns it: name, description and parameters.
+pub(crate) fn tool_entry(spec: &ToolSpec) -> serde_json::Value {
+    serde_json::json!({
+        "name": spec.name,
+        "description": spec.description,
+        "parameters": spec.parameters,
+    })
+}
+
+/// `sha256:` over the deferred tools' full schemas in catalog order.
+pub(crate) fn catalog_hash(deferred: &[serde_json::Value]) -> String {
+    let bytes = serde_json::to_vec(deferred).unwrap_or_default();
     format!("sha256:{}", hex(&Sha256::digest(&bytes)))
 }
 
@@ -241,89 +257,6 @@ pub(crate) fn edit_prompt(
     text
 }
 
-/// The tools the model is offered after the variant's edits, and the names to translate back
-/// (offered name to the engine's). Names that match no tool add a line to `warnings`.
-pub(crate) fn edit_tools(
-    variant: &EvalVariant,
-    tools: &[ToolSpec],
-    warnings: &mut Vec<String>,
-) -> (Vec<ToolSpec>, HashMap<String, String>) {
-    let known = |name: &str| tools.iter().any(|tool| tool.name == name);
-    for name in &variant.tools.drop {
-        if !known(name) {
-            warnings.push(format!("tools.drop: no tool named {name:?} is offered"));
-        }
-    }
-    for name in variant.tools.rename.keys() {
-        if !known(name) {
-            warnings.push(format!("tools.rename: no tool named {name:?} is offered"));
-        }
-    }
-    for name in variant.tools.description.keys() {
-        if !known(name) {
-            warnings.push(format!(
-                "tools.description: no tool named {name:?} is offered"
-            ));
-        }
-    }
-    let mut back = HashMap::new();
-    let mut edited = Vec::with_capacity(tools.len());
-    // Names a rename may not take: those of the tools that stay as they are.
-    let unchanged: Vec<&str> = tools
-        .iter()
-        .filter(|tool| {
-            !variant.tools.drop.contains(&tool.name)
-                && !variant.tools.rename.contains_key(&tool.name)
-        })
-        .map(|tool| tool.name.as_str())
-        .collect();
-    for tool in tools {
-        if variant.tools.drop.contains(&tool.name) {
-            continue;
-        }
-        let mut tool = tool.clone();
-        if let Some(text) = variant.tools.description.get(&tool.name) {
-            tool.description.clone_from(text);
-        }
-        if let Some(new) = variant.tools.rename.get(&tool.name) {
-            if unchanged.contains(&new.as_str()) || back.contains_key(new) {
-                warnings.push(format!(
-                    "tools.rename: {:?} cannot become {new:?}, which another tool already has; \
-                     the rename is skipped",
-                    tool.name
-                ));
-            } else {
-                back.insert(new.clone(), tool.name.clone());
-                tool.name.clone_from(new);
-            }
-        }
-        edited.push(tool);
-    }
-    (edited, back)
-}
-
-/// The conversation as the model sees it: earlier tool calls carry the renamed tools' new names
-/// (`back` maps new names to the engine's, from [`edit_tools`]), so a renamed tool is called by
-/// one name throughout.
-pub(crate) fn rename_calls(back: &HashMap<String, String>, messages: &mut [ChatMessage]) {
-    if back.is_empty() {
-        return;
-    }
-    let forward: HashMap<&str, &str> = back
-        .iter()
-        .map(|(new, original)| (original.as_str(), new.as_str()))
-        .collect();
-    for message in messages {
-        if let ChatMessage::Assistant { tool_calls, .. } = message {
-            for call in tool_calls {
-                if let Some(new) = forward.get(call.function.name.as_str()) {
-                    call.function.name = (*new).to_string();
-                }
-            }
-        }
-    }
-}
-
 /// A short form of `text` for a warning.
 fn clip(text: &str) -> String {
     let mut short: String = text.chars().take(60).collect();
@@ -345,14 +278,6 @@ mod tests {
         EvalVariant {
             id: "t".into(),
             ..EvalVariant::default()
-        }
-    }
-
-    fn tool(name: &str) -> ToolSpec {
-        ToolSpec {
-            name: name.into(),
-            description: format!("{name} does a thing"),
-            parameters: serde_json::json!({"type": "object"}),
         }
     }
 
@@ -394,45 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn edits_that_find_nothing_warn() {
-        let mut edited = variant();
-        edited.prompt.remove = vec!["absent".into()];
-        edited.tools.drop = vec!["nope".into()];
-        let mut warnings = Vec::new();
-        let text = edit_prompt(&edited, "text", Placeholders::default(), &mut warnings);
-        let (tools, _) = edit_tools(&edited, &[tool("a")], &mut warnings);
-        assert_eq!(text, "text");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-    }
-
-    #[test]
-    fn tools_are_dropped_renamed_and_redescribed() {
-        let mut edited = variant();
-        edited.tools.drop = vec!["b".into()];
-        edited.tools.rename = BTreeMap::from([("a".to_string(), "alpha".to_string())]);
-        edited.tools.description = BTreeMap::from([("c".to_string(), "new words".to_string())]);
-        let mut warnings = Vec::new();
-        let (tools, back) = edit_tools(&edited, &[tool("a"), tool("b"), tool("c")], &mut warnings);
-        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
-        assert_eq!(names, ["alpha", "c"]);
-        assert_eq!(tools[1].description, "new words");
-        assert_eq!(back.get("alpha").map(String::as_str), Some("a"));
-        assert!(warnings.is_empty());
-    }
-
-    #[test]
-    fn a_rename_onto_an_existing_tool_is_skipped() {
-        let mut edited = variant();
-        edited.tools.rename = BTreeMap::from([("a".to_string(), "b".to_string())]);
-        let mut warnings = Vec::new();
-        let (tools, back) = edit_tools(&edited, &[tool("a"), tool("b")], &mut warnings);
-        assert_eq!(tools.len(), 2);
-        assert!(back.is_empty());
-        assert_eq!(warnings.len(), 1);
-    }
-
-    #[test]
     fn flags_are_checked_and_duplicate_rename_targets_refused() {
         let mut edited = variant();
         edited
@@ -447,5 +333,26 @@ mod tests {
             ("b".to_string(), "x".to_string()),
         ]);
         assert!(validate(&twice).is_err());
+        let mut empty = variant();
+        empty.tools.core = vec![" ".into()];
+        assert!(validate(&empty).is_err());
+    }
+
+    #[test]
+    fn the_catalog_hash_follows_the_schemas_and_their_order() {
+        let one = ToolSpec {
+            name: "a".into(),
+            description: "A.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let two = ToolSpec {
+            name: "b".into(),
+            ..one.clone()
+        };
+        let forward = [tool_entry(&one), tool_entry(&two)];
+        let backward = [tool_entry(&two), tool_entry(&one)];
+        assert_eq!(catalog_hash(&forward), catalog_hash(&forward));
+        assert_ne!(catalog_hash(&forward), catalog_hash(&backward));
+        assert!(catalog_hash(&[]).starts_with("sha256:"));
     }
 }

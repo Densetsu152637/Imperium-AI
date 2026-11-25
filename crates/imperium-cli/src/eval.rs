@@ -226,6 +226,8 @@ pub async fn run(client: &mut Client, args: RunArgs) -> anyhow::Result<Outcome> 
                 "system_prompt": preview.system_prompt,
                 "workspace_placeholder": WORKSPACE_PLACEHOLDER,
                 "tools": preview.tools,
+                "deferred_tools": preview.deferred_tools,
+                "tool_loading": preview.tool_loading,
             }),
             code: 0,
         });
@@ -277,6 +279,7 @@ pub async fn run(client: &mut Client, args: RunArgs) -> anyhow::Result<Outcome> 
         "prompt_hash": result.prompt_hash,
         "system_prompt": result.last_request.as_ref().map(|request| request.system_prompt.clone()),
         "tools": result.first_request.as_ref().map_or_else(Vec::new, |request| request.tools.clone()),
+        "tool_loading": result.tool_loading,
         "transcript": transcript(&result),
         "final_reply": final_reply(&result),
         "plan": result

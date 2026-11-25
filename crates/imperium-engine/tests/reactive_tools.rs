@@ -17,6 +17,7 @@ use imperium_api::{
 use imperium_config::{HarnessMode, HarnessSettings};
 use imperium_engine::{
     ChatClient, ChatClients, LaunchFuture, ResolvedModel, Session, SessionConfig, SessionLauncher,
+    SessionOptions,
 };
 use imperium_extensions::{ConfiguredHook, Sources};
 use imperium_mcp::{Launch, McpTools, ServerSpec};
@@ -333,6 +334,8 @@ struct Options {
     resume: bool,
     /// The model's context window.
     window: Option<u64>,
+    /// A harness variant's edits of the root's tools.
+    edits: imperium_protocol::methods::ToolEdits,
 }
 
 impl Setup {
@@ -403,53 +406,59 @@ async fn start(options: Options) -> Setup {
     let mut providers: Vec<Arc<dyn ToolProvider>> =
         vec![Arc::new(mcp), Arc::new(Fetcher), Arc::new(Flaky)];
     providers.extend(options.extra);
-    let session = Session::spawn(SessionConfig {
-        id: "reactive".into(),
-        workspace,
-        model: Some(ResolvedModel {
-            spec: "fake:model".into(),
-            endpoint: Endpoint {
-                base_url: url,
-                api_key: None,
-            },
-            model: "model".into(),
-            pricing: None,
-            local: false,
-            context_window: options.window,
-            kind: "openai".into(),
-            reasoning: None,
-        }),
-        catalog: Vec::new(),
-        routing: imperium_config::RoutingSettings::default(),
-        clients: Default::default(),
-        local: None,
-        tools: providers,
-        notices: Vec::new(),
-        extensions,
-        memory: None,
-        context: None,
-        enforce: imperium_config::Enforce::Warn,
-        pre_approved: Vec::new(),
-        launcher: options.launcher,
-        resume: options.resume,
-        resume_policy: imperium_engine::default_resume_policy(),
-        instructions: None,
-        personality: None,
-        max_steps: 20,
-        background: None,
-        checkpoints: None,
-        budget_gate: None,
-        auto_compact: false,
-        auto_compact_at: None,
-        attended: !options.unattended,
-        attachments: Default::default(),
-        auto_permissions: Default::default(),
-        harness: harness(options.loading),
-        keep_agent_state: true,
-        effort: Default::default(),
-        knowledge: Default::default(),
-        journal_path: project.path().join(".journal.jsonl"),
-    })
+    let session = Session::spawn_with(
+        SessionConfig {
+            id: "reactive".into(),
+            workspace,
+            model: Some(ResolvedModel {
+                spec: "fake:model".into(),
+                endpoint: Endpoint {
+                    base_url: url,
+                    api_key: None,
+                },
+                model: "model".into(),
+                pricing: None,
+                local: false,
+                context_window: options.window,
+                kind: "openai".into(),
+                reasoning: None,
+            }),
+            catalog: Vec::new(),
+            routing: imperium_config::RoutingSettings::default(),
+            clients: Default::default(),
+            local: None,
+            tools: providers,
+            notices: Vec::new(),
+            extensions,
+            memory: None,
+            context: None,
+            enforce: imperium_config::Enforce::Warn,
+            pre_approved: Vec::new(),
+            launcher: options.launcher,
+            resume: options.resume,
+            resume_policy: imperium_engine::default_resume_policy(),
+            instructions: None,
+            personality: None,
+            max_steps: 20,
+            background: None,
+            checkpoints: None,
+            budget_gate: None,
+            auto_compact: false,
+            auto_compact_at: None,
+            attended: !options.unattended,
+            attachments: Default::default(),
+            auto_permissions: Default::default(),
+            harness: harness(options.loading),
+            keep_agent_state: true,
+            effort: Default::default(),
+            knowledge: Default::default(),
+            journal_path: project.path().join(".journal.jsonl"),
+        },
+        SessionOptions {
+            tool_edits: options.edits,
+            ..SessionOptions::default()
+        },
+    )
     .unwrap();
     Setup {
         project,
@@ -1834,4 +1843,31 @@ async fn a_review_on_a_local_model_with_auto_is_offered_the_loaders_and_refused_
         done.results
     );
     assert!(!dir.path().join("x.txt").exists());
+}
+
+/// A variant renames `run_command` to `sh` and the profile locks the shell: the renamed tool
+/// is the engine's again before the lock is checked, so neither form of call gets through.
+#[tokio::test]
+async fn a_renamed_run_command_is_refused_under_a_shell_lock() {
+    let root = vec![
+        Some((
+            "call_tool",
+            json!({"name": "sh", "arguments": {"command": "echo hi > ran.txt"}}),
+        )),
+        Some(("sh", json!({"command": "echo hi > ran.txt"}))),
+        None,
+    ];
+    let mut setup = options(HarnessMode::On, root);
+    setup.profile = locked();
+    setup.edits.rename =
+        std::collections::BTreeMap::from([("run_command".to_string(), "sh".to_string())]);
+    let setup = start(setup).await;
+    let done = turn(&setup.session, "run it").await;
+    assert_eq!(done.results.len(), 2, "{:?}", done.results);
+    assert!(refused_by_profile(&done.results[0]), "{:?}", done.results);
+    assert!(refused_by_profile(&done.results[1]), "{:?}", done.results);
+    assert!(!setup.project.path().join("ran.txt").exists());
+    // The shell tool is out of the list the model reads, under either name.
+    let seen = setup.seen.lock().unwrap().clone();
+    assert!(!seen[0].offers("run_command") && !seen[0].offers("sh"));
 }

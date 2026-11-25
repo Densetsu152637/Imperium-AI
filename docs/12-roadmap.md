@@ -817,7 +817,7 @@ and `environments.agent_update` (protocol 0.28)
     about the project come from the tools. Both come from the guided-harness pilot, where a
     variant that cut the tools and shortened the system prompt saved 42 to 70 % of prompt tokens,
     and the knowledge note gave the best held-out score
-    ([plan](plans/reactive-tools.md), [03](03-agent-engine.md#harness-aids-for-small-models)).
+    ([plan](plans/reactive-tools.md), [03](03-agent-engine.md#reactive-tool-loading-implemented)).
 <!-- markdownlint-disable-next-line MD029 -->
 62. **Built-in CAS MCP server** (planned). Imperium ships a computer algebra system as a
     built-in [MCP](05-tools-and-isolation.md#mcp) server backed by SymPy, so agents (local

@@ -16,7 +16,9 @@
 ## Agent loop
 
 1. Assemble context: policy layers ([08](08-agent-policy.md)), session memory, task brief,
-   tool schemas (filtered by permissions), and conversation.
+   tool schemas (filtered by permissions; with `harness.tool_loading` on, only the core tools
+   and the two loader tools, see [reactive tool loading](#reactive-tool-loading-implemented)),
+   and conversation.
 2. Call the model (streaming). Record tokens, latency, throughput, and cost as they arrive.
 3. Execute tool calls. Independent calls run concurrently; each passes through hooks and
    permission checks ([06](06-extensibility.md#hooks)).
@@ -99,7 +101,9 @@ never get it.
 **Implemented:** four aids that let a small (about 4B) local root agent handle references and
 ambiguity. They live in the harness, not in the model, and apply to the root agent only
 (subagents get self-contained briefs). They are set under `[harness]`
-([10](10-configuration.md)).
+([10](10-configuration.md)). The same section holds `tool_loading`, which is not one of the four
+aids: it shrinks the tool list of an agent on a small model, see [reactive tool
+loading](#reactive-tool-loading-implemented).
 
 **Following the model.** `auto` follows the root's model, which can change in a session
 (escalating to a hosted model, or switching to a local one): the tools offered are chosen each
@@ -199,6 +203,88 @@ the model or the rewrite records them. The rewrite uses the root's own model, no
 small one. The state is not shown in the desktop. The tool schema export
 (`schemas/tools/index.json`) lists `update_state` and `request_clarification` as available
 because it is static; the engine offers them only as described above.
+
+## Reactive tool loading (implemented)
+
+Roadmap [item 61](12-roadmap.md#next-in-order); the design and its reasons are in
+[the plan](plans/reactive-tools.md). Every model call used to carry every tool schema the agent
+may use: 21 tools and 14,283 bytes of tool JSON for a headless root, a floor of about 4,500
+prompt tokens on each call of a small local model. With `harness.tool_loading` on, an agent is
+offered a small **fixed** list instead (5,236 bytes in the same run) and reaches every other
+tool on demand. The setting is `auto`, `on` or `off` in `[harness]`
+([10](10-configuration.md)); `auto` is on for an agent whose own model runs on this machine and
+follows the model at turn boundaries. It is `off` by default until the measurement of plan
+stage 5. With it off nothing changes: the tools sent are byte-identical to before and dispatch is
+exactly as it was.
+
+**The list.** The core tools in their usual order, then `tool_search`, then `call_tool`. The core
+is `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` and `run_command`, and the
+loop's own protocol tools when the agent has them (`context_load`, `load_skill`,
+`activate_plugin`, `request_clarification`, `update_state`). Everything else of the agent's
+**universe** is deferred: `command_output`, `command_stop`, `update_plan`, `ask_user`, the
+delegation family, `keep_as_knowledge`, the knowledge and memory tools, built-in providers' tools,
+MCP servers' tools and activated plugins' tools. The universe is the list the agent would be
+offered with loading off (after the permission profile, shell lock, MCP and plugin allowlists,
+named-agent narrowing, `can_delegate`, `can_ask`, fork state and harness gating), recomputed at
+dispatch time for every call; the offered list is derived from it once and does not change within
+a session, through plugin activations, MCP servers connecting or changing their tools, compaction,
+initiative reviews and restarts. The exceptions are a model switch that changes the mode and a
+permission change that removes a core tool (the shell lock removing `run_command`). An agent
+whose deferred catalog would hold fewer than three tools gets everything.
+
+**`tool_search`** takes `names` (exact names, or `mcp__<server>__*`) and returns those tools'
+full schemas; `query` matches words against names and descriptions and returns up to five full
+schemas, then up to ten more as `name: first sentence` lines; neither lists the catalog. A result
+holds at most 8,000 bytes of schemas (the first, and every schema asked for by exact name, is
+always whole); the rest are listed in `more`. The result is JSON (`tools`, `more`, `unknown`
+with close names). It is read-only, needs no approval, and works in plan mode, in a question fork
+and during an initiative review. Its description is fixed when the session starts: one sentence
+and the names of the deferred built-in tools then.
+
+**`call_tool(name, arguments)`** runs a tool of the universe. A call is dispatched in this order:
+(1) `call_tool` becomes an effective call, the inner name and arguments with the outer call's id,
+so hooks, refusals, approvals and events see the inner tool (a `call_tool` of `call_tool` or
+`tool_search` is refused); (2) a variant's renamed name becomes the engine's again; (3) the
+fork, launcher (initiative review), named-agent and permission-profile refusals, in their usual
+order; (4) a variant's dropped tool is refused, and with loading on a name outside the universe
+as it is now is refused ("is not one of your tools"); (5) the usual dispatch: hooks, approvals,
+and the tool's own argument parsing. There is no separate schema validation: any **failed**
+result of a call that came through `call_tool`, or of a direct call to a deferred name (which
+endpoints that do not constrain tool names allow), gets the tool's parameters appended, once per
+tool until a compaction removes them. With loading on a few calls are refused that off mode still
+runs, because the engine does not check what was offered: `ask_agent` and
+`list_knowledge_agents` where asking is not allowed, harness tools whose aid is off, and a tool a
+named agent's list hides. The journal and the transcript keep the call as the model made it
+(the outer `call_tool`); `tool_started` and `tool_finished` carry the effective call. Code that
+reads calls back out of messages goes through `effective_call` (a source-scan test covers every
+engine file).
+
+**The loaded set and sessions.** Each agent keeps the names whose schemas the model has seen in a
+`tool_search` result or has called through `call_tool`; it drives compaction and telemetry only
+(`call_tool` needs no earlier search) and each first addition emits and journals
+`tools_loaded { names, via }` (shown in the desktop as "Looked up tools: ..." and in the CLI
+`chat`). A resumed session rebuilds the set from the journal's `tools_loaded` events, the tools
+called in the restored history and the tools of re-activated plugins, dropping names that no
+longer exist. A **compaction** removes old `tool_search` results with the rest of the summarised
+turns, and appends to the summary a delimited `<loaded-tools>` block of the loaded tools still in
+the universe, most recently used first, at most 1,500 bytes: MCP and plugin tools by name only
+(their text is outside text), built-in tools with the first sentence of their description. An
+earlier compaction's block is dropped from the transcript before summarising, so blocks do not
+stack. The model gets full schemas again only through a new `tool_search`. **Subagents** get the
+fixed list of their own universe and start with the parent's loaded tools they also have. A
+**named agent** whose file lists `tools` is offered exactly those, directly, with no loader. A
+**question fork** keeps its source's frozen list; `call_tool`'s inner name goes through the fork
+refusal. During an **initiative review** the loader tools are exempt from the review's limits and
+the inner tool is not.
+
+**The loader sentence** of the system prompt ("Tools that are not in your tool list are used in
+two steps: ...") is its own region, present for every agent offered the loader and swapped when
+the mode follows a model switch. A context breakdown counts each offered tool under its own
+category and the schemas inside a `tool_search` result under their tools' source categories.
+
+**In evaluations** `imperium run` sets the mode with `--flag tool_loading` and reports what the
+loader did; see [harness variants](#harness-variants) and the output keys under
+[running evals](#running-evals-through-the-harness-implemented).
 
 ## Planning
 
@@ -941,7 +1027,7 @@ imperium run --print-prompt --variant lean --context-tokens 32768 > prompt.json
 | `--config-home <dir>` | Look up named variants under this folder's `config` folder (laid out as `IMPERIUM_HOME`) instead of the user's. The daemon's own configuration is always the one that applies. |
 | `--local` | The root model runs on this machine, so the harness aids set to `auto` count as on. |
 | `--timeout-s`, `--journal <file>` | A wall-clock limit (default 1800), enforced by the daemon too (the session stops at the deadline and is deleted 30 seconds later, even if the command is gone), and a file the session's events are written to, one JSON object per line. The session itself is not kept: it is deleted when the run ends, or when the connection that made it closes. |
-| `--print-prompt` | Print the resolved system prompt (with `{workspace}` where the working folder goes) and tool schemas as JSON and stop. No model is called: the daemon builds the session as for a run (`session.prompt_preview`) and answers it with a stand-in model, so the output is what a run would first send. |
+| `--print-prompt` | Print the resolved system prompt (with `{workspace}` where the working folder goes) and tool schemas as JSON and stop. No model is called: the daemon builds the session as for a run (`session.prompt_preview`) and answers it with a stand-in model, so the output is what a run would first send. With `tool_loading` on it also prints `deferred_tools` (the tools outside the list, with the full schemas `tool_search` returns, after the variant's edits) and `tool_loading` (`mode`, `core`, `deferred`). |
 
 The root agent has the engine's own tools, plus `web_search` and `web_fetch`: the schemas and
 citation rules are the real ones, search returns an error ("turned off in headless evals"), and
@@ -995,9 +1081,25 @@ their recommended answers. The record lists both (`permission_requests`, `questi
 `prompt_tokens`, `completion_tokens`, `cached_tokens`, `cost_usd` (null without prices); also
 `calls_without_reported_usage` (counted from text length), `priced`, the ceilings), `wall_time_ms`,
 `exit_reason`, `error`, `root_tool_calls`, `failed_tool_calls`, `permission_requests`,
-`questions_asked`, `compactions`, `notices`, `endpoint_errors`. `prompt_hash` is
+`questions_asked`, `compactions`, `notices`, `endpoint_errors`, `tool_loading`. `prompt_hash` is
 `sha256:` over the system prompt (working folder replaced by `{workspace}`, so a run in any
-folder hashes the same as `--print-prompt`) and the tool schemas, after the variant's edits.
+folder hashes the same as `--print-prompt`) and the tool schemas of the first root request, after
+the variant's edits. It changes when loading is on; with `--flag tool_loading=off` it differs from
+runs made before reactive loading only by the knowledge-source sentence of the base prompt.
+
+`tool_loading` (additive; null before the root's first request) reports how the root was offered
+its tools. Names are the ones the model saw (after the variant's renames); `call` is the 1-based
+index of the root model call whose reply made the request.
+
+| Key | Meaning |
+| --- | --- |
+| `mode` | `on` when the first request's list was the fixed one with `tool_search` and `call_tool`, otherwise `off`. |
+| `core`, `deferred` | The tools offered directly (without the two loader tools; with loading off, every tool offered), and the tools reached through `tool_search` and `call_tool`, in catalog order (empty with loading off). |
+| `searched` | `[{ names, call }]`: the tools whose parameters a `tool_search` showed for the first time. |
+| `called` | `[{ name, call }]`: calls to deferred tools, through `call_tool` or by name. |
+| `tool_bytes_by_call` | The compact JSON size of the `tools` array of each root request, in order. |
+| `tool_list_changes` | How many root requests carried a different `tools` array from the one before (0 with loading on, unless a model switch or a shell lock moved the list). |
+| `catalog_hash` | `sha256:` over the deferred tools' full schemas in catalog order; null with loading off. |
 
 `prompt_hash` and `config_hash` are computed in the daemon, so they differ from the values of the
 first, in-process version of this command (the hashes' inputs are the same).
@@ -1029,8 +1131,10 @@ prepend = "Context budget: {context_k}K tokens."
 append  = "Answer in one line."    # {context_tokens} and {context_k} are filled in
 
 [tools]                            # by the engine's tool names
-drop = ["delegate_chunks"]         # not offered
+drop = ["delegate_chunks"]         # not offered, not searchable, refused when called
 rename = { ask_user = "ask_the_user" }   # offered under another name, still run by the engine
+core = ["read_file", "grep"]       # with tool_loading on: only these (and the two loader
+                                   # tools) are offered; every other tool is deferred
 [tools.description]
 update_plan = "Keep the checklist."
 
@@ -1043,28 +1147,28 @@ max_steps = 30
 true), `attended` (default false), `harness` (`on`, `off`, `auto`; the aids need
 `attended=true`) and `tool_loading` (`on`, `off`, `auto`, default `off`; `auto` is on with
 `--local`: the fixed tool list of `harness.tool_loading`, see
-[the plan](plans/reactive-tools.md), is offered instead of every tool). An unknown flag is an error. The variant id and a `config_hash` (over the
-edits, flags and overlay, not the name) are in the output next to the prompt hash.
+[reactive tool loading](#reactive-tool-loading-implemented), is offered instead of every
+tool). An unknown flag is an error. The variant id and a `config_hash` (over the edits, flags
+and overlay, not the name) are in the output next to the prompt hash.
 
-**Reactive tool loading (roadmap item 61, stages 2a and 2b).** `harness.tool_loading` (`auto`,
-`on`, `off`; default `off`) is the setting "Reach tools on demand"; evaluations also set it with
-`--flag tool_loading`. With it on, an agent is offered the core file
-and command tools, `tool_search` and `call_tool` (see [the plan](plans/reactive-tools.md)).
-The system prompt then carries one sentence saying how the two steps work: its own region of
-the prompt, present for every agent that is offered the loader (an unattended root and a
-subagent too) and swapped in and out when the mode follows a model switch. Code that reads calls
-back out of the conversation by name (the compaction transcript and its pinned context,
-knowledge cards, `load_skill` and `update_state` results, the de-reference history, the
-plugin-activation and touched-directory checks) reads a `call_tool` call as the tool it ran
-(`effective_call`). A context breakdown counts each offered tool under its own category, and
-the schemas inside a `tool_search` result under the category of each tool's source (built in,
-MCP, plugin). A schema's parameters are appended to a failed result at most once per tool and
-agent.
-Whether an agent gets the loader at all (at least three deferred tools) and whether
-`activate_plugin` stays offered are decided once per session, at the agent's first tool list,
-so MCP servers that connect or change their tools later do not change the list or the
-description of `tool_search`; their tools are found with `tool_search` and run with
-`call_tool`.
+**Tool edits are made by the engine, at its model boundary**, for the root agent only (a
+subagent's tools are never edited). Drops take a tool out of the root's universe, so it is not in
+the list, cannot be found with `tool_search` and, if the model calls it anyway (directly or
+through `call_tool`, with loading on or off), is refused ("is not one of your tools"); each
+refusal is listed in `variant.warnings` and in the result's `warnings` ("dropped tool <name> was
+called and refused"). Before, a dropped tool was only hidden and still ran. Renames and
+descriptions are applied where a request is built (the tool list, `tool_search`'s description and
+results, and the earlier calls and `call_tool` inner names in the history sent) and reversed
+where a reply arrives, before anything is stored, so the engine's messages, journal and events
+keep the engine's names; a renamed tool is also mapped back first of all when a call is
+dispatched, so a rename cannot get past a check keyed on the engine's name (the shell lock, a
+fork's list, a named agent's list). A `tools.core` list sets the core with loading on. Names
+that match no tool of the universe, and renames onto the name of a tool that stays, add a
+warning (a deferred tool is a tool: dropping one warns of nothing). A `tool_search` `query`
+still matches the engine's names and descriptions; exact `names` use the new names.
+
+Context breakdowns and token estimates count the tools as sent after a variant's edits, so a
+variant that redescribes tools shows its real size.
 
 ### Subagent recordings
 
