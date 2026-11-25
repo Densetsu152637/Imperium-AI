@@ -19,7 +19,7 @@ use imperium_protocol::methods::{SESSION_UPDATED, SessionSummary};
 use imperium_protocol::session::{AgentEvent, ROOT_AGENT, SessionEvent, SessionStatus};
 use serde_json::Value;
 
-use super::{CreateError, DaemonState};
+use super::{CreateError, DaemonState, write_meta};
 
 /// How often the daemon looks for sessions idle long enough to archive.
 const IDLE_CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
@@ -203,7 +203,7 @@ impl DaemonState {
                     fields.remove(key);
                 }
             }
-            if let Err(error) = std::fs::write(&path, meta.to_string()) {
+            if let Err(error) = write_meta(&path, &meta.to_string()) {
                 tracing::warn!(session = %id, %error, "could not unarchive the session's metadata");
             }
         }
@@ -260,7 +260,7 @@ impl DaemonState {
             fields.remove("pull_request");
         }
         meta["pull_request_url"] = summary.pull_request_url.clone().into();
-        std::fs::write(&path, meta.to_string())?;
+        write_meta(&path, &meta.to_string())?;
         session.stop_processes();
         // Dropping the daemon's handle stops the session once its current step ends.
         self.sessions
@@ -314,7 +314,7 @@ impl DaemonState {
                 fields.remove(key);
             }
         }
-        if let Err(error) = std::fs::write(&path, meta.to_string()) {
+        if let Err(error) = write_meta(&path, &meta.to_string()) {
             restore(self);
             return Err(error.into());
         }
@@ -327,7 +327,7 @@ impl DaemonState {
             Err(error) => {
                 meta["archived"] = Value::Bool(true);
                 meta["archived_at"] = archived.archived_at.into();
-                let _ = std::fs::write(&path, meta.to_string());
+                let _ = write_meta(&path, &meta.to_string());
                 restore(self);
                 Err(error.into())
             }

@@ -517,14 +517,54 @@ impl Agent {
     /// the agent gets an artefact handle and an outline instead of the text. Only the root,
     /// which can chunk, is guarded.
     pub(super) fn guard_input(&self, text: String, window: u64) -> String {
-        if !self.can_delegate
-            || artefacts::estimate_tokens(&text)
-                <= window.saturating_mul(ARTEFACT_THRESHOLD_PERCENT) / 100
-        {
+        if !self.fills_window(&text, window) {
             return text;
         }
         let id = self.shared.artefacts.store(&text);
         handle_message(&id, &text)
+    }
+
+    /// Whether `text` is past the share of the window that makes it an artefact: only the root
+    /// can chunk, so only its inputs are.
+    fn fills_window(&self, text: &str, window: u64) -> bool {
+        self.can_delegate
+            && artefacts::estimate_tokens(text)
+                > window.saturating_mul(ARTEFACT_THRESHOLD_PERCENT) / 100
+    }
+
+    /// A tool's result as the conversation holds it. One that would fill the root's window is
+    /// an artefact (`guard_input`, for `delegate_chunks`). Any other past a sixteenth of the
+    /// agent's window is saved in the session's results folder, and the conversation keeps its
+    /// first and last lines and the path (`harness.result_spill`). Every agent is covered; the
+    /// exempt tools and a failed save leave the result as it is.
+    pub(super) fn guard_result(&self, call: &ToolCall, output: String, window: u64) -> String {
+        if self.fills_window(&output, window) {
+            return self.guard_input(output, window);
+        }
+        let Some(dir) = &self.shared.spill_dir else {
+            return output;
+        };
+        let name = effective_call(call).function.name.clone();
+        if !spill::applies_to(&name) {
+            return output;
+        }
+        let threshold = spill::threshold_chars(
+            self.expected_window(),
+            self.shared.harness.result_spill_min_chars as usize,
+        );
+        if output.len() <= threshold || output.chars().count() <= threshold {
+            return output;
+        }
+        if !spill::worth_saving(dir, &output, threshold) {
+            return output;
+        }
+        match spill::save(dir, &name, &output) {
+            Ok(path) => spill::notice(&path, &output, threshold),
+            Err(error) => {
+                tracing::warn!(%error, tool = %name, "could not save a large tool result");
+                output
+            }
+        }
     }
 
     /// Splits an artefact and gives each chunk to its own subagent, within the session's limit

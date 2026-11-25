@@ -855,7 +855,9 @@ impl DaemonState {
                         hints: flags.harness,
                         clarify: flags.harness,
                         tool_loading: flags.tool_loading,
+                        result_spill: flags.result_spill,
                         clear_stale_results: flags.clear_stale_results,
+                        parallel_reads: flags.parallel_reads,
                         ..imperium_config::HarnessSettings::default()
                     },
                     None => self.settings().harness.clone(),
@@ -894,6 +896,7 @@ impl DaemonState {
                     .map(|eval| eval.run.tool_edits())
                     .unwrap_or_default(),
                 tool_watch: eval.as_ref().map(|eval| eval.run.tool_watch()),
+                ..imperium_engine::SessionOptions::default()
             },
         )
         .map_err(|error| CreateError::Start(error.to_string()))?;
@@ -923,7 +926,7 @@ impl DaemonState {
                 "agent_permissions": bound.as_ref().map(|(_, permissions)| permissions),
             });
             let path = self.meta_path(&id);
-            if let Err(error) = std::fs::write(&path, meta.to_string()) {
+            if let Err(error) = write_meta(&path, &meta.to_string()) {
                 tracing::warn!(path = %path.display(), %error, "could not record the session");
             }
         }

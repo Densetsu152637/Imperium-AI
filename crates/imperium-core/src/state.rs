@@ -47,6 +47,73 @@ use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
 use crate::suggestions::{SuggestTool, Suggestions};
 
+/// Writes a session's `.meta.json` so a reader never sees it half written: the text goes to a
+/// sibling file first and replaces the record in one rename. A plain `fs::write` truncates the
+/// record before filling it, and a branch, fork or restart reading it in that window finds it
+/// empty and reports the session as not recorded.
+fn write_meta(path: &Path, text: &str) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let staged = path.with_file_name(name);
+    let written = std::fs::write(&staged, text).and_then(|()| rename_over(&staged, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    written
+}
+
+/// Replaces `to` with `from`. On Windows an antivirus scanner, indexer or editor holding the
+/// record open makes the rename fail with a sharing violation or access denied for a moment,
+/// so it is retried briefly; the old record stays intact throughout.
+fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let mut tries = 0;
+        loop {
+            match std::fs::rename(from, to) {
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied && tries < 4 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                }
+                result => return result,
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    std::fs::rename(from, to)
+}
+
+/// How old a staged `.meta.json.*.tmp` file must be before it counts as left by a dead writer
+/// rather than a write in flight.
+const STALE_META_TEMP: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Removes staged meta files in `dir` that a crashed write left behind.
+pub(crate) fn sweep_stale_meta_temps(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !(name.contains(".meta.json.") && name.ends_with(".tmp")) {
+            continue;
+        }
+        let age = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok());
+        if age.is_some_and(|age| age >= STALE_META_TEMP) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 mod agent_config;
 mod archive;
 mod branch;
@@ -1697,5 +1764,70 @@ mod attended_tests {
             initiative_agent: Some("agent".into()),
             ..SessionOptions::default()
         }));
+    }
+}
+
+#[cfg(test)]
+mod write_meta_tests {
+    use super::write_meta;
+
+    #[test]
+    fn a_reader_never_sees_a_record_half_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.meta.json");
+        let body = |n: usize| serde_json::json!({"title": "x".repeat(n), "n": n}).to_string();
+        write_meta(&path, &body(10)).unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let mut reads = 0_u32;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    // Windows may refuse a read for a moment while the record is replaced.
+                    let text = match std::fs::read_to_string(&path) {
+                        Ok(text) => text,
+                        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                            continue;
+                        }
+                        Err(error) => panic!("read failed: {error}"),
+                    };
+                    serde_json::from_str::<serde_json::Value>(&text)
+                        .unwrap_or_else(|error| panic!("torn record ({error}): {text:?}"));
+                    reads += 1;
+                }
+                reads
+            });
+            for round in 0..300 {
+                write_meta(&path, &body(if round % 2 == 0 { 200_000 } else { 10 })).unwrap();
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert!(reader.join().unwrap() > 0);
+        });
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(left.len(), 1, "no staged file is left behind");
+    }
+
+    #[test]
+    fn stale_staged_files_are_swept_and_fresh_ones_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join("a.meta.json.1-1.tmp");
+        let fresh = dir.path().join("b.meta.json.1-2.tmp");
+        let record = dir.path().join("c.meta.json");
+        let other = dir.path().join("d.tmp");
+        for file in [&stale, &fresh, &record, &other] {
+            std::fs::write(file, b"x").unwrap();
+        }
+        let old = std::time::SystemTime::now()
+            - super::STALE_META_TEMP
+            - std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        super::sweep_stale_meta_temps(dir.path());
+        assert!(!stale.exists());
+        assert!(fresh.exists(), "an in-flight write is left alone");
+        assert!(record.exists() && other.exists());
     }
 }

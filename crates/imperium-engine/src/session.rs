@@ -136,6 +136,8 @@ pub struct SessionOptions {
     pub tool_edits: imperium_protocol::methods::ToolEdits,
     /// Told what the root agent's tools are and which of them it reaches on demand.
     pub tool_watch: Option<Arc<dyn crate::ToolWatch>>,
+    /// Held by every read a step runs ahead together before it reads (tests only).
+    pub read_gate: Option<Arc<dyn crate::ReadGate>>,
 }
 
 /// The answer to a model switch or a compaction.
@@ -289,7 +291,15 @@ impl Session {
     }
 
     /// [`Session::spawn`] with [`SessionOptions`]: hooks only an evaluation harness uses.
-    pub fn spawn_with(config: SessionConfig, options: SessionOptions) -> std::io::Result<Self> {
+    pub fn spawn_with(mut config: SessionConfig, options: SessionOptions) -> std::io::Result<Self> {
+        // Large tool results are saved in a folder beside the journal, which every agent of a
+        // session on this machine may read.
+        let spill_dir = (config.harness.result_spill && config.workspace.runtime().is_none())
+            .then(|| crate::spill::results_dir(&config.journal_path))
+            .filter(|dir| std::fs::create_dir_all(dir).is_ok());
+        if let Some(dir) = &spill_dir {
+            config.workspace = config.workspace.with_results_dir(dir);
+        }
         let timed = if config.resume {
             crate::journal::read_timed_events(&config.journal_path)
         } else {
@@ -352,6 +362,7 @@ impl Session {
                 root_agent: options.root_agent,
                 tool_edits: options.tool_edits,
                 tool_watch: options.tool_watch,
+                read_gate: options.read_gate,
             },
             Arc::clone(&model),
         ));
@@ -851,6 +862,9 @@ pub(crate) struct Shared {
     pub http: reqwest::Client,
     pub clients: ChatClients,
     pub workspace: Workspace,
+    /// Where tool results too large for the conversation are saved (`harness.result_spill`);
+    /// `None` when they stay in it.
+    pub spill_dir: Option<PathBuf>,
     pub catalog: Vec<CatalogModel>,
     pub routing: RoutingSettings,
     pub local: Option<Arc<dyn LocalModels>>,
@@ -917,6 +931,8 @@ pub(crate) struct Shared {
     pub knowledge: crate::knowledge::Knowledge,
     /// Answers subagents from recordings (an evaluation harness), when set.
     pub replay: Option<Arc<dyn crate::SubagentReplay>>,
+    /// Held by every read of a parallel run before it reads (tests only).
+    pub read_gate: Option<Arc<dyn crate::ReadGate>>,
     /// The variant's edits of the root agent's tools, when an evaluation sets any or watches.
     pub tool_edits: Option<crate::tool_edits::ToolEditing>,
     /// Whether the files-before-the-turn checkpoint is taken: `false` while it is being taken
@@ -1019,6 +1035,7 @@ struct Started {
     root_agent: Option<imperium_extensions::AgentDef>,
     tool_edits: imperium_protocol::methods::ToolEdits,
     tool_watch: Option<Arc<dyn crate::ToolWatch>>,
+    read_gate: Option<Arc<dyn crate::ReadGate>>,
 }
 
 /// The root agent's task: one turn at a time, in message order, while
@@ -1040,6 +1057,7 @@ async fn run(
         root_agent,
         tool_edits,
         tool_watch,
+        read_gate,
     } = started;
     let checkpoints = config.checkpoints.clone();
     for message in config.notices {
@@ -1057,6 +1075,10 @@ async fn run(
     for message in config.extensions.plugins.start(&activated).await {
         emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
     }
+    // The folder the session made at its start, when large results are saved in it.
+    let spill_dir = (config.harness.result_spill && config.workspace.runtime().is_none())
+        .then(|| crate::spill::results_dir(&config.journal_path))
+        .filter(|dir| dir.is_dir());
     let shared = Arc::new(Shared {
         session_id: config.id.clone(),
         controls: Arc::clone(&emitter.controls),
@@ -1065,6 +1087,7 @@ async fn run(
         http: reqwest::Client::new(),
         clients: config.clients,
         workspace: config.workspace,
+        spill_dir,
         catalog: config.catalog,
         routing: config.routing,
         local: config.local,
@@ -1100,6 +1123,7 @@ async fn run(
         effort,
         knowledge: crate::knowledge::Knowledge::new(config.knowledge),
         replay,
+        read_gate,
         tool_edits: (tool_watch.is_some()
             || tool_edits != imperium_protocol::methods::ToolEdits::default())
         .then(|| crate::tool_edits::ToolEditing::new(tool_edits, tool_watch)),

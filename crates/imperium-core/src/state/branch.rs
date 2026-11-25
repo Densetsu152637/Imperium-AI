@@ -17,7 +17,8 @@ use imperium_protocol::session::{AgentEvent, ROOT_AGENT, SessionEvent};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::DaemonState;
+use super::sessions::rewrite_results_prefix;
+use super::{DaemonState, write_meta};
 use crate::checkpoints;
 use crate::safe_git;
 
@@ -123,9 +124,14 @@ impl DaemonState {
             let _ = std::fs::remove_file(imperium_engine::messages_path(&new_journal));
             let _ = std::fs::remove_file(imperium_engine::turns_path(&new_journal));
             let _ = std::fs::remove_file(state.meta_path(&new_id));
+            state.forget_saved_results(&new_id);
         };
         let written = (|| -> Result<(), String> {
-            let messages = serde_json::to_vec(&plan.messages).map_err(|error| error.to_string())?;
+            // The tool results the conversation points at are copied, and point at the copies.
+            self.inherit_saved_results(source, &new_id)?;
+            let messages =
+                serde_json::to_string(&plan.messages).map_err(|error| error.to_string())?;
+            let messages = rewrite_results_prefix(&messages, source, &new_id);
             std::fs::write(imperium_engine::messages_path(&new_journal), messages)
                 .map_err(|error| error.to_string())?;
             // The branch can be branched in turn: it inherits the index up to the point.
@@ -201,7 +207,7 @@ impl DaemonState {
                 fields.insert("worktrees".into(), Value::Array(Vec::new()));
             }
         }
-        if let Err(error) = std::fs::write(self.meta_path(&new_id), meta.to_string()) {
+        if let Err(error) = write_meta(&self.meta_path(&new_id), &meta.to_string()) {
             cleanup(self);
             return Err(error.to_string());
         }

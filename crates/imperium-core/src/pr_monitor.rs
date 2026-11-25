@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use imperium_engine::Session;
-use imperium_github::{AutoMerge, Check, GitHub, MergeSettings};
+use imperium_github::{AutoMerge, Check, GitHub, MergeSettings, split_repo};
 use imperium_protocol::methods::{
     AUTOFIX_EVENT, AutofixEventParams, PULL_REQUESTS_CHANGED, PrAutoMerge, PrChecks,
     PrConflictState, PrMergeMethod, PrReview, PrState, PrStatus, PullRequestsChangedParams,
@@ -38,6 +38,8 @@ const ERROR_CHARS: usize = 200;
 /// The file in the data folder that lists pull requests whose auto-merge still has to be turned
 /// off (see [`Orphan`]).
 const ORPHANS_FILE: &str = "auto-merge-to-turn-off.json";
+/// The most entries the turn-off list keeps; past it the oldest are dropped.
+const MAX_ORPHANS: usize = 100;
 /// The first wait before a turn-off that failed is tried again; it doubles up to [`MAX_BACKOFF`].
 const ORPHAN_RETRY: Duration = Duration::from_secs(30);
 const MOVED_NOTICE: &str =
@@ -483,6 +485,14 @@ impl PrMonitor {
                 next_at: Instant::now(),
                 told: false,
             });
+            if orphans.list.len() > MAX_ORPHANS {
+                let dropped = orphans.list.len() - MAX_ORPHANS;
+                orphans.list.drain(..dropped);
+                tracing::warn!(
+                    dropped,
+                    "the auto-merge turn-off list is full: the oldest entries were dropped"
+                );
+            }
             save_orphans(state, &orphans);
         }
         self.kick.notify_one();
@@ -498,20 +508,9 @@ impl PrMonitor {
                 .ok()
                 .and_then(|text| serde_json::from_str::<Vec<Value>>(&text).ok())
                 .unwrap_or_default();
-            for entry in saved {
-                let (Some(repo), Some(number), Some(head)) = (
-                    entry["repo"].as_str(),
-                    entry["number"].as_u64(),
-                    entry["head"].as_str(),
-                ) else {
-                    continue;
-                };
+            for orphan in parse_orphans(saved) {
                 orphans.list.push(Retry {
-                    orphan: Orphan {
-                        repo: repo.to_string(),
-                        number,
-                        head: head.to_string(),
-                    },
+                    orphan,
                     attempts: 0,
                     next_at: Instant::now(),
                     told: false,
@@ -1188,6 +1187,46 @@ impl PrMonitor {
     }
 }
 
+/// The entries of the saved turn-off list that are usable. An entry whose repository is not a
+/// strict `owner/name` (the parser the GitHub client uses), whose number is not positive, or that
+/// lacks a head is skipped with a warning; past [`MAX_ORPHANS`] the oldest (first) are dropped.
+fn parse_orphans(saved: Vec<Value>) -> Vec<Orphan> {
+    let mut list: Vec<Orphan> = saved
+        .iter()
+        .filter_map(|entry| {
+            let orphan = match (
+                entry["repo"].as_str(),
+                entry["number"].as_u64(),
+                entry["head"].as_str(),
+            ) {
+                (Some(repo), Some(number), Some(head))
+                    if number > 0 && split_repo(repo).is_ok() =>
+                {
+                    Some(Orphan {
+                        repo: repo.to_string(),
+                        number,
+                        head: head.to_string(),
+                    })
+                }
+                _ => None,
+            };
+            if orphan.is_none() {
+                tracing::warn!("skipped a malformed entry in the auto-merge turn-off list");
+            }
+            orphan
+        })
+        .collect();
+    if list.len() > MAX_ORPHANS {
+        let dropped = list.len() - MAX_ORPHANS;
+        list.drain(..dropped);
+        tracing::warn!(
+            dropped,
+            "the auto-merge turn-off list is over its limit: the oldest entries were dropped"
+        );
+    }
+    list
+}
+
 /// Writes the turn-off list to the data folder (through a temporary file, so a crash leaves the
 /// old list). A failure is logged: the list in memory is still worked through.
 fn save_orphans(state: &DaemonState, orphans: &Orphans) {
@@ -1531,6 +1570,84 @@ pub(crate) fn check_repo(session: &Session, repo: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn saved(repo: &str, number: u64) -> Value {
+        serde_json::json!({ "repo": repo, "number": number, "head": "abc" })
+    }
+
+    #[test]
+    fn malformed_turn_off_entries_are_skipped() {
+        let list = parse_orphans(vec![
+            saved("owner/repo", 1),
+            saved("owner/repo", 0),
+            saved("not a repo", 2),
+            saved("owner/repo/extra", 3),
+            saved("/repo", 4),
+            saved("owner/", 5),
+            serde_json::json!({ "repo": "owner/repo", "number": 6 }),
+            serde_json::json!("junk"),
+            saved("Own-er_1/re.po", 7),
+        ]);
+        let kept: Vec<u64> = list.iter().map(|orphan| orphan.number).collect();
+        assert_eq!(kept, vec![1, 7]);
+    }
+
+    #[test]
+    fn the_turn_off_list_keeps_the_newest_hundred() {
+        let entries: Vec<Value> = (1..=105).map(|n| saved("owner/repo", n)).collect();
+        let list = parse_orphans(entries);
+        assert_eq!(list.len(), MAX_ORPHANS);
+        assert_eq!(list.first().map(|orphan| orphan.number), Some(6));
+        assert_eq!(list.last().map(|orphan| orphan.number), Some(105));
+    }
+
+    #[test]
+    fn disowning_past_the_cap_drops_the_oldest_and_saves_the_rest() {
+        let config = "[models]
+default = \"fake:m\"
+[endpoints.fake]
+base_url = \"http://127.0.0.1:9/v1\"
+[workflow]
+enabled = false
+";
+        let settings = imperium_config::Config::from_layers([
+            imperium_config::Layer::defaults(),
+            imperium_config::Layer::new(
+                imperium_config::Source::User("test".into()),
+                config.parse().unwrap(),
+            ),
+        ])
+        .settings()
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let state = DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        let monitor = state.pr_monitor();
+        for number in 1..=(MAX_ORPHANS as u64 + 5) {
+            monitor.disown(
+                &state,
+                Orphan {
+                    repo: "owner/repo".into(),
+                    number,
+                    head: "abc".into(),
+                },
+            );
+        }
+        let numbers: Vec<u64> = monitor
+            .orphans(&state)
+            .list
+            .iter()
+            .map(|retry| retry.orphan.number)
+            .collect();
+        assert_eq!(numbers.len(), MAX_ORPHANS);
+        assert_eq!(numbers.first(), Some(&6));
+        assert_eq!(numbers.last(), Some(&(MAX_ORPHANS as u64 + 5)));
+        let saved: Vec<Value> = serde_json::from_str(
+            &std::fs::read_to_string(state.data_dir().join(ORPHANS_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved.len(), MAX_ORPHANS);
+        assert_eq!(saved[0]["number"], 6);
+    }
 
     #[tokio::test]
     async fn a_rewound_fork_of_a_bound_session_is_not_bound() {

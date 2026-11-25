@@ -359,6 +359,20 @@ impl Invocation {
         }
     }
 
+    /// Whether the call only reads files or searches them, so it may run beside other such
+    /// calls in one step. [`Invocation::access`] also counts `command_output` and
+    /// `command_stop` as reads, but they depend on, or change, a running process, so they stay
+    /// in call order.
+    pub fn is_file_read(&self) -> bool {
+        matches!(
+            self,
+            Invocation::ReadFile { .. }
+                | Invocation::ListDir { .. }
+                | Invocation::Glob { .. }
+                | Invocation::Grep { .. }
+        )
+    }
+
     /// The call's arguments as JSON with the names the schema gives (`path`, not `file_path`),
     /// for hooks; `None` for a tool whose arguments need no normalising.
     pub fn hook_arguments(&self) -> Option<String> {

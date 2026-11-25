@@ -25,10 +25,12 @@ mod model;
 mod plan;
 mod queue;
 mod quiet;
+mod read_gate;
 mod replay;
 mod review;
 mod sampling_summary;
 mod session;
+mod spill;
 mod status;
 mod title;
 mod tool_edits;
@@ -49,12 +51,14 @@ pub use model::{
 };
 pub use queue::QueueError;
 pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
+pub use read_gate::ReadGate;
 pub use replay::{ReplayAnswer, ReplayRequest, ReplayRole, SubagentReplay};
 pub use review::{ReviewArgs, ReviewEffort, ReviewKind, ReviewTarget, review_prompt};
 pub use session::{
     BridgeError, Session, SessionClosed, SessionConfig, SessionMemory, SessionOptions,
     new_session_id,
 };
+pub use spill::{SAVED_TO, SPILL_MARKER, results_dir};
 pub use status::next_attempt;
 pub use title::task_title;
 pub use tool_edits::ToolWatch;
