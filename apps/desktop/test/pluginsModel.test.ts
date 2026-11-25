@@ -242,6 +242,7 @@ test("the window calls only the allow-listed methods, and none that counts an ap
     "plugins.suggestions": { source_folder: null, trusted: false, muted: false, marketplaces: [], plugins: [] },
     "plugins.dismiss_suggestion": { dismissed: true, muted: false },
     "plugins.inspect": {},
+    "plugins.inspect_folder": {},
     "plugins.install": {},
     "plugins.update": {},
     "plugins.set_enabled": {},
@@ -261,6 +262,7 @@ test("the window calls only the allow-listed methods, and none that counts an ap
   await api.dismissOffer("k");
   await api.muteProject("/p");
   await api.inspect("p@m");
+  await api.inspectFolder("my-tools");
   await api.install(preview);
   await api.update(preview);
   await api.setEnabled("p", true);
@@ -268,7 +270,7 @@ test("the window calls only the allow-listed methods, and none that counts an ap
   await api.undo(1);
   await api.setSecret("p", "KEY", "v");
   await api.deleteSecret("p", "KEY");
-  assert.equal(Object.keys(api).length, 17, "every function in pluginsApi was invoked above");
+  assert.equal(Object.keys(api).length, 18, "every function in pluginsApi was invoked above");
   const allowed = new Set([
     "plugins.marketplace_list",
     "plugins.browse",
@@ -279,6 +281,7 @@ test("the window calls only the allow-listed methods, and none that counts an ap
     "plugins.marketplace_remove",
     "plugins.dismiss_suggestion",
     "plugins.inspect",
+    "plugins.inspect_folder",
     "plugins.install",
     "plugins.update",
     "plugins.set_enabled",

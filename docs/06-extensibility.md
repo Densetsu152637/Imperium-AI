@@ -173,6 +173,30 @@ junction in the source (a link in a git repository is written as a plain file by
 load-time gate's (the files' paths, lengths and bytes without a top-level `.git` and
 `.imperium-source.json`). Nothing runs: no hook, server, build step, install script or git hook.
 
+**Inspecting a folder that did not come from a marketplace (protocol 0.62; not a paired phone).**
+`plugins.inspect_folder {name}` is `plugins.inspect` for an installed plugin folder that has no
+`name@marketplace`: a pre-existing or unrecorded one, which `plugins.inspect` cannot preview. `name`
+is exactly the name of one folder of `<config>/plugins` (as `plugins.list` shows it at the end of
+`folder`). A path, a separator, `..`, a drive or stream marker, a reserved Windows device name
+(`con`, `nul.txt`), a name with `@`, or with white space or a dot at either end, a plugin name or
+`name@marketplace` that is not a folder's own name, and a name that differs from the folder's only
+by letter case are refused; so is a folder that is a link or junction, or that resolves outside `<config>/plugins`
+(it is never followed). The folder is read where it stands: the answer is the `PluginPreview` of
+what it would run (`id` is the folder's name, `marketplace` and `marketplace_source` are empty,
+`source_kind` is `folder` and `source` the folder's path), with the `sha256` and `runs_digest` that
+the load-time gate computes for it (the same `plugin_records::content`, not a second
+implementation) and, in `notes`, that Imperium has no record of it or that it changed since the
+record. Nothing runs. The desktop's *Approve* takes the preview's hash and digest to
+`plugins.approval_challenge` and `plugins.approve` as for any plugin, so the approval counts for the
+folder's files as they are at the dialog; any change afterwards to any file makes the gate
+withhold the plugin again until it is approved again, except the folder's own top-level `.git` folder and `.imperium-source.json`, which the content hash leaves out. A hook or server that runs a
+path under `.git` is flagged in `notes`, because it can change without voiding the approval. The
+challenge and the approval name the folder the same way: a name that is exactly an entry of
+`<config>/plugins` is that folder (byte for byte, never trimmed or case-folded, never a link), and
+another name is looked up as a plugin name or id; the hash and digest must still match. The content
+hash opens each file without following a link, and a plugin folder that is itself a link or junction
+is refused rather than approved.
+
 **Installing (protocol 0.51; not a paired phone).** `plugins.install {id, sha256, revision?}`
 (the `revision` the inspection was given, if any) **fetches again** and refuses content whose hash
 is not `sha256`, a folder of that name (or one that differs only by letter case), a manifest name
@@ -567,7 +591,7 @@ plugin to `extensions.disabled_plugins` and tells the agent so. A disabled plugi
 to sessions, `activate_plugin` cannot start it, and nothing in it runs until the user turns it on
 in Connectors (a setting the daemon reads at start, so it applies after a restart), and, since the
 load-time gate, is withheld until it is approved in the desktop app (a plugin installed from a git URL
-or folder cannot be approved there yet, roadmap item 60), where its
+or folder is approved there from the preview of its folder, `plugins.inspect_folder`, roadmap item 60), where its
 source (URL, commit, and the installing session) is shown. A plugin
 with neither (skills and commands only) is listed at once. Agent-installed plugins also never
 read the daemon's environment through `${VAR}` in `.mcp.json` (see [Compatibility](#compatibility-with-existing-formats)),

@@ -154,6 +154,13 @@ export function TrustView({
           runs can still fetch and run more code.
         </Notice>
       )}
+      {preview.source_kind === "folder" && (
+        <Notice tone="info" title="This folder did not come from a marketplace">
+          The list below is read from the folder as it is now. Approval is for exactly these files: if any file changes afterwards, the plugin is
+          withheld again until it is approved again. The exceptions are the folder's own top-level .git folder and .imperium-source.json, which are
+          not covered, so do not approve anything that runs from them.
+        </Notice>
+      )}
       {diff && <Diff diff={diff} />}
       {preview.launcher && (
         <Notice tone="warn" title="Starts a launcher">
