@@ -832,7 +832,7 @@ mod single_call_tests {
 
 #[cfg(test)]
 mod prompt_tests {
-    use super::{PROVERB, RESPONSE_STYLE, root_prompt, subagent_prompt};
+    use super::{KNOWLEDGE_SOURCE, PROVERB, RESPONSE_STYLE, root_prompt, subagent_prompt};
 
     /// The rules of roadmap item 19 stay in the root prompt: change them on purpose, here too.
     #[test]
