@@ -673,7 +673,7 @@ mod tests {
                 "runs_digest": "r",
                 "challenge": "c",
                 "presence": "passed",
-                "kind": "counted",
+                "approved_kind": "counted",
                 "approval_kind": "counted",
             }))
             .unwrap();
@@ -681,6 +681,9 @@ mod tests {
         let mut keys: Vec<_> = read.as_object().unwrap().keys().cloned().collect();
         keys.sort();
         assert_eq!(keys, ["challenge", "name", "runs_digest", "sha256"]);
+        // `kind` names what is approved (a plugin or a skill), never an approval kind: one that
+        // claims `counted` is refused.
+        assert!(crate::plugin_records::Subject::parse(Some("counted")).is_err());
 
         // And with the check refused, nothing is recorded whatever the client claimed.
         let home = home();
