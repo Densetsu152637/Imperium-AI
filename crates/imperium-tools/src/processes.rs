@@ -946,10 +946,12 @@ mod tests {
         let stopped = processes.start(&workspace, slow_printer()).unwrap();
         let session_end = processes.start(&workspace, slow_printer()).unwrap();
         let read = processes.start(&workspace, "echo hi").unwrap();
+        // Let the quick command finish first: `stop_all` kills whatever still runs, and on a slow
+        // runner `echo hi` could otherwise be stopped before it exits (reported as "stopped").
+        wait_for_output(&processes, &read, "exited with code 0").await;
         processes.stop(&stopped).await.unwrap();
         processes.stop_all();
         wait_finished(&processes, &session_end).await;
-        wait_for_output(&processes, &read, "exited with code 0").await;
         assert!(processes.take_finished(None, true).is_empty());
     }
 
