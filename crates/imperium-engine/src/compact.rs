@@ -1162,7 +1162,7 @@ mod tests {
         }
     }
 
-    fn result(id: &str, content: &str) -> ChatMessage {
+    fn output_of(id: &str, content: &str) -> ChatMessage {
         ChatMessage::Tool {
             tool_call_id: id.into(),
             content: content.into(),
@@ -1182,26 +1182,26 @@ mod tests {
             },
             user("one"),
             call_of("r1", "read_file", r#"{"path":"a.rs"}"#),
-            result("r1", &long()),
+            output_of("r1", &long()),
             call_of("l1", "load_skill", r#"{"name":"pdf"}"#),
-            result("l1", &long()),
+            output_of("l1", &long()),
             call_of("e1", "read_file", r#"{"path":"b.rs"}"#),
-            result("e1", &format!("error: {}", long())),
+            output_of("e1", &format!("error: {}", long())),
             call_of("c1", "run_command", r#"{"command":"ls"}"#),
-            result("c1", &long()),
+            output_of("c1", &long()),
             ChatMessage::Assistant {
                 content: Some("done".into()),
                 tool_calls: Vec::new(),
             },
             user("two"),
             call_of("r2", "grep", r#"{"pattern":"needle","path":"src"}"#),
-            result("r2", &long()),
+            output_of("r2", &long()),
             user("three"),
             call_of("r3", "read_file", r#"{"path":"c.rs"}"#),
-            result("r3", &long()),
+            output_of("r3", &long()),
             user("four"),
             call_of("r4", "read_file", r#"{"path":"d.rs"}"#),
-            result("r4", &long()),
+            output_of("r4", &long()),
         ]
     }
 
@@ -1245,8 +1245,8 @@ mod tests {
     #[test]
     fn short_cleared_and_unknown_results_stay() {
         let mut messages = aged();
-        messages[3] = result("r1", "short");
-        messages[13] = result(
+        messages[3] = output_of("r1", "short");
+        messages[13] = output_of(
             "r2",
             &format!("{CLEARED_PREFIX}grep x \u{2014} call again if needed]"),
         );
@@ -1257,7 +1257,7 @@ mod tests {
                 content: "system".into(),
             },
             user("one"),
-            result("ghost", &long()),
+            output_of("ghost", &long()),
             user("two"),
             user("three"),
         ];
@@ -1290,7 +1290,7 @@ mod tests {
                     serde_json::json!({"path": "z.rs"}),
                 )],
             },
-            result("p1", &long()),
+            output_of("p1", &long()),
             user("two"),
             user("three"),
         ];
