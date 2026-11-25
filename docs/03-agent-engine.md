@@ -222,7 +222,6 @@ the client (`crates/imperium-engine/src/agent/call_repair.rs`), without a model 
   with its own error (a Windows path with unescaped backslashes is read that way). Empty
   arguments stay an empty object, and valid arguments are untouched.
 
-
 ## Planning
 
 **Implemented (phase 3):** the `update_plan` tool (a goal and steps with `pending`,
