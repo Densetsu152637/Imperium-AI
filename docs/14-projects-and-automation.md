@@ -611,7 +611,8 @@ global `sessions.worktree_dir`; they are recorded by path, so a resumed session 
 `session.delete` with `remove_worktrees` removes them there. An empty `worktree_dir` in
 `environments.update` clears the override, and the global setting applies again, as it always
 does to an environment with none. A change applies to sessions started afterwards. A relative
-path is refused.
+path is refused. A folder inside a repository is not added to that repository's
+`.git/info/exclude`, unlike the default `.worktrees`, so `git status` shows it as untracked.
 
 The **Project worktrees** switch in the environment's window (`project_worktrees: false` in
 `environments.update`) turns this off for sessions started afterwards. A session started on its

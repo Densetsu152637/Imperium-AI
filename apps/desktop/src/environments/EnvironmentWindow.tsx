@@ -51,13 +51,13 @@ import { pickFolder } from "../daemon/connection";
 import {
   closeAction,
   environmentDirty,
-  worktreeDirDraft,
   footerSaveBlocked,
   initialSection,
   paneHidden,
   saveTarget,
   sectionsFor,
   type EnvironmentSectionId,
+  worktreeDirDraft,
 } from "./environmentSections";
 import { searchIcons } from "../shared/icons";
 import { EnvironmentAgents, type EnvironmentAgentsHandle } from "../panels/EnvironmentAgents";
@@ -276,7 +276,7 @@ export function EnvironmentWindow({
             folders: newFolders,
             runtime: chosen,
             project_worktrees: projectWorktrees,
-            ...(worktreeDir.trim() ? { worktree_dir: worktreeDir.trim() } : {}),
+            ...(worktreeDir.trim() && !isRemote(runtime) ? { worktree_dir: worktreeDir.trim() } : {}),
             ...(pet ? { pet } : {}),
             permissions: cleaned(permissions),
           })
