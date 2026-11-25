@@ -1279,7 +1279,7 @@ its host (every endpoint speaks Chat Completions):
 | Backend | What is sent |
 |---|---|
 | OpenAI and other OpenAI-compatible services | `reasoning_effort`: `low`, `medium`, `high` (`max` is sent as `high`, the highest level every server accepts) |
-| llama.cpp, vLLM, Ollama (local servers) | the same `reasoning_effort`; llama.cpp hands it to the chat template, so templates without levels only see that reasoning is on. llama.cpp has no per-request thinking budget (only the server's `--reasoning-budget`), so none is sent. A call on a llama.cpp slot also sends `chat_template_kwargs: {"enable_thinking": false}` at `low` effort and `true` at `medium`, `high` and `max`, which switches thinking in templates that have the switch (others ignore it). An evaluation's explicit `--thinking` or `--chat-template-kwargs` replaces it |
+| llama.cpp, vLLM, Ollama (local servers) | the same `reasoning_effort`; llama.cpp hands it to the chat template, so templates without levels only see that reasoning is on. llama.cpp has no per-request thinking budget (only the server's `--reasoning-budget`), so none is sent. A call on a llama.cpp slot at `low` effort also sends `chat_template_kwargs: {"enable_thinking": false}`, which switches thinking off in templates that have the switch (others ignore it); every other effort sends no such field, so those requests are unchanged and the template's own default applies. An evaluation's explicit `--chat-template-kwargs` is merged over it (its keys win), and `--thinking` sets `enable_thinking` itself |
 | OpenRouter (`openrouter.ai`) | `reasoning: {"effort": ...}`, `max` included |
 | Anthropic (`api.anthropic.com`, its OpenAI-compatible endpoint, which ignores `reasoning_effort`) | `thinking: {"type": "enabled", "budget_tokens": N}` with 1024, 4096, 12288 or 24000 tokens; `max_tokens` is set to the budget plus 8000 when the call sets none, and a smaller cap shrinks the budget (no thinking below 1024). Claude 5 models think adaptively whatever the budget |
 | DeepSeek (`deepseek.com`), Mistral (`mistral.ai`) | nothing: no effort control is known |
@@ -1291,12 +1291,19 @@ Summaries for compaction and session titles are sent no effort.
 **Implemented, off by default.** `harness.adaptive_effort = true` lets the effort vary by call
 inside a turn, on top of the session's: a call that follows a tool result that worked (the last
 tool call of the round succeeded) is sent `low`, since the model is carrying out a plan it
-already made, and the first call of a turn and any call after a failed, refused or repaired-away
-tool call are sent the session's effort. The policy never raises the effort above the session's
+already made, and the first call of a turn and any call after a tool call that failed or was
+refused are sent the session's effort. The policy never raises the effort above the session's
 and applies to models that can reason only. With the setting off, every call carries the
 session's effort. The rule is one pure function (`call_effort` in
-`crates/imperium-engine/src/agent/effort_policy.rs`); the `low` call also turns thinking off on
-llama.cpp (see the table above).
+`crates/imperium-engine/src/agent/effort_policy.rs`). On llama.cpp the `low` call also turns
+thinking off (see the table above); the call that returns to a higher effort sends no switch,
+so the template's default decides.
+
+Changing the effort between calls changes the request's reasoning fields, which can break a
+provider's cached prompt prefix. Anthropic's budgeted thinking is the clear case: a change of the thinking
+budget invalidates the cached conversation prefix (the system prompt and tools stay cached), so
+with adaptive effort each change of effort pays for the conversation again. Turn it on for local and OpenAI-style models, or accept that cost on
+Anthropic.
 
 ### Task classes
 

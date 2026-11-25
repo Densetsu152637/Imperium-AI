@@ -435,6 +435,13 @@ impl Agent {
                 completion.tool_calls = calls;
                 completion.text = text;
             }
+            // Arguments are repaired before the call is stored, so the history keeps the
+            // repaired form (for hosted models as well).
+            completion.tool_calls = completion
+                .tool_calls
+                .into_iter()
+                .map(call_repair::vet)
+                .collect();
             // The pool admits calls by the estimate: a prompt above it overcommits the pool.
             if self.model.local && usage.prompt_tokens > u64::from(estimate) {
                 tracing::warn!(
@@ -533,7 +540,6 @@ impl Agent {
             let close: &[String] = if self.reactive() { &[] } else { &offered };
             for call in completion.tool_calls {
                 self.last_tool_ok.store(false, Ordering::SeqCst);
-                let call = call_repair::vet(call);
                 let output = self.run_tool(&call).await;
                 let output = call_repair::with_close_names(
                     &output,

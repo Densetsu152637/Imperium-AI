@@ -265,12 +265,8 @@ pub async fn stream_chat_with(
         endpoint.base_url.trim_end_matches('/')
     );
     let mut body = request_body(request, ReasoningStyle::for_base_url(&endpoint.base_url));
-    if let (Some(extra), Some(fields)) = (extra_body, body.as_object_mut())
-        && let Some(extra) = extra.as_object()
-    {
-        for (key, value) in extra {
-            fields.insert(key.clone(), value.clone());
-        }
+    if let Some(extra) = extra_body {
+        merge_extra(&mut body, extra);
     }
     let mut builder = http.post(url).json(&body);
     if let Some(key) = &endpoint.api_key {
@@ -306,6 +302,30 @@ pub async fn stream_chat_with(
     Ok(assembler.finish())
 }
 
+/// Adds the fields of the object `extra` to `body`, replacing a field of the same name, except
+/// that `chat_template_kwargs` objects are merged: the engine's own keys (`enable_thinking`)
+/// stay unless `extra` names them, so an explicit `--chat-template-kwargs` with other keys does
+/// not drop the engine's switch.
+fn merge_extra(body: &mut serde_json::Value, extra: &serde_json::Value) {
+    let (Some(fields), Some(extra)) = (body.as_object_mut(), extra.as_object()) else {
+        return;
+    };
+    for (key, value) in extra {
+        if key == "chat_template_kwargs"
+            && let (Some(Some(mine)), Some(theirs)) = (
+                fields.get_mut(key).map(serde_json::Value::as_object_mut),
+                value.as_object(),
+            )
+        {
+            for (name, setting) in theirs {
+                mine.insert(name.clone(), setting.clone());
+            }
+            continue;
+        }
+        fields.insert(key.clone(), value.clone());
+    }
+}
+
 /// The JSON body of a streamed chat completion request.
 fn request_body(request: ChatRequest<'_>, style: ReasoningStyle) -> serde_json::Value {
     let mut body = json!({
@@ -331,19 +351,15 @@ fn request_body(request: ChatRequest<'_>, style: ReasoningStyle) -> serde_json::
     if let Some(effort) = request.effort {
         style.apply(&mut body, effort);
         // llama.cpp has no per-request thinking budget, but its chat template switches
-        // thinking with `enable_thinking`: off at `low`, on above it. Only a request on a
-        // slot (a local llama.cpp model) carries it; an explicit `extra_body` field of the
-        // same name replaces it (see `stream_chat_with`).
-        if request.slot.is_some() {
-            body["chat_template_kwargs"] = json!({ "enable_thinking": thinking_for(effort) });
+        // thinking with `enable_thinking`. Only `low` on a slot (a local llama.cpp model)
+        // sends it, as false; every other effort sends nothing, so those request bodies are
+        // as they were and the template's own default applies (also when adaptive effort
+        // returns from `low`). An explicit `extra_body` is merged over it (`merge_extra`).
+        if request.slot.is_some() && effort == Effort::Low {
+            body["chat_template_kwargs"] = json!({ "enable_thinking": false });
         }
     }
     body
-}
-
-/// Whether a local model thinks at `effort`: off at `low`, on above it.
-fn thinking_for(effort: Effort) -> bool {
-    effort != Effort::Low
 }
 
 #[derive(Debug, Deserialize)]
@@ -811,18 +827,50 @@ mod tests {
     }
 
     #[test]
-    fn llama_cpp_calls_switch_thinking_with_the_effort() {
+    fn only_low_effort_on_a_slot_switches_thinking_off() {
         let local = "http://127.0.0.1:8080/v1";
-        for effort in Effort::ALL {
+        let low = slot_body(Some(Effort::Low), Some(0), local);
+        assert_eq!(
+            low["chat_template_kwargs"],
+            json!({ "enable_thinking": false })
+        );
+        // Above `low` the body is what it was before: no template kwargs at all.
+        for effort in [Effort::Medium, Effort::High, Effort::Max] {
             let body = slot_body(Some(effort), Some(0), local);
-            assert_eq!(
-                body["chat_template_kwargs"]["enable_thinking"],
-                effort != Effort::Low,
-                "{effort}"
-            );
-            // The effort itself is still sent as before.
-            assert!(body.get("reasoning_effort").is_some());
+            assert!(body.get("chat_template_kwargs").is_none(), "{effort}");
+            assert!(body.get("reasoning_effort").is_some(), "{effort}");
         }
+    }
+
+    #[test]
+    fn explicit_template_kwargs_merge_with_the_engines_switch() {
+        let local = "http://127.0.0.1:8080/v1";
+        let mut body = slot_body(Some(Effort::Low), Some(0), local);
+        merge_extra(
+            &mut body,
+            &json!({"chat_template_kwargs": {"preserve_thinking": true}}),
+        );
+        assert_eq!(
+            body["chat_template_kwargs"],
+            json!({ "enable_thinking": false, "preserve_thinking": true })
+        );
+        // An explicit key wins over the engine's.
+        merge_extra(
+            &mut body,
+            &json!({"chat_template_kwargs": {"enable_thinking": true}}),
+        );
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+        // Other fields are replaced, and a body without kwargs just takes them.
+        let mut plain = slot_body(Some(Effort::High), Some(0), local);
+        merge_extra(
+            &mut plain,
+            &json!({"chat_template_kwargs": {"enable_thinking": false}, "stream": false}),
+        );
+        assert_eq!(
+            plain["chat_template_kwargs"],
+            json!({ "enable_thinking": false })
+        );
+        assert_eq!(plain["stream"], false);
     }
 
     #[test]

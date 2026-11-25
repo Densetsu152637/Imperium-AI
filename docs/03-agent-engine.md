@@ -206,12 +206,16 @@ A small local model sometimes writes a call the server did not turn into `tool_c
 tool that does not exist, or sends arguments that are not JSON. The engine handles these on
 the client (`crates/imperium-engine/src/agent/call_repair.rs`), without a model call:
 
-- **Call in the text.** For a local model, a reply with no `tool_calls` whose text holds
-  `<tool_call>{"name": ..., "arguments": {...}}</tool_call>` (one or several; a missing closing
-  tag is read), or whose whole text is one such JSON object (also in a code fence) naming an
-  offered tool, is run as that call, and the text keeps what surrounds the tags. A bare object
-  must name an offered tool, so quoted JSON in an answer is not mistaken for a call.
-- **Unknown tool.** When a call fails because no such tool exists, its error result gains
+- **Call in the text.** For a local model, a reply with no `tool_calls` is read as a call
+  only when all of this holds: it holds `<tool_call>{"name": ..., "arguments": {...}}</tool_call>`
+  blocks (a missing closing tag is read) or is one bare JSON object of that shape; every call
+  names an offered tool (`call_tool` counts when it is offered); no block is inside a code
+  fence or right after a quote mark or a blockquote marker; and only whitespace follows the
+  last block (text before the first one is kept as the reply). An answer that quotes the
+  format, or a tool output echoed back, is therefore left alone. Calls read from text get ids
+  that are unique across the process.
+- **Unknown tool.** When a call fails because no such tool exists (a result that starts with
+  `error: unknown tool`, built-in or MCP/plugin form), its error result gains
   up to three close tool names from the offered list (a small edit distance, or one name
   containing the other), or some offered tool names when none is close. Refusals by a profile,
   hook or permission keep their own messages. With `harness.tool_loading` on nothing is added,
@@ -220,7 +224,9 @@ the client (`crates/imperium-engine/src/agent/call_repair.rs`), without a model 
   fence removed, trailing commas before `}` or `]` removed outside strings). Arguments that
   stay unparseable are left as they are, for the tool's own lenient reader to accept or answer
   with its own error (a Windows path with unescaped backslashes is read that way). Empty
-  arguments stay an empty object, and valid arguments are untouched.
+  arguments stay an empty object, and valid arguments are untouched. The repair runs on every
+  model's calls, hosted ones included, before the assistant message is stored, so the history
+  keeps the repaired arguments.
 
 ## Planning
 

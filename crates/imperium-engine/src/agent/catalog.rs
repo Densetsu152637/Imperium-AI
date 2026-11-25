@@ -1267,9 +1267,15 @@ mod tests {
         let mut files = Vec::new();
         sources(&base, &base, &mut files);
         assert!(files.len() > 20, "{} files", files.len());
-        // `call_repair.rs` reads the raw calls a model wrote, before any `call_tool` wrapping.
-        let allowed = ["agent/catalog.rs", "agent/tools.rs", "agent/call_repair.rs"];
+        let allowed = ["agent/catalog.rs", "agent/tools.rs"];
         // Counts what the model was sent, so reads the stored call as it is.
+        // The raw-parse sites of `call_repair.rs`: it reads what a model wrote, before any
+        // `call_tool` wrapping and before the call is stored, so these lines are exact.
+        let raw_parse = [
+            "names.contains(&call.function.name)",
+            "let arguments = call.function.arguments.as_str();",
+            "call.function.arguments = fixed;",
+        ];
         let as_sent = [
             "parts.push((Category::Assistant, &call.function.name));",
             "parts.push((Category::Assistant, &call.function.arguments));",
@@ -1288,7 +1294,10 @@ mod tests {
                 else {
                     continue;
                 };
-                if line.contains("effective_call(") || as_sent.contains(&line.trim()) {
+                if line.contains("effective_call(")
+                    || as_sent.contains(&line.trim())
+                    || (file == "agent/call_repair.rs" && raw_parse.contains(&line.trim()))
+                {
                     continue;
                 }
                 let value: String = line[..at]
