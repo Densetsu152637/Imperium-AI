@@ -859,6 +859,31 @@ and `environments.agent_update` (protocol 0.28)
     through the remote path, and one `imperium run --headless --json` task against it. No plan
     yet.
 
+<!-- markdownlint-disable-next-line MD029 -->
+64. **Consul escalation workflow** (planned). A built-in workflow in which Consul, one of
+    Imperium's house models ([04](04-models-and-routing.md)), takes over a subagent that keeps
+    being rejected. A rejection is any of these:
+    - the user declines an approval;
+    - a critic or judge model refuses a result;
+    - a tool or command fails.
+
+    When one subagent task collects two rejections within a single turn, Consul takes over that
+    subagent's work. The count is per subagent task, not across all the tasks in the turn. Consul
+    continues from the subagent's current state rather than starting afresh. It hands back when
+    the work is finished, or when it is unsure and needs a question answered; that question goes
+    back up to whoever dispatched the work.
+
+    Consul critiques work done by any model, and is meant in particular to critique Emperor's
+    planning. Whether Emperor also does the implementation is left open, for research and
+    testing to settle.
+
+    This is a workflow, not a setting. There is no per-environment threshold and no off switch.
+    It ships as a built-in workflow that users opt into, or replace with a custom workflow of
+    their own. It builds on the per-subagent harnesses, system prompts and workflows of
+    [item 58](#next-in-order), so it comes after item 58. The workflow, the rejection counting
+    and the handover are app work; training and building Consul and Emperor themselves are
+    research work. No plan yet.
+
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
 rather than a separate snapshot store.
