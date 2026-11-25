@@ -344,11 +344,12 @@ async fn the_path_in_the_conversation_stays_valid_after_a_restart() {
 
 #[tokio::test]
 async fn the_system_prompt_is_the_same_with_saving_on_and_off() {
+    // The workspace's path is in the prompt, so both sessions share one.
+    let dir = tempfile::tempdir().unwrap();
     let mut prompts = Vec::new();
     for on in [true, false] {
         let fake = Arc::new(Fake::default());
         let url = serve(Arc::clone(&fake)).await;
-        let dir = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         let harness = imperium_config::HarnessSettings {
             result_spill: on,
