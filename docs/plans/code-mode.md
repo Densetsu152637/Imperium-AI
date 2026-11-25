@@ -1,6 +1,6 @@
 # Plan: programmatic tool calling (code mode)
 
-Revision: 2026-11-26, revision 4 (delta review of revision 3: N1 to N7 and the F12 follow-up; plan critic round 1: findings F1 to F12, all accepted, with the root's decisions on F3 and F4; the root's answers recorded as [settled decisions](#settled-decisions)); written against `experimental`
+Revision: 2026-11-26, revision 5 (final review: D1, and the label and call-state refinements; delta review of revision 3: N1 to N7 and the F12 follow-up; plan critic round 1: findings F1 to F12, all accepted, with the root's decisions on F3 and F4; the root's answers recorded as [settled decisions](#settled-decisions)); written against `experimental`
 at `1c066512`. Roadmap [item 65](../12-roadmap.md#next-in-order); Imperium-Research roadmap R2.8.
 Status: planned.
 
@@ -232,8 +232,13 @@ next program takes; it is still used once. Stage 1 measures cold start (A4).
   including temporary files, renamed files and files created later: the endpoint file, the secret
   store, journals and their `.results/` folders, `history.json`, logs, memory, attachments, and
   the config files that hold MCP servers' environment variables and headers in plain text. The
-  label is re-applied when a new environment is added. The daemon's named pipe keeps the default
-  Medium label (`NO_WRITE_UP`), so a Low process cannot connect.
+  label is applied when a new environment is added. The daemon reads each folder's own label
+  first and sets the inheritable label (and re-propagates it to existing children) only when it
+  is missing or different, so a normal start costs a few reads. The worker's Low working folder
+  is created outside the labelled folders (under the user's Low temporary folder) and carries an
+  explicit Low label. If a file or folder in the labelled folders cannot be labelled (one the user
+  does not own), code mode fails closed and the setting names the path. The daemon's named pipe
+  keeps the default Medium label (`NO_WRITE_UP`), so a Low process cannot connect.
 - Everywhere: empty environment, no inherited handles beyond the pipes, empty working folder.
 
 **Fail closed.** If any part of a platform's confinement cannot be applied (seccomp unavailable,
@@ -369,8 +374,10 @@ WebAssembly sandbox.
   3. On `Done`, assemble the result (C2), let the guard restore the state, and return the
      result through `tool_finished` for the outer call.
 
-  The guard restores the six saved fields and clears `in_program` when it is dropped, so it
-  happens on every exit path: `Done`, a stop, a budget, a worker error, a protocol violation and
+  The six per-call fields, `in_program` and the program's remaining approval-wait budget live in
+  one `Arc<CallState>` on the agent. The guard holds its own clone of that `Arc`, so its `Drop`
+  restores the fields without borrowing the agent across `self.run_tool(&inner)`. It restores the
+  six saved fields and clears `in_program` when it is dropped, so it happens on every exit path: `Done`, a stop, a budget, a worker error, a protocol violation and
   the outer future being dropped mid-program (N7). Without it, a cancelled program would leave
   `in_program` set and the agent's next direct `spawn_agent` would be refused.
 - **Per-call state around inner calls** (F2). `run_tool` and the turn loop keep per-call state on
@@ -390,9 +397,14 @@ WebAssembly sandbox.
   freed and later restored: that would mean loading a snapshot, which Monty says to trust only
   from a trusted producer, and the worker is not one. The wall budget excludes approval waits, so
   it does not bound them. Instead each program has a total approval-wait budget,
-  `script_approval_wait_secs` (default 600 s, C5): once a program has waited that long in all,
-  the pending request is withdrawn and answered as a denial, and every later approval the
-  program needs is denied at once. So a slot is held by approval waits for at most ten minutes
+  `script_approval_wait_secs` (default 600 s, C5). It is enforced inside `approve_with`, not in
+  the driver (which is blocked inside `run_tool` while an approval waits, D1): when `in_program`
+  is set, `approve_with` races the broker's answer against the program's remaining wait budget,
+  held in the shared call state. If the budget runs out first, it calls the new
+  `PermissionBroker::cancel(request_id)`, emits `PermissionWithdrawn { request_id, reason }`
+  ("the program waited too long for approval"), and returns a denial; every later approval the
+  program needs is denied at once without a request. An answer that arrives after the withdrawal
+  is reported to its client as expired. So a slot is held by approval waits for at most ten minutes
   per program; eight programs waiting together can still hold every slot for that long, and a
   ninth program waits for a slot (that wait counts against its wall budget). The desktop shows the
   waiting approvals. The driver's per-turn worker timeout (`request_timeout`, C5) runs only while
@@ -727,7 +739,10 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
     `daemon.json` and `secrets.enc`) fails; it cannot open the daemon's named pipe; its job
     refuses a second process; after start, the data, config, sessions and scratch folders carry
     the inheritable label, and a file created afterwards in each (and a file renamed into one) is
-    unreadable to a Low process (N2); the worker holds no handle beyond its two pipes (an
+    unreadable to a Low process (N2); a second start does not re-propagate (labels unchanged,
+    no child rewritten); a fixture file the daemon cannot relabel makes code mode unavailable
+    with that path as the reason; the worker's working folder is outside the labelled folders and
+    labelled Low; the worker holds no handle beyond its two pipes (an
     inheritable test handle opened by the daemon before launch is absent in the worker, N6); a
     Low worker's `CredRead` of an Imperium Credential Manager entry is tested and its outcome
     recorded in C9 (N2).
@@ -756,7 +771,10 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
   `off`, hidden from the settings UI until stage 3).
 - Changes:
   - Protocol (next free minor at merge): `run_script()` `ToolDefinition` in `tools.rs` (exported
-    to `schemas/tools/`); `ToolStarted.parent_call_id`; the 02 version paragraph.
+    to `schemas/tools/`); `ToolStarted.parent_call_id`; the additive event
+    `SessionEvent::PermissionWithdrawn { request_id, reason }` (D1); the 02 version paragraph.
+  - Broker: `PermissionBroker::cancel(request_id)`, after which `session.respond` for that id
+    returns an "expired" error.
   - Config: `HarnessSettings.code_mode: HarnessMode` (default `Off`) and the C5 budget keys.
   - Engine: `agent/script.rs` (the driver, resolver, callable set, script-refused set, argument
     mapping, output assembly, summary line, stop and budget checks); the `run_script` arm in
@@ -790,8 +808,10 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
   - Guard (N7): a session stopped mid-program, a worker error, a protocol violation and a dropped
     outer future each leave `in_program` cleared and the six fields restored; after a stop
     mid-program, the agent's next direct `spawn_agent` is not refused.
-  - Approval wait cap (N4): with `script_approval_wait_secs` at 1 s, an inner approval left
-    unanswered is denied after 1 s, and the program's next call that asks is denied at once.
+  - Approval wait cap (N4, D1): with `script_approval_wait_secs` at 1 s, an inner approval left
+    unanswered is denied after 1 s by `approve_with`; a subscribed client receives
+    `PermissionWithdrawn` with the request id; a late `session.respond` for it is reported as
+    expired; and the program's next call that asks is denied at once with no request.
   - Per-call state (F2): a `tool.before` hook rewrites the program, and inside it a second hook
     rewrites an inner call; the inner call runs rewritten, the outer result has exactly one
     rewrite note (the program's) and the summary line none; after the program the turn loop sees
@@ -835,7 +855,8 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
 
 - Objective: C6 and C8, and the setting made visible.
 - Changes: subagents and named agents per C8; `run_script` in `FORK_TOOLS`; nothing for reviews
-  beyond a test; the desktop's nested program card (code, live inner rows, output, summary) and
+  beyond a test; the desktop and CLI `chat` remove a withdrawn approval prompt on
+  `PermissionWithdrawn` and show its reason (D1); the desktop's nested program card (code, live inner rows, output, summary) and
   CLI indentation; journal replay rebuilds nested cards from `parent_call_id`; the registry entry
   `harness.code_mode` ("Let agents write programs that call tools") and the 10 rows for it and the
   budgets.
@@ -845,7 +866,8 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
   refused `write_file`; an initiative review refuses `run_script` with the review's message
   (`crates/imperium-core/tests/`, the initiative tests' daemon harness); a background command
   started from a program is listed by `command_output` after the program ends and its completion
-  notice arrives; a resumed session renders the nested cards; compaction's transcript shows
+  notice arrives; a resumed session renders the nested cards; a withdrawn approval disappears
+  from the desktop's approvals panel with its reason, and the CLI prints it; compaction's transcript shows
   `[called run_script with ...]` and the result; desktop unit tests for the nested card and the
   live update.
 - Docs: 07 desktop (the program card), 10 configuration, 03 updates.
