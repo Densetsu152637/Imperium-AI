@@ -19,26 +19,32 @@ unsafe extern "C" {
     fn sandbox_free_error(errorbuf: *mut c_char);
 }
 
+fn set_limit(resource: Resource, value: u64) -> rustix::io::Result<()> {
+    setrlimit(
+        resource,
+        Rlimit {
+            current: Some(value),
+            maximum: Some(value),
+        },
+    )
+}
+
 pub(super) fn apply(settings: &Settings) -> Result<Report, ConfineError> {
     let mut report = Report::default();
 
     forced(settings, "rlimit")?;
-    for (resource, value) in [
-        (Resource::Data, settings.memory_limit_bytes),
-        (Resource::Core, 0),
-    ] {
-        setrlimit(
-            resource,
-            Rlimit {
-                current: Some(value),
-                maximum: Some(value),
-            },
-        )
-        .map_err(|err| ConfineError::new("rlimit", err))?;
+    // The core limit is the one that must hold: no core dump of the program's memory.
+    set_limit(Resource::Core, 0).map_err(|err| ConfineError::new("rlimit", err))?;
+    // Darwin does not enforce `RLIMIT_DATA` (the allocator's hard limit is the memory bound
+    // there) and some releases refuse to set it (EINVAL), so it is a best-effort extra.
+    match set_limit(Resource::Data, settings.memory_limit_bytes) {
+        Ok(()) => report
+            .applied
+            .push(format!("rlimit_data={}", settings.memory_limit_bytes)),
+        Err(err) => report
+            .applied
+            .push(format!("rlimit_data=unavailable ({err})")),
     }
-    report
-        .applied
-        .push(format!("rlimit_data={}", settings.memory_limit_bytes));
 
     forced(settings, "sandbox_init")?;
     let exe = std::env::current_exe()
