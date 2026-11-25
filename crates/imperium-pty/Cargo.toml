@@ -1,0 +1,41 @@
+[package]
+name = "imperium-pty"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runs a shell on a pseudo terminal, and the Linux supervisor that ends everything it started"
+
+[dependencies]
+# The pseudo terminal: openpty on Unix, ConPTY on Windows.
+portable-pty = "0.9.0"
+# Lists processes: ending a terminal by session on Unix, finding leftovers in tests on Windows.
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
+thiserror = "2.0.21"
+
+[target.'cfg(unix)'.dependencies]
+# Signals, polling, process groups, sessions and the terminal's foreground group, all through
+# safe wrappers (the workspace forbids unsafe code).
+rustix = { version = "1.1.6", features = ["event", "process", "termios"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The supervisor's self-pipe for SIGCHLD, SIGHUP and SIGTERM, and its caught-and-discarded set.
+signal-hook = "0.4.6"
+
+[target.'cfg(windows)'.dependencies]
+# The terminal's processes run in a Job Object that kills every process in it when closed.
+win32job = "2.0.3"
+
+[features]
+# Fault injection for the supervisor's tests (a delayed handover of the terminal, a missing
+# syscall, a trace file). Only this crate's own dev-dependency below turns it on; no production
+# build does.
+test-support = []
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+imperium-pty = { path = ".", features = ["test-support"] }
+tempfile = "3.27.0"

@@ -729,8 +729,8 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   `portable-pty` uses `unsafe` internally (a dependency, allowed; the workspace's own crates stay
   `forbid(unsafe_code)`, so `prctl` goes through `nix`'s safe wrappers); the supervisor must stay
   tiny, because it runs for every Linux terminal.
-- Status: pending
-- Outcome: -
+- Status: in review (PR open; every check runs in CI, nothing was built locally)
+- Outcome: see below, written with the PR.
 - Handoff notes: the crate knows nothing of sessions or protocol; the shell choice and
   environment are stage 2a's. Changing `Cargo.lock` runs the presence end-to-end job (detect
   lists it); expect it.
@@ -1000,7 +1000,10 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 - Status: pending
 - Outcome: -
 - Handoff notes: `files.read` never applies agent deny rules (D12); the docs say so. Stage 7a is
-  the client.
+  the client. `openat2` (Linux 5.6 and later) can answer `ENOSYS` or `EPERM`, for example under a
+  container's seccomp filter: the Linux root open then fails closed with a clear error and
+  `files.*` is refused on that host, never falling back to a following open. Test the branch by
+  forcing it (stage 1 does the same for the supervisor's `pidfd_open`).
 
 ### Stage 6b: File listing and locate
 
