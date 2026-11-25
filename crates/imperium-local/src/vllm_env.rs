@@ -7,6 +7,11 @@
 //!   setup leaves no record of a half-made environment.
 //! - `<version>/venv`: the virtual environment (venv mode).
 //!
+//! WSL mode (native Windows) makes the same environment inside a WSL2 distribution, under
+//! `~/.local/share/imperium/runtimes/vllm/<version>/venv` in the distro's own filesystem; the
+//! record then also names the distro and the environment's Linux path, and every command is
+//! `wsl.exe -d <distro> --exec ...` ([`crate::wsl`]).
+//!
 //! Every command runs without a shell through a [`Runner`], so tests use a fake one; the real
 //! one ([`SystemRunner`]) merges the command's output, cuts it into short lines, and the lines
 //! are shown with URL credentials and Hugging Face tokens masked ([`redact`]). No secret is
@@ -67,6 +72,8 @@ pub fn pinned_python() -> &'static str {
 pub enum Mode {
     Venv,
     Docker,
+    /// A virtual environment inside a WSL2 distribution, for a Windows daemon.
+    Wsl,
 }
 
 impl Mode {
@@ -74,6 +81,7 @@ impl Mode {
         match self {
             Mode::Venv => "venv",
             Mode::Docker => "docker",
+            Mode::Wsl => "wsl",
         }
     }
 }
@@ -85,6 +93,9 @@ pub struct Plan {
     pub version: String,
     pub image: String,
     pub python: String,
+    /// The WSL2 distribution, in WSL mode: `runtime.vllm.wsl_distro` when set, else chosen by
+    /// the caller (the default distro) before [`setup`].
+    pub distro: Option<String>,
 }
 
 impl Plan {
@@ -106,7 +117,13 @@ impl Plan {
             version: pick(version, &settings.version, pinned_version()),
             image: pick(None, &settings.docker_image, pinned_image()),
             python: pinned_python().to_string(),
+            distro: Some(settings.wsl_distro.trim())
+                .filter(|name| mode == Mode::Wsl && !name.is_empty())
+                .map(str::to_string),
         };
+        if let Some(distro) = &plan.distro {
+            crate::wsl::valid_distro(distro)?;
+        }
         valid_version(&plan.version)?;
         valid_image(&plan.image)?;
         Ok(plan)
@@ -126,6 +143,28 @@ impl Plan {
                  whole model in GPU memory"
                     .into(),
                 "needs uv (https://docs.astral.sh/uv/) on PATH".into(),
+            ],
+            Mode::Wsl => vec![
+                format!(
+                    "creates a Python {} environment with vLLM {} inside the WSL2 distribution {} \
+                     (installed by uv from PyPI; uv may also download Python {})",
+                    self.python,
+                    self.version,
+                    self.distro.as_deref().unwrap_or("(the default one)"),
+                    self.python
+                ),
+                "downloads and uses about 10 to 15 GiB of disk inside the distribution's virtual \
+                 disk: PyTorch, CUDA libraries and vLLM"
+                    .into(),
+                "needs WSL2 and an NVIDIA GPU with a Windows driver that supports WSL (CUDA 12); \
+                 vLLM keeps the whole model in GPU memory"
+                    .into(),
+                "needs uv (https://docs.astral.sh/uv/) installed inside the distribution; \
+                 Imperium does not install it"
+                    .into(),
+                "vLLM listens on 127.0.0.1 inside WSL2 and the daemon reaches it through WSL2's \
+                 localhost forwarding"
+                    .into(),
             ],
             Mode::Docker => vec![
                 format!("pulls the Docker image {}", self.image),
@@ -193,6 +232,37 @@ pub struct Managed {
     /// The image, in Docker mode.
     #[serde(default)]
     pub image: Option<String>,
+    /// The WSL2 distribution, in WSL mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distro: Option<String>,
+    /// The environment's path inside the distribution, in WSL mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub venv: Option<String>,
+}
+
+/// Whether `venv` is the environment setup makes for `version` in WSL: a home folder, then
+/// [`crate::wsl::HOME_SUBDIR`], the version and `venv`, so a record edited by hand cannot point
+/// a removal or a launch anywhere else.
+fn valid_wsl_venv(venv: &str, version: &str) -> bool {
+    let tail = format!("/{}/{version}/venv", crate::wsl::HOME_SUBDIR);
+    crate::wsl::valid_linux_path(venv)
+        && venv
+            .strip_suffix(&tail)
+            .is_some_and(|home| home.starts_with('/') && home != "/")
+}
+
+/// The environment's path inside a WSL distribution whose user's home is `home`.
+fn wsl_venv_path(home: &str, version: &str) -> Result<String, String> {
+    let home = home.trim().trim_end_matches('/');
+    let venv = format!("{home}/{}/{version}/venv", crate::wsl::HOME_SUBDIR);
+    valid_wsl_venv(&venv, version)
+        .then_some(venv)
+        .ok_or_else(|| format!("{home:?} is not a usable home folder inside the distribution"))
+}
+
+/// The folder of one version inside the distribution (what removal deletes).
+fn wsl_version_dir(venv: &str) -> &str {
+    venv.strip_suffix("/venv").unwrap_or(venv)
 }
 
 /// The record as written, whatever it says; `None` when there is none or it is unreadable.
@@ -211,7 +281,14 @@ pub fn managed(data_dir: &Path) -> Option<Managed> {
                 .image
                 .as_deref()
                 .is_none_or(|image| valid_image(image).is_ok())
+            && (record.mode != Mode::Wsl || wsl_record_valid(record))
     })
+}
+
+/// A WSL record names a valid distribution and the environment setup makes for its version.
+fn wsl_record_valid(record: &Managed) -> bool {
+    matches!((&record.distro, &record.venv), (Some(distro), Some(venv))
+        if crate::wsl::valid_distro(distro).is_ok() && valid_wsl_venv(venv, &record.version))
 }
 
 fn write_managed(data_dir: &Path, managed: &Managed) -> Result<(), String> {
@@ -230,6 +307,12 @@ pub enum Launch {
     Command(PathBuf),
     /// A container of this image, started by this `docker`.
     Docker { docker: PathBuf, image: String },
+    /// `vllm` at this path inside a WSL2 distribution, started by `wsl.exe` (a Windows daemon).
+    Wsl {
+        wsl: PathBuf,
+        distro: String,
+        program: String,
+    },
 }
 
 /// The `vllm` to start: a `configured` command (`runtime.vllm.command`) that is not empty is the
@@ -263,6 +346,52 @@ pub fn resolve(data_dir: &Path, configured: &str) -> Launch {
         _ => {}
     }
     Launch::Command(PathBuf::from(DEFAULT_COMMAND))
+}
+
+/// [`resolve`] for a daemon that may run on Windows (`windows`), where vLLM runs in WSL2: the
+/// managed WSL environment when `settings.command` is empty and the record says so, or a command
+/// pointing into WSL (`/home/me/venv/bin/vllm`, `\\wsl$\Ubuntu\...`), in the distro the path
+/// names, else `runtime.vllm.wsl_distro`, else `default_distro()` (the WSL default). Anything
+/// else is [`resolve`]'s answer, which is unusable on Windows (models stay unavailable).
+pub fn resolve_for(
+    data_dir: &Path,
+    settings: &VllmSettings,
+    windows: bool,
+    default_distro: &dyn Fn() -> Option<String>,
+) -> Launch {
+    if windows {
+        let configured = settings.command.trim();
+        if configured.is_empty() {
+            if let Some(Managed {
+                mode: Mode::Wsl,
+                distro: Some(distro),
+                venv: Some(venv),
+                ..
+            }) = managed(data_dir)
+            {
+                return Launch::Wsl {
+                    wsl: PathBuf::from(crate::wsl::WSL_EXE),
+                    distro,
+                    program: format!("{venv}/bin/vllm"),
+                };
+            }
+        } else if let Some((named, program)) = crate::wsl::command_in_wsl(configured) {
+            let chosen = named
+                .or_else(|| {
+                    Some(settings.wsl_distro.trim().to_string()).filter(|name| !name.is_empty())
+                })
+                .or_else(default_distro)
+                .filter(|name| crate::wsl::valid_distro(name).is_ok());
+            if let Some(distro) = chosen {
+                return Launch::Wsl {
+                    wsl: PathBuf::from(crate::wsl::WSL_EXE),
+                    distro,
+                    program,
+                };
+            }
+        }
+    }
+    resolve(data_dir, &settings.command)
 }
 
 /// Masks what must not be shown or logged: credentials in URLs (`https://user:pass@host`) and
@@ -431,7 +560,9 @@ impl Runner for SystemRunner {
 }
 
 fn emit(pending: &mut Vec<u8>, on_line: &mut dyn FnMut(&str)) {
-    let text = String::from_utf8_lossy(pending).into_owned();
+    // `wsl.exe` writes its own messages in UTF-16: read as bytes they are text with a NUL between
+    // the characters.
+    let text = String::from_utf8_lossy(pending).replace('\0', "");
     pending.clear();
     let text = text.trim();
     if text.is_empty() {
@@ -466,6 +597,8 @@ pub struct SetupError {
 }
 
 const TAIL_LINES: usize = 12;
+/// Most output lines [`step_lines`] hands back.
+const KEPT_LINES: usize = 64;
 
 /// Runs one step, reporting it and keeping the output's last lines for a failure.
 fn step(
@@ -476,21 +609,37 @@ fn step(
     args: &[String],
     missing: &str,
 ) -> Result<(), SetupError> {
+    step_lines(runner, on, title, program, args, missing).map(|_| ())
+}
+
+/// [`step`], returning the lines the command printed (the first [`KEPT_LINES`] of them).
+fn step_lines(
+    runner: &dyn Runner,
+    on: &mut dyn FnMut(Event),
+    title: &str,
+    program: &str,
+    args: &[String],
+    missing: &str,
+) -> Result<Vec<String>, SetupError> {
     on(Event::Step(format!(
         "{title}: {} {}",
         program,
         args.join(" ")
     )));
     let mut tail: Vec<String> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
     let result = runner.run(program, args, &mut |line| {
         if tail.len() == TAIL_LINES {
             tail.remove(0);
         }
         tail.push(line.to_string());
+        if kept.len() < KEPT_LINES {
+            kept.push(line.to_string());
+        }
         on(Event::Output(line.to_string()));
     });
     match result {
-        RunResult::Ok => Ok(()),
+        RunResult::Ok => Ok(kept),
         RunResult::Missing => Err(SetupError {
             step: title.to_string(),
             message: missing.to_string(),
@@ -515,6 +664,14 @@ pub fn check_existing(data_dir: &Path, plan: &Plan) -> Result<(), SetupError> {
         && match plan.mode {
             Mode::Venv => existing.version == plan.version,
             Mode::Docker => existing.image.as_deref() == Some(plan.image.as_str()),
+            // Another distribution is another environment.
+            Mode::Wsl => {
+                existing.version == plan.version
+                    && plan
+                        .distro
+                        .as_deref()
+                        .is_none_or(|distro| existing.distro.as_deref() == Some(distro))
+            }
         };
     if same {
         return Ok(());
@@ -528,7 +685,8 @@ pub fn check_existing(data_dir: &Path, plan: &Plan) -> Result<(), SetupError> {
             existing
                 .image
                 .as_deref()
-                .map(|image| format!(", {image}"))
+                .or(existing.distro.as_deref())
+                .map(|detail| format!(", {detail}"))
                 .unwrap_or_default()
         ),
         tail: Vec::new(),
@@ -548,6 +706,7 @@ pub fn setup(
     match plan.mode {
         Mode::Venv => setup_venv(runner, data_dir, plan, on),
         Mode::Docker => setup_docker(runner, data_dir, plan, on),
+        Mode::Wsl => setup_wsl(runner, data_dir, plan, on),
     }
 }
 
@@ -561,6 +720,8 @@ fn setup_venv(
         mode: Mode::Venv,
         version: plan.version.clone(),
         image: None,
+        distro: None,
+        venv: None,
     };
     let venv = venv_dir(data_dir, &plan.version);
     let exe = venv_program(&venv, "vllm");
@@ -649,6 +810,215 @@ fn setup_venv(
     Ok(record)
 }
 
+const WSL_MISSING: &str =
+    "wsl.exe is not installed; install WSL with `wsl --install` and run this again";
+
+fn setup_error(step: &str, message: impl Into<String>) -> SetupError {
+    SetupError {
+        step: step.to_string(),
+        message: message.into(),
+        tail: Vec::new(),
+    }
+}
+
+/// Runs each of `candidates` (a program inside `distro`) with `args` until one succeeds, and
+/// returns it. `Err(None)` when none did; `Err(Some(_))` when `wsl.exe` itself is missing.
+fn first_that_runs(
+    runner: &dyn Runner,
+    on: &mut dyn FnMut(Event),
+    title: &str,
+    distro: &str,
+    candidates: &[String],
+    args: &[&str],
+) -> Result<String, Option<SetupError>> {
+    for candidate in candidates {
+        let command: Vec<&str> = std::iter::once(candidate.as_str())
+            .chain(args.iter().copied())
+            .collect();
+        let wsl_args = crate::wsl::exec_args(distro, &command);
+        match step(
+            runner,
+            on,
+            title,
+            crate::wsl::WSL_EXE,
+            &wsl_args,
+            WSL_MISSING,
+        ) {
+            Ok(()) => return Ok(candidate.clone()),
+            Err(error) if error.message == WSL_MISSING => return Err(Some(error)),
+            Err(_) => {}
+        }
+    }
+    Err(None)
+}
+
+/// Removes `dir` inside `distro`; whether it worked.
+fn remove_wsl_dir(runner: &dyn Runner, distro: &str, dir: &str) -> bool {
+    let args = crate::wsl::exec_args(distro, &["rm", "-rf", "--", dir]);
+    runner.run(crate::wsl::WSL_EXE, &args, &mut |_| {}) == RunResult::Ok
+}
+
+fn setup_wsl(
+    runner: &dyn Runner,
+    data_dir: &Path,
+    plan: &Plan,
+    on: &mut dyn FnMut(Event),
+) -> Result<Managed, SetupError> {
+    let wsl = crate::wsl::WSL_EXE;
+    let distro = plan.distro.clone().ok_or_else(|| {
+        setup_error(
+            "choosing the distribution",
+            "no WSL distribution was chosen; set runtime.vllm.wsl_distro",
+        )
+    })?;
+    crate::wsl::valid_distro(&distro)
+        .map_err(|message| setup_error("choosing the distribution", message))?;
+    // The distribution answers, and where its user's home is: `--exec` has no `~`.
+    let home = step_lines(
+        runner,
+        on,
+        "checking the WSL distribution",
+        wsl,
+        &crate::wsl::exec_args(&distro, &["printenv", "HOME"]),
+        WSL_MISSING,
+    )
+    .map_err(|mut error| {
+        if error.message != WSL_MISSING {
+            error.message = format!(
+                "{} (is {distro} an installed WSL2 distribution? see `wsl.exe -l -v`)",
+                error.message
+            );
+        }
+        error
+    })?
+    .into_iter()
+    .find(|line| !line.trim().is_empty())
+    .unwrap_or_default();
+    let venv = wsl_venv_path(&home, &plan.version)
+        .map_err(|message| setup_error("checking the WSL distribution", message))?;
+    let home = home.trim().trim_end_matches('/').to_string();
+    let record = Managed {
+        mode: Mode::Wsl,
+        version: plan.version.clone(),
+        image: None,
+        distro: Some(distro.clone()),
+        venv: Some(venv.clone()),
+    };
+    let exe = format!("{venv}/bin/vllm");
+    if managed(data_dir).as_ref() == Some(&record)
+        && runner.run(
+            wsl,
+            &crate::wsl::exec_args(&distro, &["test", "-x", &exe]),
+            &mut |_| {},
+        ) == RunResult::Ok
+    {
+        on(Event::Step(format!(
+            "vLLM {} is already set up at {venv} in {distro}",
+            plan.version
+        )));
+        return Ok(record);
+    }
+    // `uv` is looked for where its installer puts it as well as on the PATH `--exec` has, which
+    // is not a login shell's. Imperium does not install it.
+    let uv = first_that_runs(
+        runner,
+        on,
+        "checking uv",
+        &distro,
+        &[
+            "uv".to_string(),
+            format!("{home}/.local/bin/uv"),
+            format!("{home}/.cargo/bin/uv"),
+        ],
+        &["--version"],
+    )
+    .map_err(|error| {
+        error.unwrap_or_else(|| {
+            setup_error(
+                "checking uv",
+                format!(
+                    "uv is not installed in {distro}; install it there yourself (inside the \
+                     distribution run `curl -LsSf https://astral.sh/uv/install.sh | sh`, see \
+                     https://docs.astral.sh/uv/) and run this again; Imperium does not install it"
+                ),
+            )
+        })
+    })?;
+    first_that_runs(
+        runner,
+        on,
+        "checking the GPU",
+        &distro,
+        &[
+            "nvidia-smi".to_string(),
+            "/usr/lib/wsl/lib/nvidia-smi".to_string(),
+        ],
+        &["-L"],
+    )
+    .map_err(|error| {
+        error.unwrap_or_else(|| {
+            setup_error(
+                "checking the GPU",
+                format!(
+                    "no NVIDIA GPU is visible inside {distro}: vLLM needs WSL2 and an NVIDIA \
+                     driver for Windows that supports WSL (do not install a Linux display driver \
+                     inside WSL); `nvidia-smi` must work inside the distribution"
+                ),
+            )
+        })
+    })?;
+    let fail = |error: SetupError, on: &mut dyn FnMut(Event)| {
+        if remove_wsl_dir(runner, &distro, &venv) {
+            on(Event::Warning("removed the unfinished environment".into()));
+        }
+        error
+    };
+    // A leftover of an earlier failed run is made fresh.
+    remove_wsl_dir(runner, &distro, &venv);
+    let created = step(
+        runner,
+        on,
+        "creating the environment",
+        wsl,
+        &crate::wsl::exec_args(&distro, &[&uv, "venv", "--python", &plan.python, &venv]),
+        WSL_MISSING,
+    );
+    if let Err(error) = created {
+        return Err(fail(error, on));
+    }
+    let python = format!("{venv}/bin/python");
+    let requirement = format!("vllm=={}", plan.version);
+    let installed = step(
+        runner,
+        on,
+        "installing vLLM (this downloads several GiB and can take a while)",
+        wsl,
+        &crate::wsl::exec_args(
+            &distro,
+            &[&uv, "pip", "install", "--python", &python, &requirement],
+        ),
+        WSL_MISSING,
+    );
+    if let Err(error) = installed {
+        return Err(fail(error, on));
+    }
+    let checked = step(
+        runner,
+        on,
+        "checking vLLM",
+        wsl,
+        &crate::wsl::exec_args(&distro, &[&exe, "--version"]),
+        WSL_MISSING,
+    );
+    if let Err(error) = checked {
+        return Err(fail(error, on));
+    }
+    if let Err(message) = write_managed(data_dir, &record) {
+        return Err(fail(setup_error("recording the environment", message), on));
+    }
+    Ok(record)
+}
+
 fn setup_docker(
     runner: &dyn Runner,
     data_dir: &Path,
@@ -659,6 +1029,8 @@ fn setup_docker(
         mode: Mode::Docker,
         version: plan.version.clone(),
         image: Some(plan.image.clone()),
+        distro: None,
+        venv: None,
     };
     step(
         runner,
@@ -713,6 +1085,14 @@ pub fn status(data_dir: &Path) -> Status {
             path: Some(venv),
             managed: Some(record),
         }
+    } else if record.mode == Mode::Wsl {
+        // Inside the distribution: [`status_checked`] asks it.
+        Status {
+            present: true,
+            size_bytes: None,
+            path: record.venv.as_deref().map(PathBuf::from),
+            managed: Some(record),
+        }
     } else {
         Status {
             present: true,
@@ -721,6 +1101,24 @@ pub fn status(data_dir: &Path) -> Status {
             managed: Some(record),
         }
     }
+}
+
+/// [`status`], and in WSL mode whether the environment's `vllm` is there, asked of the distribution
+/// (which starts it if it is stopped).
+pub fn status_checked(runner: &dyn Runner, data_dir: &Path) -> Status {
+    let mut status = status(data_dir);
+    if let Some(Managed {
+        mode: Mode::Wsl,
+        distro: Some(distro),
+        venv: Some(venv),
+        ..
+    }) = &status.managed
+    {
+        let exe = format!("{venv}/bin/vllm");
+        let args = crate::wsl::exec_args(distro, &["test", "-x", &exe]);
+        status.present = runner.run(crate::wsl::WSL_EXE, &args, &mut |_| {}) == RunResult::Ok;
+    }
+    status
 }
 
 /// Bytes of the files under `dir`, counting at most [`MAX_SIZE_ENTRIES`] of them.
@@ -776,7 +1174,26 @@ pub fn remove(
             )
         })?;
     }
+    if record.mode == Mode::Wsl && !wsl_record_valid(&record) {
+        return Err(format!(
+            "the WSL distribution or environment path in {} was not written by setup, so \
+             nothing was removed (delete it by hand if it is wrong)",
+            state_path(data_dir).display()
+        ));
+    }
     match record.mode {
+        Mode::Wsl => {
+            if let (Some(distro), Some(venv)) = (&record.distro, &record.venv) {
+                let dir = wsl_version_dir(venv);
+                on(Event::Step(format!("removing {dir} in {distro}")));
+                if !remove_wsl_dir(runner, distro, dir) {
+                    on(Event::Warning(format!(
+                        "could not remove {dir} in {distro} (is the distribution still installed?); \
+                         remove it there with `rm -rf {dir}`"
+                    )));
+                }
+            }
+        }
         Mode::Venv => {
             let version_dir = root(data_dir).join(&record.version);
             on(Event::Step(format!("removing {}", version_dir.display())));
@@ -1267,6 +1684,8 @@ mod tests {
                 mode: Mode::Venv,
                 version: "0.11.0".into(),
                 image: None,
+                distro: None,
+                venv: None,
             },
         )
         .unwrap();
@@ -1285,6 +1704,8 @@ mod tests {
                 mode: Mode::Docker,
                 version: "x".into(),
                 image: Some("--privileged".into()),
+                distro: None,
+                venv: None,
             },
         )
         .unwrap();
@@ -1704,5 +2125,499 @@ mod tests {
             "{result:?}"
         );
         assert!(lines.contains(&"started".to_string()), "{lines:?}");
+    }
+}
+
+#[cfg(test)]
+mod wsl_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    const HOME: &str = "/home/tester";
+
+    /// A runner that answers as `wsl.exe` would, from a script, and records every command line.
+    struct WslFake {
+        calls: RefCell<Vec<String>>,
+        /// A command line containing one of these fails.
+        fail: Vec<&'static str>,
+        /// `wsl.exe` is not installed.
+        no_wsl: bool,
+        /// Whether `test -x` finds the environment's `vllm`; set by the install.
+        installed: RefCell<bool>,
+        data_dir: PathBuf,
+        /// Whether `managed.json` existed when `vllm --version` ran.
+        record_at_check: RefCell<Option<bool>>,
+    }
+
+    impl WslFake {
+        fn new(data_dir: &Path) -> Self {
+            WslFake {
+                calls: RefCell::new(Vec::new()),
+                fail: Vec::new(),
+                no_wsl: false,
+                installed: RefCell::new(false),
+                data_dir: data_dir.to_path_buf(),
+                record_at_check: RefCell::new(None),
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl Runner for WslFake {
+        fn run(&self, program: &str, args: &[String], on_line: &mut dyn FnMut(&str)) -> RunResult {
+            let line = format!("{program} {}", args.join(" "));
+            self.calls.borrow_mut().push(line.clone());
+            if self.no_wsl {
+                return RunResult::Missing;
+            }
+            let failing = self.fail.iter().any(|f| line.contains(f));
+            if line.ends_with("--exec printenv HOME") && !failing {
+                on_line(HOME);
+                return RunResult::Ok;
+            }
+            if failing {
+                on_line("error: boom");
+                return RunResult::Failed("exited with code 1".into());
+            }
+            if line.contains("--exec test -x") && !*self.installed.borrow() {
+                return RunResult::Failed("exited with code 1".into());
+            }
+            if line.contains("uv pip install") {
+                *self.installed.borrow_mut() = true;
+            }
+            if line.ends_with("bin/vllm --version") {
+                *self.record_at_check.borrow_mut() = Some(state_path(&self.data_dir).exists());
+            }
+            on_line("ok");
+            RunResult::Ok
+        }
+    }
+
+    fn settings(distro: &str) -> VllmSettings {
+        VllmSettings {
+            wsl_distro: distro.into(),
+            ..VllmSettings::default()
+        }
+    }
+
+    fn plan() -> Plan {
+        Plan::new(Mode::Wsl, &settings("Ubuntu"), None).unwrap()
+    }
+
+    fn venv_of(plan: &Plan) -> String {
+        format!(
+            "{HOME}/.local/share/imperium/runtimes/vllm/{}/venv",
+            plan.version
+        )
+    }
+
+    fn events(on: &RefCell<Vec<Event>>) -> impl FnMut(Event) + '_ {
+        move |event| on.borrow_mut().push(event)
+    }
+
+    fn wsl(rest: &str) -> String {
+        format!("wsl.exe -d Ubuntu --exec {rest}")
+    }
+
+    #[test]
+    fn the_plan_takes_the_distro_from_the_setting_in_wsl_mode_only() {
+        assert_eq!(plan().distro.as_deref(), Some("Ubuntu"));
+        assert_eq!(
+            Plan::new(Mode::Wsl, &settings(" "), None).unwrap().distro,
+            None
+        );
+        assert_eq!(
+            Plan::new(Mode::Venv, &settings("Ubuntu"), None)
+                .unwrap()
+                .distro,
+            None
+        );
+        assert!(Plan::new(Mode::Wsl, &settings("-d"), None).is_err());
+        let needs = plan().requirements().join("\n");
+        assert!(needs.contains("WSL2") && needs.contains("Imperium does not install it"));
+    }
+
+    #[test]
+    fn setup_runs_the_commands_in_order_and_records_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan();
+        let venv = venv_of(&plan);
+        let fake = WslFake::new(dir.path());
+        let log = RefCell::new(Vec::new());
+        let record = setup(&fake, dir.path(), &plan, &mut events(&log)).unwrap();
+        assert_eq!(
+            fake.calls(),
+            vec![
+                wsl("printenv HOME"),
+                wsl("uv --version"),
+                wsl("nvidia-smi -L"),
+                wsl(&format!("rm -rf -- {venv}")),
+                wsl(&format!("uv venv --python 3.12 {venv}")),
+                wsl(&format!(
+                    "uv pip install --python {venv}/bin/python vllm=={}",
+                    plan.version
+                )),
+                wsl(&format!("{venv}/bin/vllm --version")),
+            ]
+        );
+        assert_eq!(
+            *fake.record_at_check.borrow(),
+            Some(false),
+            "recorded after the check"
+        );
+        assert_eq!(record.mode, Mode::Wsl);
+        assert_eq!(managed(dir.path()), Some(record.clone()));
+        assert_eq!(record.distro.as_deref(), Some("Ubuntu"));
+        assert_eq!(record.venv.as_deref(), Some(venv.as_str()));
+        // Nothing was made on the Windows side but the record.
+        assert!(!venv_dir(dir.path(), &plan.version).exists());
+        let text = std::fs::read_to_string(state_path(dir.path())).unwrap();
+        assert!(text.contains("\"mode\": \"wsl\""), "{text}");
+        assert!(text.contains("\"distro\": \"Ubuntu\""), "{text}");
+    }
+
+    #[test]
+    fn uv_is_found_where_its_installer_puts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan();
+        let mut fake = WslFake::new(dir.path());
+        fake.fail = vec!["--exec uv --version"];
+        setup(&fake, dir.path(), &plan, &mut |_| {}).unwrap();
+        let calls = fake.calls();
+        assert!(calls.contains(&wsl(&format!("{HOME}/.local/bin/uv --version"))));
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.contains(&format!("--exec {HOME}/.local/bin/uv venv"))),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_uv_says_how_to_install_it_and_installs_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fake = WslFake::new(dir.path());
+        fake.fail = vec!["uv --version"];
+        let error = setup(&fake, dir.path(), &plan(), &mut |_| {}).unwrap_err();
+        assert_eq!(error.step, "checking uv");
+        assert!(error.message.contains("astral.sh/uv/install.sh"), "{error}");
+        assert!(error.message.contains("does not install it"), "{error}");
+        let calls = fake.calls().join("\n");
+        assert!(!calls.contains("curl") && !calls.contains("uv venv") && !calls.contains("rm -rf"));
+        assert_eq!(managed(dir.path()), None);
+    }
+
+    #[test]
+    fn no_cuda_driver_in_wsl_stops_setup_before_anything_is_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fake = WslFake::new(dir.path());
+        fake.fail = vec!["nvidia-smi"];
+        let error = setup(&fake, dir.path(), &plan(), &mut |_| {}).unwrap_err();
+        assert_eq!(error.step, "checking the GPU");
+        assert!(
+            error
+                .message
+                .contains("no NVIDIA GPU is visible inside Ubuntu"),
+            "{error}"
+        );
+        let calls = fake.calls();
+        assert!(
+            calls.contains(&wsl("/usr/lib/wsl/lib/nvidia-smi -L")),
+            "{calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.contains("uv venv") || c.contains("rm -rf"))
+        );
+        assert_eq!(managed(dir.path()), None);
+    }
+
+    #[test]
+    fn a_failure_removes_the_unfinished_environment_and_records_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan();
+        let venv = venv_of(&plan);
+        let mut fake = WslFake::new(dir.path());
+        fake.fail = vec!["uv pip install"];
+        let log = RefCell::new(Vec::new());
+        let error = setup(&fake, dir.path(), &plan, &mut events(&log)).unwrap_err();
+        assert!(error.step.contains("installing vLLM"), "{error}");
+        assert!(
+            error.tail.iter().any(|line| line.contains("boom")),
+            "{error:?}"
+        );
+        let calls = fake.calls();
+        assert_eq!(
+            calls.last().unwrap(),
+            &wsl(&format!("rm -rf -- {venv}")),
+            "{calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.ends_with("--version") && c.contains("bin/vllm"))
+        );
+        assert!(
+            log.borrow()
+                .iter()
+                .any(|e| matches!(e, Event::Warning(w) if w.contains("unfinished")))
+        );
+        assert_eq!(managed(dir.path()), None);
+    }
+
+    #[test]
+    fn a_missing_distro_or_wsl_is_explained() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fake = WslFake::new(dir.path());
+        fake.fail = vec!["printenv HOME"];
+        let error = setup(&fake, dir.path(), &plan(), &mut |_| {}).unwrap_err();
+        assert!(error.message.contains("wsl.exe -l -v"), "{error}");
+        let mut absent = WslFake::new(dir.path());
+        absent.no_wsl = true;
+        let error = setup(&absent, dir.path(), &plan(), &mut |_| {}).unwrap_err();
+        assert!(error.message.contains("wsl --install"), "{error}");
+        // No distribution chosen is refused before WSL is asked.
+        let none = Plan::new(Mode::Wsl, &settings(""), None).unwrap();
+        let untouched = WslFake::new(dir.path());
+        assert!(setup(&untouched, dir.path(), &none, &mut |_| {}).is_err());
+        assert!(untouched.calls().is_empty());
+    }
+
+    #[test]
+    fn setting_up_what_is_there_changes_nothing_and_another_distro_needs_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan();
+        let fake = WslFake::new(dir.path());
+        setup(&fake, dir.path(), &plan, &mut |_| {}).unwrap();
+        let before = fake.calls().len();
+        setup(&fake, dir.path(), &plan, &mut |_| {}).unwrap();
+        let again: Vec<String> = fake.calls()[before..].to_vec();
+        assert_eq!(
+            again,
+            vec![
+                wsl("printenv HOME"),
+                wsl(&format!("test -x {}/bin/vllm", venv_of(&plan)))
+            ]
+        );
+        let other = Plan::new(Mode::Wsl, &settings("Debian"), None).unwrap();
+        let error = setup(&fake, dir.path(), &other, &mut |_| {}).unwrap_err();
+        assert!(error.message.contains("already set up"), "{error}");
+        assert!(error.message.contains("Ubuntu"), "{error}");
+        // A venv setup is another mode.
+        let venv = Plan::new(Mode::Venv, &VllmSettings::default(), None).unwrap();
+        assert!(check_existing(dir.path(), &venv).is_err());
+    }
+
+    #[test]
+    fn status_and_remove_work_inside_the_distro() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan();
+        let venv = venv_of(&plan);
+        let fake = WslFake::new(dir.path());
+        setup(&fake, dir.path(), &plan, &mut |_| {}).unwrap();
+
+        let status = status_checked(&fake, dir.path());
+        assert!(status.present);
+        assert_eq!(status.path, Some(PathBuf::from(&venv)));
+        assert_eq!(status.managed.as_ref().map(|m| m.mode), Some(Mode::Wsl));
+        // Its files gone from the distro: not present.
+        *fake.installed.borrow_mut() = false;
+        assert!(!status_checked(&fake, dir.path()).present);
+
+        let before = fake.calls().len();
+        let log = RefCell::new(Vec::new());
+        let removed = remove(&fake, dir.path(), &mut events(&log)).unwrap();
+        assert_eq!(removed.map(|m| m.mode), Some(Mode::Wsl));
+        let version_dir = format!(
+            "{HOME}/.local/share/imperium/runtimes/vllm/{}",
+            plan.version
+        );
+        assert_eq!(
+            fake.calls()[before..].to_vec(),
+            vec![wsl(&format!("rm -rf -- {version_dir}"))]
+        );
+        assert_eq!(managed(dir.path()), None);
+        assert!(!state_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn remove_still_drops_the_record_when_the_distro_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan();
+        let setup_fake = WslFake::new(dir.path());
+        setup(&setup_fake, dir.path(), &plan, &mut |_| {}).unwrap();
+        let mut fake = WslFake::new(dir.path());
+        fake.fail = vec!["rm -rf"];
+        let log = RefCell::new(Vec::new());
+        remove(&fake, dir.path(), &mut events(&log)).unwrap();
+        assert!(
+            log.borrow()
+                .iter()
+                .any(|e| matches!(e, Event::Warning(w) if w.contains("rm -rf")))
+        );
+        assert_eq!(managed(dir.path()), None);
+    }
+
+    #[test]
+    fn a_record_edited_to_point_elsewhere_is_ignored_and_never_acted_on() {
+        for (distro, venv) in [
+            ("Ubuntu", "/etc"),
+            (
+                "Ubuntu",
+                "/home/x/../../etc/.local/share/imperium/runtimes/vllm/0.11.0/venv",
+            ),
+            ("Ubuntu", "/.local/share/imperium/runtimes/vllm/0.11.0/venv"),
+            (
+                "-d",
+                "/home/x/.local/share/imperium/runtimes/vllm/0.11.0/venv",
+            ),
+            (
+                "Ubuntu",
+                "/home/x/.local/share/imperium/runtimes/vllm/0.9.0/venv",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            write_managed(
+                dir.path(),
+                &Managed {
+                    mode: Mode::Wsl,
+                    version: "0.11.0".into(),
+                    image: None,
+                    distro: Some(distro.into()),
+                    venv: Some(venv.into()),
+                },
+            )
+            .unwrap();
+            assert_eq!(managed(dir.path()), None, "{distro} {venv}");
+            let fake = WslFake::new(dir.path());
+            assert!(remove(&fake, dir.path(), &mut |_| {}).is_err(), "{venv}");
+            assert!(fake.calls().is_empty(), "{venv}");
+            assert!(state_path(dir.path()).exists());
+        }
+        // A WSL record with no distro is no record either.
+        let dir = tempfile::tempdir().unwrap();
+        write_managed(
+            dir.path(),
+            &Managed {
+                mode: Mode::Wsl,
+                version: "0.11.0".into(),
+                image: None,
+                distro: None,
+                venv: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(managed(dir.path()), None);
+    }
+
+    fn recorded(dir: &Path) -> Managed {
+        let fake = WslFake::new(dir);
+        setup(&fake, dir, &plan(), &mut |_| {}).unwrap()
+    }
+
+    #[test]
+    fn windows_uses_wsl_mode_when_the_record_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = recorded(dir.path());
+        let none = || -> Option<String> { None };
+        let launch = resolve_for(dir.path(), &VllmSettings::default(), true, &none);
+        assert_eq!(
+            launch,
+            Launch::Wsl {
+                wsl: PathBuf::from("wsl.exe"),
+                distro: "Ubuntu".into(),
+                program: format!("{}/bin/vllm", record.venv.unwrap()),
+            }
+        );
+        // Off Windows the record is not used, and `resolve` is unchanged.
+        assert_eq!(
+            resolve_for(dir.path(), &VllmSettings::default(), false, &none),
+            Launch::Command(PathBuf::from("vllm"))
+        );
+        assert_eq!(
+            resolve(dir.path(), ""),
+            Launch::Command(PathBuf::from("vllm"))
+        );
+    }
+
+    #[test]
+    fn windows_without_a_wsl_record_or_command_has_no_wsl_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = || Some("Ubuntu".to_string());
+        assert_eq!(
+            resolve_for(dir.path(), &VllmSettings::default(), true, &default),
+            Launch::Command(PathBuf::from("vllm"))
+        );
+        for command in ["vllm", r"C:\tools\vllm.exe", r"\\nas\share\vllm"] {
+            let settings = VllmSettings {
+                command: command.into(),
+                ..VllmSettings::default()
+            };
+            assert_eq!(
+                resolve_for(dir.path(), &settings, true, &default),
+                Launch::Command(PathBuf::from(command)),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_into_wsl_picks_its_distro_from_the_path_the_setting_or_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = || Some("Debian".to_string());
+        let wsl_launch = |distro: &str, program: &str| Launch::Wsl {
+            wsl: PathBuf::from("wsl.exe"),
+            distro: distro.into(),
+            program: program.into(),
+        };
+        let with = |command: &str, distro: &str| VllmSettings {
+            command: command.into(),
+            wsl_distro: distro.into(),
+            ..VllmSettings::default()
+        };
+        assert_eq!(
+            resolve_for(dir.path(), &with("/opt/venv/bin/vllm", ""), true, &default),
+            wsl_launch("Debian", "/opt/venv/bin/vllm")
+        );
+        assert_eq!(
+            resolve_for(
+                dir.path(),
+                &with("/opt/venv/bin/vllm", "Ubuntu"),
+                true,
+                &default
+            ),
+            wsl_launch("Ubuntu", "/opt/venv/bin/vllm")
+        );
+        assert_eq!(
+            resolve_for(
+                dir.path(),
+                &with(r"\\wsl$\Fedora\opt\venv\bin\vllm", "Ubuntu"),
+                true,
+                &default
+            ),
+            wsl_launch("Fedora", "/opt/venv/bin/vllm")
+        );
+        // No distro can be named: the command stays a (useless on Windows) command.
+        let none = || -> Option<String> { None };
+        assert_eq!(
+            resolve_for(dir.path(), &with("/opt/vllm", ""), true, &none),
+            Launch::Command(PathBuf::from("/opt/vllm"))
+        );
+        // The default distro is asked for only when needed.
+        let never = || -> Option<String> { panic!("must not ask") };
+        resolve_for(dir.path(), &with("/opt/vllm", "Ubuntu"), true, &never);
+        resolve_for(dir.path(), &VllmSettings::default(), true, &never);
+    }
+
+    #[test]
+    fn output_with_nul_characters_from_wsl_is_cleaned() {
+        let mut pending = b"T\0h\0e\0 \0e\0r\0r\0o\0r\0".to_vec();
+        let mut lines = Vec::new();
+        emit(&mut pending, &mut |line| lines.push(line.to_string()));
+        assert_eq!(lines, vec!["The error".to_string()]);
     }
 }

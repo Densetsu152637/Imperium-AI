@@ -35,7 +35,7 @@ bundle) are supported from the first release. Feature differences are explicit, 
 | Capability                 | Linux                     | Windows                        | macOS                  |
 | -------------------------- | ------------------------- | ------------------------------ | ---------------------- |
 | llama.cpp                  | CPU, CUDA, Vulkan, ROCm   | CPU, CUDA, Vulkan              | Metal, CPU             |
-| vLLM                       | Native                    | WSL2, Docker, or remote host   | Remote host only       |
+| vLLM                       | Native                    | WSL2 (managed), Docker, remote | Remote host only       |
 | Container isolation        | Docker / Podman           | Docker Desktop / Podman (WSL2) | Docker / Podman (VM)   |
 | Keychain                   | Secret Service            | Credential Manager             | Keychain               |
 

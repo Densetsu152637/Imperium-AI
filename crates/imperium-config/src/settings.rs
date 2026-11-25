@@ -1819,7 +1819,7 @@ pub struct RuntimeSettings {
     pub vllm: VllmSettings,
 }
 
-/// vLLM serves Hugging Face model folders (Linux, WSL2, or a remote host).
+/// vLLM serves Hugging Face model folders (Linux, WSL2 including from Windows, or a remote host).
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct VllmSettings {
@@ -1835,6 +1835,9 @@ pub struct VllmSettings {
     pub version: String,
     /// The Docker image `imperium runtime vllm setup --docker` pulls; empty is the pinned one.
     pub docker_image: String,
+    /// The WSL2 distribution vLLM runs in on Windows (`imperium runtime vllm setup --wsl`);
+    /// empty is WSL's default distribution.
+    pub wsl_distro: String,
 }
 
 impl Default for VllmSettings {
@@ -1845,6 +1848,7 @@ impl Default for VllmSettings {
             extra_args: Vec::new(),
             version: String::new(),
             docker_image: String::new(),
+            wsl_distro: String::new(),
         }
     }
 }
