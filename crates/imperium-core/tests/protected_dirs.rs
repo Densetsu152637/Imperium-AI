@@ -1,6 +1,6 @@
 //! The folders whose files the daemon runs or vouches for are ones the safety floor always asks
 //! about writing into: installed mods, `<config>/plugins`, and the user's own plugin folders
-//! (a plugin there can carry hooks that rewrite calls).
+//! (a plugin there can carry hooks that rewrite calls), and now the whole config folder.
 
 use std::path::Path;
 
@@ -32,6 +32,18 @@ fn mods_and_plugin_folders_are_guarded() {
         &paths.config_dir().join("plugins/p/hooks/hooks.json")
     ));
     assert!(floored(&own.path().join("p/hooks/hooks.json")));
-    // Other things in the config folder are not covered by this rule.
-    assert!(!floored(&paths.config_dir().join("skills/s/SKILL.md")));
+    // The whole config folder is guarded: the user's skills, agents, commands and settings too.
+    for guarded in [
+        "skills/s/SKILL.md",
+        "agents/a.md",
+        "commands/c.md",
+        "config.toml",
+    ] {
+        assert!(floored(&paths.config_dir().join(guarded)), "{guarded}");
+    }
+    // And the daemon's approval stores in the data folder.
+    assert!(floored(&paths.data_dir().join("skill-installs.json")));
+    assert!(floored(&paths.data_dir().join("plugin-installs.json")));
+    // A folder beside the config folder is not.
+    assert!(!floored(&home.path().join("elsewhere/x.md")));
 }
