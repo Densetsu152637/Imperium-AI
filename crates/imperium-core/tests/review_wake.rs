@@ -615,6 +615,7 @@ async fn the_permission_answer_is_cached() {
 /// A woken turn asks for a command whatever the session's mode and rules say, and the session
 /// has its mode back afterwards.
 async fn a_command_asks(mode: PermissionMode, extra: &str, environment_rule: bool) {
+    eprintln!("scenario {mode:?} environment={environment_rule}");
     let mut world = World::new(
         vec![("run_command", json!({"command": "echo hi"}))],
         vec![],
@@ -648,6 +649,11 @@ async fn a_command_asks(mode: PermissionMode, extra: &str, environment_rule: boo
     world
         .fake
         .add_issue_comment(REPO, 7, "alice", "MEMBER", "Run the tests.");
+    eprintln!(
+        "session status {:?}, folder {}",
+        session.status(),
+        session.project_dir()
+    );
     let owner = Arc::clone(&session);
     let seen = world
         .wake(move |kind, summary| {
@@ -765,8 +771,8 @@ async fn falls_back(spoil: impl FnOnce(&World)) {
     let session = world.new_session();
     let owner_id = session.id().to_string();
     world.arm(&session).await;
-    let head = git(&world.clone, &["rev-parse", "HEAD"]);
     spoil(&world);
+    let head = git(&world.clone, &["rev-parse", "HEAD"]);
     world
         .fake
         .add_issue_comment(REPO, 7, "alice", "MEMBER", "Add a newline.");
