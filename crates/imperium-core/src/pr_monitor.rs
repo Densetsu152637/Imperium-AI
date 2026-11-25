@@ -62,8 +62,6 @@ struct Tracked {
     /// differs, the poll turns auto-merge off. `None` when Imperium did not enable it (it was
     /// enabled elsewhere, or before this was recorded): then the poll leaves it alone.
     confirmed_head: Option<String>,
-    /// Said once in the next status: why the daemon turned auto-merge off.
-    notice: Option<String>,
 }
 
 /// A session's binding: its pull request and its own switches (stage 7 acts on them).
@@ -270,7 +268,6 @@ impl PrMonitor {
             next_due: Instant::now(),
             read_at: None,
             confirmed_head: None,
-            notice: None,
         });
         if tracked.status.is_none() {
             tracked.status = saved;
@@ -630,14 +627,38 @@ impl PrMonitor {
             return;
         }
         self.set_confirmed(state, key, None);
-        if let Some(tracked) = self.lock().tracked.get_mut(key) {
-            tracked.notice = Some(MOVED_NOTICE.to_string());
+        // The card shows why until the next poll reads it again.
+        let (changed, sessions) = {
+            let mut inner = self.lock();
+            let Some(tracked) = inner.tracked.get_mut(key) else {
+                return;
+            };
+            let Some(shown) = tracked.status.as_mut() else {
+                return;
+            };
+            shown.auto_merge.enabled = false;
+            shown.auto_merge.method = None;
+            shown.auto_merge.reason_unavailable = Some(MOVED_NOTICE.to_string());
+            shown.updated_at = now_ms();
+            let shown = shown.clone();
+            let sessions: Vec<String> = inner
+                .sessions
+                .iter()
+                .filter(|(_, bound)| bound.key == *key)
+                .map(|(id, _)| id.clone())
+                .collect();
+            (shown, sessions)
+        };
+        for id in sessions {
+            self.save(state, &id);
+            state.announce(
+                PULL_REQUESTS_CHANGED,
+                PullRequestsChangedParams {
+                    session_id: id.clone(),
+                    status: Some(self.personal(&id, changed.clone())),
+                },
+            );
         }
-        // The recursion is boxed: this read finds auto-merge off and the record gone.
-        let again: std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<PrStatus, String>> + Send + '_>,
-        > = Box::pin(self.read(state, key));
-        let _ = again.await;
     }
 
     /// Reads a pull request from GitHub now when a session follows it, so the cache and the
@@ -801,10 +822,6 @@ impl PrMonitor {
             };
             match result {
                 Ok(mut fresh) => {
-                    // Why the daemon turned auto-merge off, said once.
-                    if let Some(notice) = tracked.notice.take() {
-                        fresh.auto_merge.reason_unavailable.get_or_insert(notice);
-                    }
                     tracked.failures = 0;
                     tracked.last_error = None;
                     tracked.read_at = Some(Instant::now());
