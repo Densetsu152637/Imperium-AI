@@ -3,9 +3,11 @@
 R1: no `Name` or `Attribute` whose identifier is a dynamic-code name, with listed exceptions.
 R2: no `Attribute` whose attribute name starts with `_`.
 R3: no import inside a function.
-R4: `parse.py`, `guard.py` and `build.py` import only `re`, `math`, `dataclasses` and `typing`,
-    plus (in `build.py`) `from sympy import <names of the table>` and, because they are the
-    package's own pure modules, the sibling modules they are built on (listed below).
+R4: every module imports from an allowlist, not a denylist: `parse.py`, `guard.py` and
+    `build.py` import only `re`, `math`, `dataclasses` and `typing`, plus (in `build.py`)
+    `from sympy import <names of the table>` and the sibling modules they are built on. A module
+    with no entry below gets the default (those four, `types` and the package's own modules), and
+    the modules with exceptions get exactly those. Stages 2a to 5 add their imports here.
 """
 
 import ast
@@ -57,19 +59,29 @@ FORBIDDEN = frozenset(
 )
 
 # Attribute names that reach loaded modules (`sys.modules["os"]`), forbidden as attributes only.
-FORBIDDEN_ATTRIBUTES = frozenset({"modules"})
+FORBIDDEN_ATTRIBUTES = frozenset(
+    {"modules", "get_type_hints", "make_dataclass", "ForwardRef", "resolve_name", "locate"}
+)
 
 # The only exceptions, per module (plan D1 R1).
 EXCEPTIONS = {
     "pool.py": {"subprocess", "os"},
     "limits_macos.py": {"ctypes"},
-    "landlock.py": {"ctypes"},
+    "landlock.py": {"ctypes", "os"},
 }
 
 BASE_IMPORTS = {"re", "math", "dataclasses", "typing"}
+DEFAULT_IMPORTS = BASE_IMPORTS | {"types"}  # plus any `imperium_cas` module
+# Imports beyond the default, per module (the exceptions of R1, and what each stage needs).
+EXTRA_IMPORTS = {
+    "pool.py": {"subprocess", "os"},
+    "limits_macos.py": {"ctypes"},
+    "landlock.py": {"ctypes", "os", "sys"},
+}
 # R4's list plus the sibling modules each pure module is built on. The plan's R4 names no sibling
 # imports, but `guard` needs `parse`'s tree types and every module needs the function table.
 R4_ALLOWED = {
+    "functions.py": {"dataclasses", "types"},
     "parse.py": BASE_IMPORTS | {"imperium_cas.functions"},
     "guard.py": BASE_IMPORTS | {"imperium_cas.functions", "imperium_cas.parse"},
     "build.py": BASE_IMPORTS
@@ -129,16 +141,21 @@ def check_import(node, module: str, line: int, allowed_names: set[str]) -> list[
         if name in FORBIDDEN - allowed_names:
             problems.append(f"R1 line {line}: imports the name {name}")
     allowed = R4_ALLOWED.get(module)
-    if allowed is not None:
-        for target in modules:
-            if target not in allowed:
-                problems.append(f"R4 line {line}: {module} imports {target}")
-            if target == "sympy":
-                if module != "build.py" or not isinstance(node, ast.ImportFrom):
-                    problems.append(f"R4 line {line}: sympy only as `from sympy import <name>`")
-                for name in names:
-                    if name not in SYMPY_NAMES:
-                        problems.append(f"R4 line {line}: sympy name {name} is not in the table")
+    if allowed is None:
+        allowed = DEFAULT_IMPORTS | EXTRA_IMPORTS.get(module, set())
+        if module == "__init__.py":
+            allowed = set()
+    for target in modules:
+        if target not in allowed and not (
+            module not in R4_ALLOWED and target.split(".")[0] == "imperium_cas"
+        ):
+            problems.append(f"R4 line {line}: {module} imports {target}")
+        if target == "sympy":
+            if module != "build.py" or not isinstance(node, ast.ImportFrom):
+                problems.append(f"R4 line {line}: sympy only as `from sympy import <name>`")
+            for name in names:
+                if name not in SYMPY_NAMES:
+                    problems.append(f"R4 line {line}: sympy name {name} is not in the table")
     return problems
 
 
@@ -220,6 +237,23 @@ def test_the_scan_catches_what_it_should():
         "import codeop": "R1",
         "code.interact()": "R1",
         "sys.modules['os']": "R1",
+        "import pkgutil": "R4",
+        "pkgutil.resolve_name('os.system')": "R1",
+        "import timeit": "R4",
+        "import cProfile": "R4",
+        "import profile": "R4",
+        "import pydoc": "R4",
+        "pydoc.locate('os.system')": "R1",
+        "import posix": "R4",
+        "import nt": "R4",
+        "typing.get_type_hints(x)": "R1",
+        "typing.ForwardRef('1+1')": "R1",
+        "dataclasses.make_dataclass('A', [])": "R1",
+        "import operator": "R4",
+        "import json": "R4",
+        "import functools": "R4",
+        "import threading": "R4",
+        "import sys": "R4",
     }
     for source, rule in cases.items():
         problems = scan(source, "other.py")

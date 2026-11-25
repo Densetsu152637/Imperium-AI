@@ -1117,11 +1117,13 @@ Commands are what CI runs; nothing needs a local Rust build.
       `Symbol`"); `sin x` is the two-names error. A relation is allowed only at the top level.
       `!` parses to a call of `factorial`, so the guard needs no separate rule.
     - `2e3` and `2E+3` are numbers; `2e` and `2E` are `2*e` and `2*E`.
-    - D2 refinements (the first review found the first version unsound; this is the fixed one):
+    - D2 refinements (two reviews found the first versions unsound; this is the current one). The
+      guard is a first line of defence, built to be conservative for every case the reviews
+      found; it is not a proof, and D3's limits remain the backstop:
       - A symbol is an exact unit constant (`1`), so the constant parts of an expression with
         symbols are always sized: `(2x)^(10^6)` is refused like `2^(10^6)`, and `x^(10^6)`,
         `(x+y+z)^5000` and `exp(x^x^x)` pass. `(x+1)^(10^6)` is refused for the same reason.
-      - Every estimate is an upper bound. It carries a magnitude `mag`, a digit budget for the
+      - Every estimate is meant as an upper bound. It carries a magnitude `mag`, a digit budget for the
         numerator and denominator that runs through inexact values too (`(pi+1e70)-1e70` collapses
         to `pi`), the small exact value `val` (up to 64 digits, so `10^6` is known exactly), and an
         `unb` flag for values that may be arbitrarily large.
@@ -1143,13 +1145,32 @@ Commands are what CI runs; nothing needs a local Rust build.
         of ten. A constant `exp`, `sinh` or `cosh` of more than about 230,000 is refused
         (`exp(1000)` is allowed) because its result may be raised to a power.
       - A negative matrix power `M^(-n)` is sized as the inverse (`rows` times the digits), then
-        the power.
+        the power. How far a matrix with symbolic entries grows under a product is bounded only
+        by D3's limits (stage 2b).
+      - Inverse pairs collapse in SymPy (`sin(asin(z))`, `tan(atan(z))`, `log(exp(z))`,
+        `sin(pi - asin(z))`), so a function's result never claims to be smaller than its
+        arguments: the magnitude and the digit budget pass through every function, and an
+        unbounded value carries its budget instead of 1.
+      - A negative or unknown-sign power of a tiny base is huge: for an exact base the magnitude
+        uses the denominator's digits, for an inexact base the result is unbounded. An exact
+        value's bound for an exponent comes from its numerator's digits (or its small exact
+        value), not from its magnitude estimate.
+      - `floor`, `ceiling`, `Min`, `Max`, `gcd`, `lcm` and `Mod` keep the exact value of small
+        exact inputs, and `binomial(n, k)` with an untracked `k` is bounded by `2^(|n|+k)`.
+      - The limit is exclusive: a result of 100,000 digits or more is refused (`10^99998` is the
+        largest power of ten).
+      - Conservative refusals: a symbol counts as 1, so `(x+1)^(10^6)` is refused like
+        `2^(10^6)`, and so is `sin(x)^(10^6)`; the error text says so.
     - Parser: every recursive call adds one to the depth, including the right side of a binary
       or implicit product, so the depth cap bounds Python's stack for every shape. `x²³` is
       refused rather than read as `x^(2^3)`.
-    - The AST scan also forbids `__builtins__`, `builtins`, `breakpoint`, `attrgetter`,
-      `methodcaller`, `runpy`, `code`, `codeop` and the attribute `modules`, and scans
-      subpackages. The fuzz seed is the commit's in CI (`GITHUB_SHA`); `CAS_FUZZ_SEED` overrides
+    - The AST scan imports from a per-module allowlist (the default is `re`, `math`,
+      `dataclasses`, `typing`, `types` and the package's own modules; `pool.py`, `limits_macos.py`
+      and `landlock.py` get their listed exceptions), so `pkgutil`, `timeit`, `cProfile`,
+      `pydoc`, `posix`, `nt` and the like are refused. It also forbids the names `__builtins__`,
+      `builtins`, `breakpoint`, `attrgetter`, `methodcaller`, `runpy`, `code` and `codeop`, the
+      attributes `modules`, `get_type_hints`, `make_dataclass`, `ForwardRef`, `resolve_name` and
+      `locate`, and scans subpackages. The fuzz seed is the commit's in CI (`GITHUB_SHA`); `CAS_FUZZ_SEED` overrides
       it. The 100 ms per input check takes the best of three runs, with a 500 ms limit in CI.
   - **Not covered here.** The corpus runs at parse and guard level only. `test_no_string_to_sympy`
     and the audit allow-list for the worker are stage 2a. The `python-cas` job's limits tests are
@@ -1186,7 +1207,7 @@ Commands are what CI runs; nothing needs a local Rust build.
 - Handoff notes: record the measured warm-up time, memory and allow-list in the outcome; stage
   2b's default limits and stage 5's warm-up allowance use them.
   The tree can be 2,000 levels deep (a long `1+1+1+...`), so `build.py` walks it with
-  `parse.postorder`, never recursively. The AST scan's `EXCEPTIONS` and `R4_ALLOWED` in
+  `parse.postorder`, never recursively (a chain of `!` about 4,000 deep is a valid tree). The AST scan's `EXCEPTIONS` and `R4_ALLOWED` in
   `tests/test_no_dynamic_code.py` need `os._exit` for `worker.py` and the SymPy names `build.py`
   imports (see stage 1's outcome).
   `test_no_string_to_sympy.py` must cover the string-taking methods too (`.subs`, `.solve` and the

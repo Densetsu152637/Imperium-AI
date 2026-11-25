@@ -104,7 +104,7 @@ def test_a_numeric_base_is_not_an_expand_case():
         "2^1000",
         "factorial(1000)",
         "1000!",
-        "10^99999",
+        "10^99998",
         "2^300000",
         "(1/2)^1000",
         "2^(-1000)",
@@ -182,17 +182,17 @@ def test_symbolic_class():
     allowed("atan2(1, 2)")
     assert allowed("Abs(-5)").val == (5, 1)
     assert allowed("sign(-5)").exact
-    allowed("log(10^99999)")
-    allowed("sin(x)^100000")
-    refused("sin(x)^1000000")
+    allowed("log(10^99998)")
+    allowed("sin(x)^99999")
+    refused("sin(x)^999990")
 
 
 def test_root_class_is_a_power():
     refused("sqrt(2)^(10^6)")
     refused("cbrt(2)^(10^6)")
-    allowed("sqrt(2)^(10^5)")
-    allowed("sqrt(10^99999)")
-    allowed("cbrt(10^99999)")
+    allowed("sqrt(2)^(9*10^4)")
+    allowed("sqrt(10^99998)")
+    allowed("cbrt(10^99998)")
     refused("root(2, 1/10^6)")  # the 1,000,000th root of 2 as a power: 2^(10^6)
     allowed("root(2, 10^7)")
     allowed("root(2, 0)")
@@ -466,12 +466,34 @@ UNSOUND_ESTIMATES = [
     "(1e70/((pi+1e70)-1e70))^(10^6)",
 ]
 
+# B1 (inverse pairs collapse), B2 (negative powers of tiny bases), B3 (untracked binomial k).
+SECOND_REVIEW = [
+    "2^sin(asin(10^1000))",
+    "2^cos(acos(10^1000))",
+    "2^cot(acot(10^1000))",
+    "2^sin(pi-asin(10^1000))",
+    "2^sin(pi-asin(10^1000)+x-x)",
+    "2^floor(sinh(asinh(10^1000)))",
+    "tan(atan(10^99000))^(10^5)",
+    "tanh(atanh(10^99000))^(10^5)",
+    "sin(asin(10^99000))^(10^5)",
+    "2^(10*log(exp(2*10^5)))",
+    "2^((1-0.99999999999999999999999999999999999999999999999999)^(-10))",
+    "2^floor((pi-3.14159265358979323846264338327950288419716939937510)^(-5))",
+    "2^root(10,-1/10^10)",
+    "binomial(10^6, floor(500000))",
+    "binomial(10^6, ceiling(500000))",
+    "binomial(10^6, Max(500000, 1))",
+    "binomial(10^6, gcd(500000, 500000))",
+    "binomial(10^6, Min(500000, 500001))",
+]
+
 # F4: negative matrix powers are inverses.
 NEGATIVE_MATRIX_POWERS = ["[[2,1],[1,1]]^(-10^5)", "[[2,1],[1,1]]^(-10^6)"]
 
 
 @pytest.mark.parametrize(
-    "text", SYMBOLS_HIDE_CONSTANTS + UNSOUND_ESTIMATES + NEGATIVE_MATRIX_POWERS
+    "text", SYMBOLS_HIDE_CONSTANTS + UNSOUND_ESTIMATES + SECOND_REVIEW + NEGATIVE_MATRIX_POWERS
 )
 def test_reviewed_inputs_are_refused(text):
     refused(text)
@@ -528,3 +550,50 @@ def test_negative_matrix_powers_cost_the_inverse():
     positive = allowed("[[2,1],[1,1]]^(3*10^4)").digits
     negative = allowed("[[2,1],[1,1]]^(-3*10^4)").digits
     assert negative > 1.5 * positive
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "sin(asin(x))",
+        "2^sin(x)",
+        "tan(atan(x))^2",
+        "x^(-1)",
+        "(x+1)^(-3)",
+        "2^x",
+        "binomial(5, floor(2))",
+    ],
+)
+def test_second_review_cases_that_stay_allowed(text):
+    allowed(text)
+
+
+def test_an_inverse_pair_keeps_its_arguments_size():
+    assert allowed("sin(asin(10^1000))").mag >= 1000
+    assert allowed("tan(atan(10^1000))").num >= 1000
+    assert allowed("sin(pi - asin(10^1000))").mag >= 1000
+    assert allowed("log(exp(10^4))").num >= 5
+
+
+def test_a_negative_power_of_a_tiny_base_is_big():
+    est = allowed("(1-0.999999999999999999999999999999999999999999999999)^(-10)")
+    assert est.mag >= 100 or est.unb
+    assert allowed("pi^(-2)").unb  # an inexact base to a possibly negative power
+
+
+def test_select_keeps_small_exact_values():
+    assert allowed("floor(7/2)").val == (3, 1)
+    assert allowed("ceiling(7/2)").val == (4, 1)
+    assert allowed("floor(-7/2)").val == (-4, 1)
+    assert allowed("Max(3, 5, 4)").val == (5, 1)
+    assert allowed("Min(3, 5, 4)").val == (3, 1)
+    assert allowed("gcd(12, 18)").val == (6, 1)
+    assert allowed("lcm(4, 6)").val == (12, 1)
+    assert allowed("Mod(7, 3)").val == (1, 1)
+    assert allowed("Mod(-7, 3)").val == (2, 1)
+    assert allowed("Mod(7, -3)").val == (-2, 1)
+
+
+def test_the_limit_is_exclusive():
+    allowed("10^99998")
+    refused("10^99999")
