@@ -680,7 +680,7 @@ Each is checked in stage 1 and its outcome recorded in this plan before stage 2 
   worst macOS start is once per program and invisible beside a model turn, and a spare idle
   worker costs a process and a slot. Stage 6 re-measures real programs and may revisit it for
   macOS only. Size 40 to 43 MiB in 1a (failed); stage 1b's owned `MontyRun` loop removed the
-  type checker, and the shipped worker is 13 to 15 MiB (see the stage 1b Outcome).
+  type checker, and the shipped worker is 12.5 to 15.1 MiB (see the stage 1b Outcome).
 - **A5.** Qwen3.5-4B writes short Python programs that stay inside Monty's subset often enough.
   Stage 6 measures syntax, `NotImplementedError` and `NameError` rates.
 - **A6.** The guided-harness pilot's failures on aggregation are reachable by code: the knowledge
@@ -958,13 +958,14 @@ lines of the `script-worker` job):
 
 | OS | Binary | Cold start (median, max) | Resident |
 | --- | --- | --- | --- |
-| Linux x86-64 | MEASURE_X86_SIZE | MEASURE_X86_START | MEASURE_X86_RSS |
+| Linux x86-64 | 15.1 MiB | 1.4 ms, 1.6 ms | 7.9 MiB |
 | Linux aarch64 | 14.1 MiB | 1.6 ms, 1.7 ms | 7.6 MiB |
-| macOS | MEASURE_MAC_SIZE | MEASURE_MAC_START | MEASURE_MAC_RSS |
+| macOS (arm64) | 12.5 MiB | 24.5 ms, 180.5 ms | 11.2 MiB |
 | Windows x86-64 | 12.7 MiB | 4.5 ms, 9.2 ms (the confined launch included) | not measured |
 
 **A4 now holds**: every binary is under 20 MB (40 to 43 MiB in 1a), and every median cold start is
-under 50 ms. **A3 holds**: the restricted Low token, the suspended launch, the job assignment and
+under 50 ms (the macOS worst case, 180 ms, is one start in fifteen; as in 1a the target is the
+median, and stage 6 re-measures). **A3 holds**: the restricted Low token, the suspended launch, the job assignment and
 the pipes work for the CI runner's user, and the label is set and propagated on files the daemon
 owns.
 
