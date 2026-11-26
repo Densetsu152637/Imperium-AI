@@ -978,11 +978,24 @@ fn seatbelt_profile(
             "(deny network-outbound (remote tcp \"localhost:{port}\"))"
         ));
     }
+    // Terminal devices: a command must not read the keystrokes of, or write into, a terminal
+    // that is not its own (the user's terminal panes run on these). `/dev/tty`, the command's
+    // own controlling terminal, stays, as do `/dev/null`, `/dev/zero` and `/dev/urandom`; every
+    // other `/dev/tty...` (`ttys<n>`, the old `ttyp<n>`, serial lines), every `/dev/pty...` and
+    // `/dev/ptmx` (which would make a new one) are refused. Last, so no allow above wins.
+    profile.push_str(TERMINAL_DEVICES);
     if !network {
         profile.push_str("(deny network*)");
     }
     profile
 }
+
+/// The Seatbelt rule that refuses other terminals' devices (see [`seatbelt_profile`]).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const TERMINAL_DEVICES: &str = concat!(
+    "(deny file-read* file-write* file-ioctl ",
+    r##"(regex #"^/dev/tty.+") (regex #"^/dev/pty") (literal "/dev/ptmx"))"##,
+);
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn os_command(
@@ -1319,6 +1332,12 @@ mod tests {
             seatbelt_profile(&["/p".into()], &[], &Guards::default(), &[], &[], false)
                 .ends_with("(deny network*)")
         );
+        // Other terminals' devices are refused after every allow; `/dev/tty` itself is not.
+        assert!(profile.ends_with(TERMINAL_DEVICES), "{profile}");
+        assert!(TERMINAL_DEVICES.contains(r#"(regex #"^/dev/tty.+")"#));
+        assert!(TERMINAL_DEVICES.contains(r#"(regex #"^/dev/pty")"#));
+        assert!(TERMINAL_DEVICES.contains(r#"(literal "/dev/ptmx")"#));
+        assert!(!TERMINAL_DEVICES.contains(r#""/dev/tty""#));
     }
 
     #[test]

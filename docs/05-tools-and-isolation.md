@@ -1118,7 +1118,11 @@ do in any terminal opened there.
 **Residual risk at tier 0.** A command at isolation tier 0 runs as the user, so it can open the
 terminal's device itself (`/dev/pts/<n>` on Linux, `/dev/ttys<n>` on macOS, `AttachConsole` on
 Windows), read what is typed and write to it; no protocol gate stops that, as tier 0 gives code
-the user's full rights. The OS sandbox tier hides the device: a test opens a terminal, runs a
+the user's full rights. The OS sandbox tier hides the device: bubblewrap mounts a fresh `/dev`
+(`--dev /dev`, with a devpts of its own), so the host's `/dev/pts/<n>` is not there, and the
+Seatbelt profile refuses reading, writing and `ioctl` on every `/dev/tty...` but `/dev/tty`
+itself (the command's own controlling terminal), every `/dev/pty...` and `/dev/ptmx`, after every
+allow (`/dev/null`, `/dev/zero` and `/dev/urandom` stay). A test opens a terminal, runs a
 command at that tier (bubblewrap on Linux, Seatbelt on macOS) that tries to open the terminal's
 device for reading and for writing, and fails if either succeeds, while the same command outside
 the sandbox opens it.
