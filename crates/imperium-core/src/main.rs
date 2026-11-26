@@ -21,7 +21,7 @@ const IDLE_GRACE: Duration = Duration::from_secs(10);
 const BACKGROUND_STOP_WAIT: Duration = Duration::from_secs(5);
 
 fn main() -> anyhow::Result<()> {
-    run_pty_supervisor_if_asked();
+    imperium_core::run_pty_supervisor_if_asked();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("IMPERIUM_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
@@ -37,22 +37,6 @@ fn main() -> anyhow::Result<()> {
         .build()
         .context("could not start the I/O runtime")?
         .block_on(run())
-}
-
-/// The hidden `pty-supervisor` subcommand: on Linux each terminal's PTY child is this executable
-/// re-run (decision D5 of `docs/plans/terminal-file-panes.md`). It runs before anything else
-/// starts (no runtime, no logging, no configuration) and never returns.
-fn run_pty_supervisor_if_asked() {
-    #[cfg(target_os = "linux")]
-    {
-        let mut args = std::env::args_os().skip(1);
-        if args
-            .next()
-            .is_some_and(|argument| argument == imperium_pty::supervisor::SUBCOMMAND)
-        {
-            std::process::exit(imperium_pty::supervisor::run(args));
-        }
-    }
 }
 
 async fn run() -> anyhow::Result<()> {
@@ -174,6 +158,7 @@ async fn run() -> anyhow::Result<()> {
         Err(error) => tracing::warn!(%error, "GitHub auto-fix did not start"),
     }
     daemon.start_auto_archive();
+    daemon.start_terminal_sweeper();
     daemon.start_session_index();
     // A daemon a client started for itself exits when no client and no work uses it. The clock
     // starts here, after the slow part of starting, so a client that is waiting has its grace.
@@ -206,8 +191,12 @@ async fn run() -> anyhow::Result<()> {
         () = daemon.shutdown_requested() => {}
     }
     tracing::info!("shutting down");
-    // Background commands must not outlive the daemon.
-    daemon.stop_background_processes(BACKGROUND_STOP_WAIT).await;
+    // Background commands and terminals must not outlive the daemon; both end at once, within
+    // the same wait.
+    tokio::join!(
+        daemon.stop_background_processes(BACKGROUND_STOP_WAIT),
+        daemon.stop_terminals(BACKGROUND_STOP_WAIT),
+    );
     if tokio::time::timeout(BACKGROUND_STOP_WAIT, daemon.stop_speech())
         .await
         .is_err()

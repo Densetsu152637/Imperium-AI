@@ -269,6 +269,11 @@ impl Method for PluginsInspectFolder {
 pub struct PluginsInspectFolderParams {
     // The installed folder's name, as `plugins.list` shows it at the end of `folder`.
     pub name: String,
+    // `skill` approves an installed skill folder (`<config>/skills/<name>`) instead of a plugin:
+    // the same single-use challenge, with the skill's content hash and a constant digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub kind: Option<String>,
 }
 
 /// What `plugins.inspect` found: what the trust prompt shows before a plugin is installed.
@@ -595,6 +600,11 @@ pub struct PluginsApprovalChallengeParams {
     pub name: String,
     pub sha256: String,
     pub runs_digest: String,
+    // `skill` approves an installed skill folder (`<config>/skills/<name>`) instead of a plugin:
+    // the same single-use challenge, with the skill's content hash and a constant digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -629,6 +639,11 @@ pub struct PluginsApproveParams {
     pub sha256: String,
     pub runs_digest: String,
     pub challenge: String,
+    // `skill` approves an installed skill folder (`<config>/skills/<name>`) instead of a plugin:
+    // the same single-use challenge, with the skill's content hash and a constant digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

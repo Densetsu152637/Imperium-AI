@@ -287,14 +287,17 @@ impl Connection {
                 |params: PluginsApprovalChallengeParams| {
                     self.refuse_on_server(server_features::PLUGIN_APPROVAL)?;
                     crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
+                    let subject = crate::plugin_records::Subject::parse(params.kind.as_deref())
+                        .map_err(refused)?;
                     let folder =
-                        crate::plugin_install::resolve_for_approval(&self.state, &params.name)
+                        crate::plugin_install::resolve_subject(&self.state, subject, &params.name)
                             .map_err(refused)?;
                     let asked = crate::app_identity::Asked {
                         folder: &folder,
                         hash: &params.sha256,
                         runs: &params.runs_digest,
                         now_ms: imperium_api::time::unix_ms(),
+                        subject,
                     };
                     crate::app_identity::challenge(
                         &crate::app_identity::InstalledApp::of(&self.state),
@@ -330,13 +333,16 @@ impl Connection {
         let params: PluginsApproveParams = decode::<PluginsApprove>(c.params.take())?;
         self.refuse_on_server(server_features::PLUGIN_APPROVAL)?;
         crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
-        let folder = crate::plugin_install::resolve_for_approval(&self.state, &params.name)
+        let subject =
+            crate::plugin_records::Subject::parse(params.kind.as_deref()).map_err(refused)?;
+        let folder = crate::plugin_install::resolve_subject(&self.state, subject, &params.name)
             .map_err(refused)?;
         let asked = crate::app_identity::Asked {
             folder: &folder,
             hash: &params.sha256,
             runs: &params.runs_digest,
             now_ms: imperium_api::time::unix_ms(),
+            subject,
         };
         let app = crate::app_identity::InstalledApp::of(&self.state);
         let redeemed = crate::app_identity::redeem(

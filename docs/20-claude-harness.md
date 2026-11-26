@@ -29,7 +29,11 @@ What it does not do:
   option, and the harness never calls `session.control` `set_permission_mode`. It also refuses
   to answer an `mcp_sampling` request (an MCP server asking to use the user's model, see
   [05](05-tools-and-isolation.md#resources-prompts-and-sampling-implemented)): those stay with
-  the user in the desktop app or the CLI.
+  the user in the desktop app or the CLI. The same holds for a request to `install_extension` or
+  `uninstall_extension`: an agent never installs an extension without the user's explicit
+  approval, so a harness driven by another agent cannot give it. The refusal is the harness's
+  (it reads the asked tool's name); the daemon's own `session.respond` does not tell its clients
+  apart, so a client other than the harness can still answer.
 - **It never shows the token.** The token stays in the harness process; no tool result or error
   includes it (the integration test checks every reply for it). The harness is as trusted as
   the user who can read the endpoint file: anything that can run it can drive the daemon, so

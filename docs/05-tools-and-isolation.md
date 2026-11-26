@@ -713,11 +713,17 @@ action: `allow` (run without asking), `ask` (ask even where the tool would not),
   working directory. Matching ignores case on Windows.
 - **Other tools** (MCP tools, web and browser tools, memory, and the app config tools
   `set_model_card`, `install_extension`, `uninstall_extension`): only rules without a pattern
-  match. The app config tools run without asking by default (removing an extension an agent
-  did not install asks); a rule narrows them to *ask* or *deny*
-  ([06](06-extensibility.md#agents-manage-the-app-config-implemented)). An install running
-  without asking does not let the installed code run: a plugin with hooks or MCP servers is
-  installed turned off, and `activate_plugin` (which never asks) cannot start it; it is withheld until the user approves it in the Imperium desktop app; a plugin installed from a git URL or folder cannot be approved there yet (roadmap item 60).
+  match. `set_model_card` runs without asking by default. `install_extension` and
+  `uninstall_extension` always ask, in every permission mode: an agent never installs an
+  extension without the user's explicit approval. They are the tool provider's `always_asks`
+  (as for `browser_download`, above): approved afresh for each call, not covered by "allow for
+  this session", an allow rule, pre-approval, the `auto` classifier or the `full` mode, with no
+  "always allow" rule offered; a deny rule or plan mode still refuses them
+  ([06](06-extensibility.md#agents-manage-the-app-config-implemented)). Approving the install does
+  not let the installed code run, or load: a skill or plugin an agent installs is withheld by
+  the load-time gate (no skills, commands, agents, hooks or servers) until the user approves it in
+  the Imperium desktop app, and a plugin with hooks or MCP servers is also installed turned off,
+  so `activate_plugin` (which never asks) cannot start it.
 - **The review pane's steps** `git_commit` (commit a session's changes) and
   `open_pull_request` (push the branch and open a pull request with `gh`): not agent tools but
   the user's own actions from the review pane, gated the same way with rules without a
@@ -788,7 +794,7 @@ allow, and tells the model to present its plan; it also refuses `start_session` 
 started would not be in plan mode) and `memory_remember`, `memory_edit` and `memory_forget`. Tools that never ask (searching the
 web or earlier sessions, `ask_user`, delegation) still run, and the app-config tools
 (`set_model_card`, `install_extension`, `uninstall_extension`) count as tools that ask in `ask`
-and `plan`.
+and `plan`; `install_extension` and `uninstall_extension` ask in every other mode too.
 
 **Woken turns are capped (implemented, pull-request card stage 7).** When the daemon wakes a
 session because someone wrote a review comment on its pull request

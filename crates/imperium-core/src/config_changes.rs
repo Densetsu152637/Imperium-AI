@@ -246,6 +246,9 @@ pub(crate) fn uninstall_folder(
             .filter(|hash| !hash.is_empty());
         plugin = Some((key, record, hash));
     }
+    let skill_key = (kind == ExtensionKind::Skill)
+        .then(|| plugin_records::key_of(&dir))
+        .flatten();
     let folder = dir
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -255,6 +258,11 @@ pub(crate) fn uninstall_folder(
         .map_err(|error| format!("could not create {}: {error}", trash.display()))?;
     let kept = trash.join(format!("{}-{}-{folder}", unix_ms(), kind.as_str()));
     move_tree(&dir, &kept)?;
+    if let Some(key) = &skill_key
+        && let Err(error) = crate::skill_records::take_record(state.paths(), key)
+    {
+        tracing::warn!(%error, "could not remove the record of an uninstalled skill");
+    }
     let mut change = blank(
         "uninstall",
         session_id,
@@ -385,9 +393,17 @@ fn undo_install(state: &DaemonState, change: &ConfigChange) -> Result<String, St
             ));
         }
     }
+    let skill_key = (kind == ExtensionKind::Skill)
+        .then(|| plugin_records::key_of(&path))
+        .flatten();
     remove_tree(&path);
     if path.exists() {
         return Err(format!("could not remove {}", path.display()));
+    }
+    if let Some(key) = skill_key
+        && let Err(error) = crate::skill_records::take_record(state.paths(), &key)
+    {
+        tracing::warn!(%error, "could not remove the record of an uninstalled skill");
     }
     if let Some(key) = key
         && let Err(error) = plugin_records::take_record(state.paths(), &key)

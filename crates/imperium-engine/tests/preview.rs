@@ -173,6 +173,7 @@ async fn run(session: &Session, decision: PermissionDecision) -> Turn {
                 summary,
                 tool,
                 suggested_rule,
+                ..
             } => {
                 turn.asked.push(summary);
                 turn.requests

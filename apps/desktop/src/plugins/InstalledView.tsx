@@ -4,7 +4,7 @@
 
 import { KeyRound, Puzzle, RefreshCw, ShieldCheck, Trash } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { InstalledPlugin, PluginsListResult } from "@imperium/protocol";
+import type { InstalledPlugin, PluginsListResult, SkillInfo } from "@imperium/protocol";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { LoadingState } from "../components/LoadingState";
@@ -18,9 +18,12 @@ export type Scope = "user" | "environment";
 
 const part = (n: number, noun: string) => (n > 0 ? `${n} ${noun}${n === 1 ? "" : "s"}` : null);
 const runsCode = (p: InstalledPlugin) => p.hooks > 0 || p.servers.length > 0;
+/** Needs an approval to load: it runs code, or an agent installed it. */
+const needsApprovalBadge = (p: InstalledPlugin) => runsCode(p) || p.origin === "agent";
 
 export function InstalledView({
   result,
+  skills,
   query,
   scope,
   environmentName,
@@ -29,6 +32,7 @@ export function InstalledView({
   platformReason,
   onToggle,
   onApprove,
+  onApproveSkill,
   onUpdate,
   onUninstall,
   onSetSecret,
@@ -36,6 +40,8 @@ export function InstalledView({
   onBrowse,
 }: {
   result: PluginsListResult | null;
+  /** Skills an agent installed that the user has not approved: no session loads them. */
+  skills: SkillInfo[];
   query: string;
   scope: Scope;
   /** The selected environment's name, or null when there is none (then there is no scope to choose). */
@@ -47,6 +53,7 @@ export function InstalledView({
   platformReason: string | null;
   onToggle: (plugin: InstalledPlugin, enabled: boolean) => void;
   onApprove: (plugin: InstalledPlugin) => void;
+  onApproveSkill: (skill: SkillInfo) => void;
   onUpdate: (plugin: InstalledPlugin) => void;
   onUninstall: (plugin: InstalledPlugin, deleteSecrets: boolean) => void;
   onSetSecret: (plugin: InstalledPlugin, variable: string, value: string) => Promise<boolean>;
@@ -85,6 +92,36 @@ export function InstalledView({
           {plain(problem)}
         </Notice>
       ))}
+      {skills.length > 0 && (
+        <section className="connectors-section" aria-labelledby="withheld-skills-heading">
+          <h3 id="withheld-skills-heading">Skills waiting for approval</h3>
+          <p className="connectors-note">An agent installed these. No session lists or loads a skill until you approve it.</p>
+          <ul className="connector-rows">
+            {skills.map((skill) => (
+              <li key={skill.dir} className="connector-row" data-enabled={false} data-skill={skill.name}>
+                <span className="connector-icon small" aria-hidden="true">
+                  <ShieldCheck />
+                </span>
+                <div className="connector-row-title">
+                  <strong>{plain(skill.name)}</strong>
+                  <Badge tone="warn">Withheld</Badge>
+                  <span className="connector-row-counts">{plain(skill.description)}</span>
+                  {skill.installed_from && <span className="connector-row-source">Installed by an agent from {plain(skill.installed_from.location)}</span>}
+                </div>
+                <div className="connector-row-actions">
+                  {platformReason ? (
+                    <span className="connectors-note">{plain(platformReason)}</span>
+                  ) : (
+                    <button className="small" disabled={busy !== null} onClick={() => onApproveSkill(skill)}>
+                      <ShieldCheck aria-hidden="true" /> Approve
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {result.plugins.length === 0 ? (
         <EmptyState
           icon={Puzzle}
@@ -101,7 +138,7 @@ export function InstalledView({
       ) : (
         <ul ref={list} className="connector-rows">
           {shown.map((plugin) => {
-            const needsApproval = plugin.withheld && runsCode(plugin);
+            const needsApproval = plugin.withheld && needsApprovalBadge(plugin);
             return (
               <li key={plugin.folder} className="connector-row" data-enabled={plugin.enabled && !plugin.withheld} data-plugin={plugin.name}>
                 <span className="connector-icon small" aria-hidden="true">
@@ -111,7 +148,7 @@ export function InstalledView({
                   <strong>{plain(plugin.name)}</strong>
                   {plugin.withheld && <Badge tone="warn">Withheld</Badge>}
                   {!plugin.enabled && <Badge>Off</Badge>}
-                  {runsCode(plugin) &&
+                  {needsApprovalBadge(plugin) &&
                     (plugin.approval ? (
                       <Badge tone="ok" title={kindLabel(plugin.approval)}>
                         {plain(plugin.approval)}

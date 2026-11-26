@@ -426,8 +426,9 @@ check (which applies to making approvals, not to reading them). Nothing on the s
 new one: the first-start plugin migration, which on a desktop gives the plugins already installed
 a carried-over approval, records them **without** approval on a server, so a fresh data volume or
 a deleted `plugin-migration.json` approves nothing. **Until stage 3**, the authority to approve on
-a server equals write access to the data volume: an agent's command in tier 0 can write
-`plugin-installs.json` under `/var/lib/imperium` and mint a record; stage 3's Landlock ruleset
+a server equals write access to the data volume: the file tools refuse writes to the approval
+records (#304), but an agent's command in tier 0 can write `plugin-installs.json` or
+`skill-installs.json` under `/var/lib/imperium` and mint a record; stage 3's Landlock ruleset
 keeps agents' commands off `/var/lib/imperium`, which closes it. Auto-merge already enabled on GitHub stays
 enabled, and the poll still turns it off if the head moves.
 
