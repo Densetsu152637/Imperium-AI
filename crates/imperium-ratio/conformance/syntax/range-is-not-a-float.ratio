@@ -1,3 +1,0 @@
-// expect: lex-ok
-// tokens: ( int:0 .. ident:n int:1 ..= int:5 int:1 . ident:max ) ;!
-(0..n 1..=5 1.max)

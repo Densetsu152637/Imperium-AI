@@ -118,7 +118,7 @@ impl DaemonState {
 
         let new_id = imperium_engine::new_session_id().map_err(|error| error.to_string())?;
         let new_journal = self.journal_path(&new_id);
-        std::fs::write(&new_journal, prefix).map_err(|error| error.to_string())?;
+        std::fs::write(&new_journal, &prefix).map_err(|error| error.to_string())?;
         let cleanup = |state: &Self| {
             let _ = std::fs::remove_file(&new_journal);
             let _ = std::fs::remove_file(imperium_engine::messages_path(&new_journal));
@@ -128,9 +128,10 @@ impl DaemonState {
         };
         let written = (|| -> Result<(), String> {
             // The tool results the conversation points at are copied, and point at the copies.
-            self.inherit_saved_results(source, &new_id)?;
             let messages =
                 serde_json::to_string(&plan.messages).map_err(|error| error.to_string())?;
+            // Only the files the branch's messages and journal name are copied.
+            self.inherit_saved_results(source, &new_id, &[messages.as_str(), prefix.as_str()])?;
             let messages = rewrite_results_prefix(&messages, source, &new_id);
             std::fs::write(imperium_engine::messages_path(&new_journal), messages)
                 .map_err(|error| error.to_string())?;

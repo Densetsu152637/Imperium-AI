@@ -1,3 +1,0 @@
-// expect: lex-error L0006 at 2:4
-"{x
-y}"

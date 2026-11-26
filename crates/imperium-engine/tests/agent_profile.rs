@@ -626,6 +626,127 @@ async fn rewriting_hook(
     )
 }
 
+/// A `tool.after` hook on `matcher` that answers every call with `answer`.
+async fn after_hook(matcher: &str, answer: Value) -> imperium_extensions::ConfiguredHook {
+    let app = Router::new().route(
+        "/hook",
+        post(move |_: axum::Json<Value>| {
+            let answer = answer.clone();
+            async move { axum::Json(answer) }
+        }),
+    );
+    let url = format!("{}/hook", serve(app).await);
+    imperium_extensions::ConfiguredHook {
+        event: "tool.after".into(),
+        matcher: matcher.into(),
+        command: String::new(),
+        url: Some(url),
+        headers: Default::default(),
+        timeout_s: Some(5),
+    }
+}
+
+#[tokio::test]
+async fn a_tool_after_hook_can_replace_the_result_the_model_reads() {
+    let hook = after_hook("run_command", json!({"updated_output": "REDACTED"})).await;
+    let setup = start_with(
+        vec![Some(("run_command", json!({"command": "echo hi"}))), None],
+        Vec::new(),
+        Vec::new(),
+        rules(Allowlist::All, Allowlist::All, false),
+        vec![hook],
+    )
+    .await;
+    let results = turn(&setup.session, "run it").await;
+    assert_eq!(results[0], (true, "REDACTED".to_string()), "{results:?}");
+}
+
+#[tokio::test]
+async fn a_tool_after_hook_that_returns_nothing_leaves_the_result() {
+    let hook = after_hook("run_command", json!({})).await;
+    let setup = start_with(
+        vec![Some(("run_command", json!({"command": "echo hi"}))), None],
+        Vec::new(),
+        Vec::new(),
+        rules(Allowlist::All, Allowlist::All, false),
+        vec![hook],
+    )
+    .await;
+    let results = turn(&setup.session, "run it").await;
+    assert!(results[0].0 && results[0].1.contains("hi"), "{results:?}");
+}
+
+#[tokio::test]
+async fn an_oversized_replacement_from_a_tool_after_hook_is_refused() {
+    let big = "x".repeat(imperium_extensions::hooks::MAX_OUTPUT_REPLACEMENT_BYTES + 1);
+    let hook = after_hook("run_command", json!({"updated_output": big})).await;
+    let setup = start_with(
+        vec![Some(("run_command", json!({"command": "echo hi"}))), None],
+        Vec::new(),
+        Vec::new(),
+        rules(Allowlist::All, Allowlist::All, false),
+        vec![hook],
+    )
+    .await;
+    let results = turn(&setup.session, "run it").await;
+    assert!(
+        results[0].0 && results[0].1.contains("hi") && !results[0].1.contains("xxxx"),
+        "{results:?}"
+    );
+}
+
+#[tokio::test]
+async fn replacing_a_failed_result_keeps_it_failed() {
+    let hook = after_hook("read_file", json!({"updated_output": "REDACTED"})).await;
+    let setup = start_with(
+        vec![Some(("read_file", json!({"path": "missing.txt"}))), None],
+        Vec::new(),
+        Vec::new(),
+        rules(Allowlist::All, Allowlist::All, false),
+        vec![hook],
+    )
+    .await;
+    let results = turn(&setup.session, "read it").await;
+    assert_eq!(results[0], (false, "REDACTED".to_string()), "{results:?}");
+}
+
+#[tokio::test]
+async fn a_replacement_past_the_save_threshold_is_saved_like_any_large_result() {
+    // 20,000 characters in short lines: past the 8,192 a result may keep when the window is
+    // unknown, and within what a hook may return.
+    let long: String = (0..2500)
+        .map(|n| {
+            format!(
+                "row {n:04}
+"
+            )
+        })
+        .collect();
+    assert!(
+        long.len() > 8_192
+            && long.len() <= imperium_extensions::hooks::MAX_OUTPUT_REPLACEMENT_BYTES
+    );
+    let hook = after_hook("run_command", json!({"updated_output": long})).await;
+    let setup = start_with(
+        vec![Some(("run_command", json!({"command": "echo hi"}))), None],
+        Vec::new(),
+        Vec::new(),
+        rules(Allowlist::All, Allowlist::All, false),
+        vec![hook],
+    )
+    .await;
+    turn(&setup.session, "run it").await;
+    let seen = setup.seen.lock().unwrap();
+    let read = seen
+        .iter()
+        .filter(|request| !request.subagent)
+        .filter_map(|request| request.last_result.clone())
+        .next_back()
+        .expect("the model read the result");
+    assert!(read.contains(imperium_engine::SAVED_TO), "{read}");
+    assert!(read.len() < 8_192, "{}", read.len());
+}
+
 #[tokio::test]
 async fn a_rewrite_cannot_get_a_call_past_a_deny_rule() {
     let (hook, hits) = rewriting_hook("run_command", json!({"command": "rm -rf build"})).await;

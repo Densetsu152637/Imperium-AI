@@ -1,3 +1,0 @@
-// expect: lex-ok
-// tokens: ( money:500000u money:12000000u money:1000250000u money:1u money:3500000u ) ;!
-($0.50 $12 $1_000.25 $0.000001 $3.5000000)

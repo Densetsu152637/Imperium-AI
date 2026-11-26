@@ -165,6 +165,16 @@ pub trait ToolProvider: Send + Sync + fmt::Debug {
         false
     }
 
+    /// Whether the call to `name` only reads: it changes nothing (in files, services or the
+    /// session), does not depend on a call before it in the same step, and may run at the same
+    /// time as other reads when `harness.parallel_reads` is on. Off (`false`) unless overridden:
+    /// a provider opts each such tool in by name. The call still passes its check, hooks and
+    /// permission judge in call order; it runs ahead only when none of them would ask or
+    /// change it, with no events from the tool and no sampling while it runs ahead.
+    fn read_only(&self, _name: &str) -> bool {
+        false
+    }
+
     /// Instructions added to the system prompt while the tools are offered.
     fn instructions(&self) -> Option<&str> {
         None

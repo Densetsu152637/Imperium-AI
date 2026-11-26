@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use imperium_api::{PermissionRule, RuleAction};
+use imperium_api::{
+    PermissionRule, RuleAction, ToolCheck, ToolContext, ToolFuture, ToolProvider, ToolSpec,
+};
 use imperium_config::HarnessSettings;
 use imperium_engine::{ReadGate, ResolvedModel, Session, SessionConfig, SessionOptions};
 use imperium_models::Endpoint;
@@ -78,6 +80,38 @@ fn start_gated(
     parallel_reads: u32,
     read_gate: Option<Arc<dyn ReadGate>>,
 ) -> Session {
+    start_full(url, workspace, parallel_reads, read_gate, Vec::new())
+}
+
+fn start_full(
+    url: &str,
+    workspace: Workspace,
+    parallel_reads: u32,
+    read_gate: Option<Arc<dyn ReadGate>>,
+    tools: Vec<Arc<dyn ToolProvider>>,
+) -> Session {
+    start_sized(
+        url,
+        workspace,
+        HarnessSettings {
+            parallel_reads,
+            ..HarnessSettings::default()
+        },
+        Some(100_000),
+        read_gate,
+        tools,
+    )
+}
+
+/// A hosted model with `context_window` (`None`: unknown) and the given harness settings.
+fn start_sized(
+    url: &str,
+    workspace: Workspace,
+    harness: HarnessSettings,
+    context_window: Option<u64>,
+    read_gate: Option<Arc<dyn ReadGate>>,
+    tools: Vec<Arc<dyn ToolProvider>>,
+) -> Session {
     let dir = workspace.root().to_path_buf();
     Session::spawn_with(
         SessionConfig {
@@ -92,7 +126,7 @@ fn start_gated(
                 model: "model".into(),
                 pricing: None,
                 local: false,
-                context_window: Some(100_000),
+                context_window,
                 kind: "openai".into(),
                 reasoning: None,
             }),
@@ -100,7 +134,7 @@ fn start_gated(
             routing: imperium_config::RoutingSettings::default(),
             clients: Default::default(),
             local: None,
-            tools: Vec::new(),
+            tools,
             notices: Vec::new(),
             extensions: Default::default(),
             memory: None,
@@ -118,10 +152,7 @@ fn start_gated(
             attended: false,
             attachments: Default::default(),
             auto_permissions: Default::default(),
-            harness: HarnessSettings {
-                parallel_reads,
-                ..HarnessSettings::default()
-            },
+            harness,
             background: None,
             checkpoints: None,
             budget_gate: None,
@@ -588,4 +619,201 @@ async fn a_read_that_starts_to_ask_after_the_run_is_read_again_after_the_approva
     let results = tool_messages(&fake.requests.lock().unwrap()[1]);
     assert!(results[0].1.contains("alpha"), "{results:?}");
     assert!(results[1].1.contains("bravo, changed"), "{results:?}");
+}
+
+#[tokio::test]
+async fn call_tool_without_tool_loading_runs_nothing_ahead() {
+    // With tool loading off `call_tool` is no tool: it is not unwrapped, so the read inside it
+    // must not be run ahead either.
+    let reads = gate(|_| Box::pin(async {}));
+    let calls = ["r1", "r2", "r3"]
+        .into_iter()
+        .zip(["a.txt", "b.txt", "c.txt"])
+        .map(|(id, file)| {
+            call(
+                id,
+                "call_tool",
+                json!({"name": "read_file", "arguments": {"path": file}}),
+            )
+        })
+        .collect();
+    let (_fake, url) = serve_calls(calls).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    let session = start_gated(
+        &url,
+        Workspace::new(dir.path()).unwrap(),
+        4,
+        Some(reads.clone()),
+    );
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+    to_the_end(&mut events).await;
+    assert_eq!(reads.entered.load(Ordering::SeqCst), 0);
+}
+
+/// A provider with two tools, `lookup` and `lookup_slow`, that report how many of its calls
+/// ran at once. `read_only` is what it says of its tools.
+#[derive(Debug)]
+struct Lookups {
+    read_only: bool,
+    running: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+impl ToolProvider for Lookups {
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![ToolSpec {
+            name: "lookup".into(),
+            description: "Look a word up.".into(),
+            parameters: json!({"type": "object", "properties": {"word": {"type": "string"}}}),
+        }]
+    }
+
+    fn handles(&self, name: &str) -> bool {
+        name == "lookup"
+    }
+
+    fn read_only(&self, name: &str) -> bool {
+        self.read_only && name == "lookup"
+    }
+
+    fn check(&self, _name: &str, _arguments: &str) -> Result<ToolCheck, String> {
+        Ok(ToolCheck {
+            summary: "look a word up".into(),
+            ask: false,
+            needs_context: false,
+            command: None,
+        })
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: &'a ToolContext<'a>,
+        _name: &'a str,
+        arguments: &'a str,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            self.running.fetch_sub(1, Ordering::SeqCst);
+            Ok(format!("meaning of {arguments}"))
+        })
+    }
+}
+
+async fn run_lookups(read_only: bool) -> (Arc<Lookups>, Vec<(String, String)>) {
+    let calls = ["w1", "w2", "w3"]
+        .into_iter()
+        .map(|id| call(id, "lookup", json!({"word": id})))
+        .collect();
+    let (fake, url) = serve_calls(calls).await;
+    let provider = Arc::new(Lookups {
+        read_only,
+        running: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let session = start_full(
+        &url,
+        Workspace::new(dir.path()).unwrap(),
+        4,
+        None,
+        vec![provider.clone() as Arc<dyn ToolProvider>],
+    );
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+    to_the_end(&mut events).await;
+    let results = tool_messages(&fake.requests.lock().unwrap()[1]);
+    (provider, results)
+}
+
+#[tokio::test]
+async fn a_provider_tool_that_opts_in_as_read_only_runs_with_the_others_of_its_step() {
+    let (provider, results) = run_lookups(true).await;
+    assert_eq!(provider.peak.load(Ordering::SeqCst), 3);
+    // Results come back in call order, as in a sequential run.
+    let ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["w1", "w2", "w3"]);
+    assert!(results[0].1.contains("w1") && results[2].1.contains("w3"));
+}
+
+#[tokio::test]
+async fn a_provider_tool_runs_one_at_a_time_unless_it_says_it_is_read_only() {
+    let (provider, results) = run_lookups(false).await;
+    assert_eq!(provider.peak.load(Ordering::SeqCst), 1);
+    assert_eq!(results.len(), 3);
+}
+
+/// A file of 1,000 lines and about 60,000 characters: under the 2,000-line cap of a read, past
+/// the 32,000 characters a read gets when the window is unknown, and within the 100,000 a
+/// hosted model with an unknown window is given.
+fn big_file(dir: &std::path::Path) {
+    let filler = "x".repeat(50);
+    let text: String = (0..1000)
+        .map(|n| {
+            format!(
+                "row {n:04} {filler}
+"
+            )
+        })
+        .collect();
+    assert!(text.len() > 32_000 && text.len() < 90_000);
+    std::fs::write(dir.join("big.txt"), text).unwrap();
+}
+
+/// The results of one step of `calls` against a hosted model with no known context window.
+async fn unknown_window_results(
+    calls: Vec<(String, String, String)>,
+    parallel_reads: u32,
+) -> Vec<(String, String)> {
+    let fake = Arc::new(Fake {
+        calls,
+        requests: Mutex::new(Vec::new()),
+    });
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    big_file(dir.path());
+    let harness = HarnessSettings {
+        parallel_reads,
+        // Saving a large result would hide what the read itself returned.
+        result_spill: false,
+        ..HarnessSettings::default()
+    };
+    let session = start_sized(
+        &url,
+        Workspace::new(dir.path()).unwrap(),
+        harness,
+        None,
+        None,
+        Vec::new(),
+    );
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+    to_the_end(&mut events).await;
+    let requests = fake.requests.lock().unwrap();
+    tool_messages(&requests[1])
+}
+
+#[tokio::test]
+async fn a_hosted_model_with_no_known_window_reads_a_large_file_with_the_large_budget() {
+    let read = |id: &str| call(id, "read_file", json!({"path": "big.txt"}));
+    // One call at a time: `run_tool` sizes the read.
+    let alone = unknown_window_results(vec![read("c1")], 0).await;
+    assert!(
+        alone[0].1.contains("row 0999"),
+        "cut short: {}",
+        alone[0].1.len()
+    );
+    // Two reads of a step run ahead together: the prefetch sizes them the same way.
+    let together = unknown_window_results(vec![read("c1"), read("c2")], 4).await;
+    for (id, content) in &together {
+        assert!(
+            content.contains("row 0999"),
+            "{id} cut short: {}",
+            content.len()
+        );
+    }
 }
