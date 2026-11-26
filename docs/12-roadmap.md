@@ -899,7 +899,8 @@ and `environments.agent_update` (protocol 0.28)
     their own. It builds on the per-subagent harnesses, system prompts and workflows of
     [item 58](#next-in-order), so it comes after item 58. The workflow, the rejection counting
     and the handover are app work; training and building Consul and Emperor themselves are
-    research work. No plan yet.
+    research work. No plan for the workflow yet; the rejection count and the escalation hook it
+    binds to are stage 5 of the [Princeps plan](plans/princeps-local-model.md) (item 67).
 <!-- markdownlint-disable-next-line MD029 -->
 65. **Programmatic tool calling (code mode)** (planned). An agent can write a short Python program
     (`run_script`) in which each of its tools is a function. The program runs in Monty, a
@@ -930,8 +931,22 @@ and `environments.agent_update` (protocol 0.28)
     It builds on item 55, so it comes after it. Writes are refused to the safety-floor paths,
     the daemon's data folder and harness folders. A paired phone gets no editor, and mods cannot
     wrap or drive it, the same as item 55's panels. No plan yet.
+<!-- markdownlint-disable-next-line MD029 -->
+67. **Princeps local model and harness profiles** (planned). Emperor and Consul are no longer two
+    models (user decision 2026-11-26): there is one local model, Princeps (`princeps-ncm-250m`,
+    a Next Concept Model, and `princeps-tok-250m`, its token baseline), served by `ncm-server`
+    from Imperium-Models, and Emperor (the root agent) and Consul (the critic) become two harness
+    profiles over it. The app work: an `ncm:` runtime backend; `ncm-server` installed only on the
+    user's action from a pinned release, checked against SHA-256s pinned in this repository and
+    unpacked under the llama.cpp extraction rules; Princeps in the house-model catalogue in place
+    of item 44's two entries; one loaded model serving both profiles; harness profiles as item
+    58's first slice; item 64's rejection count and escalation hook with no workflow bound; and
+    `--profile` with server timings in headless evals. The harness content belongs to the
+    Imperium Harnesses session, the server and weights to the NCM session
+    ([plan](plans/princeps-local-model.md)).
 
-Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
+Custom agents come from Imperium's own open-weight model (Princeps, run under the Emperor and
+Consul harness profiles, [item 67](#next-in-order)), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
 rather than a separate snapshot store.
 
