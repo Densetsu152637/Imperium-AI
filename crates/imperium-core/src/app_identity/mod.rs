@@ -1005,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_that_runs_from_dot_git_is_flagged_because_the_hash_leaves_it_out() {
+    fn a_hook_that_runs_from_dot_git_has_it_hashed_though_the_hash_leaves_it_out_otherwise() {
         for text in [
             "sh /x/p/.git/hooks/h.sh",
             "C:\\x\\.git\\h.bat",
@@ -1019,6 +1019,13 @@ mod tests {
             "a\\.git\\h.bat",
             "\\.git\\h.bat",
             "x --dir='.git'",
+            "GIT_DIR=.git sh h",
+            "x --git-dir=.git",
+            "cd .git;sh h",
+            "cd .git&&sh h",
+            "cd .git||sh h",
+            "cd .git|sh",
+            "$(cd .git)",
         ] {
             assert!(crate::plugin_install::mentions_dot_git(text), "{text}");
         }
@@ -1035,27 +1042,25 @@ mod tests {
         }
         let home = home();
         let state = state_of(&home);
-        let clean = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        assert!(clean.notes.iter().all(|note| !note.contains(".git")));
-        std::fs::write(
-            home.folder.join("hooks/hooks.json"),
-            r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"sh ${CLAUDE_PLUGIN_ROOT}/.git/h.sh"}]}]}}"#,
-        )
-        .unwrap();
-        let flagged = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        assert!(
-            flagged
-                .notes
-                .iter()
-                .any(|note| note.contains("WARNING") && note.contains(".git"))
-        );
-        // The exclusion the warning is about: a file under the top-level `.git` is not hashed.
+        // Without a mention, the top-level `.git` is not content: a change there keeps the hash.
         std::fs::create_dir_all(home.folder.join(".git")).unwrap();
         std::fs::write(home.folder.join(".git/h.sh"), "one").unwrap();
         let first = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
         std::fs::write(home.folder.join(".git/h.sh"), "two").unwrap();
         let second = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
         assert_eq!(first.sha256, second.sha256);
+        // A hook that runs a path under `.git` makes it content: a change there changes the hash,
+        // so the approval no longer holds.
+        std::fs::write(
+            home.folder.join("hooks/hooks.json"),
+            r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"sh ${CLAUDE_PLUGIN_ROOT}/.git/h.sh"}]}]}}"#,
+        )
+        .unwrap();
+        let third = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        std::fs::write(home.folder.join(".git/h.sh"), "three").unwrap();
+        let fourth = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
+        assert_ne!(third.sha256, fourth.sha256);
+        assert_ne!(third.sha256, second.sha256);
     }
 
     #[test]
@@ -1089,10 +1094,40 @@ mod tests {
     fn an_exact_folder_name_must_be_one_plain_name() {
         let home = home();
         let state = state_of(&home);
-        // A path or a name with a separator never names a folder, exact or not.
+        // A path or a name with a separator never names a folder.
         assert!(crate::plugin_install::resolve_for_approval(&state, "../plugins/p").is_err());
         assert!(crate::plugin_install::resolve_for_approval(&state, "./p").is_err());
         assert!(crate::plugin_install::resolve_for_approval(&state, "p/").is_err());
         assert!(crate::plugin_install::resolve_for_approval(&state, "p").is_ok());
+    }
+
+    #[test]
+    fn a_folder_name_wins_over_a_record_that_carries_the_same_name() {
+        let home = home();
+        let state = state_of(&home);
+        // Another folder whose record is named "p" (id `p@m`): looked up as a plugin name, "p" is
+        // ambiguous between the two folders; named exactly, it is the folder "p" and nothing else.
+        let other = copy_plugin(&home, "x..y");
+        plugin_records::add_record(
+            &home.paths,
+            &other,
+            plugin_records::Record {
+                name: "p".into(),
+                origin: plugin_records::Origin::User,
+                id: Some("p@m".into()),
+                source: None,
+                commit: None,
+                hash: String::new(),
+                runs: String::new(),
+                approval: None,
+            },
+        )
+        .unwrap();
+        assert!(crate::plugin_install::resolve(&state, "p").is_err());
+        let found = crate::plugin_install::resolve_for_approval(&state, "p").unwrap();
+        assert_eq!(found, home.folder.canonicalize().unwrap());
+        // A name that is not a plain folder name (`..`) is looked up, never taken as exact.
+        let found = crate::plugin_install::resolve_for_approval(&state, "x..y").unwrap();
+        assert_eq!(found, other.canonicalize().unwrap());
     }
 }

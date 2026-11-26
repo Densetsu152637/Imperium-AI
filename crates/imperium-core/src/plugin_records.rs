@@ -302,15 +302,40 @@ fn reparse_point(_: &std::fs::Metadata) -> bool {
     false
 }
 
-/// Whether `name` at the folder's top is left out of the hash: `.git`, and the one file Imperium
-/// writes into a plugin folder. Any other file, `.imperium-*.json` ones a plugin ships included,
-/// is content (a hook can run it).
-fn excluded(name: &str) -> bool {
-    name == ".git" || name == plugins::SOURCE_FILE
+/// Whether `name` at the folder's top is left out of the hash: `.git` (unless `with_git`), and the
+/// one file Imperium writes into a plugin folder. Any other file, `.imperium-*.json` ones a plugin
+/// ships included, is content (a hook can run it).
+fn excluded(name: &str, with_git: bool) -> bool {
+    (name == ".git" && !with_git) || name == plugins::SOURCE_FILE
+}
+
+/// Whether a hook or server command of the plugin in `root` mentions a `.git` path: then the
+/// top-level `.git` is content (something can run from it) and the hash covers it.
+fn runs_from_git(root: &Path) -> bool {
+    let Some(plugin) = parse(root) else {
+        return false;
+    };
+    let runs = plugins::runs(&plugin);
+    runs.hooks
+        .iter()
+        .flat_map(|hook| std::iter::once(&hook.command).chain(hook.url.iter()))
+        .chain(runs.servers.iter().flat_map(|server| {
+            server
+                .command
+                .iter()
+                .chain(server.args.iter())
+                .chain(server.url.iter())
+        }))
+        .any(|text| crate::plugin_install::mentions_dot_git(text))
 }
 
 /// Lists every file under `root` without following links. Stops at the first link found.
-fn walk(root: &Path, prefix: &str, stamps: &mut Vec<Stamp>) -> Result<Option<String>, String> {
+fn walk(
+    root: &Path,
+    prefix: &str,
+    with_git: bool,
+    stamps: &mut Vec<Stamp>,
+) -> Result<Option<String>, String> {
     let folder = if prefix.is_empty() {
         root.to_path_buf()
     } else {
@@ -330,11 +355,11 @@ fn walk(root: &Path, prefix: &str, stamps: &mut Vec<Stamp>) -> Result<Option<Str
         if is_link(&meta) {
             return Ok(Some(relative));
         }
-        if prefix.is_empty() && excluded(&relative) {
+        if prefix.is_empty() && excluded(&relative, with_git) {
             continue;
         }
         if meta.is_dir() {
-            if let Some(link) = walk(root, &relative, stamps)? {
+            if let Some(link) = walk(root, &relative, with_git, stamps)? {
                 return Ok(Some(link));
             }
         } else if meta.is_file() {
@@ -402,7 +427,7 @@ fn hash_files(root: &Path, stamps: &[Stamp]) -> Result<String, String> {
 /// that is not installed yet (an inspected plugin in a staging folder).
 pub(crate) fn measure(root: &Path) -> Result<Seen, String> {
     let mut stamps = Vec::new();
-    if let Some(link) = walk(root, "", &mut stamps)? {
+    if let Some(link) = walk(root, "", runs_from_git(root), &mut stamps)? {
         return Ok(Seen {
             hash: String::new(),
             link: Some(link),
@@ -569,7 +594,7 @@ pub(crate) fn take_record(paths: &Paths, key: &str) -> Result<Option<Record>, St
 /// when the walk's list of paths, sizes and times is the cached one.
 pub(crate) fn look(canon: &Path) -> Result<Seen, String> {
     let mut stamps = Vec::new();
-    if let Some(link) = walk(canon, "", &mut stamps)? {
+    if let Some(link) = walk(canon, "", runs_from_git(canon), &mut stamps)? {
         return Ok(Seen {
             hash: String::new(),
             link: Some(link),
