@@ -464,7 +464,7 @@ impl Connection {
             .map_err(|error| {
                 let code = match &error {
                     CreateError::UnavailableOnServer(feature) => {
-                        return errors::unavailable_on_server(*feature);
+                        return errors::unavailable_on_server(feature);
                     }
                     CreateError::Project(..)
                     | CreateError::Environment(_)
@@ -531,7 +531,7 @@ impl Connection {
         let (session, events) = created.map_err(|error| {
             let code = match &error {
                 CreateError::UnavailableOnServer(feature) => {
-                    return errors::unavailable_on_server(*feature);
+                    return errors::unavailable_on_server(feature);
                 }
                 CreateError::Project(..)
                 | CreateError::Environment(_)

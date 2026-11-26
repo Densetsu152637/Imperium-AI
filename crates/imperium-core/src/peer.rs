@@ -48,7 +48,7 @@ pub(crate) const NESTED_NAMESPACE: &str = "the daemon runs in a nested PID names
      grants and approvals are refused there; run the daemon on the host to make them";
 
 /// The start-up warning of a server-mode daemon in the host's PID namespace.
-pub const HOST_NAMESPACE_WARNING: &str = "running in the host's PID namespace: the structural \
+pub(crate) const HOST_NAMESPACE_WARNING: &str = "running in the host's PID namespace: the structural \
      refusal of grants does not apply; only server mode refuses them";
 
 /// Whether the text of `/proc/self/status` says the process is in a nested PID namespace: its
