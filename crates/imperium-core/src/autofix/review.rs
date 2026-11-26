@@ -1002,6 +1002,12 @@ async fn checkout_problem(dir: &Path, branch: &str) -> Option<String> {
                 .to_string(),
         );
     }
+    // `git status` can run a filter the repository's config names.
+    if let Err(error) =
+        super::repository_allows(dir, crate::review::Step::Commit, "work in it yourself").await
+    {
+        return Some(error);
+    }
     match git::is_clean(dir).await {
         Ok(true) => None,
         _ => Some("the session's folder has uncommitted changes".to_string()),
@@ -1219,6 +1225,18 @@ impl Drop for Hold {
             Err(_) => self.state.budgets().untag_session(&id),
         }
     }
+}
+
+/// Stops counting `session_id`'s model calls toward the auto-fix budget after
+/// [`UNTAG_AFTER`], once the calls of the turn that just ended are recorded.
+pub(crate) fn untag_later(state: &Arc<DaemonState>, session_id: &str) {
+    let (state, id) = (Arc::downgrade(state), session_id.to_string());
+    tokio::spawn(async move {
+        tokio::time::sleep(UNTAG_AFTER).await;
+        if let Some(state) = state.upgrade() {
+            state.budgets().untag_session(&id);
+        }
+    });
 }
 
 /// How long a woken turn's calls keep counting toward the auto-fix budget after it ends.
@@ -1483,6 +1501,10 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
                     replacement_timeout,
                 )
                 .await;
+            // Its later model calls (a user who takes it over) are not auto-fix's.
+            if let Some(id) = &session_id {
+                untag_later(&state, id);
+            }
             if !ok {
                 // Nobody answers its requests any more: a late "allow" must not run a call
                 // in a session already reported as failed.
@@ -1642,11 +1664,17 @@ async fn reply_to_threads(state: &Arc<DaemonState>, github: &dyn GitHub, job: Re
             );
             continue;
         }
-        let text = if ask {
+        // A reply that looks like it holds a credential (a reviewer can steer the session into
+        // reading one) is never posted unasked, and the approval says so.
+        let secret = looks_secret(&proposed);
+        let text = if ask || secret {
+            let warning = if secret {
+                "WARNING: this text looks like it contains a credential (a key or token);                  do not post it unless you are sure. "
+            } else {
+                ""
+            };
             let request = format!(
-                "Reply in {repo}#{number} to {place}. This exact text is posted, followed by an \
-                 Imperium footer, and you may edit it. The model wrote it after reading review \
-                 text other people wrote (unverified):\n{proposed}"
+                "{warning}Reply in {repo}#{number} to {place}. This exact text is posted,                  followed by an Imperium footer, and you may edit it (an edit is defanged the                  same way). The model wrote it after reading review text other people wrote                  (unverified):\n{proposed}"
             );
             let answer = state
                 .approvals()
@@ -1656,7 +1684,7 @@ async fn reply_to_threads(state: &Arc<DaemonState>, github: &dyn GitHub, job: Re
                 Ok(crate::approvals::Answer {
                     approve: true,
                     text,
-                }) => text.unwrap_or_else(|| proposed.clone()),
+                }) => text.map_or_else(|| proposed.clone(), |edited| defang(&edited)),
                 _ => {
                     say(
                         "reply_declined",
@@ -1668,10 +1696,8 @@ async fn reply_to_threads(state: &Arc<DaemonState>, github: &dyn GitHub, job: Re
         } else {
             proposed.clone()
         };
-        let body = format!(
-            "{}{REPLY_FOOTER}",
-            text.chars().take(REPLY_CHARS).collect::<String>()
-        );
+        // Defanged and capped already: cutting it now could split a quoted mention.
+        let body = format!("{text}{REPLY_FOOTER}");
         match github.reply_to_thread(&thread.id, &body).await {
             Ok(id) => {
                 ledger.record_reply(state, repo, number, id);
@@ -1685,13 +1711,22 @@ async fn reply_to_threads(state: &Arc<DaemonState>, github: &dyn GitHub, job: Re
     }
 }
 
-/// Makes the model's summary safe to post where other people read it and get notified:
-/// control and invisible characters go, backticks become apostrophes, `@mentions` (users and
-/// teams) are quoted as code so nobody is notified, URLs lose their scheme separator and
-/// `www.` its dot so nothing becomes a link, Markdown links and images are broken, `<` and `>`
-/// are escaped so no HTML (or a forged footer marker) renders, and the text is capped.
+/// Makes text safe to post where other people read it and get notified: control, invisible and
+/// filler characters go, backticks become apostrophes, `@mentions` (users and teams) are quoted
+/// as code so nobody is notified, `&`, `<`, `>`, the backslash, `[` and `]` become HTML entities (so no
+/// HTML, no Markdown escape, no inline or reference link or image, and no forged footer marker
+/// renders), `://` and `www.` are broken so nothing becomes a link, `~~~` fences are broken and
+/// lines lose their indentation (no code block), and the input is capped before any of this,
+/// so the output is never cut.
 pub(crate) fn defang(text: &str) -> String {
     let cleaned = neutralise(&text.chars().take(REPLY_CHARS).collect::<String>(), true);
+    // No line opens an indented code block or a fence.
+    let cleaned = cleaned
+        .lines()
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("~~~", "~ ~ ~");
     let chars: Vec<char> = cleaned.chars().collect();
     let mut out = String::with_capacity(cleaned.len() + 16);
     let mut at = 0;
@@ -1709,7 +1744,8 @@ pub(crate) fn defang(text: &str) -> String {
             {
                 end += 1;
             }
-            // `neutralise` turned every backtick into an apostrophe, so these are the only ones.
+            // `neutralise` turned every backtick into an apostrophe and backslashes are
+            // entities, so these are the only backticks and nothing escapes them.
             out.push('`');
             out.extend(&chars[at..end]);
             out.push('`');
@@ -1717,18 +1753,49 @@ pub(crate) fn defang(text: &str) -> String {
             continue;
         }
         match c {
+            '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
+            '\\' => out.push_str("&#92;"),
+            '[' => out.push_str("&#91;"),
+            ']' => out.push_str("&#93;"),
             _ => out.push(c),
         }
         at += 1;
     }
-    let mut out = out.replace("://", "[:]//").replace("](", "] (");
+    let mut out = out.replace("://", ":&#47;&#47;");
     // ASCII lowercasing keeps byte offsets, so a match in the copy is a match in the text.
     while let Some(at) = out.to_ascii_lowercase().find("www.") {
-        out.replace_range(at + 3..at + 4, "[.]");
+        out.replace_range(at + 3..at + 4, "&#46;");
     }
     out
+}
+
+/// Prefixes of credentials that must never be posted: GitHub, GitLab, Slack, OpenAI and
+/// Anthropic style keys, AWS access keys, and PEM private keys.
+const SECRET_MARKS: [&str; 12] = [
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "sk-",
+    "AKIA",
+    "PRIVATE KEY",
+];
+
+/// Whether `text` looks like it holds a credential: a word that starts with a known prefix and
+/// is long enough to be a key, or a PEM private key.
+pub(crate) fn looks_secret(text: &str) -> bool {
+    if text.contains("PRIVATE KEY") {
+        return true;
+    }
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .any(|word| word.len() >= 20 && SECRET_MARKS.iter().any(|mark| word.starts_with(mark)))
 }
 
 /// Hooks for the daemon's tests: hold a wake at the moment it re-checks the session, shorten
@@ -1826,23 +1893,51 @@ mod tests {
     fn a_reply_notifies_nobody_links_nothing_and_renders_no_html() {
         let text = defang(
             "Thanks @alice and @org/team! See https://evil.example/x and www.Evil.example, \
-             [click](http://x) ![img](http://y) <img src=x> <!-- imperium-auto-fix --> \
-             mail me@example.com `code` \u{202E}gnp.exe",
+             [click](http://x) ![img](http://y) ![a][r]\n[r]: //evil/x <img src=x> \
+             <!-- imperium-auto-fix --> mail me@example.com `code` \u{202E}gnp.exe \\@bob \
+             &#64;carol \u{FE0F}\u{E0100}\u{3164}\u{115F}\u{2800}\u{034F} \
+             \n    indented\n~~~\nfenced",
         );
         assert!(
             text.contains("`@alice`") && text.contains("`@org/team`"),
             "{text}"
         );
+        assert!(text.contains("&#92;`@bob`"), "{text}");
+        assert!(text.contains("&amp;#64;carol"), "{text}");
         assert!(text.contains("me@example.com"), "{text}");
         assert!(!text.contains("://"), "{text}");
         assert!(!text.to_ascii_lowercase().contains("www."), "{text}");
-        assert!(!text.contains("]("), "{text}");
-        assert!(!text.contains('<') && !text.contains('>'), "{text}");
+        assert!(!text.contains('[') && !text.contains(']'), "{text}");
+        assert!(
+            !text.contains('<') && !text.contains('>') && !text.contains('\\'),
+            "{text}"
+        );
         assert!(!text.contains(REPLY_MARKER), "{text}");
-        assert!(!text.contains('\u{202E}'), "{text}");
-        // The only backticks are the ones around mentions.
-        assert_eq!(text.matches('`').count(), 4, "{text}");
-        assert!(defang(&"x".repeat(REPLY_CHARS * 2)).chars().count() <= REPLY_CHARS);
+        assert!(!text.contains("~~~") && !text.contains("\n    "), "{text}");
+        for hidden in [
+            '\u{202E}',
+            '\u{FE0F}',
+            '\u{E0100}',
+            '\u{3164}',
+            '\u{115F}',
+            '\u{2800}',
+            '\u{034F}',
+        ] {
+            assert!(!text.contains(hidden), "{hidden:?} in {text}");
+        }
+        // Only the backticks around mentions, and the text is never cut after defanging.
+        assert_eq!(text.matches('`').count(), 6, "{text}");
+        let long = format!("{}@alice", "x ".repeat(REPLY_CHARS / 2 - 1));
+        let cut = defang(&long);
+        assert_eq!(cut.matches('`').count() % 2, 0, "{cut}");
+    }
+
+    #[test]
+    fn credentials_are_recognised() {
+        assert!(looks_secret("here: ghp_0123456789abcdefABCDEF0123"));
+        assert!(looks_secret("-----BEGIN OPENSSH PRIVATE KEY-----"));
+        assert!(looks_secret("AKIAABCDEFGHIJKLMNOP"));
+        assert!(!looks_secret("Renamed the greeting; see sk-learn docs."));
     }
 
     #[test]

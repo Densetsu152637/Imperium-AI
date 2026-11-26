@@ -69,6 +69,13 @@ impl Connection {
             }),
             ApprovalRespond::NAME => {
                 call::<ApprovalRespond>(c.params.take(), |params: ApprovalRespondParams| {
+                    // A paired phone may approve or decline a reply, not write its text.
+                    if params.text.is_some() && self.allowed.is_some() {
+                        return Err(ErrorObject::new(
+                            codes::INVALID_PARAMS,
+                            "a paired phone cannot edit an approval's text; answer it without text",
+                        ));
+                    }
                     let found = self
                         .state
                         .approvals()

@@ -14,6 +14,7 @@ use imperium_github::{FailingPr, GitHub, git};
 use imperium_protocol::methods::{AUTOFIX_EVENT, AutofixEventParams};
 
 use crate::DaemonState;
+use crate::review::Step;
 
 pub(crate) mod review;
 
@@ -209,6 +210,9 @@ pub async fn fix_ci(
             FIX_TIMEOUT,
         )
         .await;
+    if let Some(id) = &session_id {
+        review::untag_later(state, id);
+    }
     if !ok {
         announce(state, repo, pr.number, "failed", session_id, summary);
         return;
@@ -254,6 +258,19 @@ pub(crate) fn fix_ci_options() -> crate::SessionOptions {
         budget_source: Some(crate::budgets::SOURCE_AUTOFIX.to_string()),
         ..crate::SessionOptions::default()
     }
+}
+
+/// Refuses `dir` when its repository's own config names a program the step would run
+/// ([`crate::review::check_repository_config`]).
+pub(crate) async fn repository_allows(
+    dir: &Path,
+    step: Step,
+    what: &'static str,
+) -> Result<(), String> {
+    let dir = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::review::check_repository_config(&dir, step, what))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 /// What a session's work became.
@@ -338,6 +355,14 @@ pub(crate) async fn deliver(
             }
         }
     }
+    // Nothing the repository's own config names may run in the daemon's commit (filters,
+    // signing programs); hooks and fsmonitor are turned off in every daemon git call.
+    if let Err(error) =
+        repository_allows(dir, Step::Commit, "commit and push the fix yourself").await
+    {
+        say("failed", error);
+        return Delivered::Failed;
+    }
     let message = format!(
         "{title}\n\n{summary}\n\nImperium-Auto-Fix: session {session}",
         summary = summary.chars().take(1500).collect::<String>(),
@@ -363,26 +388,19 @@ pub(crate) async fn deliver(
             return Delivered::Failed;
         }
     };
+    // Measured up to the commit that is pushed, whatever `HEAD` is by then.
     let mut warnings: Vec<String> = note.into_iter().collect();
-    let changes = match git::changes_since_origin(dir, branch).await {
+    let changes = match git::changes_up_to(dir, branch, &sha).await {
         Ok(changes) => changes,
         Err(error) => {
             warnings.push(format!("the changed files could not be listed: {error}"));
             Vec::new()
         }
     };
-    match git::commits_ahead(dir, branch).await {
+    match git::commits_ahead_of(dir, branch, &sha).await {
         Ok(1) => {}
         Ok(count) => warnings.push(format!("the push would send {count} commits, not one")),
         Err(error) => warnings.push(format!("the commits to push could not be counted: {error}")),
-    }
-    if git::head(dir).await.ok().as_deref() != Some(sha.as_str()) {
-        say(
-            "failed",
-            "the folder's HEAD moved while the push was being measured; nothing was pushed"
-                .to_string(),
-        );
-        return Delivered::Failed;
     }
     let paths: Vec<String> = changes.iter().map(|(_, path)| path.clone()).collect();
     let flagged = ci_config_paths(&paths);
@@ -411,6 +429,10 @@ pub(crate) async fn deliver(
     // A push changes what the user confirmed when they turned GitHub's auto-merge on, so it is
     // turned off first and stays off until they confirm it again in the desktop app. If it
     // cannot be checked or turned off, nothing is pushed.
+    if let Err(error) = repository_allows(dir, Step::AutofixPush, "push the fix yourself").await {
+        say("failed", error);
+        return Delivered::Failed;
+    }
     if let Err(error) = crate::pr_monitor::disable_before_push(state, github, repo, number).await {
         say("failed", error);
         return Delivered::Failed;
@@ -434,22 +456,42 @@ pub(crate) async fn deliver(
 /// Marker of the untrusted block; the text inside has it broken.
 const DATA_MARK: &str = "CI-DATA";
 
-/// Invisible and direction-changing characters: soft hyphen, Arabic letter mark, Mongolian vowel
-/// separator, zero-width and direction marks, line and paragraph separators, bidi controls,
-/// word joiners and invisible operators, byte order mark, interlinear annotation and tag
-/// characters. One set for the CI-log envelope and for text shown on the card.
+/// Invisible, filler and direction-changing characters: every format character (Unicode
+/// category Cf: soft hyphen, Arabic and Syriac marks, zero-width and direction marks, bidi
+/// controls, word joiners and invisible operators, the byte order mark, interlinear annotation,
+/// tag characters and the rest), the line and paragraph separators, variation selectors, the
+/// combining grapheme joiner, the Hangul and Khmer fillers and the Braille blank. One set for
+/// the CI-log envelope, replies and text shown on the card.
 pub(crate) fn is_invisible(c: char) -> bool {
     matches!(c,
         '\u{AD}'
+        | '\u{34F}'
+        | '\u{600}'..='\u{605}'
         | '\u{61C}'
-        | '\u{180E}'
+        | '\u{6DD}'
+        | '\u{70F}'
+        | '\u{890}'..='\u{891}'
+        | '\u{8E2}'
+        | '\u{115F}'..='\u{1160}'
+        | '\u{17B4}'..='\u{17B5}'
+        | '\u{180B}'..='\u{180F}'
         | '\u{200B}'..='\u{200F}'
         | '\u{2028}'..='\u{202E}'
         | '\u{2060}'..='\u{2064}'
         | '\u{2066}'..='\u{206F}'
+        | '\u{2800}'
+        | '\u{3164}'
+        | '\u{FE00}'..='\u{FE0F}'
         | '\u{FEFF}'
+        | '\u{FFA0}'
         | '\u{FFF9}'..='\u{FFFB}'
-        | '\u{E0000}'..='\u{E007F}')
+        | '\u{110BD}'
+        | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E007F}'
+        | '\u{E0100}'..='\u{E01EF}')
 }
 
 /// Makes third-party text safe to quote inside the untrusted block: control, invisible and

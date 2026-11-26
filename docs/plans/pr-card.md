@@ -942,9 +942,17 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   CI), and its D5 replacement runs as Fix CI does; review feedback goes first when both wait;
   (5) the budget counts a woken turn's calls while the wake holds its cap and five seconds after
   (the calls are recorded from events by another task), so a user turn started within those
-  seconds may count too; (6) in the corpus test Fix CI's file writes run unasked (D8) and the
-  check is that they leave only through the push approval, which lists them; network tools in
-  Fix CI follow `ask` mode, so the corpus there asserts commands, not fetches.
+  seconds may count too; (6) in the corpus test Fix CI's file writes run unasked (D8): they
+  reach the remote only through the push (which asks here; with `push = "auto"` a change outside
+  CI configuration and hooks is pushed unasked, as before), and fetches to hosts that are not
+  allowed ask. Security review fixes before merge: the daemon's git runs no repository hook
+  (`core.hooksPath` pointed at an empty folder, fsmonitor off, `--no-verify`) and refuses
+  program-naming repository config before commit and push (`Step::AutofixPush`, which unlike the
+  pull-request push allows `url.*.insteadOf`); the push is measured up to the pushed commit;
+  defanging escapes the backslash, `&`, `[` and `]`, strips format, variation-selector and
+  filler characters and is never cut afterwards; a paired phone cannot send reply text, and an
+  edited reply is defanged; a reply that looks like a credential asks even with
+  `comment = "auto"`.
 - Handoff notes: the approval request carries the exact reply text (`ApprovalInfo.text`) so the
   desktop and phone approvals panels need only an edit box that sends `text` back with
   `approvals.respond`. Stage 9 reuses `Work`, `examine` and `deliver` for `trigger: conflict`.

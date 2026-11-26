@@ -1362,10 +1362,14 @@ can comment, so nothing in it is trusted:
 - **Replies to review threads.** After a review wake that pushed (or changed nothing), the
   daemon replies in each unresolved thread holding a comment on the diff that woke the session,
   with the session's final summary. Conversation comments and reviews have no thread and get no
-  reply. The text is **defanged**: control and invisible characters removed, backticks turned
-  into apostrophes, `@mentions` (users and teams) quoted as code so nobody is notified, `://` and
-  `www.` broken so nothing becomes a link, Markdown links and images broken, `<` and `>` escaped
-  so no HTML (and no forged footer marker) renders, at most 3000 characters. A footer says the
+  reply. The text is **defanged**: control, format (Unicode `Cf`), invisible and filler
+  characters removed (variation selectors, Hangul and Khmer fillers and the Braille blank
+  included), backticks turned into apostrophes, `@mentions` (users and teams) quoted as code so
+  nobody is notified, `&`, `<`, `>`, the backslash, `[` and `]` written as HTML entities (so no
+  HTML, no Markdown escape that could undo the quoting, no inline or reference link or image and
+  no forged footer marker renders), `://` and `www.` broken so nothing becomes a link, `~~~`
+  fences broken and indentation removed (no code block). The input is cut to 3000 characters
+  before any of this, and the result is never cut, so a quoted mention cannot be split. A footer says the
   reply was posted by Imperium auto-fix and ends with the marker `<!-- imperium-auto-fix -->`;
   the id of every reply is kept in `pr-review.json`, so the daemon's own replies never wake
   anything.
@@ -1373,9 +1377,15 @@ can comment, so nothing in it is trusted:
   is an approval request of kind `reply` whose `text` is exactly what will be posted (the footer
   is added after it), and its summary says which thread and comment it answers and that the
   model wrote it from text other people wrote. The user may answer `approvals.respond` with their
-  own `text`, which is posted as they wrote it (capped, with the footer); `text` on any other
-  request is refused. A paired phone may answer it like a push approval. `comment = "auto"` posts
-  without asking. Over `github.autofix.comment_replies_per_hour` (default 6) replies on the pull
+  own `text`, which is defanged the same way and posted with the footer; `text` on any other
+  request is refused. A paired phone may approve or decline it like a push approval, but may not
+  send `text`. `comment = "auto"` posts without asking, **with a risk**: a reviewer with write
+  access can ask the session to read a file (reads run in a capped turn) and put it in its
+  summary, which is then posted on a public pull request. A reply that looks like a credential (a
+  GitHub, GitLab, Slack, OpenAI-style or AWS key, or a PEM private key) is never posted unasked:
+  it asks, with a warning, in either mode; anything else that is secret but does not look like a
+  key is not caught. Approvals (push and reply alike) have no timeout: one nobody answers waits,
+  and the pull request is not worked on again until it is answered or the daemon restarts. Over `github.autofix.comment_replies_per_hour` (default 6) replies on the pull
   request in the last hour, a reply is **held**: not asked about and not posted
   (`autofix.event` status `held`). The other statuses are `replied` and `reply_declined`.
 - **Failing commits of a bound pull request.** With `fix_ci` among the responders and the card's
@@ -1389,9 +1399,16 @@ can comment, so nothing in it is trusted:
   does (below), not capped, because its worktree belongs to the daemon.
 - **Fix CI for watched pull requests** (no bound session with the switch on) still starts a new
   session in the pull request's worktree in `ask` mode with `write_file` and `edit_file`
-  pre-approved (D8): every command asks, allow rules notwithstanding, and edits stay in the
-  daemon's worktree until the push approval, which lists everything in
-  `origin/<branch>..HEAD`. It now shares the wake path's commit and push (the approved commit is
+  pre-approved (D8): every command asks, allow rules notwithstanding, and a fetch to a host
+  that is not allowed asks. Its edits run unasked in the daemon's worktree; they reach the
+  remote only through the push approval, which lists everything in `origin/<branch>..<commit>`,
+  and with `push = "auto"` a change outside CI configuration and hooks is pushed without asking,
+  as before. Nothing the repository names runs in the daemon's own git: every checkout, commit,
+  status, diff and push it makes points `core.hooksPath` at an empty folder (so a hook the
+  session wrote, or a repository's `.husky` hooks, never run), turns fsmonitor off, never enters
+  submodules and skips the hooks again with `--no-verify`; a repository whose own config names a
+  filter, a signing program, an SSH or proxy command, a credential helper or a transport program
+  is refused before the commit or the push. It now shares the wake path's commit and push (the approved commit is
   pushed by its hash, auto-merge is turned off first), and its handled commits and attempt count
   are kept in `pr-review.json` across restarts. Network tools follow `ask` mode there; the capped
   wake of a user's session asks for every call that is not a read.
@@ -1405,7 +1422,9 @@ can comment, so nothing in it is trusted:
   limit) is checked before every wake and every Fix CI run: once today's `autofix` cost reaches
   it, nothing is woken or started until the next local day, the work is not taken, and an
   `autofix.event` with status `stopped` says so once per pull request per day. A wake already
-  running finishes. Only models with prices count; local models cost nothing.
+  running finishes, so a day can end over the budget by what one wake costs. A session auto-fix
+  started stops counting a few seconds after its run ends (a user who takes it over is not
+  charged to auto-fix). Only models with prices count; local models cost nothing.
 - **What protects the user.** The defence is the envelope, the capped turn, the push and reply
   approvals and the fact that no tool reaches auto-merge, approvals or settings, not the model's
   obedience. `tests/injection_corpus.rs` checks the plumbing with a scripted model that obeys

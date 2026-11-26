@@ -185,11 +185,12 @@ async fn an_edited_reply_is_posted_instead_and_text_is_refused_for_a_push() {
         Some("replied"),
         "{statuses:?}"
     );
-    // The user's own text is posted as they wrote it, with the footer.
+    // The user's own text is posted, defanged, with the footer.
     let replies = world.replies();
     assert_eq!(replies.len(), 1);
     assert!(
-        replies[0].1.starts_with("My own words, @carol.\n\n---\n"),
+        // The edit is defanged like a proposed reply.
+        replies[0].1.starts_with("My own words, `@carol`.\n\n---\n"),
         "{replies:?}"
     );
     assert!(replies[0].1.ends_with(REPLY_MARKER));
@@ -477,4 +478,69 @@ output_usd_per_mtok = 1000.0
     assert_eq!(world.status(&id).await["untrusted_handled"], false);
     // Said once a day, not at every poll.
     world.quiet(Poll::Monitor).await;
+}
+
+/// A repository whose own config points `core.hooksPath` at a folder in the worktree (as husky
+/// does), with hooks that leave a mark when they run: the daemon's checkout, commit and push of
+/// a Fix CI run start none of them.
+#[tokio::test]
+async fn no_repository_hook_runs_in_the_daemons_git() {
+    let mut world = World::new(
+        Script::new(write_greeting(), "Fixed it."),
+        "[github.autofix]
+enabled = true
+[[github.watch]]
+repo = \"owner/repo\"
+project = \"{clone}\"
+",
+    )
+    .await;
+    let marks = world.root.path().join("marks");
+    std::fs::create_dir_all(&marks).unwrap();
+    let hooks = world.clone.join(".husky");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let mark_dir = marks.display().to_string().replace('\\', "/");
+    for hook in [
+        "pre-commit",
+        "prepare-commit-msg",
+        "commit-msg",
+        "post-commit",
+        "pre-push",
+        "post-checkout",
+        "reference-transaction",
+    ] {
+        let path = hooks.join(hook);
+        std::fs::write(&path, format!("#!/bin/sh\ntouch \"{mark_dir}/{hook}\"\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    git(&world.clone, &["add", "-A"]);
+    git(&world.clone, &["commit", "-q", "-m", "add hooks"]);
+    git(&world.clone, &["push", "-q", "origin", "feature"]);
+    // Only now, so the setup's own git calls ran no hook.
+    git(&world.clone, &["config", "core.hooksPath", ".husky"]);
+    let before = world.origin_head();
+    world.fake.set_check(REPO, 7, "lint", Some("FAILURE"));
+    let seen = world
+        .run(
+            Poll::FixCi,
+            yes,
+            &["pushed", "failed", "declined", "nothing"],
+        )
+        .await;
+    assert_eq!(
+        seen.statuses,
+        ["started", "awaiting_approval", "pushed"],
+        "{seen:?}"
+    );
+    assert_ne!(world.origin_head(), before);
+    let ran: Vec<String> = std::fs::read_dir(&marks)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(ran.is_empty(), "hooks ran: {ran:?}");
 }
