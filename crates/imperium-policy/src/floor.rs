@@ -483,20 +483,20 @@ fn changes_agents(args: &[String]) -> bool {
     {
         return true;
     }
-    // `runtime [--remote x] vllm setup|remove`: the group word, then `vllm`, then the verb.
-    if args
-        .iter()
-        .position(|word| word == "runtime")
-        .is_some_and(|at| {
-            let rest = &args[at + 1..];
-            rest.iter()
-                .position(|word| word == "vllm")
-                .is_some_and(|v| {
-                    rest[v + 1..]
-                        .iter()
-                        .any(|word| matches!(word.as_str(), "setup" | "remove"))
-                })
-        })
+    // `runtime [--remote x] install|update|remove|use` of any backend (also `vllm setup|remove`):
+    // the verb anywhere after the group word, so global options between them do not hide it.
+    if after(
+        "runtime",
+        &[
+            "install",
+            "update",
+            "upgrade",
+            "remove",
+            "uninstall",
+            "use",
+            "setup",
+        ],
+    ) || changes_runtime_setting(args)
     {
         return true;
     }
@@ -509,6 +509,43 @@ fn changes_agents(args: &[String]) -> bool {
             .iter()
             .skip(1)
             .any(|word| matches!(word.as_str(), "add" | "set" | "rm"))
+}
+
+/// `config [--remote x] set|unset runtime.…` of a key that names a binary, a path, extra
+/// arguments, a version, an image or the update policy (or of a whole `runtime` table): the
+/// daemon would launch what it names, or fetch and install it. A false alarm only asks.
+fn changes_runtime_setting(args: &[String]) -> bool {
+    const RISKY: &[&str] = &[
+        "custom_path",
+        "command",
+        "extra_args",
+        "update",
+        "auto_install",
+        "find_existing",
+        "backend",
+        "version",
+        "docker_image",
+        "wsl_distro",
+    ];
+    args.iter()
+        .position(|word| word == "config")
+        .is_some_and(|at| {
+            let rest = &args[at + 1..];
+            rest.iter()
+                .any(|word| matches!(word.as_str(), "set" | "unset"))
+                && rest.iter().any(|word| {
+                    let key = word.to_ascii_lowercase();
+                    let key = key.split('=').next().unwrap_or(&key);
+                    let Some(tail) = key.strip_prefix("runtime") else {
+                        return false;
+                    };
+                    // `runtime`, `runtime.llamacpp`, `runtime.vllm`: a whole table.
+                    if tail.is_empty() || matches!(tail, ".llamacpp" | ".vllm") {
+                        return true;
+                    }
+                    tail.starts_with('.') && RISKY.iter().any(|name| tail.contains(name))
+                })
+        })
 }
 
 /// `plugin [--remote x] marketplace add …`: the group word, then `marketplace`, then `add`.
@@ -670,6 +707,32 @@ mod tests {
             "imperium --remote=box pack add-source a https://example.com/p.git",
             "imperium mods --remote x install ./demo",
             "imperium --remote mods mods update demo",
+            "imperium runtime install",
+            "imperium runtime install --pack windows-x64-vulkan",
+            "imperium runtime update",
+            "imperium runtime remove",
+            "imperium runtime use /tmp/llama-server",
+            "imperium runtime use",
+            "imperium --remote box runtime install",
+            "imperium runtime --remote x use /tmp/x",
+            "imperium.exe runtime install",
+            "FOO=1 imperium runtime install",
+            "env FOO=1 imperium runtime install",
+            "cd x && imperium runtime install",
+            "bash -c 'imperium runtime install'",
+            "imperium config set runtime.llamacpp.custom_path /tmp/x",
+            "imperium config unset runtime.llamacpp.custom_path",
+            "imperium config set runtime.llamacpp.extra_args '[\"--x\"]'",
+            "imperium config set runtime.llamacpp.update_external auto",
+            "imperium config set runtime.llamacpp.auto_install true",
+            "imperium config set runtime.llamacpp.backend cuda12",
+            "imperium config set runtime.llamacpp.models.m.extra_args []",
+            "imperium config set runtime.vllm.command /tmp/vllm",
+            "imperium config set runtime.vllm.docker_image evil/img",
+            "imperium config set runtime.vllm.version 9",
+            "imperium config set runtime.vllm.extra_args []",
+            "imperium config set runtime.llamacpp {}",
+            "imperium --remote box config set Runtime.LlamaCpp.Custom_Path /tmp/x",
             "imperium runtime vllm setup",
             "imperium runtime vllm setup --docker --yes",
             "imperium.exe runtime vllm remove --yes",
@@ -704,8 +767,12 @@ mod tests {
             "imperium runtime vllm status",
             "imperium runtime vllm",
             "imperium runtime status",
-            "imperium runtime install",
+            "imperium runtime candidates",
             "imperium vllm setup",
+            "imperium config set runtime.llamacpp.context 8192",
+            "imperium config set runtime.llamacpp.idle_unload_s 60",
+            "imperium config set runtime.vllm.max_gpu_memory_utilization 0.8",
+            "imperium config explain runtime.llamacpp.custom_path",
             "imperium plugin",
             "imperium plugin marketplace list",
             "imperium plugin marketplace refresh",
@@ -754,6 +821,61 @@ mod tests {
             "git -C /repo push origin +HEAD:main",
         ] {
             assert!(dangerous_command(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn runtime_changes_ask_every_time_in_every_mode_and_are_never_sticky() {
+        use crate::permissions::{CallKind, Decision, Target, decide_call, safety_floor};
+        use imperium_api::{PermissionMode, RuleAction};
+        let floored = [
+            "imperium runtime install",
+            "imperium runtime install --pack windows-x64-cuda12",
+            "imperium runtime use /opt/evil/llama-server",
+            "imperium runtime vllm setup --docker --yes",
+            "imperium runtime vllm remove --yes",
+            "imperium config set runtime.llamacpp.custom_path /opt/evil/llama-server",
+            "imperium config set runtime.llamacpp.extra_args '[\"--x\"]'",
+            "imperium config set runtime.llamacpp.update_external auto",
+            "imperium config set runtime.vllm.command /opt/evil/vllm",
+        ];
+        let open = [
+            "imperium runtime status",
+            "imperium runtime candidates",
+            "imperium runtime vllm status",
+            "imperium config set runtime.llamacpp.context 8192",
+        ];
+        for mode in [
+            PermissionMode::Ask,
+            PermissionMode::Default,
+            PermissionMode::Auto,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Full,
+        ] {
+            for line in floored {
+                let target = Target::Command(line.to_string());
+                assert!(safety_floor(CallKind::Execute, &target), "{line}");
+                // With no rule, and with an allow rule: the floor asks, never sticky.
+                for rule in [None, Some(RuleAction::Allow)] {
+                    assert_eq!(
+                        decide_call(mode, CallKind::Execute, rule, true),
+                        Decision::Ask { sticky: false },
+                        "{mode} {rule:?} {line}"
+                    );
+                }
+            }
+            for line in open {
+                let target = Target::Command(line.to_string());
+                assert!(!safety_floor(CallKind::Execute, &target), "{line}");
+            }
+            // An unfloored command with an allow rule runs in the modes that honour rules.
+            if mode != PermissionMode::Ask {
+                assert_eq!(
+                    decide_call(mode, CallKind::Execute, Some(RuleAction::Allow), false),
+                    Decision::Run,
+                    "{mode}"
+                );
+            }
         }
     }
 

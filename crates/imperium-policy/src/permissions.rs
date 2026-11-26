@@ -1499,6 +1499,26 @@ mod tests {
     }
 
     #[test]
+    fn the_floor_guards_the_installed_runtimes_folder() {
+        protect_dir(std::path::Path::new("/floor-runtime-data/runtimes"));
+        let path = |absolute: &str| Target::Path {
+            absolute: absolute.to_string(),
+            relative: None,
+        };
+        for guarded in [
+            "/floor-runtime-data/runtimes/llamacpp/b1/llama-server",
+            "/floor-runtime-data/runtimes/vllm.env",
+        ] {
+            assert!(safety_floor(CallKind::Edit, &path(guarded)), "{guarded}");
+            assert!(!safety_floor(CallKind::Read, &path(guarded)), "{guarded}");
+        }
+        assert!(!safety_floor(
+            CallKind::Edit,
+            &path("/floor-runtime-data/runtimes-notes/x")
+        ));
+    }
+
+    #[test]
     fn a_protected_folder_is_guarded_by_its_resolved_path_too() {
         let base = tempfile::tempdir().unwrap();
         let real = base.path().join("real-config");

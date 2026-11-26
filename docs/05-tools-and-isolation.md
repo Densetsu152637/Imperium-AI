@@ -869,6 +869,17 @@ answers:
   ([06](06-extensibility.md#plugin-marketplaces)). Browsing, inspecting, listing, disabling and
   uninstalling, and `plugin secret set|delete`, do not ask. There is no command that approves a
   plugin; that is the desktop app's dialog alone.
+- `imperium runtime install|update|remove|use` (any backend, and `runtime vllm setup|remove`),
+  and `imperium config set|unset` of a `runtime.*` key that names a binary, a path, extra
+  arguments, a version, an image or the update policy (`custom_path`, `command`, `extra_args`,
+  `update_external`, `auto_install`, `find_existing`, `backend`, `version`, `docker_image`,
+  `wsl_distro`, or a whole `runtime` table): they download and install software or point the
+  daemon at a binary it will launch ([04](04-models-and-routing.md#runtimes)). Like every
+  floored call they ask in every permission mode, every time, and no allow rule or "always
+  this session" answer lifts it. `runtime status|candidates` and `runtime vllm status` do not
+  ask.
+- Writing into the installed runtimes (`<data>/runtimes`), so a verified binary cannot be swapped
+  after install.
 - Writing into the installed mods (`<config>/mods`) and the daemon's approvals file
   (`mod-approvals.json`), which a mod approval vouches for; and into the installed plugins
   (`<config>/plugins`), the marketplace clones (`<data>/marketplaces`) and the plugin records

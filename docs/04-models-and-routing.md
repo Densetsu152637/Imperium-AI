@@ -209,6 +209,14 @@ desktop shows a card ([07](07-desktop-ui.md)); `imperium chat` prints the sugges
 
 ## Runtimes
 
+**Agents cannot install or switch a runtime on their own.** Run by an agent, `imperium runtime
+install|update|remove|use` (also `runtime vllm setup|remove`) and `imperium config set|unset` of
+the `runtime.*` keys that name a binary, a path, extra arguments, a version, an image or the
+update policy are on the [safety floor](05-tools-and-isolation.md): they ask the user every
+time in every permission mode, and an allow rule does not lift it. File tools asking to write
+under `<data>/runtimes` (the installed builds and the managed vLLM environment) ask too.
+`status`, `candidates` and `vllm status` stay unfloored.
+
 **Implemented:** `imperium runtime install [--pack <id>]` (and `runtime.install`, *Install
 llama.cpp* in the app) installs llama.cpp's own release build from
 [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases) at the ref pinned in

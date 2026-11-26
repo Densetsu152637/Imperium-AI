@@ -248,7 +248,7 @@ struct Placement {
 /// Asks the safety floor to guard the folders whose files the daemon runs or vouches for: the
 /// installed mods (an approval vouches for their files) and the plugin folders (the user's own
 /// can carry hooks that rewrite calls), the pinned policy packs in `<data>/packs`,
-/// `<config>/plugins`, the marketplace clones in `<data>/marketplaces` and `extensions.plugin_dirs`
+/// `<data>/runtimes`, `<config>/plugins`, the marketplace clones in `<data>/marketplaces` and `extensions.plugin_dirs`
 /// of the user's settings. A writer agent that can reach one of those folders could otherwise plant a
 /// plugin, so a write there is always asked about.
 fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
@@ -259,6 +259,9 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     protect_dir(&paths.data_dir().join("packs"));
     // The marketplaces' clones: a plugin installed from one is copied out of its folder.
     protect_dir(&paths.data_dir().join("marketplaces"));
+    // The installed runtimes (`llama-server` and the managed vLLM environment): a write there
+    // would swap a binary the daemon launches after it was verified at install.
+    protect_dir(&paths.data_dir().join("runtimes"));
     for dir in &settings.extensions.plugin_dirs {
         protect_dir(dir);
     }
