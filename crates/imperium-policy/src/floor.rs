@@ -150,9 +150,11 @@ fn unescape(word: &str) -> String {
 }
 
 /// Whether a line runs `imperium` with arguments the floor cannot read: a variable, a
-/// substitution, a group, an `%VAR%` or a PowerShell `@splat`; or runs it through `xargs`,
-/// which feeds it words from elsewhere. Looked for before the line is taken apart, since a
-/// substitution splits it. A false alarm only asks.
+/// substitution, a group, a brace list, a glob, a delayed (`!X!`) or `%VAR%` expansion, a
+/// PowerShell backtick or `@splat`; or runs it through `xargs` or `parallel`, which feed it
+/// words from elsewhere. Looked for before the line is taken apart, since a substitution splits
+/// it. Any such character in a segment that runs `imperium` asks: a shell can build a word
+/// from them that the floor never sees. A false alarm only asks.
 fn unreadable_imperium(line: &str) -> bool {
     let line = line.replace("&&", ";").replace("||", ";");
     line.split([';', '|', '\n']).any(|segment| {
@@ -162,10 +164,11 @@ fn unreadable_imperium(line: &str) -> bool {
         if !words.iter().any(names_imperium) {
             return false;
         }
-        words
-            .iter()
-            .any(|word| program_names(word).iter().any(|name| name == "xargs"))
-            || segment.contains(['$', '`', '(', ')'])
+        words.iter().any(|word| {
+            program_names(word)
+                .iter()
+                .any(|name| name == "xargs" || name == "parallel")
+        }) || segment.contains(['$', '`', '(', ')', '{', '}', '*', '?', '[', ']', '!'])
             || segment.matches('%').count() >= 2
             || words
                 .iter()
@@ -317,9 +320,14 @@ fn dangerous_named(name: &str, args: &[String], depth: usize) -> bool {
         // PowerShell running a string or another process: what runs cannot be read.
         "iex" | "invoke-expression" | "start-process" | "saps" | "invoke-command" | "icm" => true,
         "nice" | "ionice" | "nohup" | "time" | "command" | "exec" | "builtin" | "stdbuf"
-        | "chrt" | "taskset" => dangerous_words(
-            // `nice -n 5`: an option that takes the next word.
-            skip_options(args, &["-n", "-c", "-p", "--adjustment"]),
+        | "chrt" | "taskset" | "setsid" | "watch" => dangerous_words(
+            // `nice -n 5`, `watch -n 5`: an option that takes the next word.
+            skip_options(args, &["-n", "-c", "-p", "--adjustment", "--interval"]),
+            depth,
+        ),
+        // `parallel cmd ::: args` builds the command's words from elsewhere; what leads is read.
+        "parallel" => dangerous_words(
+            skip_options(args, &["-j", "-n", "-N", "-S", "-a", "--jobs", "--colsep"]),
             depth,
         ),
         "timeout" => {
@@ -612,7 +620,19 @@ fn changes_runtime_setting(args: &[String]) -> bool {
 /// language servers) a folder may start. Read on the whole line, quotes and escapes removed, so
 /// a false alarm needs `imperium`, `config`, `set`/`unset` and the key all on one line.
 pub(crate) fn command_refused(line: &str) -> bool {
-    let flat = unescape(line).to_ascii_lowercase();
+    // A PowerShell backtick escape (`mcp.trusted` + backtick + `_projects`) is no part of the
+    // word it sits in; braces and globs are expanded the way a shell expands them.
+    let flat = unescape(&line.replace('`', "")).to_ascii_lowercase();
+    let mut budget = MAX_BRACE_VARIANTS;
+    expand_braces(&flat, &mut budget)
+        .iter()
+        .any(|variant| refused_words(variant))
+}
+
+/// The most words a brace list may be expanded into when a line is read.
+const MAX_BRACE_VARIANTS: usize = 64;
+
+fn refused_words(flat: &str) -> bool {
     let words: Vec<&str> = flat.split_whitespace().collect();
     words
         .iter()
@@ -620,8 +640,113 @@ pub(crate) fn command_refused(line: &str) -> bool {
         && words.contains(&"config")
         && words.iter().any(|word| matches!(*word, "set" | "unset"))
         && words.iter().any(|word| {
-            crate::permissions::trusted_projects_key(word.split('=').next().unwrap_or(word))
+            let key = word.split('=').next().unwrap_or(word);
+            crate::permissions::trusted_projects_key(key)
+                // A glob that could name the key (`mcp.trusted_p*`, `mcp.trusted_projec?s`).
+                || (key.contains(['*', '?', '['])
+                    && ["mcp.trusted_projects", "mcp"]
+                        .iter()
+                        .any(|name| glob_matches(key, name)))
         })
+}
+
+/// `{a,b}` lists expanded as a shell does (nested too), at most `budget` words in all; text
+/// without a list, and a `{...}` with no comma, is kept as it is.
+fn expand_braces(text: &str, budget: &mut usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let Some(open) = chars.iter().position(|c| *c == '{') else {
+        return vec![text.to_string()];
+    };
+    let mut depth = 0_i32;
+    let mut close = None;
+    let mut commas = Vec::new();
+    for (index, &c) in chars.iter().enumerate().skip(open) {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(index);
+                    break;
+                }
+            }
+            ',' if depth == 1 => commas.push(index),
+            _ => {}
+        }
+    }
+    let Some(close) = close else {
+        return vec![text.to_string()];
+    };
+    let tail: String = chars[close + 1..].iter().collect();
+    if commas.is_empty() {
+        let head: String = chars[..=close].iter().collect();
+        return expand_braces(&tail, budget)
+            .into_iter()
+            .map(|rest| format!("{head}{rest}"))
+            .collect();
+    }
+    let prefix: String = chars[..open].iter().collect();
+    let mut bounds = vec![open];
+    bounds.extend(commas);
+    bounds.push(close);
+    let mut out = Vec::new();
+    for pair in bounds.windows(2) {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        let alternative: String = chars[pair[0] + 1..pair[1]].iter().collect();
+        out.extend(expand_braces(
+            &format!("{prefix}{alternative}{tail}"),
+            budget,
+        ));
+    }
+    out
+}
+
+/// Whether the glob `pattern` (`*`, `?`, `[abc]`, `[a-c]`, `[!x]`) matches all of `text`.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    fn go(pattern: &[char], text: &[char]) -> bool {
+        match pattern.first() {
+            None => text.is_empty(),
+            Some('*') => (0..=text.len()).any(|skip| go(&pattern[1..], &text[skip..])),
+            Some('?') => !text.is_empty() && go(&pattern[1..], &text[1..]),
+            Some('[') => {
+                let Some(end) = pattern
+                    .iter()
+                    .skip(2)
+                    .position(|c| *c == ']')
+                    .map(|at| at + 2)
+                else {
+                    return text.first() == Some(&'[') && go(&pattern[1..], &text[1..]);
+                };
+                let Some(&c) = text.first() else {
+                    return false;
+                };
+                let set = &pattern[1..end];
+                let (negated, set) = match set.first() {
+                    Some('!' | '^') => (true, &set[1..]),
+                    _ => (false, set),
+                };
+                let mut hit = false;
+                let mut index = 0;
+                while index < set.len() {
+                    if index + 2 < set.len() && set[index + 1] == '-' {
+                        hit |= (set[index]..=set[index + 2]).contains(&c);
+                        index += 3;
+                    } else {
+                        hit |= set[index] == c;
+                        index += 1;
+                    }
+                }
+                hit != negated && go(&pattern[end + 1..], &text[1..])
+            }
+            Some(&literal) => text.first() == Some(&literal) && go(&pattern[1..], &text[1..]),
+        }
+    }
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    go(&pattern, &text)
 }
 
 /// `plugin [--remote x] marketplace add …`: the group word, then `marketplace`, then `add`.
@@ -828,6 +953,25 @@ mod tests {
             "& \"C:\\Program Files\\Imperium\\imperium.exe\" runtime install",
             "'/opt/my tools/imperium' runtime use /tmp/x",
             "\"C:\\Program Files\\Imperium\\imperium.exe\" config set runtime.llamacpp.custom_path x",
+            "imperium runtime {install,}",
+            "imperium runtime {,install}",
+            "imperium config set {mcp.trusted_projects,} []",
+            "imperium runtime instal?",
+            "imperium runtime inst*",
+            "imperium runtime [i]nstall",
+            "cmd /v:on /c \"set X=install&& imperium runtime !X!\"",
+            "cmd /c imperium runtime install",
+            "cmd /C \"imperium runtime install\"",
+            "pwsh -Command imperium runtime install",
+            "powershell -c \"imperium runtime install\"",
+            "nohup imperium runtime install",
+            "setsid imperium runtime install",
+            "setsid -w imperium runtime install",
+            "watch -n 5 imperium runtime install",
+            "parallel imperium runtime install ::: x",
+            "xargs imperium runtime install",
+            "echo ok\nimperium runtime install",
+            "imperium runtime install\necho ok",
             "imperium runtime ncm use /opt/evil/ncm",
             "imperium runtime ncm install",
             "imperium runtime ncm remove",
@@ -944,6 +1088,13 @@ mod tests {
             "bash -c 'imperium config set mcp.trusted_projects []'",
             "cd x && imperium config set mcp.trusted_projects []",
             "FOO=1 imperium config set mcp.trusted_projects []",
+            "imperium config set {mcp.trusted_projects,} []",
+            "imperium config set mcp.trusted_p* []",
+            "imperium config set mcp.trusted_projec?s []",
+            "imperium config set mcp.[t]rusted_projects []",
+            "imperium config set mcp.trusted`_projects []",
+            "imperium config unset {mcp,x}.trusted_projects",
+            "imperium config set mcp.trusted_projects null",
             "imperium config set mcp {}",
         ];
         let allowed = [

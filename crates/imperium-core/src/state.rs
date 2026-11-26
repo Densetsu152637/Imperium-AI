@@ -299,6 +299,8 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     // would swap a binary the daemon launches after it was verified at install, so it is
     // refused, not asked about.
     imperium_policy::permissions::refuse_writes_under(&paths.data_dir().join("runtimes"));
+    // A command that names the folder asks too (`cp x <data>/runtimes/...`).
+    imperium_policy::permissions::guard_commands_naming(&paths.data_dir().join("runtimes"));
     for dir in &settings.extensions.plugin_dirs {
         protect_dir(dir);
         // Plugins in the user's own folders skip the load-time gate, so a file tool never writes

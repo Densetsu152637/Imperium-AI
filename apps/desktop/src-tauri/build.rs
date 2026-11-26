@@ -30,6 +30,7 @@ fn main() {
             "update_switch_install",
             "plugin_approve",
             "auto_merge_enable",
+            "user_call",
         ]),
     ))
     .expect("the Imperium window's build configuration is invalid");

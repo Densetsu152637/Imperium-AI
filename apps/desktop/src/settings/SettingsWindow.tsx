@@ -38,6 +38,7 @@ import { PermissionsSection } from "./PermissionsSection";
 import { DataSection } from "./DataSection";
 import { AboutSection } from "./AboutSection";
 import { TestNotificationRow } from "./TestNotificationRow";
+import { callAsUser } from "../daemon/userCall";
 
 type Props = {
   layoutControls: LayoutControls;
@@ -131,7 +132,7 @@ export function SettingsWindow(props: Props) {
     if (!client) return;
     setConfigError(null);
     try {
-      const result = await client.call<ConfigSetResult>("config.set", { key, value });
+      const result = await callAsUser<ConfigSetResult>(client, "config.set", { key, value });
       setConfig((current) =>
         current && {
           ...current,

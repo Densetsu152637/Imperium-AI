@@ -1,4 +1,25 @@
 use super::*;
+
+/// What a caller is told when a setting only the user's own process may change is not theirs.
+pub(super) const USER_ONLY: &str = "this changes what the daemon launches or trusts (a runtime binary, path, extra arguments, the update policy or the trusted projects), so only a process of your own on the local socket may make the change (not an agent, a mod, a phone or a remote client): the desktop app's settings do this through its own local connection, or run `imperium config set` from your own terminal";
+
+/// Whether the caller behind `peer` is a person's own process on the local socket, never on a
+/// server and never a descendant of the daemon (`daemon_pid`).
+pub(super) async fn local_user(
+    state: Arc<DaemonState>,
+    peer: Option<(u32, u64)>,
+    daemon_pid: u32,
+) -> bool {
+    let Some((pid, accepted_at)) = peer else {
+        return false;
+    };
+    tokio::task::spawn_blocking(move || {
+        !state.settings().daemon.server
+            && crate::peer::may_grant_from(pid, daemon_pid, Some(accepted_at))
+    })
+    .await
+    .unwrap_or(false)
+}
 use imperium_protocol::jsonrpc::server_features;
 
 impl Connection {
@@ -56,8 +77,9 @@ impl Connection {
             }
             // A setting that names a runtime binary, path, arguments or update policy is what the
             // daemon launches or fetches, and `mcp.trusted_projects` says which folders may start
-            // MCP servers: only a person's own process on the local socket may
-            // change it, not an agent, a mod, a phone or a client over TCP.
+            // MCP servers: only a person's own process on the local socket may change it (the
+            // desktop app calls through its own local connection), not an agent, a mod, a
+            // phone or a client over TCP. Whatever the value, null (unset) included.
             ConfigSet::NAME
                 if c.params
                     .as_ref()
@@ -65,31 +87,22 @@ impl Connection {
                     .and_then(Value::as_str)
                     .is_some_and(imperium_policy::permissions::user_only_setting) =>
             {
-                const WHY: &str = "this setting names a runtime binary, a path, extra arguments, the update policy or the trusted projects, so only a process of your own on the local socket may change it (not an agent, a mod, a phone or a remote client): run `imperium config set` from your own terminal or use the app's settings";
                 match self.peer {
                     None => call::<ConfigSet>(c.params.take(), |_: ConfigSetParams| {
-                        Err(ErrorObject::new(codes::INVALID_PARAMS, WHY))
+                        Err(ErrorObject::new(codes::INVALID_PARAMS, USER_ONLY))
                     }),
-                    Some((pid, accepted_at)) => {
-                        call_later::<ConfigSet, _>(c.params.take(), c.later, |params| {
-                            let state = Arc::clone(&self.state);
-                            async move {
-                                let may = tokio::task::spawn_blocking(move || {
-                                    crate::peer::may_grant(pid, accepted_at)
-                                })
-                                .await
-                                .unwrap_or(false);
-                                if !may {
-                                    return Err(ErrorObject::new(codes::INVALID_PARAMS, WHY));
-                                }
-                                tokio::task::spawn_blocking(move || {
-                                    crate::config::set(&state, params)
-                                })
+                    peer => call_later::<ConfigSet, _>(c.params.take(), c.later, |params| {
+                        let state = Arc::clone(&self.state);
+                        let daemon_pid = self.daemon_pid;
+                        async move {
+                            if !local_user(Arc::clone(&state), peer, daemon_pid).await {
+                                return Err(ErrorObject::new(codes::INVALID_PARAMS, USER_ONLY));
+                            }
+                            tokio::task::spawn_blocking(move || crate::config::set(&state, params))
                                 .await
                                 .map_err(|error| refused(error.to_string()))?
-                            }
-                        })
-                    }
+                        }
+                    }),
                 }
             }
             ConfigSet::NAME => call::<ConfigSet>(c.params.take(), |params: ConfigSetParams| {

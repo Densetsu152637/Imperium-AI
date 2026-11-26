@@ -31,6 +31,7 @@ import { arrangeModels, markOf, type ModelMark } from "../models/modelPrefs";
 import { prefersReducedMotion, useModelMarks } from "../settings/settings";
 import { HiddenGroupRow, ModelMarkButtons } from "./ModelMarks";
 import { localDescription, localSpec, memoryPlan } from "./ModelSelect";
+import { callAsUser } from "../daemon/userCall";
 
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;
@@ -229,7 +230,7 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
   }, [client]);
 
   const useServer = (path: string | null) =>
-    check(() => client.call<RuntimeStatusResult>("runtime.set_server", { path }));
+    check(() => (path === null ? client.call<RuntimeStatusResult>("runtime.set_server", { path }) : callAsUser<RuntimeStatusResult>(client, "runtime.set_server", { path })));
   const choose = async () => {
     const path = await pickFile("Choose llama-server");
     if (path) await useServer(path);

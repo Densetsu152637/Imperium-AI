@@ -215,7 +215,7 @@ the `runtime.*` keys that name a binary, a path, extra arguments, a version, an 
 update policy are on the [safety floor](05-tools-and-isolation.md): they ask the user every
 time in every permission mode, and an allow rule does not lift it. File tools asking to write
 under `<data>/runtimes` (the installed builds and the managed vLLM environment) are refused
-outright. Limits: interpreters and scripts (`python -c "import subprocess; …"`) are unseen by
+outright, and a command that names the folder asks every time. Limits: interpreters and scripts (`python -c "import subprocess; …"`) are unseen by
 the floor; the daemon RPC through a `run_command` that reads the endpoint file under the policy
 tier is a residual; and a launch-time hash check of the binary against its install record is a
 residual too (roadmap: a manifest of the executable plus the libraries it loads).

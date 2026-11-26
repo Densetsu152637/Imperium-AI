@@ -25,6 +25,7 @@
     "allow-update-switch-install",
     "allow-plugin-approve",
     "allow-auto-merge-enable",
+    "allow-user-call",
     "core:default",
     "dialog:allow-open",
     "notification:default",

@@ -890,21 +890,33 @@ answers:
   floored call they ask in every permission mode, every time, and no allow rule or "always
   this session" answer lifts it. This covers every backend, `runtime ncm use|install|remove|update`
   and `runtime.ncm.*` included. `runtime status|candidates`, `runtime vllm status` and `runtime ncm
-  status` do not ask. The daemon's own `config.set` refuses those `runtime.*` keys too unless the
-  caller is a process of the user's own on the local socket, so an agent, a mod, a phone or a
-  client over TCP cannot set them even by calling the RPC.
+  status` do not ask. The daemon refuses the same changes unless the caller is a process of the
+  user's own on the local socket (not a descendant of the daemon, not marked as one, never on a
+  server): `config.set` of those `runtime.*` keys (a null value, which unsets, included),
+  `runtime.set_server` with a path, and `models.set_config` that saves any `extra_args` (a dry
+  run saves nothing and is not held back). So an agent, a mod, a phone or a client over TCP
+  cannot make them even by calling the RPC. The desktop app's webview is a loopback TCP client,
+  so its settings window, "Use this llama-server" and the model dialog's save make these calls
+  through the app's own `user_call` command, which sends them over the local socket (only those
+  three methods, only from the app's own windows).
 - `imperium env set-runtime …`, which changes an environment's isolation and pulls images.
 - Arguments of `imperium` are read as a shell reads them (quotes, backslashes and `^` removed,
-  so `ins""tall` is `install`), and a line that runs `imperium` with arguments the floor cannot
-  read (a variable, `$( )`, a backtick, a group, `%VAR%`, a PowerShell `@splat`) or through
-  `xargs` asks outright. A quoted program path with spaces (`"C:\Program Files\Imperium\imperium.exe"`)
+  so `ins""tall` is `install`). Any segment that runs `imperium` and holds a character a shell
+  could build a word from (`$ ( ) { } * ? [ ] ! %VAR%`, a backtick, a PowerShell `@splat`), or
+  that runs it through `xargs` or `parallel`, asks outright: brace lists, globs, variables,
+  substitutions and `cmd` delayed expansion (`!X!`) are not read. `nohup`, `setsid`, `watch`,
+  `nice` and the like are unwrapped. A quoted program path with spaces (`"C:\Program Files\Imperium\imperium.exe"`)
   is one word.
 - `imperium config set|unset mcp.trusted_projects` (or the whole `mcp` table) is **refused**
   outright, not asked about, in every mode: trust gates which folders may start MCP servers
-  (and later language servers). The daemon's `config.set` of it is likewise refused unless the
-  caller is a process of the user's own on the local socket.
-- Writing into the installed runtimes (`<data>/runtimes`) is **refused** without asking, in
-  every mode, so a verified binary cannot be swapped after install.
+  (and later language servers). It is read after removing quotes, escapes and PowerShell
+  backticks and expanding brace lists and globs. Known false positive: a read-only command that
+  names `imperium`, `config`, `set` or `unset` and the key together is refused too. The daemon's
+  `config.set` of it is likewise refused unless the caller is a process of the user's own on the
+  local socket.
+- Writing into the installed runtimes (`<data>/runtimes`) with a file tool is **refused**
+  without asking, in every mode. A command line that names the folder (`cp x
+  <data>/runtimes/...`) asks every time; a path the shell builds (`$X/...`) is not seen.
 - Limits, stated: the floor reads command lines, not what an interpreter or script runs
   (`python -c "import subprocess; …"` is unseen); an agent's `run_command` that reads the
   daemon's endpoint file could call the daemon RPC under the policy tier (a residual, see the

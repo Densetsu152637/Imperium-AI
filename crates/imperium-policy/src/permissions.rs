@@ -527,6 +527,28 @@ pub fn refused_write(absolute: &str) -> bool {
         })
 }
 
+/// Folders a command line may not name without asking: the installed runtimes, whose binaries
+/// file tools may not write and a command (`cp x <data>/runtimes/...`) could. Process-wide, like
+/// [`REFUSED_WRITES`].
+static COMMAND_GUARDED_DIRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Makes any command line that names `dir` (as given or as it resolves) something the safety
+/// floor asks about every time. A line is read as text, so a path built by the shell (`$X/...`) is
+/// not seen: a stated limit.
+pub fn guard_commands_naming(dir: &std::path::Path) {
+    register(&COMMAND_GUARDED_DIRS, dir);
+}
+
+/// Whether `line` names a folder given to [`guard_commands_naming`].
+fn command_names_guarded_dir(line: &str) -> bool {
+    let flat = normalise_dir(&line.replace(['"', '\''], ""));
+    COMMAND_GUARDED_DIRS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|dir| flat.contains(dir.as_str()))
+}
+
 /// Whether `absolute` is a file a project uses to add extensions or change what the daemon
 /// starts for it: `.imperium/` or `.claude/` `skills`, `commands` or `agents`, `.mcp.json`, and
 /// `.imperium/config.toml` or `config.local.toml` (they can add plugin folders and MCP servers).
@@ -648,7 +670,9 @@ const FLOOR_PATHS: &[&str] = &[
 /// or program does.
 pub fn safety_floor(kind: CallKind, target: &Target) -> bool {
     match (kind, target) {
-        (CallKind::Execute, Target::Command(line)) => crate::floor::dangerous_command(line),
+        (CallKind::Execute, Target::Command(line)) => {
+            crate::floor::dangerous_command(line) || command_names_guarded_dir(line)
+        }
         (CallKind::Edit, Target::Path { absolute, .. }) => {
             let fold = cfg!(any(windows, target_os = "macos"));
             let in_git = absolute.split('/').any(|part| {
@@ -1756,6 +1780,39 @@ mod tests {
             "/floor-runtime-data/plugins/x",
         ] {
             assert!(!refused_write(open), "{open}");
+        }
+    }
+
+    #[test]
+    fn a_command_naming_the_installed_runtimes_folder_asks_in_every_mode() {
+        guard_commands_naming(std::path::Path::new("/guard-cmd-data/runtimes"));
+        let bs = char::from(92);
+        let windows_style = format!("cp x {bs}guard-cmd-data{bs}runtimes{bs}llama-server");
+        for line in [
+            "cp evil /guard-cmd-data/runtimes/llama-server".to_string(),
+            "cd /guard-cmd-data/runtimes && cp evil llama-server".to_string(),
+            "cp evil '/guard-cmd-data/runtimes/llama-server'".to_string(),
+            "cp evil \"/guard-cmd-data/runtimes/llama-server\"".to_string(),
+            windows_style,
+        ] {
+            let target = Target::Command(line.clone());
+            assert!(safety_floor(CallKind::Execute, &target), "{line}");
+            for mode in PermissionMode::ALL {
+                if mode == PermissionMode::Plan {
+                    continue;
+                }
+                assert_eq!(
+                    decide_call(mode, CallKind::Execute, Some(RuleAction::Allow), true),
+                    Decision::Ask { sticky: false },
+                    "{mode} {line}"
+                );
+            }
+        }
+        for line in ["ls /elsewhere/data", "cp a b", "echo runtimes"] {
+            assert!(
+                !safety_floor(CallKind::Execute, &Target::Command(line.into())),
+                "{line}"
+            );
         }
     }
 
