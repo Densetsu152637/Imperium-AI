@@ -351,7 +351,15 @@ export function InstalledView({
                 <Sparkles aria-hidden="true" />
                 <div>
                   <strong>{skill.name}</strong> <Badge>{skill.origin}</Badge>
+                  {skill.withheld_reason && (
+                    <Badge tone="warn" title={skill.withheld_reason}>
+                      Withheld
+                    </Badge>
+                  )}
                   <p className="skill-description">{skill.description}</p>
+                  {skill.withheld_reason && (
+                    <p className="connectors-note">Not loaded: {skill.withheld_reason}. Approve it in Plugins, Installed.</p>
+                  )}
                   {skill.installed_from && (
                     <p className="connector-row-source" title={skill.installed_from.location}>
                       {installedByAgent(skill) ? "Installed by an agent from " : "Installed from "}

@@ -217,3 +217,117 @@ fn a_floor_given_by_the_caller_replaces_the_computed_one() {
     assert_eq!(provider_call(Some(true)), (E, allow, true));
     assert_eq!(provider_call(None), (R, allow, false));
 }
+
+fn path(absolute: &str) -> Target {
+    Target::Path {
+        absolute: absolute.into(),
+        relative: None,
+    }
+}
+
+#[test]
+fn a_projects_extension_files_ask_every_time_in_every_mode() {
+    for file in [
+        "/work/app/.imperium/skills/x/SKILL.md",
+        "/work/app/.claude/skills/x/SKILL.md",
+        "/work/app/.imperium/commands/c.md",
+        "/work/app/.claude/commands/c.md",
+        "/work/app/.imperium/agents/a.md",
+        "/work/app/.claude/agents/a.md",
+        "/work/app/.mcp.json",
+        "/work/app/.imperium/config.toml",
+        "/work/app/.imperium/config.local.toml",
+        // Spellings a case-folding or stream-aware file system also reaches.
+        "/work/app/.IMPERIUM/Skills/x.md",
+        "/work/app/.imperium./skills /x.md",
+        "/work/app/.MCP.JSON",
+        "/work/app/.mcp.json:stream",
+        // `.` and `..` are tidied: the floor judges what the path resolves to either way.
+        "/work/app/.claude/./skills/x/SKILL.md",
+        "/work/app/.imperium/./config.toml",
+        "/work/app/.claude/sub/../skills/x/SKILL.md",
+        "/work/app/.imperium/commands/../agents/a.md",
+        ".claude/./skills/x/SKILL.md",
+        // A plugin's code-running parts, wherever its folder is.
+        "/tools/plugins/p/hooks/hooks.json",
+        "/tools/plugins/p/.claude-plugin/plugin.json",
+        "/tools/plugins/p/hooks/./hooks.json",
+    ] {
+        let target = path(file);
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::Auto,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Full,
+        ] {
+            // An allow rule does not lift it either.
+            let allow = vec![rule("write_file", "", RuleAction::Allow)];
+            for rules in [Vec::new(), allow] {
+                let (decision, _, floored) = judged(
+                    &permissions(mode, rules),
+                    "write_file",
+                    &target,
+                    CallKind::Edit,
+                    None,
+                );
+                assert!(floored, "{file}");
+                assert_eq!(decision, E, "{mode:?} {file}");
+            }
+        }
+        // Reading is never covered.
+        let (decision, _, _) = judged(
+            &permissions(PermissionMode::Full, Vec::new()),
+            "read_file",
+            &target,
+            CallKind::Read,
+            None,
+        );
+        assert_eq!(decision, R, "{file}");
+    }
+    for plain in [
+        "/work/app/src/main.rs",
+        "/work/app/docs/skills/x.md",
+        "/work/app/.imperium/memory.md",
+        "/work/app/mcp.json",
+    ] {
+        let (_, _, floored) = judged(
+            &permissions(PermissionMode::Default, Vec::new()),
+            "write_file",
+            &path(plain),
+            CallKind::Edit,
+            None,
+        );
+        assert!(!floored, "{plain}");
+    }
+}
+
+#[test]
+fn a_write_to_the_users_configuration_is_refused_before_anyone_is_asked() {
+    imperium_policy::permissions::refuse_writes_under(std::path::Path::new(
+        "/matrix-config/skills",
+    ));
+    let target = path("/matrix-config/skills/x/SKILL.md");
+    for mode in PermissionMode::ALL {
+        let (decision, _, _) = judged(
+            &permissions(mode, vec![rule("write_file", "", RuleAction::Allow)]),
+            "write_file",
+            &target,
+            CallKind::Edit,
+            None,
+        );
+        assert_eq!(
+            decision,
+            Decision::Refuse(Refusal::Configuration),
+            "{mode:?}"
+        );
+        // Reading it, and writing elsewhere, are unaffected.
+        let (read, _, _) = judged(
+            &permissions(mode, Vec::new()),
+            "read_file",
+            &target,
+            CallKind::Read,
+            None,
+        );
+        assert_eq!(read, R, "{mode:?}");
+    }
+}

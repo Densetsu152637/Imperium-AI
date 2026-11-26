@@ -31,7 +31,13 @@ arguments?: string, } | { "type": "permission_requested", request_id: number, to
  * The rule "always allow" would add (`permissions.add_rule`), when there is a sensible
  * one: the command and its subcommand, the file's folder, or the whole tool.
  */
-suggested_rule?: PermissionRule, } | { "type": "tool_finished", call_id: string, ok: boolean, output: string, 
+suggested_rule?: PermissionRule, 
+/**
+ * The daemon says only the user may answer this request (an extension install or
+ * removal, or a write to a project's extension files, judged on the path the call
+ * resolves to): a harness or other agent-driven client must not. Absent for any other.
+ */
+user_only?: boolean, } | { "type": "tool_finished", call_id: string, ok: boolean, output: string, 
 /**
  * The tool's name; absent in history recorded before it was sent.
  */

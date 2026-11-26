@@ -250,6 +250,7 @@ test("the window calls only the allow-listed methods, and none that counts an ap
     "config.undo": {},
     "plugins.set_secret": {},
     "plugins.delete_secret": {},
+    "mcp.list": { skills: [{ name: "held", withheld_reason: "an agent installed it" }, { name: "fine", withheld_reason: null }] },
   });
   const api = pluginsApi(client, "e");
   await api.marketplaces();
@@ -263,6 +264,11 @@ test("the window calls only the allow-listed methods, and none that counts an ap
   await api.muteProject("/p");
   await api.inspect("p@m");
   await api.inspectFolder("my-tools");
+  await api.inspectFolder("held", "skill");
+  assert.deepEqual(
+    (await api.withheldSkills()).map((skill) => skill.name),
+    ["held"],
+  );
   await api.install(preview);
   await api.update(preview);
   await api.setEnabled("p", true);
@@ -270,7 +276,7 @@ test("the window calls only the allow-listed methods, and none that counts an ap
   await api.undo(1);
   await api.setSecret("p", "KEY", "v");
   await api.deleteSecret("p", "KEY");
-  assert.equal(Object.keys(api).length, 18, "every function in pluginsApi was invoked above");
+  assert.equal(Object.keys(api).length, 19, "every function in pluginsApi was invoked above");
   const allowed = new Set([
     "plugins.marketplace_list",
     "plugins.browse",
@@ -289,6 +295,7 @@ test("the window calls only the allow-listed methods, and none that counts an ap
     "config.undo",
     "plugins.set_secret",
     "plugins.delete_secret",
+    "mcp.list",
   ]);
   assert.deepEqual(new Set(calls.map((c) => c.method)), allowed);
   // Neither of the daemon's two approval methods is among them; the app's own command is the only way.
