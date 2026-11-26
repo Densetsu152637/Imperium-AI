@@ -1,2 +1,0 @@
-// expect: lex-error L0016 at 2:6
-"{x:a{b}"

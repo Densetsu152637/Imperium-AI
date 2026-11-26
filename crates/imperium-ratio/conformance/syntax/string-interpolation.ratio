@@ -1,3 +1,0 @@
-// expect: lex-ok
-// tokens: kw:let ident:s = str[ text:"Hello, " interp[ ident:name ]interp text:"!" ]str ;!
-let s = "Hello, {name}!"

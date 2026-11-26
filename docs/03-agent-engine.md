@@ -1290,6 +1290,9 @@ Stable prompt prefix (R2.3) changed it again: with loading off the root's list g
 `list_knowledge_agents` and `ask_agent` (when `knowledge.enabled`) and lists MCP servers' and
 plugins' tools last; with the harness aids or the loader on the system prompt has those
 paragraphs at its end. Evals baselined before R2.3 need a new baseline.
+The `edit_file` schema change (an optional `replace_all` boolean, a changed description) changes
+it once more, on top of the tool-list change of R2.3 that has already landed: eval results
+recorded before it do not compare directly.
 
 `tool_loading` (additive; null before the root's first request) reports how the root was offered
 its tools. Names are the ones the model saw (after the variant's renames); `call` is the 1-based

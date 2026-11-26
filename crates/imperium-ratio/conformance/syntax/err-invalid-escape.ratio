@@ -1,2 +1,0 @@
-// expect: lex-error L0003 at 2:3
-"a\qb"

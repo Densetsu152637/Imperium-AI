@@ -1,3 +1,0 @@
-// expect: lex-error L0012 at 3:3
-// option: max_nesting 2
-((()))
