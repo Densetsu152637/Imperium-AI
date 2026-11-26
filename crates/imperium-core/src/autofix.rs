@@ -295,10 +295,10 @@ pub(crate) async fn check_push_target(dir: &Path, repo: &str) -> Result<(), Stri
     if push_target_is(&target, repo) {
         return Ok(());
     }
-    // The tests push to local folders, which name no GitHub repository: there the address must
-    // be the one the repository's own config names, with no redirect of the push.
+    // The tests push to local folders, which name no GitHub repository: there the push address
+    // must be the fetch address, with no redirect of the push alone.
     #[cfg(feature = "testing")]
-    if testing_configured_origin(dir).is_some_and(|configured| configured == target) {
+    if testing_fetch_url(dir).is_some_and(|fetch| fetch == target) {
         return Ok(());
     }
     Err(format!(
@@ -312,9 +312,9 @@ fn push_target_is(target: &str, repo: &str) -> bool {
 }
 
 #[cfg(feature = "testing")]
-fn testing_configured_origin(dir: &Path) -> Option<String> {
+fn testing_fetch_url(dir: &Path) -> Option<String> {
     let mut command = crate::safe_git::command(dir);
-    command.args(["config", "--get", "remote.origin.url"]);
+    command.args(["remote", "get-url", "origin"]);
     let output = crate::safe_git::run(&mut command).ok()?;
     Some(crate::safe_git::text(&output))
 }
