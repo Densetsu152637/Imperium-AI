@@ -105,6 +105,10 @@ pub(crate) fn applies_to(tool: &str) -> bool {
 
 /// A name for the saved file that is safe on every platform and unique across restarts.
 fn file_name(tool: &str) -> String {
+    #[cfg(test)]
+    if let Some(name) = tests::NAME.with(|name| name.borrow().clone()) {
+        return name;
+    }
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let tool: String = tool
         .chars()
@@ -315,6 +319,12 @@ fn cut(line: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    thread_local! {
+        /// A name `file_name` returns instead of a unique one, for the test on this thread.
+        pub(super) static NAME: std::cell::RefCell<Option<String>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
     use super::*;
 
     #[test]
@@ -530,12 +540,37 @@ mod tests {
     #[test]
     fn a_name_that_is_taken_is_never_overwritten() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("taken.txt");
-        std::fs::write(&path, "old").unwrap();
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        assert!(options.open(&path).is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+        let results = dir.path().join("s.results");
+        std::fs::create_dir(&results).unwrap();
+        NAME.with(|name| *name.borrow_mut() = Some("taken.txt".into()));
+        std::fs::write(results.join("taken.txt"), "old").unwrap();
+        // Both entry points refuse the name that is taken and leave the file as it was.
+        assert!(save(&results, "grep", "new").is_err());
+        assert!(save_within(&results, "grep", "new", 1024).is_err());
+        assert_eq!(
+            std::fs::read_to_string(results.join("taken.txt")).unwrap(),
+            "old"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_at_the_name_is_never_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let results = dir.path().join("s.results");
+        std::fs::create_dir(&results).unwrap();
+        let target = dir.path().join("outside.txt");
+        std::fs::write(&target, "outside").unwrap();
+        NAME.with(|name| *name.borrow_mut() = Some("planted.txt".into()));
+        std::os::unix::fs::symlink(&target, results.join("planted.txt")).unwrap();
+        assert!(save(&results, "grep", "secret").is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "outside");
+        // A link to nothing is not written through either (the target is not created).
+        let missing = dir.path().join("missing.txt");
+        NAME.with(|name| *name.borrow_mut() = Some("dangling.txt".into()));
+        std::os::unix::fs::symlink(&missing, results.join("dangling.txt")).unwrap();
+        assert!(save(&results, "grep", "secret").is_err());
+        assert!(!missing.exists());
     }
 
     #[test]
