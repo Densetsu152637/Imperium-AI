@@ -1,17 +1,23 @@
-//! Measurements for assumption A4 (cold start, binary size) and the type-checker follow-up of
-//! F12 (resident memory). Logged with a `MEASURE` prefix; CI runs this in release mode with
-//! `--nocapture` and the numbers are recorded in the plan. The assertions are loose floors that
-//! catch a broken worker, not the plan's targets.
-#![cfg(unix)]
+//! Measurements for assumption A4 (cold start, binary size) and F12 (resident memory), for the
+//! shipped worker without the type checker. Logged with a `MEASURE` prefix; CI runs this in
+//! release mode with `--nocapture` on every OS and the numbers are recorded in the plan. The
+//! assertions are loose floors that catch a broken worker, not the plan's targets.
 
 mod common;
 
-use std::{process::Command, time::Duration};
+use std::time::Duration;
 
 use common::{launcher, quick_limits, worker_path};
 use imperium_script::ScriptEvent;
 
+#[cfg(not(unix))]
+fn resident_kb(_pid: u32) -> Option<u64> {
+    None
+}
+
+#[cfg(unix)]
 fn resident_kb(pid: u32) -> Option<u64> {
+    use std::process::Command;
     let output = Command::new("ps")
         .args(["-o", "rss=", "-p", &pid.to_string()])
         .output()

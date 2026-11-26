@@ -29,6 +29,8 @@ imperium-memory = { version = "0.2.0", path = "../imperium-memory" }
 imperium-models = { version = "0.2.0", path = "../imperium-models" }
 imperium-pets = { version = "0.2.0", path = "../imperium-pets" }
 imperium-protocol = { version = "0.2.0", path = "../imperium-protocol" }
+# Code mode: the worker launcher and, on Windows, the NO_READ_UP labels on the daemon's folders.
+imperium-script = { version = "0.2.0", path = "../imperium-script" }
 imperium-policy = { version = "0.2.0", path = "../imperium-policy" }
 imperium-tools = { version = "0.2.0", path = "../imperium-tools" }
 imperium-web = { version = "0.2.0", path = "../imperium-web" }

@@ -1,12 +1,11 @@
-//! Platforms with no self-confinement in the worker (Windows until stage 1b): the worker refuses
-//! to run rather than run unconfined.
+//! Platforms with no confinement for the worker (neither Linux, macOS nor Windows): the worker
+//! refuses to run rather than run unconfined.
 
 use super::{ConfineError, Report, Settings};
 
 pub(super) fn apply(_settings: &Settings) -> Result<Report, ConfineError> {
     Err(ConfineError::new(
         "platform",
-        "this platform has no worker self-confinement yet; the daemon launches the worker \
-         confined on Windows (stage 1b of the code-mode plan)",
+        "this platform has no confinement for the worker, so code mode is unavailable here",
     ))
 }
