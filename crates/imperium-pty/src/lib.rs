@@ -422,7 +422,7 @@ impl Terminator {
         // Everywhere: by session (the PTY's child is its leader). On Linux this catches what
         // survives a supervisor that was itself killed; on macOS it is the whole job.
         if let Some(sid) = sid {
-            sweep::sweep(sid);
+            let _ = sweep::sweep(sid);
         }
         close_master(&self.master);
     }

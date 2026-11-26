@@ -152,11 +152,12 @@ fn signal_member(pid: i32, _start: u64, signal: Signal, _sid: Pid) -> Delivery {
     }
 }
 
-/// Ends every process of session `sid`: `SIGHUP`, then freeze and `SIGKILL`.
-pub(crate) fn sweep(sid: Pid) {
+/// Ends every process of session `sid`: `SIGHUP`, then freeze and `SIGKILL`. Whether none was
+/// left (a process that refuses signals, or outlasts the cap, makes it `false`).
+pub(crate) fn sweep(sid: Pid) -> bool {
     let first = members(sid);
     if first.is_empty() {
-        return;
+        return true;
     }
     for member in &first {
         signal_member(member.pid.as_raw_pid(), member.start, Signal::HUP, sid);
@@ -166,12 +167,12 @@ pub(crate) fn sweep(sid: Pid) {
     let deadline = Instant::now() + HUP_WAIT;
     while Instant::now() < deadline {
         if members(sid).is_empty() {
-            return;
+            return true;
         }
         sleep(POLL);
     }
     let leader = sid.as_raw_pid();
-    freeze::run(
+    let outcome = freeze::run(
         || {
             members(sid)
                 .into_iter()
@@ -186,4 +187,5 @@ pub(crate) fn sweep(sid: Pid) {
         |candidate, signal| signal_member(candidate.key.0, candidate.key.1, signal, sid),
         Instant::now() + KILL_WAIT,
     );
+    outcome.left == 0 && outcome.denied.is_empty()
 }
