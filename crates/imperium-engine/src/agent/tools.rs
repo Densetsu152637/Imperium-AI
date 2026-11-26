@@ -1207,6 +1207,10 @@ pub(super) fn denied_by_rule(summary: &str) -> String {
 pub(super) fn refused(why: Refusal, summary: &str) -> String {
     match why {
         Refusal::Rule => denied_by_rule(summary),
+        Refusal::Configuration => format!(
+            "{summary} was not run: {}.",
+            imperium_policy::permissions::REFUSED_WRITE_ADVICE
+        ),
         Refusal::Plan => format!(
             "The session is in plan mode, which only reads: {summary} was not run. Read and \
              search what you need, then present your plan; the user switches the mode when \

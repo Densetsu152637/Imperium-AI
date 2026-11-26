@@ -30,9 +30,22 @@ fn guarded(paths: &Paths) {
         "mods/m/mod.json",
         "plugins/p/hooks/hooks.json",
         "config.toml",
+        // A full settings layer, the connector catalogue's overrides and the personalities.
+        "models.toml",
+        "connectors.json",
+        "personalities/p.md",
     ] {
         let path = paths.config_dir().join(refused);
         assert!(refused_write(&slash(&path)), "{refused}");
+    }
+    // The approval records are unsigned: a write would be an approval.
+    for store in [
+        "skill-installs.json",
+        "plugin-installs.json",
+        "mod-approvals.json",
+    ] {
+        let path = paths.data_dir().join(store);
+        assert!(refused_write(&slash(&path)), "{store}");
     }
     // The approval stores ask, in the data folder.
     assert!(floored(&paths.data_dir().join("skill-installs.json")));
@@ -58,4 +71,18 @@ fn a_shared_config_and_data_folder_leaves_workspaces_and_worktrees_alone() {
     let paths = Paths::in_one_folder(home.path());
     assert_eq!(paths.config_dir(), paths.data_dir());
     guarded(&paths);
+}
+
+#[test]
+fn the_users_own_plugin_folders_are_refused_too() {
+    // Plugins there skip the load-time gate, so no file tool writes into them.
+    let home = tempfile::tempdir().unwrap();
+    let own = tempfile::tempdir().unwrap();
+    let mut settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+    settings.extensions.plugin_dirs = vec![own.path().to_path_buf()];
+    let _state = DaemonState::new(Paths::under(home.path()), settings, None);
+    assert!(refused_write(&slash(
+        &own.path().join("p/hooks/hooks.json")
+    )));
+    assert!(!refused_write(&slash(&home.path().join("elsewhere/x.md"))));
 }

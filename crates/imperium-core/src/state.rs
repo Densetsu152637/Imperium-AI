@@ -257,6 +257,19 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
         refuse_writes_under(&paths.config_dir().join(folder));
     }
     refuse_writes_under(&paths.user_config_file());
+    // `models.toml` is a full settings layer (hooks, MCP servers, plugin folders), `connectors.json`
+    // can replace a catalogue connector's command, and personalities are instructions.
+    refuse_writes_under(&paths.app_models_file());
+    refuse_writes_under(&paths.config_dir().join("connectors.json"));
+    refuse_writes_under(&paths.config_dir().join("personalities"));
+    // The daemon's approval records are unsigned: a write would be an approval.
+    for store in [
+        "skill-installs.json",
+        "plugin-installs.json",
+        "mod-approvals.json",
+    ] {
+        refuse_writes_under(&paths.data_dir().join(store));
+    }
     protect_dir(&paths.config_dir().join("mods"));
     protect_dir(&paths.config_dir().join("plugins"));
     // Pinned policy packs: agents read their files as instructions, so a write is always asked.
@@ -265,6 +278,9 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     protect_dir(&paths.data_dir().join("marketplaces"));
     for dir in &settings.extensions.plugin_dirs {
         protect_dir(dir);
+        // Plugins in the user's own folders skip the load-time gate, so a file tool never writes
+        // there.
+        refuse_writes_under(dir);
     }
 }
 

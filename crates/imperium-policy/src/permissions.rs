@@ -170,6 +170,17 @@ impl Permissions {
         floor_override: Option<bool>,
     ) -> Judgement {
         let rule = self.evaluate(tool, target);
+        // Writing the user's own configuration is refused before anyone is asked.
+        if kind == CallKind::Edit
+            && let Target::Path { absolute, .. } = target
+            && refused_write(absolute)
+        {
+            return Judgement {
+                decision: Decision::Refuse(Refusal::Configuration),
+                rule,
+                floored: true,
+            };
+        }
         let floored = floor_override.unwrap_or_else(|| safety_floor(kind, target));
         Judgement {
             decision: decide_call(self.mode(), kind, rule, floored),
@@ -227,6 +238,9 @@ pub enum Refusal {
     Rule,
     /// The session is in plan mode, which only reads.
     Plan,
+    /// A file tool would write what the daemon loads as the user's own configuration
+    /// ([`refuse_writes_under`]): refused in every mode, whatever a rule or an answer says.
+    Configuration,
 }
 
 /// How a call is decided from the session's mode, the matching rules' action (`rule`), and
@@ -338,7 +352,9 @@ fn register(list: &std::sync::Mutex<Vec<String>>, path: &std::path::Path) {
     }
 }
 
-/// Folders and files the file tools refuse to write, whatever the mode, rules or answers.
+/// Folders and files the file tools refuse to write, whatever the mode, rules or answers. The
+/// list is process-wide and de-duplicated: every daemon in the process adds its own paths, a path
+/// added twice (as given and as it resolves) is kept once, and nothing removes one.
 static REFUSED_WRITES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// Makes `write_file` and `edit_file` refuse (not ask) any write to `path`, or under it when it
@@ -350,14 +366,56 @@ pub fn refuse_writes_under(path: &std::path::Path) {
     register(&REFUSED_WRITES, path);
 }
 
-/// Whether a write to `absolute` is refused ([`refuse_writes_under`]).
+/// Whether a write to `absolute` is refused ([`refuse_writes_under`]). Compared folded both ways
+/// (lower and upper case), as the workspace compares its configuration files: some file systems
+/// fold `ſ` to `S`, which lowercasing alone does not undo.
 pub fn refused_write(absolute: &str) -> bool {
     let path = normalise_dir(absolute);
+    let upper = path.to_uppercase();
+    let under = |path: &str, entry: &str| path == entry || path.starts_with(&format!("{entry}/"));
     REFUSED_WRITES
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .iter()
-        .any(|entry| path == *entry || path.starts_with(&format!("{entry}/")))
+        .any(|entry| {
+            under(&path, entry)
+                || (cfg!(any(windows, target_os = "macos")) && under(&upper, &entry.to_uppercase()))
+        })
+}
+
+/// Whether `absolute` is a file a project uses to add extensions or change what the daemon
+/// starts for it: `.imperium/` or `.claude/` `skills`, `commands` or `agents`, `.mcp.json`, and
+/// `.imperium/config.toml` or `config.local.toml` (they can add plugin folders and MCP servers).
+/// Matched by name wherever the project is, after the folding the workspace's configuration-file
+/// check does (case both ways, no `:stream`, no trailing dots or spaces), so no spelling of
+/// one slips by; over-matching is harmless, a write there only asks.
+fn project_extension_file(absolute: &str) -> bool {
+    let parts: Vec<String> = absolute
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let name = part.split(':').next().unwrap_or_default();
+            name.trim_end_matches(['.', ' ']).to_string()
+        })
+        .collect();
+    let is = |name: &str, want: &str| {
+        name.to_lowercase() == want || name.to_uppercase() == want.to_uppercase()
+    };
+    if parts.last().is_some_and(|last| is(last, ".mcp.json")) {
+        return true;
+    }
+    parts.windows(2).any(|pair| {
+        let (folder, name) = (&pair[0], &pair[1]);
+        let tool_folder = is(folder, ".imperium") || is(folder, ".claude");
+        (tool_folder
+            && ["skills", "commands", "agents"]
+                .iter()
+                .any(|want| is(name, want)))
+            || (is(folder, ".imperium")
+                && ["config.toml", "config.local.toml"]
+                    .iter()
+                    .any(|want| is(name, want)))
+    })
 }
 
 /// What a file tool tells the agent when a write is refused ([`refused_write`]).
@@ -436,6 +494,7 @@ pub fn safety_floor(kind: CallKind, target: &Target) -> bool {
                 }
             });
             in_git
+                || project_extension_file(absolute)
                 || in_protected_dir(absolute)
                 || FLOOR_PATHS.iter().any(|pattern| {
                     path_matches(pattern, absolute, None)
