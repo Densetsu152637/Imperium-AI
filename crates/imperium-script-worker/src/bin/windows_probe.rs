@@ -56,7 +56,16 @@ fn main() -> std::process::ExitCode {
             Err(err) => format!("failed ({err})"),
         },
     );
-    report("env_count", std::env::vars_os().count());
+    let mut names: Vec<String> = std::env::vars_os()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    report("env_names", names.join(","));
+    for name in ["LOCALAPPDATA", "TEMP"] {
+        if let Some(value) = std::env::var_os(name) {
+            report(&format!("env_{name}"), value.to_string_lossy());
+        }
+    }
     let cwd = std::env::current_dir().map(|dir| dir.display().to_string());
     report("cwd", cwd.as_deref().unwrap_or("unknown"));
     report(

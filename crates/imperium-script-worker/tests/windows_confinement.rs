@@ -190,7 +190,19 @@ async fn a_low_worker_cannot_write_read_the_daemons_files_reach_the_daemon_or_sp
     );
     assert!(confined.contains("appcontainer=yes"), "{seen:?}");
     assert!(confined.contains("job=yes"), "{seen:?}");
-    assert_eq!(seen["env_count"], "0", "{seen:?}");
+    // Only the folder variables the AppContainer launch needs, which it points at the container's
+    // own folders.
+    assert!(
+        seen["env_names"]
+            .split(',')
+            .filter(|name| !name.is_empty())
+            .all(|name| {
+                imperium_script::windows::launch::CONTAINER_VARIABLES
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(name))
+            }),
+        "{seen:?}"
+    );
     assert_eq!(seen["cwd_empty"], "true", "{seen:?}");
     assert!(seen["write_profile"].starts_with("denied"), "{seen:?}");
     assert!(

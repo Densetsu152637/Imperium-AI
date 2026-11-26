@@ -17,7 +17,8 @@
 //!    access is the daemon's user at Medium integrity, each opened once by the daemon for the
 //!    child (not inheritable) and accepting no other client.
 //! 6. `process`: `CreateProcessAsUserW` with the token, in the AppContainer with no capabilities
-//!    (`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`), suspended, with an empty environment, the
+//!    (`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`), suspended, with an environment of only the
+//!    folder variables an AppContainer launch needs ([`CONTAINER_VARIABLES`]), the
 //!    working folder, and no handle inheritance at all. It is detached from any console: a
 //!    console would need a `conhost` process, which the job's one-process limit refuses (the
 //!    worker then dies with `STATUS_DLL_INIT_FAILED`).
@@ -550,6 +551,32 @@ impl Pipes {
     }
 }
 
+/// The only variables the worker's environment holds. An AppContainer launch rewrites the folder
+/// variables to the container's own folders (under `%LOCALAPPDATA%\Packages\<name>\AC`) and
+/// fails with `ERROR_ENVVAR_NOT_FOUND` when the block lacks them, so an empty block (stage 1b) no
+/// longer works. They name folders, not secrets; nothing else of the daemon's is passed.
+pub const CONTAINER_VARIABLES: [&str; 5] =
+    ["APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "USERPROFILE"];
+
+/// A Unicode environment block of the daemon's values of [`CONTAINER_VARIABLES`], sorted, each
+/// `NAME=value` NUL-terminated, then a final NUL.
+fn container_environment() -> Vec<u16> {
+    let mut block: Vec<u16> = Vec::new();
+    for name in CONTAINER_VARIABLES {
+        if let Some(value) = std::env::var_os(name) {
+            let mut entry = OsString::from(name);
+            entry.push("=");
+            entry.push(value);
+            block.extend(wide(entry));
+        }
+    }
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    block
+}
+
 /// Step 6: `CreateProcessAsUserW` in the AppContainer, suspended, inheriting nothing.
 fn create_suspended(
     token: &Handle,
@@ -599,8 +626,7 @@ fn create_suspended(
         let application = wide(program);
         let mut command = wide(command);
         let folder = wide(folder);
-        // An empty Unicode environment block: just its terminator.
-        let environment = [0_u16; 2];
+        let environment = container_environment();
         let mut info = PROCESS_INFORMATION::default();
         // SAFETY: every pointer is valid and outlives the call; `command` is writable as the
         // call requires; no handle is inherited.
