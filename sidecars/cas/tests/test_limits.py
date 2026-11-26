@@ -85,6 +85,8 @@ def test_a_cpu_spin_ends_with_the_cpu_limit(pools):
 
 @UNIX
 def test_the_hard_cpu_limit_stops_a_worker_that_never_runs_the_handler(pools):
+    """Linux: the hard limit's `SIGKILL`. macOS does not kill at the hard limit, so there the
+    front's CPU poll stops it one second past the limit."""
     pool = pools("spin.py", "--ignore-xcpu", cpu_seconds=2, wall_seconds=30)
     warm(pool)
     reply, elapsed = timed(pool, {"spin": True})
@@ -94,6 +96,22 @@ def test_the_hard_cpu_limit_stops_a_worker_that_never_runs_the_handler(pools):
     )
     assert reply["category"] == "limit" and reply["limit"] == "cpu", reply
     assert elapsed <= 2 + 2 + SLACK, elapsed
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS poll")
+def test_the_macos_poll_reads_cpu_seconds_in_seconds():
+    """The Mach-tick conversion: this process's CPU time from the poll matches `getrusage`."""
+    import os
+    import resource
+
+    from imperium_cas.limits_macos import usage
+
+    deadline = time.process_time() + 0.5
+    while time.process_time() < deadline:
+        pass
+    own = resource.getrusage(resource.RUSAGE_SELF)
+    polled = usage(os.getpid())[1]
+    assert 0.8 < polled / (own.ru_utime + own.ru_stime) < 1.25, polled
 
 
 @UNIX

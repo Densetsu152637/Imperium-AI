@@ -6,7 +6,8 @@ request and maps how it ended:
 
 - a reply and exit 0: the reply;
 - `MEMORY`, or a kill by the macOS footprint poll: `limit` (memory);
-- `CPU`, `SIGXCPU` or a `SIGKILL` the front did not send (the hard CPU limit): `limit` (CPU);
+- `CPU`, `SIGXCPU` or a `SIGKILL` the front did not send (the hard CPU limit), or a kill by the
+  macOS CPU poll (macOS does not enforce the hard limit): `limit` (CPU);
 - a kill by the front's wall clock, counted from when the call was received (so time spent
   queued counts, and a call with no time left when its turn comes never reaches a worker):
   `limit` (wall clock);
@@ -15,11 +16,11 @@ request and maps how it ended:
 
 Spawning is behind `Spawner`. `PosixSpawner` starts the base interpreter with `subprocess` on
 Linux and macOS; the worker applies its own CPU and memory limits there (`limits_posix.py`),
-and on macOS this front polls the memory footprint (`limits_macos.py`), because macOS does not
-enforce `RLIMIT_AS`. On Windows the front cannot start processes inside its sandbox, and the
-worker applies no limit itself, so production uses `BrokerSpawner` (stage 5), whose broker puts
-each worker in a Job Object with the limits. `PosixSpawner` refuses Windows unless a test asks
-for unlimited workers explicitly.
+and on macOS this front polls the memory footprint and CPU time (`limits_macos.py`), because
+macOS enforces neither `RLIMIT_AS` nor the hard `RLIMIT_CPU`. On Windows the front cannot start
+processes inside its sandbox, and the worker applies no limit itself, so production uses
+`BrokerSpawner` (stage 5), whose broker puts each worker in a Job Object with the limits.
+`PosixSpawner` refuses Windows unless a test asks for unlimited workers explicitly.
 """
 
 import signal
@@ -45,9 +46,10 @@ from .framing import (
 )
 
 if sys.platform == "darwin":
-    from .limits_macos import footprint as macos_footprint
+    from .limits_macos import usage as macos_usage
 
-POLL_SECONDS = 0.05  # the macOS footprint poll (D3)
+POLL_SECONDS = 0.05  # the macOS footprint and CPU poll (D3)
+CPU_GRACE = 1.0  # the poll kills this long past the CPU limit, as Linux's hard limit does
 
 # Exit statuses that mean the CPU limit: the worker's own status, `SIGXCPU` when the handler did
 # not run, and the hard limit's `SIGKILL` (when the front did not send it).
@@ -145,6 +147,7 @@ class Run:
         self.call_id = call_id
         self.deadline = deadline
         self.memory_limit: int | None = None  # bytes of footprint, set when the call starts
+        self.cpu_limit: float | None = None  # CPU seconds, set when the call starts
         self.peak: int | None = None  # the footprint seen when the poll killed the worker
         self.reason: str | None = None
         self.finished = threading.Event()
@@ -159,11 +162,12 @@ class Run:
 
 
 class Pool:
-    def __init__(self, spawner: Spawner, limits: Limits | None = None, footprint=None):
+    def __init__(self, spawner: Spawner, limits: Limits | None = None, usage=None):
         self.spawner = spawner
         self.limits = limits or Limits()
-        # pid -> bytes, polled every `POLL_SECONDS`; macOS's only memory limit.
-        self.footprint = footprint or (macos_footprint if sys.platform == "darwin" else None)
+        # pid -> (footprint bytes, CPU seconds), polled every `POLL_SECONDS`: macOS's only memory
+        # limit, and its CPU backstop.
+        self.usage = usage or (macos_usage if sys.platform == "darwin" else None)
         self.spare: WorkerProcess | None = None
         self.running: Run | None = None
         self.queued: set = set()
@@ -247,10 +251,11 @@ class Pool:
         reply = None
         try:
             read_frame(proc.stdout, REPLY_CAP)  # the ready frame: warm, limited and hooked
-            if self.footprint is not None:
-                baseline = self.footprint(proc.pid)
+            if self.usage is not None:
+                baseline = self.usage(proc.pid)
                 if baseline is not None:
-                    run.memory_limit = baseline + self.limits.memory_mib * 1024 * 1024
+                    run.memory_limit = baseline[0] + self.limits.memory_mib * 1024 * 1024
+                    run.cpu_limit = baseline[1] + self.limits.cpu_seconds + CPU_GRACE
             proc.stdin.write(payload)
             proc.stdin.close()
             reply = read_frame(proc.stdout, REPLY_CAP)
@@ -266,20 +271,23 @@ class Pool:
         return self.outcome(run, reply, status)
 
     def watch(self, run: Run) -> None:
-        """Kill the worker at its deadline, or (macOS) when its footprint is over the limit."""
+        """Kill the worker at its deadline, or (macOS) when its footprint or CPU time is over."""
         while True:
             left = run.deadline - time.monotonic()
-            wait = min(left, POLL_SECONDS) if self.footprint is not None else left
+            wait = min(left, POLL_SECONDS) if self.usage is not None else left
             if run.finished.wait(max(wait, 0.0)):
                 return
             if time.monotonic() >= run.deadline:
                 run.stop("wall clock")
                 return
             if run.memory_limit is not None:
-                used = self.footprint(run.proc.pid)
-                if used is not None and used > run.memory_limit:
-                    run.peak = used
+                used = self.usage(run.proc.pid)
+                if used is not None and used[0] > run.memory_limit:
+                    run.peak = used[0]
                     run.stop("memory")
+                    return
+                if used is not None and used[1] > run.cpu_limit:
+                    run.stop("cpu")
                     return
 
     def wall_clock(self, queued: bool = False) -> dict:
@@ -295,6 +303,8 @@ class Pool:
             return self.wall_clock()
         if run.reason == "memory":
             return {**memory, "footprint": run.peak, "footprint_limit": run.memory_limit}
+        if run.reason == "cpu":
+            return error("limit", f"CPU time ({self.limits.cpu_seconds} s)", limit="cpu")
         if status == EXIT_OK and reply is not None:
             return reply
         if status == MEMORY:

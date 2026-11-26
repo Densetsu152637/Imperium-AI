@@ -312,9 +312,11 @@ Details:
   - Windows: both are only requested on the command line until stage 5; the broker applies them
     through the worker's Job Object. `PosixSpawner` refuses Windows unless a test opts in to
     unlimited workers.
-  - A worker that ignores or never runs its `SIGXCPU` handler (stuck in C code) is killed by the
-    hard limit's `SIGKILL` one second later; the front reads that `SIGKILL`, which it did not
-    send, as `limit: CPU time`.
+  - A worker that ignores or never runs its `SIGXCPU` handler (stuck in C code) is killed on
+    Linux by the hard limit's `SIGKILL` one second later; the front reads that `SIGKILL`, which
+    it did not send, as `limit: CPU time`. macOS does not kill at the hard limit (measured in
+    stage 2b: such a worker ran on to the wall clock), so there the front's 50 ms poll also reads
+    the worker's CPU time (`proc_pid_rusage`) and kills it one second past the limit.
 - **Hash seed.** `PYTHONHASHSEED=0` is set for every process on every OS, so a call's result does
   not depend on the process.
 - **Unix spawning.** The worker sets its own `rlimit`s after warm-up and before reading the call,

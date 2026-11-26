@@ -1,15 +1,25 @@
-"""The front's memory backstop on macOS (plan D3): read a worker's physical footprint.
+"""The front's backstops on macOS (plan D3): read a worker's footprint and CPU time.
 
 macOS does not enforce `RLIMIT_AS`, so the front polls each running worker's `ri_phys_footprint`
 (`proc_pid_rusage` from `libproc`, part of `libSystem`) every 50 ms and kills it over its limit.
 Polling is not a hard cap: between two polls a worker can allocate as fast as the machine allows,
-and stage 2b measures that overshoot. This module takes a PID and no agent data.
+and stage 2b measures that overshoot.
+
+macOS sends `SIGXCPU` at the soft `RLIMIT_CPU` limit but, unlike Linux, does not kill at the hard
+limit (measured in stage 2b), so a worker stuck in C code would run on to the wall clock. The
+same poll reads its CPU time and the front kills it one second past the CPU limit, as Linux's
+hard limit does. `ri_user_time` and `ri_system_time` are in Mach time units, converted with
+`mach_timebase_info`. This module takes a PID and no agent data.
 """
 
 import ctypes
 import sys
 
 RUSAGE_INFO_V0 = 0
+
+
+class TimebaseInfo(ctypes.Structure):
+    _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
 
 
 class RusageInfoV0(ctypes.Structure):
@@ -34,11 +44,15 @@ if sys.platform == "darwin":
     LIBPROC = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
     LIBPROC.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
     LIBPROC.proc_pid_rusage.restype = ctypes.c_int
+    TIMEBASE = TimebaseInfo()
+    LIBPROC.mach_timebase_info(ctypes.byref(TIMEBASE))
+    SECONDS_PER_TICK = TIMEBASE.numer / TIMEBASE.denom / 1e9
 
 
-def footprint(pid: int) -> int | None:
-    """The process's physical footprint in bytes, or `None` once it is gone."""
+def usage(pid: int) -> tuple[int, float] | None:
+    """The process's physical footprint in bytes and CPU seconds, or `None` once it is gone."""
     info = RusageInfoV0()
     if LIBPROC.proc_pid_rusage(pid, RUSAGE_INFO_V0, ctypes.byref(info)) != 0:
         return None
-    return int(info.ri_phys_footprint)
+    ticks = info.ri_user_time + info.ri_system_time
+    return int(info.ri_phys_footprint), ticks * SECONDS_PER_TICK
