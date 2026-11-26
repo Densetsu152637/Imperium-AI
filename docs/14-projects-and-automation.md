@@ -1414,9 +1414,11 @@ can comment, so nothing in it is trusted:
   filter, a signing program, an SSH or proxy command, a credential helper or a transport program
   is refused before the commit or the push, and before the first fetch of the checkout (a
   credential helper or `core.sshCommand` in the repository's config would run in the fetch). The
-  push also goes only where the pull request is: `git remote get-url --push origin` (with
-  `pushurl`, `url.*.insteadOf` and `pushInsteadOf` applied) must name the repository being
-  fixed, or the fix fails with an `autofix.event` of status `failed` before anything is asked or
+  push also goes only where the pull request is: every line of `git remote get-url --push --all
+  origin` (with every `pushurl`, `url.*.insteadOf` and `pushInsteadOf` applied) must name the
+  repository being fixed over https or ssh. Plain `http://` and `git://` addresses are refused,
+  and so is an SSH host alias such as `git@github.com-work:owner/repo` (it fails closed: use the
+  real host name), or the fix fails with an `autofix.event` of status `failed` before anything is asked or
   pushed (and is checked again just before the push). It now shares the wake path's commit and push (the approved commit is
   pushed by its hash, auto-merge is turned off first), and its handled commits and attempt count
   are kept in `pr-review.json` across restarts. Network tools follow `ask` mode there; the capped

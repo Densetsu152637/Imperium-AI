@@ -289,25 +289,34 @@ pub(crate) async fn prepare_worktree(
 /// (`pushurl` and the `insteadOf` rewrites included), must name that GitHub repository. The
 /// address is not quoted, as it may hold a password.
 pub(crate) async fn check_push_target(dir: &Path, repo: &str) -> Result<(), String> {
-    let target = git::push_url(dir).await.map_err(|_| {
+    let targets = git::push_urls(dir).await.map_err(|_| {
         "the push address of origin could not be read, so nothing was pushed".to_string()
     })?;
-    if push_target_is(&target, repo) {
+    // A push goes to every address, so each one must name the repository.
+    if !targets.is_empty() && targets.iter().all(|target| push_target_is(target, repo)) {
         return Ok(());
     }
-    // The tests push to local folders, which name no GitHub repository: there the push address
-    // must be the fetch address, with no redirect of the push alone.
+    // The tests push to local folders, which name no GitHub repository: there every push
+    // address must be the fetch address, with no redirect of the push alone.
     #[cfg(feature = "testing")]
-    if testing_fetch_url(dir).is_some_and(|fetch| fetch == target) {
+    if !targets.is_empty()
+        && testing_fetch_url(dir).is_some_and(|fetch| targets.iter().all(|target| *target == fetch))
+    {
         return Ok(());
     }
     Err(format!(
-        "origin's push address does not name {repo} (a pushurl or pushInsteadOf may redirect it), so nothing was pushed"
+        "origin's push address does not name {repo} over https or ssh (a pushurl, a second pushurl or a pushInsteadOf may redirect it), so nothing was pushed"
     ))
 }
 
-/// Whether `target` is a GitHub address of `repo`.
+/// Whether `target` is an https or ssh GitHub address of `repo`: plain `http://` and `git://`
+/// are refused, and so is an SSH host alias such as `git@github.com-work:owner/repo` (fail
+/// closed).
 fn push_target_is(target: &str, repo: &str) -> bool {
+    let target = target.trim();
+    if target.starts_with("http://") || target.starts_with("git://") {
+        return false;
+    }
     crate::pr_monitor::github_repo(target).is_some_and(|named| named.eq_ignore_ascii_case(repo))
 }
 
@@ -772,6 +781,9 @@ mod tests {
             "https://github.com/attacker/repo.git",
             "https://example.com/owner/repo.git",
             "git@gitlab.com:owner/repo.git",
+            "http://github.com/owner/repo.git",
+            "git://github.com/owner/repo.git",
+            "git@github.com-work:owner/repo.git",
             "/tmp/owner/repo.git",
             "",
         ] {

@@ -625,10 +625,11 @@ async fn a_redirected_push_is_refused(redirect: fn(&Path, &str, &str)) {
     let elsewhere_url = elsewhere.to_str().unwrap().to_string();
     let origin_url = git(&clone, &["config", "--get", "remote.origin.url"]);
     redirect(&clone, &origin_url, &elsewhere_url);
-    // The redirect is what git resolves the push address to.
-    assert_eq!(
-        git(&clone, &["remote", "get-url", "--push", "origin"]),
-        elsewhere_url
+    // The redirect is among the addresses git resolves the push to.
+    assert!(
+        git(&clone, &["remote", "get-url", "--push", "--all", "origin"])
+            .lines()
+            .any(|line| line == elsewhere_url)
     );
 
     let mut announcements = daemon.announcements();
@@ -675,6 +676,19 @@ async fn a_push_insteadof_redirect_stops_the_push() {
         git(
             clone,
             &["config", &format!("url.{elsewhere}.pushInsteadOf"), origin],
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_second_pushurl_stops_the_push() {
+    a_redirected_push_is_refused(|clone, origin, elsewhere| {
+        // The first address is the real one; the second is where the push is also sent.
+        git(clone, &["config", "--add", "remote.origin.pushurl", origin]);
+        git(
+            clone,
+            &["config", "--add", "remote.origin.pushurl", elsewhere],
         );
     })
     .await;

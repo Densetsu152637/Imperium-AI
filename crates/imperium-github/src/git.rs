@@ -127,11 +127,17 @@ pub async fn commit_all(worktree: &Path, message: &str) -> Result<bool, String> 
     Ok(true)
 }
 
-/// The address a push to `origin` goes to, as git resolves it (`git remote get-url --push
-/// origin`): `pushurl` and the `url.*.insteadOf` and `pushInsteadOf` rewrites included, so it is
-/// where the push really goes.
-pub async fn push_url(dir: &Path) -> Result<String, String> {
-    git(dir, &["remote", "get-url", "--push", "origin"]).await
+/// Every address a push to `origin` goes to, as git resolves them (`git remote get-url --push
+/// --all origin`): `pushurl` (a second one is pushed to as well) and the `url.*.insteadOf` and
+/// `pushInsteadOf` rewrites included, so these are where the push really goes.
+pub async fn push_urls(dir: &Path) -> Result<Vec<String>, String> {
+    let out = git(dir, &["remote", "get-url", "--push", "--all", "origin"]).await?;
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// Pushes the worktree's commit to `branch` on origin. A plain push: if the branch moved
@@ -280,8 +286,8 @@ mod tests {
     async fn the_push_address_is_the_origin_url_by_default() {
         let dir = repo_with_origin("https://github.com/owner/repo.git");
         assert_eq!(
-            push_url(dir.path()).await.unwrap(),
-            "https://github.com/owner/repo.git"
+            push_urls(dir.path()).await.unwrap(),
+            ["https://github.com/owner/repo.git"]
         );
     }
 
@@ -297,8 +303,29 @@ mod tests {
             ],
         );
         assert_eq!(
-            push_url(dir.path()).await.unwrap(),
-            "https://example.com/other/place.git"
+            push_urls(dir.path()).await.unwrap(),
+            ["https://example.com/other/place.git"]
+        );
+    }
+
+    #[tokio::test]
+    async fn every_pushurl_is_a_push_address() {
+        let dir = repo_with_origin("https://github.com/owner/repo.git");
+        for url in [
+            "https://github.com/owner/repo.git",
+            "https://example.com/other/place.git",
+        ] {
+            run(
+                dir.path(),
+                &["config", "--add", "remote.origin.pushurl", url],
+            );
+        }
+        assert_eq!(
+            push_urls(dir.path()).await.unwrap(),
+            [
+                "https://github.com/owner/repo.git",
+                "https://example.com/other/place.git"
+            ]
         );
     }
 
@@ -314,8 +341,8 @@ mod tests {
             ],
         );
         assert_eq!(
-            push_url(dir.path()).await.unwrap(),
-            "https://example.com/other/repo.git"
+            push_urls(dir.path()).await.unwrap(),
+            ["https://example.com/other/repo.git"]
         );
     }
 }
