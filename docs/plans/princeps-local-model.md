@@ -160,15 +160,22 @@ below is deferred (stage 2b).
   only if releases stay absent once the weights ship.
 - **Set only by the user.** `runtime.ncm.custom_path` (or *Choose ncm-server…* on the runtime
   card, or `imperium runtime ncm use <path>`) is floored as below: agents, mod frames and paired
-  phones cannot set it, in any mode. The path must be absolute, name a regular file (no symbolic
-  link at the file), and not lie inside a project, a worktree or a session workspace (folders
-  agents write to).
-- **Hash on approval, re-checked at launch.** When the user sets the path, the card shows the
-  file's path, size, SHA-256 and `--version` output, and the user approves it; the hash and the
-  approval time go into `<data>/runtimes/ncm-server/user.json` (in the protected folder). Every
-  launch re-hashes the file through a held handle, as in the tamper checks below, and a changed
-  file is refused until the user approves the new hash. Files the binary loads beside it (NVRTC on
-  a CUDA build) are the user's toolkit's and are not hashed; this is recorded as a residual.
+  phones cannot set it, in any mode. The path must be absolute and name a regular file (no
+  symbolic link at the file).
+- **Copy on approval.** When the user sets the path, the card shows the file's path, size, SHA-256
+  and `--version` output, and the user approves it. Imperium then copies the binary into the
+  protected `<data>/runtimes/ncm-server/user/<sha256>/` (hashing the copy, which must match) and
+  records the hash, the original path and the approval time in
+  `<data>/runtimes/ncm-server/user.json`. Imperium **always launches that copy, never the
+  original**, with the child's working folder set to the copy's folder. Windows searches the
+  executable's own folder first for DLLs, so a DLL planted beside the original binary (in a
+  project or a build folder agents can write) is never loaded; the copy's folder holds only the
+  copy. Because the original is never run, it may live anywhere, a project or worktree included.
+- **Re-checked at launch.** Every launch re-hashes the copy through a held handle, as in the
+  tamper checks below; a mismatch refuses the launch. Rebuilding the original changes nothing until
+  the user approves the new file, which makes a new copy (one earlier copy is kept until the new one
+  has loaded a model). Libraries the binary loads from elsewhere (NVRTC from the user's CUDA
+  toolkit on a CUDA build) are not hashed; this is recorded as a residual.
 - **Revocation, pins and attestations** do not apply to a user build; they start with releases.
 
 - **Source (deferred until releases exist).** GitHub releases of `Densetsu152637/Imperium-Models`, tag `ncm-server-v<semver>`,
@@ -439,7 +446,9 @@ the Imperium Implementation session, which also reviews and merges stage 1.
   2026-11-26). The work must meet the bar of D1 to D3: the format, header limits and catalogue
   rows of D1; the backend, launch arguments, environment allowlist, request rules and capability
   fallbacks of D2; and D3's rules where stage 1 touches them (`runtime.ncm.custom_path` set only by
-  the user, and the floored `runtime.ncm.*` keys). The Imperium Implementation session reviews it
+  the user, the floored `runtime.ncm.*` keys, and **copy on approval**: stage 1 launches only the
+  approved copy under `<data>/runtimes/ncm-server/user/<sha256>/`, with that folder as the working
+  folder, never the configured path itself). The Imperium Implementation session reviews it
   against this plan and merges it.
 - Objective: D1 and D2 with `runtime.ncm.custom_path` as the only way to name a server.
 - Depends on: none.
@@ -459,24 +468,30 @@ the Imperium Implementation session, which also reviews and merges stage 1.
 ### Stage 2a: the user-built `ncm-server` (interim)
 
 - Objective: D3's interim path: `imperium runtime ncm use|status` and *Choose ncm-server…* on the
-  runtime card, the approval with path, size, SHA-256 and `--version`, `user.json` in a protected
-  `<data>/runtimes/`, the launch-time re-hash through held handles, the floored commands and config
-  keys, and the opt-in `ncm-live` workflow (manual and nightly) that builds `ncm-server` for the
-  CPU from a commit pinned in `runtimes/ncm-server.env` (`NCM_SERVER_COMMIT`, for CI only) and
-  loads it with `--random-weights`.
+  runtime card, the approval with path, size, SHA-256 and `--version`, the copy on approval and
+  `user.json` in a protected `<data>/runtimes/`, the launch-time re-hash through held handles, the
+  floored commands and config keys, and the opt-in `ncm-live` workflow (manual and nightly) that
+  builds `ncm-server` for the CPU with `cargo build --locked --release` from a commit pinned in
+  `runtimes/ncm-server.env` (`NCM_SERVER_COMMIT`, for CI only) and loads it with
+  `--random-weights`. The workflow has `permissions: contents: read` and no secrets.
 - Depends on: stage 1.
 - Owned paths: `imperium-local` `runtime_check.rs`, new `ncm_runtime.rs`; `imperium-core`
   `state.rs`; `imperium-cli` runtime commands; `runtimes/ncm-server.env`;
   `.github/workflows/ncm-live.yml`; docs 04 and 11.
-- Acceptance checks (CI): a path that is relative, a symbolic link, not a regular file, or inside a
-  project, worktree or session workspace is refused; nothing runs before the user approves the
-  hash; a file changed after approval is refused at launch until approved again; on Windows,
-  replacing or deleting the approved binary while the server runs fails (handle held without write
+- Acceptance checks (CI): a path that is relative, a symbolic link or not a regular file is
+  refused; nothing runs before the user approves the hash; the approved file is copied into
+  `user/<sha256>/` and the launched program is that copy, with that folder as its working folder; a
+  DLL (or, on Unix, a shared library) planted beside the original binary is never loaded (Windows
+  test with a fake server that reports the DLL it loaded); changing the original after approval
+  changes nothing until it is approved again; a copy changed after approval is refused at launch;
+  on Windows, replacing or deleting the copy while the server runs fails (handle held without write
   or delete sharing) and the handle is released when it exits; on Linux the server is executed from
   the hashed descriptor; `config set|unset runtime.ncm.*` and `runtime ncm use` need approval in
   each permission mode (one test per mode), and the daemon methods refuse agent, mod-frame and
-  phone callers; agent writes into `<data>/runtimes/` are refused. ncm-live: build at the pinned
-  commit, `/health` 200, one chat completion.
+  phone callers; agent writes into `<data>/runtimes/` are refused. a CI script check
+  (like `check-monty-pin.sh`) fails unless `ncm-live.yml` builds with `--locked`, sets only
+  `contents: read` and references no secrets. ncm-live: build at the pinned commit,
+  `/health` 200, one chat completion.
 - Status: pending.
 - Handoff notes: the CUDA build is untested in CI (ncm-live builds for the CPU); a CUDA build's
   NVRTC comes from the user's toolkit and is not hashed (residual, D3).
