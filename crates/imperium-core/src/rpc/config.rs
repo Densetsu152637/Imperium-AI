@@ -115,8 +115,9 @@ impl Connection {
                         } else if params.trusted || params.interactive {
                             let may = match peer {
                                 Some((pid, accepted_at)) => {
+                                    let daemon = Arc::clone(&state);
                                     tokio::task::spawn_blocking(move || {
-                                        crate::peer::may_grant(pid, accepted_at)
+                                        crate::peer::may_grant(&daemon, pid, accepted_at).is_ok()
                                     })
                                     .await
                                     .unwrap_or(false)
@@ -296,7 +297,7 @@ impl Connection {
                         now_ms: imperium_api::time::unix_ms(),
                     };
                     crate::app_identity::challenge(
-                        &crate::app_identity::InstalledApp,
+                        &crate::app_identity::InstalledApp::of(&self.state),
                         self.identity.as_deref(),
                         &mut self.challenges,
                         &asked,
@@ -337,9 +338,10 @@ impl Connection {
             runs: &params.runs_digest,
             now_ms: imperium_api::time::unix_ms(),
         };
+        let app = crate::app_identity::InstalledApp::of(&self.state);
         let redeemed = crate::app_identity::redeem(
             self.state.paths(),
-            &crate::app_identity::InstalledApp,
+            &app,
             self.identity.as_deref(),
             &mut self.challenges,
             &asked,
@@ -352,7 +354,7 @@ impl Connection {
                 Ok(redeemed) => tokio::task::spawn_blocking(move || {
                     crate::app_identity::conclude(
                         state.paths(),
-                        &crate::app_identity::InstalledApp,
+                        &app,
                         crate::plugin_records::production_verifier(),
                         &crate::app_identity::presence::System,
                         peer.as_deref(),

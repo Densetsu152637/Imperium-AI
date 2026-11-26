@@ -388,3 +388,52 @@ fn sigterm_runs_the_shutdown_and_removes_the_endpoint_and_the_socket() {
     assert!(!file.exists(), "daemon.json is removed");
     assert!(!socket.exists(), "the socket is removed");
 }
+
+/// The first-start plugin migration approves what is already installed on a desktop, so nothing
+/// that runs today stops. On a server a fresh data volume (or a deleted marker) must approve
+/// nothing: the folders are recorded, and stay withheld.
+#[tokio::test]
+async fn the_first_start_migration_approves_nothing_on_a_server() {
+    for server in [true, false] {
+        let (state, home) = daemon(server);
+        plugin(home.path());
+        state.migrate_plugins();
+        let (mut connection, _) = connect(&state).await;
+        let row = plugin_row(&mut connection).await;
+        assert_eq!(row["origin"], "preexisting", "{row}");
+        if server {
+            assert_eq!(row["withheld"], true, "{row}");
+            assert!(row["approval"].is_null(), "{row}");
+        } else {
+            assert_eq!(row["withheld"], false, "{row}");
+            assert_eq!(row["approval"], "carried-over", "{row}");
+        }
+    }
+}
+
+/// An environment that runs its commands in a running container (`docker exec`) needs the
+/// Docker socket too: its sessions do not start on a server.
+#[tokio::test]
+async fn a_docker_container_environment_does_not_start_on_a_server() {
+    let (state, _home) = daemon(true);
+    let (mut connection, _) = connect(&state).await;
+    let env = result(
+        call(
+            &mut connection,
+            "environments.create",
+            json!({"name": "Box", "folders": ["/srv/app"],
+                   "runtime": {"kind": "docker", "image": "ubuntu:24.04", "container": "box"}}),
+        )
+        .await,
+    );
+    unavailable(
+        call(
+            &mut connection,
+            "session.create",
+            json!({"environment_id": env["id"]}),
+        )
+        .await,
+        server_features::CONTAINER_TIER,
+    );
+    assert!(state.sessions().is_empty());
+}

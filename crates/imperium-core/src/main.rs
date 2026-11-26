@@ -66,14 +66,6 @@ async fn run() -> anyhow::Result<()> {
     // Before anything is written: a SIGTERM (`docker stop`) that arrives while the daemon starts
     // is held until the shutdown path below can run.
     let mut terminate = Terminate::listen()?;
-    if let Some(warning) =
-        imperium_core::host_namespace_warning(settings.daemon.server, &imperium_core::ProcSelf)
-    {
-        tracing::warn!("{warning}");
-    }
-    if settings.daemon.server {
-        tracing::info!("server mode: desktop-only features and the container tier are refused");
-    }
     std::fs::create_dir_all(paths.data_dir())
         .with_context(|| format!("could not create {}", paths.data_dir().display()))?;
     let _lock = acquire_single_instance_lock(&paths)?;

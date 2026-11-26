@@ -67,10 +67,14 @@ impl DaemonState {
     }
 
     /// The first-start plugin migration (`plugin_records::migrate`). Run when the daemon starts,
-    /// before any session loads plugins; it does nothing once its marker exists.
+    /// before any session loads plugins; it does nothing once its marker exists. On a server
+    /// (`daemon.server`) it records the folders without approving any: a fresh data volume or a
+    /// deleted marker must not approve what is in `<config>/plugins`.
     pub fn migrate_plugins(&self) {
-        let disabled = self.settings().extensions.disabled_plugins.clone();
-        match crate::plugin_records::migrate(&self.paths, &disabled) {
+        let settings = self.settings();
+        let disabled = settings.extensions.disabled_plugins.clone();
+        let carry_over = !settings.daemon.server;
+        match crate::plugin_records::migrate_with(&self.paths, &disabled, carry_over) {
             Ok(crate::plugin_records::Migration::Recorded { count, skipped }) => {
                 tracing::info!(plugins = count, "recorded the installed plugins");
                 for report in skipped {

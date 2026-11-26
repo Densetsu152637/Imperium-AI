@@ -1154,8 +1154,8 @@ and `--network none` without network. `isolation.network` (default `true`) appli
 On a server ([server mode](02-architecture.md#server-mode-implemented), `daemon.server`) the
 container tier is refused: configuration validation rejects `isolation.tier = "container"`,
 `config.set` answers `-32010` (`container_tier`), and a session whose commands would run in
-containers (the tier, or an environment's Docker image runtime) does not start, since a server
-has no Docker socket to give.
+containers (the tier, or an environment's Docker runtime: an image, or a running container
+through `docker exec`) does not start, since a server has no Docker socket to give.
 The file tools stay tier 0 (they run in the daemon, confined to the workspace). Not yet: policy
 forcing tiers per model or agent, GPU flags for containers, Windows AppContainer, and a default
 dev image.

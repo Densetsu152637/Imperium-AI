@@ -1,7 +1,7 @@
 # Plan: server package (Docker Compose)
 
-Revision: 2026-11-26, revision 5 (plan-gate round 4: C1 opt-outs match origin and name; over
-revision 4's B1 and B2, revision 3's A1 and A2 and revision 2's F1 to F10); written against
+Revision: 2026-11-26, revision 6 (stage 1 security review: no nested-namespace rule, server mode enforced in the checks, migration on a server; over revision 5 (plan-gate round 4: C1 opt-outs match origin and name; over
+revision 4's B1 and B2, revision 3's A1 and A2 and revision 2's F1 to F10)); written against
 `experimental` at `2cb50590`, merged with `experimental` at revision 2 (last updated).
 Roadmap [item 63](../12-roadmap.md#next-in-order). Status: in progress (stage 1 done).
 
@@ -374,60 +374,61 @@ these cannot hold, for reasons that do not depend on configuration:
   [06](../06-extensibility.md#who-may-grant-trust-and-approval-implemented) and `app_identity`'s
   check 6 say, an unavailable presence check records a `dialog-only` approval rather than
   refusing, and a container has no presence provider, so it would be "unavailable".
-- **Terminal grants: the ancestry walk cannot be trusted in a nested PID namespace.** Inside a
-  container a process can double-fork so that it is re-parented to `tini` (PID 1), which carries
-  no `IMPERIUM_SPAWNED_BY_DAEMON` mark and has no `sshd` above it in the namespace, so the walk
-  would pass; a rule on the peer's parent PID does not catch that. Stage 1 therefore adds a
-  structural rule in `peer.rs` and `app_identity`: **when the daemon itself runs in a nested PID
-  namespace** (its `/proc/self/status` `NSpid` line has more than one entry), every terminal
-  grant and every app-identity approval is refused. No setting or environment variable changes
-  this rule; it reads only the kernel's own answer. This also covers a daemon run inside
-  distrobox or toolbox on a desktop: grants and approvals are refused there too, and the docs say
-  to run the daemon on the host to approve. The daemon is **not** made a child subreaper to keep
-  re-parented processes in its tree: a daemon-wide subreaper steals agents' commands' exit
-  statuses, as the terminal plan found.
+- **Terminal grants: the ancestry walk cannot be trusted in a container.** Inside a container
+  a process can double-fork so that it is re-parented to `tini` (PID 1), which carries no
+  `IMPERIUM_SPAWNED_BY_DAEMON` mark and has no `sshd` above it in the namespace, so the walk
+  would pass; a rule on the peer's parent PID does not catch that. The daemon **cannot detect**
+  that it runs in a container: Docker, Podman, distrobox and toolbox mount a fresh `/proc`, so its
+  own `NSpid` line has one entry (the two-entry line is only the host's view of it), and comparing
+  namespace inodes would also fire on WSL2 desktops, which are themselves nested. (Revision 6:
+  stage 1 first built such an `NSpid` rule; the security review reproduced with
+  `unshare --mount-proc` that it never fires, and it was removed.) The daemon is **not** made a
+  child subreaper to keep re-parented processes in its tree: a daemon-wide subreaper steals
+  agents' commands' exit statuses, as the terminal plan found.
 - **Peers from outside.** A connection over the TLS listener has no peer process at all. Over the
   SSH-forwarded socket the peer is the host's `sshd`, outside the container's PID namespace, so
-  `SO_PEERCRED` reports PID 0, which the peer lookup already treats as unknown and refuses
-  (fails closed). `docker exec` peers are inside the namespace and are caught by the nested-
-  namespace rule above.
+  `SO_PEERCRED` reports PID 0, which the peer lookup refuses (fails closed). `docker exec` peers
+  are inside the namespace; only server mode refuses them.
 
-On top of that structural refusal, a **server mode** gives clear errors early and tells clients:
-the setting `daemon.server` (set by the image as `IMPERIUM_DAEMON__SERVER=true`; environment
-variables are the last layer, so a `config.toml` on the volume cannot unset it) makes the daemon
-answer these with `-32010` (`UNAVAILABLE_ON_SERVER`) and a `feature` in the error's data, and
-report `server: true` in the handshake. Server mode **refuses terminal grants and app-identity
-approvals unconditionally**, before any peer is looked at. It only ever removes capabilities.
+**So server mode is the rule, enforced centrally.** The setting `daemon.server` (set by the image
+as `IMPERIUM_DAEMON__SERVER=true`; environment variables are the last layer, so a `config.toml` on
+the volume cannot unset it) makes the daemon answer these with `-32010` (`UNAVAILABLE_ON_SERVER`)
+and a `feature` in the error's data, and report `server: true` in the handshake. Beyond the
+per-method refusals, it is enforced inside the two checks every grant and approval goes through:
+`app_identity::InstalledApp` is made from the daemon's state (`InstalledApp::of`) and refuses every
+app-identity approval on a server, and `peer::may_grant` takes the daemon's state and refuses every
+terminal grant on a server, both before any peer is looked at. Every present and future caller
+(terminal panes, item 55; `files.write`, item 66) therefore inherits the refusal. It only ever
+removes capabilities.
 
-**Turning server mode off grants nothing only in a nested PID namespace.** There the
-nested-namespace rule refuses grants and approvals by itself. The exception is a container started
-with `pid: host` (or `--pid=host`): the daemon then shares the host's PID namespace, its `NSpid`
-line has a single entry, the nested-namespace rule does not fire, and the ancestry walk runs as on
-a desktop. Three things cover it:
-
-- `check-compose.py` refuses `pid: host`, `privileged: true`, `network_mode: host`,
-  `userns_mode: host` and `ipc: host` on the `imperium` service, in the base file and every
-  override, so no shipped stack runs that way;
-- server mode, which the image sets through the environment, still refuses unconditionally;
-- a server-mode daemon whose `NSpid` line has a single entry logs a warning at start ("running
-  in the host's PID namespace: the structural refusal of grants does not apply; only server mode
-  refuses them"). The image does not refuse to start, since a single entry is also what a
-  daemon run outside a container sees.
+**Turning server mode off on a server is the operator's own act.** It means changing the image's
+environment, which nothing inside the container can do. A daemon run in a container without
+server mode (a derived image, or distrobox or toolbox on a desktop) has the double-fork gap above;
+the docs say to keep server mode on in a container and to run the daemon on the host to make
+grants. `check-compose.py` still refuses `pid: host`, `privileged: true`, `network_mode: host`,
+`userns_mode: host` and `ipc: host` on the `imperium` service, in the base file and every
+override.
 
 | Feature | On a server | `feature` |
 | --- | --- | --- |
 | Plugin approval (`plugins.approval_challenge`, `plugins.approve`) | refused | `plugin_approval` |
-| Presence check | never raised: server mode refuses before it, and the missing app and nested namespace refuse without server mode | n/a |
+| Presence check | never raised: server mode refuses before it, and without server mode the missing app refuses first | n/a |
 | Enabling GitHub auto-merge (`pull_requests.auto_merge_challenge`, `set_auto_merge` with `enabled: true`) | refused; disabling still works from any client | `auto_merge_enable` |
 | Terminal grants (`mods.install` `trusted` and `interactive`) | `trusted` is an error, `interactive` is dropped with a note, as when the check fails today | `terminal_grant` |
 | Secret writes, `mcp.login`, `api.token` rotate | refused ([D4](#d4-secrets-backend)) | `secret_write`, `mcp_login` |
-| `isolation.tier = "container"` | refused at config validation and at session start | `container_tier` |
+| `isolation.tier = "container"`, and an environment's Docker runtime (an image, or `docker exec` into a running container) | refused at config validation and at session start | `container_tier` |
 | `imperium runtime vllm setup --docker` and Docker-mode vLLM starts | refused (would need the Docker socket) | `vllm_docker` |
 
 **Carried-over approvals keep working.** Plugin approval records already in `<data>` (a data
 folder restored from a desktop machine) are verified as today by the plugin's hash and run
 summary, and count; stage 1 tests that loading a record does not re-run the desktop identity
-check or the nested-namespace rule (which applies to making approvals, not to reading them). Nothing on the server creates a new one. Auto-merge already enabled on GitHub stays
+check (which applies to making approvals, not to reading them). Nothing on the server creates a
+new one: the first-start plugin migration, which on a desktop gives the plugins already installed
+a carried-over approval, records them **without** approval on a server, so a fresh data volume or
+a deleted `plugin-migration.json` approves nothing. **Until stage 3**, the authority to approve on
+a server equals write access to the data volume: an agent's command in tier 0 can write
+`plugin-installs.json` under `/var/lib/imperium` and mint a record; stage 3's Landlock ruleset
+keeps agents' commands off `/var/lib/imperium`, which closes it. Auto-merge already enabled on GitHub stays
 enabled, and the poll still turns it off if the head moves.
 
 ### D6. GPU services
@@ -673,18 +674,19 @@ the internet, a world-readable secret file, a weak token).
    it. The directory store opens with `O_NOFOLLOW`, caps size, and never logs a value.
 5. **Writes that would silently land somewhere weaker.** A secret write on a server is refused
    (`-32010`), never written to `secrets.enc`, the data volume or a log.
-6. **Desktop-only approvals obtained on a server.** Refused structurally and by server mode
-   (D5). Structurally: there is no `imperium-desktop` to match; the daemon runs in a nested PID
-   namespace, so every terminal grant and app-identity approval is refused whatever the peer's
-   ancestry looks like (which defeats double-forking to `tini`); a TLS peer has no process; an
+6. **Desktop-only approvals obtained on a server.** Refused by server mode, enforced centrally
+   (D5): the app-identity check and the grant check take the daemon's state and refuse on a
+   server before any peer is looked at, and each desktop-only method refuses first with
+   `-32010`. Besides: there is no `imperium-desktop` to match, a TLS peer has no process, and an
    SSH-forwarded peer reads as PID 0 and fails closed. The presence check is not a barrier: where
-   it is unavailable it would record `dialog-only`. A derived image that adds a file named
-   `imperium-desktop` still gets no approval, because the nested-namespace rule refuses before the
-   app is matched, and server mode refuses before both. **Exception:** a container run with
-   `pid: host` shares the host's PID namespace, so the nested-namespace rule does not fire there;
-   server mode still refuses unconditionally, `check-compose.py` refuses `pid: host` (and
-   `privileged`, host network, host user namespace and host IPC) on the `imperium` service, and
-   the daemon warns at start (D5).
+   it is unavailable it would record `dialog-only`. There is **no structural rule** for a daemon
+   in a container: it cannot detect that it is in one (a fresh `/proc` shows one `NSpid` entry),
+   so a container run without server mode is open to double-forking to `tini`; the image sets
+   server mode, and the docs say not to unset it. The first-start migration approves nothing on
+   a server. **Residual until stage 3:** approval authority on a server equals write access to the
+   data volume (`plugin-installs.json`), which agents' commands in tier 0 have; stage 3's Landlock
+   ruleset removes it. `check-compose.py` refuses `pid: host` (and `privileged`, host network,
+   host user namespace and host IPC) on the `imperium` service.
 7. **Host compromise through the container.** Non-root user, every capability dropped,
    `no-new-privileges`, read-only root, default seccomp and AppArmor kept, no Docker socket, no
    privileged mode, no Docker-in-Docker. The `prepare` service is the only root process: no
@@ -781,7 +783,7 @@ estimates of changed lines, tests included.
 
 | Stage | Name | Depends on | Estimate |
 | --- | --- | --- | --- |
-| 1 | Server mode, refusals and the nested-namespace rule | none | 750 |
+| 1 | Server mode and its refusals, enforced centrally | none | 750 |
 | 2 | Read-only directory secrets | 1 | 600 |
 | 3 | Landlock backend for tier 1, every MCP server and hook on a server | none (3b: 1) | 850 (split 3a/3b if past 800) |
 | 4 | Socket folder and the SSH path into a container | none | 450 |
@@ -799,12 +801,10 @@ estimates of changed lines, tests included.
   `HandshakeResult.server`; the refusals of [D5](#d5-features-unavailable-on-a-server) at
   `plugins.approval_challenge`, `plugins.approve`, `pull_requests.auto_merge_challenge`,
   `pull_requests.set_auto_merge` (`enabled: true` only), `mods.install` grants,
-  `isolation.tier = "container"` (config validation and session start) and Docker-mode vLLM; the
-  **nested-PID-namespace rule** of D5 on Linux: `peer::may_grant` and `app_identity` refuse every
-  terminal grant and app-identity approval when the daemon's own `NSpid` line has more than one
-  entry, whatever any setting says; server mode refuses every terminal grant and app-identity
-  approval unconditionally, whatever the namespace; a server-mode daemon whose `NSpid` line has a
-  single entry logs the start-up warning of D5 and starts normally; SIGTERM on Unix runs the same
+  `isolation.tier = "container"` (config validation and session start) and Docker-mode vLLM;
+  server mode enforced inside `app_identity::InstalledApp` and `peer::may_grant`, so every caller
+  inherits it; the first-start plugin migration approving nothing on a server; SIGTERM on Unix
+  runs the same
   shutdown as Ctrl+C. Protocol minor bump.
 - Depends on: none.
 - Owned paths: `crates/imperium-protocol/src/{lib.rs,jsonrpc.rs,methods/system.rs}`,
@@ -817,66 +817,63 @@ estimates of changed lines, tests included.
   (existing tests); a `config.toml` setting `daemon.server = false` does not override
   `IMPERIUM_DAEMON__SERVER=true`; a carried-over plugin approval record still counts in server
   mode; `set_auto_merge` with `enabled: false` still works; SIGTERM on a test daemon removes
-  `daemon.json` and the socket. Namespace rule, through a **test seam**: a pure
-  `nested_pid_namespace(status: &str) -> bool` parser of `/proc/self/status` text and a
-  `NamespaceReader` the grant paths take (the real one reads `/proc/self/status`; tests inject
-  one): an `NSpid` line with one entry allows today's checks to run, two or more entries refuse a
-  `trusted` grant and a plugin approval even for a peer the ancestry walk would accept, a missing
-  or unreadable line refuses (fail closed), and `IMPERIUM_*` variables and every config layer
-  leave the answer unchanged. With server mode on and an injected single-entry `NSpid` (the
-  `pid: host` case), a `trusted` grant from a peer the walk would accept is still refused, and the
-  start-up warning is logged once; with server mode off and a single entry, nothing is logged. A
+  `daemon.json` and the socket. Server mode through the production entry points:
+  `InstalledApp::of` a server daemon refuses an approval for any peer, and `peer::may_grant` of a
+  server daemon refuses a grant, each with a reason that differs from the off-server one, so
+  removing the wiring fails a test; the first-start migration on a server records plugins with
+  no approval (and with one off a server). A
   peer reported as PID 0 is refused (existing behaviour, now tested). The handshake snapshot shows
   `server`. `cargo clippy` clean.
 - Status: done.
-- Outcome: built as planned, with these differences.
-  - **Protocol 0.65, not 0.62**: 0.62 was taken by `plugins.inspect_folder` and 0.63 by
-    `pull_requests.set_monitor` before this stage merged, and 0.64 is held by #304. `HandshakeResult.server` (`#[serde(default)]`, so an older daemon reads as `false`)
-    and `codes::UNAVAILABLE_ON_SERVER` (`-32010`) are in `imperium-protocol`, with every
-    `feature` name of the table as a constant in `jsonrpc::server_features`, including the ones
-    later stages use (`secret_write`, `mcp_login`).
-  - **Where the refusals sit.** `Connection::refuse_on_server` is the first check of
+- Outcome: built, with these differences from the revision-5 plan.
+  - **Protocol 0.66**: 0.62 to 0.64 were taken on `experimental` before this stage merged
+    (`plugins.inspect_folder`, `pull_requests.set_monitor`, approval texts) and #304 holds 0.65.
+    `HandshakeResult.server` (`#[serde(default)]`, so an older daemon reads as `false`) and
+    `codes::UNAVAILABLE_ON_SERVER` (`-32010`) are in `imperium-protocol`, with every `feature`
+    name of the table as a constant in `jsonrpc::server_features`, including the ones later stages
+    use (`secret_write`, `mcp_login`). The text-editor plan's `FILE_CONFLICT` and `FILE_BUSY`
+    move to `-32011` and `-32012`.
+  - **No nested-namespace rule.** The first round built one from the `NSpid` line; the security
+    review showed it never fires in Docker, Podman, distrobox or toolbox (a fresh `/proc`), and
+    it was removed with its start-up warning (D5, revision 6). Server mode is enforced inside the
+    checks instead: `InstalledApp { server }` is made with `InstalledApp::of(&daemon)` (tests use
+    `InstalledApp::DESKTOP`), and `peer::may_grant(&daemon, pid, accepted_at)` answers
+    `Err(Refused::Server)` on a server before any process is looked at. A peer of PID 0 is
+    refused explicitly at the top of the walk.
+  - **Per-method refusals.** `Connection::refuse_on_server` is still the first check of
     `plugins.approval_challenge`, `plugins.approve`, `pull_requests.auto_merge_challenge` and
     `set_auto_merge` with `enabled: true`; `mods.install` refuses `trusted` with `-32010`
     (`terminal_grant`) and a message that still starts with `trust was not granted`, so the CLI's
     sandbox fallback is unchanged, and drops `interactive` with a note. `config.set` of
     `isolation.tier = "container"` answers `-32010`; `Settings::validate` refuses that tier with
     `daemon.server` (the daemon does not start with it).
+  - **First-start migration** (`plugin_records::migrate_with`, called by
+    `DaemonState::migrate_plugins`) records the folders without approval on a server.
   - **Session start** needed files outside the owned paths: `CreateError::UnavailableOnServer`
-    (`state.rs`) and a check in `state/create.rs` that refuses any session whose sandbox is
-    `Sandbox::Container` on a server. That also covers an environment's Docker image runtime
-    (the same `docker run` per command), which the plan did not name.
+    (`state.rs`) and checks in `state/create.rs` that refuse, on a server, any session whose
+    sandbox is `Sandbox::Container` (the tier, or an environment's Docker image runtime) and any
+    environment whose runtime is a running container (`docker exec`).
   - **Docker-mode vLLM** is `vllm_env::Mode::allowed(server)`: `imperium runtime vllm setup
-    --docker` fails with its message (a CLI error, not a `-32010` reply: no RPC is involved), and
-    a server daemon whose data folder records a Docker setup starts `vllm` from `PATH` instead
-    (`crates/imperium-core/src/local.rs`, outside the owned paths, and
-    `crates/imperium-cli/src/vllm.rs`).
-  - **The nested-namespace rule** is in `peer.rs`: `nested_pid_namespace(status)`, the
-    `NamespaceReader` trait (the real `ProcSelf` reads `/proc/self/status` on Linux and answers
-    "no namespaces" elsewhere), `refuse_nested`, and `may_grant_in`, which `may_grant` calls with
-    `ProcSelf`. `app_identity::InstalledApp` is now `Guarded { namespace: ProcSelf, inner: the
-    platform check }`, so check 1 (local socket) still comes first, then the rule, then checks 2
-    to 4; the auto-merge challenge uses the same `InstalledApp`. A peer of PID 0 is refused
-    explicitly at the top of the walk.
-  - **The "IMPERIUM_* variables leave the answer unchanged" check** cannot set variables in the
-    test process (`unsafe_code` is forbidden in the workspace), so it compares the answer with
-    the `NSpid` line of a child started with `IMPERIUM_*` variables (Linux), and the reader takes
-    no setting as input.
+    --docker` fails with its message before any other check (a CLI error, not a `-32010` reply:
+    no RPC is involved; `crates/imperium-cli/src/vllm.rs`, test `tests/server_mode.rs` of the CLI),
+    and a server daemon whose data folder records a Docker setup starts `vllm` from `PATH` instead
+    (`local::vllm_launch`, outside the owned paths, with a unit test).
   - **SIGTERM** is listened for before the endpoint file is written, so one that arrives during
     start-up waits for the shutdown path; the test sends it to the real binary
     (`tests/server_mode.rs`, Unix only).
   - Tests: `crates/imperium-core/tests/server_mode.rs` (new), a server case in
-    `tests/pr_automerge.rs` (outside the owned paths; it needs that file's fake GitHub), unit
-    tests in `peer.rs`, `app_identity/mod.rs`, `vllm_env.rs` and the protocol's `system.rs`.
+    `tests/pr_automerge.rs` (outside the owned paths; it needs that file's fake GitHub),
+    `crates/imperium-cli/tests/server_mode.rs` (new), unit tests in `peer.rs`,
+    `app_identity/mod.rs`, `local.rs`, `vllm_env.rs` and the protocol's `system.rs`.
   - Docs: 02 gained [server mode](../02-architecture.md#server-mode-implemented) and the SIGTERM
-    note, 05 the container tier and auto-merge on a server, 06 the nested-namespace rule and
-    server mode in both approval sections.
-- Handoff notes: server mode's refusals sit at the RPC boundary before any challenge is issued.
-  The nested-namespace rule is the one change inside the identity code: it is a guard at the top
-  of `peer::may_grant` and of the app-identity check, evaluated before the walk, and it does not
-  replace the walk. No subreaper is added (it would take agents' commands' exit statuses). On a
-  desktop running the daemon in distrobox or toolbox, grants and approvals are refused after this
-  stage; docs 06 says so.
+    note, 05 the container tier and auto-merge on a server, 06 server mode in both approval
+    sections and why there is no container rule.
+- Handoff notes: server mode's refusals sit at the RPC boundary before any challenge is issued,
+  and again inside `InstalledApp` and `peer::may_grant`, which take the daemon's state: a new
+  caller of either (item 55's terminal panes, item 66's `files.write`) inherits the refusal
+  without a check of its own. No subreaper is added (it would take agents' commands' exit
+  statuses). A daemon in a container without server mode is open to double-forking; keep server
+  mode on there.
 
 ## Stage 2: Read-only directory secrets
 

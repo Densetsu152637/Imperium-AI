@@ -135,7 +135,7 @@ challenge is issued, so nothing is recorded:
 | `plugins.approval_challenge`, `plugins.approve` | `plugin_approval` |
 | `pull_requests.auto_merge_challenge`, `pull_requests.set_auto_merge` with `enabled: true` (turning it off works from any client) | `auto_merge_enable` |
 | `mods.install` with `trusted` (an error whose message starts with `trust was not granted`, so the CLI installs the mod in its sandbox instead); `interactive` is dropped with a note | `terminal_grant` |
-| `isolation.tier = "container"`: refused by configuration validation (the daemon does not start with it), by `config.set`, and at session start, where a Docker image runtime is refused too (no Docker socket on a server) | `container_tier` |
+| `isolation.tier = "container"`: refused by configuration validation (the daemon does not start with it), by `config.set`, and at session start, where an environment's Docker runtime (an image, or a running container through `docker exec`) is refused too (no Docker socket on a server) | `container_tier` |
 
 `imperium runtime vllm setup --docker` fails with a message on a server, and a server daemon whose
 data folder records a Docker setup of vLLM starts `vllm` from `PATH` instead of a container.
@@ -145,11 +145,19 @@ remaining features of the plan's table (`secret_write`, `mcp_login`, `vllm_docke
 code) belong to later stages; their names are already in
 `imperium_protocol::jsonrpc::server_features`.
 
-Underneath server mode, a structural rule holds whatever any setting says: a daemon in a nested
-PID namespace refuses every grant and app-identity approval
-([06](06-extensibility.md#who-may-grant-trust-and-approval-implemented)). A server-mode daemon
-whose `NSpid` line has a single entry (a container run with `pid: host`, or no container) logs
-once at start that only server mode refuses grants there.
+Besides the per-method refusals, server mode is enforced where grants and approvals are decided:
+the app-identity check (`app_identity::InstalledApp`, made from the daemon's state) and the grant
+check (`peer::may_grant`, which takes the daemon's state) refuse everything on a server before any
+peer is looked at, so every caller, present or future, inherits the refusal
+([06](06-extensibility.md#who-may-grant-trust-and-approval-implemented)). A daemon cannot tell
+from inside that it runs in a container (Docker, Podman, distrobox and toolbox mount a fresh
+`/proc`, where its own `NSpid` line has one entry), so server mode, set by the image, is the rule.
+
+The first-start plugin migration, which on a desktop records the plugins already installed with
+a carried-over approval, records them **without** approval on a server, so a fresh data volume or
+a deleted `plugin-migration.json` approves nothing. Until stage 3's Landlock tier keeps agents'
+commands off `/var/lib/imperium`, the authority to approve on a server is write access to the data
+volume: whoever can write `plugin-installs.json` there can mint a record.
 
 ## Protocol
 

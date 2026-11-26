@@ -779,6 +779,16 @@ pub(crate) enum Migration {
 /// that runs today stops. Then writes the marker. Does nothing once the marker exists, and never
 /// overwrites a store it cannot read.
 pub(crate) fn migrate(paths: &Paths, disabled: &[String]) -> Result<Migration, String> {
+    migrate_with(paths, disabled, true)
+}
+
+/// [`migrate`], with `carry_over` false for a server (`daemon.server`): the folders are recorded
+/// without any approval, so a fresh data volume or a deleted marker approves nothing there.
+pub(crate) fn migrate_with(
+    paths: &Paths,
+    disabled: &[String],
+    carry_over: bool,
+) -> Result<Migration, String> {
     // Only a marker that is certainly absent lets the migration run: a marker that cannot be
     // read counts as present.
     let absent = matches!(
@@ -793,7 +803,7 @@ pub(crate) fn migrate(paths: &Paths, disabled: &[String]) -> Result<Migration, S
         // A store with no marker (a crash between the two writes): keep it, finish the marker.
         Stored::Found(_) => (0, Vec::new()),
         Stored::Missing => {
-            let (store, skipped) = record_present(paths, disabled);
+            let (store, skipped) = record_present(paths, disabled, carry_over);
             write_json(&store_path(paths), &store)?;
             (store.plugins.len(), skipped)
         }
@@ -806,7 +816,7 @@ pub(crate) fn migrate(paths: &Paths, disabled: &[String]) -> Result<Migration, S
 }
 
 /// The records for the folders present, and a report for each folder that is not carried over.
-fn record_present(paths: &Paths, disabled: &[String]) -> (Store, Vec<String>) {
+fn record_present(paths: &Paths, disabled: &[String], carry_over: bool) -> (Store, Vec<String>) {
     let mut store = Store::default();
     let mut skipped = Vec::new();
     for folder in plugins::plugin_folders(&[plugins_dir(paths)]) {
@@ -836,7 +846,7 @@ fn record_present(paths: &Paths, disabled: &[String]) -> (Store, Vec<String>) {
             continue;
         }
         let runs = plugins::runs(&plugin).digest();
-        let approval = (!disabled.contains(&plugin.name)).then(|| Approval {
+        let approval = (carry_over && !disabled.contains(&plugin.name)).then(|| Approval {
             hash: seen.hash.clone(),
             runs: runs.clone(),
             at_unix_ms: unix_ms(),

@@ -81,6 +81,16 @@ fn installer_variables(vars: impl Iterator<Item = (String, String)>) -> Vec<Stri
 pub fn setup(docker: bool, in_wsl: bool, yes: bool, version: Option<String>) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
+    let mode = if docker {
+        Mode::Docker
+    } else if in_wsl {
+        Mode::Wsl
+    } else {
+        Mode::Venv
+    };
+    // First, on every platform: a server never sets up vLLM in Docker.
+    mode.allowed(settings.daemon.server)
+        .map_err(anyhow::Error::msg)?;
     if in_wsl && !cfg!(windows) {
         bail!(
             "--wsl is for Imperium running on Windows; on Linux, or inside WSL2, run this without \
@@ -94,15 +104,6 @@ pub fn setup(docker: bool, in_wsl: bool, yes: bool, version: Option<String>) -> 
              machine, or use a remote vLLM endpoint)"
         );
     }
-    let mode = if docker {
-        Mode::Docker
-    } else if in_wsl {
-        Mode::Wsl
-    } else {
-        Mode::Venv
-    };
-    mode.allowed(settings.daemon.server)
-        .map_err(anyhow::Error::msg)?;
     if docker && version.is_some() {
         println!(
             "note: --version applies to the virtual environment; with --docker the image \

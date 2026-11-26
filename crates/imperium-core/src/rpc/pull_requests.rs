@@ -177,7 +177,7 @@ impl Connection {
             return Ok(());
         }
         crate::app_identity::Identify::identify(
-            &crate::app_identity::InstalledApp,
+            &crate::app_identity::InstalledApp::of(&self.state),
             self.identity.as_deref(),
         )
         .map_err(|reason| {

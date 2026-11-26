@@ -320,11 +320,10 @@ itself (`crates/imperium-core/src/app_identity/`), never from what the caller se
 
 - the connection came in on the local socket; loopback TCP (a mod frame, a remote host) and a
   paired phone are refused before any process is looked at;
-- on Linux, the daemon itself does not run in a nested PID namespace (the
-  [nested-namespace rule](#who-may-grant-trust-and-approval-implemented)); on a server
-  ([server mode](02-architecture.md#server-mode-implemented)) both calls answer `-32010`
-  (`plugin_approval`) before this list is checked, and approvals carried over in the data folder
-  still count;
+- the daemon is not a server: in [server mode](02-architecture.md#server-mode-implemented) both
+  calls answer `-32010` (`plugin_approval`) before this list is checked, and the identity check
+  itself (`InstalledApp`, made from the daemon's state) refuses every approval on a server, so no
+  caller can leave it out; approvals carried over in the data folder still count;
 - on Linux, the peer is held from accept by a pidfd (`SO_PEERPIDFD`; only on a kernel that lacks
   that option, `pidfd_open` on the `SO_PEERCRED` id, refusing a process that started after the
   accept, while any other `SO_PEERPIDFD` error refuses the peer), and every read goes through
@@ -1076,20 +1075,20 @@ asking**, using what the operating system says about the caller.
   tries the local socket first). A paired phone and a mod frame cannot call `mods.*` at all. A
   peer reported as PID 0 (a process outside the daemon's PID namespace, such as the host's
   `sshd` forwarding into a container) is refused.
-- **The nested-PID-namespace rule.** Before the walk, a daemon running in a nested PID namespace
-  (its own `NSpid` line in `/proc/self/status` lists more than one id: a container, distrobox or
-  toolbox) refuses every grant, and the same rule refuses every app-identity approval (plugin
-  approvals and the auto-merge challenge). There a process can double-fork so that it is
-  re-parented to the namespace's PID 1, which carries no mark and has no `sshd` above it, and the
-  walk would pass. The rule reads only the kernel's answer: no setting or environment variable
-  changes it, and a status that cannot be read or has no `NSpid` line refuses (fails closed). On
-  a desktop that runs the daemon in distrobox or toolbox, grants and approvals are therefore
-  refused: run the daemon on the host to make them. No child subreaper is added to keep
-  re-parented processes in the tree (it would take agents' commands' exit statuses).
 - **On a server** ([server mode](02-architecture.md#server-mode-implemented)) `trusted` is refused
   with `-32010` (`terminal_grant`, the message still starting with `trust was not granted`, so the
   CLI installs the mod in its sandbox) and `interactive` is dropped with a note, before any peer
-  is looked at, whatever the namespace.
+  is looked at. The grant check itself (`peer::may_grant`, which takes the daemon's state) refuses
+  every grant on a server too, so every caller inherits it.
+- **Containers.** Inside a container a process can double-fork so that it is re-parented to the
+  container's PID 1, which carries no mark and has no `sshd` above it, and the walk would pass. A
+  daemon cannot detect that it runs in a container (Docker, Podman, distrobox and toolbox mount a
+  fresh `/proc`, so its own `NSpid` line has one entry; and a WSL2 desktop is itself nested, so
+  namespace identity does not tell either), so there is no structural rule: server mode, which
+  the server image sets, is what refuses grants there. A desktop that runs the daemon in
+  distrobox or toolbox without server mode has this gap; run the daemon on the host. No child
+  subreaper is added to keep re-parented processes in the tree (it would take agents' commands'
+  exit statuses).
 - **When the check fails:** `trusted` is an error (`trust was not granted`, nothing installed);
   `interactive` is dropped, the mod installs off, and the result's `notes` say so. The result
   carries `interactive` and `trusted` as counted, and the CLI reports those, not what it sent.

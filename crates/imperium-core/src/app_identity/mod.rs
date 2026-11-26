@@ -8,9 +8,6 @@
 //!
 //! 1. the connection came in on the local socket (never loopback TCP, a paired phone or a mod
 //!    frame); this is decided before any process is looked at;
-//!    then, on Linux, the daemon must not run in a nested PID namespace (a container, distrobox,
-//!    toolbox): there every approval is refused, whatever the peer ([`Guarded`],
-//!    [`crate::peer`]);
 //! 2. the peer was identified at accept without races ([`Peer`], per platform);
 //! 3. its executable is the app installed beside `imperium-core`, outside any sandbox;
 //! 4. its environment holds none of the loader or WebView2 overrides [`refused_variable`] names;
@@ -23,6 +20,10 @@
 //! 7. on Windows, a release build compiled by the signing job, running from under the
 //!    per-machine Program Files folder (`windows::may_count`); a debug build's `dev` approval is
 //!    exempt.
+//!
+//! Before all of these, a daemon in server mode (`daemon.server`) refuses every approval, whatever
+//! the peer: [`InstalledApp`] is made from the daemon's state ([`InstalledApp::of`]), so every
+//! caller inherits the refusal.
 //!
 //! Linux, Windows and macOS are implemented (Windows reads no peer environment: the app checks
 //! its own, stage 8b); another platform refuses every approval.
@@ -105,43 +106,39 @@ pub(crate) trait Identify {
     fn identify(&self, peer: Option<&Peer>) -> Result<(), String>;
 }
 
-/// The production check: the desktop app installed beside `imperium-core`, never from a daemon
-/// in a nested PID namespace.
-pub(crate) struct InstalledApp;
+/// Why an approval is refused on a server.
+pub(crate) const ON_SERVER: &str = "this daemon runs as a server (daemon.server), where no \
+     approval is made: approve in the desktop app on its own machine";
+
+/// The production check: the desktop app installed beside `imperium-core`, and never on a
+/// server.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InstalledApp {
+    server: bool,
+}
+
+impl InstalledApp {
+    /// The check for `daemon`: on a server it refuses everything.
+    pub(crate) fn of(daemon: &crate::DaemonState) -> Self {
+        InstalledApp {
+            server: daemon.settings().daemon.server,
+        }
+    }
+
+    /// The check of a daemon that is not a server, for tests of the platform checks.
+    #[cfg(test)]
+    pub(crate) const DESKTOP: InstalledApp = InstalledApp { server: false };
+}
 
 impl Identify for InstalledApp {
     fn identify(&self, peer: Option<&Peer>) -> Result<(), String> {
-        Guarded {
-            namespace: &crate::peer::ProcSelf,
-            inner: BesideTheDaemon,
+        // Server mode first, before any peer is looked at; then check 1, so a TCP caller is
+        // refused before any process is looked at.
+        if self.server {
+            return Err(ON_SERVER.to_string());
         }
-        .identify(peer)
-    }
-}
-
-/// Checks 1 to 4 against the app installed beside `imperium-core`.
-struct BesideTheDaemon;
-
-impl Identify for BesideTheDaemon {
-    fn identify(&self, peer: Option<&Peer>) -> Result<(), String> {
         let peer = local_only(peer)?;
         platform::identify(peer, &installed_app()?)
-    }
-}
-
-/// `inner`, after check 1 and the nested-PID-namespace rule ([`crate::peer::refuse_nested`]),
-/// read by `namespace`: in a nested namespace nothing is identified, whatever the peer.
-pub(crate) struct Guarded<'a, I> {
-    pub(crate) namespace: &'a dyn crate::peer::NamespaceReader,
-    pub(crate) inner: I,
-}
-
-impl<I: Identify> Identify for Guarded<'_, I> {
-    fn identify(&self, peer: Option<&Peer>) -> Result<(), String> {
-        // Check 1 comes first: a TCP caller is refused before any process is looked at.
-        local_only(peer)?;
-        crate::peer::refuse_nested(self.namespace)?;
-        self.inner.identify(peer)
     }
 }
 
@@ -400,7 +397,7 @@ mod tests {
     #[test]
     fn a_tcp_connection_is_refused_before_any_process_check() {
         // `None` is what a loopback TCP connection, a phone or a mod frame carries.
-        let error = InstalledApp.identify(None).unwrap_err();
+        let error = InstalledApp::DESKTOP.identify(None).unwrap_err();
         assert!(error.contains("local socket"), "{error}");
         let home = home();
         let (hash, runs) = content(&home);
@@ -411,7 +408,7 @@ mod tests {
             now_ms: 0,
         };
         let mut challenges = Challenges::default();
-        let error = challenge(&InstalledApp, None, &mut challenges, &asked).unwrap_err();
+        let error = challenge(&InstalledApp::DESKTOP, None, &mut challenges, &asked).unwrap_err();
         assert!(error.contains("local socket"), "{error}");
     }
 
@@ -569,20 +566,11 @@ mod tests {
         )
     }
 
-    /// The kernel's answer for the nested-namespace rule, as a test chooses it.
-    struct Nspid(&'static str);
-
-    impl crate::peer::NamespaceReader for Nspid {
-        fn status(&self) -> std::io::Result<Option<String>> {
-            Ok(Some(format!("Name:\timperium-core\nNSpid:\t{}\n", self.0)))
-        }
-    }
-
-    /// In a nested PID namespace a plugin approval is refused even for a peer every other check
-    /// accepts: no challenge is issued, nobody is asked and nothing is recorded. With one
-    /// `NSpid` entry the same peer gets its challenge and its approval.
+    /// On a server the production check refuses an approval for any peer, the app's included,
+    /// before any process is looked at: no challenge is issued, nobody is asked and nothing is
+    /// recorded. The check is made from the daemon's state, so a caller cannot leave it out.
     #[test]
-    fn a_nested_namespace_refuses_an_approval_the_identity_check_would_accept() {
+    fn a_server_refuses_every_approval_through_the_production_check() {
         let home = home();
         let (hash, runs) = content(&home);
         let asked = Asked {
@@ -592,20 +580,27 @@ mod tests {
             now_ms: 0,
         };
         let peer = Peer::test_peer();
-        let nested = Guarded {
-            namespace: &Nspid("9021\t7"),
-            inner: LocalPeer,
-        };
+        let mut settings =
+            imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+                .settings()
+                .unwrap();
+        settings.daemon.server = true;
+        let server = crate::DaemonState::new(home.paths.clone(), settings, None);
+        let app = InstalledApp::of(&server);
+        for peer in [Some(&peer), None] {
+            assert_eq!(app.identify(peer).unwrap_err(), ON_SERVER);
+        }
         let mut challenges = Challenges::default();
-        let error = challenge(&nested, Some(&peer), &mut challenges, &asked).unwrap_err();
-        assert!(error.contains("nested PID namespace"), "{error}");
-        // A challenge issued before (say, by the same peer through a check without the rule)
-        // is not redeemed either.
+        assert_eq!(
+            challenge(&app, Some(&peer), &mut challenges, &asked).unwrap_err(),
+            ON_SERVER
+        );
+        // A challenge some other check issued is not redeemed either.
         let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
         let presence = Answers::new(Presence::Passed);
         let result = approve(
             &home.paths,
-            &nested,
+            &app,
             &TestVerifier,
             &presence,
             Some(&peer),
@@ -614,36 +609,13 @@ mod tests {
             &issued.challenge,
         );
         assert!(!result.approved);
-        assert!(result.reason.unwrap().contains("nested PID namespace"));
+        assert_eq!(result.reason.as_deref(), Some(ON_SERVER));
         assert!(presence.asked().is_empty());
         assert_eq!(recorded_kind(&home), None);
-        // Check 1 still comes first.
-        let error = nested.identify(None).unwrap_err();
-        assert!(error.contains("local socket"), "{error}");
-
-        // The host's namespace: the same peer is approved.
-        let single = Guarded {
-            namespace: &Nspid("812"),
-            inner: LocalPeer,
-        };
-        let issued = challenge(&single, Some(&peer), &mut challenges, &asked).unwrap();
-        let result = approve(
-            &home.paths,
-            &single,
-            &TestVerifier,
-            &presence,
-            Some(&peer),
-            &mut challenges,
-            &asked,
-            &issued.challenge,
-        );
-        if cfg!(windows) {
-            // Check 7: this unsigned test build counts nothing on Windows.
-            assert!(!result.approved);
-            return;
-        }
-        assert!(result.approved, "{:?}", result.reason);
-        assert_eq!(recorded_kind(&home), Some(ApprovalKind::Counted));
+        // Off a server the same check goes on to the peer (and this test process is not the app).
+        let desktop = InstalledApp::of(&state_of(&home));
+        let error = desktop.identify(Some(&peer)).unwrap_err();
+        assert_ne!(error, ON_SERVER);
     }
 
     fn recorded_kind(home: &Home) -> Option<ApprovalKind> {
@@ -719,7 +691,7 @@ mod tests {
         assert!(!result.approved);
         let result = approve(
             &home.paths,
-            &InstalledApp,
+            &InstalledApp::DESKTOP,
             &ReleaseVerifier,
             &presence,
             None,

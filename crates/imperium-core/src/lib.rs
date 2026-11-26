@@ -75,7 +75,6 @@ pub use initiative::{InitiativeBook, Outcome as InitiativeOutcome};
 pub use load::{LoadMonitor, ManualLoad, Sample, classify};
 pub use local::LocalRuntime;
 pub use openai::OpenAiApi;
-pub use peer::{NamespaceReader, ProcSelf, host_namespace_warning};
 pub use pets::PetEngine;
 pub use phone::Devices;
 pub use pr_monitor::{PrMonitor, disable_before_push as disable_auto_merge_before_push};
