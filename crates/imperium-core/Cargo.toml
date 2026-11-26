@@ -51,6 +51,9 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 rustix = { version = "1.1.6", features = ["fs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The hidden `pty-supervisor` subcommand (`main.rs`); the terminal service of stage 2a will use
+# the library on every OS and move this to the main table.
+imperium-pty = { version = "0.2.0", path = "../imperium-pty" }
 # Identifying the desktop app for plugin approvals (`app_identity/linux.rs`) without `unsafe`:
 # rustix for pidfds, SO_PEERCRED, poll and /proc; nix only for SO_PEERPIDFD, which rustix lacks.
 nix = { version = "0.31.3", default-features = false, features = ["socket"] }

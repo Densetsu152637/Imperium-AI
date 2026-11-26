@@ -1153,8 +1153,8 @@ Only on approval does it push to the
 pull request's branch, as a plain push. It never force-pushes, closes or approves, and requests
 GitHub's auto-merge only on the user's switch, turned on in the desktop app; it never calls a merge
 endpoint. Before it pushes it turns that auto-merge off (see [auto-merge](#auto-merge-implemented-stage-6-protocol-060)).
-After `max_attempts_per_pr` (default 3) failing commits on one pull request it stops and
-says so. Progress is sent to every connected client as `autofix.event` notifications (`started`,
+After `max_attempts_per_pr` (default 3) runs on one pull request that did not end in a push
+the user accepted it stops and says so. Progress is sent to every connected client as `autofix.event` notifications (`started`,
 `awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, `stopped`); the phone page lists them all, and the desktop app shows only `failed` ones, as a toast and a system notification per the user's notification settings (`notifyFailed`, `notifyOnlyInBackground`); approvals are
 answered in the desktop app's Approvals panel or with `imperium approvals list|approve|deny`
 (`approvals.list` and `approvals.respond`, with `approval.requested` notifications). When the
@@ -1162,10 +1162,11 @@ daemon cannot list a repository's pull requests and waiting will not fix it (no 
 `GH_TOKEN`, an app installation token, a token GitHub rejects), it sends one `autofix.event` with
 status `failed` (pull request number 0, since it is not about one pull request) and the reason, instead of a log line on every poll; the same failure is not sent
 again until a poll of that repository succeeds. Any other failure is sent after three polls in a
-row fail. Not yet:
-review, conflict, triage, and workflow-failure responders, `github.*` hook events, webhooks,
-labelled or all pull requests, budgets, `comment`, and persisting attempt counts across
-restarts.
+row fail. Review comments, replies, the daily budget and attempt counts kept across restarts
+are described under [review-comment wake](#review-comment-wake-implemented-stage-7-protocol-063)
+and [replies](#replies-fix-ci-on-the-wake-path-and-the-budget-implemented-stage-8-protocol-064).
+Not yet: conflict, triage, and workflow-failure responders, `github.*` hook events, webhooks, and
+labelled or all pull requests.
 
 **What a session's commands see of `gh`.** The daemon does not need a session's `gh`: it reads the
 login itself. Sessions' commands, MCP servers and hooks drop `GH_TOKEN`, `GITHUB_TOKEN` and
@@ -1320,8 +1321,11 @@ can comment, so nothing in it is trusted:
   finishes, or cancels it; a replacement session whose wake fails is stopped and has its pending
   requests denied the same way. The replacement session is capped for its whole life and the user
   cannot lift that: start a new session or branch to work uncapped; the session shows a "capped
-  (review wake)" badge. A wake that ends without starting its turn five times in a row (the
-  session was busy) says so in an `autofix.event` with status `failed`.
+  (review wake)" badge. A session is woken only when it is idle, not stopped, not capped by
+  another wake and none of its subagents is working or paused (a paused subagent would resume
+  on the session's permissions; the wake leaves it alone). Five passes in a row that could not
+  wake it, for any of these reasons or because a turn of the user's started first, are reported
+  in an `autofix.event` with status `failed`; the comments are not taken and are tried again.
 - **Where it runs.** In the owning session's folder (loaded from its record if it is not running),
   only if that session is bound to this pull request now and its `origin` is the repository (the
   ledger file is not trusted to name an owner), and the folder is on the pull request's
@@ -1349,8 +1353,86 @@ can comment, so nothing in it is trusted:
   count, and once it is reached further comments wait ("stopped") until the switch is turned off
   and on. The card shows *Untrusted comment text was handled* after any wake until the user
   acknowledges it (`ack_untrusted`). A pull request that is both in `[[github.watch]]` and bound
-  to a session is handled once: comments go to the bound session, and Fix CI for watched pull
-  requests is unchanged. No tool is added for the agent. Replies to the threads are stage 8.
+  to a session is handled once: comments and failing commits go to the bound session, and Fix CI
+  leaves that pull request alone. No tool is added for the agent. Replies to the threads, failing
+  commits of a bound pull request and the daily budget are described next.
+
+### Replies, Fix CI on the wake path and the budget (implemented, stage 8, protocol 0.64)
+
+- **Replies to review threads.** After a review wake that pushed (or changed nothing), the
+  daemon replies in each unresolved thread holding a comment on the diff that woke the session,
+  with the session's final summary. Conversation comments and reviews have no thread and get no
+  reply. The text is **defanged**: control, format (Unicode `Cf`), invisible and filler
+  characters removed (variation selectors, Hangul and Khmer fillers and the Braille blank
+  included), backticks turned into apostrophes, `@mentions` (users and teams) quoted as code so
+  nobody is notified, `&`, `<`, `>`, the backslash, `[` and `]` written as HTML entities (so no
+  HTML, no Markdown escape that could undo the quoting, no inline or reference link or image and
+  no forged footer marker renders), `://` and `www.` broken so nothing becomes a link, `~~~`
+  fences broken and indentation removed (no code block). The input is cut to 3000 characters
+  before any of this, and the result is never cut, so a quoted mention cannot be split. A footer says the
+  reply was posted by Imperium auto-fix and ends with the marker `<!-- imperium-auto-fix -->`;
+  the id of every reply is kept in `pr-review.json`, so the daemon's own replies never wake
+  anything.
+- **Approval of the exact text.** With `github.autofix.comment = "ask"` (the default) each reply
+  is an approval request of kind `reply` whose `text` is exactly what will be posted (the footer
+  is added after it), and its summary says which thread and comment it answers and that the
+  model wrote it from text other people wrote. The user may answer `approvals.respond` with their
+  own `text`, which is defanged the same way and posted with the footer; `text` on any other
+  request is refused. A paired phone may approve or decline it like a push approval, but may not
+  send `text`. `comment = "auto"` posts without asking, **with a risk**: a reviewer with write
+  access can ask the session to read a file (reads run in a capped turn) and put it in its
+  summary, which is then posted on a public pull request. A reply that looks like a credential (a
+  GitHub, GitLab, Slack, OpenAI-style or AWS key, or a PEM private key) is never posted unasked:
+  it asks, with a warning, in either mode; anything else that is secret but does not look like a
+  key is not caught. Approvals (push and reply alike) have no timeout: one nobody answers waits,
+  and the pull request is not worked on again until it is answered or the daemon restarts. Over `github.autofix.comment_replies_per_hour` (default 6) replies on the pull
+  request in the last hour, a reply is **held**: not asked about and not posted
+  (`autofix.event` status `held`). The other statuses are `replied` and `reply_declined`.
+- **Failing commits of a bound pull request.** With `fix_ci` among the responders and the card's
+  switch on, a new failing head commit wakes the owning session the same way as review comments:
+  the N2 checks, the capped turn, the D5 fallback, and a push that always asks (the CI log is
+  untrusted text), with `trigger` `ci`. The prompt is Fix CI's CI-log envelope (the failed
+  checks, the first one's details URL and the last 6000 characters of its log). Review feedback
+  waiting at the same time goes first; the failing commit is handled at the next pass. The
+  commit handled last is kept in `pr-review.json`, so neither a restart nor a status read before
+  a push landed handles it again. A D5 replacement session for a failing commit runs as Fix CI
+  does (below), not capped, because its worktree belongs to the daemon.
+- **Fix CI for watched pull requests** (no bound session with the switch on) still starts a new
+  session in the pull request's worktree in `ask` mode with `write_file` and `edit_file`
+  pre-approved (D8): every command asks, allow rules notwithstanding, and a fetch to a host
+  that is not allowed asks. Its edits run unasked in the daemon's worktree; they reach the
+  remote only through the push approval, which lists everything in `origin/<branch>..<commit>`,
+  and with `push = "auto"` a change outside CI configuration and hooks is pushed without asking,
+  as before. Nothing the repository names runs in the daemon's own git: every checkout, commit,
+  status, diff and push it makes points `core.hooksPath` at an empty folder (so a hook the
+  session wrote, or a repository's `.husky` hooks, never run), turns fsmonitor off, never enters
+  submodules and skips the hooks again with `--no-verify`; a repository whose own config names a
+  filter, a signing program, an SSH or proxy command, a credential helper or a transport program
+  is refused before the commit or the push. It now shares the wake path's commit and push (the approved commit is
+  pushed by its hash, auto-merge is turned off first), and its handled commits and attempt count
+  are kept in `pr-review.json` across restarts. Network tools follow `ask` mode there; the capped
+  wake of a user's session asks for every call that is not a read.
+- **Attempts.** `max_attempts_per_pr` counts every wake and every Fix CI run, of any trigger, that
+  did not end in a push the user accepted; an accepted push resets it.
+- **Daily budget.** The model calls of a woken turn (while the wake holds its cap, and a few
+  seconds after, as the calls are recorded) and of every session auto-fix starts are counted in
+  the budgets ledger under the source `autofix`, besides their environment and model, so the
+  user's other budgets count them as before and a `[budgets]` limit with `scope = "source"` and
+  `target = "autofix"` can watch them. `github.autofix.budget_usd_per_day` (default `0`, no
+  limit) is checked before every wake and every Fix CI run: once today's `autofix` cost reaches
+  it, nothing is woken or started until the next local day, the work is not taken, and an
+  `autofix.event` with status `stopped` says so once per pull request per day. A wake already
+  running finishes, so a day can end over the budget by what one wake costs. A session auto-fix
+  started stops counting a few seconds after its run ends (a user who takes it over is not
+  charged to auto-fix). Only models with prices count; local models cost nothing.
+- **What protects the user.** The defence is the envelope, the capped turn, the push and reply
+  approvals and the fact that no tool reaches auto-merge, approvals or settings, not the model's
+  obedience. `tests/injection_corpus.rs` checks the plumbing with a scripted model that obeys
+  about thirty hostile comments (and the same text as a CI log through Fix CI): no auto-merge
+  call, every command, fetch, file write and subagent asks in a woken turn (a script the model
+  wrote and then runs too, under an allow rule), every command asks in Fix CI, nothing is pushed
+  unasked, the GitHub token appears in no prompt, notification, file or reply, and every reply is
+  defanged. A real model's resistance is an evaluation, not a CI check.
 
 ### Events
 
@@ -1372,7 +1454,7 @@ plugins and user hooks can react too.
 | Responder        | Does                                                                                   |
 | ---------------- | -------------------------------------------------------------------------------------- |
 | **Fix CI**       | Reads the failed job's logs, reproduces locally where possible, commits a fix to the PR branch in its own worktree, and pushes |
-| **Address review** | Applies requested changes, replies to each comment with what changed, and resolves threads it addressed (applying changes is built: [review-comment wake](#review-comment-wake-implemented-stage-7-protocol-063); replies and resolving are not yet) |
+| **Address review** | Applies requested changes, replies to each comment with what changed, and resolves threads it addressed (applying changes and replies are built: [review-comment wake](#review-comment-wake-implemented-stage-7-protocol-063), [replies](#replies-fix-ci-on-the-wake-path-and-the-budget-implemented-stage-8-protocol-064); resolving threads is not yet) |
 | **Resolve conflicts** | Merges the base branch in a worktree, resolves conflicts, runs checks, and pushes |
 | **Triage issue** | Labels, asks for missing details, links duplicates, and optionally opens a draft PR with a fix |
 | **Workflow failure** | Opens or updates an issue with the failure's cause, or starts Fix CI when it maps to an open PR |
@@ -1393,9 +1475,10 @@ issues = { labels = ["auto-triage"] }
 enabled = true
 responders = ["fix_ci", "address_review", "resolve_conflicts"]
 max_attempts_per_pr = 3             # stop and notify after this many failed fixes
-budget_usd_per_day = 2.0
+budget_usd_per_day = 2.0            # what wakes may spend per day; 0 is no limit
 push = "ask"                        # ask | auto: ask queues an approval before each push
-comment = "auto"                    # replies and issue comments
+comment = "ask"                     # ask | auto: replies to review threads wait for approval
+comment_replies_per_hour = 6        # per pull request; more are held
 ```
 
 - **Never** force-pushes, closes or approves, and requests GitHub auto-merge only on the user's

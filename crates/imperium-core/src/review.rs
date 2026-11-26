@@ -647,6 +647,11 @@ pub(crate) const COMMIT_REFUSED: &str =
 /// credentials: the commit keys plus these.
 pub(crate) const PUSH_REFUSED: &str = r"^(filter\..+\.(clean|smudge|process)|gpg\..*program|gpg\.ssh\.defaultkeycommand|core\.(hookspath|sshcommand|gitproxy|askpass|fsmonitor|alternaterefscommand)|credential\..*|remote\..+\.(receivepack|uploadpack|vcs)|url\..+\.(insteadof|pushinsteadof)|protocol\..*)$";
 
+/// Keys that make the auto-fix push run a program or answer for credentials. The daemon's git
+/// calls override `core.hooksPath` and `core.fsmonitor` themselves, and the remote is the one the
+/// user's checkout names (its `insteadOf` rewrites included), so those are not refused here.
+pub(crate) const AUTOFIX_PUSH_REFUSED: &str = r"^(filter\..+\.(clean|smudge|process)|gpg\..*program|gpg\.ssh\.defaultkeycommand|core\.(sshcommand|gitproxy|askpass|alternaterefscommand)|credential\..*|remote\..+\.(receivepack|uploadpack|vcs)|protocol\..*)$";
+
 /// Which list a step checks.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Step {
@@ -654,6 +659,8 @@ pub(crate) enum Step {
     Checkout,
     Commit,
     Push,
+    /// The auto-fix push ([`AUTOFIX_PUSH_REFUSED`]).
+    AutofixPush,
 }
 
 /// Refuses a repository whose own config (`.git/config` with its includes, and the worktree's
@@ -665,6 +672,7 @@ pub(crate) fn check_repository_config(top: &Path, step: Step, what: &str) -> Res
     let pattern = match step {
         Step::Commit | Step::Checkout => COMMIT_REFUSED,
         Step::Push => PUSH_REFUSED,
+        Step::AutofixPush => AUTOFIX_PUSH_REFUSED,
     };
     let mut found = Vec::new();
     for scope in ["--local", "--worktree"] {
