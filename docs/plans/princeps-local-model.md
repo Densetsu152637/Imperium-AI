@@ -1,10 +1,12 @@
 # Plan: Princeps, the local model, and the Emperor and Consul harness profiles
 
-Revision: 2026-11-26, revision 3 (folds in the re-review's R1, trusted-profile and escalation
+Revision: 2026-11-26, revision 4 (the NCM session's relayed user decisions: no releases yet, so an
+interim user-built path and a deferred stage 2b; weights, licence and GPU scope decided; revision 3
+folded in the re-review's R1, trusted-profile and escalation
 settings, and R2, every runtime file verified and held at launch; revision 2 folded in the plan
 review's B1 to B4, should-fix 1 to 7 and nits, and the NCM session's answers, from its branch
-`feat/ncm-speed-2` at `61350bc`); written against `experimental` at `9cc5c5b0` (last updated).
-Revision 1 was `7d4f11c5`, revision 2 `6d1cdf5c`.
+`feat/ncm-speed-2` at `61350bc`); written against `experimental` at `9ce002c5` (last updated).
+Revision 1 was `7d4f11c5`, revision 2 `6d1cdf5c`, revision 3 `10b67a66`.
 Status: planned, no stage started. Roadmap [item 67](../12-roadmap.md#next-in-order).
 
 **User decision (2026-11-26).** Emperor and Consul stop being two models. There is one local
@@ -26,17 +28,18 @@ minor free when it merges; none is reserved here (0.63 went to #301, and #304 ho
 ## Goals
 
 Each goal is boolean, with the check that decides it. "CI" is this repository's CI on the pull
-request; "ncm-live" is the opt-in workflow [stage 2](#stage-2-obtaining-and-verifying-ncm-server)
-adds, which runs the CPU build only (the CUDA path has no CI check; see [risks](#risks)).
+request; "ncm-live" is the opt-in workflow [stage 2a](#stage-2a-the-user-built-ncm-server-interim)
+adds, which runs a CPU build only (the CUDA path has no CI check; see [risks](#risks)).
 
 1. A model file `princeps-ncm-250m.safetensors` in a model folder is listed as
    `ncm:princeps-ncm-250m` and loads through the supervisor like a llama.cpp model. Check: CI
-   tests over a fake `ncm-server`; ncm-live loads the real CPU release build with `--random-weights`.
-2. `ncm-server` is obtained only from a pinned Imperium-Models release whose attestation was
-   verified when it was pinned, every asset is checked against a SHA-256 pinned in this
-   repository, unpacked under the llama.cpp extraction rules, installed only on an explicit user
-   action, and re-checked against its recorded hash at every launch. Check: CI tests for each
-   refusal.
+   tests over a fake `ncm-server`; ncm-live loads a CPU build of `ncm-server` with `--random-weights`.
+2. Until releases exist, `ncm-server` runs only from a path the user set and approved, with its
+   hash re-checked at every launch (stage 2a). Once releases exist, it is obtained only from a
+   pinned Imperium-Models release whose attestation was verified when it was pinned, every asset is
+   checked against a SHA-256 pinned in this repository, unpacked under the llama.cpp extraction
+   rules, installed only on an explicit user action, and re-checked at every launch (stage 2b).
+   Check: CI tests for each refusal.
 3. One loaded Princeps serves the Emperor and the Consul profile in the same session from one
    process. Check: a CI test with a fake server sees one launch and two profiles' calls on it.
 4. A harness profile can be selected for the root, for a subagent and for a headless run, and no
@@ -144,11 +147,36 @@ The security bar is the llama.cpp runtime's ([04](../04-models-and-routing.md#ru
 because Imperium-Models is our own repository: the pin in this repository governs, the release's
 provenance is verified when pinning, and nothing installs without the user.
 
-- **Source.** GitHub releases of `Densetsu152637/Imperium-Models`, tag `ncm-server-v<semver>`,
+**Interim: no releases yet (user decision 2026-11-26).** Imperium-Models publishes no
+`ncm-server` releases for now; the binary is built from source. Until releases exist, the only
+way to run Princeps is a **user-built binary at a path the user sets**, and the release download
+below is deferred (stage 2b).
+
+- **Decision: a user-set path, not `imperium runtime ncm build`.** Building from source needs a
+  Rust toolchain and, for CUDA, a CUDA toolkit; Imperium installs neither, and a build command
+  would run a large compile with network access on the user's machine. The user builds
+  `ncm-server` themselves (`cargo build --release -p ncm-server [--features cuda]` in
+  Imperium-Models at a commit they choose) and points Imperium at it. Revisit a build command
+  only if releases stay absent once the weights ship.
+- **Set only by the user.** `runtime.ncm.custom_path` (or *Choose ncm-server…* on the runtime
+  card, or `imperium runtime ncm use <path>`) is floored as below: agents, mod frames and paired
+  phones cannot set it, in any mode. The path must be absolute, name a regular file (no symbolic
+  link at the file), and not lie inside a project, a worktree or a session workspace (folders
+  agents write to).
+- **Hash on approval, re-checked at launch.** When the user sets the path, the card shows the
+  file's path, size, SHA-256 and `--version` output, and the user approves it; the hash and the
+  approval time go into `<data>/runtimes/ncm-server/user.json` (in the protected folder). Every
+  launch re-hashes the file through a held handle, as in the tamper checks below, and a changed
+  file is refused until the user approves the new hash. Files the binary loads beside it (NVRTC on
+  a CUDA build) are the user's toolkit's and are not hashed; this is recorded as a residual.
+- **Revocation, pins and attestations** do not apply to a user build; they start with releases.
+
+- **Source (deferred until releases exist).** GitHub releases of `Densetsu152637/Imperium-Models`, tag `ncm-server-v<semver>`,
   archives `ncm-server-<version>-<target>-<cpu|cuda>.{zip,tar.gz}` for `windows-x64` and
   `linux-x64` (CPU and CUDA) and `macos-arm64` (CPU), as the NCM session proposes (user decision
-  pending). AMD, Intel and Apple GPUs get the CPU build. There is no other source: no PATH search,
-  no package manager, no Downloads-folder candidate run by itself.
+  pending, Q1). AMD, Intel and Apple GPUs get the CPU build until Burn wgpu builds come (a later
+  user decision). Besides the interim user path there is no other source: no PATH search, no
+  package manager, no Downloads-folder candidate run by itself.
 - **Pin.** `runtimes/ncm-server.env` holds `NCM_SERVER_REF` and one `NCM_SERVER_SHA256_<target>`
   per asset, raised only by pull request, with a CODEOWNERS entry requiring the owner's review.
   CODEOWNERS binds only if branch protection on `experimental` and `main` requires code-owner
@@ -190,8 +218,8 @@ provenance is verified when pinning, and nothing installs without the user.
   earlier installed, unrevoked ref until the pinned one is installed.
 - **Tamper checks.** `<data>/runtimes/` becomes a protected folder (`protect_dir`, as for
   `<config>/mods` and `plugins`), so no agent tool or command writes there, **and** every launch
-  verifies the whole build folder against `imperium-runtime.json`. A `custom_path` build is the
-  user's and is not hashed.
+  verifies the whole build folder against `imperium-runtime.json`. A `custom_path` build is
+  checked against the hash the user approved (the interim rule above).
   - Every file in the folder, NVRTC and its builtins included, must be in the record with a
     matching SHA-256, and a file not in the record refuses the launch (it could be loaded by
     search order). A mismatch or an extra file says to reinstall.
@@ -213,7 +241,8 @@ provenance is verified when pinning, and nothing installs without the user.
   for extension installs).
 - **Build choice.** CUDA on an NVIDIA GPU, else CPU. The CUDA build loads the driver and NVRTC
   dynamically (no cuBLAS or cudart) and needs a CUDA 13.x driver (minimum unverified, Q2); NVRTC
-  and its builtins ship in the archive or a pinned companion asset. A CUDA build that fails its
+  and its builtins ship in the archive or a pinned companion asset, once NVIDIA's redistribution
+  terms are verified (before any release, Q20). A CUDA build that fails its
   first `/props` check falls back to the CPU build, as llama.cpp's builds do.
 
 ### D4. One loaded model, two profiles
@@ -341,7 +370,7 @@ Harnesses session's.
   second inside the agent loop.
 - The scored evals themselves are the research sessions' work, run through this harness.
 
-## Current state (found on `experimental` at `0cbc6570`)
+## Current state (found on `experimental` at `0cbc6570`, unchanged at `9ce002c5`)
 
 - `imperium-local`: `RuntimeBackend` with `LlamaCpp` and `Vllm` (`backend.rs`); `Format` has
   `Gguf` and `Safetensors` (`scan.rs`); the hardened installer and extractor live in `runtime.rs`;
@@ -396,9 +425,9 @@ a new `crates/imperium-local/src/{ncm.rs,extract.rs}`, `runtimes/ncm-server.env`
 ## Stages
 
 Each stage is one pull request against `experimental` with its docs, CI green before the next.
-Stages 1 and 5 need nothing from the NCM session; stage 2 needs a release (Q1, Q2, Q19); stage 3
-needs published weights (Q5) only for its last step. Stages 3 to 6 change the protocol and take
-the next free minor at merge.
+Stages 1, 2a, 4 and 5 need nothing from the NCM session. Stage 2b waits for releases (Q1, Q2,
+Q13, Q19, Q20, all deferred); stage 3's download waits for published weights (Q5, after
+training). Stages 3 to 6 change the protocol and take the next free minor at merge.
 
 ### Stage 1: `ncm` backend and format
 
@@ -417,30 +446,53 @@ the next free minor at merge.
   row; a forced tool choice on an `ncm:` row falls back to `auto`.
 - Status: pending.
 
-### Stage 2: obtaining and verifying `ncm-server`
+### Stage 2a: the user-built `ncm-server` (interim)
 
-- Objective: D3: `imperium runtime ncm install|status|remove|update|use`, `runtime.status`
-  reporting the `ncm` runtime, the shared extractor, `runtimes/ncm-server.env` with CODEOWNERS, the
-  `ncm-pin` check, `protect_dir` on `<data>/runtimes/`, the launch-time hash check, and the opt-in
-  `ncm-live` workflow (manual and nightly, CPU build only) that installs the pinned release and
+- Objective: D3's interim path: `imperium runtime ncm use|status` and *Choose ncm-server…* on the
+  runtime card, the approval with path, size, SHA-256 and `--version`, `user.json` in a protected
+  `<data>/runtimes/`, the launch-time re-hash through held handles, the floored commands and config
+  keys, and the opt-in `ncm-live` workflow (manual and nightly) that builds `ncm-server` for the
+  CPU from a commit pinned in `runtimes/ncm-server.env` (`NCM_SERVER_COMMIT`, for CI only) and
   loads it with `--random-weights`.
-- Depends on: stage 1; an Imperium-Models release with attestations (Q1, Q2, Q19).
-- Owned paths: `imperium-local` `runtime.rs` (extractor moved out), new `extract.rs`,
-  `runtime_check.rs`; `imperium-core` `state.rs`; `imperium-cli` runtime commands;
-  `.github/workflows/{ncm-pin.yml,ncm-live.yml}`, `.github/CODEOWNERS`; docs 04 and 11.
+- Depends on: stage 1.
+- Owned paths: `imperium-local` `runtime_check.rs`, new `ncm_runtime.rs`; `imperium-core`
+  `state.rs`; `imperium-cli` runtime commands; `runtimes/ncm-server.env`;
+  `.github/workflows/ncm-live.yml`; docs 04 and 11.
+- Acceptance checks (CI): a path that is relative, a symbolic link, not a regular file, or inside a
+  project, worktree or session workspace is refused; nothing runs before the user approves the
+  hash; a file changed after approval is refused at launch until approved again; on Windows,
+  replacing or deleting the approved binary while the server runs fails (handle held without write
+  or delete sharing) and the handle is released when it exits; on Linux the server is executed from
+  the hashed descriptor; `config set|unset runtime.ncm.*` and `runtime ncm use` need approval in
+  each permission mode (one test per mode), and the daemon methods refuse agent, mod-frame and
+  phone callers; agent writes into `<data>/runtimes/` are refused. ncm-live: build at the pinned
+  commit, `/health` 200, one chat completion.
+- Status: pending.
+- Handoff notes: the CUDA build is untested in CI (ncm-live builds for the CPU); a CUDA build's
+  NVRTC comes from the user's toolkit and is not hashed (residual, D3).
+
+### Stage 2b: release download and verification (deferred until releases exist)
+
+- Objective: the rest of D3: `imperium runtime ncm install|remove|update`, the shared extractor,
+  `NCM_SERVER_REF` and per-asset SHA-256 pins with CODEOWNERS, the `ncm-pin` attestation check,
+  revocation, updates, whole-folder verification with held handles, and ncm-live switched to the
+  pinned release.
+- Depends on: stage 2a; Imperium-Models releases with attestations (Q1, Q13, Q19) and NVRTC
+  redistribution verified (Q20).
+- Owned paths: `imperium-local` `runtime.rs` (extractor moved out), new `extract.rs`;
+  `imperium-cli` runtime commands; `.github/workflows/{ncm-pin.yml,ncm-live.yml}`,
+  `.github/CODEOWNERS`; docs 04 and 11.
 - Acceptance checks (CI, against a local fake GitHub API): the llama.cpp extractor tests pass
   unchanged against the moved module; an asset whose hash differs from the pin, or from GitHub's
   digest, or with no pin, is refused and nothing is replaced; hostile archives are refused; a
   revoked ref is not launched; a binary, an NVRTC library or a builtin changed after install is
   refused at launch, and so is an extra file in the build folder; on Windows, replacing or deleting
-  a verified file while the server runs fails (handles held without write or delete sharing), and
-  the handles are released when it exits; on Linux the server is executed from the hashed
-  descriptor; nothing
-  installs without the explicit call, and under `update = "ask"` a new ref waits for the user; the
-  floored commands and config keys need approval in each permission mode, one test per mode;
+  a verified file while the server runs fails, and the handles are released when it exits; nothing
+  installs without the explicit call, and under `update = "ask"` a new ref waits for the user;
+  `runtime ncm install|remove|update` need approval in each permission mode (one test per mode);
   `ncm-pin` fails on a missing attestation and on another signer (fixture). ncm-live: install,
   `/health` 200, one chat completion.
-- Status: pending.
+- Status: deferred (user decision 2026-11-26: no releases yet).
 - Handoff notes: ask the user to enable, in the repository settings, branch protection on
   `experimental` and `main` that requires code-owner review and makes `ncm-pin` a required check;
   until then the CODEOWNERS entry is advisory.
@@ -452,8 +504,10 @@ the next free minor at merge.
   downloads the set, verifies every file and offers to install `ncm-server` in the same consent;
   the Local models panel shows `ncm:` models and an `ncm-server` runtime card; the `princeps` tag
   and the `emperor` alias (D1).
-- Depends on: stages 1 and 2; Q5 for the real source (the card keeps *not yet available* until
-  then).
+- Depends on: stages 1 and 2a; Q5 for the real source (Hugging Face under the user's account,
+  Apache-2.0, pinned revision and per-file SHA-256, after training; the card keeps *not yet
+  available* until then). The card's offer to install `ncm-server` in the same consent waits for
+  stage 2b; until then it points to the runtime card's *Choose ncm-server…*.
 - Owned paths: `houseModels.ts`, `HouseModelCard.tsx`, `LocalModelsPanel.tsx`, the protocol method
   and its TS types, `imperium-engine` `model.rs`; docs 04, 07 and 12 item 44.
 - Acceptance checks (CI): catalogue parsing tests; a download whose file hash differs is deleted
@@ -510,7 +564,7 @@ the next free minor at merge.
 - Objective: D7: `profile` and `timings` in the headless JSON; ncm-live runs one headless task per
   profile on random weights; the queue-wait and prefix-eviction measurements of D4; docs updated
   and this plan marked done.
-- Depends on: stages 2 and 4.
+- Depends on: stages 2a and 4.
 - Owned paths: headless result types in `imperium-core` and `imperium-cli`; docs 03 and 12.
 - Acceptance checks: CI tests of the JSON shape; ncm-live asserts `profile.name` and
   `predicted_per_second` in the result. Handoff: tell the research sessions the flags are live.
@@ -523,6 +577,9 @@ the next free minor at merge.
 - **The CUDA path is untested in CI.** ncm-live runs the CPU build on hosted runners; the CUDA
   build, NVRTC loading and the `CUDA_PATH` dependency are checked only by a manual run on the
   user's GPU before a pin is raised. Recorded here, not hidden.
+- **The interim user build is less verified than a release.** Its hash is approved by the user and
+  re-checked, but there is no attestation, and the NVRTC it loads from the user's CUDA toolkit is
+  not hashed. Mitigation: stage 2b once releases exist.
 - **Queue contention and prefix eviction** between profiles on one slot. Mitigation: measured in
   stage 6; D4's revisit trigger.
 - **The loopback server has no authentication** today: any local process can call it. Mitigation:
@@ -531,35 +588,42 @@ the next free minor at merge.
 
 ## Answers from the NCM session (2026-11-26)
 
-From the session's branch `feat/ncm-speed-2` at `61350bc`, not yet on Imperium-Models `main`.
+From the session's branch `feat/ncm-speed-2` at `61350bc`, not yet on Imperium-Models `main`, and
+the user's decisions relayed by the NCM session the same day (marked *decided*).
 
 | Q | Answer | Effect on this plan |
 | --- | --- | --- |
-| 1 Releases | None yet; CI is CPU on Ubuntu only. Proposed: tag `ncm-server-v<semver>`, archives `ncm-server-<ver>-<target>-<cpu or cuda>`, Windows and Linux x64 CPU and CUDA, macOS arm64 CPU; the release job can build CUDA without a GPU. User decision pending. | D3 uses the proposed names. |
+| 1 Releases | *Decided:* no releases yet; Imperium builds `ncm-server` from source for now. Proposed for later: tag `ncm-server-v<semver>`, archives `ncm-server-<ver>-<target>-<cpu or cuda>`, Windows and Linux x64 CPU and CUDA, macOS arm64 CPU. Deferred. | D3 interim user-built path; stage 2b deferred. |
 | 2 CUDA | Dynamic via cudarc 0.19: driver and NVRTC only; CUDA 13.4 symbols, so a 13.x driver (minimum unverified); CubeCL reads `CUDA_PATH` for NVRTC headers; NVRTC and builtins to ship. | D2 keeps `CUDA_PATH`; D3 ships NVRTC. |
 | 3 Readiness | `--version` prints 0.0.0; no `--list-devices`, `--check` or footprint flag yet (proposed). Cache size is `ncm_model::cache_bytes_with`; `/props` reports the actual. | D2 mirrors the formula and uses `/props`. |
 | 4 Concurrency | `--parallel` splits context only; sequential; prompt-prefix reuse on the branch (default on, `--no-prefix-reuse`); no batching planned. | D4: one slot, Imperium queues. |
-| 5 Weights | None published (training paused); host and licence pending the user; tokenizer from `--tokenizer`, else beside the weights, else an error. | Stage 3 waits. |
+| 5 Weights | *Decided:* Hugging Face under the user's account, Apache-2.0, pinned revisions and per-file SHA-256, only after training; file names to be decided. Tokenizer from `--tokenizer`, else beside the weights, else an error. | Stage 3's download waits for training. |
 | 6 Format | `ncm-safetensors-v1` is stable; the header also has `ncm_config` and `ncm_quant`; `ncm_model_id` and `ncm_model_version` proposed; exact-architecture loading. | D1. |
 | 7 Quantisation | Separate quantised files, or dense plus `--quant q8` or `q4` at load. | D2: by file layout; `--quant` via `extra_args`. |
 | 8 Flags | `--speculate` off by default (leave off); 8-bit indexer keys on by default. | D2. |
 | 9 Context | 32k is fine (tens of MiB); the first request compiles kernels in 0.4 to 0.65 s; load time unmeasured. | D4 default 32k. |
 | 10 Tools | `tool_choice` only `none` or `auto`; no `response_format` or schema; no stop strings; `reasoning_content` implemented, show it. | D2 copes; reasoning shown. |
-| 11 GPUs | CPU and CUDA only; AMD, Intel and Apple CPU-only for now (user decision pending). | D3. |
+| 11 GPUs | *Decided:* CUDA and CPU now; AMD, Intel and Apple GPUs later through Burn wgpu. | D3: CPU build on those GPUs for now. |
 | 12 Network, env | No outbound network; binds `--host:--port`, default `127.0.0.1`; reads `CUBECL_*`, `BENCH_*` and `CUDA_PATH`. | D2 allowlist with `CUDA_PATH`. |
-| 13 Provenance | `SHA256SUMS` and attestations planned with releases (user decision pending). | D3 makes attestation mandatory. |
+| 13 Provenance | `SHA256SUMS` and attestations planned with releases; deferred with them. | D3 makes attestation mandatory (stage 2b). |
+| 20 Licences | *Decided:* the Imperium-Models repository and `ncm-server` are Apache-2.0. NVRTC redistribution is to be verified before any release. | D3 ships NVRTC only once verified. |
+| Queue | *Decided:* Q2, Q3, Q6, Q9 and Q14 to Q18 are queued as `ncm-server` work after the NCM session's current benchmark. | Stage 1 uses the fallbacks in D1 and D2 until they land. |
 
 ## Open questions for the NCM session
 
+Status: Q1, Q13 and Q19 are **deferred** until releases exist; Q2, Q3, Q6, Q9 and Q14 to Q18 are
+**queued** as `ncm-server` work after the NCM session's current benchmark; Q5 and Q11 are decided
+(answers table); Q20 is half decided (Apache-2.0) with NVRTC redistribution still to verify.
+
 Still open from the first round (numbers as in the answers table):
 
-- **Q1, Q13. Release decision.** Confirm the tag scheme, targets, and that releases ship
-  `SHA256SUMS` and attestations, once the user decides.
+- **Q1, Q13 (deferred). Release decision.** Confirm the tag scheme, targets, and that releases ship
+  `SHA256SUMS` and attestations, once releases are scheduled.
 - **Q2. CUDA minimum.** The minimum NVIDIA driver, and whether NVRTC headers ship so `CUDA_PATH` is
   no longer needed.
 - **Q3. Introspection.** A real `--version` (version, commit, features), `--list-devices` or
   `--check`, and a `--print-footprint`.
-- **Q5. Weights.** Host, licence, revision, file names and per-file SHA-256.
+- **Q5 (decided except file names).** The weight and tokenizer file names, once training ends.
 - **Q6. Header fields.** Add `ncm_model_id` and `ncm_model_version`, and say which server versions
   load which weight files.
 - **Q9. Load time.** How long a restart with a larger cache takes.
@@ -580,11 +644,12 @@ New, from the plan review:
 - **Q18. Autotune cache.** Does CubeCL write an autotune or kernel cache at run time, and where? It
   should go under a folder Imperium passes (inside `<data>`), not the user's home or the binary's
   folder, and must not be trusted across versions.
-- **Q19. Release integrity.** Are `ncm-server-v*` tags protected so only the release workflow can
+- **Q19 (deferred). Release integrity.** Are `ncm-server-v*` tags protected so only the release workflow can
   create them, are releases made only by CI, and which workflow path should Imperium pin as the
   attestation signer?
-- **Q20. Licences.** The licence of the `ncm-server` binary and its bundled third-party code, and
-  whether NVRTC and its builtins may be redistributed in the archive under NVIDIA's terms.
+- **Q20 (NVRTC part open).** The binary and repository are Apache-2.0; still to verify: the
+  licences of bundled third-party code, and whether NVRTC and its builtins may be redistributed in
+  the archive under NVIDIA's terms, before any release.
 
 ## Questions for the Harnesses session (for later relay)
 

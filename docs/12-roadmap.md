@@ -942,9 +942,10 @@ and `environments.agent_update` (protocol 0.28)
     models (user decision 2026-11-26): there is one local model, Princeps (`princeps-ncm-250m`,
     a Next Concept Model, and `princeps-tok-250m`, its token baseline), served by `ncm-server`
     from Imperium-Models, and Emperor (the root agent) and Consul (the critic) become two harness
-    profiles over it. The app work: an `ncm:` runtime backend; `ncm-server` installed only on the
-    user's action from a pinned release, checked against SHA-256s pinned in this repository and
-    unpacked under the llama.cpp extraction rules; Princeps in the house-model catalogue in place
+    profiles over it. The app work: an `ncm:` runtime backend; for now (no releases yet) a
+    user-built `ncm-server` at a path only the user sets, its hash approved and re-checked at each
+    launch, and later one installed only on the user's action from a pinned release, checked
+    against SHA-256s pinned in this repository and unpacked under the llama.cpp extraction rules; Princeps in the house-model catalogue in place
     of item 44's two entries; one loaded model serving both profiles; harness profiles as item
     58's first slice; item 64's rejection count and escalation hook with no workflow bound; and
     `--profile` with server timings in headless evals. The harness content belongs to the
