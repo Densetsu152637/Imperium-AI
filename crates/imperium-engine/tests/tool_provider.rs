@@ -214,7 +214,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
         .map(|tool| tool["function"]["name"].as_str().unwrap())
         .collect();
     assert_eq!(
-        names[names.len() - 11..],
+        names[names.len() - 13..],
         [
             "update_plan",
             "note_add",
@@ -226,7 +226,9 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
             "resume_agent",
             "keep_as_knowledge",
             "delegate_chunks",
-            "ask_user"
+            "ask_user",
+            "list_knowledge_agents",
+            "ask_agent"
         ]
     );
     let system = first["messages"][0]["content"].as_str().unwrap();

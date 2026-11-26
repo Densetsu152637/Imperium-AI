@@ -194,7 +194,9 @@ path under `.git` is flagged in `notes`, because it can change without voiding t
 challenge and the approval name the folder the same way: a name that is exactly an entry of
 `<config>/plugins` is that folder (byte for byte, never trimmed or case-folded, never a link), and
 another name is looked up as a plugin name or id; the hash and digest must still match. The content
-hash opens each file without following a link, and a plugin folder that is itself a link or junction
+hash refuses a folder that holds a link anywhere (a link is never followed), and opens each file
+with the operating system's no-follow flag (`O_NOFOLLOW` on Unix), which guards the last part of the
+path against a swap for a link after the walk; a plugin folder that is itself a link or junction
 is refused rather than approved.
 
 **Installing (protocol 0.51; not a paired phone).** `plugins.install {id, sha256, revision?}`
@@ -504,14 +506,18 @@ when an agent first uses it, keeping context and start-up cost low.
   second call says the skill is already loaded. Each first load is journalled as
   `extension_loaded` (`kind: skill`). A compaction that summarises the conversation forgets
   the agent's loaded skills, so they can be loaded again.
-- **Plugins.** `activate_plugin` (offered while some plugin is inactive) starts the plugin's
-  MCP servers for the session; their tools are offered from the agent's next model call, as
+- **Plugins.** `activate_plugin` (offered for the whole session when some plugin is inactive at
+  its start) starts the plugin's MCP servers for the session; their tools are offered from the
+  agent's next model call, appended to the end of the list, as
   `mcp__<plugin>_<server>__<tool>`, to every agent of the session. Activation is journalled
   as `extension_loaded` (`kind: plugin`, with the tools it added). A plugin whose servers all
-  fail is not activated and can be tried again. With `harness.tool_loading` on the tool list
-  does not change: `activate_plugin` stays offered for the whole session (it answers "already
-  active" once every plugin is), and an activated plugin's tools join the agent's universe at
-  once but are found with `tool_search` and run with `call_tool` instead of appearing in the list
+  fail is not activated and can be tried again. `activate_plugin` stays offered for the whole
+  session (it answers "already active" once every plugin is). Whether it is offered is decided
+  once, when the session first builds its tool list, so a session resumed after every plugin is
+  active lists no `activate_plugin` and its first request misses the provider's prompt cache
+  once. With `harness.tool_loading` on the tool list does not change at all, and an activated
+  plugin's tools join the agent's universe at once but are found with `tool_search` and run with
+  `call_tool` instead of appearing in the list
   ([reactive tool loading](03-agent-engine.md#reactive-tool-loading-implemented)).
 - **Resume.** A resumed session replays its journal: plugins it had activated start again
   before the first turn, and skills an agent had loaded (since its last compaction) are not
@@ -621,8 +627,8 @@ Hook events: `session.start`, `session.end`, `prompt.submit`, `turn.start`, `tur
 `model.before`, `model.after`, `compact.before`, `notification`.
 
 - A hook is a command (any executable receiving JSON on stdin) or an HTTP endpoint.
-- `tool.before` and `prompt.submit` hooks can allow, deny, or rewrite
-  ([below](#rewriting-hooks-implemented)); others observe.
+- `tool.before` and `prompt.submit` hooks can allow, deny, or rewrite, and `tool.after` hooks
+  can replace the tool's result ([below](#rewriting-hooks-implemented)); others observe.
 - Hooks run with timeouts. **They are not confined by the isolation tier**: a command hook is
   started through `imperium_tools::shell` with the daemon's whole environment (plus
   `IMPERIUM_PROJECT_DIR` and `CLAUDE_PROJECT_DIR`), as a process of the user, and an HTTP hook is
@@ -673,7 +679,7 @@ tool events also get `tool_name`, and a hook's `matcher` filters tool events and
 | `turn.start` | `session_id`, `prompt` (after commands and `prompt.submit` hooks) |
 | `turn.end` | `session_id` (after the turn's messages are saved) |
 | `tool.before` | `agent_id`, `tool_input` (can block) |
-| `tool.after` | `agent_id`, `tool_input`, `ok`, `tool_output` |
+| `tool.after` | `agent_id`, `tool_input`, `ok`, `tool_output` (cut to 8,000 characters; can replace the result) |
 | `permission.requested` | `agent_id`, `tool`, `summary` (the request is shown to the user at the same time) |
 | `agent.spawn` | the new subagent's task details |
 | `agent.complete` | `task_id`, `ok`, `report` |
@@ -905,6 +911,9 @@ approved with `--yes`, or installed by an agent, stays opt-in in Settings → Mo
 
 ### Rewriting hooks (implemented)
 
+A `tool.after` hook may answer with `{"updated_output": "..."}` to replace the result the model
+reads (see [replacing a result](#replacing-a-tool-result) below).
+
 A `tool.before` hook may answer with `{"updated_input": {...}}` (an object: the tool's new
 arguments, under the schema's names, as the hook received them in `tool_input`), and a
 `prompt.submit` hook with `{"updated_prompt": "..."}`; a command prints it as JSON on stdout
@@ -941,6 +950,35 @@ Several hooks rewrite in order, each seeing the last one's result. The rules:
   `<config>/plugins`, those folders and `<config>/mods` ask first (the folders are guarded by
   their resolved path as well as the one given, so a link or junction does not escape it);
   commands are read, not path-checked, so this is a guard against mistakes, not a boundary.
+
+#### Replacing a tool result
+
+A `tool.after` hook may answer with `{"updated_output": "..."}` (a string) in the same way, and
+the model reads that in place of what the tool returned (a redacted or summarised result, say).
+The call has already run, so nothing is re-checked: the replacement changes only the text the
+model, the transcript and the tool's finish event carry. The rules:
+
+- **Bounded.** A replacement is at most 64 KiB (`MAX_OUTPUT_REPLACEMENT_BYTES`). A longer one is
+  **refused, not cut**: the result stays as the tool returned it and the refusal is logged. A
+  blank or non-string `updated_output` is no replacement. (An HTTP hook's whole answer is also
+  capped at 64 KiB.)
+- **Chained.** Several hooks replace in order, each seeing the last one's result as its
+  `tool_output`. The hooks see the result cut to 8,000 characters, so a hook cannot rely on
+  seeing a long result whole.
+- **Failure is kept.** A replacement changes the text only: a result that failed stays failed
+  (`ok` is false in the finish event and the transcript) with the replacement as its text.
+- **Large replacements are saved like any result.** The replacement then goes through the same
+  check as a tool's own output (`harness.result_spill`, docs/03), so one past the agent's
+  threshold is saved to a file and the model sees its preview and the path.
+- **An echo is no replacement.** A hook that answers with the `tool_output` it was shown (cut
+  to 8,000 characters) changes nothing; the full result is kept, not the cut copy.
+- **Journalled.** A replacement adds a transcript notice (`A hook replaced the result of
+  <tool>`) with the result before and after, each cut to 1,000 characters, like a rewritten call.
+- **Trust.** The same as for rewrites: only hooks from the user's own configuration may replace;
+  a plugin an agent installed may observe and never replace (its answer is ignored and logged),
+  and `updated_output` from any other event is ignored.
+- A hook that answers nothing, fails or times out leaves the result as it was. A `tool.after`
+  hook cannot block: the call has run.
 
 ### Trusted main-context mods (trust implemented, loader not built)
 

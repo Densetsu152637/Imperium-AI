@@ -299,8 +299,10 @@ async fn skills_and_plugins_load_on_first_use_and_after_a_restart() {
     assert_eq!((requests[1].starts, requests[2].starts), (0, 0));
     assert_eq!(requests[3].starts, 1);
     assert!(requests[3].tools.iter().any(|tool| tool == LOOKUP));
+    // The entry stays after the last plugin is active, so the list only gained the tools
+    // (appended): it answers "already active" instead of leaving.
     assert!(
-        !requests[3]
+        requests[3]
             .tools
             .iter()
             .any(|tool| tool == "activate_plugin")

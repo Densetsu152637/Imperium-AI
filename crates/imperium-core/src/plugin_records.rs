@@ -350,17 +350,12 @@ fn walk(root: &Path, prefix: &str, stamps: &mut Vec<Stamp>) -> Result<Option<Str
 fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
+        // `O_NOFOLLOW` from rustix on every Unix target, never a hard-coded per-OS value.
         #[allow(clippy::cast_possible_wrap)]
         options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
-    }
-    #[cfg(all(unix, not(target_os = "linux")))]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // `O_NOFOLLOW` on macOS and the BSDs.
-        options.custom_flags(0x0100);
     }
     #[cfg(windows)]
     {
@@ -1372,5 +1367,19 @@ mod tests {
         // `hash_files` is handed a list that names the link, as when a file is swapped after the walk.
         let stamps = vec![("link.txt".to_string(), 6, None)];
         assert!(hash_files(dir.path(), &stamps).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_no_follow_open_refuses_a_dangling_link_and_a_link_to_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let dangling = dir.path().join("dangling");
+        std::os::unix::fs::symlink(dir.path().join("missing"), &dangling).unwrap();
+        assert!(open_nofollow(&dangling).is_err());
+        let folder = dir.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        let to_folder = dir.path().join("to-folder");
+        std::os::unix::fs::symlink(&folder, &to_folder).unwrap();
+        assert!(open_nofollow(&to_folder).is_err());
     }
 }

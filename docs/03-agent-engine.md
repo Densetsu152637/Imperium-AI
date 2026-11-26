@@ -109,8 +109,10 @@ loading](#reactive-tool-loading-implemented).
 **Following the model.** `auto` follows the root's model, which can change in a session
 (escalating to a hosted model, or switching to a local one): the tools offered are chosen each
 turn, and the harness paragraph of the system prompt is rewritten when the model is switched,
-so the prompt never describes tools that are not offered (the labelled parts of the system
-prompt, and with them the context breakdown, move with the edit).
+so the prompt never describes tools that are not offered. The paragraph is in the swappable
+tail at the very end of the system message
+([stable prompt prefix](#stable-prompt-prefix-implemented)), so a switch changes only the end of the prompt (the labelled parts, and with them the context
+breakdown, move with the edit).
 
 **When they are on.** Each of `dereference`, `state`, `hints` and `clarify` is `auto`, `on` or
 `off`. `auto` (the default) turns the aid on only when the root agent's model runs on this
@@ -354,8 +356,42 @@ the inner tool is not.
 
 **The loader sentence** of the system prompt ("Tools that are not in your tool list are used in
 two steps: ...") is its own region, present for every agent offered the loader and swapped when
-the mode follows a model switch. A context breakdown counts each offered tool under its own
+the mode follows a model switch; it sits in the swappable tail at the end of the system message,
+after the harness paragraph. A context breakdown counts each offered tool under its own
 category and the schemas inside a `tool_search` result under their tools' source categories.
+
+### Stable prompt prefix (implemented)
+
+Roadmap R2.3. A provider's prompt cache and a local runtime's slot reuse the longest prefix of
+the system message and the tool list that a request shares with the one before, so within a
+session both only grow at the end. There is no clock or per-call text in the system prompt;
+the rest is by construction:
+
+- **The swappable tail.** What depends on the model (the harness paragraph, then the loader
+  sentence) is the last part of the system message, after the base prompt, the indexes, the
+  memory and tool instructions and the project's instructions. A model switch that turns the
+  harness aids or the loader on or off adds or takes off only that tail
+  (`Agent::set_tail`); nothing before it moves. A named agent's text is added before the tail.
+  The paragraph used to follow the response style in the middle of the base part.
+- **Stable entries (loading off).** The tool list a hosted agent is offered does not gain or lose
+  a tool in a session. `activate_plugin` is listed for the whole session when the agent could
+  activate a plugin at its start (decided once; it answers "already active" after the last
+  one), and `list_knowledge_agents` and `ask_agent` are listed to every agent that may ask
+  whenever `knowledge.enabled`, not once the first knowledge agent exists; before that they say
+  "No knowledge agents in this session." (and `ask_agent` names none to ask), and they refuse as
+  before for an agent that may not ask. With loading on the offered list was already fixed, and
+  these two stay out of it until a knowledge agent exists (they are searchable then).
+- **Outside tools last.** MCP servers' tools, then activated plugins' tools, are the end of the
+  list, after every built-in and delegation tool, so a server that lists more tools and a plugin
+  that is activated append. A server that drops or renames a tool, or one that connects after
+  a plugin was activated, still changes the list from that tool on (it is not tracked in the
+  order tools arrived), as do a model switch that turns `request_clarification` or
+  `update_state` on or off and a permission change that hides a tool.
+- **Test.** `the_system_prompt_and_the_tool_list_only_grow_across_a_sessions_requests`
+  (`tests/reactive_tools.rs`) runs a hosted session through a plugin activation, an MCP server
+  listing another tool and a kept knowledge agent, and asserts that each root request's system
+  prompt and tool array start with the previous request's;
+  `a_swap_changes_only_the_end_of_the_prompt` covers the tail.
 
 **In evaluations** `imperium run` sets the mode with `--flag tool_loading` and reports what the
 loader did; see [harness variants](#harness-variants) and the output keys under
@@ -1250,6 +1286,13 @@ their recommended answers. The record lists both (`permission_requests`, `questi
 folder hashes the same as `--print-prompt`) and the tool schemas of the first root request, after
 the variant's edits. It changes when loading is on; with `--flag tool_loading=off` it differs from
 runs made before reactive loading only by the knowledge-source sentence of the base prompt.
+Stable prompt prefix (R2.3) changed it again: with loading off the root's list gains
+`list_knowledge_agents` and `ask_agent` (when `knowledge.enabled`) and lists MCP servers' and
+plugins' tools last; with the harness aids or the loader on the system prompt has those
+paragraphs at its end. Evals baselined before R2.3 need a new baseline.
+The `edit_file` schema change (an optional `replace_all` boolean, a changed description) changes
+it once more, on top of the tool-list change of R2.3 that has already landed: eval results
+recorded before it do not compare directly.
 
 `tool_loading` (additive; null before the root's first request) reports how the root was offered
 its tools. Names are the ones the model saw (after the variant's renames); `call` is the 1-based

@@ -1,0 +1,2 @@
+// expect: lex-error L0005 at 2:3
+"a}b"

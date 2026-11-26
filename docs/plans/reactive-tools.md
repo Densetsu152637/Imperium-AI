@@ -293,7 +293,7 @@ the real tool. Code that reads tool calls back out of messages goes through one 
 
 On mode refuses calls that off mode runs today, because step 4 checks the universe and today's
 dispatch does not check what was offered: `ask_agent` and `list_knowledge_agents` where `can_ask`
-is false or no knowledge agent exists yet, harness tools while their aid is off for the current
+is false, harness tools while their aid is off for the current
 model (after a switch), a tool hidden by a named agent's list that today's arms would still run,
 and a variant's dropped tool. Stage 2 lists each with a test, and an off-mode regression test
 shows each still runs when loading is off (for example `ask_agent` with `can_ask` false).
@@ -330,9 +330,8 @@ shows each still runs when loading is off (for example `ask_agent` with `can_ask
 - **The loader sentence.** In on mode the system prompt carries one sentence: "Tools that are not
   in your tool list are used in two steps: tool_search finds them and shows their parameters, and
   call_tool runs one by name with those arguments." It is its own swappable region of the system
-  prompt (a `loader_text` beside `harness_text`, placed with the same `swap_harness_text` and
-  `shift_spans` mechanics, after the base part), independent of attendance and of
-  `can_delegate`, so unattended roots and subagents get it too; it is swapped when the mode
+  prompt (a `loader_text` beside `harness_text`, placed at the end of the system
+  message), independent of attendance and of `can_delegate`, so unattended roots and subagents get it too; it is swapped when the mode
   changes with the model. The base prompt's mentions of `spawn_agent`, `update_plan` and the rest
   stay; they now name tools reached through `call_tool`.
 

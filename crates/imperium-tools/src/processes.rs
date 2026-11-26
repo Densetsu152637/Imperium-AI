@@ -554,6 +554,30 @@ impl Processes {
         finished
     }
 
+    /// Releases every background command `owner` started, once that agent has finished: the
+    /// ones still running are stopped (with everything they started; a finished agent can no
+    /// longer read or stop them, and nothing may outlive its owner), and every one of its
+    /// entries, ended or not, is removed from the table. Returns how many entries were
+    /// released. Commands of other agents, and unowned ones, are untouched.
+    pub fn release_owner(&self, owner: &str) -> usize {
+        let mut table = lock(&self.0);
+        let mut killers = Vec::new();
+        let before = table.entries.len();
+        table.entries.retain_mut(|entry| {
+            if entry.owner.as_deref() != Some(owner) {
+                return true;
+            }
+            if entry.active() {
+                killers.push(entry.stop());
+            }
+            false
+        });
+        let released = before - table.entries.len();
+        drop(table);
+        kill_all(killers);
+        released
+    }
+
     /// How many commands are still running, counting those that exited but left processes
     /// they started running.
     pub fn running(&self) -> usize {
@@ -1035,6 +1059,30 @@ mod tests {
             roots.iter().map(|f| f.id.clone()).collect::<Vec<_>>(),
             [a, c]
         );
+    }
+
+    #[tokio::test]
+    async fn releasing_an_owner_stops_and_removes_only_its_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let processes = workspace.processes().clone();
+        let sub = workspace.with_owner("sub1");
+        let running = processes.start(&sub, slow_printer()).unwrap();
+        let done = processes.start(&sub, "echo done").unwrap();
+        let other = processes
+            .start(&workspace.with_owner("sub2"), slow_printer())
+            .unwrap();
+        wait_for_output(&processes, &running, "started").await;
+        wait_finished(&processes, &done).await;
+        assert_eq!(processes.release_owner("sub1"), 2);
+        // Both of the subagent's entries are gone; the running one was stopped, not leaked.
+        assert!(processes.output(&running, None).is_err());
+        assert!(processes.ended(&done).is_err());
+        assert_eq!(processes.running(), 1);
+        // Another agent's command is untouched, and a second release finds nothing.
+        assert!(processes.ended(&other).unwrap().is_none());
+        assert_eq!(processes.release_owner("sub1"), 0);
+        processes.stop_all();
     }
 
     #[tokio::test]

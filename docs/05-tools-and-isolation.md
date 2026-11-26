@@ -4,7 +4,7 @@
 
 | Tool group  | Tools                                                     | Notes                                            |
 | ----------- | --------------------------------------------------------- | ------------------------------------------------ |
-| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match unique edits; reads numbered, capped at 2,000 lines and a window-sized character budget by default and paged with `offset`/`limit`; `list_dir` capped at 500 entries and paged with `offset`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
+| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match edits (`old_string` must be unique, or `replace_all` changes every occurrence); reads numbered, capped at 2,000 lines and a window-sized character budget by default and paged with `offset`/`limit`; `list_dir` capped at 500 entries and paged with `offset`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
 | Execution   | `run_command`, `command_output`, `command_stop` (implemented) | Runs in the project root via `cmd /C` (the line passed verbatim) or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr; `background: true` [returns a process id at once](#background-commands-implemented) |
 | Web         | `web.search`, `web.fetch`                                 | Search providers: SearXNG (self-hosted), Brave, Tavily, Kagi, Exa; pluggable. Pages are [cached](#fetch-cache-and-robotstxt-implemented) and `robots.txt` is honoured |
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
@@ -311,8 +311,12 @@ the block or fake one. Each notice is also emitted as a `notice` event, so clien
 Several commands that end between two calls each get a notice, in start order. Each process
 remembers the agent that started it (the workspace an agent's tools run in carries its id): the
 root is told of its own commands and of any no agent owns, a subagent of its own, at its own
-safe point. A subagent's command that ends after the subagent has reported is not reported (the
-root can still read it with `command_output`). Not reported: a command the agent stopped with
+safe point. When a subagent finishes, its background commands are released: the ones still
+running are stopped (with everything they started; they are not handed to the root, which was never
+told of them) and all its entries leave the table, so a subagent's command never lingers or
+outlives it. A subagent that finished and is later resumed under the same id starts without them:
+the ids (`p1`, ...) it was given before are gone, and it starts commands again if it needs them.
+Not reported: a command the agent stopped with
 `command_stop`, one killed because the session stopped, and one whose end the agent already read
 through `command_output`. A finished command whose notice is still waiting is not dropped from
 the table to make room (unless the table has doubled). Nothing wakes an idle session: a command
@@ -378,6 +382,13 @@ without them. Server pings are answered; roots and elicitation requests are refu
 sampling is refused unless enabled (below). A remote server that wants an OAuth sign-in is
 reported as needing one, and the user signs in to it on purpose
 ([OAuth for remote servers](#oauth-for-remote-servers-implemented)).
+
+**Planned (roadmap item 62, stage 1 of the [CAS plan](plans/cas-mcp.md) in progress):** a built-in
+computer algebra server, `imperium_cas`, backed by SymPy and started per session like any stdio
+server. Agent text never reaches `sympify`, `parse_expr` or `eval`: a hand-written parser reads a
+small infix language and a size guard refuses runaway numbers before anything is computed. Only
+that front end exists so far, as the `sidecars/cas/` project and its `python-cas` CI job; the
+server, its sandbox and its setup are later stages of the plan.
 
 ### Resources, prompts, and sampling (implemented)
 
@@ -1093,14 +1104,20 @@ as binary, and a folder is refused with a pointer to `list_dir`, in a remote wor
 A read without a `limit` returns at most 2,000 lines and also stops at a character budget sized
 from the calling agent's context window: about an eighth of the window in tokens at 4 characters
 a token (at least 8,000 characters, at most 100,000), or 32,000 characters when the window is not
-known. The engine passes the window to the call (`Invocation::execute_in`); it is not a model-visible
-parameter. The budget ends the read on a whole line, and a note gives the exact offset to continue
-(`[lines 1-19 of 400; stopped at the 8000-character read budget; use offset=20 to read more]`); a
-read that stops short for any reason says the same. A first line past the budget is shown cut, with
-a note to use `grep` for the part needed. A read with an explicit `limit` keeps the 100,000-character
-ceiling (line numbers and notes included). The defaults apply to every model, hosted ones too, and to
-calls through the MCP bridge and the Claude harness (a caller that cannot give the window gets 32,000 characters). `list_dir` returns at most 500 entries
-per call, sorted, with a note (`use offset=500 to see more`); its optional `offset` skips entries. Edits stay UTF-8. `tool.before`
+known. A hosted model with no window in the model table is assumed to have a large one, so its read
+gets the 100,000-character ceiling; a local model with an unknown window keeps 32,000. The engine
+passes the window to the call (`Invocation::execute_in`); it is not a model-visible parameter. The
+budget ends the read on a whole line, and a note gives the exact offset to continue (`[lines 1-19 of
+400; stopped at the 8000-character read budget; use offset=20 to read more]`); a read that stops
+short for any reason says the same. A first line past the budget is shown cut, with a note to use
+`grep` for the part needed. A read with an explicit `limit` keeps the 100,000-character ceiling
+(line numbers and notes included). The defaults apply to every model and to calls through the MCP
+bridge and the Claude harness (a caller that cannot give the window gets 32,000 characters).
+`list_dir` returns at most 500 entries per call, sorted, with a note (`use offset=500 to see more`);
+its optional `offset` skips entries. Edits stay UTF-8. `edit_file` takes an optional `replace_all`
+(boolean, default false; `"true"` and `"false"` in quotes are read as the flag): false keeps the exact, unique `old_string` rule (none or several matches
+is an error that names `replace_all`); true replaces every occurrence, says how many, and still
+refuses no match. `tool.before`
 and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
 (`path`, `offset`, `limit`) whatever spelling the model used. Each reading is checked like any
 other path, and the first that lands inside a folder or grant is used. The OS tier makes every

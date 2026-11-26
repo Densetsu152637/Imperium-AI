@@ -1,0 +1,2 @@
+// expect: lex-error L0003 at 2:2
+"\u{110000}"

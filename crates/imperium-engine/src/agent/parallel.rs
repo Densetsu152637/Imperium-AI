@@ -133,7 +133,7 @@ impl Agent {
         if stopped || !self.shared.snapshot_ready().await {
             return covered;
         }
-        let window = self.expected_window();
+        let window = self.tool_window();
         let jobs: Vec<ReadJob> = run
             .iter()
             .map(|(_, invocation)| {
@@ -178,6 +178,13 @@ impl Agent {
         lock(&self.prefetched).remove(id);
     }
 
+    /// The window tools size their output against: the model's, and for a hosted model whose
+    /// window is unknown a large one, not a local model's.
+    pub(super) fn tool_window(&self) -> Option<u64> {
+        self.expected_window()
+            .or_else(|| (!self.model.local).then_some(imperium_tools::HOSTED_UNKNOWN_WINDOW_TOKENS))
+    }
+
     /// What `invocation` returns for the call `call`: the output the run kept for it, or its
     /// own execution. `started` is when the call was announced; the kept read's duration is
     /// counted back from it so events report how long the read really took.
@@ -194,7 +201,7 @@ impl Agent {
             }
             _ => (
                 invocation
-                    .execute_in(&self.workspace, self.expected_window())
+                    .execute_in(&self.workspace, self.tool_window())
                     .await,
                 started,
             ),
