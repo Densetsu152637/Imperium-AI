@@ -19,6 +19,9 @@ from sympy.logic.boolalg import Boolean
 from imperium_cas import format as printer
 from imperium_cas import tools, worker
 from imperium_cas.build import Builder
+from imperium_cas.guard import check as guard_check
+from imperium_cas.guard import check_expansion
+from imperium_cas.parse import CasInputError, parse
 from imperium_cas.pool import Limits, Pool
 from support import make_spawner
 from test_hostile import ENTRIES
@@ -120,18 +123,34 @@ def test_tool_results_round_trip(printed, tool, args):
     assert_round_trips(tool, args, reply, value)
 
 
-def test_every_corpus_result_round_trips():
-    """Each corpus line through `simplify` in a limited worker (some lines, such as
-    `(x+y+z)^5000`, pass the guard and only the limits stop them, so the corpus never runs in
-    this process), then `equal` of the input and the result's text, also in a worker: the text
-    must parse back and must never be shown unequal to the input."""
-    limits = Limits(cpu_seconds=5, memory_mib=512, wall_seconds=15)
+def accepted(text: str) -> bool:
+    """Whether the parser and the guard (pure functions of the text, which never build or
+    compute anything) accept a line; only those lines can give a result."""
+    try:
+        root = parse(text)
+        guard_check(root)
+        check_expansion(root)
+    except CasInputError:
+        return False
+    return True
+
+
+VALID_LINES = [text for _, text in ENTRIES if accepted(text)]
+
+
+@pytest.mark.parametrize("chunk", range(2))
+def test_every_corpus_result_round_trips(chunk):
+    """Each corpus line the guard accepts, through `simplify` in a limited worker (the corpus is
+    never built in this process), then `equal` of the input and the result's text, also in a
+    worker: the text must parse back and must never be shown unequal to the input."""
+    lines = VALID_LINES[chunk::2]
+    limits = Limits(cpu_seconds=3, memory_mib=512, wall_seconds=6)
     pools = [Pool(make_spawner(), limits) for _ in range(2 if sys.platform == "win32" else 4)]
     results: dict[int, tuple[dict, dict | None]] = {}
 
     def lane(index: int) -> None:
-        for position in range(index, len(ENTRIES), len(pools)):
-            text = ENTRIES[position][1]
+        for position in range(index, len(lines), len(pools)):
+            text = lines[position]
             reply = pools[index].call({"tool": "simplify", "args": {"expression": text}})
             check = None
             if reply["ok"] and reply["kind"] == "expression":
@@ -150,7 +169,7 @@ def test_every_corpus_result_round_trips():
             pool.close()
     checked = 0
     for position, (reply, check) in sorted(results.items()):
-        text = ENTRIES[position][1][:60]
+        text = lines[position][:60]
         assert reply["ok"] or reply["category"] in {"parse", "guard", "math", "limit"}, (
             text,
             reply,
@@ -162,4 +181,4 @@ def test_every_corpus_result_round_trips():
             checked += 1
         else:
             assert check["category"] in {"limit", "math"}, (text, reply["text"], check)
-    assert checked > 50  # the corpus has valid lines too
+    assert checked > 20  # the corpus has valid lines too

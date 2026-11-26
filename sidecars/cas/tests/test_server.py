@@ -238,7 +238,7 @@ def test_the_hostile_corpus_through_tools_call(pools, chunk):
     """No line is `refused` (the hook saw an event outside the allow-list) or `crashed`."""
     calls = corpus_calls()[chunk::CORPUS_CHUNKS]
     servers = [
-        make_server(pools(cpu_seconds=5, memory_mib=512, wall_seconds=15), "landlock")
+        make_server(pools(cpu_seconds=3, memory_mib=512, wall_seconds=6), "landlock")
         for _ in range(PARALLEL)
     ]
     results: list = [None] * len(calls)
