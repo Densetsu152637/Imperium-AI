@@ -76,4 +76,5 @@ wildcards = "allow"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# THROWAWAY SPIKE (crates/imperium-ratio-host): Ratio is not on crates.io yet.
+allow-git = ["https://github.com/Densetsu152637/Ratio"]

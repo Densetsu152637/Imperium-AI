@@ -1,0 +1,24 @@
+[package]
+name = "imperium-ratio-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "THROWAWAY SPIKE, never merged: Imperium's RatioHost against Ratio's stage 11a Host trait"
+
+[dependencies]
+imperium-api = { version = "0.2.0", path = "../imperium-api" }
+imperium-memory = { version = "0.2.0", path = "../imperium-memory" }
+imperium-models = { version = "0.2.0", path = "../imperium-models" }
+imperium-policy = { version = "0.2.0", path = "../imperium-policy" }
+# Ratio stage 11a, final candidate (feat/wt-s11a-host, HOST_API_VERSION 1). Not on crates.io.
+ratio-lang = { git = "https://github.com/Densetsu152637/Ratio", rev = "7e73f9dcc21ce14f41c119a92e163df364e27439", features = ["host-tests"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
+# Tapes are written as `.jsonl.zst` on Imperium's side.
+zstd = "0.13"
+
+[lints]
+workspace = true
