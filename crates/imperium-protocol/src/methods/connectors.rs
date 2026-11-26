@@ -141,6 +141,10 @@ pub struct SkillInfo {
     /// Where it was installed from, when an agent installed it (`install_extension`).
     #[serde(default)]
     pub installed_from: Option<InstallSource>,
+    /// The load-time gate withholds this skill, and why: an agent installed it and the user has
+    /// not approved it in the desktop app. It is listed but no session loads it.
+    #[serde(default)]
+    pub withheld_reason: Option<String>,
 }
 
 /// A named subagent defined by a Markdown file in the user's `agents/` folder or a plugin: the

@@ -12,4 +12,9 @@ origin: string, dir: string,
 /**
  * Where it was installed from, when an agent installed it (`install_extension`).
  */
-installed_from: InstallSource | null, };
+installed_from: InstallSource | null, 
+/**
+ * The load-time gate withholds this skill, and why: an agent installed it and the user has
+ * not approved it in the desktop app. It is listed but no session loads it.
+ */
+withheld_reason: string | null, };

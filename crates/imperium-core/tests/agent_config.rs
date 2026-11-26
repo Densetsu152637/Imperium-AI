@@ -340,9 +340,24 @@ async fn cards_installs_and_removals_are_recorded_with_their_source_and_undone()
     for (tool, ok, output) in &turn.tools {
         assert!(*ok, "{tool}: {output}");
     }
-    // Only removing the hand-made skill asked.
-    assert_eq!(turn.asked.len(), 1, "{:?}", turn.asked);
-    assert_eq!(turn.asked[0].0, "uninstall_extension");
+    // The three installs and the removal asked (and the card did not), each naming what it does.
+    let asked: Vec<&str> = turn.asked.iter().map(|(tool, _)| tool.as_str()).collect();
+    assert_eq!(
+        asked,
+        [
+            "install_extension",
+            "install_extension",
+            "install_extension",
+            "uninstall_extension"
+        ],
+        "{:?}",
+        turn.asked
+    );
+    assert!(
+        turn.asked[0].1.contains("skill") && turn.asked[0].1.contains(&url),
+        "{:?}",
+        turn.asked
+    );
 
     // The card is in the app settings file and in effect.
     let models = std::fs::read_to_string(state.paths().app_models_file()).unwrap();
@@ -366,6 +381,13 @@ async fn cards_installs_and_removals_are_recorded_with_their_source_and_undone()
     assert_eq!(skill["installed_from"]["location"], url);
     assert_eq!(skill["installed_from"]["revision"], head);
     assert_eq!(skill["installed_from"]["session_id"], session_id);
+    // An agent-installed skill is listed but withheld until the user approves it.
+    assert!(
+        skill["withheld_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("desktop app")),
+        "{skill}"
+    );
     let hooked = listed["plugins"]
         .as_array()
         .unwrap()
@@ -541,9 +563,16 @@ async fn an_installed_plugin_with_a_server_stays_off_until_the_user_turns_it_on(
     let mut connection = connect(&state);
     let deny = PermissionDecision::Deny;
 
-    // The install runs without asking, and leaves the plugin off.
-    let (_, turn) = run_prompt(&state, project.path(), deny, "install words").await;
-    assert!(turn.asked.is_empty(), "{:?}", turn.asked);
+    // The install asks (and is allowed here), and leaves the plugin off.
+    let (_, turn) = run_prompt(
+        &state,
+        project.path(),
+        PermissionDecision::Allow,
+        "install words",
+    )
+    .await;
+    assert_eq!(turn.asked.len(), 1, "{:?}", turn.asked);
+    assert_eq!(turn.asked[0].0, "install_extension");
     let (tool, ok, output) = &turn.tools[0];
     assert_eq!(tool, "install_extension");
     assert!(*ok, "{output}");
@@ -680,7 +709,8 @@ async fn an_agent_installs_a_marketplace_plugin_and_one_with_code_is_withheld_an
     )
     .await;
     assert_eq!(turn.tools.len(), 5, "{turn:?}");
-    assert!(turn.asked.is_empty(), "{:?}", turn.asked);
+    // Every install asked, the refused ones too.
+    assert_eq!(turn.asked.len(), 5, "{:?}", turn.asked);
     let (_, ok, output) = &turn.tools[0];
     assert!(*ok, "{output}");
     assert!(
@@ -724,13 +754,317 @@ async fn an_agent_installs_a_marketplace_plugin_and_one_with_code_is_withheld_an
             .all(|plugin| plugin["name"] != "folderx"),
         "the folder was installed: {listed}"
     );
+    // A plugin an agent installed is withheld whether or not it has code, until it is approved.
     let y = find("y");
     assert_eq!(y["origin"], "agent");
-    assert_eq!(y["withheld"], false);
+    assert_eq!(y["withheld"], true);
+    assert!(
+        y["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("desktop app")),
+        "{y}"
+    );
     // Nothing ran, and the journal tells the user which session installed what.
     assert!(!project.path().join("ran.marker").exists());
     assert!(!market.path().join("ran.marker").exists());
     let changes = change_ids(&mut connection);
     assert_eq!(changes.len(), 2, "{changes:?}");
     assert!(x["source"].is_string(), "{x}");
+}
+
+/// A turn of a new session in `mode`: each permission request is answered with the next of
+/// `answers` (the last one repeats).
+async fn run_in_mode(
+    state: &Arc<DaemonState>,
+    project: &Path,
+    mode: imperium_api::PermissionMode,
+    answers: &[PermissionDecision],
+) -> Turn {
+    let (session, mut events) = state
+        .create_session(&project.display().to_string(), None)
+        .unwrap();
+    session.set_permission_mode(mode);
+    session.send("manage the config".into()).unwrap();
+    let mut turn = Turn::default();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match events.recv().await.unwrap().event {
+                SessionEvent::ToolFinished {
+                    ok, output, tool, ..
+                } => turn.tools.push((tool.unwrap_or_default(), ok, output)),
+                SessionEvent::PermissionRequested {
+                    request_id,
+                    tool,
+                    summary,
+                    ..
+                } => {
+                    let answer = answers[turn.asked.len().min(answers.len() - 1)];
+                    turn.asked.push((tool, summary));
+                    session.respond(request_id, answer).unwrap();
+                }
+                SessionEvent::TurnCompleted { .. } => break,
+                SessionEvent::TurnFailed { message } => panic!("{message}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the turn ends within 60 s");
+    turn
+}
+
+#[tokio::test]
+async fn installing_or_removing_an_extension_asks_in_every_mode() {
+    use imperium_api::PermissionMode;
+    let project = tempfile::tempdir().unwrap();
+    let sources = tempfile::tempdir().unwrap();
+    for name in ["notes", "other"] {
+        write(
+            &sources.path().join(name).join("SKILL.md"),
+            &format!("---\nname: {name}\ndescription: A skill.\n---\nbody\n"),
+        );
+    }
+    let calls = vec![
+        (
+            "install_extension",
+            json!({"kind": "skill", "source": sources.path().join("notes").display().to_string()}),
+        ),
+        (
+            "install_extension",
+            json!({"kind": "plugin", "source": "https://example.test/plugin.git"}),
+        ),
+        (
+            "uninstall_extension",
+            json!({"kind": "skill", "name": "manual"}),
+        ),
+    ];
+    let url = fake_model(calls).await;
+    // An allow rule on both tools, and a user's own skill that an agent installed nothing of.
+    let rules = "[permissions]\nrules = [\n  { tool = \"install_extension\", action = \"allow\" },\n  \
+                 { tool = \"uninstall_extension\", action = \"allow\" },\n]\n";
+    for mode in [
+        PermissionMode::Ask,
+        PermissionMode::Default,
+        PermissionMode::Auto,
+        PermissionMode::AcceptEdits,
+        PermissionMode::Full,
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let state = daemon(home.path(), &url, rules);
+        let config_dir = state.paths().config_dir().to_path_buf();
+        write(
+            &config_dir.join("skills/manual/SKILL.md"),
+            "---\nname: manual\ndescription: Hand-made.\n---\nHi.\n",
+        );
+        // The user says no to each: nothing is installed or removed, whatever the mode or rule.
+        let turn = run_in_mode(&state, project.path(), mode, &[PermissionDecision::Deny]).await;
+        let asked: Vec<&str> = turn.asked.iter().map(|(tool, _)| tool.as_str()).collect();
+        assert_eq!(
+            asked,
+            [
+                "install_extension",
+                "install_extension",
+                "uninstall_extension"
+            ],
+            "{mode:?}: {turn:?}"
+        );
+        // The card names the kind and the source (or the name for a removal).
+        assert!(
+            turn.asked[0].1.contains("skill") && turn.asked[0].1.contains("notes"),
+            "{:?}",
+            turn.asked
+        );
+        assert!(
+            turn.asked[1].1.contains("plugin")
+                && turn.asked[1].1.contains("https://example.test/plugin.git"),
+            "{:?}",
+            turn.asked
+        );
+        assert!(turn.asked[2].1.contains("manual"), "{:?}", turn.asked);
+        assert!(
+            turn.tools.iter().all(|(_, ok, _)| !ok),
+            "{mode:?}: {turn:?}"
+        );
+        assert!(!config_dir.join("skills/notes").exists(), "{mode:?}");
+        assert!(
+            config_dir.join("skills/manual/SKILL.md").is_file(),
+            "{mode:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_approval_of_one_install_does_not_carry_over_to_the_next() {
+    use imperium_api::PermissionMode;
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let sources = tempfile::tempdir().unwrap();
+    for name in ["notes", "other"] {
+        write(
+            &sources.path().join(name).join("SKILL.md"),
+            &format!("---\nname: {name}\ndescription: A skill.\n---\nbody\n"),
+        );
+    }
+    let calls = vec![
+        (
+            "install_extension",
+            json!({"kind": "skill", "source": sources.path().join("notes").display().to_string()}),
+        ),
+        (
+            "install_extension",
+            json!({"kind": "skill", "source": sources.path().join("other").display().to_string()}),
+        ),
+    ];
+    let url = fake_model(calls).await;
+    let state = daemon(home.path(), &url, "");
+    let config_dir = state.paths().config_dir().to_path_buf();
+    // "Allow for this session" on the first install does not cover the second, which asks again
+    // and is refused.
+    let turn = run_in_mode(
+        &state,
+        project.path(),
+        PermissionMode::Default,
+        &[
+            PermissionDecision::AllowForSession,
+            PermissionDecision::Deny,
+        ],
+    )
+    .await;
+    assert_eq!(turn.asked.len(), 2, "{turn:?}");
+    assert!(turn.tools[0].1, "{turn:?}");
+    assert!(!turn.tools[1].1, "{turn:?}");
+    assert!(turn.tools[0].2.contains("withheld"), "{turn:?}");
+    assert!(config_dir.join("skills/notes/SKILL.md").is_file());
+    assert!(!config_dir.join("skills/other").exists());
+    // What was installed is withheld: no new session lists it until the desktop app approves it.
+    let mut connection = connect(&state);
+    let listed = rpc(&mut connection, "mcp.list", json!({})).unwrap();
+    let notes = listed["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|skill| skill["name"] == "notes")
+        .expect("the withheld skill is listed");
+    assert!(notes["withheld_reason"].is_string(), "{notes}");
+}
+
+#[tokio::test]
+async fn a_file_tool_never_writes_into_the_extension_folders_in_any_mode() {
+    use imperium_api::PermissionMode;
+    let home = tempfile::tempdir().unwrap();
+    // The session works in the folder that holds the config folder, so its file tools reach it.
+    let evil = imperium_config::Paths::under(home.path())
+        .config_dir()
+        .join("skills/evil/SKILL.md")
+        .display()
+        .to_string();
+    let calls = vec![
+        (
+            "write_file",
+            json!({"path": evil, "content": "---\nname: evil\ndescription: x\n---\nbody\n"}),
+        ),
+        (
+            "write_file",
+            json!({"path": home.path().join("notes.txt").display().to_string(), "content": "ok"}),
+        ),
+    ];
+    let url = fake_model(calls).await;
+    for mode in [
+        PermissionMode::Default,
+        PermissionMode::Auto,
+        PermissionMode::AcceptEdits,
+        PermissionMode::Full,
+    ] {
+        let state = daemon(home.path(), &url, "");
+        let turn = run_in_mode(&state, home.path(), mode, &[PermissionDecision::Allow]).await;
+        assert_eq!(turn.tools.len(), 2, "{mode:?}: {turn:?}");
+        // Refused whatever the mode or the answer, and the agent is told what to do instead.
+        let (tool, ok, output) = &turn.tools[0];
+        assert_eq!(tool, "write_file");
+        assert!(!ok, "{mode:?}: {output}");
+        assert!(output.contains("install_extension"), "{mode:?}: {output}");
+        assert!(!home.path().join("config/skills/evil").exists(), "{mode:?}");
+        // Other writes are not affected.
+        assert!(turn.tools[1].1, "{mode:?}: {turn:?}");
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("notes.txt")).unwrap(),
+            "ok"
+        );
+        std::fs::remove_file(home.path().join("notes.txt")).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn requests_only_the_user_may_answer_are_marked_by_the_daemon() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    write(
+        &source.path().join("SKILL.md"),
+        "---\nname: marked\ndescription: A skill.\n---\nbody\n",
+    );
+    let calls = vec![
+        // Respelled with `.` and `..`: the daemon judges the path it resolves to.
+        (
+            "write_file",
+            json!({"path": ".claude/./skills/x/SKILL.md", "content": "x"}),
+        ),
+        (
+            "edit_file",
+            json!({"path": ".claude/sub/../skills/x/SKILL.md", "old_string": "x", "new_string": "y"}),
+        ),
+        (
+            "write_file",
+            json!({"path": "tools/p/hooks/hooks.json", "content": "{}"}),
+        ),
+        (
+            "write_file",
+            json!({"path": "src/main.rs", "content": "fn main() {}"}),
+        ),
+        (
+            "install_extension",
+            json!({"kind": "skill", "source": source.path().display().to_string()}),
+        ),
+    ];
+    let url = fake_model(calls).await;
+    let state = daemon(home.path(), &url, "");
+    let (session, mut events) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    session.set_permission_mode(imperium_api::PermissionMode::Full);
+    session.send("manage the config".into()).unwrap();
+    let mut marked: Vec<(String, Option<bool>)> = Vec::new();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match events.recv().await.unwrap().event {
+                SessionEvent::PermissionRequested {
+                    request_id,
+                    tool,
+                    user_only,
+                    ..
+                } => {
+                    marked.push((tool, user_only));
+                    session
+                        .respond(request_id, PermissionDecision::Deny)
+                        .unwrap();
+                }
+                SessionEvent::TurnCompleted { .. } => break,
+                SessionEvent::TurnFailed { message } => panic!("{message}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the turn ends within 60 s");
+    // Full mode: only floored calls ask, and each asks marked by the daemon.
+    assert_eq!(
+        marked,
+        [
+            ("write_file".to_string(), Some(true)),
+            ("edit_file".to_string(), Some(true)),
+            ("write_file".to_string(), Some(true)),
+            ("install_extension".to_string(), Some(true)),
+        ],
+        "{marked:?}"
+    );
 }

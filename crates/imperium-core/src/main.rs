@@ -21,7 +21,7 @@ const IDLE_GRACE: Duration = Duration::from_secs(10);
 const BACKGROUND_STOP_WAIT: Duration = Duration::from_secs(5);
 
 fn main() -> anyhow::Result<()> {
-    run_pty_supervisor_if_asked();
+    imperium_core::run_pty_supervisor_if_asked();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("IMPERIUM_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
@@ -39,22 +39,6 @@ fn main() -> anyhow::Result<()> {
         .block_on(run())
 }
 
-/// The hidden `pty-supervisor` subcommand: on Linux each terminal's PTY child is this executable
-/// re-run (decision D5 of `docs/plans/terminal-file-panes.md`). It runs before anything else
-/// starts (no runtime, no logging, no configuration) and never returns.
-fn run_pty_supervisor_if_asked() {
-    #[cfg(target_os = "linux")]
-    {
-        let mut args = std::env::args_os().skip(1);
-        if args
-            .next()
-            .is_some_and(|argument| argument == imperium_pty::supervisor::SUBCOMMAND)
-        {
-            std::process::exit(imperium_pty::supervisor::run(args));
-        }
-    }
-}
-
 async fn run() -> anyhow::Result<()> {
     let idle_grace = exit_when_idle(std::env::args().skip(1))?;
     let paths = Paths::from_env()?;
@@ -63,10 +47,15 @@ async fn run() -> anyhow::Result<()> {
         tracing::warn!("{warning}");
     }
     let settings = config.settings()?;
+    // Before anything is written: a SIGTERM (`docker stop`) that arrives while the daemon starts
+    // is held until the shutdown path below can run.
+    let mut terminate = Terminate::listen()?;
     std::fs::create_dir_all(paths.data_dir())
         .with_context(|| format!("could not create {}", paths.data_dir().display()))?;
     let _lock = acquire_single_instance_lock(&paths)?;
     end_children_with_daemon();
+    // Windows: the NO_READ_UP labels code mode's Low-integrity worker needs, in the background.
+    imperium_core::code_mode::label_folders(&paths, &settings.workspaces.root(&paths));
 
     let listener = TcpListener::bind(SocketAddr::from((
         Ipv4Addr::LOCALHOST,
@@ -171,6 +160,7 @@ async fn run() -> anyhow::Result<()> {
         Err(error) => tracing::warn!(%error, "GitHub auto-fix did not start"),
     }
     daemon.start_auto_archive();
+    daemon.start_terminal_sweeper();
     daemon.start_session_index();
     // A daemon a client started for itself exits when no client and no work uses it. The clock
     // starts here, after the slow part of starting, so a client that is waiting has its grace.
@@ -195,14 +185,20 @@ async fn run() -> anyhow::Result<()> {
         daemon.clone(),
         wait_for_stop(stop.subscribe()),
     ));
-    // Ctrl+C, or a client's `system.shutdown` (the desktop app's Stop, `imperium daemon stop`).
+    // Ctrl+C, SIGTERM (`docker stop`, a service manager), or a client's `system.shutdown` (the
+    // desktop app's Stop, `imperium daemon stop`).
     tokio::select! {
         signal = tokio::signal::ctrl_c() => signal.context("could not listen for Ctrl+C")?,
+        () = terminate.received() => tracing::info!("SIGTERM received"),
         () = daemon.shutdown_requested() => {}
     }
     tracing::info!("shutting down");
-    // Background commands must not outlive the daemon.
-    daemon.stop_background_processes(BACKGROUND_STOP_WAIT).await;
+    // Background commands and terminals must not outlive the daemon; both end at once, within
+    // the same wait.
+    tokio::join!(
+        daemon.stop_background_processes(BACKGROUND_STOP_WAIT),
+        daemon.stop_terminals(BACKGROUND_STOP_WAIT),
+    );
     if tokio::time::timeout(BACKGROUND_STOP_WAIT, daemon.stop_speech())
         .await
         .is_err()
@@ -226,6 +222,32 @@ async fn run() -> anyhow::Result<()> {
         Err(_) => tracing::warn!("connections still open after the grace period; exiting"),
     }
     Ok(())
+}
+
+/// SIGTERM, on Unix: it runs the same shutdown as Ctrl+C. Elsewhere it never arrives.
+struct Terminate {
+    #[cfg(unix)]
+    signal: tokio::signal::unix::Signal,
+}
+
+impl Terminate {
+    fn listen() -> anyhow::Result<Self> {
+        Ok(Terminate {
+            #[cfg(unix)]
+            signal: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .context("could not listen for SIGTERM")?,
+        })
+    }
+
+    async fn received(&mut self) {
+        #[cfg(unix)]
+        {
+            if self.signal.recv().await.is_some() {
+                return;
+            }
+        }
+        std::future::pending::<()>().await;
+    }
 }
 
 /// Resolves when the daemon is told to stop (or its sender is gone, which means the same).

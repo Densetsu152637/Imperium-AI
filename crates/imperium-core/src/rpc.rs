@@ -331,6 +331,21 @@ impl Connection {
             && (self.peer.is_some() || self.state.eval_over_tcp())
     }
 
+    /// Whether the daemon runs as a server (`daemon.server`).
+    fn on_server(&self) -> bool {
+        self.state.settings().daemon.server
+    }
+
+    /// `-32010` for the desktop-only `feature` when the daemon runs as a server. Called at the
+    /// top of the method, before any peer is looked at or any challenge is issued.
+    fn refuse_on_server(&self, feature: &'static str) -> Result<(), ErrorObject> {
+        if self.on_server() {
+            Err(errors::unavailable_on_server(feature))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Whether this connection wants `system.resources_changed` notifications.
     pub fn watches_resources(&self) -> bool {
         self.resources.is_some()
@@ -478,6 +493,7 @@ impl Connection {
                 version: env!("CARGO_PKG_VERSION").into(),
             },
             protocol: PROTOCOL_VERSION,
+            server: self.on_server(),
         })
     }
 }

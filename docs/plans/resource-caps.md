@@ -939,10 +939,13 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
     and 16,384-task ceiling of its own) and `scripts/ci/limits-measure.sh`. `unsafe` is allowed
     only in `windows.rs`, `macos.rs` and `notify.rs` (Tokio's `AsyncFd::register` for the
     inotify descriptor, `AsyncFd::new` being deprecated as unsound).
-  - **#328's pieces, moved with their API.** `cgroup::{Cgroups, Lease, delegated}` (now
+  - **#328's pieces, copied with their API.** `cgroup::{Cgroups, Lease, delegated}` (now
     directory-relative, the M5 fix), `macos::{Watchdog, resident_bytes}` and `windows::Job`
     (`limit`, `restrict_ui`, `assign` on a `BorrowedHandle`, `assign_child`, `terminate`).
-    #328 keeps its token, labels, pipes and handle list and calls these.
+    #328 merged first, so `imperium-script` still has its own `cgroup.rs`, `watchdog.rs` and
+    job code. A follow-up (before stage 3) switches it to these calls, keeping its token,
+    labels, pipes and handle list, and deletes its copies; until then the two copies agree in
+    behaviour, except that only this crate's cgroup setup is directory-relative.
   - **Measured on the hosted runners** (4 CPUs each):
 
     | Check | Linux, cgroup | Linux, fallback | Windows, job |

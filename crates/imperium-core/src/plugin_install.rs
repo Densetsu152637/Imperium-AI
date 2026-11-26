@@ -436,7 +436,7 @@ const DEVICE_NAMES: &[&str] = &[
 /// Whether `name` is one plain folder name: not empty, one path component that is not `.` or `..`
 /// and holds no separator, drive or stream marker (`:`), wildcard or control character, does not
 /// end in a dot or space (Windows drops them) and is not a Windows device name.
-fn check_folder_name(name: &str) -> Result<(), String> {
+pub(crate) fn check_folder_name(name: &str) -> Result<(), String> {
     let refuse = |why: &str| {
         Err(format!(
             "{name:?} is not the name of a plugin folder: {why}"
@@ -581,6 +581,9 @@ pub(crate) fn inspect_folder(
     state: &DaemonState,
     params: &PluginsInspectFolderParams,
 ) -> Result<PluginPreview, String> {
+    if plugin_records::Subject::parse(params.kind.as_deref())? == plugin_records::Subject::Skill {
+        return inspect_skill_folder(state, params);
+    }
     let folder = folder_named(state, &params.name)?;
     let (canon, sha256, _, plugin) = plugin_records::content(&folder)?;
     // The folder read is the folder named, and it is still that folder, not a link, now that it was
@@ -610,6 +613,18 @@ pub(crate) fn inspect_folder(
             notes.push("its content changed since Imperium recorded it".to_string());
         }
         Some(_) => {}
+    }
+    if let Some(record) = record
+        .as_ref()
+        .filter(|record| record.origin == Origin::Agent)
+    {
+        notes.push(format!(
+            "An agent installed this plugin{}. It is withheld, with its skills, commands and agents, until you approve it.",
+            record
+                .source
+                .as_deref()
+                .map_or(String::new(), |source| format!(" from {source}"))
+        ));
     }
     Ok(PluginPreview {
         id: params.name.clone(),
@@ -641,6 +656,109 @@ pub(crate) fn inspect_folder(
         }),
         notes,
     })
+}
+
+/// `plugins.inspect_folder` with `kind: "skill"`: what the skill folder installed under
+/// `<config>/skills/<name>` holds, with the content hash the gate computes and the constant digest
+/// an approval of a skill is bound to. Nothing in it runs.
+fn inspect_skill_folder(
+    state: &DaemonState,
+    params: &PluginsInspectFolderParams,
+) -> Result<PluginPreview, String> {
+    let folder = crate::skill_records::exact_folder(state.paths(), &params.name)?;
+    let (canon, sha256, runs_digest, name) = crate::skill_records::content(&folder)?;
+    if canon != folder || crate::skill_records::exact_folder(state.paths(), &params.name)? != canon
+    {
+        return Err(format!("{:?} changed while it was read", params.name));
+    }
+    let record = crate::skill_records::record_for(state.paths(), &canon);
+    let shown = extension_install::display_path(&canon);
+    let text = std::fs::read_to_string(canon.join("SKILL.md")).unwrap_or_default();
+    let (fields, body) = imperium_api::markdown::front_matter(&text);
+    let mut notes = vec![
+        format!(
+            "The folder is {} and the skill's name in its front matter is {}.",
+            params.name, name
+        ),
+        "This is a skill, not a plugin. Approving lets agents list it and load its instructions \
+         in every later session. It runs nothing itself, but an agent follows what it says."
+            .to_string(),
+    ];
+    if let Some(source) = record.as_ref().and_then(|record| record.source.as_deref()) {
+        notes.push(format!("An agent installed it from {source}."));
+    }
+    match &record {
+        None => notes.push(
+            "Imperium has no record of this folder's content: it was installed before approvals existed"
+                .to_string(),
+        ),
+        Some(record) if record.hash != sha256 => {
+            notes.push("its content changed since Imperium recorded it".to_string());
+        }
+        Some(_) => {}
+    }
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&canon).into_iter().flatten().flatten() {
+        let file = entry.file_name().to_string_lossy().into_owned();
+        if file != "SKILL.md" && file != plugins::SOURCE_FILE && file != ".git" {
+            files.push(file);
+        }
+    }
+    files.sort();
+    if !files.is_empty() {
+        files.truncate(30);
+        notes.push(format!(
+            "Other files in it (which the skill can tell an agent to read or run): {}",
+            files.join(", ")
+        ));
+    }
+    notes.push(format!(
+        "Its instructions begin: {}",
+        imperium_api::truncate_chars(body.trim(), 1200)
+    ));
+    let same_content = record.as_ref().is_some_and(|record| record.hash == sha256);
+    Ok(PluginPreview {
+        id: params.name.clone(),
+        name: name.clone(),
+        marketplace: String::new(),
+        marketplace_source: String::new(),
+        marketplace_commit: None,
+        source_kind: "skill".into(),
+        source: shown.clone(),
+        commit: record.as_ref().and_then(|record| record.commit.clone()),
+        description: fields.get("description").cloned().unwrap_or_default(),
+        version: None,
+        author: None,
+        homepage: None,
+        license: None,
+        hooks: Vec::new(),
+        servers: Vec::new(),
+        launcher: false,
+        skills: vec![name],
+        commands: Vec::new(),
+        agents: Vec::new(),
+        commands_with_shell: Vec::new(),
+        sha256,
+        runs_digest,
+        installed: Some(PluginInstalled {
+            path: shown,
+            same_content,
+            recorded_sha256: record.map(|record| record.hash),
+        }),
+        notes,
+    })
+}
+
+/// The folder an approval of `subject` named `name` is asked for.
+pub(crate) fn resolve_subject(
+    state: &DaemonState,
+    subject: plugin_records::Subject,
+    name: &str,
+) -> Result<PathBuf, String> {
+    match subject {
+        plugin_records::Subject::Plugin => resolve_for_approval(state, name),
+        plugin_records::Subject::Skill => crate::skill_records::exact_folder(state.paths(), name),
+    }
 }
 
 /// Creates the install folder exclusively: anything already there (a folder that appeared since
@@ -841,9 +959,10 @@ pub(crate) async fn install_for_agent(
     let mut notes = staged.notes.clone();
     let withheld = withheld_reason(state, &dest);
     notes.push(match &withheld {
-        Some(_) => "It has hooks or MCP servers, so it is installed withheld and unapproved:                     activate_plugin cannot start it, and only the user can approve it, in the                     Imperium desktop app."
+        Some(_) => "It is installed withheld and unapproved: it adds no skills, commands or agents to any session, and activate_plugin cannot start its servers, until the user approves it in the Imperium desktop app (Plugins, Installed). Tell the user it is waiting there."
             .into(),
-        None => "New sessions list its skills and commands; it has no hooks or servers.".into(),
+        None => "It is withheld until the user approves it in the Imperium desktop app (Plugins, Installed); tell the user it is waiting there."
+            .into(),
     });
     Ok(extension_install::Installed {
         kind: ExtensionKind::Plugin,

@@ -203,6 +203,7 @@ async fn start_routed(
         eager: Vec::new(),
         downloaded: Vec::new(),
         allowed: None,
+        skill_gate: imperium_extensions::SkillGate::default(),
     });
     let seen = Arc::new(Mutex::new(Vec::new()));
     let url = model(root, sub, Arc::clone(&seen)).await;

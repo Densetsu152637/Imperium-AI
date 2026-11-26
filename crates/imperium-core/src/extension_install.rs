@@ -6,13 +6,13 @@
 //! came from to `.imperium-source.json` inside it, and moves it into place. Nothing in it runs:
 //! no install script, no build, no hook. Git clones no submodules, skips Git LFS downloads, and
 //! refuses the `ext::` transport; copies skip symbolic links and `.git`. Skills and plugins are
-//! then listed for agents and load on first use; a plugin with hooks or MCP servers is added to
-//! `extensions.disabled_plugins` so neither its hooks nor its servers (which `activate_plugin`
-//! would start unasked) run until the plugin is approved in the desktop app (a plugin installed from a git URL or folder
-//! cannot be approved there yet, roadmap item 60), and a mod installed by an
-//! agent shows only after the user turns it on in the desktop app. Whatever the user turns on,
-//! `${VAR}` in an agent-installed plugin's `.mcp.json` never reads the daemon's environment
-//! (see `imperium_extensions::plugins`).
+//! then withheld, not listed or loaded, until the user approves them in the desktop app (an
+//! install is itself asked about every time, in every permission mode, so it never happens
+//! unasked). A plugin with hooks or MCP servers is also added to `extensions.disabled_plugins`,
+//! so neither its hooks nor its servers (which `activate_plugin` would start unasked) run until
+//! then. A mod installed by an agent shows only after the user turns it on in the desktop app.
+//! Whatever the user turns on, `${VAR}` in an agent-installed plugin's `.mcp.json` never reads
+//! the daemon's environment (see `imperium_extensions::plugins`).
 //!
 //! An uninstall moves the folder aside to `<data>/config-trash/`, so undoing it puts it back.
 
@@ -283,8 +283,8 @@ async fn install_in(
         newly_disabled = !was_listed;
         notes.push(format!(
             "It has {has}, so it is installed turned off and activate_plugin cannot start it; \
-             it is withheld until the user approves it in the Imperium desktop app (a plugin \
-             installed from a git URL or folder cannot be approved there yet, roadmap item 60)."
+             it is withheld, with its skills, commands and agents, until the user approves \
+             it in the Imperium desktop app (Plugins, Installed)."
         ));
     } else {
         move_tree(&out, &dest)?;
@@ -302,12 +302,29 @@ async fn install_in(
             }
         }
     }
+    if request.kind == ExtensionKind::Skill {
+        // Recorded with no approval: an agent cannot approve, so the load-time gate withholds it.
+        if let Err(error) = crate::skill_records::record_install(
+            state.paths(),
+            &dest,
+            &name,
+            Some(source.location.clone()),
+            source.revision.clone(),
+        ) {
+            remove_tree(&dest);
+            return Err(error);
+        }
+    }
     match request.kind {
         ExtensionKind::Skill => notes.push(format!(
-            "Agents see it in the skill index of new sessions and load it with load_skill {name}."
+            "The skill {name} is withheld: no session lists or loads it until the user approves it \
+             in the Imperium desktop app (Plugins, Installed). Tell the user it is waiting there."
         )),
-        ExtensionKind::Plugin if !disabled => notes
-            .push("New sessions list its skills and commands; it has no hooks or servers.".into()),
+        ExtensionKind::Plugin if !disabled => notes.push(
+            "It is withheld, with its skills, commands and agents, until the user approves it in \
+             the Imperium desktop app (Plugins, Installed); tell the user it is waiting there."
+                .into(),
+        ),
         ExtensionKind::Mod => {
             notes.push("Its panels show only after the user turns it on in Settings → Mods.".into())
         }

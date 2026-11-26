@@ -63,6 +63,7 @@ pub use secrets::{
 pub use secrets_file::{
     AutoSecrets, FileSecrets, KeySource, MigrationReport, PASSPHRASE_FILE_ENV, SecretBackend,
 };
+pub use settings::CONTAINER_TIER_ON_SERVER;
 pub use settings::{
     ActionSettings, AgentSettings, ApiSettings, AttachmentSettings, AutofixSettings, Capability,
     CatalogEntry, ConditionSettings, ContextSettings, DaemonSettings, EndpointSettings, Enforce,
@@ -74,8 +75,8 @@ pub use settings::{
     OFFICIAL_MARKETPLACE, OFFICIAL_MARKETPLACE_SOURCE, OpenAiApiSettings, PetSettings,
     PhoneSettings, PluginSettings, PolicySettings, Preference, ProjectSettings, ResumeSettings,
     RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef, SessionSearchScope,
-    SessionSettings, Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, VoiceSettings,
-    VoiceTranscription, WebSettings, WorkflowSettings, WorkspacesSettings, WritePolicy,
-    default_workspaces_root, same_marketplace_source,
+    SessionSettings, Settings, TerminalSettings, Tier, TriggerSettings, VLLM_ENDPOINT,
+    VllmSettings, VoiceSettings, VoiceTranscription, WebSettings, WorkflowSettings,
+    WorkspacesSettings, WritePolicy, default_workspaces_root, same_marketplace_source,
 };
 pub use settings::{SuggestionCandidate, default_suggestions};

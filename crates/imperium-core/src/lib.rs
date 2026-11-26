@@ -13,6 +13,7 @@ mod browser_control;
 mod budgets;
 pub use budgets::{CallGate, CallUsage};
 mod checkpoints;
+pub mod code_mode;
 mod config;
 mod config_changes;
 mod connectors;
@@ -54,8 +55,10 @@ mod runtimes;
 mod safe_git;
 mod scheduler;
 mod server;
+mod skill_records;
 mod state;
 mod suggestions;
+pub mod terminal;
 mod token;
 mod voice;
 mod workspaces;
@@ -86,3 +89,21 @@ pub use server::{serve, serve_ipc};
 pub use state::{CreateError, DaemonState, SessionOptions};
 pub use token::AccessToken;
 pub use writers::GitWriterTrees;
+
+/// The hidden `pty-supervisor` subcommand: on Linux each terminal's PTY child is the daemon's
+/// own executable re-run through `/proc/self/exe` (decision D5 of
+/// `docs/plans/terminal-file-panes.md`). Call it first thing in `main`, before a runtime,
+/// logging or configuration exist; it never returns when asked to supervise, and does nothing
+/// otherwise (or off Linux).
+pub fn run_pty_supervisor_if_asked() {
+    #[cfg(target_os = "linux")]
+    {
+        let mut args = std::env::args_os().skip(1);
+        if args
+            .next()
+            .is_some_and(|argument| argument == imperium_pty::supervisor::SUBCOMMAND)
+        {
+            std::process::exit(imperium_pty::supervisor::run(args));
+        }
+    }
+}

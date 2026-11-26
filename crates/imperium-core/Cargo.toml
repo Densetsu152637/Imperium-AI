@@ -29,6 +29,9 @@ imperium-memory = { version = "0.2.0", path = "../imperium-memory" }
 imperium-models = { version = "0.2.0", path = "../imperium-models" }
 imperium-pets = { version = "0.2.0", path = "../imperium-pets" }
 imperium-protocol = { version = "0.2.0", path = "../imperium-protocol" }
+# The desktop app's terminals (`terminal.rs`) and, on Linux, the hidden `pty-supervisor`
+# subcommand.
+imperium-pty = { version = "0.2.0", path = "../imperium-pty" }
 imperium-policy = { version = "0.2.0", path = "../imperium-policy" }
 imperium-tools = { version = "0.2.0", path = "../imperium-tools" }
 imperium-web = { version = "0.2.0", path = "../imperium-web" }
@@ -46,14 +49,15 @@ toml = "1.2.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
+[target.'cfg(unix)'.dependencies]
+# The account's shell for terminals (`terminal/shell.rs`), through nix's safe `getpwuid`.
+nix = { version = "0.31.3", default-features = false, features = ["user"] }
+
 [target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
 # `O_NOFOLLOW` for the plugin content hash (`plugin_records.rs`) on the other Unix targets.
 rustix = { version = "1.1.6", features = ["fs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# The hidden `pty-supervisor` subcommand (`main.rs`); the terminal service of stage 2a will use
-# the library on every OS and move this to the main table.
-imperium-pty = { version = "0.2.0", path = "../imperium-pty" }
 # Identifying the desktop app for plugin approvals (`app_identity/linux.rs`) without `unsafe`:
 # rustix for pidfds, SO_PEERCRED, poll and /proc; nix only for SO_PEERPIDFD, which rustix lacks.
 nix = { version = "0.31.3", default-features = false, features = ["socket"] }
@@ -71,12 +75,17 @@ nix = { version = "0.31.3", default-features = false, features = ["socket"] }
 security-framework = { version = "3.7.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
+# Code mode's NO_READ_UP labels on the daemon's folders (`code_mode.rs`); stage 2 uses the
+# crate's launcher on every OS.
+imperium-script = { version = "0.2.0", path = "../imperium-script" }
 # Check 7 of plugin approvals: the per-machine Program Files folder from
 # SHGetKnownFolderPath(FOLDERID_ProgramFiles) through dirs-sys's safe wrapper.
 dirs-sys = "0.5.0"
 windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell"] }
 # The daemon puts itself in a kill-on-close job, so its children end with it however it dies.
 win32job = "2.0.3"
+# The `pwsh.exe` that PowerShell's installer registered under App Paths (`terminal/shell.rs`).
+winreg = "0.56.0"
 
 [features]
 # Hooks for the crate's integration tests (fault injection); never enabled in a release build.
@@ -84,6 +93,12 @@ testing = []
 
 [lints]
 workspace = true
+
+# Its own `main` runs the hidden `pty-supervisor` subcommand first, as the daemon's does, so a
+# terminal's supervisor can be this test executable re-run through `/proc/self/exe`.
+[[test]]
+name = "terminal"
+harness = false
 
 [dev-dependencies]
 imperium-client = { path = "../imperium-client" }

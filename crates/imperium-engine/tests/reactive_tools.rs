@@ -392,6 +392,7 @@ async fn start(options: Options) -> Setup {
         eager: Vec::new(),
         downloaded: Vec::new(),
         allowed: None,
+        skill_gate: imperium_extensions::SkillGate::default(),
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
     let seen = Arc::new(Mutex::new(Vec::new()));

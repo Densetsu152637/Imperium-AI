@@ -8,12 +8,43 @@ repository.workspace = true
 publish = false
 description = "Daemon side of run_script: launches one confined Monty worker per program and drives its protocol"
 
+[features]
+# Test hooks: forcing a stage of the Windows launch to fail, and setting a stale wall deadline.
+# Enabled only by the worker crate's dev-dependency and by `scripts/check-rust.sh`.
+test-support = []
+
 # The same Monty release as the worker (runtimes/monty.env), pinned exactly.
 [dependencies]
 monty-proto = "=1.6.0"
 monty-types = "=1.6.0"
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["process", "io-util", "time", "sync", "rt", "macros"] }
+tokio = { version = "1.54.1", features = ["process", "io-util", "time", "sync", "rt", "macros", "net"] }
 
-[lints]
-workspace = true
+[target.'cfg(target_os = "macos")'.dependencies]
+# The resident-memory watchdog (watchdog.rs): `proc_pidinfo` and `kill`.
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+# The confined launch (windows/launch.rs) and the folder labels (windows/labels.rs).
+getrandom = "0.4.3"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt", "macros", "time"] }
+
+# The Windows launch and labels and the macOS watchdog need Win32 and C calls, all unsafe. Only
+# the modules that need them opt in (`#[allow(unsafe_code)]`); the rest of the crate denies it.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -1,12 +1,11 @@
-//! The real worker through the real driver: the interpreter, its limits and its processes.
-//! Unix only until the Windows launch lands (stage 1b of the code-mode plan).
-#![cfg(unix)]
+//! The real worker through the real driver: the interpreter, its limits and its processes, on
+//! every OS (on Windows through the daemon's confined launch).
 
 mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{exc_type, launcher, quick_limits, run};
+use common::{exc_type, is_gone as gone, launcher, quick_limits, run};
 use imperium_script::{MontyObject, ScriptError, ScriptEvent};
 
 #[tokio::test]
@@ -88,20 +87,64 @@ async fn capabilities_are_denied() {
     }
 }
 
-/// A2: whether `eval` and `exec` exist in a program. Recorded, not asserted: if they do, the
-/// engine refuses programs that name them.
+/// A2: `eval` and `exec` exist inside Monty (stage 1a), so a program that names them is refused
+/// before any worker starts. Hygiene, not a boundary: the slot count shows no worker ran.
 #[tokio::test]
-async fn eval_and_exec_outcome_is_recorded() {
-    let outcome = run(&launcher(), "print(eval('1+1'))", &quick_limits(), &[]).await;
-    eprintln!(
-        "A2 eval -> prints={:?} result={:?}",
-        outcome.prints, outcome.result
-    );
-    let outcome = run(&launcher(), "exec('print(2)')", &quick_limits(), &[]).await;
-    eprintln!(
-        "A2 exec -> prints={:?} result={:?}",
-        outcome.prints, outcome.result
-    );
+async fn programs_that_name_eval_or_exec_are_refused_before_a_worker_starts() {
+    let launcher = launcher();
+    for code in [
+        "print(eval('1+1'))",
+        "exec('print(2)')",
+        "f = eval\nprint(f('3'))",
+        "print(f\"{eval('4')}\")",
+    ] {
+        match launcher.start(code, &quick_limits()).await {
+            Err(ScriptError::Refused(reason)) => {
+                assert!(
+                    reason.contains("eval") || reason.contains("exec"),
+                    "{reason}"
+                );
+            }
+            other => panic!("{code:?} was not refused: {other:?}"),
+        }
+        assert_eq!(
+            launcher.free_slots(),
+            8,
+            "a worker slot was taken for {code:?}"
+        );
+    }
+    // The words in strings are fine.
+    let outcome = run(&launcher, "print('eval and exec')", &quick_limits(), &[]).await;
+    assert_eq!(outcome.result, Ok(()));
+    assert_eq!(outcome.prints, "eval and exec\n");
+}
+
+/// The stage 1a review: `answer` clears a deadline that a cancelled `next_until` left behind, so a
+/// large answer is not cut off by it. The answer here is larger than a pipe's buffer, so with the
+/// stale deadline it could not be written in time and the program would end as crashed.
+#[tokio::test]
+async fn an_answer_is_not_bound_by_a_deadline_a_cancelled_wait_left_behind() {
+    let mut run = launcher()
+        .start("x = lookup()\nprint(len(x))", &quick_limits())
+        .await
+        .unwrap();
+    let mut prints = String::new();
+    let result = loop {
+        match run.next().await {
+            ScriptEvent::NameLookup(_) => run.resume_name(Some("lookup")).await.unwrap(),
+            ScriptEvent::Call(_) => {
+                run.leave_stale_deadline(Instant::now());
+                let big = "x".repeat(4 * 1024 * 1024);
+                run.resume_value(MontyObject::string(big))
+                    .await
+                    .expect("the answer is sent whatever deadline was left behind");
+            }
+            ScriptEvent::Print(text) => prints.push_str(&text),
+            ScriptEvent::Done(result) => break result,
+        }
+    };
+    assert_eq!(result, Ok(()));
+    assert_eq!(prints, format!("{}\n", 4 * 1024 * 1024));
 }
 
 #[tokio::test]
@@ -177,11 +220,6 @@ async fn sleeping_returns_at_once_and_clocks_and_entropy_work() {
     );
 }
 
-fn gone(pid: u32) -> bool {
-    let pid = rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap();
-    rustix::process::test_kill_process(pid).is_err()
-}
-
 #[tokio::test]
 async fn programs_run_in_different_workers_that_are_gone_afterwards() {
     let launcher = launcher();
@@ -211,8 +249,7 @@ async fn a_killed_worker_is_reported_crashed_and_the_next_program_runs() {
     let launcher = launcher();
     let mut run = launcher.start("lookup()", &quick_limits()).await.unwrap();
     assert!(matches!(run.next().await, ScriptEvent::Call(_)));
-    let pid = rustix::process::Pid::from_raw(i32::try_from(run.pid().unwrap()).unwrap()).unwrap();
-    rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
+    common::kill(run.pid().unwrap());
     // The answer may go to a dead worker; either way the program ends crashed.
     let _ = run.resume_value(MontyObject::string("x")).await;
     match run.next().await {

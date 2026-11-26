@@ -179,9 +179,9 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Clippy
-        run: cargo clippy --locked --all-targets -p imperium-script -p imperium-script-worker --features imperium-script-worker/test-support -- -D warnings
+        run: cargo clippy --locked --all-targets -p imperium-script -p imperium-script-worker --features imperium-script-worker/test-support,imperium-script/test-support -- -D warnings
       - name: Tests
-        run: cargo test --locked -p imperium-script -p imperium-script-worker --features imperium-script-worker/test-support -- --nocapture --test-threads=2
+        run: cargo test --locked -p imperium-script -p imperium-script-worker --features imperium-script-worker/test-support,imperium-script/test-support -- --nocapture --test-threads=2
       - name: Measurements (release build)
         shell: bash
         run: |

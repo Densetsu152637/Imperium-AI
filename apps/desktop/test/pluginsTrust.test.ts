@@ -270,3 +270,20 @@ test("answers: approved kinds, a cancel, a refusal, an install left withheld, an
   assert.match(platformReason("Mozilla/5.0 (Windows NT 10.0; Win64; x64)") ?? "", /Windows/);
   assert.equal(platformReason("Mozilla/5.0 (X11; Linux x86_64)"), null);
 });
+
+test("an agent's plugin or skill is approved whether or not it runs code, and a marketplace one without code is not", async () => {
+  assert.ok(offersApprove({ withheld: true, hooks: 0, servers: [], origin: "agent" }, null));
+  assert.ok(!offersApprove({ withheld: true, hooks: 0, servers: [], origin: "marketplace" }, null));
+  assert.ok(!offersApprove({ withheld: false, hooks: 0, servers: [], origin: "agent" }, null));
+  assert.ok(needsApproval(preview({ hooks: [], servers: [], source_kind: "skill" })));
+  assert.ok(needsApproval(preview({ hooks: [], servers: [], source_kind: "folder" })));
+  assert.ok(!needsApproval(preview({ hooks: [], servers: [], source_kind: "github" })));
+  const sent: Record<string, unknown>[] = [];
+  const invoke = async (_command: string, args: Record<string, unknown>) => {
+    sent.push(args);
+    return { approved: true, kind: "counted", reason: null, cancelled: false, installed: false };
+  };
+  await approvePlugin(invoke, "notes", "approve", undefined, "skill");
+  await approvePlugin(invoke, "notes", "approve");
+  assert.deepEqual(sent, [{ name: "notes", action: "approve", kind: "skill" }, { name: "notes", action: "approve" }]);
+});
