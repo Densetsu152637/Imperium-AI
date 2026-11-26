@@ -18,6 +18,7 @@ mod workspace;
 mod writer_trees;
 
 pub use exec::{SPAWNED_MARK, shell};
+pub use files::HOSTED_UNKNOWN_WINDOW_TOKENS;
 pub use invocation::{Access, Invocation, ToolError, specs};
 pub use mentions::{
     FileMatch, FileSearch, MAX_MATCHES, find_files, fuzzy_score, mention_withheld, read_remote_file,

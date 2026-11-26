@@ -1854,6 +1854,7 @@ impl Shared {
                 verdict: Verdict::Allow,
                 updated_input: None,
                 updated_prompt: None,
+                updated_output: None,
             };
         }
         self.extensions

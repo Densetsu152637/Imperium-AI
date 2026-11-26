@@ -1,4 +1,0 @@
-// expect: lex-error L0001 at 4:1
-// expect: lex-error L0015 at 4:2
-// option: max_diagnostics 1
-~~

@@ -247,9 +247,12 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-media`      | Image (OpenAI-compatible, ComfyUI), speech, and transcription tools (implemented) |
 | `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours run in the desktop's mod frames, not here ([16](16-pets.md)) |
 | `imperium-pty`        | A shell on a pseudo terminal on all three OSes (`portable-pty`), a 1 MiB output ring and, on Linux, the per-terminal supervisor the daemon re-runs as its hidden `pty-supervisor` subcommand; no daemon wiring yet ([terminal and file panes plan](plans/terminal-file-panes.md), stage 1) |
-| `imperium-ratio`      | Ratio, the agent-harness language: the token reader is in (stage 1 of its implementation plan); standalone, not yet wired into the engine ([roadmap item 58](12-roadmap.md#next-in-order)) |
 | `imperium-core`       | The daemon (`imperium-core` binary, formerly `imperiumd`), also a library for tests |
 | `imperium-cli`        | `imperium` binary: CLI and TUI client, `imperium mcp-serve` ([20](20-claude-harness.md)), and the headless `imperium run` for evaluations ([03](03-agent-engine.md#running-evals-through-the-harness-implemented)) |
+
+Ratio, the agent-harness language, lives in its own repository,
+[Ratio](https://github.com/Densetsu152637/Ratio); Imperium will depend on its engine and
+implement the host side ([roadmap item 58](12-roadmap.md#next-in-order)).
 
 `imperium-api` depends on no other Imperium crate, and crates that only share vocabulary
 depend on it rather than on each other: `imperium-tools`, `imperium-mcp`, `imperium-web`, and

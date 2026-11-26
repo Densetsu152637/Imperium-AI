@@ -1,3 +1,0 @@
-// expect: lex-ok
-// tokens: ( dur:500ms dur:30000ms dur:300000ms dur:7200000ms ) ;!
-(500ms 30s 5m 2h)

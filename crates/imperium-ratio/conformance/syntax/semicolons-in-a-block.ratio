@@ -1,6 +1,0 @@
-// expect: lex-ok
-// tokens: kw:fn ident:f ( ) {block kw:let ident:a = int:1 ;! ident:a ;! } ;!
-fn f() {
-  let a = 1
-  a
-}

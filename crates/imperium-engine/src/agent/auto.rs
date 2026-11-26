@@ -244,10 +244,17 @@ pub(super) fn builtin_input(invocation: &Invocation) -> CallInput {
             path,
             old_string,
             new_string,
-        } => file_input(
-            path,
-            &[("old_string", old_string), ("new_string", new_string)],
-        ),
+            replace_all,
+        } => {
+            let mut fields = vec![
+                ("old_string", old_string.as_str()),
+                ("new_string", new_string.as_str()),
+            ];
+            if *replace_all {
+                fields.push(("replace_all", "true"));
+            }
+            file_input(path, &fields)
+        }
         other => match other.path() {
             Some(path) => file_input(path, &[]),
             None => Ok(format!("{{\"tool\": {}}}", quoted(other.tool_name()))),
@@ -756,6 +763,7 @@ mod tests {
             path: "a.txt".into(),
             old_string: "a".into(),
             new_string: "n".repeat(MAX_CONTENT_CHARS + 1),
+            replace_all: false,
         };
         assert_eq!(builtin_input(&long_edit), Err(TOO_LONG.to_string()));
         // A command or path too long to read whole is not classified.
