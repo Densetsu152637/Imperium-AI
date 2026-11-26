@@ -217,6 +217,7 @@ async fn wait_for(terminal: &Terminal, needle: &str) -> String {
 
 /// The number printed right after `prefix` and before `suffix` (the echoed command line holds
 /// the prefix too, followed by no digits).
+#[cfg(unix)]
 fn number_after(text: &str, prefix: &str, suffix: &str) -> Option<u32> {
     let mut rest = text;
     while let Some(at) = rest.find(prefix) {
