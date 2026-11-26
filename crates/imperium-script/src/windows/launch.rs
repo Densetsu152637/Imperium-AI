@@ -13,7 +13,9 @@
 //!    child and accepting no other client.
 //! 5. `process`: `CreateProcessAsUserW` with the token, suspended, an empty environment, the
 //!    working folder, and `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming only the three pipe ends,
-//!    so nothing else the daemon holds is inherited (N6).
+//!    so nothing else the daemon holds is inherited (N6). It is detached from any console: a
+//!    console would need a `conhost` process, which the job's one-process limit refuses (the
+//!    worker then dies with `STATUS_DLL_INIT_FAILED`).
 //! 6. `assign`: the process joins the job while it is still suspended.
 //! 7. `resume`: only then does its thread start.
 //!
@@ -60,7 +62,7 @@ use windows_sys::Win32::{
             JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
         },
         Threading::{
-            CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
+            CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, DETACHED_PROCESS,
             DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
             GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList, OpenProcessToken,
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread,
@@ -582,7 +584,7 @@ fn create_suspended(
                 1,
                 CREATE_SUSPENDED
                     | CREATE_UNICODE_ENVIRONMENT
-                    | CREATE_NO_WINDOW
+                    | DETACHED_PROCESS
                     | EXTENDED_STARTUPINFO_PRESENT,
                 environment.as_ptr().cast(),
                 folder.as_ptr(),
