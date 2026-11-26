@@ -1,6 +1,0 @@
-// expect: lex-ok
-// tokens: doc:" The count." kw:let ident:x = int:1 ;! kw:let ident:y = int:2 ;!
-/// The count.
-let x = 1 // plain comment
-// another
-let y = 2

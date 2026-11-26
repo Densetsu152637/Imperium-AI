@@ -1,4 +1,0 @@
-# Stub. Chapter 10 generates this file from the built-ins of chapter 06 at the pinned spec
-# revision (ratio-spec.lock) and CI fails when the checked-in copy drifts. Nothing consumes
-# built-ins before stage 7, so the generator and the drift check land with it; until then this
-# file stays empty of entries.

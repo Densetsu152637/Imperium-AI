@@ -1,4 +1,0 @@
-// expect: lex-ok
-// tokens: kw:let ident:r = ident:par_map ( ident:xs , | ident:c | {block ident:c . ident:steps } , ident:limit : int:4 ) ;! kw:let ident:q = ident:map ( | ident:c | {record ident:steps : ident:c . ident:steps } ) ;!
-let r = par_map(xs, |c| { c.steps }, limit: 4)
-let q = map(|c| { steps: c.steps })

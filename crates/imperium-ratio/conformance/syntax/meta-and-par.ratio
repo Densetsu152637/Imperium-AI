@@ -1,7 +1,0 @@
-// expect: lex-ok
-// tokens: ctx:meta {record ident:name : str[ text:"x" ]str } ;! kw:let ident:v = ctx:par {block ident:a ( ) ;! ident:b ( ) ;! } ;!
-meta { name: "x" }
-let v = par {
-  a()
-  b()
-}

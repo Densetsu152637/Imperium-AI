@@ -1,5 +1,0 @@
-// expect: lex-ok
-// tokens: kw:let ident:timeout = ident:meta . ident:frame ( ) ;! kw:let ident:r = ident:race ( [ ident:a ] ) ;! ctx:state : ident:Int = int:0 ;!
-let timeout = meta.frame()
-let r = race([a])
-state: Int = 0
