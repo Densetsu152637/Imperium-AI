@@ -43,7 +43,7 @@ use imperium_protocol::methods::{
 
 /// The release tag and short commit this build came from, as `--version` prints them
 /// (`0.2.281-experimental (223a0d02)`; `0.2.0-dev (<commit or unknown>)` for a local build).
-pub(crate) const BUILD_VERSION: &str = env!("IMPERIUM_BUILD_VERSION_STRING");
+const BUILD_VERSION: &str = env!("IMPERIUM_BUILD_VERSION_STRING");
 
 /// Command-line client for the Imperium daemon.
 #[derive(Debug, Parser)]
