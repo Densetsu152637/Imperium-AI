@@ -129,8 +129,15 @@ reply = pool.call({"tool": "build", "expression": "x + 1"})
 pool.close()
 if reply.get("text") != "x + 1":
     import subprocess as sp
-    probe = sp.run(make_spawner().command, input=b"", capture_output=True, timeout=60)
-    reply["stderr"] = probe.stderr.decode(errors="replace")[-2000:]
+    from imperium_cas.framing import REQUEST_CAP, encode_frame
+    from support import worker_env
+    probe = sp.run(
+        make_spawner().command + Limits().argv(),
+        input=encode_frame({"tool": "build", "expression": "x + 1"}, REQUEST_CAP),
+        capture_output=True, timeout=60, env=worker_env(),
+    )
+    reply["direct"] = [probe.returncode, probe.stdout[-300:].decode(errors="replace")]
+    reply["stderr"] = probe.stderr.decode(errors="replace")[-3000:]
 print(json.dumps(reply))
 try:
     os.execv("/bin/sh", ["sh", "-c", "exit 0"])
