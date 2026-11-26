@@ -1,3 +1,0 @@
-// expect: lex-ok
-// tokens: kw:let ident:s = str[ interp[ kw:if ident:ok {block str[ text:"yes" ]str } kw:else {block str[ text:"no" ]str } ]interp ]str ;!
-let s = "{if ok { "yes" } else { "no" }}"

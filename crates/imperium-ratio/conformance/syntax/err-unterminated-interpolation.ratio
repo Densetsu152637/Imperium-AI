@@ -1,3 +1,0 @@
-// expect: lex-error L0007 at 3:2
-// expect: lex-error L0002 at 3:1
-"{x

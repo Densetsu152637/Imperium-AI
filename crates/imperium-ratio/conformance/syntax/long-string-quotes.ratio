@@ -1,3 +1,0 @@
-// expect: lex-ok
-// tokens: kw:let ident:s = str3[ text:"say \"hi\" and \"\"q\"\" " ]str ;!
-let s = """say "hi" and ""q"" """

@@ -1,4 +1,0 @@
-// expect: lex-ok
-// tokens: kw:let ident:a = str[ ]str ;! kw:let ident:b = str3[ ]str ;!
-let a = ""
-let b = """"""
