@@ -19,7 +19,7 @@ alias: string | null,
  */
 reasoning: boolean, 
 /**
- * `llamacpp` for GGUF files, `vllm` for Hugging Face folders.
+ * `llamacpp` for GGUF files, `vllm` for Hugging Face folders, `ncm` for NCM safetensors.
  */
 runtime: "llamacpp" | "vllm" | "ncm", path: string, 
 /**
