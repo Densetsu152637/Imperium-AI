@@ -1,7 +1,7 @@
 # Plan: built-in text editor with Markdown presentation
 
-Revision: 2026-11-26, revision 2 (plan review of revision 1: B1, B2, M1 to M5, the minor findings
-and nits folded in, and the root's answers to open questions 1, 2, 3 and 7 recorded as
+Revision: 2026-11-26, revision 3 (round-2 review: N1 and the stage-text majors folded in; plan
+review of revision 1: B1, B2, M1 to M5, the minor findings and nits; and the root's answers to open questions 1, 2, 3 and 7 recorded as
 [settled decisions](#settled-decisions)); written against `experimental` at `243602ab`. Roadmap
 [item 66](../12-roadmap.md#next-in-order). Status: planned (no stage started).
 
@@ -26,7 +26,7 @@ The plan's core is three rules:
 - **Neither side's edit is lost silently.** Every save carries the hash of the bytes it was based
   on; the daemon refuses a save whose base no longer matches the file, and the editor shows the
   difference and lets the user merge, keep theirs or take the file's. An agent's full-file
-  `write_file` is refused in turn when the file changed since that session last read it.
+  `write_file` is refused in turn when the file changed since that agent last read it.
 
 Each stage below is one pull request against `experimental` of at most about 800 changed lines,
 with the docs it changes. The agent engine is this session's to change; stage E4b changes it
@@ -43,7 +43,7 @@ The root answered these on 2026-11-26; they are no longer open.
   save**: the dialog names the risk, shows the diff against the last checkpoint (or `HEAD` when
   there is none), and says when an agent changed the file in this session ([D7](#decisions)).
 - **Agents and user saves:** `write_file` **refuses a full overwrite of a file that changed since
-  this session's last `read_file` of it** (a per-session last-read hash), and the next turn may
+  that agent's last `read_file` of it** (a last-read record per agent instance), and the next turn may
   carry a note listing the files the user saved ([D10](#decisions), stage E4b).
 - **Legacy encodings** stay read-only; a later "reopen with encoding" is editable only for a file
   whose decode and encode round trip is byte-identical ([D8](#decisions)).
@@ -183,63 +183,102 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     (friction on every save, no gain over the gate); **the Tauri `fs` plugin with a scope** (a second
     path checker that must agree with the daemon's, no root identities, no link-free opening, and
     nothing for a remote daemon later).
-- **D4. Paths and opening: item 55's rules, for writing.** Paths are `{root, relative}` pairs
-  only; roots are `Workspace::roots()` and `Workspace::scratch()` with identities recorded at
-  creation; the same up-front spelling checks (no `..` past the root, absolute, drive, UNC,
-  `\\?\`, stream or reserved device names); every open through the held root `Dir` with no link
-  followed out of the root (`openat2` with `RESOLVE_BENEATH` on Linux, component by component
-  elsewhere) ([D12 of item 55](terminal-file-panes.md#decisions)). For a write additionally:
-  - the target, if it exists, is opened first (no write access yet), `fstat`ed, and must be a
-    regular file with **exactly one link** (`nlink == 1`); a FIFO, socket or device is refused
-    without opening it for writing, and a file with other hard links opens read-only with the
-    reason shown (D7);
-  - a link inside the folders that stays inside is followed: the save writes the link's target,
-    whose parent directory is opened through the held `Dir` and kept open for the rest of the save;
-  - creating a file (`create: true`) opens with `O_EXCL` (`create_new`) and creates no
-    directories; its name passes the same spelling checks;
-  - on Windows, every path component on **every** operation (read, stat, write, create, the
+- **D4. Paths and opening: item 55's rules, for writing, on a judged handle.** Paths are
+  `{root, relative}` pairs only; roots are `Workspace::roots()` and `Workspace::scratch()` with
+  identities recorded at creation; the same up-front spelling checks (no `..` past the root,
+  absolute, drive, UNC, `\\?\`, stream or reserved device names); every open through the held root
+  `Dir` with no link followed out of the root ([D12 of item 55](terminal-file-panes.md#decisions)).
+  For a write (and for `files.stat`, `files.baseline` and the editable read) the open is done in a
+  fixed order, so what is judged is exactly what is written:
+  1. **Open the parent first.** The parent directory is opened from the root one component at a
+     time, each component opened without following a link (`openat2` with `RESOLVE_BENEATH` and
+     `RESOLVE_NO_MAGICLINKS` on Linux, cap-std's no-follow open elsewhere); a component that is a
+     link inside the folders is resolved by reading it and continuing from its target, again one
+     component at a time, so no step follows a link out of the root.
+  2. **Open the target relative to the parent without following its last component**
+     (`O_NOFOLLOW`; on Windows `FILE_FLAG_OPEN_REPARSE_POINT`, refusing a reparse point). A last
+     component that is a link inside the folders is resolved as in step 1 (its target's parent
+     becomes the parent) and the target is opened again the same way. The target is opened without
+     write access first, `fstat`ed, and must be a regular file with **exactly one link**
+     (`nlink == 1`); a FIFO, socket or device is refused without opening it for writing.
+  3. **Check the device.** The target's device (volume serial on Windows) must equal the parent's,
+     so a mount point or a junction to another volume swapped in as the last component is refused.
+  4. **Judge** the parent's final path plus the target's name, and the parent's identity chain
+     (D7). On Unix the chain is built upward from the parent's descriptor with
+     `openat(fd, "..")` and `fstat` at each step, up to the file system's root, so it describes
+     the directories actually opened, not a path that might since have been renamed; on Windows
+     from the parent handle's final path, each ancestor opened by handle and its file index read.
+  5. Keep the parent open for the rest of the operation; the save's temporary file, rename and any
+     in-place write all go through it (D5). The judgement is repeated on the held parent just before
+     the rename (cheap: one final-path read and the chain).
+  - **Creating a file** (`create: true`) opens with `O_EXCL` (`create_new`) relative to the held
+    parent and creates no directories; its name passes the same spelling checks.
+  - **On Windows**, every path component on **every** operation (read, stat, write, create, the
     temporary file and the rename) is refused when it ends in a dot or a space or is a short (8.3)
-    name that differs from the component's long name; the opened handle's final path (D7) is the
-    check of record, so a spelling that slipped past these is still judged by what it opened.
+    name that differs from the component's long name; the parent's final path is the check of
+    record, so a spelling that slipped past these is still judged by what it opened.
+  - **Residual:** an attacker who can already rename directories inside the folders can move an
+    ancestor of the held parent into a guarded place between the last judgement and the rename;
+    the rename then lands there. Such an attacker can write there directly anyway; it is listed
+    under [residual risks](#residual-risks).
 
   Rejected: `Workspace::resolve_writable` (it accepts the loose spellings models write and
-  includes path grants, which are agents' permissions, not the user's folders).
+  includes path grants, which are agents' permissions, not the user's folders); **opening the
+  target by its full path and judging afterwards** (a link as the last component would be
+  followed before it could be judged).
 - **D5. Atomic replace, keeping what the file was.**
-  - **The sequence.** Under the file's lock (D6), with the parent directory held open: create a
-    temporary file in that directory through the held handle (`.<name>.imperium-<random>.tmp`,
-    `O_EXCL`); write and `sync_all` it; copy the old file's metadata onto it, handle to handle
-    (below); rename it over the target **relative to the held parent handle**; on Unix `fsync` the
-    parent directory. A crash leaves either the old or the new file, never a truncated one.
+  - **The sequence.** Under the file's lock (D6), with the parent directory held open (D4): create
+    a temporary file in that directory through the held handle (`.<name>.imperium-<random>.tmp`,
+    `O_EXCL`); write it and flush it (`sync_all`; on macOS `fcntl(F_FULLFSYNC)`, because `fsync`
+    there does not reach the disk); copy the old file's metadata onto it, handle to handle (below);
+    re-judge the parent (D4 step 5); rename it over the target **relative to the held parent**; on
+    Unix flush the parent directory (`fsync`, `F_FULLFSYNC` on macOS). A crash leaves either the old
+    or the new file, never a truncated one.
   - **Handle-relative rename.** Unix: `renameat` through the held `Dir` (cap-std's `Dir::rename`),
-    so a parent swapped for a link after it was opened cannot redirect the rename. Windows:
-    `SetFileInformationByHandle` with `FileRenameInfoEx` on the temporary file's handle,
-    `RootDirectory` set to the held parent handle, flags `FILE_RENAME_FLAG_REPLACE_IF_EXISTS` and
-    `FILE_RENAME_FLAG_POSIX_SEMANTICS`, in a new opt-in unsafe module
-    `crates/imperium-ipc/src/windows/replace.rs` (the workspace allows `unsafe` only there).
+    so a parent swapped for a link after it was opened cannot redirect the rename. Windows, in a new
+    opt-in unsafe module `crates/imperium-ipc/src/windows/replace.rs` (the workspace allows `unsafe`
+    only there), in this order, each tried only when the previous is refused as unsupported:
+    1. `SetFileInformationByHandle` with `FileRenameInfoEx` on the temporary file's handle,
+       `RootDirectory` set to the held parent handle, flags `FILE_RENAME_FLAG_REPLACE_IF_EXISTS`
+       and `FILE_RENAME_FLAG_POSIX_SEMANTICS` (NTFS and ReFS on Windows 10 1709 and later);
+    2. `FileRenameInfo` with `RootDirectory` and `ReplaceIfExists` (older NTFS builds);
+    3. the in-place write below, with a note. FAT, exFAT and SMB shares take this path: their
+       drivers refuse POSIX semantics, and SMB requires `RootDirectory` to be zero, which would
+       make the rename path-based, so it is not used.
   - **Metadata copied** from the old file's handle to the temporary file's handle before the
     rename:
-    - Linux: the mode (`fchmod`) and every extended attribute (`rustix` `flistxattr`,
-      `fgetxattr`, `fsetxattr`), which carries POSIX ACLs (`system.posix_acl_access`) and the
-      SELinux label (`security.selinux`);
+    - Linux: the mode (`fchmod`), the group when the daemon's user may set it (`fchown(fd, -1,
+      gid)`), and every extended attribute (`rustix` `flistxattr`, `fgetxattr`, `fsetxattr`),
+      which carries POSIX ACLs (`system.posix_acl_access`) and the SELinux label
+      (`security.selinux`);
     - macOS: `fcopyfile` with `COPYFILE_METADATA` (mode, ACL, extended attributes, the quarantine
-      flag included), in a new opt-in unsafe module `crates/imperium-ipc/src/macos/copy_metadata.rs`;
+      flag included) and the group as on Linux, in a new opt-in unsafe module
+      `crates/imperium-ipc/src/macos/copy_metadata.rs`;
     - Windows: the security descriptor (owner, group, DACL, label) through `GetSecurityInfo` and
       `SetSecurityInfo` on the handles, the basic attributes through `FileBasicInfo`, and every
       named stream (`Zone.Identifier` included) listed with `FileStreamInfo` and copied by opening
       each stream relative to the file handle, in `replace.rs`.
-  - **In-place fallback.** The save writes in place instead (truncate and write through the handle
-    already opened, never a path) when the file's owner is not the daemon's user (a rename would
-    change the owner), or when any metadata copy fails; the save's result `note` says so, and the
-    docs say a crash during an in-place write can leave a truncated file. Hard-linked files are not
-    written at all (D7).
+  - **Written in place instead** (with a `note` in the save's result) when: the file's owner is
+    not the daemon's user; its group cannot be restored; any metadata copy fails; the file is
+    EFS-encrypted, compressed, sparse or has an integrity stream (Windows attributes
+    `FILE_ATTRIBUTE_ENCRYPTED`, `_COMPRESSED`, `_SPARSE_FILE`, `_INTEGRITY_STREAM`, whose state a
+    new file would not carry); or the rename fell through to step 3. The docs say a crash during an
+    in-place write can leave a mixed file. Hard-linked files are not written at all (D7).
+  - **In-place without a path race.** The in-place write never reopens the file by its path:
+    Windows `ReOpenFile` on the handle already opened and judged, with write access; Linux
+    `open("/proc/self/fd/<n>", O_WRONLY)` on that descriptor; macOS `openat(parent, name,
+    O_WRONLY | O_NOFOLLOW)` followed by an `fstat` whose file id must equal the judged one
+    (refused otherwise). The new bytes are written from offset 0 over the old content, the file is
+    then truncated to the new length (`ftruncate`, `SetEndOfFile`) and flushed, so a crash before
+    the truncate leaves the new bytes followed by old ones, never a short file.
   - **Windows sharing violations** (another program or antivirus holding the target or the
     temporary file): the rename is retried after 50, 100, 200, 400 and 800 ms; still refused, the
-    save falls back to in-place if the target can be opened for writing, and otherwise fails with
+    save falls back to in-place if the handle can be reopened for writing, and otherwise fails with
     `FILE_BUSY` (D6).
   - **Leftover temporary files** (from a crash) are removed when the root is next opened: only
     names matching the pattern, only regular files with `nlink == 1`, older than a day, opened and
     removed through the held `Dir`.
-  - Rejected: **always in place** (a crash or full disk leaves a truncated file); **`ReplaceFileW`**
+  - Rejected: **always in place** (a crash or full disk leaves a mixed file); **`ReplaceFileW`**
     (it keeps ACLs and streams, but takes paths, so a parent swapped between the check and the call
     redirects it); **renaming by path** (the same race).
 - **D6. Saves compare identity and content hash; one lock per file in the daemon.**
@@ -252,9 +291,9 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     modified_ms}` and the viewer discards and re-reads from the start when a page's differ from the
     first page's.
   - **Saving.** `files.write` carries `base: {hash, file_id}` (or `null` with `create: true`).
-    Under the lock below the daemon opens the target, checks it is the same file and hashes its
-    bytes; if either differs it writes nothing and fails with the new error `FILE_CONFLICT` (the
-    next free code, `-32010` today), whose data is the current `{hash, file_id, size,
+    Under the lock below the daemon opens the target (D4), checks it is the same file and hashes
+    its bytes; if either differs it writes nothing and fails with the new error `FILE_CONFLICT`
+    (the next free code, `-32010` today), whose data is the current `{hash, file_id, size,
     modified_ms}` (or `deleted`). `etag` (item 55's size, time and partial hash) is used only to
     skip re-reads, never to accept a save.
   - **One lock per file, shared with every writer in the daemon.** A new
@@ -262,18 +301,25 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     so the table does not grow). The key is the **final path of the opened handle** (Linux:
     `readlink` of `/proc/self/fd/<n>`; macOS: `fcntl(F_GETPATH)`; Windows:
     `GetFinalPathNameByHandleW` with `FILE_NAME_NORMALIZED`), case-folded on a case-insensitive
-    volume; for a file that does not exist yet it is the parent's final path joined with the
-    name. Not the requested spelling (aliases would get different locks) and not the file id (an
-    atomic replace changes it). The holders:
+    volume. For a file that does not exist yet it is the final path of its **nearest existing
+    ancestor** joined with the remaining components (case-folded the same way), so two spellings
+    of a missing file in a missing folder get one key. Not the requested spelling (aliases would
+    get different locks) and not the file id (an atomic replace changes it). The holders:
     - `files.write`, around compare and replace; it waits at most 5 s and then fails with the new
       error `FILE_BUSY` (the next free code after `FILE_CONFLICT`);
     - `write_file` and `edit_file` (`imperium-tools/src/files.rs`), around their read and write.
       They take it **after** the permission check, any approval and the `tool.before` hook have
       finished (those run in the engine's dispatch before the tool body), so a waiting approval
-      never holds a lock;
+      never holds a lock, and **re-open the file after taking it** (the key is computed from a first
+      open; the read and write use a fresh open made under the lock, and if its final path differs
+      from the key the tool drops the lock and starts again, at most three times);
     - `session.rewind` (restoring a checkpoint) and `session.review_hunk` when it reverts, around
       each file they rewrite; an operation that rewrites several files takes all their locks first,
-      **in sorted key order**, so two multi-file operations cannot deadlock.
+      **in sorted key order**, so two multi-file operations cannot deadlock. A rewind takes its
+      locks **only once the session's turn and every subagent are idle or stopped** (it already
+      stops the turn first), and never waits on an in-flight tool while holding any lock: if a tool
+      still holds one of its keys, it releases everything it took, waits for the tool to finish and
+      starts again.
   - A command (`run_command`, a build, another editor) can still change the file between the
     compare and the rename; that window is the time to hash and rename and is a stated
     [residual risk](#residual-risks).
@@ -282,26 +328,46 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     would block agents' tools on Windows); **paging editable files** (a page boundary can fall
     between two versions of the file).
 - **D7. Guarded targets, judged on what was opened.**
-  - **How a target is judged.** After D4 has opened the target (or its parent, for a create), the
-    daemon takes the handle's **final path** (as for the lock key, D6) and the **file identity of
-    every directory on it** from the root down, and judges those, never the requested spelling.
-    The name checks reuse the safety floor's own resolved-form check
-    (`imperium_policy::permissions::safety_floor` with `CallKind::Edit` on the final path, which
-    already folds case on Windows and macOS and covers `.git` anywhere in the path and the floor's
-    file list), so the editor and agents' tools cannot drift. Because the final path comes from the
-    handle, a symbolic link inside a root to `.git/hooks/pre-commit`, a short name (`GIT~1`), a
-    trailing dot (`.git.`) and a case variant (`.GIT`) are all judged as the `.git` folder they
-    opened.
-  - **Identity, not only names.** The daemon records at start the file identities of `<data>` and
-    `<config>`, and at root open the identities of each repository's git folder and common folder
-    (`git rev-parse --git-dir --git-common-dir`, through `safe_git`); a target whose directory
-    chain contains one of those identities is refused whatever it is called (a bind mount or a
-    folder renamed by a link).
+  - **How a target is judged.** D4 gives the parent's final path, the target's name and the
+    parent's identity chain; those are judged, never the requested spelling. The name checks reuse
+    the safety floor's own resolved-form check (`imperium_policy::permissions::safety_floor` with
+    `CallKind::Edit` on the final path, which already folds case on Windows and macOS and covers
+    `.git` anywhere in the path and the floor's file list), so the editor and agents' tools cannot
+    drift. Because the final path comes from the handle, a symbolic link inside a root to
+    `.git/hooks/pre-commit`, a short name (`GIT~1`), a trailing dot (`.git.`) and a case variant
+    (`.GIT`) are all judged as the `.git` folder they opened.
+  - **Identity, not only names.** The daemon records at start the file identities of `<data>`,
+    `<config>` and of the parts of `<data>` that hold sessions' files (below), and at root open the
+    identities of each repository's git folder and common folder (`git rev-parse --git-dir
+    --git-common-dir`, through `safe_git`). A directory in the target's identity chain that equals
+    one of the refused identities is refused whatever it is called (a bind mount, or a folder
+    reached through a link).
+  - **The daemon's folders, with the parts that are sessions' folders allowed.** `<data>` holds
+    session roots, so refusing all of it would make default sessions read-only:
+    `workspaces.root` (by default `<data>/workspaces`) holds the Home environment's workspace and
+    every session's scratch folder, and `<data>/worktrees` (and the configured worktree folders)
+    holds auto-fix and data-mode worktrees. The rule is therefore: a target whose identity chain
+    contains `<data>` or `<config>` is refused **unless** the chain, below that point, passes
+    through the identity of `workspaces.root` or of a worktree folder, which are judged as ordinary
+    session folders (D4 has already confined the target to a root of this session). Named, so the
+    docs and tests can list them, the refused parts are: `daemon.json`, `ipc/`, `secrets.*`
+    (`secrets.enc`, `secrets.key`, `secrets.lock`, `secrets.backend`), `devices.json`, `remotes/`,
+    `marketplaces/`, the plugin records and approvals (`plugin-installs.json`,
+    `plugin-migration.json`, `marketplaces.json`, `mod-approvals.json`), `mods/`, `plugins/`,
+    `config.toml`, sessions' journals and every other file of `<data>` and `<config>` outside the
+    allowed folders.
   - **Hard refusals** (`-32005`, and the file opens read-only with the reason): anything in a
-    `.git` folder or a repository's git or common folder; anything in `<data>` or `<config>`
-    (mods, plugins, approvals, `daemon.json`); a file with more than one hard link (its other names
-    may be in a guarded place, and an in-place write would change them all); a file the editor
-    cannot decode losslessly (D8).
+    `.git` folder or a repository's git or common folder; the daemon's folders as above; a file
+    the editor cannot decode losslessly (D8); a file with **more than one hard link**, whose reason
+    reads "This file has other names (hard links), as files in package stores such as pnpm's and
+    uv's do; editing it here would change them too." A file system that reports `nlink == 1` for
+    every file (some network and FUSE file systems) passes this check; that is a safe split,
+    because the save then replaces only this name (D5's rename) and the other names keep the old
+    content. On FUSE and NFS file systems (found from `fstatfs`), whose link counts may be
+    synthetic, the in-place fallback is refused rather than taken, so a save there that cannot
+    rename fails with the reason instead of writing through other names. SMB shares report the
+    server's own link count (`FileStandardInformation`), so the check holds there and their
+    in-place saves (D5) are allowed.
   - **Secret files** (the safety floor's file list: `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
     `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc` and the rest) are editable after a
     **one-time confirmation per tab** ("This file holds secrets. Agents ask before writing it.
@@ -313,6 +379,8 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     project run"), shows the diff between the buffer and the file at the last checkpoint (or
     `HEAD`, or "new file"), fetched with the new `files.baseline`, and says "An agent changed this
     file in this session" when one did. `files.write` requires `confirmed: ["harness"]`.
+    `files.baseline` applies the same root confinement and opening as `files.read` and is refused
+    to a phone.
   - The confirmations are checked by the daemon so a webview bug cannot skip them, but they are
     the user's own guard against surprises, not a boundary: the gate (D3) is the boundary.
   - Agent deny rules do not apply: they say what agents may touch, and the editor is the user's, as
@@ -379,25 +447,52 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     tab left open); **always reloading** (loses unsaved work); **last writer wins** (the item's
     requirement).
 - **D10. Agents learn about user saves.**
-  - **Stale full overwrites are refused.** Each session keeps a **last-read hash** per file (by
-    lock key, D6): `read_file` records the SHA-256 of the whole file as it was when read (a paged
-    read records the hash of the file at the first page), and `write_file` and `edit_file` record
-    the hash of what they wrote. `write_file` over an **existing** file whose current hash differs
-    from the session's recorded one is refused with a message the model can act on ("`src/lib.rs`
-    changed since you last read it (saved by the user in the editor); read it again before
-    replacing it"). A file the session never read is written as today (no behaviour change for
-    new files or first writes), and `edit_file` is unchanged (it re-reads and matches exact text).
-    Subagents share their session's map; a writer subagent in its own worktree has its own paths.
+  - **Stale full overwrites are refused.** Each **agent instance** (the session's root agent, and
+    each subagent, keyed by session id plus agent id) keeps a **last-read record** per file, by
+    lock key (D6):
+    - `read_file` records the SHA-256 of the whole file as it was when read, for files up to
+      4 MiB; above that it records `{file_id, size, modified_ms}` instead of a hash, and a paged
+      read whose pages disagree on those records `inconsistent`;
+    - `write_file` and `edit_file` record what they wrote.
+    `write_file` over an **existing** file is refused when the current file differs from the
+    record (by hash, or by `{file_id, size, modified_ms}` above 4 MiB) or the record is
+    `inconsistent`, with a message the model can act on: "`src/lib.rs` changed since you last read
+    it; read it again before replacing it". The words "(saved by the user in the editor)" are added
+    only when the daemon's record of user saves (below) shows a `files.write` of that file whose
+    resulting hash equals the current one. A file the agent instance never read is written as today
+    (no behaviour change for new files or first writes), and `edit_file` is unchanged (it re-reads
+    and matches exact text).
+  - **Per agent, not per session.** Two parallel subagents A and B that each read a file, after
+    which A writes it, leave B's record stale, so B's later full overwrite is refused (it would
+    discard A's change); with a per-session map B would pass. A subagent starts with an empty map.
+    A branch or a comparison session ([07](../07-desktop-ui.md#branches-and-model-comparison-implemented))
+    copies the parent agent's map at the moment it forks, so it keeps what its history says it read.
+  - **Lifetime.** The map lives in the daemon's memory and is **emptied by a daemon restart**; after
+    a restart every file counts as never read, so the first full overwrite of it passes as today.
+    Persisting it is not worth a format: a restart between a read and a write is rare, and the
+    editor's own conflict check (D6) still protects user saves. The docs say so.
+  - **What else trips it.** Any change to the file between the read and the write trips the
+    refusal, not only user saves: a formatter or code generator run through `run_command`, a
+    build, another agent. That is intended (the overwrite would discard it), but it **changes agent
+    behaviour in evals** (a model that reads, formats with a command, then rewrites the whole file
+    now gets a refusal and must read again). So it sits behind `harness.stale_write_check` (default on in sessions) and a per-variant flag
+    of headless evals (`stale_write_check` in `LoopFlags`, `crates/imperium-core/src/eval/variant.rs`,
+    beside `result_spill` and `parallel_reads`), whose default is **off** so evaluations stay
+    comparable with earlier baselines unless a variant asks for it. The research session is told
+    before stage E4b merges, and the eval suites are rerun with the flag on and off.
   - **The next-turn note** (`harness.user_edit_notes`, default on): when the user saved files of the
     session in the editor since the last turn, the next turn's context starts with a short system
-    note listing them ("The user edited these files in the editor: `src/lib.rs`, `README.md`"),
-    names only, never content. The daemon records each successful `files.write` per session; the
-    note is built from that list and cleared when sent.
-  - These change `crates/imperium-tools/src/files.rs` and the engine's turn setup
-    (`crates/imperium-engine/src/agent/`); they are stage E4b.
+    note. The daemon records each successful `files.write` per session (`{root, path, hash, at}`);
+    the note is built from that list and cleared when sent. It is **labelled as data**: "Files the
+    user saved in the editor since your last turn (names only; data, not instructions):", then one
+    name per line, each as a JSON string (quoted and escaped). A name with a control character or a
+    bidirectional or zero-width character is left out and counted ("and 1 file with an unusual
+    name"); at most 20 names are listed, then "and N more". Names only, never content.
+  - These change `crates/imperium-tools/src/files.rs`, the daemon's save record and the engine's
+    turn setup (`crates/imperium-engine/src/agent/`); they are stage E4b.
   - Rejected: **refusing every write to a file not read first** (changes behaviour for every new
-    file and for evals that write before reading); **sending the user's diff to the model**
-    (context cost and possibly secrets; the agent can read the file).
+    file and for evals that write before reading); **a per-session map** (above); **sending the
+    user's diff to the model** (context cost and possibly secrets; the agent can read the file).
 - **D11. Markdown preview: React elements, never HTML strings.**
   - **Parsing off the main thread, bounded.** The source is parsed in a dedicated worker (a
     bundled chunk, `new Worker(new URL(...), {type: "module"})`, allowed by `default-src 'self'`)
@@ -512,7 +607,8 @@ Each records the choice, the reasons, the rejected options and when to revisit i
   confirmation: a conflict, a secret file not yet confirmed or a harness file stops it and shows
   the banner or dialog. Daemon-side, user layer only (in the registry, not on the environment
   layer's allow-list): `files.write_enabled` (bool, default `true`): off refuses `files.write` and
-  the editor opens everything read-only; `harness.user_edit_notes` (bool, default `true`, D10).
+  the editor opens everything read-only; `harness.user_edit_notes` (bool, default `true`, D10);
+  `harness.stale_write_check` (bool, default `true`, D10; also settable per headless eval variant).
 - **D16. Built-in, closed to mods and the phone; buffers in memory only.** The Files panel stays a
   built-in panel that takes no modules ([D15 of item 55](terminal-file-panes.md#decisions)); no mod
   permission reaches buffers or `files_write`. A paired phone is refused `files.write`,
@@ -612,7 +708,8 @@ user's own registry hive (writable by any same-user process).
    D5).
 5. **Writes into guarded places by another name** (D7): an inside link to `.git/hooks`, a hard
    link to a hook or to a file outside, `.GIT`, `GIT~1`, `.git.`, a bind mount of `<data>`; all
-   judged on the final path and directory identities.
+   judged on the final path and directory identities, with the parts of `<data>` that are session
+   folders (`workspaces.root`, the worktree folders) allowed by identity.
 6. **Hostile Markdown** (D11): raw HTML shown as text, an element allowlist, no anchors at all,
    scheme allowlist with confirmation, no remote images, SVG not rendered, local images by magic
    bytes only, inside the file's root, capped and lazy, prefixed ids, parsing in a bounded worker.
@@ -636,8 +733,15 @@ user's own registry hive (writable by any same-user process).
 - **An evading same-user process** can drive the app's window or detach from the daemon to pass
   `may_grant` (item 55's residual risk, unchanged); it can also set `HKLM` WebView2 policy only
   with an administrator's rights.
-- **In-place fallback** (D5): when the owner differs or metadata cannot be copied, a crash during
-  the write can leave a truncated file; the save's note says it was written in place.
+- **In-place fallback** (D5): when the owner or group differs, metadata cannot be copied, the file
+  is encrypted, compressed, sparse or has an integrity stream, or the volume cannot rename by
+  handle (FAT, exFAT, SMB), a crash during the write can leave the new bytes followed by old ones;
+  the save's note says it was written in place.
+- **An ancestor moved into a guarded place** (D4): someone who can already rename directories
+  inside the session's folders can move an ancestor of the held parent into a guarded place
+  between the last judgement and the rename. They could write there directly.
+- **Agents' last-read records are lost on a daemon restart** (D10): the first full overwrite after
+  a restart is not checked against an earlier read.
 - **macOS has no `RESOLVE_BENEATH`;** the component walk and the held parent handle cover it, as in
   item 55.
 
@@ -662,7 +766,8 @@ requests may take the next ones first) and updates `PROTOCOL_VERSION`,
 with the reason; a guarded file without its confirmation gets `-32005` with `data: {needs}`.
 `files.stat` and `files.baseline` are answered to any full client, like the other reads, and
 refused to a phone. None is offered to agents. Native (Tauri) command: `files_write`, the same
-arguments, relayed (stage E2). Config: `files.write_enabled`, `harness.user_edit_notes` (D15).
+arguments, relayed (stage E2). Config: `files.write_enabled`, `harness.user_edit_notes`,
+`harness.stale_write_check` (D15).
 
 Not added: a `files.changed` notification (the editor polls, D9), `files.delete`, `files.rename`.
 
@@ -708,10 +813,17 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 
 - Objective: `FileContent`'s new fields and the whole-file read for editable text (D6, D8);
   page identity on paged reads; `files.stat` and `files.baseline` (protocol minor at merge);
-  `imperium-tools/src/file_locks.rs` with final-path keys (D6), taken by `write_file` and
-  `edit_file` after dispatch and by `session.rewind` and `session.review_hunk`'s revert in sorted
-  key order; the guarded-target judgement of D7 as a function over an opened handle, calling the
-  safety floor on the final path; the `test-hooks` feature and its barriers.
+  the judged open of D4 (parent first, one component at a time; the target relative to it without
+  following its last component; the device check; the identity chain built upward with
+  `openat(fd, "..")` on Unix and by handle on Windows), used by `files.read`'s editable read,
+  `files.stat`, `files.baseline` and later `files.write`;
+  `imperium-tools/src/file_locks.rs` with final-path keys (nearest existing ancestor for a missing
+  file, D6), taken by `write_file` and `edit_file` after dispatch with a re-open under the lock,
+  and by `session.rewind` (only once the turn and subagents are idle or stopped, never waiting on a
+  tool while holding a lock) and `session.review_hunk`'s revert, in sorted key order; the
+  guarded-target judgement of D7 as a function over the judged handle, calling the safety floor on
+  the final path, with the identities of `<data>`, `<config>`, `workspaces.root` and the worktree
+  folders recorded at daemon start; the `test-hooks` feature and its barriers.
 - Depends on: item 55 stage 6a.
 - Owned paths: `crates/imperium-core/src/files.rs`, `rpc/files.rs`, `src/state/` (rewind),
   `src/review.rs` (hunk revert), `Cargo.toml` (`test-hooks`), `tests/files.rs`, `tests/phone.rs`,
@@ -721,29 +833,47 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   `docs/02-architecture.md`.
 - Acceptance checks: `cargo test -p imperium-core --test files --test phone` and
   `cargo test -p imperium-tools` on the matrix:
-  - `hash` equals the SHA-256 of the bytes on disk and the editable read is one response;
-    **torn read:** with the read parked at `after_open`, the test rewrites the file and releases
-    it, and the returned text and hash still describe one version (the old one, read through the
-    already-open handle, or a refusal), never a mix; **paged read:** a 6 MiB file rewritten
+  - the editable read is one response and its `hash` equals `sha256` of **exactly the bytes it
+    returned** (the test encodes the returned text back with the reported encoding and BOM and
+    hashes that); **torn read:** with the read parked at `after_open`, the test rewrites the file
+    (in place, so the open handle sees the change) and releases it, and the assertion
+    `hash == sha256(returned bytes)` still holds, whatever mix of versions the bytes are; stage E1b
+    shows that a save based on such a read conflicts; **paged read:** a 6 MiB file rewritten
     between the first and second page reports a different `file_id`, `size` or `modified_ms` on
     the second page;
   - `eol` is `lf`, `crlf`, `mixed` (with the majority) and `none` for the four fixtures, and a lone
     CR is `mixed`; UTF-8 with BOM, UTF-16 LE and BE with BOM report their encoding and `bom`;
     invalid UTF-8 and BOM-less UTF-16 report `writable: false` with the reason;
   - `.env` reports `needs: secret`; `.imperium/config.toml`, `.claude/settings.json`,
-    `.mcp.json` and `.claude-plugin/plugin.json` report `needs: harness`; `.git/config` and a file
-    in `<data>` placed under a root report `writable: false`; a 5 MiB file reports
-    `writable: false`;
+    `.mcp.json` and `.claude-plugin/plugin.json` report `needs: harness`; `.git/config` reports
+    `writable: false`; a 5 MiB file reports `writable: false`; a file with a second hard link
+    reports `writable: false` with the package-store reason;
+  - **the daemon's folders (N1):** with `<data>` and `workspaces.root` in a temporary folder as the
+    daemon's defaults lay them out, a file in a session's scratch folder, a file in the Home
+    environment's workspace and a file in a worktree under `<data>/worktrees` report
+    `writable: true`; `daemon.json` reached through a bind mount of `<data>` placed under a root
+    (Linux) reports `writable: false` (refused by identity), and so do `ipc/`, `secrets.enc`,
+    `devices.json`, `remotes/x.json`, `mods/x`, `plugins/x` and `config.toml` reached the same way;
+  - **judged open:** a bind mount (Linux) or junction to another volume (Windows) as the last
+    component is refused by the device check; an inside link as the last component is judged at
+    its target; with the open parked at `after_parent_open`, an ancestor renamed away still gives
+    the identity chain of the directories actually opened;
   - `files.stat` of 51 files is refused, of 50 answers, of a removed file says `exists: false`;
     `files.baseline` returns the checkpoint text, `HEAD` when there is no checkpoint, `none` for a
-    new file, and `agent_changed_this_session` after a scripted `edit_file`;
+    new file, and `agent_changed_this_session` after a scripted `edit_file`; `files.baseline` of
+    `../outside.txt`, an absolute path and a link to outside is refused like `files.read`;
   - **lock keys:** `src/a.txt`, `SRC/A.TXT` (on a case-insensitive volume) and an inside link to it
-    get the same key; the key survives an atomic replace;
+    get the same key; the key survives an atomic replace; for a missing file in a missing folder,
+    `new/dir/x.txt` and `NEW/dir/x.txt` (case-insensitive volume) get the same key, built from the
+    nearest existing ancestor;
   - **lock holders:** two `edit_file` calls appending to one file from two tasks both land; an
     `edit_file` waiting on approval holds no lock (a parallel `files.stat` and a rewind proceed);
+    an `edit_file` whose target is swapped for another inside file between computing the key and
+    taking the lock (a barrier) re-opens, sees the new final path and retries with the right key;
     a `session.rewind` of files `b` and `a` and a hunk revert of `a` and `b` started together
-    finish without deadlock (taken in sorted order, checked with barriers); the lock table is empty
-    after all finish;
+    finish without deadlock (taken in sorted order, checked with barriers); a rewind requested
+    while a tool holds one of its keys stops the turn, takes no lock until the tool has finished,
+    and completes; the lock table is empty after all finish;
   - the phone is refused `files.stat` and `files.baseline`; the floor's existing tests pass.
 - Size: about 800 lines.
 - Status: pending
@@ -755,8 +885,13 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   `app_gate.rs`, with `files.write` added as a caller and the release-build rule), the spelling
   checks on every component, the held parent, `nlink == 1` regular files only, `create` with
   `O_EXCL`, compare under the lock with the 5-second `FILE_BUSY`, the guarded-target judgement and
-  confirmations, the handle-relative atomic replace with metadata copy, `fsync` of the parent, the
-  Windows retries and the in-place fallback, leftover cleanup, encoding by `encoding` and `bom`,
+  confirmations with the daemon's allowed folders (N1), the re-judgement before the rename, the
+  handle-relative atomic replace with metadata and group copy, `F_FULLFSYNC` on macOS and the
+  parent flush, the Windows rename order (`FileRenameInfoEx` with POSIX semantics, then
+  `FileRenameInfo` with `RootDirectory`, then in place), the Windows retries, the in-place write
+  through the judged handle (`ReOpenFile`, `/proc/self/fd`, `openat` with `O_NOFOLLOW` and a file-id
+  check on macOS; write then truncate) and its triggers (owner, group, encrypted, compressed,
+  sparse, integrity stream, FAT, exFAT, SMB), leftover cleanup, encoding by `encoding` and `bom`,
   the 4 MiB caps, `FILE_CONFLICT`, `files.write_enabled`. The unsafe Windows and macOS pieces live
   in `imperium-ipc`'s opt-in modules.
 - Depends on: stage E1a; item 55 stage 2b (`app_gate.rs`).
@@ -777,7 +912,8 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   - a save with a stale `hash`, or a stale `file_id` (the file replaced by another with the same
     content), returns `FILE_CONFLICT` with the current state and leaves the file unchanged; a save of
     a deleted file returns `deleted`; a save waiting more than 5 s on a held lock returns
-    `FILE_BUSY`;
+    `FILE_BUSY`; a save whose base came from the torn read of stage E1a (a mixed version) returns
+    `FILE_CONFLICT`, because no version on disk has that hash;
   - **escapes**, each refused with nothing created or changed outside: `../`, absolute, drive,
     UNC, `\\?\`, a stream name, `NUL.txt` and the other device names, a symbolic link (or junction
     on Windows) to outside as the target and as a parent, a `create` through a link;
@@ -787,18 +923,40 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   - **guarded targets** (B1), each refused or asking as D7 says, with nothing written: an inside
     symbolic link to `.git/config`; a hard link to `.git/hooks/x` (refused for `nlink > 1`); a
     hard link to a file outside the root (refused for `nlink > 1`); `.GIT/config` (refused on every
-    OS: on a case-insensitive volume it is `.git`, on a case-sensitive one the floor's check is
-    applied to the final path with folding); `GIT~1/config` on Windows with short names enabled on
-    the test volume (`fsutil 8dot3name set <vol> 0`); `.git./config` on Windows; a bind mount or
-    second link of `<data>` under a root on Linux (refused by identity); `.env` without
+    OS: on a case-insensitive volume it is `.git`; on Linux's case-sensitive file systems `.GIT` is
+    a different folder from `.git`, and refusing it there is **intended over-caution**, which the
+    test's name and comment say, because the floor folds case so that a repository copied from
+    Windows or macOS stays guarded); `GIT~1/config` on Windows with short names enabled on the test
+    volume (`fsutil 8dot3name set <vol> 0`); `.git./config` on Windows; `.env` without
     `confirmed: ["secret"]` (refused with `needs`) and with it (written); `.mcp.json` without and
     with `confirmed: ["harness"]`;
+  - **the daemon's folders (N1):** with the default layout in a temporary `<data>`, a save to a file
+    in a session's scratch folder, to a file in the Home environment's workspace and to a file in a
+    worktree under `<data>/worktrees` succeeds; a save to `daemon.json` reached through a bind mount
+    of `<data>` placed under a root (Linux) is refused by identity and `daemon.json` is unchanged;
+  - **re-judgement:** with the save parked at `before_rename`, the test renames the target's parent
+    into a `.git` folder of the same root and releases; the re-judgement refuses the rename and
+    nothing is written there;
   - **metadata:** on Linux a file with mode `0640`, a `user.test` extended attribute and a POSIX
     ACL keeps all three; on macOS a file with `com.apple.quarantine` and an ACL entry keeps both; on
     Windows a file with an explicit DACL entry, the read-only attribute cleared and a
-    `Zone.Identifier` stream keeps the DACL entry and the stream; a file owned by another user
-    (Linux, made with the runner's `sudo`) is written in place with a `note`; a metadata copy made
-    to fail through a test hook falls back to in-place with a `note`;
+    `Zone.Identifier` stream keeps the DACL entry and the stream; a file whose group differs from
+    the user's primary group keeps it (Linux and macOS, a supplementary group of the runner's
+    user); a file owned by another user (Linux, made with the runner's `sudo`) is written in place
+    with a `note`; on Windows a compressed file (`compact /c`) and a sparse file (`fsutil sparse
+    setflag`) are written in place with a `note` and keep their attribute; a metadata copy made to
+    fail through a test hook falls back to in-place with a `note`;
+  - **in place without a path race:** with an in-place save parked after the judgement, the test
+    replaces the file's name with a link to outside (Unix) or another file (Windows) and releases;
+    the write goes to the judged file (Windows `ReOpenFile`, Linux `/proc/self/fd`) or is refused
+    by the file-id check (macOS), and nothing outside changes; a shorter new text leaves no old
+    bytes after it (the truncate ran);
+  - **Windows rename order:** with `FileRenameInfoEx` made to fail as unsupported through a test
+    hook, the save uses `FileRenameInfo` with `RootDirectory`; with both failing, it writes in
+    place with a `note`; on an exFAT volume (a VHD the test creates and mounts with
+    `New-VHD`/`Mount-VHD` or `diskpart` when the runner allows it) and on an SMB loopback share
+    (`New-SmbShare` on `\\localhost\`) the save writes in place with a `note`; if the runner allows
+    neither, those two are named known gaps and the hook-driven fallbacks still run;
   - **crash and cleanup:** a save stopped at `before_rename` and abandoned leaves the original
     intact; the leftover is removed when the root is next opened; a leftover-looking name that is a
     directory, a link or has two hard links is left alone;
@@ -936,26 +1094,47 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 
 ### Stage E4b: Agents learn about user saves
 
-- Objective: D10: the per-session last-read hash map (`read_file`, `write_file` and `edit_file`
-  record; keyed by lock key), `write_file`'s refusal of a full overwrite of an existing file
-  changed since the session's last read, the daemon's per-session list of user saves, and the
-  next-turn note behind `harness.user_edit_notes`.
+- Objective: D10: the last-read records per agent instance (session id plus agent id; keyed by
+  lock key; a hash up to 4 MiB, `{file_id, size, modified_ms}` above it, `inconsistent` when pages
+  disagree), copied on branch and comparison forks and emptied by a restart; `write_file`'s
+  refusal of a full overwrite of an existing file changed since that agent's last read, with the
+  "saved by the user" wording only when the daemon's save record matches; the switch
+  `harness.stale_write_check` and the eval variants' `stale_write_check` flag (default off); the daemon's
+  per-session record of user saves; and the next-turn note behind `harness.user_edit_notes`,
+  labelled as data, with names as JSON strings, unusual names left out and counted, and at most
+  20 names. Before it merges, the research session is told that `write_file` behaves differently
+  and the eval suites are rerun with the check on and off.
 - Depends on: stages E1a and E1b.
-- Owned paths: `crates/imperium-tools/src/files.rs`, `src/workspace.rs` (the map's home on the
-  session's workspace), `crates/imperium-engine/src/agent/` (the turn's opening note),
-  `crates/imperium-core/src/files/write.rs` (recording saves), `crates/imperium-config/src/settings.rs`
-  and `registry.rs`, the tools' and engine's tests, `docs/03-agent-engine.md`,
-  `docs/05-tools-and-isolation.md`, `docs/10-configuration.md`.
+- Owned paths: `crates/imperium-tools/src/files.rs`, `src/workspace.rs` and a new
+  `src/last_read.rs` (the records, held per agent instance), `crates/imperium-engine/src/agent/`
+  (the turn's opening note, the fork copy, the per-agent handle), `crates/imperium-core/src/eval/variant.rs`
+  (the variant flag), `crates/imperium-core/src/files/write.rs` (recording saves),
+  `crates/imperium-config/src/settings.rs` and `registry.rs`, the tools' and engine's tests,
+  `docs/03-agent-engine.md`, `docs/05-tools-and-isolation.md`, `docs/10-configuration.md`.
 - Acceptance checks: `cargo test -p imperium-tools -p imperium-engine -p imperium-core` on the
-  matrix: a `read_file`, then a user `files.write`, then a `write_file` of the same file is refused
-  with the message naming the change and the file is unchanged; after a fresh `read_file` the
-  `write_file` succeeds; a `write_file` of a new file and of an existing file the session never
-  read succeed as today; an `edit_file` after a user save applies to the saved text; a subagent
-  shares its session's map; with the setting on, a turn after two user saves starts with a note
-  naming both files and no content, and the next turn has none; with it off, no note. The
-  headless eval runner's existing tests pass unchanged (no eval writes over a file changed under
-  it).
-- Size: about 500 lines.
+  matrix:
+  - a `read_file`, then a user `files.write`, then a `write_file` of the same file is refused with
+    "(saved by the user in the editor)" and the file is unchanged; after a fresh `read_file` the
+    `write_file` succeeds;
+  - a `read_file`, then a change by a scripted `run_command` (a formatter), then a `write_file` is
+    refused **without** the user wording; with `harness.stale_write_check = false` it succeeds;
+  - **parallel subagents:** subagents A and B both read `f`; A writes `f`; B's full `write_file` of
+    `f` is refused and B's after a fresh read succeeds; A's own second write (its record updated by
+    its write) succeeds;
+  - a branch forked after a read keeps the record (its write over an unchanged file succeeds, over
+    a changed one is refused); a new subagent starts empty;
+  - a file over 4 MiB: unchanged since the read, the write succeeds; with `modified_ms` changed, it
+    is refused; a paged read whose pages disagree records `inconsistent` and the write is refused;
+  - after a daemon restart (the map dropped) the first write passes, as documented;
+  - a `write_file` of a new file and of an existing file never read succeed as today; an
+    `edit_file` after a user save applies to the saved text;
+  - **the note:** with the setting on, a turn after two user saves starts with the labelled note
+    naming both files as JSON strings and no content, and the next turn has none; a saved file named
+    with a right-to-left override or a newline is left out and counted; 25 saves list 20 names and
+    "and 5 more"; with the setting off, no note;
+  - a headless eval variant without the flag shows the old behaviour (its default is off) and one
+    with it refuses as a session does; the eval runner's existing tests pass unchanged.
+- Size: about 650 lines.
 - Status: pending
 - Outcome: -
 
