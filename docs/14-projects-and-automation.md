@@ -1224,8 +1224,8 @@ the pull request differs from the saved status. A record without the key (writte
 loads as an unbound session, and a record that does not parse is ignored. A restored link is
 checked against the session's `origin` again: one that no longer matches (the record was edited,
 or the remote changed) is dropped from the record and logged. The switches belong to the binding (`auto_fix` off, `auto_archive_on_close`
-as the setting was at bind time) and are inert until stage 7; the archive rule above still reads
-`sessions.auto_archive_on_pr_close`. A pull request opened by `session.review_pull_request` is
+as the setting was at bind time) and act from stage 7 on (below); the archive rule above still
+reads `sessions.auto_archive_on_pr_close`. A pull request opened by `session.review_pull_request` is
 bound to the session that opened it as soon as `gh` reports its link, through the same
 `origin` check as `pull_requests.bind` (a link that is not a github.com pull request of the
 session's origin is simply not bound, and the open itself is unaffected); it replaces any pull
@@ -1241,7 +1241,6 @@ state, the allowed merge methods, the auto-fix and auto-merge switches and the l
 session it lists every running session that has a pull request bound. Both read the daemon's cache
 (`pull_requests.status`); neither calls GitHub. The CLI writes every control and direction character
 as `\u{..}` (the daemon already strips them, so this is a second line of defence for a terminal).
-Not yet: turning the auto-fix switch on (a later stage).
 
 ### Auto-merge (implemented, stage 6, protocol 0.60)
 
@@ -1277,6 +1276,82 @@ off, and the first failure is sent as an `autofix.event` with status `failed`, w
 tool, hook, plugin, mod, webview frame, CLI command, project file, phone token or comment text can
 turn it on.
 
+### Review-comment wake (implemented, stage 7, protocol 0.63)
+
+With the card's *Fix CI and review comments* switch on (`pull_requests.set_monitor` with
+`auto_fix`, refused for a pull request the signed-in account did not open) and `address_review`
+in `github.autofix.responders` (a wake needs both), a new **review, review comment or conversation
+comment** on the pull request wakes the session that owns it. Review text is written by anyone who
+can comment, so nothing in it is trusted:
+
+- **Who wakes it.** Only a user with `write`, `maintain` or `admin` access, from
+  `GET /repos/{repo}/collaborators/{login}/permission` (cached 5 minutes per login, dropped at a
+  restart; a downgrade can take that long to apply). `authorAssociation` is not used, and there is
+  no "everyone" setting. Comments from others are counted on the card (`ignored_comments`) and
+  wake nothing; the user's own comments count. The daemon's own replies carry a footer marker and
+  never wake it. The poll runs with the card's poller (`github.autofix.poll_s`, at most 60 s while a
+  client shows the card), whether or not `github.autofix.enabled` is on.
+- **A cursor, no history.** The comment cursors start from what is there when the switch is turned
+  on, so only later comments wake anything; turning the switch off and on again starts over.
+  Cursors, the attempt count and the card's notice are kept in the data folder
+  (`pr-review.json`), not in the session's record, because the record is gone when the session is
+  archived or deleted. Comments are taken when the wake is dispatched, so a restart does not
+  handle them twice (a daemon that dies mid-wake loses that wake).
+- **What the model sees.** One prompt built by the daemon: the comments between two marker lines
+  with a random tag (the envelope Fix CI uses for logs), with logins, file names and text capped,
+  control and invisible characters removed, backticks turned into apostrophes and the markers' own
+  name broken, after a fixed note that it is untrusted data, never instructions. At most ten of
+  each kind per wake.
+- **Capped turn.** The woken turn runs in the stricter of the session's mode and `ask`
+  ([05](05-tools-and-isolation.md#permission-modes-implemented)): every edit, command and tool that
+  asks waits for the user, whatever allow rules, *Always this session* approvals, `accept_edits`,
+  `full` access or `auto` say; `plan` stays `plan`. On top of the mode, **every call that is not a
+  read asks, every time** (web, browser, MCP and extension tools, memory writes, `spawn_agent` and
+  `start_session`, also through `call_tool`; the list is in
+  [05](05-tools-and-isolation.md#permission-modes-implemented)). Nothing is pre-approved (stricter
+  than Fix CI, whose worktree belongs to the daemon). The cap is applied before the message is
+  sent, the session is checked again then (a turn of the user's own may have started), and the
+  wake counts only from the start of its own turn. It is held until the turn and its subagents
+  are over, and after a timeout or a stop until the turn really ends. The session's mode
+  comes back afterwards; the user's later messages are not capped. A question the model asks the
+  user waits for the user, within the turn's time limit. A wake that times out stops the session,
+  denies the requests still waiting (the daemon reports the wake as failed, so a late "allow"
+  must not run anything), and leaves the session capped until the user resumes it and the turn
+  finishes, or cancels it; a replacement session whose wake fails is stopped and has its pending
+  requests denied the same way. The replacement session is capped for its whole life and the user
+  cannot lift that: start a new session or branch to work uncapped; the session shows a "capped
+  (review wake)" badge. A wake that ends without starting its turn five times in a row (the
+  session was busy) says so in an `autofix.event` with status `failed`.
+- **Where it runs.** In the owning session's folder (loaded from its record if it is not running),
+  only if that session is bound to this pull request now and its `origin` is the repository (the
+  ledger file is not trusted to name an owner), and the folder is on the pull request's
+  branch, at or ahead of `origin/<branch>` (not behind or diverged; `origin` is fetched first) and
+  clean. A pull request from a fork is not woken at all (the branch is not one the daemon pushes
+  to): an `autofix.event` with status `stopped` says so. If a check fails, or the session is deleted or archived, the daemon starts a **new
+  unattended session** on the pull request's own worktree
+  (`<data>/worktrees/<owner>__<repo>/pr-<n>`, from the pull request's branch, in `ask` mode with
+  nothing pre-approved) and says so in the `autofix.event`; it never unarchives a session. A merged
+  or closed pull request wakes nothing. A session that is busy with a turn of its own is woken at a
+  later poll.
+- **Commit and push.** The daemon, not the model, commits (trailer `Imperium-Auto-Fix`). The push
+  **always asks**, also with `push = "auto"`, because the text that drove the change came from
+  someone else; the approval lists everything in `origin/<branch>..HEAD` (the commits that were
+  there before the wake too), flags CI configuration and git hooks, says that review comments
+  drove it, and labels the model's summary as unverified. Auto-merge is turned off before a push,
+  as for Fix CI. The push sends the commit the approval measured, by its hash, whatever `HEAD` is
+  by then, and nothing is committed if the folder left the pull request's branch during the turn.
+  Accepted residual risks: in the owning folder `git add -A` also takes files the session or the
+  user created untracked during the turn (the approval lists them), and a declined push leaves the
+  commit on the branch in that folder. The daemon's own replies are recognised by the footer
+  marker as the end of a comment by the daemon's own login, nothing else.
+- **Events and limits.** `autofix.event` carries `trigger` (`review`) and the `comment_ids` that
+  woke the session. Every wake counts toward `max_attempts_per_pr`; an accepted push resets the
+  count, and once it is reached further comments wait ("stopped") until the switch is turned off
+  and on. The card shows *Untrusted comment text was handled* after any wake until the user
+  acknowledges it (`ack_untrusted`). A pull request that is both in `[[github.watch]]` and bound
+  to a session is handled once: comments go to the bound session, and Fix CI for watched pull
+  requests is unchanged. No tool is added for the agent. Replies to the threads are stage 8.
+
 ### Events
 
 Delivered by polling the GitHub API (default, works behind NAT) or by a webhook through the
@@ -1297,7 +1372,7 @@ plugins and user hooks can react too.
 | Responder        | Does                                                                                   |
 | ---------------- | -------------------------------------------------------------------------------------- |
 | **Fix CI**       | Reads the failed job's logs, reproduces locally where possible, commits a fix to the PR branch in its own worktree, and pushes |
-| **Address review** | Applies requested changes, replies to each comment with what changed, and resolves threads it addressed |
+| **Address review** | Applies requested changes, replies to each comment with what changed, and resolves threads it addressed (applying changes is built: [review-comment wake](#review-comment-wake-implemented-stage-7-protocol-063); replies and resolving are not yet) |
 | **Resolve conflicts** | Merges the base branch in a worktree, resolves conflicts, runs checks, and pushes |
 | **Triage issue** | Labels, asks for missing details, links duplicates, and optionally opens a draft PR with a fix |
 | **Workflow failure** | Opens or updates an issue with the failure's cause, or starts Fix CI when it maps to an open PR |

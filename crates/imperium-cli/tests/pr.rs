@@ -252,6 +252,7 @@ fn hostile() -> PrStatus {
         },
         auto_archive_on_close: false,
         untrusted_handled: false,
+        ignored_comments: 0,
         updated_at: 0,
         error: Some("rate\u{feff}limited".into()),
     }

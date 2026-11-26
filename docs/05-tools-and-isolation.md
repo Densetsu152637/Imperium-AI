@@ -790,6 +790,45 @@ web or earlier sessions, `ask_user`, delegation) still run, and the app-config t
 (`set_model_card`, `install_extension`, `uninstall_extension`) count as tools that ask in `ask`
 and `plan`; `install_extension` and `uninstall_extension` ask in every other mode too.
 
+**Woken turns are capped (implemented, pull-request card stage 7).** When the daemon wakes a
+session because someone wrote a review comment on its pull request
+([14](14-projects-and-automation.md#review-comment-wake-implemented-stage-7-protocol-063)), the
+turn runs in the stricter of the session's mode and `ask`: every mode but `plan` becomes `ask`
+(allow rules, *Always this session* approvals, `accept_edits`, `full` and `auto` do not apply
+during the turn), and `plan` stays `plan`. Deny rules and the safety floor apply as always, and
+nothing is pre-approved. On top of the mode, the session is **capped** (`Permissions::cap`, held
+by `permissions::TurnCap`): **every call that is not a read asks, every time, with no exception**,
+whatever the tool's own default, an allow rule, an allow list, the session's approvals or a
+pre-approval says. That covers file writes and edits, commands, web search and fetch, browser and
+media tools, MCP and extension tools, `activate_plugin`, and the agent tools that change something
+outside the conversation: `spawn_agent`, `start_session`, `steer_agent`, `queue_agent`,
+`resume_agent`, `keep_as_knowledge`, `ask_agent`, `delegate_chunks`, `memory_remember`,
+`memory_edit` and `memory_forget`, also when reached through `call_tool`. Deny rules still refuse
+and plan mode still refuses. Reads (`read_file`, `list_dir`, `glob`, `grep`, `memory_search`,
+`memory_read`) run. `update_plan` and `update_state` are **refused** ("not available in a turn
+woken by review comments"): what they write is read again at the top of later turns and after a
+compaction, where it would be trusted, so nothing a capped turn plants outlives it; `await_tasks`,
+`list_agents`, `list_knowledge_agents`, `load_skill`, `context_load` and `ask_user` read or wait.
+The cap also counts as the safety floor, so a tool the session was started with pre-approved still
+asks. A session the daemon starts for a wake (a deleted or archived owner, or a failed checkout) is
+capped for its whole life (`SessionOptions::capped`, kept in its record). **The user cannot lift
+that cap**: to work uncapped, start a new session or branch one. The session summary says so
+(`SessionSummary.capped`), the desktop shows a "capped (review wake)" badge in the session footer,
+and a capped session's approval requests offer no "always allow" rule. If the user binds such a
+session to the pull request and turns auto-fix on, later wakes run on that standing cap. In a
+capped turn "Always this session" is not offered and is answered as a single "allow" if sent: an
+approval given under the cap would otherwise outlive it. A branch of a session that handled
+review comments carries the comment text in its history, like the session itself, and is not
+capped: the card's notice applies to it too.
+The session's rules and approvals are untouched, and the session's own mode comes back when
+the turn **and its subagents** are over. Subagents share the session's permissions, so the cap
+is held until none is working (a paused one is cancelled). If the turn does not end in time the
+session is stopped and stays capped until the turn really ends, so resuming it later does not
+run it uncapped. If a turn of the user's own got the session first, the wake message is taken
+back out of the queue and the comments are looked at again later. The user's later messages are
+**not** capped, with the comment text still in the history; the card says so until it is
+acknowledged.
+
 **The safety floor** is a built-in check that applies everywhere: no mode, allow rule, session
 approval, or unattended session's pre-approved tools lift it (plan mode refuses the call
 anyway). Each call it covers asks every time; in an unattended session (auto-fix, schedules,
@@ -1255,6 +1294,33 @@ commands must not be able to turn into daemon calls. `crates/imperium-tools/test
 runs a real sandbox in CI (Linux and macOS) to show that the endpoint file is unreadable, the
 sockets cannot be opened, a hidden file cannot be renamed or linked out, and a workspace of the
 home folder cannot write `<config>` or `<data>`.
+
+### Programs (`run_script`): the interpreter worker (implemented in part)
+
+Code mode ([plan](plans/code-mode.md), roadmap item 65) is **not reachable yet**: there is no
+`run_script` tool and no setting. What exists is the worker that will run the programs and the
+daemon-side driver, built and tested but not wired into the engine.
+
+- **The worker** is `crates/imperium-script-worker` (binary `imperium-script`): the Monty
+  interpreter behind `monty-proto`'s worker loop, in a process of its own, one per program. The
+  Monty crates are pinned to one release, exactly, in `runtimes/monty.env` and Imperium's
+  `Cargo.lock`.
+- **Confinement is applied by the worker to itself before it reads any request**, and the worker
+  exits when any part cannot be applied (fail closed). First it closes every inherited file
+  descriptor above 2, and the driver starts it in an empty folder of its own. On Linux it sets `PR_SET_NO_NEW_PRIVS`,
+  `RLIMIT_DATA` (twice the program's memory budget), Landlock where the kernel has it (no file
+  access at all) and a seccomp allowlist: reads from stdin, writes to stdout and stderr, memory,
+  futexes, clocks, `getrandom`, signals, exit, `kill` of itself and `clone` for threads only. Every
+  other system call fails, `clone3` with `ENOSYS`; another architecture kills the process. On macOS
+  it calls `sandbox_init` with a profile that starts from `(deny default)` and allows reading its
+  own binary and the system libraries and a few `sysctl` keys, so there is no file access, network,
+  process creation or `mach-lookup` (no pasteboard). macOS has no enforced memory limit at the OS level (Monty's own limit and allocator ceiling apply while no escape has happened). The Windows launch (restricted token, job
+  object, labels) is stage 1b; until then the worker refuses to run there.
+- **The driver** is `crates/imperium-script`. It starts one worker per program with an empty
+  environment, accepts only the events of the plan's allowlist (anything else kills the worker),
+  answers every OS call with an error, counts every suspension against `script_suspensions` and
+  ends the program with `AbortFeed` past it, times out a worker that stops answering, and kills the
+  worker when the program ends.
 
 ### Environment runtimes (implemented)
 

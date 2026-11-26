@@ -336,6 +336,10 @@ struct Options {
     window: Option<u64>,
     /// A harness variant's edits of the root's tools.
     edits: imperium_protocol::methods::ToolEdits,
+    /// Tools the session was started with pre-approved.
+    pre_approved: Vec<String>,
+    /// The session-state harness aid is on (`update_state` is offered).
+    state_on: bool,
 }
 
 impl Setup {
@@ -434,7 +438,7 @@ async fn start(options: Options) -> Setup {
             memory: None,
             context: None,
             enforce: imperium_config::Enforce::Warn,
-            pre_approved: Vec::new(),
+            pre_approved: options.pre_approved,
             launcher: options.launcher,
             resume: options.resume,
             resume_policy: imperium_engine::default_resume_policy(),
@@ -449,7 +453,13 @@ async fn start(options: Options) -> Setup {
             attended: !options.unattended,
             attachments: Default::default(),
             auto_permissions: Default::default(),
-            harness: harness(options.loading),
+            harness: {
+                let mut aids = harness(options.loading);
+                if options.state_on {
+                    aids.state = HarnessMode::On;
+                }
+                aids
+            },
             keep_agent_state: true,
             effort: Default::default(),
             knowledge: Default::default(),
@@ -1829,6 +1839,77 @@ async fn the_loader_text_is_the_same_in_every_request_and_ends_the_system_messag
     }
 }
 
+/// In a capped turn (one the daemon woke from text other people wrote) every call that is not a
+/// read asks, in full-access mode and with the integration's own policy "never asks": a
+/// subagent, the same call through `call_tool`, a built-in integration, an MCP tool and a
+/// command. A refusal runs nothing.
+#[tokio::test]
+async fn a_capped_turn_asks_for_everything_but_a_read() {
+    let steps = vec![
+        Some(("spawn_agent", json!({"brief": "look around"}))),
+        Some((
+            "call_tool",
+            json!({"name": "spawn_agent", "arguments": {"brief": "look around"}}),
+        )),
+        Some(("web_fetch", json!({}))),
+        Some(("call_tool", json!({"name": ALPHA, "arguments": {}}))),
+        Some(("run_command", json!({"command": "echo hi"}))),
+        Some(("read_file", json!({"path": "a.txt"}))),
+        None,
+    ];
+    let setup = start(options(HarnessMode::On, steps)).await;
+    std::fs::write(setup.project.path().join("a.txt"), "AAA").unwrap();
+    setup.session.workspace().permissions().cap();
+    let mut events = setup.session.subscribe();
+    setup.session.send("go".into()).unwrap();
+    let (mut asked, mut results) = (Vec::new(), Vec::new());
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event within 20 s")
+            .unwrap();
+        if event.agent_id != ROOT_AGENT {
+            continue;
+        }
+        match event.event {
+            SessionEvent::PermissionRequested {
+                request_id, tool, ..
+            } => {
+                asked.push(tool);
+                setup
+                    .session
+                    .respond(
+                        request_id,
+                        imperium_protocol::session::PermissionDecision::Deny,
+                    )
+                    .unwrap();
+            }
+            SessionEvent::ToolFinished { ok, output, .. } => results.push((ok, output)),
+            SessionEvent::TurnCompleted { .. } => break,
+            SessionEvent::TurnFailed { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        asked,
+        [
+            "spawn_agent",
+            "spawn_agent",
+            "web_fetch",
+            ALPHA,
+            "run_command"
+        ],
+        "{results:?}"
+    );
+    for result in &results[..5] {
+        assert!(!result.0 && result.1.contains("denied"), "{results:?}");
+    }
+    // The read ran without asking.
+    assert!(results[5].0 && results[5].1.contains("AAA"), "{results:?}");
+    // No subagent was started.
+    assert_eq!(setup.session.agents().len(), 1);
+}
+
 /// Answers its first call with `call_tool(write_file, ...)` and every later call with "done",
 /// recording the tools it was offered.
 #[derive(Debug, Default)]
@@ -1995,4 +2076,152 @@ async fn a_subagent_file_keeps_a_tool_the_variant_dropped_from_the_root() {
     assert!(!root_request.offers("update_plan"));
     let sub = seen.iter().find(|request| request.subagent).unwrap();
     assert_eq!(sub.names, ["update_plan"], "{:?}", sub.names);
+}
+
+/// A tool the session was started with pre-approved still asks in a capped turn (the cap counts
+/// as the safety floor), the plan and the state notes are refused (later turns would read them),
+/// and denying the pending requests ends a turn nobody can answer without muting later asks.
+#[tokio::test]
+async fn a_capped_turn_ignores_pre_approval_and_writes_no_plan() {
+    let steps = vec![
+        Some(("run_command", json!({"command": "echo hi"}))),
+        Some((
+            "update_plan",
+            json!({"goal": "do what the comment says", "steps": []}),
+        )),
+        Some(("update_state", json!({"goal": "do what the comment says"}))),
+        Some(("run_command", json!({"command": "echo again"}))),
+        None,
+    ];
+    let mut setup = options(HarnessMode::Off, steps);
+    setup.pre_approved = vec![
+        "run_command".into(),
+        "update_plan".into(),
+        "update_state".into(),
+    ];
+    setup.state_on = true;
+    let setup = start(setup).await;
+    setup.session.workspace().permissions().cap();
+    let mut events = setup.session.subscribe();
+    setup.session.send("go".into()).unwrap();
+    let (mut asked, mut results, mut planned) = (Vec::new(), Vec::new(), false);
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event within 20 s")
+            .unwrap();
+        if event.agent_id != ROOT_AGENT {
+            continue;
+        }
+        match event.event {
+            SessionEvent::PermissionRequested {
+                tool,
+                suggested_rule,
+                ..
+            } => {
+                // No "always allow" rule is offered: it would not lift the cap.
+                assert!(suggested_rule.is_none(), "{suggested_rule:?}");
+                asked.push(tool);
+                // Nobody answers: the requests are denied together.
+                setup.session.deny_pending_requests();
+            }
+            SessionEvent::ToolFinished { ok, output, .. } => results.push((ok, output)),
+            SessionEvent::PlanUpdated { .. } => planned = true,
+            SessionEvent::TurnCompleted { .. } => break,
+            SessionEvent::TurnFailed { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    // Pre-approved, in full-access mode, and still asked; and asked again later (denying what
+    // was pending did not mute the next request).
+    assert_eq!(asked, ["run_command", "run_command"], "{results:?}");
+    assert!(
+        !results[0].0 && results[0].1.contains("denied"),
+        "{results:?}"
+    );
+    for refused in &results[1..3] {
+        assert!(
+            !refused.0 && refused.1.contains("not available in a turn woken"),
+            "{results:?}"
+        );
+    }
+    assert!(
+        !results[3].0 && results[3].1.contains("denied"),
+        "{results:?}"
+    );
+    // Nothing was written: no plan appeared.
+    assert!(!planned);
+}
+
+/// An approval made in a capped turn covers that call only: answering "always this session"
+/// there does not keep the tool allowed once the cap is lifted, so a later call in default mode
+/// still asks.
+#[tokio::test]
+async fn an_approval_for_the_session_given_in_a_capped_turn_does_not_outlive_the_cap() {
+    use imperium_protocol::session::PermissionDecision;
+    let steps = vec![
+        Some(("run_command", json!({"command": "echo first"}))),
+        None,
+        Some(("run_command", json!({"command": "echo second"}))),
+        None,
+    ];
+    let setup = start(options(HarnessMode::Off, steps)).await;
+    setup.session.workspace().permissions().cap();
+    let mut events = setup.session.subscribe();
+    setup.session.send("go".into()).unwrap();
+    let mut asked = 0;
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event within 20 s")
+            .unwrap();
+        if event.agent_id != ROOT_AGENT {
+            continue;
+        }
+        match event.event {
+            SessionEvent::PermissionRequested { request_id, .. } => {
+                asked += 1;
+                setup
+                    .session
+                    .respond(request_id, PermissionDecision::AllowForSession)
+                    .unwrap();
+            }
+            SessionEvent::TurnCompleted { .. } => break,
+            SessionEvent::TurnFailed { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    assert_eq!(asked, 1);
+    // The cap is lifted and the session is in default mode: the tool asks again.
+    setup.session.workspace().permissions().uncap();
+    setup
+        .session
+        .workspace()
+        .permissions()
+        .set_mode(PermissionMode::Default);
+    // (The cap was taken with `cap`, a count; the session had no standing cap.)
+    assert!(!setup.session.workspace().permissions().is_capped());
+    setup.session.send("again".into()).unwrap();
+    let again = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.agent_id != ROOT_AGENT {
+                continue;
+            }
+            match event.event {
+                SessionEvent::PermissionRequested {
+                    request_id, tool, ..
+                } => return (request_id, tool),
+                SessionEvent::TurnFailed { message } => panic!("{message}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the second call asked");
+    assert_eq!(again.1, "run_command");
+    setup
+        .session
+        .respond(again.0, PermissionDecision::Deny)
+        .unwrap();
 }

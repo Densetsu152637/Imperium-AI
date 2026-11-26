@@ -77,6 +77,22 @@ impl DaemonState {
         resumed
     }
 
+    /// The session `id`, loaded from its record when it is not running (a session that was not
+    /// resumed at the last start). `None` for one that was deleted or archived.
+    pub(crate) fn load_session(&self, id: &str) -> Option<Arc<Session>> {
+        if let Some(session) = self.session(id) {
+            return Some(session);
+        }
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(self.meta_path(id)).ok()?).ok()?;
+        if meta["archived"] == true {
+            return None;
+        }
+        self.resume_from_meta(id, &meta, &self.journal_path(id), false)
+            .ok()
+            .map(|(session, _)| session)
+    }
+
     /// Continues one recorded session from its meta file and journal.
     pub(super) fn resume_from_meta(
         &self,
@@ -97,6 +113,7 @@ impl DaemonState {
                 background: meta["background"].as_bool().unwrap_or(false),
                 // Stays unattended after a restart even when its pre-approved tools are gone.
                 unattended: recorded_unattended(meta),
+                capped: meta["capped"].as_bool().unwrap_or(false),
                 run_now: meta["run_now"].as_bool().unwrap_or(false),
                 // A branch asking for a worktree of its own gets a new one.
                 worktree,
@@ -550,6 +567,11 @@ impl DaemonState {
             read_only: placement.read_only,
             started_by: placement.started_by,
             pull_request_url: self.pr_monitor.url_of(session.id()),
+            capped: session
+                .workspace()
+                .permissions()
+                .is_capped()
+                .then_some(true),
             created_at: created_at(&self.journal_path(session.id())),
             title: placement
                 .title
