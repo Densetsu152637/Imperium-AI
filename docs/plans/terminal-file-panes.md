@@ -891,6 +891,18 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     it, and sweeps again, only once its cap and 5 s have passed. Test: a supervisor that lingers
     14 s after ending its tree exits by itself, not by `SIGKILL`. N9 (plain `SIGKILL` each round)
     is not taken: the stop-then-kill rounds are tested and bounded as they are.
+  - **Who can reach a terminal (resource-caps review):** terminals are uncapped, so only the
+    installed desktop app may open or type into one; a tier-0 process that reads the endpoint
+    file (an agent's command, an MCP server, a hook, a plugin) must not. In this stage no
+    protocol method reaches the service at all, and three regression tests hold that for stage
+    2b's gate to keep: a client with the daemon's token (`Connection::new`, what loopback TCP and
+    the local socket give any token holder) gets an error for every `terminal.*` call, opens
+    nothing and types nothing into an open terminal (with a positive control); a paired phone
+    gets `-32005` for each (`tests/phone.rs`, and the phone scopes' unit test lists no
+    `terminal.`); and the mod host's request allowlist, the mod SDK, the mod frames' native side
+    and `mods.rs` name no terminal call (`apps/desktop/test/terminalScan.test.ts`). The mod host
+    APIs of `c0b3a9b8` (`sessions.list`/`selected`, `pets.list`/`strip`, `storage.get`/`set`)
+    are that same closed allowlist, answered in the webview; none reaches `terminal.*`.
   - **Deviations:** `IMPERIUM_HOME` is kept in the shell's environment (it is a path, and an
     `imperium` command in the terminal must reach this daemon); every other `IMPERIUM_*` is
     dropped, and `PWD` is set to the working folder (an inherited one names the daemon's). On
@@ -908,6 +920,10 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   and no protocol: stage 2b adds `terminal.*` on top of `open_terminal`, `attach_terminal`,
   `detach_terminal`, `close_terminal`, `terminals().list` and `Terminal::pty().subscribe`. The
   gate (D2) belongs there; until then nothing outside the daemon's process can reach a terminal.
+  Stage 2b must gate `terminal.open` and `terminal.input` (every `terminal.*`) on
+  `InstalledApp` and `may_grant` (or a desktop lease such as a per-launch secret over the app's
+  own pipe, never written to disk) and keep the three refusal tests above passing; its sentinel
+  and spawn-mark tests add the real gate's cases.
 
 ### Stage 2b: Terminal protocol and the gate
 

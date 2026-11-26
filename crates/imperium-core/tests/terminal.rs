@@ -49,6 +49,7 @@ fn main() {
         an_environment_file_cannot_choose_the_shell_or_turn_terminals_off,
         terminals_turned_off_are_refused,
         a_remote_runtime_session_and_an_archived_session_are_refused,
+        a_client_with_the_daemon_token_cannot_open_or_type_into_a_terminal,
         the_path_search_never_returns_the_working_folder_or_the_session_folders,
         unix_shell_choice,
         windows_shell_choice_ignores_comspec_and_path,
@@ -243,9 +244,11 @@ async fn start_job(terminal: &Terminal, count: u32) -> Job {
     #[cfg(unix)]
     {
         let _ = count;
+        // The job prints its own pid and becomes `sleep`: `jobs -p` in `$(...)` runs in a subshell
+        // with no jobs (dash), and bash 3.2 takes the `!` of `$!` for history expansion.
         terminal
             .pty()
-            .write(b"sleep 60 & echo JOB:$(jobs -p):END\n")
+            .write(b"sh -c 'echo JOB:$$:END; exec sleep 60' &\n")
             .unwrap();
         let mut pid = None;
         wait_until("the job's pid", || {
@@ -546,6 +549,116 @@ async fn a_remote_runtime_session_and_an_archived_session_are_refused() {
         Err(TerminalError::NoSession(_))
     ));
     assert!(fixture.state.terminals().ids().is_empty());
+}
+
+#[cfg(unix)]
+const NEWLINE: &str = "\n";
+#[cfg(windows)]
+const NEWLINE: &str = "\r\n";
+
+/// A command for [`known_shell`] whose output differs from its echo.
+fn typed(marker: &str) -> String {
+    if cfg!(windows) {
+        format!("echo {marker}-%OS%")
+    } else {
+        format!("echo {marker}-$((6*7))")
+    }
+}
+
+/// What [`typed`] prints once the shell evaluated it.
+fn evaluated(marker: &str) -> String {
+    if cfg!(windows) {
+        format!("{marker}-Windows_NT")
+    } else {
+        format!("{marker}-42")
+    }
+}
+
+/// The methods a protocol caller would use to reach a terminal, with parameters that would be
+/// valid ones.
+fn terminal_calls(session: &str, terminal: &str) -> Vec<(&'static str, serde_json::Value)> {
+    use base64::Engine;
+    let data =
+        base64::engine::general_purpose::STANDARD.encode(format!("{}{NEWLINE}", typed("AGENT")));
+    vec![
+        (
+            "terminal.open",
+            serde_json::json!({"session_id": session, "cols": 80, "rows": 24}),
+        ),
+        (
+            "terminal.create",
+            serde_json::json!({"session_id": session, "cols": 80, "rows": 24}),
+        ),
+        ("terminal.list", serde_json::json!({"session_id": session})),
+        (
+            "terminal.attach",
+            serde_json::json!({"terminal_id": terminal}),
+        ),
+        (
+            "terminal.input",
+            serde_json::json!({"terminal_id": terminal, "data": data}),
+        ),
+        (
+            "terminal.resize",
+            serde_json::json!({"terminal_id": terminal, "cols": 10, "rows": 10}),
+        ),
+        (
+            "terminal.close",
+            serde_json::json!({"terminal_id": terminal}),
+        ),
+    ]
+}
+
+/// Whatever reads the daemon's endpoint file (an agent's command at tier 0, an MCP server, a
+/// hook, a plugin, an `imperium` command an agent runs) holds the token and gets this
+/// connection, over loopback TCP or the local socket. It opens no terminal and types into none:
+/// in stage 2a no protocol method reaches the service at all, and stage 2b's `terminal.*` must
+/// keep this test passing behind the desktop-only gate (D2).
+async fn a_client_with_the_daemon_token_cannot_open_or_type_into_a_terminal() {
+    let fixture = fixture(&known_shell());
+    let session = fixture.session();
+    let terminal = fixture.open(&session).await;
+    let mut connection = imperium_core::Connection::new(Arc::clone(&fixture.state));
+    let reply =
+        |connection: &mut imperium_core::Connection, method: &str, params: serde_json::Value| {
+            let frame =
+                serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+            connection
+                .handle_text(&frame.to_string())
+                .response
+                .unwrap_or_else(|| panic!("no immediate reply to {method}"))
+                .outcome
+        };
+    let handshake = reply(
+        &mut connection,
+        "system.handshake",
+        serde_json::json!({"client": {"name": "agent", "version": "0"}, "protocol": {"major": 0, "minor": 2}}),
+    );
+    assert!(matches!(
+        handshake,
+        imperium_protocol::jsonrpc::Outcome::Result(_)
+    ));
+    for (method, params) in terminal_calls(&session, terminal.id()) {
+        let outcome = reply(&mut connection, method, params);
+        assert!(
+            matches!(outcome, imperium_protocol::jsonrpc::Outcome::Error(_)),
+            "{method} was answered: {outcome:?}"
+        );
+    }
+    // Only the terminal opened in process exists, at its size, and nothing was typed into it.
+    assert_eq!(fixture.state.terminals().ids(), [terminal.id()]);
+    assert_eq!((terminal.info().cols, terminal.info().rows), (80, 24));
+    // A positive control: input that does reach the shell is evaluated and shown.
+    terminal
+        .pty()
+        .write(format!("{}{NEWLINE}", typed("OWNER")).as_bytes())
+        .unwrap();
+    wait_for(&terminal, &evaluated("OWNER")).await;
+    assert!(
+        !output(&terminal).contains(&evaluated("AGENT")),
+        "a caller typed into the terminal"
+    );
+    fixture.state.stop_terminals(BOUND).await;
 }
 
 /// A runner for remote runtimes that runs nothing and says it worked.
