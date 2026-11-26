@@ -861,7 +861,9 @@ impl Host for RatioHost {
         let task = Task {
             handle: self
                 .runtime
-                .spawn(tokio::time::sleep_until(tokio::time::Instant::from_std(at))),
+                // The sleep is made inside the task: tokio's `Sleep` needs the runtime's
+                // context when it is created, and `timer` is called from Ratio's scheduler.
+                .spawn(sleep_until(Some(at))),
             abort_on_drop: true,
         };
         Box::pin(async move {
