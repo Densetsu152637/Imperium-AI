@@ -614,6 +614,15 @@ struct HealthLimits {
     hung_after: u32,
 }
 
+/// Whether something accepts a TCP connection at `root` (`http://host:port`) within `limit`.
+async fn accepts(root: &str, limit: Duration) -> bool {
+    let address = root.trim_start_matches("http://").trim_end_matches('/');
+    matches!(
+        tokio::time::timeout(limit, tokio::net::TcpStream::connect(address)).await,
+        Ok(Ok(_))
+    )
+}
+
 /// Asks `GET <root>/health` every `limits.every` until the server answers 503, or times out
 /// `limits.hung_after` times in a row, then records why in `poisoned` and stops. A loaded
 /// `ncm-server` answers 503 to every request, `/health` included, once its engine hit an internal
@@ -642,6 +651,12 @@ fn watch_health(
                     response
                 }
                 Err(error) if error.is_timeout() => {
+                    // A refused or unreachable port can also time out (Windows retries a
+                    // refused connect), and is left to the process check: count only a server
+                    // that accepts the connection and then does not answer.
+                    if !accepts(&root, limits.timeout).await {
+                        continue;
+                    }
                     timeouts += 1;
                     if timeouts >= limits.hung_after {
                         *poisoned.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(

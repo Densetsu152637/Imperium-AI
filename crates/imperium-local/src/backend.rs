@@ -624,7 +624,9 @@ mod tests {
     #[test]
     fn the_launch_line_matches_the_ncm_server_contract() {
         let ncm = Ncm::default();
-        let tokenizer = PathBuf::from("/models/princeps/tokenizer.json")
+        // Built the way the backend builds it, so the separator matches on Windows too.
+        let tokenizer = PathBuf::from("/models/princeps/princeps-ncm-250m.safetensors")
+            .with_file_name("tokenizer.json")
             .display()
             .to_string();
         let model = PathBuf::from("/models/princeps/princeps-ncm-250m.safetensors")
