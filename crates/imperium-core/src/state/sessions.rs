@@ -824,7 +824,13 @@ pub(super) fn copy_referenced_results(
             }
             made = true;
         }
-        std::fs::copy(entry.path(), to.join(&name))?;
+        // A new file only: a link planted under the name is never written through.
+        let mut source = std::fs::File::open(entry.path())?;
+        let mut copy = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(to.join(&name))?;
+        std::io::copy(&mut source, &mut copy)?;
     }
     Ok(())
 }
@@ -867,6 +873,58 @@ mod saved_results_tests {
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
+    }
+
+    #[tokio::test]
+    async fn a_fork_that_cannot_resume_leaves_nothing_behind_in_sessions() {
+        let config = "[models]
+default = \"fake:m\"
+[endpoints.fake]
+base_url = \"http://127.0.0.1:9/v1\"
+[workflow]
+enabled = false
+";
+        let settings = imperium_config::Config::from_layers([
+            imperium_config::Layer::defaults(),
+            imperium_config::Layer::new(
+                imperium_config::Source::User("test".into()),
+                config.parse().unwrap(),
+            ),
+        ])
+        .settings()
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let state =
+            crate::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        let (session, _) = state
+            .create_session(&folder.path().display().to_string(), None)
+            .unwrap();
+        let id = session.id().to_string();
+        let sessions = imperium_config::Paths::under(home.path())
+            .data_dir()
+            .join("sessions");
+        // A saved result in the parent, which the fork's conversation names.
+        let results = sessions.join(format!("{id}.results"));
+        std::fs::create_dir_all(&results).unwrap();
+        std::fs::write(results.join("1-grep.txt"), "the whole output").unwrap();
+        // The meta now names a workspace that is gone, so the fork cannot resume.
+        let meta_path = sessions.join(format!("{id}.meta.json"));
+        let mut meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        meta["project_dir"] = folder.path().join("gone").display().to_string().into();
+        meta.as_object_mut().unwrap().remove("environment_id");
+        std::fs::write(&meta_path, meta.to_string()).unwrap();
+        let before = files(&sessions);
+
+        let messages = format!(
+            "Full output saved to {}",
+            results.join("1-grep.txt").display()
+        );
+        let error = state.fork_session(&id, 0, Some(messages.into_bytes()));
+        assert!(error.is_err(), "the fork should not resume: {error:?}");
+        // No journal, messages, meta or results folder of the failed fork is left.
+        assert_eq!(files(&sessions), before);
     }
 
     #[test]

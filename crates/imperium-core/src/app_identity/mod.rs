@@ -1229,7 +1229,7 @@ Write things down.
     }
 
     #[test]
-    fn a_hook_that_runs_from_dot_git_is_flagged_because_the_hash_leaves_it_out() {
+    fn dot_git_is_hashed_only_when_a_hook_mentions_it() {
         for text in [
             "sh /x/p/.git/hooks/h.sh",
             "C:\\x\\.git\\h.bat",
@@ -1243,6 +1243,14 @@ Write things down.
             "a\\.git\\h.bat",
             "\\.git\\h.bat",
             "x --dir='.git'",
+            "GIT_DIR=.git sh h",
+            "x --git-dir=.git",
+            "cd .git;sh h",
+            "cd .git&&sh h",
+            "cd .git||sh h",
+            "cd .git|sh",
+            "$(cd .git)",
+            "PYTHONPATH=.git/lib",
         ] {
             assert!(crate::plugin_install::mentions_dot_git(text), "{text}");
         }
@@ -1259,27 +1267,108 @@ Write things down.
         }
         let home = home();
         let state = state_of(&home);
-        let clean = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        assert!(clean.notes.iter().all(|note| !note.contains(".git")));
+        let hash = || {
+            crate::plugin_install::inspect_folder(&state, &folder_params("p"))
+                .unwrap()
+                .sha256
+        };
+        // Every edit writes a file of a new length, so a cached hash is never reused by mistake.
+        let size = std::cell::Cell::new(0usize);
+        let edit = |relative: &str| {
+            let path = home.folder.join(".git").join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            size.set(size.get() + 1);
+            std::fs::write(path, "x".repeat(size.get())).unwrap();
+        };
+        let hook = |command: &str| {
+            let hooks = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": command}
+            ]}]}});
+            std::fs::write(home.folder.join("hooks/hooks.json"), hooks.to_string()).unwrap();
+        };
+        // Without a mention, the top-level `.git` is not content.
+        edit("h.sh");
+        let first = hash();
+        edit("h.sh");
+        assert_eq!(hash(), first);
+        // Any mention of `.git`, however the path is built, hashes all of it: an edit to
+        // `.git/refs/x` (a file git rewrites) then voids the approval.
+        for command in [
+            "sh .git/refs/x",
+            "sh .git/hooks/pre-commit",
+            "sh .git/hooks/\"../refs/x\"",
+            "cd .git/hooks && sh ../refs/x",
+            "cd .git;sh refs/x",
+            "GIT_DIR=.git sh h",
+            "sh ${CLAUDE_PLUGIN_ROOT}/.git/$X",
+            "python .git/x.lock",
+        ] {
+            hook(command);
+            for file in ["refs/x", "FETCH_HEAD", "x.lock", "hooks/pre-commit"] {
+                let last = hash();
+                edit(file);
+                let added = hash();
+                assert_ne!(added, last, "{command}: {file}");
+                edit(file);
+                assert_ne!(hash(), added, "{command}: {file}");
+            }
+        }
+        // No mention: `.git` stays out of the hash again.
+        hook("true");
+        let last = hash();
+        edit("refs/x");
+        assert_eq!(hash(), last);
+    }
+
+    #[test]
+    fn a_server_that_runs_from_dot_git_through_its_arguments_has_it_hashed() {
+        let home = home();
+        let state = state_of(&home);
+        std::fs::create_dir_all(home.folder.join(".git/refs")).unwrap();
+        let hash = || {
+            crate::plugin_install::inspect_folder(&state, &folder_params("p"))
+                .unwrap()
+                .sha256
+        };
+        // Arguments that reach `.git` from the server's own folder: `../refs/x` from `.git/hooks`.
         std::fs::write(
-            home.folder.join("hooks/hooks.json"),
-            r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"sh ${CLAUDE_PLUGIN_ROOT}/.git/h.sh"}]}]}}"#,
+            home.folder.join(".mcp.json"),
+            r#"{"mcpServers":{"s":{"command":"sh","args":["-c","cd .git/hooks && sh ../refs/x"]}}}"#,
         )
         .unwrap();
-        let flagged = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        assert!(
-            flagged
-                .notes
-                .iter()
-                .any(|note| note.contains("WARNING") && note.contains(".git"))
-        );
-        // The exclusion the warning is about: a file under the top-level `.git` is not hashed.
+        std::fs::write(home.folder.join(".git/refs/x"), "1").unwrap();
+        let first = hash();
+        std::fs::write(home.folder.join(".git/refs/x"), "22").unwrap();
+        assert_ne!(hash(), first);
+    }
+
+    #[test]
+    fn a_server_that_runs_from_dot_git_through_its_environment_has_it_hashed() {
+        let home = home();
+        let state = state_of(&home);
         std::fs::create_dir_all(home.folder.join(".git")).unwrap();
-        std::fs::write(home.folder.join(".git/h.sh"), "one").unwrap();
-        let first = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        std::fs::write(home.folder.join(".git/h.sh"), "two").unwrap();
-        let second = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        assert_eq!(first.sha256, second.sha256);
+        std::fs::write(home.folder.join(".git/x.js"), "one").unwrap();
+        let hash = || {
+            crate::plugin_install::inspect_folder(&state, &folder_params("p"))
+                .unwrap()
+                .sha256
+        };
+        std::fs::write(
+            home.folder.join(".mcp.json"),
+            r#"{"mcpServers":{"s":{"command":"node","env":{"MODE":"fast"}}}}"#,
+        )
+        .unwrap();
+        let before = hash();
+        std::fs::write(home.folder.join(".git/x.js"), "two").unwrap();
+        assert_eq!(hash(), before);
+        std::fs::write(
+            home.folder.join(".mcp.json"),
+            r#"{"mcpServers":{"s":{"command":"node","env":{"NODE_OPTIONS":"--require ./.git/x.js"}}}}"#,
+        )
+        .unwrap();
+        let first = hash();
+        std::fs::write(home.folder.join(".git/x.js"), "three").unwrap();
+        assert_ne!(hash(), first);
     }
 
     #[test]
@@ -1313,10 +1402,58 @@ Write things down.
     fn an_exact_folder_name_must_be_one_plain_name() {
         let home = home();
         let state = state_of(&home);
-        // A path or a name with a separator never names a folder, exact or not.
+        // A path or a name with a separator never names a folder.
         assert!(crate::plugin_install::resolve_for_approval(&state, "../plugins/p").is_err());
         assert!(crate::plugin_install::resolve_for_approval(&state, "./p").is_err());
         assert!(crate::plugin_install::resolve_for_approval(&state, "p/").is_err());
         assert!(crate::plugin_install::resolve_for_approval(&state, "p").is_ok());
+    }
+
+    #[test]
+    fn a_folder_name_wins_over_a_record_that_carries_the_same_name() {
+        let home = home();
+        let state = state_of(&home);
+        // Another folder whose record is named "p" (id `p@m`): looked up as a plugin name, "p" is
+        // ambiguous between the two folders; named exactly, it is the folder "p" and nothing else.
+        let other = copy_plugin(&home, "x..y");
+        plugin_records::add_record(
+            &home.paths,
+            &other,
+            plugin_records::Record {
+                name: "p".into(),
+                origin: plugin_records::Origin::User,
+                id: Some("p@m".into()),
+                source: None,
+                commit: None,
+                hash: String::new(),
+                runs: String::new(),
+                approval: None,
+            },
+        )
+        .unwrap();
+        assert!(crate::plugin_install::resolve(&state, "p").is_err());
+        let found = crate::plugin_install::resolve_for_approval(&state, "p").unwrap();
+        assert_eq!(found, home.folder.canonicalize().unwrap());
+        // A name that is not a plain folder name (`..`) is looked up, never taken as exact: a
+        // third folder whose record is named "x..y" makes it ambiguous.
+        let found = crate::plugin_install::resolve_for_approval(&state, "x..y").unwrap();
+        assert_eq!(found.canonicalize().unwrap(), other.canonicalize().unwrap());
+        let third = copy_plugin(&home, "third");
+        plugin_records::add_record(
+            &home.paths,
+            &third,
+            plugin_records::Record {
+                name: "x..y".into(),
+                origin: plugin_records::Origin::User,
+                id: None,
+                source: None,
+                commit: None,
+                hash: String::new(),
+                runs: String::new(),
+                approval: None,
+            },
+        )
+        .unwrap();
+        assert!(crate::plugin_install::resolve_for_approval(&state, "x..y").is_err());
     }
 }
