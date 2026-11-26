@@ -25,6 +25,7 @@ mod model;
 mod plan;
 mod queue;
 mod quiet;
+#[cfg(feature = "testing")]
 mod read_gate;
 mod replay;
 mod review;
@@ -51,6 +52,7 @@ pub use model::{
 };
 pub use queue::QueueError;
 pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
+#[cfg(feature = "testing")]
 pub use read_gate::ReadGate;
 pub use replay::{ReplayAnswer, ReplayRequest, ReplayRole, SubagentReplay};
 pub use review::{ReviewArgs, ReviewEffort, ReviewKind, ReviewTarget, review_prompt};

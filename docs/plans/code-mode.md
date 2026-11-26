@@ -120,11 +120,13 @@ worker" is the shipped interpreter binary, which CI builds.
   default) are not. `tool_universe()` is the agent's whole permitted list, recomputed at dispatch.
   `CORE_TOOLS` in `catalog.rs` is the fixed offered core. `effective_call()` is the one helper for
   code that reads calls back out of messages.
-- **Large-result spill** (R2.5) is on branch `feat/large-result-spill` (4 commits, not merged):
-  `spill.rs` saves a result past a sixteenth of the window (at least
-  `harness.result_spill_min_chars`, 4,000) to `<journal>.results/` and keeps a preview and the
-  path. `EXEMPT_TOOLS` lists tools never spilled. `guard_result` replaces `guard_input` in the
-  loop.
+- **Large-result spill** (R2.5, merged in #296, polished in the spill follow-up): `spill.rs`
+  saves a result past a sixteenth of the window (at least `harness.result_spill_min_chars`,
+  4,000) to `<journal>.results/` and keeps a preview and the path. `EXEMPT_TOOLS` lists tools
+  never spilled. `guard_result` replaces `guard_input` in the loop. The results folder is made
+  empty when a session spawns and is never a link (`is_link`); `spill::is_notice` recognises a
+  notice by its `SPILL_MARKER` prefix; a branch or fork copies only the files its conversation
+  names.
 - **Approvals** (`approve_with`): pre-approved tools of an unattended session run without asking
   (except floored calls). Otherwise the call waits on the broker, and an unanswered request in a
   headless run denies. Stopping a session (`Session::stop`) halts agents at their next safe point:
