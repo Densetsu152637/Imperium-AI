@@ -57,6 +57,16 @@ async fn model(last_user: Arc<Mutex<String>>) -> String {
 }
 
 fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path) -> Session {
+    start_with(id, url, data, project, WritePolicy::Ask)
+}
+
+fn start_with(
+    id: &str,
+    url: &str,
+    data: &std::path::Path,
+    project: &std::path::Path,
+    policy: WritePolicy,
+) -> Session {
     Session::spawn(SessionConfig {
         id: id.into(),
         workspace: Workspace::new(project).unwrap(),
@@ -84,7 +94,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
             store: Store::new(data),
             settings: MemorySettings {
                 write: MemoryWrite {
-                    global: WritePolicy::Ask,
+                    global: policy,
                     ..MemoryWrite::default()
                 },
                 ..MemorySettings::default()
@@ -198,4 +208,62 @@ async fn a_memory_saved_in_one_session_is_recalled_in_the_next() {
         sent.ends_with("Cut a release for the new version please"),
         "{sent}"
     );
+}
+
+#[tokio::test]
+async fn a_capped_turn_asks_before_saving_a_memory_even_when_the_policy_is_auto() {
+    let data = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let url = model(Arc::new(Mutex::new(String::new()))).await;
+    // Without the cap, an auto policy saves without asking.
+    let free = start_with("free", &url, data.path(), project.path(), WritePolicy::Auto);
+    let events = turn(&free, "Remember how we cut releases.").await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::PermissionRequested { .. }))
+    );
+    assert!(
+        data.path()
+            .join("memory/global/release-checklist.md")
+            .is_file()
+    );
+    std::fs::remove_dir_all(data.path().join("memory")).unwrap();
+
+    // In a capped turn it asks, and a refusal saves nothing.
+    let url = model(Arc::new(Mutex::new(String::new()))).await;
+    let capped = start_with(
+        "capped",
+        &url,
+        data.path(),
+        project.path(),
+        WritePolicy::Auto,
+    );
+    capped.workspace().permissions().cap();
+    let mut events = capped.subscribe();
+    capped.send("Remember how we cut releases.".into()).unwrap();
+    let mut asked = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap()
+            .event;
+        match event {
+            SessionEvent::PermissionRequested {
+                request_id, tool, ..
+            } => {
+                asked.push(tool);
+                capped
+                    .respond(request_id, PermissionDecision::Deny)
+                    .unwrap();
+            }
+            SessionEvent::MemorySaved { .. } => panic!("saved without approval"),
+            SessionEvent::TurnCompleted { .. } => break,
+            SessionEvent::TurnFailed { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    assert_eq!(asked, ["memory_remember"]);
+    assert!(!data.path().join("memory/global").exists());
 }

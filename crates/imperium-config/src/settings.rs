@@ -551,6 +551,10 @@ pub struct AutofixSettings {
     pub poll_s: u64,
     /// Model for fix sessions; defaults to `models.default`.
     pub model: Option<String>,
+    /// Which kinds of wake exist at all: `fix_ci`, `address_review`, `resolve_conflicts`. A pull
+    /// request's own auto-fix switch then turns them on for that pull request; a wake needs
+    /// both.
+    pub responders: Vec<String>,
 }
 
 impl Default for AutofixSettings {
@@ -561,6 +565,11 @@ impl Default for AutofixSettings {
             max_attempts_per_pr: 3,
             poll_s: 120,
             model: None,
+            responders: vec![
+                "fix_ci".into(),
+                "address_review".into(),
+                "resolve_conflicts".into(),
+            ],
         }
     }
 }

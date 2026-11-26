@@ -131,6 +131,8 @@ pub struct PrMonitor {
     subscribers: AtomicUsize,
     kick: Notify,
     orphans: Mutex<Orphans>,
+    /// Review wakes: comment cursors, attempts and the card's untrusted-text notice.
+    review: crate::autofix::review::Ledger,
 }
 
 /// Held by a connection that shows pull requests; the poller runs faster meanwhile.
@@ -153,6 +155,7 @@ impl Default for PrMonitor {
             subscribers: AtomicUsize::new(0),
             kick: Notify::new(),
             orphans: Mutex::default(),
+            review: crate::autofix::review::Ledger::default(),
         }
     }
 }
@@ -205,6 +208,35 @@ impl PrMonitor {
         let _ = self.github.set(github);
     }
 
+    /// The review-wake state.
+    pub(crate) fn ledger(&self) -> &crate::autofix::review::Ledger {
+        &self.review
+    }
+
+    /// Tells the clients of every session bound to `repo#number` that the card's review-wake
+    /// notice or its count of ignored comments changed.
+    pub(crate) fn announce_flags(&self, state: &DaemonState, repo: &str, number: u64) {
+        let key = key_of(repo, number);
+        let ids: Vec<String> = self
+            .lock()
+            .sessions
+            .iter()
+            .filter(|(_, binding)| binding.key == key)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if let Ok(status) = self.status(&id) {
+                state.announce(
+                    PULL_REQUESTS_CHANGED,
+                    PullRequestsChangedParams {
+                        session_id: id,
+                        status: Some(status),
+                    },
+                );
+            }
+        }
+    }
+
     /// A connection that shows pull requests holds this while it does.
     pub(crate) fn watch(self: &Arc<Self>) -> Watch {
         self.subscribers.fetch_add(1, Ordering::SeqCst);
@@ -247,7 +279,7 @@ impl PrMonitor {
             number,
         };
         let archive = state.settings().sessions.auto_archive_on_pr_close;
-        let (cached, moved, orphan) = {
+        let (cached, moved, orphan, left) = {
             let mut inner = self.lock();
             let previous = inner.sessions.get(session.id()).cloned();
             let moved = previous.as_ref().is_none_or(|old| old.key != key);
@@ -262,6 +294,10 @@ impl PrMonitor {
             };
             inner.sessions.insert(session.id().to_string(), binding);
             Self::track(&mut inner, repo, number, None, None);
+            let left = previous
+                .as_ref()
+                .filter(|old| old.key != key)
+                .map(|old| old.key.clone());
             let orphan = previous
                 .filter(|old| old.key != key)
                 .and_then(|old| Self::drop_if_unused(&mut inner, &old.key));
@@ -269,8 +305,13 @@ impl PrMonitor {
                 inner.tracked.get(&key).and_then(|t| t.status.clone()),
                 moved,
                 orphan,
+                left,
             )
         };
+        // The new pull request starts with the switches off; the old one is no longer woken.
+        if let Some(left) = left {
+            self.review.deactivate(state, &left.repo, left.number);
+        }
         // The session left a pull request it had turned auto-merge on for.
         if let Some(orphan) = orphan {
             self.disown(state, orphan);
@@ -331,12 +372,17 @@ impl PrMonitor {
         if let Some(binding) = self.lock().sessions.get(session_id) {
             status.auto_fix = binding.auto_fix;
             status.auto_archive_on_close = binding.auto_archive_on_close;
+            let (handled, ignored) = self.review.flags(&status.repo, status.number);
+            status.untrusted_handled = handled;
+            status.ignored_comments = ignored;
         }
         status
     }
 
-    /// Sets a session's per-binding switches and records them. They act from stage 7 on; until
-    /// then they are only kept and shown. False when the session has no binding.
+    /// Sets a session's per-binding switches and records them. Turning `auto_fix` on makes the
+    /// session the owner whose checkout review comments wake, from the comments there now on;
+    /// turning it off stops that. False when the session has no binding. The caller has checked
+    /// that the pull request is the account's own (see [`Self::set_monitor`]).
     pub fn set_switches(
         &self,
         state: &DaemonState,
@@ -344,7 +390,7 @@ impl PrMonitor {
         auto_fix: Option<bool>,
         auto_archive_on_close: Option<bool>,
     ) -> bool {
-        {
+        let target = {
             let mut inner = self.lock();
             let Some(binding) = inner.sessions.get_mut(session_id) else {
                 return false;
@@ -352,6 +398,21 @@ impl PrMonitor {
             binding.auto_fix = auto_fix.unwrap_or(binding.auto_fix);
             binding.auto_archive_on_close =
                 auto_archive_on_close.unwrap_or(binding.auto_archive_on_close);
+            let key = binding.key.clone();
+            inner
+                .tracked
+                .get(&key)
+                .map(|tracked| (tracked.repo.clone(), tracked.number))
+        };
+        if let (Some(on), Some((repo, number))) = (auto_fix, target) {
+            match (on, state.session(session_id)) {
+                (true, Some(session)) => {
+                    self.review
+                        .enroll(state, &repo, number, session_id, session.project_dir());
+                }
+                (false, _) => self.review.deactivate(state, &repo, number),
+                (true, None) => {}
+            }
         }
         self.save(state, session_id);
         if let Ok(status) = self.status(session_id) {
@@ -364,6 +425,51 @@ impl PrMonitor {
             );
         }
         true
+    }
+
+    /// `pull_requests.set_monitor`: sets a session's switches for the pull request at `url`.
+    /// Turning auto-fix on is refused unless the signed-in account opened the pull request (its
+    /// comments, reviews and the checks of its branch are then the account's own business).
+    pub(crate) async fn set_monitor(
+        &self,
+        state: &Arc<DaemonState>,
+        params: &imperium_protocol::methods::PullRequestsSetMonitorParams,
+    ) -> Result<PrStatus, String> {
+        let (repo, number) = self.bound_target(&params.session_id, &params.url)?;
+        if params.auto_fix == Some(true) {
+            let github = self
+                .github
+                .get()
+                .cloned()
+                .ok_or("GitHub is not available, so auto-fix was not turned on")?;
+            match github.is_own_pull_request(&repo, number).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(
+                        "auto-fix works only on pull requests you opened; this one is someone else's"
+                            .to_string(),
+                    );
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "could not check who opened the pull request, so auto-fix was not turned on: {}",
+                        clean(&error, ERROR_CHARS)
+                    ));
+                }
+            }
+        }
+        if params.ack_untrusted == Some(true) {
+            self.review.ack(state, &repo, number);
+        }
+        if !self.set_switches(
+            state,
+            &params.session_id,
+            params.auto_fix,
+            params.auto_archive_on_close,
+        ) {
+            return Err("no pull request is bound to this session".to_string());
+        }
+        self.status(&params.session_id)
     }
 
     /// Writes a session's binding, switches and last status into its record, so a restart
@@ -398,6 +504,7 @@ impl PrMonitor {
         else {
             return;
         };
+        self.review.ensure(state);
         if let Err(reason) = check_repo(session, &repo) {
             tracing::warn!(session = %session.id(), %reason, "the saved pull request is not this session's own; it is unbound");
             state.record_pull_request(session.id(), None);
@@ -423,6 +530,15 @@ impl PrMonitor {
             );
             let confirmed = record["auto_merge_head"].as_str().map(str::to_string);
             Self::track(&mut inner, &repo, number, saved.clone(), confirmed);
+        }
+        if record["auto_fix"].as_bool().unwrap_or(false) {
+            self.review.enroll_if_missing(
+                state,
+                &repo,
+                number,
+                session.id(),
+                session.project_dir(),
+            );
         }
         match saved {
             Some(status) => apply_overlay(session, &status),
@@ -578,6 +694,8 @@ impl PrMonitor {
                                     "auto-merge on {}#{} could not be turned off yet ({error}); Imperium will try again",
                                     orphan.repo, orphan.number
                                 ),
+                                trigger: "ci".to_string(),
+                                comment_ids: Vec::new(),
                             },
                         );
                     }
@@ -668,7 +786,13 @@ impl PrMonitor {
     /// Ends a session's binding, switches its watch overlay off, and tells clients. False when
     /// it had none.
     pub(crate) fn unbind(&self, state: &DaemonState, session: &Session) -> bool {
+        let target = self.target_of(session.id());
         let was_bound = self.forget(state, session.id());
+        // Unbinding is the user's choice: the pull request is not woken any more. (A session
+        // that is deleted or archived keeps its pull request in the ledger instead.)
+        if let (true, Some((repo, number))) = (was_bound, target) {
+            self.review.deactivate(state, &repo, number);
+        }
         session.set_watch(None);
         if was_bound {
             state.record_pull_request(session.id(), None);
@@ -682,6 +806,13 @@ impl PrMonitor {
             );
         }
         was_bound
+    }
+
+    /// The repository and number of the pull request a session is bound to.
+    pub(crate) fn target_of(&self, session_id: &str) -> Option<(String, u64)> {
+        let inner = self.lock();
+        let tracked = inner.tracked.get(&inner.sessions.get(session_id)?.key)?;
+        Some((tracked.repo.clone(), tracked.number))
     }
 
     /// Drops a session's binding without telling anyone (the session itself is gone).
@@ -1035,6 +1166,9 @@ impl PrMonitor {
             let _ = self.read(state, &key).await;
         }
         self.retry_orphans(state, force).await;
+        if let Some(github) = self.github.get() {
+            crate::autofix::review::pass(state, github, force).await;
+        }
         let interval = self.interval();
         let now = Instant::now();
         let orphan = self.next_orphan(state);
@@ -1482,6 +1616,7 @@ fn build(
         },
         auto_archive_on_close: archive_on_close,
         untrusted_handled: false,
+        ignored_comments: 0,
         updated_at: now_ms(),
         error: None,
     }

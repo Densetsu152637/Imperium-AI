@@ -830,8 +830,8 @@ estimates of changed lines, tests included.
   `server`. `cargo clippy` clean.
 - Status: done.
 - Outcome: built as planned, with these differences.
-  - **Protocol 0.63, not 0.62**: 0.62 was taken by `plugins.inspect_folder` before this stage
-    merged. `HandshakeResult.server` (`#[serde(default)]`, so an older daemon reads as `false`)
+  - **Protocol 0.65, not 0.62**: 0.62 was taken by `plugins.inspect_folder` and 0.63 by
+    `pull_requests.set_monitor` before this stage merged, and 0.64 is held by #304. `HandshakeResult.server` (`#[serde(default)]`, so an older daemon reads as `false`)
     and `codes::UNAVAILABLE_ON_SERVER` (`-32010`) are in `imperium-protocol`, with every
     `feature` name of the table as a constant in `jsonrpc::server_features`, including the ones
     later stages use (`secret_write`, `mcp_login`).

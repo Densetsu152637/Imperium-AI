@@ -119,12 +119,13 @@ async fn a_paired_phone_approves_a_queued_action() {
     .await;
     let status = next(&mut phone, Some(20), None).await;
     assert_ne!(status["error"]["code"], -32005, "{status}");
-    // A phone cannot bind, unbind, ask for an auto-merge challenge or turn auto-merge on or off.
+    // A phone cannot bind, unbind, ask for an auto-merge challenge, turn auto-merge on or off, or change what a pull request wakes.
     for (id, method) in [
         (21, "pull_requests.bind"),
         (22, "pull_requests.unbind"),
         (23, "pull_requests.auto_merge_challenge"),
         (24, "pull_requests.set_auto_merge"),
+        (25, "pull_requests.set_monitor"),
     ] {
         send(
             &mut phone,

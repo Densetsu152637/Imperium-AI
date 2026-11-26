@@ -3,8 +3,8 @@ use imperium_protocol::jsonrpc::server_features;
 use imperium_protocol::methods::{
     PullRequestsAutoMergeChallenge, PullRequestsAutoMergeChallengeParams,
     PullRequestsAutoMergeChallengeResult, PullRequestsBind, PullRequestsBindParams,
-    PullRequestsSetAutoMerge, PullRequestsSetAutoMergeParams, PullRequestsStatus,
-    PullRequestsStatusParams, PullRequestsUnbind, PullRequestsUnbindParams,
+    PullRequestsSetAutoMerge, PullRequestsSetAutoMergeParams, PullRequestsSetMonitor,
+    PullRequestsStatus, PullRequestsStatusParams, PullRequestsUnbind, PullRequestsUnbindParams,
     PullRequestsUnbindResult,
 };
 
@@ -92,6 +92,19 @@ impl Connection {
                 },
             ),
             PullRequestsSetAutoMerge::NAME => self.set_auto_merge(c),
+            PullRequestsSetMonitor::NAME => {
+                self.show_pull_requests();
+                call_later::<PullRequestsSetMonitor, _>(c.params.take(), c.later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        state
+                            .pr_monitor()
+                            .set_monitor(&state, &params)
+                            .await
+                            .map_err(refused)
+                    }
+                })
+            }
             _ => return None,
         })
     }

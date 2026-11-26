@@ -30,7 +30,7 @@ export type SwitchView = {
   /** The switch's accessible name. */
   label: string;
   on: boolean;
-  /** What the switch does, or why it cannot be changed (the auto-fix switch is not built yet). */
+  /** What the switch does, or why it cannot be changed. */
   reason: string;
   /** What GitHub or the repository says about it for this pull request, when anything. */
   hint: string | null;
@@ -87,6 +87,10 @@ export type PrCardView = {
   /** Merged or closed: nothing more will change. */
   ended: boolean;
   autoFix: SwitchView;
+  /** Shown until the user acknowledges it: a session handled review text that other people wrote. */
+  untrusted: string | null;
+  /** Comments from people without write access that woke nothing, or null when there are none. */
+  ignored: string | null;
   autoMerge: SwitchView;
   methods: MethodOption[];
   /** The method the picker shows, from the request or the first allowed one. */
@@ -165,7 +169,30 @@ const MERGE_NOTES: Record<string, string> = {
   has_hooks: "Waiting on the repository's merge checks",
 };
 
-const AUTO_FIX_PENDING = "Fixing from review comments is not available yet.";
+const AUTO_FIX_OFF =
+  "When on, new reviews and comments from people with write access wake this session. It works on them with every edit and command asking you first, Imperium commits the result, and nothing is pushed until you approve it.";
+const AUTO_FIX_ON =
+  "New reviews and comments from people with write access wake this session. Every edit and command it makes then asks you first, and a push always waits for your approval.";
+const UNTRUSTED_NOTICE =
+  "This session handled review text written by other people. It stays in the session's history, and your own messages are not limited the way the wake was.";
+
+function ignoredNotice(count: number): string | null {
+  if (count <= 0) return null;
+  return `${count} ${count === 1 ? "comment" : "comments"} from people without write access did not wake the session.`;
+}
+
+function autoFixView(status: PrStatus): SwitchView {
+  const ended = status.state === "merged" || status.state === "closed";
+  const on = status.auto_fix;
+  return {
+    label: "Fix CI and review comments",
+    on,
+    reason: on ? AUTO_FIX_ON : AUTO_FIX_OFF,
+    hint: ended ? "This pull request is over, so nothing more is handled." : null,
+    canTurnOn: !on && !ended,
+    canTurnOff: on,
+  };
+}
 const AUTO_MERGE_OFF = "GitHub will merge it when its own rules pass, with nobody looking at the code again. Imperium never merges it itself.";
 const AUTO_MERGE_ON = "GitHub merges it when its checks and reviews pass. Imperium never merges it itself, and turns this off before it pushes to the branch.";
 const AUTO_MERGE_SETTING_OFF = "Auto-merge is turned off in your settings (github.automerge.allowed).";
@@ -226,7 +253,9 @@ export function describePr(status: PrStatus, settings: AutoMergeSettings = DEFAU
     merge: MERGEABLE[status.mergeable],
     mergeNote: MERGE_NOTES[status.merge_state] ?? null,
     ended,
-    autoFix: { label: "Fix CI and review comments", on: status.auto_fix, reason: AUTO_FIX_PENDING, hint: null, canTurnOn: false, canTurnOff: false },
+    autoFix: autoFixView(status),
+    untrusted: status.untrusted_handled ? UNTRUSTED_NOTICE : null,
+    ignored: ignoredNotice(status.ignored_comments ?? 0),
     autoMerge: autoMergeView(status, settings),
     ...methodView(status, settings),
     error: status.error ? oneLine(status.error) : null,

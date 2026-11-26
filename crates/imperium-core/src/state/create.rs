@@ -473,6 +473,9 @@ impl DaemonState {
             settings.permissions.mode
         });
         workspace.permissions().set_mode(permission_mode);
+        if options.capped {
+            workspace.permissions().cap_for_life();
+        }
         let mut placement = Placement {
             environment_id: options.environment_id.clone(),
             agent_id: options.agent_id.clone(),
@@ -915,6 +918,7 @@ impl DaemonState {
                 "model": model_spec,
                 "background": options.background,
                 "unattended": !attended,
+                "capped": options.capped,
                 "run_now": options.run_now,
                 "environment_id": placement.environment_id,
                 "folders": placement.folders,

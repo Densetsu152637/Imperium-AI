@@ -254,6 +254,7 @@ mod tests {
             },
             auto_archive_on_close: false,
             untrusted_handled: false,
+            ignored_comments: 0,
             updated_at: 0,
             error: None,
         }

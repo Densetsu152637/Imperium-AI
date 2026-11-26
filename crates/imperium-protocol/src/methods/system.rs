@@ -196,7 +196,7 @@ pub struct HandshakeResult {
     pub daemon: Peer,
     pub protocol: ProtocolVersion,
     /// The daemon runs as a server (`daemon.server`): the desktop-only features are refused
-    /// with `-32010`, so a client hides their controls. False from a daemon before 0.63.
+    /// with `-32010`, so a client hides their controls. False from a daemon before 0.65.
     #[serde(default)]
     pub server: bool,
 }
@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(value["server"], true);
         let older: HandshakeResult = serde_json::from_value(serde_json::json!({
             "daemon": {"name": "imperium-core", "version": "0"},
-            "protocol": {"major": 0, "minor": 62}
+            "protocol": {"major": 0, "minor": 63}
         }))
         .unwrap();
         assert!(!older.server);

@@ -427,6 +427,13 @@ pub struct SessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub pull_request_url: Option<String>,
+    /// `true` while every call that is not a read asks, whatever the mode or the rules say: a
+    /// session the daemon started from review comments written by other people (capped for its
+    /// whole life, and the user cannot lift it: start a new session or branch to work
+    /// uncapped), or a session during a turn woken by such comments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub capped: Option<bool>,
 }
 
 /// Where a branched session came from.

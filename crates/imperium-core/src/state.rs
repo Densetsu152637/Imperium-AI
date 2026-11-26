@@ -182,6 +182,10 @@ pub struct SessionOptions {
     /// kept in the session's meta and set again when the session resumes, because the options
     /// that implied it (an auto-fix session's pre-approved tools) are not restored.
     pub unattended: bool,
+    /// Every call that is not a read asks, for the session's whole life (`Permissions::cap`):
+    /// a session started from text other people wrote. Kept in the session's meta and set
+    /// again when it resumes.
+    pub capped: bool,
     /// The caller already holds the working-folders lock (a Home session made its folder under
     /// it), so the session must not take it again.
     #[doc(hidden)]
@@ -1314,6 +1318,7 @@ fn summary(session: &Session) -> SessionSummary {
         read_only: false,
         started_by: None,
         pull_request_url: None,
+        capped: None,
     }
 }
 
