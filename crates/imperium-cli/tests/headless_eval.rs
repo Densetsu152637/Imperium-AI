@@ -797,7 +797,7 @@ async fn the_users_deny_rules_apply_even_in_full_mode() {
 }
 
 #[tokio::test]
-async fn a_write_into_a_protected_folder_asks_even_in_full_mode_and_is_denied() {
+async fn a_write_into_the_extension_folders_is_refused_without_asking_even_in_full_mode() {
     let daemon = Daemon::start("").await;
     let mods = daemon.config_dir().join("mods");
     std::fs::create_dir_all(&mods).unwrap();
@@ -813,9 +813,9 @@ async fn a_write_into_a_protected_folder_asks_even_in_full_mode_and_is_denied() 
     let out = &outcome.json;
     assert_eq!(out["exit_reason"], "completed", "{out:#}");
     assert!(!mods.join("notes.txt").exists());
-    let requests = out["permission_requests"].as_array().unwrap();
-    assert_eq!(requests.len(), 1, "{requests:?}");
-    assert_eq!(requests[0]["decision"], "denied");
+    // Refused outright, before anyone is asked.
+    assert_eq!(out["failed_tool_calls"], 1, "{out:#}");
+    assert_eq!(out["permission_requests"], json!([]));
 }
 
 fn eval_params(workspace: &std::path::Path) -> SessionEvalCreateParams {
