@@ -12,11 +12,17 @@
 //! the user left beside the original binary (a planted DLL, which Windows would load from the
 //! executable's folder first) is ever loaded.
 //!
-//! The trust anchor is the data folder: `<data>/runtimes/` is protected from agent file tools and
-//! commands (agent writes there are refused, #304/#330), so only the user's own processes can
-//! change the copy or the record. NVRTC, which a CUDA build loads at its first kernel compile,
-//! comes from the user's CUDA toolkit through `CUDA_PATH` and is not hashed (a recorded
-//! residual).
+//! The trust anchor is meant to be the data folder, but it is not one yet. The protection of
+//! `<data>/runtimes/` from agent file tools and commands, and the floor that makes
+//! `imperium runtime ncm use` need a person in every permission mode, arrive with #304 and #330,
+//! which are not merged. Until they are, only the `local_files_only` agent profile refuses the
+//! data folder, agent shell commands are not confined, and the terminal check can be faked
+//! (`script -qc ... /dev/null`, `expect`). So, as a recorded residual, an agent could write
+//! `user.json` and a copy that matches it, or run `runtime ncm use` under a fake terminal, and
+//! Imperium would run that binary. The hash checks here defend against accidents and stale
+//! copies, not against such an agent, until #304 and #330 land. NVRTC, which a CUDA build loads
+//! at its first kernel compile, comes from the user's CUDA toolkit through `CUDA_PATH` and is not
+//! hashed (a further residual).
 //!
 //! Nothing here searches `PATH` or downloads anything.
 
@@ -108,6 +114,11 @@ pub fn temp_folders() -> Vec<PathBuf> {
     if cfg!(unix) {
         folders.extend(["/tmp", "/var/tmp", "/dev/shm"].map(PathBuf::from));
     }
+    if cfg!(windows)
+        && let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|dir| !dir.is_empty())
+    {
+        folders.push(PathBuf::from(local).join("Temp"));
+    }
     folders.sort();
     folders.dedup();
     folders
@@ -159,21 +170,22 @@ pub fn inspect(path: &Path, forbidden: &[PathBuf]) -> Result<Candidate, String> 
 /// Once the user approved `candidate`: copies it into [`copy_dir`] (unless a copy with its hash
 /// is already there, as when the user approves the build a running server uses again), asks the
 /// copy what it is with `probe` (never the original), and records it in [`RECORD`]. `ask_cuda`
-/// decides whether the build has CUDA when its version output does not say. The copy must hash
-/// to what the user was shown: a file changed since [`inspect`] is refused.
+/// decides whether the build has CUDA when its version output does not say; when it fails (the
+/// user's answer could not be read), nothing is recorded. The copy must hash to what the user was
+/// shown: a file changed since [`inspect`] is refused.
 pub fn approve(
     data_dir: &Path,
     candidate: &Candidate,
     approved_at: u64,
     probe: impl FnOnce(&Path, &Path) -> Probe,
-    ask_cuda: impl FnOnce(Option<&str>) -> bool,
+    ask_cuda: impl FnOnce(Option<&str>) -> Result<bool, String>,
 ) -> Result<Approval, String> {
     let dir = install_copy(data_dir, candidate)?;
     let program = dir.join(exe_name());
     let found = probe(&program, &dir);
     let cuda = match found.cuda {
         Some(cuda) => cuda,
-        None => ask_cuda(found.version.as_deref()),
+        None => ask_cuda(found.version.as_deref())?,
     };
     let approval = Approval {
         source: candidate.path.clone(),
@@ -497,7 +509,7 @@ mod tests {
                     cuda: cuda_in_version(version),
                 }
             },
-            |_| false,
+            |_| Ok(false),
         )
     }
 
@@ -639,7 +651,7 @@ mod tests {
             },
             |version| {
                 *asked.lock().unwrap() = version.map(str::to_string);
-                true
+                Ok(true)
             },
         )
         .unwrap();
@@ -655,6 +667,24 @@ mod tests {
         .unwrap();
         assert!(!said.cuda);
         assert!(!approved_cuda(data.path()));
+    }
+
+    #[test]
+    fn an_unread_cuda_answer_records_nothing() {
+        let data = tempfile::tempdir().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let binary = build(source_dir.path(), b"the server");
+        let candidate = inspect(&binary, &[]).unwrap();
+        let error = approve(
+            data.path(),
+            &candidate,
+            1,
+            |_, _| Probe::default(),
+            |_| Err("stdin closed".into()),
+        )
+        .unwrap_err();
+        assert!(error.contains("stdin closed"), "{error}");
+        assert!(approved(data.path()).unwrap().is_none());
     }
 
     #[test]

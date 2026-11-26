@@ -23,8 +23,12 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long saving or restoring a slot may take: a long context is gigabytes of KV cache.
 const SLOT_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL: Duration = Duration::from_millis(250);
-/// How often a loaded `ncm-server` is asked whether it still serves ([`watch_health`]).
+/// How often a loaded `ncm-server` is asked whether it still serves ([`watch_health`]), and how
+/// long one answer may take.
 const NCM_HEALTH_EVERY: Duration = Duration::from_secs(2);
+const NCM_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
+/// `/health` timeouts in a row after which a loaded `ncm-server` is taken for hung.
+const NCM_HUNG_AFTER: u32 = 3;
 
 /// What the launcher asks the daemon around starting `llama-server`, so the runtime is
 /// installed when a model first needs it rather than when the app starts.
@@ -351,7 +355,11 @@ impl ProcessLauncher {
                     let task = watch_health(
                         self.http.clone(),
                         base.clone(),
-                        NCM_HEALTH_EVERY,
+                        HealthLimits {
+                            every: NCM_HEALTH_EVERY,
+                            timeout: NCM_HEALTH_TIMEOUT,
+                            hung_after: NCM_HUNG_AFTER,
+                        },
                         Arc::clone(&poisoned),
                     );
                     HealthWatch {
@@ -597,27 +605,55 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// Asks `GET <root>/health` every `every` until the server answers 503, then records why in
-/// `poisoned` and stops. A loaded `ncm-server` answers 503 to every request, `/health` included,
-/// once its engine hit an internal error, while the process keeps running; the supervisor then
-/// treats it as crashed ([`Server::exited`]), stops it and loads the model again at its next
-/// call. A request that fails or times out is not taken for that: only an explicit 503 is.
+/// How [`watch_health`] asks: every `every`, each answer within `timeout`, and `hung_after`
+/// timeouts in a row taken for a hung server.
+#[derive(Debug, Clone, Copy)]
+struct HealthLimits {
+    every: Duration,
+    timeout: Duration,
+    hung_after: u32,
+}
+
+/// Asks `GET <root>/health` every `limits.every` until the server answers 503, or times out
+/// `limits.hung_after` times in a row, then records why in `poisoned` and stops. A loaded
+/// `ncm-server` answers 503 to every request, `/health` included, once its engine hit an internal
+/// error, while the process keeps running; a hung one answers nothing. The supervisor then treats
+/// it as crashed ([`Server::exited`]), stops it and loads the model again at its next call. Any
+/// answer resets the count; a refused connection is not counted (an exited process is seen by
+/// the process check).
 fn watch_health(
     http: reqwest::Client,
     root: String,
-    every: Duration,
+    limits: HealthLimits,
     poisoned: Arc<Mutex<Option<String>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut timeouts = 0_u32;
         loop {
-            tokio::time::sleep(every).await;
-            let Ok(response) = http
+            tokio::time::sleep(limits.every).await;
+            let response = match http
                 .get(format!("{root}/health"))
-                .timeout(Duration::from_secs(10))
+                .timeout(limits.timeout)
                 .send()
                 .await
-            else {
-                continue;
+            {
+                Ok(response) => {
+                    timeouts = 0;
+                    response
+                }
+                Err(error) if error.is_timeout() => {
+                    timeouts += 1;
+                    if timeouts >= limits.hung_after {
+                        *poisoned.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(
+                            "the server is hung: /health did not answer within {} ms {timeouts} \
+                             times in a row",
+                            limits.timeout.as_millis()
+                        ));
+                        return;
+                    }
+                    continue;
+                }
+                Err(_) => continue,
             };
             if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
                 continue;
@@ -1005,7 +1041,11 @@ mod tests {
             _task: AbortOnDrop(watch_health(
                 reqwest::Client::new(),
                 root.clone(),
-                Duration::from_millis(20),
+                HealthLimits {
+                    every: Duration::from_millis(20),
+                    timeout: Duration::from_secs(5),
+                    hung_after: 3,
+                },
                 Arc::clone(&poisoned),
             )),
         };
@@ -1035,13 +1075,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_loaded_server_whose_health_keeps_timing_out_counts_as_hung() {
+        // Accepts connections and answers `/health` only after far longer than the timeout.
+        let app = axum::Router::new().route(
+            "/health",
+            axum::routing::get(|| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                "late"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let served = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let poisoned = Arc::new(Mutex::new(None));
+        let task = watch_health(
+            reqwest::Client::new(),
+            root,
+            HealthLimits {
+                every: Duration::from_millis(10),
+                timeout: Duration::from_millis(50),
+                hung_after: 3,
+            },
+            Arc::clone(&poisoned),
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while poisoned.lock().unwrap().is_none() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "never taken for hung"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let why = poisoned.lock().unwrap().clone().unwrap();
+        assert!(why.contains("hung") && why.contains("3 times"), "{why}");
+        task.abort();
+        served.abort();
+    }
+
+    #[tokio::test]
     async fn a_server_that_does_not_answer_is_not_taken_for_a_poisoned_one() {
         let poisoned = Arc::new(Mutex::new(None));
         // Nothing listens there.
         let task = watch_health(
             reqwest::Client::new(),
             "http://127.0.0.1:9".into(),
-            Duration::from_millis(10),
+            HealthLimits {
+                every: Duration::from_millis(10),
+                timeout: Duration::from_millis(100),
+                hung_after: 1,
+            },
             Arc::clone(&poisoned),
         );
         tokio::time::sleep(Duration::from_millis(200)).await;

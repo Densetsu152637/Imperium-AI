@@ -61,7 +61,6 @@ pub fn use_server(path: PathBuf) -> anyhow::Result<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
-    let mut failed = None;
     let approval = ncm_runtime::approve(
         paths.data_dir(),
         &candidate,
@@ -73,19 +72,12 @@ pub fn use_server(path: PathBuf) -> anyhow::Result<()> {
                  it?",
                 version.unwrap_or("no answer to --version")
             );
-            match confirm(&question, false) {
-                Ok(cuda) => cuda,
-                Err(error) => {
-                    failed = Some(error);
-                    false
-                }
-            }
+            // Asked before anything is recorded: an answer that cannot be read leaves no
+            // approval behind.
+            confirm(&question, false).map_err(|error| error.to_string())
         },
     )
     .map_err(anyhow::Error::msg)?;
-    if let Some(error) = failed {
-        return Err(error);
-    }
     imperium_config::set_user_setting(
         &paths,
         "runtime.ncm.custom_path",

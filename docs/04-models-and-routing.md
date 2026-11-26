@@ -1114,19 +1114,26 @@ profiles over it, not models.
   refuses to run without an interactive terminal, so a script, a pipe or an agent cannot approve
   a binary. It shows the file's path, size and SHA-256 without running it, and refuses a
   relative path, a symbolic link, a non-file, or a file inside the session workspaces, the
-  worktree folder or a temporary folder (`%TEMP%`, `/tmp`, `/var/tmp`, `/dev/shm`). Once the user
+  worktree folder or a temporary folder (`%TEMP%`, `%LOCALAPPDATA%\Temp`, `/tmp`, `/var/tmp`,
+  `/dev/shm`). Once the user
   confirms, the file is copied to `<data>/runtimes/ncm-server/user/<sha256>/` (kept when a copy
   with that hash is already there, as when the build a running server uses is approved again),
   and only then is the copy asked for its `--version`, from its own folder and with the server's
   environment allowlist. Whether the build has CUDA comes from that output when it says, else
-  the user is asked; it is recorded with the hash in `<data>/runtimes/ncm-server/user.json` (and
+  the user is asked (before anything is recorded); it is recorded with the hash in `<data>/runtimes/ncm-server/user.json` (and
   `runtime.ncm.custom_path` is set). Nothing is searched for on `PATH` and nothing is
   downloaded. Without an approval an `ncm:` model's `problem` and a failed load say how to build
   and approve one. `imperium runtime ncm status` shows the approved build.
-- **Trust anchor.** `<data>/runtimes/` is protected from agent file tools and commands (agent
-  writes there are refused, #304 and #330), so only the user's own processes can change the copy
-  or the record; the checks below assume that. Another process of the same user running outside
-  Imperium's tools can still write the data folder, the same boundary as for the rest of it.
+- **Trust anchor (not in place yet).** The design rests on the data folder: `<data>/runtimes/`
+  protected from agent file tools and commands, and `imperium runtime ncm use` floored so it
+  needs a person in every permission mode. Both arrive with #304 and #330, which are not merged.
+  Until they are, only the `local_files_only` agent profile refuses the data folder, agent shell
+  commands are not confined, and the terminal check can be faked (`script -qc ... /dev/null`,
+  `expect`). The recorded residual: until then an agent could write `user.json` and a copy that
+  matches it, or run `runtime ncm use` under a fake terminal, and Imperium would run that binary;
+  the hash and folder checks below defend against accidents and stale copies, not against that.
+  Even with #304 and #330, another process of the same user running outside Imperium's tools can
+  write the data folder, the same boundary as for the rest of it.
 - **Launch.** Every launch runs the approved copy, never the original. Its folder must hold the
   executable and nothing else (a file dropped there, such as a DLL Windows would load from the
   executable's folder first, refuses the launch until the build is approved again, which clears
@@ -1146,9 +1153,10 @@ profiles over it, not models.
   log is `<data>/logs/ncm-<id>.log`.
 - **A server that stops serving.** After an internal engine error `ncm-server` keeps running but
   answers 503 to every request, `/health` included. A loaded server's `/health` is asked every
-  2 s; a 503 counts as a crash: the supervisor stops the process, records the unload with reason
-  `crashed`, and the next call loads the model again. A request that fails or times out is not
-  taken for that.
+  2 s, each answer allowed 2 s; a 503, or three timeouts in a row (a hung server), counts as a
+  crash: the supervisor stops the process, records the unload with reason `crashed`, and the
+  next call loads the model again. Any answer resets the count, and a refused connection is left
+  to the process check.
 - **Memory and slots.** A model goes wholly on the GPU or wholly on the CPU, never split by
   layer. `runtime.ncm.device = "auto"` uses the GPU only when the approved build has CUDA (read
   when the daemon starts) and the model fits there, else the CPU; `cuda` and `cpu` force one, and
