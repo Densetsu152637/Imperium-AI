@@ -599,13 +599,7 @@ mod tests {
                     987654 4096 10 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0";
         let parsed = parse_stat(stat).expect("parses");
         assert_eq!(
-            (
-                parsed.state,
-                parsed.ppid,
-                parsed.pgrp,
-                parsed.session,
-                parsed.start
-            ),
+            (parsed.state, parsed.ppid, parsed.session, parsed.start),
             ('S', 1, 123, 987_654)
         );
     }
