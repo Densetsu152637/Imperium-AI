@@ -900,7 +900,8 @@ and `environments.agent_update` (protocol 0.28)
     their own. It builds on the per-subagent harnesses, system prompts and workflows of
     [item 58](#next-in-order), so it comes after item 58. The workflow, the rejection counting
     and the handover are app work; training and building Consul and Emperor themselves are
-    research work. No plan yet.
+    research work. No plan for the workflow yet; the rejection count and the escalation hook it
+    binds to are stage 5 of the [Princeps plan](plans/princeps-local-model.md) (item 67).
 <!-- markdownlint-disable-next-line MD029 -->
 65. **Programmatic tool calling (code mode)** (planned). An agent can write a short Python program
     (`run_script`) in which each of its tools is a function. The program runs in Monty, a
@@ -949,6 +950,22 @@ and `environments.agent_update` (protocol 0.28)
     files as data
     ([plan](plans/text-editor.md)).
 <!-- markdownlint-disable-next-line MD029 -->
+67. **Princeps local model and harness profiles** (planned). Emperor and Consul are no longer two
+    models (user decision 2026-11-26): there is one local model, Princeps, a Next Concept Model
+    served by `ncm-server` from Imperium-Models, in two sizes: Princeps (`princeps-ncm-1b`, about
+    1B, the default where it fits) and Princeps-Lite (`princeps-lite-ncm-250m`, the research
+    model, for small machines, with the evaluation-only baseline `princeps-lite-tok-250m`).
+    Emperor (the root agent) and Consul (the critic) become two harness profiles over it. The app
+    work: an `ncm:` runtime backend; for now (no releases yet) a user-built `ncm-server` at a path
+    only the user sets, copied on approval and hash-checked at each launch, and later one
+    installed only on the user's action from a pinned release, checked against SHA-256s pinned in
+    this repository and unpacked under the llama.cpp extraction rules; both sizes in the
+    house-model catalogue in place of item 44's two entries; one loaded model serving both
+    profiles; harness profiles as item 58's first slice; item 64's rejection count and escalation
+    hook with no workflow bound; and `--profile` with server timings in headless evals. The
+    harness content belongs to the Imperium Harnesses session, the server and weights to the NCM
+    session ([plan](plans/princeps-local-model.md)).
+<!-- markdownlint-disable-next-line MD029 -->
 68. **Resource caps on every child process** (planned). No process Imperium starts can exhaust
     the host. A CAS test process grew to about 20 GB on a 64 GB Windows machine and took it to
     about 100% RAM, because on Windows nothing Imperium starts has a memory limit. Every
@@ -968,7 +985,8 @@ and `environments.agent_update` (protocol 0.28)
     runs an allocation bomb, a fork bomb and a CPU spin on each OS, under probes that bound
     themselves ([plan](plans/resource-caps.md)).
 
-Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
+Custom agents come from Imperium's own open-weight model (Princeps, run under the Emperor and
+Consul harness profiles, [item 67](#next-in-order)), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
 rather than a separate snapshot store.
 
