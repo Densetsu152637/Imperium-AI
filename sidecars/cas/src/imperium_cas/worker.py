@@ -43,6 +43,7 @@ import os
 import sys
 import time
 
+from . import nocodegen
 from .build import Builder, MathError, text
 from .framing import (
     CPU,
@@ -62,6 +63,8 @@ from .framing import (
 )
 from .functions import FUNCTIONS
 from .parse import CasInputError, render_error
+from .tools import TOOLS, run_tool
+from .tools import WARM_UP as TOOL_WARM_UP
 
 if sys.platform != "win32":
     from . import limits_posix
@@ -69,9 +72,9 @@ if sys.platform != "win32":
 MAX_INT_DIGITS = 100_000
 
 # Audit events a warmed-up worker may raise while it handles a call, measured over the hostile
-# corpus and every table entry (stage 2a, tests/test_audit_hook.py): only `array.__new__`, which
-# SymPy's prime sieve raises each time it grows (`factorial(25000)`, `prime(10^6)`). Stage 3
-# measures it again over the eleven tools. `compile`, `exec`, `import`, `open`, `os.*`,
+# corpus and every table entry (stage 2a) and over the eleven tools (stage 3,
+# tests/test_audit_hook.py): only `array.__new__`, which SymPy's prime sieve raises each time it
+# grows (`factorial(25000)`, `prime(10^6)`). `compile`, `exec`, `import`, `open`, `os.*`,
 # `subprocess.*`, `socket.*` and `ctypes.*` must never be added.
 ALLOWED_EVENTS: frozenset[str] = frozenset({"array.__new__"})
 
@@ -112,10 +115,8 @@ def parse_limits(argv: list[str]) -> dict[str, int]:
 
 
 def build_call(request: dict) -> dict:
-    """Stage 2a's one call: parse, guard and build an expression, and return its text.
-
-    Stage 3 replaces this with the eleven tools.
-    """
+    """Parse, guard and build one expression and return its text: the worker's own check call
+    (stage 2a), which tests use. The front never sends it; it offers only the eleven tools."""
     expression = request.get("expression")
     if not isinstance(expression, str):
         return {"ok": False, "category": "parse", "message": "parse: expression must be a string"}
@@ -128,7 +129,18 @@ def build_call(request: dict) -> dict:
         return {"ok": False, "category": "math", "message": f"math: {exc.message}"}
 
 
-HANDLERS = {"build": build_call}
+def tool_call(request: dict) -> dict:
+    """One of the eleven tools: `{"tool": name, "args": {...}}`."""
+    name, args = request["tool"], request.get("args")
+    try:
+        return run_tool(name, args)
+    except CasInputError as exc:
+        return {"ok": False, "category": exc.category, "message": render_error(exc, exc.source)}
+    except MathError as exc:
+        return {"ok": False, "category": "math", "message": f"math: {exc.message}"}
+
+
+HANDLERS = {"build": build_call, **dict.fromkeys(TOOLS, tool_call)}
 
 
 def handle(request: dict) -> dict:
@@ -140,7 +152,10 @@ def handle(request: dict) -> dict:
 
 
 def warm_up() -> None:
-    """Run every code path a call can take once, so nothing is imported lazily under the hook."""
+    """Run every code path a call can take once, so nothing is imported lazily under the hook.
+
+    First, SymPy's polynomial rings stop generating code at run time (`nocodegen`)."""
+    nocodegen.install()
     for function in FUNCTIONS.values():
         args = ", ".join(["7"] * function.min_args)
         for expression in (f"{function.name}({args})", f"{function.name}(x)"):
@@ -152,6 +167,8 @@ def warm_up() -> None:
         handle({"tool": "build", "expression": bad})
     handle({"tool": "build", "expression": "x", "assume": {"x": ["positive", "negative"]}})
     handle({"tool": "build", "expression": "x", "assume": {"__class__": ["real"]}})
+    for name, args in TOOL_WARM_UP:
+        handle({"tool": name, "args": args})
     encode_frame({"ok": True, "text": "x"}, REPLY_CAP)
 
 

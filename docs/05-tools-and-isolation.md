@@ -383,21 +383,31 @@ sampling is refused unless enabled (below). A remote server that wants an OAuth 
 reported as needing one, and the user signs in to it on purpose
 ([OAuth for remote servers](#oauth-for-remote-servers-implemented)).
 
-**Planned (roadmap item 62, stage 2 of the [CAS plan](plans/cas-mcp.md) in progress):** a built-in
+**Planned (roadmap item 62, stage 3 of the [CAS plan](plans/cas-mcp.md) in progress):** a built-in
 computer algebra server, `imperium_cas`, backed by SymPy and started per session like any stdio
 server. Agent text never reaches `sympify`, `parse_expr` or `eval`: a hand-written parser reads a
 small infix language, a size guard refuses runaway numbers before anything is computed, and a
-fixed table builds the result into SymPy objects. Each call is meant to run in a fresh worker
+fixed table builds the result into SymPy objects. A second estimate refuses obvious blow-ups
+before a tool expands anything (more than 10,000 terms, such as `(x+y+z)^5000`, or an expanded
+form far over the 64 KiB result cap), and matrix operations whose cost grows like n! have a size
+cap. Each call is meant to run in a fresh worker
 process that has already imported SymPy, answers one call and exits; an audit hook ends the
 worker if anything opens a file, starts a process, compiles code or imports a module. Each call
 has a CPU limit (15 s by default), a memory limit (1 GiB) and a wall clock (20 s, counted from
 when the call arrived, so time spent queued counts). On Linux the worker applies the CPU and
 memory limits itself; on macOS it applies the CPU limit, and the server polls the worker's memory
-every 50 ms, so a worker can overshoot the memory limit briefly, by at most 2 GiB; on Windows the
-limits come with the server's sandbox (a later stage). On Linux with Landlock, neither the server
-nor its workers can start programs outside the interpreter's installation. The parser, guard,
-builder, worker, limits and worker pool exist so far, as the `sidecars/cas/` project and its
-`python-cas` CI job; the MCP server, its sandbox and its setup are later stages.
+every 50 ms, so a worker can overshoot the memory limit briefly, by at most 2 GiB; on Windows each
+worker runs in its own Job Object with both limits (from the server's sandbox broker in a later
+stage; the tests use Job Objects the server itself creates). On Linux with Landlock, neither the
+server nor its workers can `execve` a program other than the interpreter (the ELF loader can
+still map other files, so the `bwrap` sandbox is the boundary there). The MCP server offers
+eleven tools: `simplify`, `expand`, `factor`, `solve` (every answer states its domain, complex
+or real), `differentiate`, `integrate`, `limit`, `series`, `matrix`, `evaluate` (the only
+decimal results) and `equal` (true only when proved; false with a point where the two differ;
+otherwise unknown). Each result is one text item with the plain answer and its LaTeX, plus
+structured content. The parser, guard, builder, worker, limits, pool and MCP server exist so
+far, as the `sidecars/cas/` project and its `python-cas` CI job; the sandbox, the managed
+environment and the daemon wiring are later stages.
 
 ### Resources, prompts, and sampling (implemented)
 

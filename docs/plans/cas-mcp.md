@@ -3,7 +3,7 @@
 Revision: 2026-11-26, revision 3 (plan-gate review round 2: R2-1 to R2-5 and the nits folded in;
 revision 2 folded in F1 to F11 and decided the four open questions); written against
 `experimental` at `56ce2da9` (last updated). Roadmap [item 62](../12-roadmap.md#next-in-order).
-Status: in progress (stage 1 done in review; no other stage started).
+Status: in progress (stages 1, 2a and 2b merged; stage 3 done in review).
 
 Imperium ships a computer algebra system as a built-in [MCP](../05-tools-and-isolation.md#mcp)
 server backed by SymPy, so agents (local models in particular) do exact symbolic maths instead of
@@ -309,16 +309,21 @@ Details:
   - macOS: CPU (`RLIMIT_CPU`) is applied by the worker and core files are off; memory is only
     requested on the command line, and enforced by the front's footprint poll. The wall clock is
     the front's.
-  - Windows: both are only requested on the command line until stage 5; the broker applies them
-    through the worker's Job Object. `PosixSpawner` refuses Windows unless a test opts in to
-    unlimited workers.
+  - Windows: both are only requested on the command line; the broker applies them through the
+    worker's Job Object (stage 5). Until then `WindowsSpawner` (stage 3) gives each worker a Job
+    Object from the front, for the tests and for a front started with
+    `IMPERIUM_CAS_WINDOWS_JOBS=1` (see the rejected alternative below). `PosixSpawner` refuses
+    Windows unless a test opts in to unlimited workers.
   - A worker that ignores or never runs its `SIGXCPU` handler (stuck in C code) is killed on
     Linux by the hard limit's `SIGKILL` one second later; the front reads that `SIGKILL`, which
     it did not send, as `limit: CPU time`. macOS does not kill at the hard limit (measured in
     stage 2b: such a worker ran on to the wall clock), so there the front's 50 ms poll also reads
     the worker's CPU time (`proc_pid_rusage`) and kills it one second past the limit.
-- **Hash seed.** `PYTHONHASHSEED=0` is set for every process on every OS, so a call's result does
-  not depend on the process.
+- **Hash seed.** None is set: the front and workers run under `-I`, which ignores
+  `PYTHONHASHSEED`, so each process has its own random hash seed. Instead the tools' outputs are
+  canonical: SymPy prints sets sorted, everything a tool lists itself is sorted, variables default
+  to the free symbols sorted by name, and `equal`'s points come from a fixed seed (stage 3,
+  `test_isolated_workers_give_the_same_reply` runs the same calls in two `-I` workers).
 - **Unix spawning.** The worker sets its own `rlimit`s after warm-up and before reading the call,
   from values the front passes on its command line. `pool.py` spawns workers with `subprocess`,
   inside the sandbox they inherit.
@@ -394,6 +399,9 @@ Rejected alternatives:
   the process starts, the front would need the right to create processes (so a compromised front
   could start anything inside the AppContainer), and the Win32 code would be duplicated outside
   `imperium-ipc`.
+  Stage 3 still adds such a spawner (`WindowsSpawner`, assigned before the worker reads its call)
+  so that Windows tests and unconfined development runs have limits before stage 5; it is not
+  the production path and is chosen only explicitly.
 - **A front written in Rust** (`imperium cas-serve`). The roadmap fixes a Python project with the
   MCP Python SDK, and a Python server stays usable by other MCP clients on Linux and macOS (on
   Windows it needs Imperium's broker).
@@ -412,7 +420,7 @@ The server and every process it starts get:
 - read and execute access to the environment root (`<data>/runtimes/cas/<env-digest>/`);
 - a private temporary folder;
 - an explicit minimal environment: `PATH` (the environment's own folders only), `LANG`,
-  `PYTHONHASHSEED=0`, and on Windows `SYSTEMROOT` and `TEMP`/`TMP` (the AppContainer's own
+  and on Windows `SYSTEMROOT` and `TEMP`/`TMP` (the AppContainer's own
   temporary folder).
 
 They get no workspace, no network, no home folder, no `<config>` or `<data>` beyond the root, and
@@ -432,11 +440,15 @@ through `PATH`. It starts from an empty root:
 This is stricter than the commands' OS tier, which starts from `--ro-bind / /` with masks.
 
 Inside, the front applies a **Landlock** ruleset (`landlock.py`, raw syscalls through `ctypes`,
-no agent data). The ruleset handles `LANDLOCK_ACCESS_FS_EXECUTE` and allows it only beneath the
-interpreter's own installation (`sys.base_prefix`, inside the environment root) and for the
-interpreter's ELF loader (`PT_INTERP`, which the kernel also opens for execution, so without it
-the interpreter could not start a worker). So neither the front nor a worker can `execve`
-anything in `/usr/bin` (a shell, `curl`). Workers inherit the ruleset.
+no agent data). The ruleset handles `LANDLOCK_ACCESS_FS_EXECUTE` and allows it only for the
+interpreter's own executable (`realpath(sys.executable)`, inside the environment root) and for
+its ELF loader (`PT_INTERP`, which the kernel also opens for execution, so without it the
+interpreter could not start a worker). Workers inherit the ruleset. It blocks a direct `execve`
+of anything else (a shell, `curl`); `ld.so` is not covered: run as `ld.so <binary>`, the allowed
+loader maps and runs any ELF file the process can read, so stage 4's `bwrap` profile, which
+binds only the environment root and the system library folders, is the boundary, and Landlock is
+defence in depth. An interpreter installed at `/`, `/usr` or `/usr/local` (a system Python) makes
+the front fail closed with exit 71.
 
 - **Timing (R2-3).** The ruleset is applied by the first statement of `imperium_cas.__main__`,
   before any other import (the MCP SDK, `pool`) and before stdin is read. `landlock.py` imports
@@ -445,8 +457,9 @@ anything in `/usr/bin` (a shell, `curl`). Workers inherit the ruleset.
   but creating the ruleset, adding the rule or `landlock_restrict_self` fails, the front exits
   with an error before reading stdin. The session then reports the server as failed to start.
 - **Residual.** Where Landlock is unavailable (a kernel before 5.13, or Landlock disabled), the
-  front carries on, and a process could still run `/usr` programs. Those would still have no
-  network, no home folder and no daemon socket.
+  front carries on, and a process could still run `/usr` programs; with Landlock, a process can
+  still run one through the ELF loader. Those would still have no network, no home folder and no
+  daemon socket.
 - **How the note reaches `mcp.list`.** stderr is discarded, so the front reports it in the MCP
   `initialize` reply. Its `serverInfo` carries `name`, `version` and a `confinement` value
   (`landlock` or `no-landlock`), and its `instructions` field holds a one-line note: "Landlock
@@ -1098,7 +1111,7 @@ Commands are what CI runs; nothing needs a local Rust build.
   - the existing `python` job is unchanged and still skipped (no `sidecars/media`).
 
   About 750 lines.
-- Status: done (pull request pending merge; see the outcome).
+- Status: done (merged; see the outcome).
 - Handoff notes: the media sidecar's job must stay Ubuntu-only. `check-python.sh` with no
   argument keeps its old behaviour.
 - Outcome (2026-11-26):
@@ -1227,7 +1240,7 @@ Commands are what CI runs; nothing needs a local Rust build.
     path lines in a `.pth` are read under `-I`, and on Windows the venv redirector's PID differs.
 
   About 600 lines.
-- Status: done (pull request pending merge; see the outcome).
+- Status: done (merged; see the outcome).
 - Handoff notes: record the measured warm-up time, memory and allow-list in the outcome; stage
   2b's default limits and stage 5's warm-up allowance use them.
   The tree can be 2,000 levels deep (a long `1+1+1+...`), so `build.py` walks it with
@@ -1337,7 +1350,7 @@ Commands are what CI runs; nothing needs a local Rust build.
     - it skips with a reason when Landlock is absent, and then `confinement` is `no-landlock`.
 
   About 650 lines.
-- Status: done (pull request #324 pending merge; see the outcome).
+- Status: done (merged as #324; see the outcome).
 - Handoff notes: on Windows these tests skip; the Windows limits are covered by stages 5 and 7.
   `imperium_cas/__init__.py` must stay empty, or import nothing: importing the package must not
   import `pool`, `worker` or the SDK before the Landlock statement. Stage 1 creates it empty and
@@ -1440,9 +1453,105 @@ Commands are what CI runs; nothing needs a local Rust build.
 
   About 800 lines. If it is over, split it into 3a (front, `simplify`, `expand`, `factor`,
   `solve`, `evaluate`, `equal`) and 3b (the calculus tools and `matrix`).
-- Status: pending.
+- Status: done (pull request pending merge; see the outcome).
 - Handoff notes: on Windows the stdio test waits for stage 7, because the server needs the
   broker there.
+- Outcome (2026-11-26):
+  - **The 2b security review, folded in first.**
+    - Landlock: the execute rule is now `realpath(sys.executable)` instead of all of
+      `base_prefix`, the front fails closed (71) for an interpreter at `/`, `/usr` or
+      `/usr/local` (the test that skipped there now asserts it), and D4 and `landlock.py` say
+      what the rule covers: a direct `execve`, not `ld.so <binary>`; stage 4's `bwrap` is the
+      boundary. (The review named stage 5; on Linux `bwrap` is stage 4.)
+    - The macOS poll no longer fails open: a usage reading of `None` for the baseline, or while
+      the worker is alive, kills it and the call is `refused` (tested with `usage` returning
+      `None` on every OS).
+    - A cancel between dequeue and running is no longer lost: the dequeued call id is recorded
+      under the lock, `cancel()` marks it, and `run` kills the worker as soon as it records it
+      (a slow-spawner test).
+    - No leaks: `run` kills and waits for its worker in a `finally` from `take()` on, and a
+      spare started while the pool closes is killed instead of recorded.
+    - `PYTHONHASHSEED` is gone from the spawner and from D3 and D4 (see D3's hash seed); `-I`
+      stays, and the outputs are canonical.
+    - Nits: `default_spawner()` on Windows is the `BrokerSpawner` stub and a call through it is
+      `crashed`; the front checks the ready frame (`audit_hook`, the PID, and on Linux the
+      applied address-space limit) and treats a mismatch as `crashed`; an unsent `SIGKILL` is
+      `limit` with the neutral message "the worker was killed by the system (the CPU limit of N
+      s, or memory)" and `limit: killed`.
+  - **Delivered.** `server.py` (the SDK's low-level server: `tools/list` with the eleven input and
+    output schemas, `tools/call` checked against the input schema with `jsonschema`, then run in
+    the pool from a thread; `notifications/cancelled` cancels the handler, which cancels the call
+    and kills its worker; a middleware adds `confinement` to `initialize`'s `serverInfo`, and
+    `instructions` holds D4's note without Landlock), `tools.py` (the eleven tools and their
+    warm-up calls), `format.py` (text, LaTeX, kind and the 64 KiB cap), `nocodegen.py` (below),
+    `limits_windows.py` and `WindowsSpawner` (below), the expansion estimate in `guard.py`
+    (below), and `__main__.py` serving MCP after the Landlock statement. Tests:
+    `test_tools.py`, `test_roundtrip.py`, `test_server.py`, `test_no_inprocess_corpus.py`, the
+    test worker `trap_probe.py`, and additions to `test_limits.py`, `test_landlock.py`,
+    `test_audit_hook.py` and `test_no_dynamic_code.py`.
+  - **Checks to tests.** Per-tool cases, `equal`'s three outcomes with the fixed seed,
+    unevaluated integrals (a definite one carries its 15-digit numeric value), `ConditionSet`
+    results as "not solved", the domain on every `solve` result, a complex-domain inequality
+    refused, contradictory assumptions, hostile names with the schema bypassed:
+    `test_tools.py`. Result texts round-trip: `test_roundtrip.py`. The in-memory client (errors
+    by category, a limit, a cancel that kills the worker, `serverInfo.confinement`) and a real
+    `-I` stdio process on Linux and macOS through a `-c` bootstrap: `test_server.py`. The full
+    corpus through `tools/call` (each line as one tool's main argument, the tools in turn, in
+    parallel pools) with no `refused` or `crashed` reply, on all three OSes: `test_server.py`.
+  - **Found on the way.**
+    - SymPy generates code at run time: every new polynomial ring (one per new set of symbols,
+      for `nonlinsolve`'s Groebner bases) `exec`s generated monomial functions, which the hook
+      refuses, so a system in fresh symbols failed closed. `nocodegen.py` gives
+      `sympy.polys.rings` plain functions of the same meaning, installed first in the warm-up
+      (a probe makes a fresh ring under the hook; a test compares the functions with SymPy's).
+      The allow-list stays `array.__new__` only.
+    - SymPy's own lazily built tables call `sympify` on fixed strings in its source (the units
+      prefixes, `S('3/2')` in the Meijer G table). The worker's warm-up builds them before the
+      hook; the test session runs the warm-up before the string trap.
+    - **Memory explosions.** Corpus line `(x+y+z)^5000` passes D2's guard (it is the expand rule's
+      exponent of 10,000 that refuses only `expand`) and `simplify`, `expand` and others multiply
+      it out: 12.5 million terms. A first in-process round-trip run over the corpus reached
+      about 16 GB on a local Windows machine. Three fixes:
+      - the guard's **expansion estimate** (`guard.check_expansion`, a heuristic first line)
+        bounds the terms of the expanded form (multinomial counts through sums, products and
+        whole powers) and refuses over 10,000 terms for every tool that expands, and for
+        `expand` an expanded form over about 128 KiB (`(x+y)^1000`). Matrix operations whose cost
+        grows like n! have side caps (8 with symbols, 30 without; eigenvalues 4 and 10). The OS
+        limits stay the backstop;
+      - **hostile inputs never run in the test process**: the corpus runs only through the pool
+        in limited workers, and `test_no_inprocess_corpus.py` fails if a test or script hands the
+        corpus to the worker's handlers in process (fixed small inputs may still run there);
+      - **Windows limits now**: `WindowsSpawner` puts each worker in its own Job Object
+        (`JOB_OBJECT_LIMIT_PROCESS_MEMORY`, a per-process CPU time limit, kill on close, no error
+        reporting), assigned right after the worker starts and before it reads its call, then
+        armed from the post-warm-up baseline when it reports ready. The tests use it on Windows,
+        so the spin and allocation workers are stopped there too. D3 rejects front-side Job
+        Objects for production (the front cannot create processes in the AppContainer, and the
+        broker owns the jobs), so `default_spawner()` on Windows stays the broker stub unless
+        `IMPERIUM_CAS_WINDOWS_JOBS=1` is set; stage 5's broker replaces it. The test run itself
+        is capped too (`conftest.py`: a 4 GiB Job Object on Windows, `RLIMIT_AS` on Linux;
+        `CAS_TEST_MEMORY_GIB` changes it).
+  - **Measured.** The tool list a model sees (names, descriptions and input schemas) is about
+    6.9 KB: about 1,700 to 2,000 tokens at 3.5 to 4 characters per token, over D6's estimate of
+    1,500; the test keeps it under 7,000 characters. The repeated `assume` schema is most of it.
+    The warm-up now runs every tool once (about 1.2 s on a local Windows machine; the CI figures
+    are in the "cas measurements" section of each `python-cas` log).
+  - **Choices the plan left open.**
+    - The worker request is `{"tool": <name>, "args": {...}}`; the worker keeps stage 2a's
+      `build` call for its own tests, and the front offers only the eleven tools.
+    - Kinds: D6's list plus `list` (nullspace, eigenvalues, eigenvectors). `limit` reports
+      "does not exist" (with `exists: false`) when the one-sided limits differ or the value is
+      bounded but oscillates. `variable` is optional when the expression has one symbol.
+      `matrix`'s `charpoly` uses the symbol `lambda`.
+    - A result holding a SymPy function outside D1's table (the derivative of `x!` holds
+      `polygamma`, an unsolved integral `Integral`) does not parse back; sets, lists and the
+      `O()` term are not in the input language either. The round trip covers expressions,
+      numbers, matrices and series without `O()`, and the corpus through `simplify` then `equal`
+      of input and output.
+    - The identifier pattern in the schemas is written `^[A-Za-z](_?[A-Za-z0-9])*$`, the same
+      language as D1's, and a test checks it against `is_identifier`.
+    - Only the handshake-era `initialize` carries `confinement`; a client on the 2026-07-28
+      protocol (no handshake) does not see it. Imperium's client speaks `2025-06-18`.
 
 ### Stage 4: `confine` on Linux and macOS
 

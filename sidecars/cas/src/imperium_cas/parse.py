@@ -70,6 +70,7 @@ class CasInputError(Exception):
     """Input the language or the guard refused. Carries a column (1-based) and a message."""
 
     category = "input"
+    source: str | None = None  # the expression text it was raised for, set by the builder
 
     @property
     def message(self) -> str:

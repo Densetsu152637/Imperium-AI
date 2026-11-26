@@ -8,17 +8,16 @@ corpus through the builder under it, and checks the package's sources statically
 
 import ast
 import contextlib
-import sys
 from pathlib import Path
 
 import pytest
 import sympy
 from sympy import Matrix, Symbol, diff, integrate, solve, solveset
 
-from imperium_cas import worker
 from imperium_cas.build import Builder
 from imperium_cas.functions import FUNCTIONS
-from support import VIOLATIONS, recording
+from imperium_cas.pool import Limits, Pool
+from support import VIOLATIONS, make_spawner
 from test_hostile import ENTRIES
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "imperium_cas"
@@ -110,25 +109,16 @@ def test_the_trap_catches_string_taking_paths(attempt):
 
 
 def test_the_table_and_the_corpus_build_without_strings_or_code():
-    """Every table entry and corpus line through the builder: no trapped call, no `compile` or
-    `exec` audit event (a parse of text into code raises one of them first)."""
-    before = len(VIOLATIONS)
-    previous = sys.get_int_max_str_digits()
-    sys.set_int_max_str_digits(worker.MAX_INT_DIGITS)
+    """Every table entry and corpus line through the builder, in a limited worker with the trap
+    and the real hook: no trapped call, and no `compile` or `exec` event (the hook would end the
+    worker with `REFUSED`; a parse of text into code raises one of them first)."""
+    inputs = [f"{name}(5)" for name in FUNCTIONS] + [text for _, text in ENTRIES]
+    pool = Pool(make_spawner("trap_probe.py"), Limits(cpu_seconds=60, wall_seconds=120))
     try:
-        worker.warm_up()
-        inputs = [f"{name}(5)" for name in FUNCTIONS] + [text for _, text in ENTRIES]
-        code_events = []
-        for text in inputs:
-            for assume in (None, {"x": ["real", "positive"]}):
-                with recording() as events:
-                    reply = worker.handle({"tool": "build", "expression": text, "assume": assume})
-                    code_events += [event for event in events if event in ("compile", "exec")]
-                assert "StringToSympy" not in reply.get("message", ""), (text, reply)
+        reply = pool.call({"expressions": inputs})
     finally:
-        sys.set_int_max_str_digits(previous)
-    assert VIOLATIONS[before:] == []
-    assert code_events == []
+        pool.close()
+    assert reply == {"ok": True, "violations": [], "trapped": []}, reply
 
 
 def test_names_reach_symbol_only_after_the_identifier_check():

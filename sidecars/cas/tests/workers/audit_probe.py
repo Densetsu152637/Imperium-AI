@@ -8,6 +8,9 @@ import socket
 import subprocess
 import sys
 
+from sympy import symbols
+from sympy.polys.rings import ring
+
 from imperium_cas import worker
 
 if sys.platform != "win32":
@@ -64,6 +67,11 @@ def probe(request: dict) -> dict:
             if "mailbox" in sys.modules:
                 return {"ok": False, "message": "mailbox was already imported"}
             import mailbox  # noqa: F401 - a module the worker never imported
+        elif action == "ring":
+            # A polynomial ring over generators never seen before: SymPy would generate its
+            # monomial functions with `exec`, unless `nocodegen` is installed.
+            ring(symbols("probe_a probe_b probe_c probe_d probe_e probe_f probe_g"), "QQ")
+            return {"ok": True, "ring": True}
         elif action == "corpus":
             # Every expression under the real hook: an event outside the allow-list exits.
             for expression in request.get("expressions", []):
