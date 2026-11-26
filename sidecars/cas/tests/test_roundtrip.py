@@ -153,7 +153,8 @@ def test_every_corpus_result_round_trips(chunk):
             text = lines[position]
             reply = pools[index].call({"tool": "simplify", "args": {"expression": text}})
             check = None
-            if reply["ok"] and reply["kind"] == "expression":
+            # A result longer than the input language's 16 KiB cap cannot be parsed back.
+            if reply["ok"] and reply["kind"] == "expression" and len(reply["text"]) <= 16384:
                 args = {"left": text, "right": reply["text"]}
                 check = pools[index].call({"tool": "equal", "args": args})
             results[position] = (reply, check)

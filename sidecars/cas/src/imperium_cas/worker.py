@@ -176,12 +176,27 @@ def warm_up() -> None:
 STATE = {"audit_hook": False}
 
 
-def refusal_frame(event) -> bytes:
-    """The reply frame the hook writes before it exits: the refused event's name, at most 80
-    printable ASCII characters."""
-    name = event[:80] if isinstance(event, str) else "?"
-    name = "".join(ch if " " <= ch < "\x7f" else "?" for ch in name)
-    return encode_frame({"ok": False, "category": "refused", "event": name}, REPLY_CAP)
+def printable(text, limit: int = 80) -> str:
+    text = text[-limit:] if isinstance(text, str) else "?"
+    return "".join(ch if " " <= ch < "\x7f" else "?" for ch in text)
+
+
+def refusal_frame(event, args=()) -> bytes:
+    """The reply frame the hook writes before it exits: the refused event's name and, for
+    `compile` and `exec`, where the code came from (the file name SymPy or Python gave it, never
+    the source), each at most 80 printable ASCII characters."""
+    where = ""
+    try:
+        if event == "compile" and len(args) > 1 and isinstance(args[1], str):
+            where = args[1]
+        elif event == "exec" and args:
+            where = args[0].co_filename
+    except Exception:  # noqa: BLE001, S110 - a report detail, never worth failing for
+        pass
+    reply = {"ok": False, "category": "refused", "event": printable(event)}
+    if where:
+        reply["where"] = printable(where)
+    return encode_frame(reply, REPLY_CAP)
 
 
 def install_audit_hook(allowed: frozenset[str] = ALLOWED_EVENTS) -> None:
@@ -204,7 +219,7 @@ def install_audit_hook(allowed: frozenset[str] = ALLOWED_EVENTS) -> None:
     ) -> None:
         if event not in allowed:
             try:
-                write(1, frame(event))
+                write(1, frame(event, args))
             except BaseException:  # noqa: BLE001, S110 - exiting matters, the report does not
                 pass
             exit(status)

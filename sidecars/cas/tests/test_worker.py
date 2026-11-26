@@ -32,8 +32,11 @@ def call(proc, request: dict | None = None, raw: bytes | None = None):
         except FrameError:
             proc.wait()
             pytest.fail(f"no ready frame; stderr: {proc.stderr.read().decode(errors='replace')}")
-        proc.stdin.write(raw if raw is not None else encode_frame(request, REQUEST_CAP))
-        proc.stdin.close()
+        try:  # a worker that exits before reading (no hook, say) closes the pipe first
+            proc.stdin.write(raw if raw is not None else encode_frame(request, REQUEST_CAP))
+            proc.stdin.close()
+        except OSError:
+            pass
         try:
             reply = read_frame(proc.stdout, REPLY_CAP)
         except FrameError:

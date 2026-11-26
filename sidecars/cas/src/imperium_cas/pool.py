@@ -484,7 +484,10 @@ class Pool:
             )
         if status == REFUSED:
             event = reply.get("event") if isinstance(reply, dict) else None
+            where = reply.get("where") if isinstance(reply, dict) else None
             shown = f" (audit event {event})" if isinstance(event, str) else ""
+            if isinstance(where, str):
+                shown = f" (audit event {event} from {where})"
             return error("refused", f"the call did something the CAS does not allow{shown}")
         return error("crashed", f"the worker exited with status {status}", status=status)
 
