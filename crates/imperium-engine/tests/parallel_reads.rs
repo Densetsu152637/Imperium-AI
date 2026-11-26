@@ -90,6 +90,28 @@ fn start_full(
     read_gate: Option<Arc<dyn ReadGate>>,
     tools: Vec<Arc<dyn ToolProvider>>,
 ) -> Session {
+    start_sized(
+        url,
+        workspace,
+        HarnessSettings {
+            parallel_reads,
+            ..HarnessSettings::default()
+        },
+        Some(100_000),
+        read_gate,
+        tools,
+    )
+}
+
+/// A hosted model with `context_window` (`None`: unknown) and the given harness settings.
+fn start_sized(
+    url: &str,
+    workspace: Workspace,
+    harness: HarnessSettings,
+    context_window: Option<u64>,
+    read_gate: Option<Arc<dyn ReadGate>>,
+    tools: Vec<Arc<dyn ToolProvider>>,
+) -> Session {
     let dir = workspace.root().to_path_buf();
     Session::spawn_with(
         SessionConfig {
@@ -104,7 +126,7 @@ fn start_full(
                 model: "model".into(),
                 pricing: None,
                 local: false,
-                context_window: Some(100_000),
+                context_window,
                 kind: "openai".into(),
                 reasoning: None,
             }),
@@ -130,10 +152,7 @@ fn start_full(
             attended: false,
             attachments: Default::default(),
             auto_permissions: Default::default(),
-            harness: HarnessSettings {
-                parallel_reads,
-                ..HarnessSettings::default()
-            },
+            harness,
             background: None,
             checkpoints: None,
             budget_gate: None,
@@ -725,4 +744,76 @@ async fn a_provider_tool_runs_one_at_a_time_unless_it_says_it_is_read_only() {
     let (provider, results) = run_lookups(false).await;
     assert_eq!(provider.peak.load(Ordering::SeqCst), 1);
     assert_eq!(results.len(), 3);
+}
+
+/// A file of 1,000 lines and about 60,000 characters: under the 2,000-line cap of a read, past
+/// the 32,000 characters a read gets when the window is unknown, and within the 100,000 a
+/// hosted model with an unknown window is given.
+fn big_file(dir: &std::path::Path) {
+    let filler = "x".repeat(50);
+    let text: String = (0..1000)
+        .map(|n| {
+            format!(
+                "row {n:04} {filler}
+"
+            )
+        })
+        .collect();
+    assert!(text.len() > 32_000 && text.len() < 90_000);
+    std::fs::write(dir.join("big.txt"), text).unwrap();
+}
+
+/// The results of one step of `calls` against a hosted model with no known context window.
+async fn unknown_window_results(
+    calls: Vec<(String, String, String)>,
+    parallel_reads: u32,
+) -> Vec<(String, String)> {
+    let fake = Arc::new(Fake {
+        calls,
+        requests: Mutex::new(Vec::new()),
+    });
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    files(dir.path());
+    big_file(dir.path());
+    let harness = HarnessSettings {
+        parallel_reads,
+        // Saving a large result would hide what the read itself returned.
+        result_spill: false,
+        ..HarnessSettings::default()
+    };
+    let session = start_sized(
+        &url,
+        Workspace::new(dir.path()).unwrap(),
+        harness,
+        None,
+        None,
+        Vec::new(),
+    );
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+    to_the_end(&mut events).await;
+    let requests = fake.requests.lock().unwrap();
+    tool_messages(&requests[1])
+}
+
+#[tokio::test]
+async fn a_hosted_model_with_no_known_window_reads_a_large_file_with_the_large_budget() {
+    let read = |id: &str| call(id, "read_file", json!({"path": "big.txt"}));
+    // One call at a time: `run_tool` sizes the read.
+    let alone = unknown_window_results(vec![read("c1")], 0).await;
+    assert!(
+        alone[0].1.contains("row 0999"),
+        "cut short: {}",
+        alone[0].1.len()
+    );
+    // Two reads of a step run ahead together: the prefetch sizes them the same way.
+    let together = unknown_window_results(vec![read("c1"), read("c2")], 4).await;
+    for (id, content) in &together {
+        assert!(
+            content.contains("row 0999"),
+            "{id} cut short: {}",
+            content.len()
+        );
+    }
 }

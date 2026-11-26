@@ -47,13 +47,16 @@ impl Agent {
     /// loading on this is its universe, which calls are checked against; it is worked out
     /// again each time it is asked for.
     pub(super) fn tool_universe(&self) -> (Vec<ToolSpec>, Vec<Category>) {
-        self.build_universe(self.reactive())
+        self.build_universe(!self.reactive())
     }
 
-    /// [`Agent::tool_universe`]; `keep_activation` keeps `activate_plugin` listed after the
-    /// last plugin is active (loading on, where the offered list must not change).
-    pub(super) fn build_universe(&self, keep_activation: bool) -> (Vec<ToolSpec>, Vec<Category>) {
-        let (specs, groups) = self.universe_before_edits(keep_activation);
+    /// [`Agent::tool_universe`]; `listed` says the universe is the list the model is offered
+    /// (loading off), which must not gain or lose a tool within a session: the questions to
+    /// knowledge agents are then listed whenever knowledge agents are on, not only once one
+    /// exists. With loading on the offered list is the fixed one, and the universe has them
+    /// when there is someone to ask.
+    pub(super) fn build_universe(&self, listed: bool) -> (Vec<ToolSpec>, Vec<Category>) {
+        let (specs, groups) = self.universe_before_edits(listed);
         // A variant's dropped tools leave the root's universe (and so its list and searches).
         let Some(editing) = self
             .shared
@@ -71,10 +74,7 @@ impl Agent {
     }
 
     /// [`Agent::build_universe`] before a variant's drops.
-    pub(super) fn universe_before_edits(
-        &self,
-        keep_activation: bool,
-    ) -> (Vec<ToolSpec>, Vec<Category>) {
+    pub(super) fn universe_before_edits(&self, listed: bool) -> (Vec<ToolSpec>, Vec<Category>) {
         if self.single_call {
             return (Vec::new(), Vec::new());
         }
@@ -85,32 +85,32 @@ impl Agent {
         if !profile.allows_shell() {
             tools.retain(|tool| !SHELL_TOOLS.contains(&tool.name.as_str()));
         }
-        let mcp_start = tools.len();
+        // The outside tools (MCP servers', activated plugins') come last, MCP first, so a
+        // server that connects or lists more tools and a plugin that is activated add to the
+        // end of the list and leave the prefix before them as it was.
+        let mut outside = Vec::new();
         for provider in self.providers(ToolGroup::External) {
-            tools.extend(
+            outside.extend(
                 provider
                     .specs()
                     .into_iter()
                     .filter(|tool| profile.allows_mcp(provider.server_of(&tool.name).as_deref())),
             );
         }
-        let mcp = mcp_start..tools.len();
+        let mcp_count = outside.len();
         let lazy = &self.shared.extensions.plugins;
-        tools.extend(lazy.specs().into_iter().filter(|tool| {
+        outside.extend(lazy.specs().into_iter().filter(|tool| {
             lazy.plugin_of(&tool.name)
                 .is_some_and(|plugin| profile.allows_plugin(&plugin))
         }));
-        let plugins = mcp.end..tools.len();
         tools.push(update_plan_spec());
         if !self.shared.extensions.skills.is_empty() {
             tools.push(load_skill_spec());
         }
-        if lazy
-            .plugins()
-            .iter()
-            .any(|plugin| !lazy.is_active(&plugin.name) && profile.allows_plugin(&plugin.name))
-            || (keep_activation && self.plugin_loader() && profile.allows_any_plugin())
-        {
+        // Offered for the whole session when the agent could activate a plugin at its start
+        // (decided once), so it does not leave the list after the last activation: it then
+        // answers "already active".
+        if self.plugin_loader() && profile.allows_any_plugin() {
             tools.push(activate_plugin_spec());
         }
         if self.shared.context.is_some() {
@@ -154,23 +154,27 @@ impl Agent {
                 tools.push(update_state_spec());
             }
         }
-        // Questions are offered while the session has a knowledge agent to ask.
+        // Questions to knowledge agents. In the list the model is offered they are always
+        // there while knowledge agents are on, so the list does not change when the first one
+        // is kept; before there is one, they answer that there is none.
         if self.can_ask
             && self.fork.is_none()
             && self.shared.knowledge.enabled()
-            && !self.shared.agents.knowledge_cards().is_empty()
+            && (listed || !self.shared.agents.knowledge_cards().is_empty())
         {
             tools.extend([list_knowledge_agents_spec(), ask_agent_spec()]);
         }
+        let outside_start = tools.len();
+        tools.extend(outside);
         // One category per tool, in step with the list.
         let groups: Vec<Category> = (0..tools.len())
             .map(|index| {
-                if mcp.contains(&index) {
-                    Category::ToolsMcp
-                } else if plugins.contains(&index) {
-                    Category::ToolsPlugins
-                } else {
+                if index < outside_start {
                     Category::ToolsBuiltin
+                } else if index < outside_start + mcp_count {
+                    Category::ToolsMcp
+                } else {
+                    Category::ToolsPlugins
                 }
             })
             .collect();
@@ -275,16 +279,41 @@ impl Agent {
         }
     }
 
-    pub(super) async fn after_tool(&self, tool: &str, arguments: &str, ok: bool, output: &str) {
+    /// Runs `tool.after` hooks on a finished call and returns the result the model reads: what
+    /// the tool returned, or a hook's replacement (`updated_output`; only the user's own hooks
+    /// may, and one over the size limit was refused by the hook layer). The hooks see the
+    /// result cut to [`REPORT_CHARS`]. A replacement is journalled as a notice with the result
+    /// before and after, like a rewritten call.
+    pub(super) async fn after_tool(
+        &self,
+        tool: &str,
+        arguments: &str,
+        ok: bool,
+        output: String,
+    ) -> String {
         let payload = json!({
             "agent_id": self.id,
             "tool_input": tool_input(arguments),
             "ok": ok,
-            "tool_output": truncate(output, REPORT_CHARS),
+            "tool_output": truncate(&output, REPORT_CHARS),
         });
-        self.shared
-            .hook_in(&self.workspace, HookEvent::ToolAfter, Some(tool), payload)
+        let outcome = self
+            .shared
+            .hook_rewriting_in(&self.workspace, HookEvent::ToolAfter, Some(tool), payload)
             .await;
+        match outcome.updated_output {
+            Some(new) if new != output => {
+                self.emit(SessionEvent::Notice {
+                    message: format!(
+                        "A hook replaced the result of {tool}.\nBefore: {}\nAfter: {}",
+                        crate::agent::shown(&output),
+                        crate::agent::shown(&new)
+                    ),
+                });
+                new
+            }
+            _ => output,
+        }
     }
 
     /// Under `required-before-action`, the message refusing a write or command while required
@@ -649,7 +678,7 @@ impl Agent {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
-        self.after_tool(name, arguments, ok, &output).await;
+        let output = self.after_tool(name, arguments, ok, output).await;
         self.tool_finished(call, name, ok, output, Some(started))
     }
 
@@ -1088,7 +1117,7 @@ impl Agent {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
-        self.after_tool(tool, &hook_arguments, ok, &output).await;
+        let output = self.after_tool(tool, &hook_arguments, ok, output).await;
         self.tool_finished(call, tool, ok, output, Some(started))
     }
 

@@ -492,7 +492,12 @@ fn folder_named(state: &DaemonState, name: &str) -> Result<PathBuf, String> {
 /// nothing else; a link is refused, not followed. Any other `name` is looked up as `resolve` does
 /// (a plugin name or `name@marketplace`), and the folder it finds must not be a link either.
 pub(crate) fn resolve_for_approval(state: &DaemonState, name: &str) -> Result<PathBuf, String> {
-    if let Some(exact) = exact_folder(state, name)? {
+    // An exact folder name is one plain name (`check_folder_name`); white space around it is the one
+    // thing allowed, because an approval names the folder byte for byte. Any other name is looked
+    // up as a plugin name or id.
+    if check_folder_name(name.trim()).is_ok()
+        && let Some(exact) = exact_folder(state, name)?
+    {
         return Ok(exact);
     }
     let found = resolve(state, name)?;
@@ -545,7 +550,10 @@ pub(crate) fn mentions_dot_git(text: &str) -> bool {
     lower.match_indices(".git").any(|(at, _)| {
         let before = lower[..at].chars().next_back();
         let after = lower[at + 4..].chars().next();
-        matches!(before, Some('/' | '\\'))
+        // A `.git` component after a separator (`./.git`, `a/../.git`, `a\.git`) or at the start of
+        // the text, a word or a quoted string (`.git/hooks/h`, `sh .git/h`): relative paths count
+        // as well as absolute ones.
+        before.is_none_or(|c| matches!(c, '/' | '\\' | '"' | '\'') || c.is_whitespace())
             && after.is_none_or(|c| matches!(c, '/' | '\\' | '"' | '\'') || c.is_whitespace())
     })
 }

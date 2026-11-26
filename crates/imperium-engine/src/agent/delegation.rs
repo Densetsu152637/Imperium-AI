@@ -78,7 +78,7 @@ impl Agent {
                 // A variant's drops are the root's alone, so they do not narrow what a subagent's
                 // file may list.
                 let parent: Vec<String> = self
-                    .universe_before_edits(self.reactive())
+                    .universe_before_edits(!self.reactive())
                     .0
                     .into_iter()
                     .map(|tool| tool.name)
@@ -1405,6 +1405,9 @@ pub(super) async fn run_subagent(
             outcome.text = format!("{note}\n\n{}", truncate(&outcome.text, room));
         }
     }
+    // A finished subagent can no longer read or stop its background commands, so the ones still
+    // running are stopped and all its entries leave the session's table.
+    agent.workspace.processes().release_owner(&id);
     shared
         .hook_in(
             &agent.workspace,
