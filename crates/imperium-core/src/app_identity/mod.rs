@@ -1041,39 +1041,6 @@ mod tests {
         ] {
             assert!(!crate::plugin_install::mentions_dot_git(text), "{text}");
         }
-        use crate::plugin_install::{DotGitUse, dot_git_use};
-        for text in ["true", "sh x/.github/h"] {
-            assert_eq!(dot_git_use(text), DotGitUse::None, "{text}");
-        }
-        for text in [
-            "sh .git/hooks/pre-commit",
-            "sh ${CLAUDE_PLUGIN_ROOT}/.git/hooks/h.sh",
-            "cat .git/config",
-            "sh .git/info/x.sh",
-            r"C:\x\.git\hooks\h.bat",
-            "sh .git/hooks/a; sh .git/config",
-        ] {
-            assert_eq!(dot_git_use(text), DotGitUse::Safe, "{text}");
-        }
-        for text in [
-            "cd .git",
-            "GIT_DIR=.git",
-            "--git-dir=.git",
-            "sh .git",
-            "sh x/.git/",
-            "sh .git/refs/x",
-            "sh .git/HEAD",
-            "sh .git/objects/ab/cd",
-            "sh .git/hooks/$X",
-            "sh .git/hooks/*",
-            "sh .git/hooks/../refs/x",
-            "sh .git/info/x.lock",
-            "python .git/x.lock",
-            "sh .git/config/x",
-            "sh .git/hooks/a; sh .git/refs/x",
-        ] {
-            assert_eq!(dot_git_use(text), DotGitUse::Any, "{text}");
-        }
         let home = home();
         let state = state_of(&home);
         let hash = || {
@@ -1100,65 +1067,55 @@ mod tests {
         let first = hash();
         edit("h.sh");
         assert_eq!(hash(), first);
-        // A hook that runs only a file git never rewrites (`hooks/**`, `config`, `info/**`): those
-        // files are content, but what git rewrites in normal use (a fetch, a commit) is not.
-        hook("sh ${CLAUDE_PLUGIN_ROOT}/.git/hooks/pre-commit");
-        let before = hash();
-        let object = format!("objects/ab/{}", "c".repeat(38));
-        let pack = format!("objects/pack/pack-{}.pack", "d".repeat(40));
-        for relative in [
-            "FETCH_HEAD",
-            "index",
-            "HEAD",
-            "refs/heads/main",
-            "logs/HEAD",
-            "packed-refs",
-            "index.lock",
-            "refs/heads/main.lock",
-            "gc.log",
-            "objects/info/packs",
-            object.as_str(),
-            pack.as_str(),
-        ] {
-            edit(relative);
-        }
-        assert_eq!(hash(), before);
-        for relative in [
-            "hooks/pre-commit",
-            "hooks/x.lock",
-            "config",
-            "info/exclude",
-            "description",
-            "objects/zz/not-an-object",
-            "objects/pack/pack-short.pack",
-            "refs.sh",
-        ] {
-            let last = hash();
-            edit(relative);
-            let added = hash();
-            assert_ne!(added, last, "{relative}");
-            edit(relative);
-            assert_ne!(hash(), added, "{relative}");
-        }
-        // Any other use of `.git` (a bare `.git`, a variable, refs, a lock file) covers all of it:
-        // the files named can run, and git's own files can hold what they run.
-        for (command, file) in [
-            ("sh .git/refs/x", "refs/x"),
-            ("GIT_DIR=.git sh h", "FETCH_HEAD"),
-            ("cd .git;sh refs/x", "refs/x"),
-            ("sh ${CLAUDE_PLUGIN_ROOT}/.git/$X", "index"),
-            ("python .git/x.lock", "x.lock"),
-            ("sh .git/objects/info/run.sh", "objects/info/run.sh"),
-            ("sh .git/packed-refs", "packed-refs"),
+        // Any mention of `.git`, however the path is built, hashes all of it: an edit to
+        // `.git/refs/x` (a file git rewrites) then voids the approval.
+        for command in [
+            "sh .git/refs/x",
+            "sh .git/hooks/pre-commit",
+            "sh .git/hooks/\"../refs/x\"",
+            "cd .git/hooks && sh ../refs/x",
+            "cd .git;sh refs/x",
+            "GIT_DIR=.git sh h",
+            "sh ${CLAUDE_PLUGIN_ROOT}/.git/$X",
+            "python .git/x.lock",
         ] {
             hook(command);
-            let last = hash();
-            edit(file);
-            let added = hash();
-            assert_ne!(added, last, "{command}");
-            edit(file);
-            assert_ne!(hash(), added, "{command}");
+            for file in ["refs/x", "FETCH_HEAD", "x.lock", "hooks/pre-commit"] {
+                let last = hash();
+                edit(file);
+                let added = hash();
+                assert_ne!(added, last, "{command}: {file}");
+                edit(file);
+                assert_ne!(hash(), added, "{command}: {file}");
+            }
         }
+        // No mention: `.git` stays out of the hash again.
+        hook("true");
+        let last = hash();
+        edit("refs/x");
+        assert_eq!(hash(), last);
+    }
+
+    #[test]
+    fn a_server_that_runs_from_dot_git_through_its_arguments_has_it_hashed() {
+        let home = home();
+        let state = state_of(&home);
+        std::fs::create_dir_all(home.folder.join(".git/refs")).unwrap();
+        let hash = || {
+            crate::plugin_install::inspect_folder(&state, &folder_params("p"))
+                .unwrap()
+                .sha256
+        };
+        // Arguments that reach `.git` from the server's own folder: `../refs/x` from `.git/hooks`.
+        std::fs::write(
+            home.folder.join(".mcp.json"),
+            r#"{"mcpServers":{"s":{"command":"sh","args":["-c","cd .git/hooks && sh ../refs/x"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(home.folder.join(".git/refs/x"), "1").unwrap();
+        let first = hash();
+        std::fs::write(home.folder.join(".git/refs/x"), "22").unwrap();
+        assert_ne!(hash(), first);
     }
 
     #[test]

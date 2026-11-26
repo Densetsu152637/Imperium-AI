@@ -38,7 +38,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::app_identity::presence::{PresenceProvider, kind_for};
-use crate::plugin_install::DotGitUse;
 
 const STORE_FILE: &str = "plugin-installs.json";
 const MARKER_FILE: &str = "plugin-migration.json";
@@ -303,25 +302,25 @@ fn reparse_point(_: &std::fs::Metadata) -> bool {
     false
 }
 
-/// Whether `name` at the folder's top is left out of the hash: `.git` (unless a hook or server uses
-/// it: `Safe` still leaves out what `git_managed` names, `Any` leaves out nothing), and the
-/// one file Imperium writes into a plugin folder. Any other file, `.imperium-*.json` ones a plugin
-/// ships included, is content (a hook can run it).
-fn excluded(name: &str, git: DotGitUse) -> bool {
-    (name == ".git" && git == DotGitUse::None) || name == plugins::SOURCE_FILE
+/// Whether `name` at the folder's top is left out of the hash: `.git` (unless a hook or server
+/// mentions it, then all of it is content), and the one file Imperium writes into a plugin folder.
+/// Any other file, `.imperium-*.json` ones a plugin ships included, is content (a hook can run it).
+fn excluded(name: &str, with_git: bool) -> bool {
+    (name == ".git" && !with_git) || name == plugins::SOURCE_FILE
 }
 
-/// How the plugin in `root` uses its own top-level `.git`, from every hook command and URL and
-/// every server command, argument, URL, launch environment value and working folder. Only the
+/// Whether a hook or server of the plugin in `root` mentions `.git` anywhere: in a hook command or
+/// URL, or a server's command, argument, URL, launch environment value or working folder. Then the
+/// whole top-level `.git` is content, with no exclusion: a path can be built from a mention in too
+/// many ways (`cd .git && sh refs/x`, `.git/hooks/"../refs/x"`) to tell which files run. Only the
 /// answer leaves this function, never a value.
-fn git_use(root: &Path) -> DotGitUse {
-    use crate::plugin_install::dot_git_use;
+fn runs_from_git(root: &Path) -> bool {
+    use crate::plugin_install::mentions_dot_git;
     let Some(plugin) = parse(root) else {
-        return DotGitUse::None;
+        return false;
     };
     let runs = plugins::runs(&plugin);
-    let texts = runs
-        .hooks
+    runs.hooks
         .iter()
         .flat_map(|hook| std::iter::once(&hook.command).chain(hook.url.iter()))
         .chain(runs.servers.iter().flat_map(|server| {
@@ -331,63 +330,23 @@ fn git_use(root: &Path) -> DotGitUse {
                 .chain(server.args.iter())
                 .chain(server.url.iter())
         }))
-        .map(|text| dot_git_use(text))
-        .max()
-        .unwrap_or(DotGitUse::None);
-    plugin
-        .servers
-        .iter()
-        .map(|server| match &server.launch {
-            imperium_mcp::Launch::Stdio { env, cwd, .. } => env
-                .iter()
-                .map(|(_, value)| dot_git_use(value))
-                .chain(cwd.iter().map(|cwd| dot_git_use(&cwd.to_string_lossy())))
-                .max()
-                .unwrap_or(DotGitUse::None),
-            imperium_mcp::Launch::Http { .. } => DotGitUse::None,
+        .any(|text| mentions_dot_git(text))
+        || plugin.servers.iter().any(|server| match &server.launch {
+            imperium_mcp::Launch::Stdio { env, cwd, .. } => {
+                env.iter().any(|(_, value)| mentions_dot_git(value))
+                    || cwd
+                        .as_ref()
+                        .is_some_and(|cwd| mentions_dot_git(&cwd.to_string_lossy()))
+            }
+            imperium_mcp::Launch::Http { .. } => false,
         })
-        .max()
-        .unwrap_or(DotGitUse::None)
-        .max(texts)
-}
-
-fn is_hex(text: &str, lengths: &[usize]) -> bool {
-    lengths.contains(&text.len()) && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-/// Whether the file `relative` (to the top-level `.git`, with `/`) is one git rewrites in normal
-/// use: the index, the refs and reflogs, the fetch and merge bookkeeping, lock files, and loose
-/// and packed objects. Names are checked strictly and anything unexpected is hashed, as are
-/// `hooks/**`, `config`, `info/**` and `description`: those can run or steer what runs.
-fn git_managed(relative: &str) -> bool {
-    let parts: Vec<&str> = relative.split('/').collect();
-    match parts.as_slice() {
-        ["hooks", ..] => false,
-        [
-            "index" | "HEAD" | "FETCH_HEAD" | "ORIG_HEAD" | "AUTO_MERGE" | "packed-refs" | "gc.log",
-        ] => true,
-        ["logs" | "refs", ..] => true,
-        ["objects", "info", _] => true,
-        ["objects", "pack", name] => name.strip_prefix("pack-").is_some_and(|rest| {
-            rest.rsplit_once('.').is_some_and(|(id, extension)| {
-                is_hex(id, &[40, 64])
-                    && matches!(
-                        extension,
-                        "pack" | "idx" | "rev" | "keep" | "bitmap" | "mtimes"
-                    )
-            })
-        }),
-        ["objects", fan, name] => is_hex(fan, &[2]) && is_hex(name, &[38, 62]),
-        // Lock files of the index, refs and config, in the top-level `.git` or in a sub folder.
-        _ => parts.last().is_some_and(|name| name.ends_with(".lock")),
-    }
 }
 
 /// Lists every file under `root` without following links. Stops at the first link found.
 fn walk(
     root: &Path,
     prefix: &str,
-    git: DotGitUse,
+    with_git: bool,
     stamps: &mut Vec<Stamp>,
 ) -> Result<Option<String>, String> {
     let folder = if prefix.is_empty() {
@@ -409,17 +368,14 @@ fn walk(
         if is_link(&meta) {
             return Ok(Some(relative));
         }
-        if prefix.is_empty() && excluded(&relative, git) {
+        if prefix.is_empty() && excluded(&relative, with_git) {
             continue;
         }
         if meta.is_dir() {
-            if let Some(link) = walk(root, &relative, git, stamps)? {
+            if let Some(link) = walk(root, &relative, with_git, stamps)? {
                 return Ok(Some(link));
             }
         } else if meta.is_file() {
-            if git == DotGitUse::Safe && relative.strip_prefix(".git/").is_some_and(git_managed) {
-                continue;
-            }
             stamps.push((relative, meta.len(), meta.modified().ok()));
         }
     }
@@ -484,7 +440,7 @@ fn hash_files(root: &Path, stamps: &[Stamp]) -> Result<String, String> {
 /// that is not installed yet (an inspected plugin in a staging folder).
 pub(crate) fn measure(root: &Path) -> Result<Seen, String> {
     let mut stamps = Vec::new();
-    if let Some(link) = walk(root, "", git_use(root), &mut stamps)? {
+    if let Some(link) = walk(root, "", runs_from_git(root), &mut stamps)? {
         return Ok(Seen {
             hash: String::new(),
             link: Some(link),
@@ -651,7 +607,7 @@ pub(crate) fn take_record(paths: &Paths, key: &str) -> Result<Option<Record>, St
 /// when the walk's list of paths, sizes and times is the cached one.
 pub(crate) fn look(canon: &Path) -> Result<Seen, String> {
     let mut stamps = Vec::new();
-    if let Some(link) = walk(canon, "", git_use(canon), &mut stamps)? {
+    if let Some(link) = walk(canon, "", runs_from_git(canon), &mut stamps)? {
         return Ok(Seen {
             hash: String::new(),
             link: Some(link),

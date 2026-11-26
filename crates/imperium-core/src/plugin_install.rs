@@ -574,59 +574,6 @@ pub(crate) fn mentions_dot_git(text: &str) -> bool {
     !dot_git_ends(text).is_empty()
 }
 
-/// How a hook or server uses the plugin folder's own `.git`, in order of how much of it the content
-/// hash must cover.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum DotGitUse {
-    /// No mention: `.git` is not content.
-    None,
-    /// Every mention names a file git does not rewrite itself (`.git/hooks/...`, `.git/config`,
-    /// `.git/info/...` other than a `.lock`).
-    Safe,
-    /// Anything else (a bare `.git`, a variable or glob, refs, objects, `HEAD`, a `.lock`, ...):
-    /// every file of `.git` is content.
-    Any,
-}
-
-/// The use `text` makes of `.git`; the strongest of its mentions.
-pub(crate) fn dot_git_use(text: &str) -> DotGitUse {
-    let lower = text.to_ascii_lowercase();
-    let mut found = DotGitUse::None;
-    for end in dot_git_ends(text) {
-        let rest = &lower[end..];
-        let safe = rest.strip_prefix(['/', '\\']).is_some_and(|rest| {
-            let path = rest
-                .split(|c: char| {
-                    c.is_whitespace()
-                        || matches!(c, '"' | '\'' | ';' | '&' | '|' | ')' | '(' | '<' | '>')
-                })
-                .next()
-                .unwrap_or("");
-            let parts: Vec<&str> = path
-                .split(['/', '\\'])
-                .filter(|part| !part.is_empty())
-                .collect();
-            let plain = parts.iter().all(|part| {
-                !part.ends_with(".lock")
-                    && *part != ".."
-                    && !part.contains(['$', '*', '?', '[', ']', '{', '}', '~', '`', '%', '!', '\\'])
-            });
-            plain
-                && match parts.as_slice() {
-                    ["hooks" | "info", ..] => true,
-                    ["config"] => true,
-                    _ => false,
-                }
-        });
-        found = found.max(if safe {
-            DotGitUse::Safe
-        } else {
-            DotGitUse::Any
-        });
-    }
-    found
-}
-
 /// `plugins.inspect_folder`: what the installed plugin folder `name` would run, read from the
 /// folder itself with the gate's own hash and run digest (`plugin_records::content`), so an
 /// approval of exactly these values is the one the gate honours. Nothing in it runs.
