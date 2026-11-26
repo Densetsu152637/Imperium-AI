@@ -936,6 +936,24 @@ and `environments.agent_update` (protocol 0.28)
     file changed since that agent last read it. A paired phone gets no editor, and mods cannot
     wrap or drive it, the same as item 55's panels
     ([plan](plans/text-editor.md)).
+<!-- markdownlint-disable-next-line MD029 -->
+68. **Resource caps on every child process** (planned). No process Imperium starts can exhaust
+    the host. A CAS test process grew to about 20 GB on a 64 GB Windows machine and took it to
+    about 100% RAM, because on Windows nothing Imperium starts has a memory limit. Every command,
+    terminal, MCP server, hook, plugin process, CAS server, code-mode worker, browser, daemon tool
+    and local model server runs in a cap unit: a process tree with a memory cap and a process
+    cap, and an optional CPU cap. The mechanisms are a nested Job Object on Windows (assigned
+    while the process is suspended), a delegated cgroup v2 subtree on Linux (with an `rlimit`
+    and poll fallback), and a daemon-side poll on macOS. Container and Docker runs get their
+    own flags. Units sit under a per-session aggregate and an Imperium-wide total. Model servers
+    get large caps from the memory planner's own estimate, warn-only at first. A daemon
+    watchdog stops Imperium's largest units, or unloads idle models, before free memory falls
+    below a reserve. Caps are user settings (`[limits]`): project files may only lower them,
+    plugin manifests cannot set them, and an agent's `config set limits.*` hits the safety
+    floor. Each stop is reported to the agent and the interface with the cap, the peak and the
+    setting that raises it. The existing CAS and code-mode limits are reused, not doubled. CI
+    runs an allocation bomb, a fork bomb and a CPU spin on each OS, under probes that bound
+    themselves ([plan](plans/resource-caps.md)).
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
