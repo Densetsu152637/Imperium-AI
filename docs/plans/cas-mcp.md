@@ -168,6 +168,9 @@ Why agent text cannot reach `eval`, `exec`, `__import__` or attribute access:
      - `pool.py` may use `subprocess` and `os`;
      - `worker.py` may use `os` for `os._exit` and `os.getpid` only (and R2 allows its `_exit`);
      - `limits_macos.py` and `landlock.py` may use `ctypes`. They take no agent data.
+     - `landlock.py` may use `os` (with `os.open`, for the interpreter and the rule's roots), and
+       `limits_posix.py` may call `open` on the fixed path `/proc/self/statm` only, before the
+       audit hook (stage 2b; both are checked by `test_no_dynamic_code.py`).
    - **R2.** An `Attribute` whose attribute name starts with `_`.
    - **R3.** An `import` inside a function.
    - **R4.** Any import in `parse.py`, `guard.py` and `build.py` other than `re`, `math`,
@@ -299,6 +302,19 @@ Details:
   measured in stage 2b). So a macOS worker can briefly exceed its limit by that much before it
   is killed. Stage 2b records the measured worst overshoot, and 05 states the bound.
 - **Core dumps.** Every worker sets `RLIMIT_CORE = 0`.
+- **Applied or only requested (stage 2b).** The worker passes nothing to the call until its
+  limits are in place, and it must not be spawned in production without them:
+  - Linux: CPU (`RLIMIT_CPU`) and memory (`RLIMIT_AS`) are applied by the worker itself, core
+    files are off, and the front's wall clock kills it.
+  - macOS: CPU (`RLIMIT_CPU`) is applied by the worker and core files are off; memory is only
+    requested on the command line, and enforced by the front's footprint poll. The wall clock is
+    the front's.
+  - Windows: both are only requested on the command line until stage 5; the broker applies them
+    through the worker's Job Object. `PosixSpawner` refuses Windows unless a test opts in to
+    unlimited workers.
+  - A worker that ignores or never runs its `SIGXCPU` handler (stuck in C code) is killed by the
+    hard limit's `SIGKILL` one second later; the front reads that `SIGKILL`, which it did not
+    send, as `limit: CPU time`.
 - **Hash seed.** `PYTHONHASHSEED=0` is set for every process on every OS, so a call's result does
   not depend on the process.
 - **Unix spawning.** The worker sets its own `rlimit`s after warm-up and before reading the call,
@@ -415,8 +431,10 @@ This is stricter than the commands' OS tier, which starts from `--ro-bind / /` w
 
 Inside, the front applies a **Landlock** ruleset (`landlock.py`, raw syscalls through `ctypes`,
 no agent data). The ruleset handles `LANDLOCK_ACCESS_FS_EXECUTE` and allows it only beneath the
-environment root, so neither the front nor a worker can `execve` anything in `/usr/bin` (a
-shell, `curl`). Workers inherit the ruleset.
+interpreter's own installation (`sys.base_prefix`, inside the environment root) and for the
+interpreter's ELF loader (`PT_INTERP`, which the kernel also opens for execution, so without it
+the interpreter could not start a worker). So neither the front nor a worker can `execve`
+anything in `/usr/bin` (a shell, `curl`). Workers inherit the ruleset.
 
 - **Timing (R2-3).** The ruleset is applied by the first statement of `imperium_cas.__main__`,
   before any other import (the MCP SDK, `pool`) and before stdin is read. `landlock.py` imports
@@ -1443,6 +1461,11 @@ Commands are what CI runs; nothing needs a local Rust build.
   An unarmed spare therefore has no wall clock, only CPU, memory and active-process limits, so
   the "never armed" test becomes "an unarmed worker is stopped at the default CPU limit". (D3's
   `arm` and wall-clock wording, which count from "ready", needs this change when stage 5 edits it.)
+  **Crash dumps (from the stage 2a review).** Unix workers set `RLIMIT_CORE = 0`, but Windows has
+  no such limit: Windows Error Reporting can write a crashed worker's memory, which holds the
+  request, to a dump under the user's profile (`LocalDumps` or a queued report). Stage 5 turns
+  that off for workers: `SetErrorMode(SEM_NOGPFAULTERRORBOX)` inherited from the broker, or
+  `WerAddExcludedApplication`, and a test that a crashing probe leaves no dump.
 
 ### Stage 6: Managed environment and the CLI
 

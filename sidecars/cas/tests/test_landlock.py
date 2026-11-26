@@ -9,6 +9,7 @@ in a subprocess, so the test session itself is never confined.
 
 import ast
 import errno
+import json
 import os
 import subprocess
 import sys
@@ -112,7 +113,7 @@ def test_confinement_off_linux():
 
 
 EXEC_PROBE = """
-import os, subprocess, sys
+import json, os, subprocess, sys
 from imperium_cas import landlock
 print(landlock.confine())
 child = subprocess.run(
@@ -124,8 +125,13 @@ print(child.stdout.strip() or child.returncode)
 from imperium_cas.pool import Limits, Pool
 from support import make_spawner
 pool = Pool(make_spawner(), Limits(wall_seconds=60))
-print(pool.call({"tool": "build", "expression": "x + 1"}).get("text"))
+reply = pool.call({"tool": "build", "expression": "x + 1"})
 pool.close()
+if reply.get("text") != "x + 1":
+    import subprocess as sp
+    probe = sp.run(make_spawner().command, input=b"", capture_output=True, timeout=60)
+    reply["stderr"] = probe.stderr.decode(errors="replace")[-2000:]
+print(json.dumps(reply))
 try:
     os.execv("/bin/sh", ["sh", "-c", "exit 0"])
 except OSError as exc:
@@ -139,11 +145,11 @@ def test_execve_is_refused_for_the_front_and_its_children():
     if sh.startswith(os.path.realpath(sys.base_prefix) + os.sep):
         pytest.skip("the interpreter is installed where /bin/sh is; the rule allows both")
     result = run_python(EXEC_PROBE)
-    lines = result.stdout.decode().split()
-    assert lines == ["landlock", str(errno.EACCES), "x", "+", "1", str(errno.EACCES)], (
-        lines,
-        result.stderr.decode(errors="replace"),
-    )
+    lines = result.stdout.decode().splitlines()
+    assert len(lines) == 4, (lines, result.stderr.decode(errors="replace"))
+    assert lines[:2] == ["landlock", str(errno.EACCES)]
+    assert json.loads(lines[2]) == {"ok": True, "text": "x + 1"}  # a worker starts and answers
+    assert lines[3] == str(errno.EACCES)
 
 
 INJECTED = """
