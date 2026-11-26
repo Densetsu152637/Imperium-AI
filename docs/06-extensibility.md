@@ -171,7 +171,8 @@ what is installed under that name. It refuses a manifest name unlike the entry's
 junction in the source (a link in a git repository is written as a plain file by the clone,
 `core.symlinks=false`, so it never reaches the disk as a link). The content hash is the
 load-time gate's (the files' paths, lengths and bytes without a top-level `.git`, unless a hook or
-server mentions it, and without `.imperium-source.json`). Nothing runs: no hook, server, build step, install script or git hook.
+server mentions it, and without `.imperium-source.json`). Nothing runs: no hook, server, build
+step, install script or git hook.
 
 **Inspecting a folder that did not come from a marketplace (protocol 0.62; not a paired phone).**
 `plugins.inspect_folder {name}` is `plugins.inspect` for an installed plugin folder that has no
@@ -192,8 +193,15 @@ folder's files as they are at the dialog; any change afterwards to any file make
 withhold the plugin again until it is approved again, except `.imperium-source.json` and the
 folder's own top-level `.git` folder, which the content hash leaves out unless a hook or server
 command of the plugin mentions a `.git` path (`.git/h.sh`, `GIT_DIR=.git`, `--git-dir=.git`,
-`cd .git;sh h`): then `.git` is hashed too, so changing what runs from it voids the approval. The
-challenge and the approval name the folder the same way: a name that is exactly an entry of
+`cd .git;sh h`), or a server's launch environment value or working folder does
+(`NODE_OPTIONS=--require ./.git/x.js`): then `.git` is hashed too, so changing what runs from it
+voids the approval. Even then the files git rewrites in normal use stay out (the index, `HEAD`,
+`FETCH_HEAD`, `ORIG_HEAD`, `AUTO_MERGE`, `packed-refs`, `gc.log`, `logs/**`, `refs/**`, `*.lock`,
+loose objects, pack files by their strict names, `objects/info/*`), so a fetch or a commit does
+not void it; `hooks/**`, `config`, `info/**`, `description` and any unexpected name are hashed. The
+approval covers files that run directly, not data a hashed program reads: `git show HEAD:payload |
+sh` runs whatever the repository's history holds, and a change to that history does not void the
+approval. The challenge and the approval name the folder the same way: a name that is exactly an entry of
 `<config>/plugins` is that folder (byte for byte, never trimmed or case-folded, never a link), and
 another name is looked up as a plugin name or id; the hash and digest must still match. The content
 hash refuses a folder that holds a link anywhere (a link is never followed), and opens each file

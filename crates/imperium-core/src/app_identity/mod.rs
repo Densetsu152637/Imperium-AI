@@ -1005,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_that_runs_from_dot_git_has_it_hashed_though_the_hash_leaves_it_out_otherwise() {
+    fn dot_git_is_hashed_only_when_a_hook_mentions_it() {
         for text in [
             "sh /x/p/.git/hooks/h.sh",
             "C:\\x\\.git\\h.bat",
@@ -1026,6 +1026,7 @@ mod tests {
             "cd .git||sh h",
             "cd .git|sh",
             "$(cd .git)",
+            "PYTHONPATH=.git/lib",
         ] {
             assert!(crate::plugin_install::mentions_dot_git(text), "{text}");
         }
@@ -1061,6 +1062,86 @@ mod tests {
         let fourth = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
         assert_ne!(third.sha256, fourth.sha256);
         assert_ne!(third.sha256, second.sha256);
+        // What git rewrites in normal use stays out of the hash even then: a fetch, a commit.
+        let hash = || {
+            crate::plugin_install::inspect_folder(&state, &folder_params("p"))
+                .unwrap()
+                .sha256
+        };
+        let before = hash();
+        let object = format!("{}/{}", "ab", "c".repeat(38));
+        let pack = format!("pack-{}.pack", "d".repeat(40));
+        for (relative, text) in [
+            ("FETCH_HEAD", "x"),
+            ("index", "x"),
+            ("HEAD", "ref: refs/heads/main"),
+            ("refs/heads/main", "1"),
+            ("logs/HEAD", "1"),
+            ("packed-refs", "1"),
+            ("index.lock", "1"),
+            ("refs/heads/main.lock", "1"),
+            ("gc.log", "1"),
+            ("objects/info/packs", "1"),
+        ] {
+            let path = home.folder.join(".git").join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        for relative in [format!("objects/{object}"), format!("objects/pack/{pack}")] {
+            let path = home.folder.join(".git").join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x").unwrap();
+        }
+        assert_eq!(hash(), before);
+        // Anything else under `.git` is content: hooks, config, an unexpected name or object path.
+        for relative in [
+            "hooks/x",
+            "hooks/x.lock",
+            "config",
+            "info/exclude",
+            "description",
+            "objects/zz/not-an-object",
+            "objects/pack/pack-short.pack",
+            "refs.sh",
+        ] {
+            let path = home.folder.join(".git").join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let last = hash();
+            std::fs::write(&path, "one").unwrap();
+            let added = hash();
+            assert_ne!(added, last, "{relative}");
+            std::fs::write(&path, "twotwo").unwrap();
+            assert_ne!(hash(), added, "{relative}");
+        }
+    }
+
+    #[test]
+    fn a_server_that_runs_from_dot_git_through_its_environment_has_it_hashed() {
+        let home = home();
+        let state = state_of(&home);
+        std::fs::create_dir_all(home.folder.join(".git")).unwrap();
+        std::fs::write(home.folder.join(".git/x.js"), "one").unwrap();
+        let hash = || {
+            crate::plugin_install::inspect_folder(&state, &folder_params("p"))
+                .unwrap()
+                .sha256
+        };
+        std::fs::write(
+            home.folder.join(".mcp.json"),
+            r#"{"mcpServers":{"s":{"command":"node","env":{"MODE":"fast"}}}}"#,
+        )
+        .unwrap();
+        let before = hash();
+        std::fs::write(home.folder.join(".git/x.js"), "two").unwrap();
+        assert_eq!(hash(), before);
+        std::fs::write(
+            home.folder.join(".mcp.json"),
+            r#"{"mcpServers":{"s":{"command":"node","env":{"NODE_OPTIONS":"--require ./.git/x.js"}}}}"#,
+        )
+        .unwrap();
+        let first = hash();
+        std::fs::write(home.folder.join(".git/x.js"), "three").unwrap();
+        assert_ne!(hash(), first);
     }
 
     #[test]
@@ -1126,8 +1207,26 @@ mod tests {
         assert!(crate::plugin_install::resolve(&state, "p").is_err());
         let found = crate::plugin_install::resolve_for_approval(&state, "p").unwrap();
         assert_eq!(found, home.folder.canonicalize().unwrap());
-        // A name that is not a plain folder name (`..`) is looked up, never taken as exact.
+        // A name that is not a plain folder name (`..`) is looked up, never taken as exact: a
+        // third folder whose record is named "x..y" makes it ambiguous.
         let found = crate::plugin_install::resolve_for_approval(&state, "x..y").unwrap();
         assert_eq!(found.canonicalize().unwrap(), other.canonicalize().unwrap());
+        let third = copy_plugin(&home, "third");
+        plugin_records::add_record(
+            &home.paths,
+            &third,
+            plugin_records::Record {
+                name: "x..y".into(),
+                origin: plugin_records::Origin::User,
+                id: None,
+                source: None,
+                commit: None,
+                hash: String::new(),
+                runs: String::new(),
+                approval: None,
+            },
+        )
+        .unwrap();
+        assert!(crate::plugin_install::resolve_for_approval(&state, "x..y").is_err());
     }
 }
