@@ -227,10 +227,13 @@ llama.cpp* in the app) installs llama.cpp's own release build from
   is checked against the SHA-256 `digest` GitHub publishes for it; an asset without one, or
   with a different hash, is refused and nothing is replaced.
 - **Unpacking.** Each archive (`.zip` or `.tar.gz`) is unpacked into a staging folder, writing
-  only regular files and folders beneath it: an entry with an absolute path, a `..` component,
-  a drive prefix or a NUL, or any non-regular entry (a FIFO, device or, in a tar, a sparse file)
-  is refused; a zip symlink is refused, and a tar symlink or hard link only if its target is
-  absolute or contains `..`. Files keep their executable bit. Unpacking is bounded by what is actually written,
+  only regular files, folders and links beneath it. A zip entry with an absolute path, a `..`
+  component, a drive prefix or a NUL is refused, as is a zip symlink or any non-regular zip
+  entry (a FIFO or device). In a tar, a `..` component is refused and an absolute or
+  drive-prefixed name is made relative (the tar crate strips it); sparse files, devices, FIFOs
+  and unknown types are refused, and a symlink or hard link is allowed only inside the tree
+  (its target is neither absolute nor contains `..`). Pax global headers are accepted.
+  Files keep their executable bit. Unpacking is bounded by what is actually written,
   not by sizes the archive declares: at most 8 GiB in total, 20 000 entries, and no zip entry
   over 100 MB that expands more than 200:1. An archive past any limit fails the install with
   invalid data and the staging folder is removed, so no partial build is left. A zip entry's
