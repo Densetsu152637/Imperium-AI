@@ -230,7 +230,7 @@ next program takes; it is still used once. Stage 1 measures cold start (A4).
   integrity, assigns it to a Job Object (memory limit at twice `script_memory_mb`,
   active-process limit 1, kill-on-job-close, UI restrictions), and only then resumes it. Its
   environment is empty and its working folder an empty low-integrity folder. It inherits exactly
-  its two pipe handles: the launch uses `STARTUPINFOEX` with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
+  its three pipe handles (stdin, stdout and stderr): the launch uses `STARTUPINFOEX` with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
   naming only them (N6), so no other inheritable handle the daemon holds leaks into it.
   So that a Low process cannot read what the daemon and its sessions keep, the daemon sets one
   **inheritable `NO_READ_UP` mandatory label at Medium integrity** (object inherit and container
@@ -587,7 +587,7 @@ boundaries as `tool_loading` does. The default is `off` until stage 6, then `aut
 
 Mitigation (C1, root decisions on F3 and N2): a restricted, Low-integrity token, so the worker
 cannot write the user's files, registry or medium-integrity processes; a Job Object (memory, one
-process, kill on close, UI limits); an empty environment and folder; only its two pipes inherited
+process, kill on close, UI limits); an empty environment and folder; only its three pipes (stdin, stdout, stderr) inherited
 (N6; on Linux and macOS the worker closes every other descriptor, F1); and one inheritable Medium `NO_READ_UP` label on the data folder, the config folder and
 every environment's sessions and scratch folders. Everything Imperium keeps there is unreadable to
 a Low process whatever its name or age: the endpoint file and token, the encrypted secret store
@@ -767,7 +767,7 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
     unreadable to a Low process (N2); a second start does not re-propagate (labels unchanged,
     no child rewritten); a fixture file the daemon cannot relabel makes code mode unavailable
     with that path as the reason; the worker's working folder is outside the labelled folders and
-    labelled Low; the worker holds no handle beyond its two pipes (an
+    labelled Low; the worker holds no handle beyond its three pipes (an
     inheritable test handle opened by the daemon before launch is absent in the worker, N6); a
     Low worker's `CredRead` of an Imperium Credential Manager entry is tested and its outcome
     recorded in C9 (N2).

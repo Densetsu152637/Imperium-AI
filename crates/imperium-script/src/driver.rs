@@ -426,6 +426,9 @@ impl ScriptRun {
     }
 
     async fn kill_and_wait(&mut self) {
+        // The watchdog stops before the worker is reaped, so it never signals a reused id.
+        #[cfg(target_os = "macos")]
+        drop(self.watchdog.take());
         self.process.start_kill();
         let _ = self.process.wait().await;
         self.finished = true;
@@ -493,6 +496,8 @@ impl ScriptRun {
             },
         };
         if let Some(mut reason) = reason {
+            #[cfg(target_os = "macos")]
+            drop(self.watchdog.take());
             // A worker that exited by itself says how; anything else is killed first.
             if reason.contains("exited")
                 && let Ok(Some(exit)) = timeout(Duration::from_secs(2), self.process.wait()).await
@@ -825,6 +830,12 @@ impl ScriptRun {
             ReadFailure::Deadline => ScriptError::WallBudget,
             ReadFailure::Frame(what) => ScriptError::Misbehaved(what),
             ReadFailure::Eof | ReadFailure::Io => {
+                // Stopped before the wait reaps the worker, so it never signals a reused id.
+                #[cfg(target_os = "macos")]
+                let watched_out = self
+                    .watchdog
+                    .take()
+                    .is_some_and(|watchdog| watchdog.tripped());
                 let status = timeout(Duration::from_secs(2), self.process.wait())
                     .await
                     .ok()
@@ -833,11 +844,7 @@ impl ScriptRun {
                     return ScriptError::OutOfMemory;
                 }
                 #[cfg(target_os = "macos")]
-                if self
-                    .watchdog
-                    .as_ref()
-                    .is_some_and(crate::watchdog::Watchdog::tripped)
-                {
+                if watched_out {
                     return ScriptError::OutOfMemory;
                 }
                 let stderr = self.stderr_snapshot().await;
