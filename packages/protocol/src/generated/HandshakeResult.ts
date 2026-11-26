@@ -5,6 +5,6 @@ import type { ProtocolVersion } from "./ProtocolVersion";
 export type HandshakeResult = { daemon: Peer, protocol: ProtocolVersion, 
 /**
  * The daemon runs as a server (`daemon.server`): the desktop-only features are refused
- * with `-32010`, so a client hides their controls. False from a daemon before 0.65.
+ * with `-32010`, so a client hides their controls. False from a daemon before 0.66.
  */
 server: boolean, };

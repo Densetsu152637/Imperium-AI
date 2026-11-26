@@ -21,6 +21,7 @@ const IDLE_GRACE: Duration = Duration::from_secs(10);
 const BACKGROUND_STOP_WAIT: Duration = Duration::from_secs(5);
 
 fn main() -> anyhow::Result<()> {
+    run_pty_supervisor_if_asked();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("IMPERIUM_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
@@ -36,6 +37,22 @@ fn main() -> anyhow::Result<()> {
         .build()
         .context("could not start the I/O runtime")?
         .block_on(run())
+}
+
+/// The hidden `pty-supervisor` subcommand: on Linux each terminal's PTY child is this executable
+/// re-run (decision D5 of `docs/plans/terminal-file-panes.md`). It runs before anything else
+/// starts (no runtime, no logging, no configuration) and never returns.
+fn run_pty_supervisor_if_asked() {
+    #[cfg(target_os = "linux")]
+    {
+        let mut args = std::env::args_os().skip(1);
+        if args
+            .next()
+            .is_some_and(|argument| argument == imperium_pty::supervisor::SUBCOMMAND)
+        {
+            std::process::exit(imperium_pty::supervisor::run(args));
+        }
+    }
 }
 
 async fn run() -> anyhow::Result<()> {

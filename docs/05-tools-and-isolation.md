@@ -389,9 +389,15 @@ server. Agent text never reaches `sympify`, `parse_expr` or `eval`: a hand-writt
 small infix language, a size guard refuses runaway numbers before anything is computed, and a
 fixed table builds the result into SymPy objects. Each call is meant to run in a fresh worker
 process that has already imported SymPy, answers one call and exits; an audit hook ends the
-worker if anything opens a file, starts a process, compiles code or imports a module. The parser,
-guard, builder and worker exist so far, as the `sidecars/cas/` project and its `python-cas` CI
-job; the per-call resource limits, the server, its sandbox and its setup are later stages.
+worker if anything opens a file, starts a process, compiles code or imports a module. Each call
+has a CPU limit (15 s by default), a memory limit (1 GiB) and a wall clock (20 s, counted from
+when the call arrived, so time spent queued counts). On Linux the worker applies the CPU and
+memory limits itself; on macOS it applies the CPU limit, and the server polls the worker's memory
+every 50 ms, so a worker can overshoot the memory limit briefly, by at most 2 GiB; on Windows the
+limits come with the server's sandbox (a later stage). On Linux with Landlock, neither the server
+nor its workers can start programs outside the interpreter's installation. The parser, guard,
+builder, worker, limits and worker pool exist so far, as the `sidecars/cas/` project and its
+`python-cas` CI job; the MCP server, its sandbox and its setup are later stages.
 
 ### Resources, prompts, and sampling (implemented)
 
@@ -1125,10 +1131,10 @@ short for any reason says the same. A first line past the budget is shown cut, w
 bridge and the Claude harness (a caller that cannot give the window gets 32,000 characters).
 `list_dir` returns at most 500 entries per call, sorted, with a note (`use offset=500 to see more`);
 its optional `offset` skips entries. Edits stay UTF-8. `edit_file` takes an optional `replace_all`
-(boolean, default false; `"true"` and `"false"` in quotes are read as the flag): false keeps the exact, unique `old_string` rule (none or several matches
-is an error that names `replace_all`); true replaces every occurrence, says how many, and still
-refuses no match. `tool.before`
-and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
+(boolean, default false; `"true"` and `"false"` in quotes are read as the flag): false keeps the
+exact, unique `old_string` rule (none or several matches is an error that names `replace_all`);
+true replaces every occurrence, says how many, and still refuses no match. `tool.before` and
+`tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
 (`path`, `offset`, `limit`) whatever spelling the model used. Each reading is checked like any
 other path, and the first that lands inside a folder or grant is used. The OS tier makes every
 folder writable (one

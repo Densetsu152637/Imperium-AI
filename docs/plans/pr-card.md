@@ -864,7 +864,7 @@ Each stage is one pull request against `experimental`, with the docs it changes.
   Suspending allowances touches permission code shared with every session: the cap is scoped to
   the wake turn and tested for restoration on error and cancel. The N2 checks depend on #267's
   helpers keeping their names; if #267 renames them, only this plan's references change.
-- Status: in review (one pull request; not split)
+- Status: done (#301, one pull request; not split)
 - Outcome: `pull_requests.set_monitor`, `github.autofix.responders`, the review poll with the
   write-access check, the capped wake (`permissions::TurnCap`), the N2 checks with the D5
   fallback, the daemon-side commit and the always-asking push, persistence of cursors, attempts
@@ -919,11 +919,43 @@ Each stage is one pull request against `experimental`, with the docs it changes.
 - Risks: a scripted model proves the plumbing, not a real model's resistance; stage 9 adds an
   evaluation, and the docs name the envelope, the capped mode and the approvals, not model
   obedience, as the defence.
-- Status: pending
-- Outcome: -
-- Handoff notes: the approval request carries the exact reply text so the desktop and phone
-  approvals panels need no new component beyond a text diff; an edited text returns in the
-  optional `text` of `approvals.respond`.
+- Status: in review (one pull request)
+- Outcome: replies (`reply_to_threads` in `autofix/review.rs`: one per unresolved thread holding a
+  comment on the diff that woke the session, after a wake that pushed or changed nothing,
+  defanged by `defang`, footer and marker, ids recorded in the ledger, `held` over
+  `comment_replies_per_hour`), approval of the exact text (`Approvals::request_text`,
+  `ApprovalInfo.text`, `approvals.respond` `text`, refused for other requests), Fix CI on the wake
+  path (`autofix::deliver` shared by Fix CI and wakes; a failing commit of a bound pull request
+  wakes its session with `trigger: ci`; Fix CI's handled commits and attempts in the ledger), the
+  daily budget (budgets source `autofix`, `BudgetBook::tag_session`, `budget_spent`), and the
+  stage 7 re-review follow-ups (approval cards matched by session id, not summary text; a pass
+  that cannot wake the owner counts toward the five-in-a-row notice; a session with a paused
+  subagent is not woken). Tests: `tests/review_replies.rs`, `tests/injection_corpus.rs` (shared
+  harness `tests/pr_world/`), three more in `tests/review_wake.rs`, and unit tests in
+  `approvals.rs`, `budgets.rs` and `autofix/review.rs`. Protocol 0.64 (the next free minor at
+  merge). Deviations: (1) the desktop and phone approvals panels show the reply text in the
+  summary but have no edit box yet, and `imperium approvals approve` has no `--text` (its help is
+  a snapshot test); the edit is in the protocol only; (2) replies go only to threads (comments on
+  the diff): reviews and conversation comments have no thread, and issue comments stay outside
+  this plan; (3) a reply over the hourly cap is held, meaning not posted and not queued for later;
+  (4) a failing commit of a bound pull request wakes the owning session capped (stricter than Fix
+  CI), and its D5 replacement runs as Fix CI does; review feedback goes first when both wait;
+  (5) the budget counts a woken turn's calls while the wake holds its cap and five seconds after
+  (the calls are recorded from events by another task), so a user turn started within those
+  seconds may count too; (6) in the corpus test Fix CI's file writes run unasked (D8): they
+  reach the remote only through the push (which asks here; with `push = "auto"` a change outside
+  CI configuration and hooks is pushed unasked, as before), and fetches to hosts that are not
+  allowed ask. Security review fixes before merge: the daemon's git runs no repository hook
+  (`core.hooksPath` pointed at an empty folder, fsmonitor off, `--no-verify`) and refuses
+  program-naming repository config before commit and push (`Step::AutofixPush`, which unlike the
+  pull-request push allows `url.*.insteadOf`); the push is measured up to the pushed commit;
+  defanging escapes the backslash, `&`, `[` and `]`, strips format, variation-selector and
+  filler characters and is never cut afterwards; a paired phone cannot send reply text, and an
+  edited reply is defanged; a reply that looks like a credential asks even with
+  `comment = "auto"`.
+- Handoff notes: the approval request carries the exact reply text (`ApprovalInfo.text`) so the
+  desktop and phone approvals panels need only an edit box that sends `text` back with
+  `approvals.respond`. Stage 9 reuses `Work`, `examine` and `deliver` for `trigger: conflict`.
 
 ## Stage 9: Conflicts, evaluation, docs and close-out
 

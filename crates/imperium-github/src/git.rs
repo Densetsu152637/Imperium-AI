@@ -2,10 +2,65 @@
 //! configuration apply. Nothing here force-pushes, rewrites published history, or touches the
 //! user's own checkout beyond adding a worktree.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
+/// Git's own variables from the daemon's surroundings that would point a command at another
+/// repository, index or program; they are dropped.
+const DROPPED_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_PAGER",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+];
+
+/// An empty folder made for this process (a fresh private temporary directory), where
+/// `core.hooksPath` points: no hook of the repository runs.
+fn no_hooks() -> Result<&'static Path, String> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        tempfile::Builder::new()
+            .prefix("imperium-no-hooks-")
+            .tempdir()
+            .ok()
+            .map(tempfile::TempDir::keep)
+    })
+    .as_deref()
+    .ok_or_else(|| "could not make an empty hooks folder, so git was not run".to_string())
+}
+
+/// Runs git in `dir` with nothing from the repository able to run a program: its hooks are
+/// pointed at an empty folder (a session may have written a hook file, and a repository's own
+/// `core.hooksPath` such as `.husky` names files in the worktree), fsmonitor is off, submodules
+/// are never entered, and git's variables from the surroundings are dropped. Config keys that
+/// name programs (filters, signing programs, transports) are refused by the caller before a
+/// commit or push.
 async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = tokio::process::Command::new("git")
+    let no_hooks = no_hooks()?;
+    let mut command = tokio::process::Command::new("git");
+    for name in DROPPED_ENV {
+        command.env_remove(name);
+    }
+    let output = command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_COUNT", "4")
+        .env("GIT_CONFIG_KEY_0", "core.hooksPath")
+        .env("GIT_CONFIG_VALUE_0", no_hooks)
+        .env("GIT_CONFIG_KEY_1", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_1", "false")
+        .env("GIT_CONFIG_KEY_2", "submodule.recurse")
+        .env("GIT_CONFIG_VALUE_2", "false")
+        .env("GIT_CONFIG_KEY_3", "push.recurseSubmodules")
+        .env("GIT_CONFIG_VALUE_3", "no")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -53,13 +108,22 @@ pub async fn prepare_worktree(
 /// Commits every change in the worktree; false when there was nothing to commit.
 pub async fn commit_all(worktree: &Path, message: &str) -> Result<bool, String> {
     git(worktree, &["add", "-A"]).await?;
-    if git(worktree, &["diff", "--cached", "--quiet"])
-        .await
-        .is_ok()
+    if git(
+        worktree,
+        &[
+            "diff",
+            "--cached",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+        ],
+    )
+    .await
+    .is_ok()
     {
         return Ok(false);
     }
-    git(worktree, &["commit", "-m", message]).await?;
+    git(worktree, &["commit", "--no-verify", "-m", message]).await?;
     Ok(true)
 }
 
@@ -67,18 +131,36 @@ pub async fn commit_all(worktree: &Path, message: &str) -> Result<bool, String> 
 /// meanwhile, the push is rejected rather than overwriting it.
 pub async fn push(worktree: &Path, branch: &str) -> Result<(), String> {
     let target = format!("HEAD:refs/heads/{branch}");
-    git(worktree, &["push", "origin", &target])
-        .await
-        .map(|_| ())
+    git(
+        worktree,
+        &[
+            "push",
+            "--no-verify",
+            "--recurse-submodules=no",
+            "origin",
+            &target,
+        ],
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Pushes exactly the commit `sha` to `branch` on origin (a plain push, like [`push`]), so what
 /// was approved is what goes, whatever `HEAD` is by then.
 pub async fn push_commit(worktree: &Path, sha: &str, branch: &str) -> Result<(), String> {
     let target = format!("{sha}:refs/heads/{branch}");
-    git(worktree, &["push", "origin", &target])
-        .await
-        .map(|_| ())
+    git(
+        worktree,
+        &[
+            "push",
+            "--no-verify",
+            "--recurse-submodules=no",
+            "origin",
+            &target,
+        ],
+    )
+    .await
+    .map(|_| ())
 }
 
 /// What a push of the worktree's `HEAD` would add to `origin/<branch>`: each changed path with
@@ -87,10 +169,29 @@ pub async fn changes_since_origin(
     worktree: &Path,
     branch: &str,
 ) -> Result<Vec<(String, String)>, String> {
+    changes_up_to(worktree, branch, "HEAD").await
+}
+
+/// What a push of commit `rev` would add to `origin/<branch>`, as [`changes_since_origin`].
+pub async fn changes_up_to(
+    worktree: &Path,
+    branch: &str,
+    rev: &str,
+) -> Result<Vec<(String, String)>, String> {
     let base = format!("origin/{branch}");
     let out = git(
         worktree,
-        &["diff", "--name-status", "--no-renames", "-z", &base, "HEAD"],
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--name-status",
+            "--no-renames",
+            "-z",
+            &base,
+            rev,
+            "--",
+        ],
     )
     .await?;
     let mut fields = out.split('\0').filter(|field| !field.is_empty());
@@ -103,8 +204,13 @@ pub async fn changes_since_origin(
 
 /// How many commits a push of the worktree's `HEAD` would add to `origin/<branch>`.
 pub async fn commits_ahead(worktree: &Path, branch: &str) -> Result<u64, String> {
-    let range = format!("origin/{branch}..HEAD");
-    git(worktree, &["rev-list", "--count", &range])
+    commits_ahead_of(worktree, branch, "HEAD").await
+}
+
+/// How many commits a push of commit `rev` would add to `origin/<branch>`.
+pub async fn commits_ahead_of(worktree: &Path, branch: &str, rev: &str) -> Result<u64, String> {
+    let range = format!("origin/{branch}..{rev}");
+    git(worktree, &["rev-list", "--count", &range, "--"])
         .await?
         .parse()
         .map_err(|error| format!("unexpected commit count: {error}"))

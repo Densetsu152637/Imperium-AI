@@ -487,10 +487,11 @@ fn folder_named(state: &DaemonState, name: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("no plugin folder named {name:?} is installed"))
 }
 
-/// The folder an approval is asked for. A `name` that is exactly the name of an entry of
-/// `<config>/plugins` (compared byte for byte, not trimmed or case-folded) is that folder, and
-/// nothing else; a link is refused, not followed. Any other `name` is looked up as `resolve` does
-/// (a plugin name or `name@marketplace`), and the folder it finds must not be a link either.
+/// The folder an approval is asked for. A `name` that passes `check_folder_name` once trimmed and
+/// is exactly the name of an entry of `<config>/plugins` (compared byte for byte, not trimmed or
+/// case-folded) is that folder, and nothing else; a link is refused, not followed. Any other
+/// `name` (including one that is not a plain folder name) is looked up as `resolve` does (a plugin
+/// name or `name@marketplace`), and the folder it finds must not be a link either.
 pub(crate) fn resolve_for_approval(state: &DaemonState, name: &str) -> Result<PathBuf, String> {
     // An exact folder name is one plain name (`check_folder_name`); white space around it is the one
     // thing allowed, because an approval names the folder byte for byte. Any other name is looked
@@ -543,19 +544,34 @@ fn exact_folder(state: &DaemonState, name: &str) -> Result<Option<PathBuf>, Stri
     Ok(Some(canon))
 }
 
-/// Whether `text` names a path under a `.git` folder (`x/.git/hooks/h.sh`, `x\.git`), which the
-/// content hash leaves out when it is the plugin folder's own top-level `.git`.
-pub(crate) fn mentions_dot_git(text: &str) -> bool {
+/// The end of each `.git` in `text` that is a path component of its own: after a separator, a
+/// quote, white space or `=` (or at the start), and before a separator, quote, white space or a
+/// shell terminator.
+fn dot_git_ends(text: &str) -> Vec<usize> {
     let lower = text.to_ascii_lowercase();
-    lower.match_indices(".git").any(|(at, _)| {
-        let before = lower[..at].chars().next_back();
-        let after = lower[at + 4..].chars().next();
-        // A `.git` component after a separator (`./.git`, `a/../.git`, `a\.git`) or at the start of
-        // the text, a word or a quoted string (`.git/hooks/h`, `sh .git/h`): relative paths count
-        // as well as absolute ones.
-        before.is_none_or(|c| matches!(c, '/' | '\\' | '"' | '\'') || c.is_whitespace())
-            && after.is_none_or(|c| matches!(c, '/' | '\\' | '"' | '\'') || c.is_whitespace())
-    })
+    lower
+        .match_indices(".git")
+        .filter(|(at, _)| {
+            let before = lower[..*at].chars().next_back();
+            let after = lower[at + 4..].chars().next();
+            // A `.git` component after a separator (`./.git`, `a/../.git`, `a\.git`) or at the
+            // start of the text, a word, a quoted string or an assignment (`.git/hooks/h`,
+            // `sh .git/h`, `GIT_DIR=.git`, `--git-dir=.git`), and before a separator, quote, space
+            // or a shell terminator (`cd .git;sh h`, `cd .git&&x`, `$(cd .git)`): relative paths
+            // count as well as absolute ones.
+            before.is_none_or(|c| matches!(c, '/' | '\\' | '"' | '\'' | '=') || c.is_whitespace())
+                && after.is_none_or(|c| {
+                    matches!(c, '/' | '\\' | '"' | '\'' | ';' | '&' | '|' | ')')
+                        || c.is_whitespace()
+                })
+        })
+        .map(|(at, _)| at + 4)
+        .collect()
+}
+
+/// Whether `text` names a path under a `.git` folder (`x/.git/hooks/h.sh`, `x\.git`).
+pub(crate) fn mentions_dot_git(text: &str) -> bool {
+    !dot_git_ends(text).is_empty()
 }
 
 /// `plugins.inspect_folder`: what the installed plugin folder `name` would run, read from the
@@ -586,25 +602,6 @@ pub(crate) fn inspect_folder(
         runs_digest,
     } = contents(&plugin, &shown_at);
     let mut notes = Vec::new();
-    // The hash leaves out the folder's own top-level `.git` and `.imperium-source.json`: a hook or
-    // server that runs from `.git` can change without the approval being voided.
-    let runs_from_git = hooks
-        .iter()
-        .flat_map(|hook| std::iter::once(&hook.command).chain(hook.url.iter()))
-        .chain(servers.iter().flat_map(|server| {
-            server
-                .command
-                .iter()
-                .chain(server.args.iter())
-                .chain(server.url.iter())
-        }))
-        .any(|text| mentions_dot_git(text));
-    if runs_from_git {
-        notes.push(
-            "WARNING: a hook or server runs a path under .git, which the content hash does not cover: changing it will not withhold this plugin again"
-                .to_string(),
-        );
-    }
     match &record {
         None => notes.push(
             "Imperium has no record of this folder: it was not installed by Imperium".to_string(),

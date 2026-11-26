@@ -926,11 +926,17 @@ and `environments.agent_update` (protocol 0.28)
     and asks before overwriting, and saves compare file identity and content hash so neither
     side's edit is lost. Markdown files get a live rendered preview beside the source, and a
     presentation mode that shows a file as slides, split on `---` or headings, full screen in
-    the app. Rendering is sanitised: no raw HTML or script execution, remote images load only
-    after asking, and links open only after confirmation, consistent with item 55's link rules.
-    It builds on item 55, so it comes after it. Writes are refused to the safety-floor paths,
-    the daemon's data folder and harness folders. A paired phone gets no editor, and mods cannot
-    wrap or drive it, the same as item 55's panels. No plan yet.
+    the app. Rendering is sanitised: no raw HTML or script execution, local images only through
+    the daemon, remote images not loaded, and links open only after confirmation, consistent
+    with item 55's link rules.
+    It builds on item 55, so it comes after it. Writes are refused inside `.git`
+    and the daemon's data and config folders (except the session workspaces and worktrees kept
+    there), judged on what was opened; secret files need a
+    confirmation per tab, and harness files (`.imperium/`, `.claude/`, `.mcp.json`,
+    `.claude-plugin/`) ask on every save. An agent's full-file `write_file` is refused when the
+    file changed since that agent last read it. A paired phone gets no editor, and mods cannot
+    wrap or drive it, the same as item 55's panels
+    ([plan](plans/text-editor.md)).
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based

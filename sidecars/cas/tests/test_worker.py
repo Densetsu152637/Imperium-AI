@@ -108,12 +108,66 @@ def test_one_call_in_one_reply_out_then_exit():
     proc.stderr.close()
     assert ready["pid"] == proc.pid  # spawned with the base interpreter (plan D3)
     assert ready["ready"] and ready["limits"] == {"--cpu-seconds": 15, "--memory-mib": 1024}
+    assert ready["audit_hook"] is True  # installed before the request is read
     assert reply == {"ok": True, "text": "x**2 + 2*x"}
+    applied = ready["applied"]
+    if sys.platform == "win32":
+        assert applied == {"cpu": "requested (broker)", "memory": "requested (broker)"}
+    else:
+        assert applied["cpu"] == "rlimit" and applied["core"] == 0
+        assert applied["cpu_hard"] == applied["cpu_soft"] + 1
+        assert applied["cpu_soft"] >= 15
+        if sys.platform == "darwin":
+            assert applied["memory"] == "front poll" and applied["address_space"] is None
+        else:
+            assert applied["memory"] == "rlimit"
+            assert applied["address_space"] > 1024 * 2**20
     shown = f"{memory / 2**20:.0f} MiB" if memory else "unknown"
+    space = applied.get("address_space")
     MEASUREMENTS.append(
-        f"worker ({sys.platform}): warm-up {ready['warmup_seconds']} s, ready"
-        f" {ready_after:.2f} s after spawn, peak memory {shown}"
+        f"worker ({sys.platform}): warm-up {ready['warmup_seconds']} s, limits applied in"
+        f" {ready['limits_seconds'] * 1000:.2f} ms, ready {ready_after:.2f} s after spawn, peak"
+        f" memory {shown}, applied {applied['cpu']} CPU / {applied['memory']} memory"
+        + (f", RLIMIT_AS {space / 2**20:.0f} MiB" if space else "")
     )
+
+
+def test_a_number_over_the_default_digit_limit_prints():
+    """`10^5000` has 5,001 digits, over CPython's default of 4,300: the worker raises the cap."""
+    _, reply, code = call(spawn_worker(), {"tool": "build", "expression": "10^5000"})
+    assert reply == {"ok": True, "text": "1" + "0" * 5000}
+    assert code == worker.EXIT_OK
+
+
+@pytest.mark.parametrize("tool", [["build"], {"a": 1}, 7, None])
+def test_a_tool_that_is_not_a_string_is_unknown(tool):
+    reply = worker.handle({"tool": tool, "expression": "1"})
+    assert reply == {"ok": False, "category": "parse", "message": "parse: unknown tool"}
+
+
+def test_the_request_is_not_read_without_the_hook():
+    """A worker whose hook was never installed says so, and exits before reading the call."""
+    proc = spawn_worker(script="hookless_probe.py")
+    ready, reply, code = call(proc, {"tool": "build", "expression": "1"})
+    assert ready["audit_hook"] is False
+    assert reply is None
+    assert code == worker.CRASHED
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/<pid>/limits")
+def test_core_files_are_off_from_outside():
+    proc = spawn_worker()
+    ready = read_frame(proc.stdout, REPLY_CAP)
+    with open(f"/proc/{proc.pid}/limits", encoding="ascii") as limits:
+        lines = {line[:26].strip(): line[26:].split() for line in limits}
+    proc.kill()
+    proc.wait()
+    proc.stdout.close()
+    proc.stderr.close()
+    assert lines["Max core file size"][:2] == ["0", "0"]
+    applied = ready["applied"]
+    assert lines["Max cpu time"][:2] == [str(applied["cpu_soft"]), str(applied["cpu_hard"])]
+    assert lines["Max address space"][:2] == [str(applied["address_space"])] * 2
 
 
 def test_refusals_come_back_as_replies():
@@ -160,7 +214,11 @@ def test_parse_limits_refuses(argv):
 
 
 def test_parse_limits_accepts():
-    assert worker.parse_limits([]) == {}
+    assert worker.parse_limits([]) == {"--cpu-seconds": 15, "--memory-mib": 1024}
+    assert worker.parse_limits(["--memory-mib", "64"]) == {
+        "--memory-mib": 64,
+        "--cpu-seconds": 15,
+    }
     assert worker.parse_limits(["--memory-mib", "64", "--cpu-seconds", "120"]) == {
         "--memory-mib": 64,
         "--cpu-seconds": 120,
