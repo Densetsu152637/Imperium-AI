@@ -7,7 +7,7 @@ settings, and R2, every runtime file verified and held at launch; revision 2 fol
 review's B1 to B4, should-fix 1 to 7 and nits, and the NCM session's answers, from its branch
 `feat/ncm-speed-2` at `61350bc`); written against `experimental` at `9ce002c5` (last updated).
 Revision 1 was `7d4f11c5`, revision 2 `6d1cdf5c`, revision 3 `10b67a66`.
-Status: planned, no stage started. Roadmap [item 67](../12-roadmap.md#next-in-order).
+Status: planned; stage 1 in progress in the Imperium Princeps (NCM) session (`feat/ncm-runtime`), no other stage started. Roadmap [item 67](../12-roadmap.md#next-in-order).
 
 **User decision (2026-11-26).** Emperor and Consul stop being two models. There is one local
 model, **Princeps**, and Emperor and Consul become two **harness profiles** over it: the Emperor
@@ -429,8 +429,18 @@ Stages 1, 2a, 4 and 5 need nothing from the NCM session. Stage 2b waits for rele
 Q13, Q19, Q20, all deferred); stage 3's download waits for published weights (Q5, after
 training). Stages 3 to 6 change the protocol and take the next free minor at merge.
 
+**Owners.** On the user's instruction, the Imperium Princeps (NCM) session implements stage 1 on
+its branch `feat/ncm-runtime`. Stage 2b (releases) is deferred. Stages 2a and 3 to 6 stay with
+the Imperium Implementation session, which also reviews and merges stage 1.
+
 ### Stage 1: `ncm` backend and format
 
+- Owner: the Imperium Princeps (NCM) session, branch `feat/ncm-runtime` (user instruction,
+  2026-11-26). The work must meet the bar of D1 to D3: the format, header limits and catalogue
+  rows of D1; the backend, launch arguments, environment allowlist, request rules and capability
+  fallbacks of D2; and D3's rules where stage 1 touches them (`runtime.ncm.custom_path` set only by
+  the user, and the floored `runtime.ncm.*` keys). The Imperium Implementation session reviews it
+  against this plan and merges it.
 - Objective: D1 and D2 with `runtime.ncm.custom_path` as the only way to name a server.
 - Depends on: none.
 - Owned paths: `imperium-local` `backend.rs`, `scan.rs`, new `ncm.rs`; spec prefixes in
@@ -444,7 +454,7 @@ training). Stages 3 to 6 change the protocol and take the next free minor at mer
   a fake that keeps streaming after the disconnect holds the slot until it ends; a fake that exits
   non-zero fails the load with its log tail; `place` never splits; the CPU lane accepts an `ncm:`
   row; a forced tool choice on an `ncm:` row falls back to `auto`.
-- Status: pending.
+- Status: in progress (Imperium Princeps session, `feat/ncm-runtime`).
 
 ### Stage 2a: the user-built `ncm-server` (interim)
 
