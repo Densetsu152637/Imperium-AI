@@ -322,6 +322,10 @@ itself (`crates/imperium-core/src/app_identity/`), never from what the caller se
 
 - the connection came in on the local socket; loopback TCP (a mod frame, a remote host) and a
   paired phone are refused before any process is looked at;
+- the daemon is not a server: in [server mode](02-architecture.md#server-mode-implemented) both
+  calls answer `-32010` (`plugin_approval`) before this list is checked, and the identity check
+  itself (`InstalledApp`, made from the daemon's state) refuses every approval on a server, so no
+  caller can leave it out; approvals carried over in the data folder still count;
 - on Linux, the peer is held from accept by a pidfd (`SO_PEERPIDFD`; only on a kernel that lacks
   that option, `pidfd_open` on the `SO_PEERCRED` id, refusing a process that started after the
   accept, while any other `SO_PEERPIDFD` error refuses the peer), and every read goes through
@@ -1170,7 +1174,23 @@ asking**, using what the operating system says about the caller.
   parent that has exited is no longer linked, so a chain can end early; the mark in the peer's
   own environment covers that). Any `sshd` among the peer and its ancestors is refused too.
 - A connection over loopback TCP has no process to ask about and never makes a grant (the CLI
-  tries the local socket first). A paired phone and a mod frame cannot call `mods.*` at all.
+  tries the local socket first). A paired phone and a mod frame cannot call `mods.*` at all. A
+  peer reported as PID 0 (a process outside the daemon's PID namespace, such as the host's
+  `sshd` forwarding into a container) is refused.
+- **On a server** ([server mode](02-architecture.md#server-mode-implemented)) `trusted` is refused
+  with `-32010` (`terminal_grant`, the message still starting with `trust was not granted`, so the
+  CLI installs the mod in its sandbox) and `interactive` is dropped with a note, before any peer
+  is looked at. The grant check itself (`peer::may_grant`, which takes the daemon's state) refuses
+  every grant on a server too, so every caller inherits it.
+- **Containers.** Inside a container a process can double-fork so that it is re-parented to the
+  container's PID 1, which carries no mark and has no `sshd` above it, and the walk would pass. A
+  daemon cannot detect that it runs in a container (Docker, Podman, distrobox and toolbox mount a
+  fresh `/proc`, so its own `NSpid` line has one entry; and a WSL2 desktop is itself nested, so
+  namespace identity does not tell either), so there is no structural rule: server mode, which
+  the server image sets, is what refuses grants there. A desktop that runs the daemon in
+  distrobox or toolbox without server mode has this gap; run the daemon on the host. No child
+  subreaper is added to keep re-parented processes in the tree (it would take agents' commands'
+  exit statuses).
 - **When the check fails:** `trusted` is an error (`trust was not granted`, nothing installed);
   `interactive` is dropped, the mod installs off, and the result's `notes` say so. The result
   carries `interactive` and `trusted` as counted, and the CLI reports those, not what it sent.

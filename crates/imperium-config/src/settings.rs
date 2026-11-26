@@ -17,6 +17,10 @@ port = 0
 # (`imperium run --headless`) and the desktop app for plugin approvals; it also lets an SSH
 # forward reach the daemon. The token is still required.
 socket = true
+# Run as a server (the container image sets it with IMPERIUM_DAEMON__SERVER=true, which no
+# config.toml overrides): the desktop-only features (plugin approvals, turning auto-merge on,
+# trust and prompt grants of mods) and the container tier are refused, and clients are told.
+server = false
 
 [api.openai_compatible]
 # Serve the local models (and the hosted ones listed in `expose`) to other tools as an
@@ -239,6 +243,11 @@ pub const LLAMACPP_ENDPOINT: &str = "llamacpp";
 /// The endpoint id that names Hugging Face models served by supervised vLLM, as in
 /// `vllm:<folder name>`.
 pub const VLLM_ENDPOINT: &str = "vllm";
+
+/// Why `isolation.tier = "container"` is refused in server mode (`daemon.server`).
+pub const CONTAINER_TIER_ON_SERVER: &str = "isolation.tier = \"container\" is unavailable on a \
+     server (daemon.server): it needs the Docker socket, which is root on the host; use \"os\" or \
+     \"policy\"";
 
 impl Settings {
     /// Checks rules that span keys: model table ids are unique, and routing rules name models
@@ -473,6 +482,9 @@ impl Settings {
         }
         if !matches!(self.isolation.tier.as_str(), "policy" | "os" | "container") {
             return Err("isolation.tier must be policy, os, or container".into());
+        }
+        if self.daemon.server && self.isolation.tier == "container" {
+            return Err(CONTAINER_TIER_ON_SERVER.into());
         }
         if !matches!(self.github.autofix.push.as_str(), "ask" | "auto") {
             return Err("github.autofix.push must be ask or auto".into());
@@ -1699,6 +1711,11 @@ pub struct DaemonSettings {
     /// default (the built-in defaults layer and a missing key alike).
     #[serde(default = "socket_on")]
     pub socket: bool,
+    /// Server mode (docs/02-architecture.md#server-mode-implemented): refuses the desktop-only
+    /// features and the container tier, and says so in the handshake. It only ever removes
+    /// capabilities.
+    #[serde(default)]
+    pub server: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

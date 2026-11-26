@@ -1,4 +1,5 @@
 use super::*;
+use imperium_protocol::jsonrpc::server_features;
 
 impl Connection {
     /// The `config` methods: `None` for a method of another group.
@@ -54,6 +55,9 @@ impl Connection {
                 })
             }
             ConfigSet::NAME => call::<ConfigSet>(c.params.take(), |params: ConfigSetParams| {
+                if params.key == "isolation.tier" && params.value.as_str() == Some("container") {
+                    self.refuse_on_server(server_features::CONTAINER_TIER)?;
+                }
                 crate::config::set(&self.state, params)
             }),
             PersonalitiesList::NAME => {
@@ -83,14 +87,37 @@ impl Connection {
                 |mut params: ModInstallParams| {
                     let state = Arc::clone(&self.state);
                     let peer = self.peer;
+                    let server = self.on_server();
                     async move {
-                        // Only a person's own process makes a grant (see `crate::peer`).
+                        // Only a person's own process makes a grant (see `crate::peer`), and
+                        // never on a server: there it is refused before any peer is looked at.
                         let mut notes = Vec::new();
-                        if params.trusted || params.interactive {
+                        if server && (params.trusted || params.interactive) {
+                            let why =
+                                errors::unavailable_on_server(server_features::TERMINAL_GRANT);
+                            if params.trusted {
+                                // The command-line client installs the mod in its sandbox
+                                // instead when the message starts with this.
+                                return Err(errors::unavailable_on_server_with(
+                                    server_features::TERMINAL_GRANT,
+                                    format!(
+                                        "{}: {}",
+                                        imperium_protocol::errors::TRUST_NOT_GRANTED,
+                                        why.message
+                                    ),
+                                ));
+                            }
+                            params.interactive = false;
+                            notes.push(format!(
+                                "the approval was not counted as given at a terminal: {}",
+                                why.message
+                            ));
+                        } else if params.trusted || params.interactive {
                             let may = match peer {
                                 Some((pid, accepted_at)) => {
+                                    let daemon = Arc::clone(&state);
                                     tokio::task::spawn_blocking(move || {
-                                        crate::peer::may_grant(pid, accepted_at)
+                                        crate::peer::may_grant(&daemon, pid, accepted_at).is_ok()
                                     })
                                     .await
                                     .unwrap_or(false)
@@ -258,6 +285,7 @@ impl Connection {
             PluginsApprovalChallenge::NAME => call::<PluginsApprovalChallenge>(
                 c.params.take(),
                 |params: PluginsApprovalChallengeParams| {
+                    self.refuse_on_server(server_features::PLUGIN_APPROVAL)?;
                     crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
                     let subject = crate::plugin_records::Subject::parse(params.kind.as_deref())
                         .map_err(refused)?;
@@ -272,7 +300,7 @@ impl Connection {
                         subject,
                     };
                     crate::app_identity::challenge(
-                        &crate::app_identity::InstalledApp,
+                        &crate::app_identity::InstalledApp::of(&self.state),
                         self.identity.as_deref(),
                         &mut self.challenges,
                         &asked,
@@ -303,6 +331,7 @@ impl Connection {
     /// check and the record are done.
     fn plugins_approve(&mut self, c: &mut Dispatch<'_>) -> Result<Value, ErrorObject> {
         let params: PluginsApproveParams = decode::<PluginsApprove>(c.params.take())?;
+        self.refuse_on_server(server_features::PLUGIN_APPROVAL)?;
         crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
         let subject =
             crate::plugin_records::Subject::parse(params.kind.as_deref()).map_err(refused)?;
@@ -315,9 +344,10 @@ impl Connection {
             now_ms: imperium_api::time::unix_ms(),
             subject,
         };
+        let app = crate::app_identity::InstalledApp::of(&self.state);
         let redeemed = crate::app_identity::redeem(
             self.state.paths(),
-            &crate::app_identity::InstalledApp,
+            &app,
             self.identity.as_deref(),
             &mut self.challenges,
             &asked,
@@ -330,7 +360,7 @@ impl Connection {
                 Ok(redeemed) => tokio::task::spawn_blocking(move || {
                     crate::app_identity::conclude(
                         state.paths(),
-                        &crate::app_identity::InstalledApp,
+                        &app,
                         crate::plugin_records::production_verifier(),
                         &crate::app_identity::presence::System,
                         peer.as_deref(),

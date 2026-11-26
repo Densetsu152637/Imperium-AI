@@ -63,6 +63,7 @@ pub use secrets::{
 pub use secrets_file::{
     AutoSecrets, FileSecrets, KeySource, MigrationReport, PASSPHRASE_FILE_ENV, SecretBackend,
 };
+pub use settings::CONTAINER_TIER_ON_SERVER;
 pub use settings::{
     ActionSettings, AgentSettings, ApiSettings, AttachmentSettings, AutofixSettings, Capability,
     CatalogEntry, ConditionSettings, ContextSettings, DaemonSettings, EndpointSettings, Enforce,
