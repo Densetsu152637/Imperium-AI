@@ -1,6 +1,7 @@
 # Plan: resource caps on every child process
 
-Revision: 2026-11-26, revision 1 (first draft, for the root's and the user's review); written
+Revision: 2026-11-26, revision 2 (the user's answers to the open questions recorded as
+[settled decisions](#settled-decisions)); revision 1 was the first draft. Written
 against `experimental` at `cd791003`. Roadmap [item 68](../12-roadmap.md#next-in-order).
 Status: planned (no stage started).
 
@@ -10,7 +11,8 @@ today, and on Linux and macOS only two workers do. This plan treats unbounded re
 security issue. An agent's command, an MCP server, a hook, a plugin or a runaway test should not
 be able to take the host down, whatever text steered it there.
 
-Every process Imperium starts gets a **cap unit**. A unit is one process tree with a memory cap,
+Every process Imperium starts gets a **cap unit** (the user's own terminals get one with no
+caps, [S2](#settled-decisions)). A unit is one process tree with a memory cap,
 a process-count cap and an optional CPU cap, enforced by the OS where the OS can, and by a
 daemon-side poll where it cannot. Units are grouped per session under a session aggregate, and
 all of them under an Imperium-wide total. A daemon watchdog watches the machine's free memory and
@@ -21,6 +23,37 @@ raise a cap.
 Each stage below is one pull request against `experimental`. Every merge into `experimental`
 publishes a build, so caps that could stop legitimate work start in warn-only mode where the
 plan says so (see [rollout](#rollout)).
+
+## Settled decisions
+
+Recorded from the user's answers (2026-11-26). They override anything else in this plan.
+
+- **S1. Commands: 25% of RAM, between 2 and 16 GiB** (16 GiB on the user's 64 GB machine), as
+  [L6](#l6-default-caps-per-class) proposed.
+- **S2. The user's own terminals are not capped.** Only processes an agent starts, or an
+  agent-driven path starts (MCP servers, hooks, plugins, the CAS, code mode, the browser), are
+  capped. A terminal pane still runs in a unit, so it keeps its kill-on-close and tree stop, but
+  the unit has no memory, process or CPU cap. It is outside the session aggregate, and the
+  watchdog never stops it.
+- **S3. `limits.mode = "off"` is allowed, and only the user can set it.** Agents can never
+  change `limits.mode`: an agent's `imperium config set|unset limits.mode` is refused outright,
+  not asked. Every other `limits.*` key from an agent asks every time (the safety floor). The
+  project and environment layers may only move it towards `enforce`
+  ([L7](#l7-settings-user-layer-only-narrowing-elsewhere)).
+- **S4. The watchdog acts on low memory whatever the cause.** It stops Imperium's
+  lowest-value units first, then unloads idle models, and never touches a program Imperium did
+  not start ([L11](#l11-the-daemon-watchdog)).
+
+Kept as the plan's defaults, which the user can change in settings:
+
+- **S5. No default CPU cap.** Agent classes run at lower priority, and
+  `limits.<class>.cpu_percent` sets a cap.
+- **S6. Containers count against the session aggregate when they start**, at their cap
+  ([L5](#l5-containers-docker-and-wsl-get-their-own-flags)).
+- **S7. The repository's scripts.** The pytest run gets a 4 GiB unit
+  (`IMPERIUM_TEST_MEMORY_MB`). `scripts/check-rust.sh` gets a unit too if wrapping it costs only
+  the one launcher `exec`: 50% of RAM, at most 32 GiB (`IMPERIUM_RUST_MEMORY_MB`), because rustc
+  and the linker can legitimately use more ([L12](#l12-the-repositorys-own-tests)).
 
 ## Goals
 
@@ -149,7 +182,7 @@ Not in scope: GPU memory (the residency controller owns VRAM), disk space and fi
 the three platforms. Every spawn site builds a `UnitSpec` and spawns through it.**
 
 ```rust
-pub enum Class { Command, Terminal, Mcp, Hook, Cas, Script, Browser, Internal, Model }
+pub enum Class { Command, Terminal /* no caps, S2 */, Mcp, Hook, Cas, Script, Browser, Internal, Model }
 
 pub struct Caps { memory_bytes: Option<u64>, processes: Option<u32>, cpu_percent: Option<u16> }
 
@@ -342,7 +375,7 @@ machine.
 | Class | What it covers | Memory | 64 GB machine | Processes | CPU |
 | --- | --- | --- | --- | --- | --- |
 | `command` | `run_command` (foreground and background), scheduled and auto-fix commands, environment runtimes | 25% of RAM, between 2 and 16 GiB | 16 GiB | 1,024 | none; below-normal priority |
-| `terminal` | the user's terminal panes | 25% of RAM, between 2 and 16 GiB | 16 GiB | 2,048 | none; normal priority |
+| `terminal` | the user's terminal panes | **not capped** (S2) | none | none | none; normal priority |
 | `mcp` | stdio MCP servers, plugin MCP servers | 2 GiB | 2 GiB | 256 | none; below-normal |
 | `hook` | command hooks (and the existing 300 s clamp) | 512 MiB | 512 MiB | 64 | none; below-normal |
 | `cas` | the CAS server tree (outer unit only) | D4's formula: twice D3's per-call memory + 512 MiB | 2.5 GiB | D4's measured limit (3 on Windows), 8 on Unix | D3's per-call CPU time stays |
@@ -371,10 +404,9 @@ Reasons:
   page cache before it kills anything. Model units keep swap (no `memory.swap.max`).
 - **CPU is not capped by default.** A spin degrades the machine but does not take it down the
   way memory does. Lower priority for agent classes keeps the interface responsive, and a CPU
-  cap is one setting away. This is an open question for the user.
-- **The terminal is the user's**, so it gets normal priority and the same memory default as
-  commands. It is still capped, because a script the user runs there can be as runaway as an
-  agent's.
+  cap is one setting away (S5).
+- **The terminal is the user's** (S2), so it gets normal priority and no caps, and it is not
+  counted in the session aggregate. Only agent-started processes are capped.
 
 ### L7. Settings: user layer only, narrowing elsewhere
 
@@ -388,7 +420,7 @@ mode = "enforce"                 # "enforce", "warn" (notices only) or "off" (no
 commands.memory_mb = "auto"      # "auto" (the L6 default) or MiB
 commands.processes = "auto"
 commands.cpu_percent = 0         # 0 = no cap; else percent of the whole machine
-terminal.memory_mb = "auto"      # likewise for terminal, mcp, hooks, browser, internal
+mcp.memory_mb = "auto"           # likewise for mcp, hooks, browser, internal (terminals: none, S2)
 models.mode = "warn"             # models: "enforce", "warn" or "off", separate from `mode`
 models.margin_mb = 2048
 session.memory_mb = "auto"
@@ -405,15 +437,16 @@ watchdog.reserve_mb = "auto"
 - **The environment and project layers narrow.** `limits.*` joins the environment layer's
   allow-list as narrow-only ([10](../10-configuration.md#layers)): a value at or below the user's
   is applied, a higher one is listed as refused by `imperium env config` and `config explain`.
-  `limits.mode` may only move towards `enforce`.
+  `limits.mode` may only move towards `enforce` (S3).
 - **Agents cannot raise them.** No tool takes a cap. `run_command` gets no new parameter.
   `config.toml` and `models.toml` are refused to the file tools (pull request #304). `imperium
   config set|unset limits.*` from an agent's command hits the safety floor (asked every time,
-  never sticky, in every mode), the rule pull request #330 adds for `runtime.*` keys. The OS tier
+  never sticky, in every mode), the rule pull request #330 adds for `runtime.*` keys. The
+  exception is `limits.mode`, which is refused outright to agents (S3). The OS tier
   already hides the daemon's endpoint and socket, so a confined command cannot call `config.set`.
 - **Floors.** Values below a minimum (64 MiB, 8 processes, 5% CPU) are refused when saved, so a
-  typo cannot make every command fail. `mode = "off"` is allowed (the user's machine), but
-  Settings shows it as a warning, and the watchdog has its own switch.
+  typo cannot make every command fail. `mode = "off"` is allowed and user-only (S3): Settings
+  shows it as a warning, and the watchdog has its own switch.
 - **Changes apply to new units.** A changed cap applies to processes started afterwards.
   Running units keep their caps (`restart: false`, no daemon restart needed), except that
   lowering the total or the reserve applies to the watchdog at once.
@@ -434,8 +467,8 @@ never two at the same level.
   into `imperium-limits` unchanged in value. There is still one job per worker, now nested in
   the session job. The code-mode plan's "cgroups when delegated" (C1) is delivered by this
   plan's L3.
-- **Terminals.** The terminal plan's job and Linux supervisor stay. The job gets the
-  `terminal` limits, and the supervisor uses `cgroup.kill` on its unit where one is delegated
+- **Terminals.** The terminal plan's job and Linux supervisor stay. The job gets no limits
+  (S2), so the unit only provides the stop, and the supervisor uses `cgroup.kill` on its unit where one is delegated
   (the "robust future form" that plan names), keeping its walk as the fallback.
 - **Background commands.** The background-command job becomes the unit job (assigned while
   suspended, so the tree walk is needed only for terminals). The 8 running and 32 kept per
@@ -494,8 +527,9 @@ where an agent is waiting.**
 
 ### L11. The daemon watchdog
 
-**Accepted: a dedicated OS thread in the daemon samples the machine's free memory and stops
-Imperium's own units, largest eligible first, before the machine runs out.**
+**Accepted (S4): a dedicated OS thread in the daemon samples the machine's free memory and
+stops Imperium's own units, lowest value first, before the machine runs out, whatever is causing
+the shortage.**
 
 - **Readings.** Every second, and every 250 ms while below twice the reserve:
   - Windows: `GlobalMemoryStatusEx`, both available physical memory and available commit,
@@ -507,13 +541,13 @@ Imperium's own units, largest eligible first, before the machine runs out.**
     source that wakes it on a warning.
 - **Acting.** Below the reserve for two samples in a row, it acts once, then waits 2 s before
   acting again. In order:
-  1. stop the largest unit of `command` (background before foreground), `mcp`, `hook`,
-     `browser`, `cas`, `script` or `internal` that uses more than 256 MiB;
+  1. stop the lowest-value unit that uses more than 256 MiB: `internal` and `browser` first,
+     then background `command`s, `mcp` and `hook`, then `cas` and `script`, then foreground
+     `command`s, the largest first within each group;
   2. ask the residency controller to unload idle models (`pressure`);
-  3. stop the largest `terminal` unit;
-  4. only below half the reserve for 5 s: stop a model with a call in flight (`pressure`).
-  It never stops the daemon, the desktop app or any process Imperium did not start, even when
-  the pressure comes from elsewhere. Each act is a `resource.limited` with `system_pressure`,
+  3. only below half the reserve for 5 s: stop a model with a call in flight (`pressure`).
+  It never stops the daemon, the desktop app, the user's terminals (S2) or any program Imperium
+  did not start, even when the pressure comes from elsewhere. Each act is a `resource.limited` with `system_pressure`,
   naming the free memory and the reserve.
 - **Self-protection.** The thread is started at daemon start with its buffers allocated, runs at
   above-normal priority, and takes no lock that a session holds, so it keeps running when the
@@ -528,7 +562,9 @@ Imperium's own units, largest eligible first, before the machine runs out.**
 F5's runaway ran outside Imperium. The launcher in L3 is also usable on its own:
 `imperium-core limit --memory 4G --processes 256 -- <command>` puts any command in a unit (a job
 on Windows, a cgroup or rlimits and a poll elsewhere). Stage 2 wraps `scripts/check-python.sh`'s
-pytest run in it on every OS (4 GiB by default, `IMPERIUM_TEST_MEMORY_MB` to change). Stage 2
+pytest run in it on every OS (4 GiB by default, `IMPERIUM_TEST_MEMORY_MB` to change). It
+also wraps `scripts/check-rust.sh` if that costs only the launcher's `exec` (50% of RAM, at most
+32 GiB, `IMPERIUM_RUST_MEMORY_MB`; S7). Stage 2
 also removes the CAS tests' `unlimited_on_windows` opt-in for in-process corpus and fuzz tests,
 which then run inside that unit. A development agent that runs the scripts gets the cap without
 having to know about it.
@@ -653,11 +689,12 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
 
 ### Stage 7: terminals
 
-- Objective: terminal panes through `Limits::adopt` with the `terminal` class, and `cgroup.kill`
-  in the Linux supervisor where delegated (L8).
+- Objective: terminal panes through `Limits::adopt` with the uncapped `terminal` class (S2),
+  and `cgroup.kill` in the Linux supervisor where delegated (L8).
 - Depends on: stage 3 and the terminal plan's stage 2a (#331).
-- Acceptance checks: the terminal plan's fork-loop test also passes under a 64-process cap; an
-  allocation in a terminal past its cap is stopped and shown in the pane.
+- Acceptance checks: the terminal plan's stop tests pass through the unit; a terminal that
+  allocates past the `command` cap is not stopped and is not counted in the session aggregate;
+  the watchdog's victim order never includes a terminal.
 
 ### Stage 8: review, measurement and enforce for models
 
@@ -669,7 +706,7 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
 ## Rollout
 
 - Stages 1 and 2 add no caps to any agent-facing process (only the scripts of L12).
-- Stages 3, 4 and 7 ship in `enforce` for their classes with the L6 defaults, which are sized so
+- Stages 3 and 4 ship in `enforce` for their classes with the L6 defaults, which are sized so
   ordinary builds and servers stay well under them.
 - Models ship in `warn` in stage 5 and move to `enforce` only in stage 8.
 - The watchdog ships enabled in stage 6.
@@ -695,26 +732,7 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
 
 ## Open questions
 
-For the user:
-
-1. **Default sizes.** Commands and terminals at 25% of RAM (16 GiB on the 64 GB machine), MCP
-   servers at 2 GiB, hooks at 512 MiB, the browser at 4 GiB, a session at 50% (32 GiB), and the
-   watchdog's reserve at 8% (5.1 GiB). Tighter (commands at 8 GiB) or looser?
-2. **CPU caps by default.** None by default, with lower priority for agent classes (the plan's
-   choice), or a default cap, for example 75% of the machine per session?
-3. **The terminal.** Cap the user's own terminal like commands (the plan's choice), or leave it
-   to the session aggregate and the watchdog only?
-4. **Containers in the session aggregate.** Count a container at its cap on admission (the
-   plan's choice), or leave containers out of the aggregate?
-5. **The watchdog and pressure from elsewhere.** When the machine is short because of a
-   non-Imperium program, should the watchdog still stop Imperium's units (the plan's choice: yes,
-   largest first, never a model with a call in flight unless critical)?
-6. **`limits.mode = "off"`.** Allow the user to turn caps off entirely (the plan's choice), or
-   keep a hard minimum for the small classes?
-7. **The repository's scripts (L12).** Is 4 GiB right for the pytest run, and should
-   `scripts/check-rust.sh` get a unit too (rustc can legitimately use more)?
-
-For the root:
+The user's questions are answered ([settled decisions](#settled-decisions)). For the root:
 
 1. **Roadmap number.** Item 67 is taken by the open Princeps plan (#325), so this is item 68. If
    #325 does not merge first, renumbering is a one-line change.

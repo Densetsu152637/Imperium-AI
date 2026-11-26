@@ -939,18 +939,19 @@ and `environments.agent_update` (protocol 0.28)
 <!-- markdownlint-disable-next-line MD029 -->
 68. **Resource caps on every child process** (planned). No process Imperium starts can exhaust
     the host. A CAS test process grew to about 20 GB on a 64 GB Windows machine and took it to
-    about 100% RAM, because on Windows nothing Imperium starts has a memory limit. Every command,
-    terminal, MCP server, hook, plugin process, CAS server, code-mode worker, browser, daemon tool
-    and local model server runs in a cap unit: a process tree with a memory cap and a process
-    cap, and an optional CPU cap. The mechanisms are a nested Job Object on Windows (assigned
+    about 100% RAM, because on Windows nothing Imperium starts has a memory limit. Every
+    agent-started command, MCP server, hook, plugin process, CAS server, code-mode worker,
+    browser, daemon tool and local model server runs in a cap unit: a process tree with a memory
+    cap and a process cap, and an optional CPU cap. The user's own terminals are not capped. The mechanisms are a nested Job Object on Windows (assigned
     while the process is suspended), a delegated cgroup v2 subtree on Linux (with an `rlimit`
     and poll fallback), and a daemon-side poll on macOS. Container and Docker runs get their
     own flags. Units sit under a per-session aggregate and an Imperium-wide total. Model servers
     get large caps from the memory planner's own estimate, warn-only at first. A daemon
-    watchdog stops Imperium's largest units, or unloads idle models, before free memory falls
-    below a reserve. Caps are user settings (`[limits]`): project files may only lower them,
-    plugin manifests cannot set them, and an agent's `config set limits.*` hits the safety
-    floor. Each stop is reported to the agent and the interface with the cap, the peak and the
+    watchdog stops Imperium's lowest-value units, then unloads idle models, before free memory
+    falls below a reserve, whatever the cause, and never touches a program Imperium did not
+    start. Caps are user settings (`[limits]`): project files may only lower them, plugin
+    manifests cannot set them, and an agent's `config set limits.*` hits the safety floor. Only
+    the user can turn caps off (`limits.mode = "off"`); an agent's change to it is refused. Each stop is reported to the agent and the interface with the cap, the peak and the
     setting that raises it. The existing CAS and code-mode limits are reused, not doubled. CI
     runs an allocation bomb, a fork bomb and a CPU spin on each OS, under probes that bound
     themselves ([plan](plans/resource-caps.md)).
