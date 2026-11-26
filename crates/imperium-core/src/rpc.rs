@@ -143,6 +143,8 @@ mod sessions;
 mod system;
 mod terminal;
 use errors::*;
+#[cfg(feature = "testing")]
+pub use terminal::testing as terminal_gate_testing;
 pub use terminal::{TerminalCaller, TerminalFrames, TerminalGate};
 
 /// A session's events, to be forwarded to this connection as notifications.

@@ -1010,6 +1010,21 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     `lagged` and comes back by attaching with `since`; the OS sandbox tier cannot open the
     terminal's device for reading or writing while the user's own process can (Linux and
     macOS).
+  - **Review fixes (second round):** (1) every agent-command child (`imperium_tools::shell`,
+    every tier through `Sandbox::named_command_for`, remote-runtime clients, MCP servers) gets
+    descriptors 3 and up made close-on-exec between `fork` and `exec`
+    (`imperium_ipc::close_inherited_on_exec`, an opt-in `unsafe` module: `close_range` with
+    `CLOSE_RANGE_CLOEXEC`, else an `fcntl` loop to `RLIMIT_NOFILE`), because `portable-pty`
+    marks a new PTY close-on-exec only after `openpty`; a Linux test runs a command storm while
+    terminals open and close and finds no `pts` or `ptmx` among any child's descriptors. An
+    atomic close-on-exec PTY open would need replacing `portable-pty`'s spawn and is not done.
+    (2) `config.set` of `terminal.*` (and `terminal`) goes through the same gate. (3) The
+    real-socket test prints and asserts the refusal's reason; with the app check set aside by a
+    test hook, an orphaned helper with the spawn mark is refused by the grant check alone and the
+    same helper without it gets terminals (Unix), and a unit test fails if `may_grant` leaves
+    `DesktopGate::admit`. (4) 05 states the tier-0 residuals and the 16 × 1 MiB bound. The
+    Seatbelt profile now refuses other terminals' devices (`/dev/tty.+`, `/dev/pty*`,
+    `/dev/ptmx`) for reading, writing and `ioctl`.
 - Handoff notes: stage 3 is the only client. Touching `app_identity/` or `rpc/config.rs` runs the
   presence end-to-end job. The relay reads `terminal.output` and `terminal.changed` that may
   arrive before the reply of the `terminal.open` or `terminal.attach` that caused them, and

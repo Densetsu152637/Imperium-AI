@@ -2966,6 +2966,7 @@ version = "0.2.0"
 dependencies = [
  "block2",
  "getrandom 0.4.3",
+ "libc",
  "objc2",
  "objc2-foundation",
  "objc2-local-authentication",
@@ -3011,6 +3012,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "imperium-api",
+ "imperium-ipc",
  "reqwest",
  "serde",
  "serde_json",
@@ -3143,6 +3145,7 @@ version = "0.2.0"
 dependencies = [
  "ignore",
  "imperium-api",
+ "imperium-ipc",
  "imperium-policy",
  "imperium-tools",
  "regex",

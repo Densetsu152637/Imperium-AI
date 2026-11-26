@@ -684,9 +684,12 @@ pub(super) async fn opening_while_archiving_or_stopping_leaves_nothing() {
     ));
 }
 
-/// The real gate, the real local socket, a real child: a process carrying the daemon's spawn
-/// mark (as an agent's command, a hook or a shell in a terminal does) that connects with the
-/// token gets `-32005`.
+/// The real gate, the real local socket, real processes. With the real app check, a helper of
+/// the test is refused by it (it is not the installed desktop app). With the app check set aside
+/// (`terminal_gate_testing`), the grant check alone judges: on Unix the helper is orphaned out of
+/// the daemon's process tree, so the spawn mark is the only thing that can refuse it, and the
+/// same helper without the mark is let in (the control); on Windows the helper stays the test's
+/// child and is refused by the grant check.
 pub(super) async fn a_real_child_with_the_spawn_mark_is_refused() {
     let data = tempfile::tempdir().unwrap();
     let listener = imperium_ipc::Listener::bind(data.path()).unwrap();
@@ -700,33 +703,111 @@ pub(super) async fn a_real_child_with_the_spawn_mark_is_refused() {
         Arc::clone(&fixture.state),
         std::future::pending(),
     ));
-    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            HELPER,
-            &address,
-            token,
-            &std::process::id().to_string(),
-            &session,
-        ])
-        .env(imperium_tools::SPAWNED_MARK, "1")
+    // The real gate: refused, and by the app check.
+    let printed = helper_run(&address, token, &session, true, data.path()).await;
+    for method in ["terminal.open", "terminal.list"] {
+        let line = reply_line(&printed, method);
+        assert!(
+            line.starts_with(&format!("{method} {FORBIDDEN} ")),
+            "{printed}"
+        );
+        assert!(!line.contains("started by the daemon"), "{printed}");
+    }
+    // The app check set aside: the grant check refuses the marked helper.
+    imperium_core::terminal_gate_testing::skip_app_check(true);
+    let marked = helper_run(&address, token, &session, true, data.path()).await;
+    let unmarked = if cfg!(unix) {
+        Some(helper_run(&address, token, &session, false, data.path()).await)
+    } else {
+        None
+    };
+    imperium_core::terminal_gate_testing::skip_app_check(false);
+    for method in ["terminal.open", "terminal.list"] {
+        let line = reply_line(&marked, method);
+        assert!(
+            line.starts_with(&format!("{method} {FORBIDDEN} ")),
+            "{marked}"
+        );
+        assert!(line.contains("started by the daemon"), "{marked}");
+    }
+    if let Some(unmarked) = unmarked {
+        // The control: out of the daemon's tree and unmarked, the same helper gets terminals.
+        assert!(
+            reply_line(&unmarked, "terminal.list").starts_with("terminal.list ok"),
+            "{unmarked}"
+        );
+    }
+    server.abort();
+    fixture.state.stop_terminals(BOUND).await;
+}
+
+/// The line the helper printed for `method`.
+fn reply_line(printed: &str, method: &str) -> String {
+    printed
+        .lines()
+        .find(|line| line.starts_with(&format!("{method} ")))
+        .unwrap_or_else(|| panic!("no reply to {method}: {printed}"))
+        .to_owned()
+}
+
+/// Runs the helper against the daemon at `address` and returns what it printed. On Unix it is
+/// orphaned (started in the background of a shell that exits at once), so it is outside the
+/// daemon's process tree; on Windows it is a child of the test.
+async fn helper_run(
+    address: &str,
+    token: &str,
+    session: &str,
+    marked: bool,
+    scratch: &Path,
+) -> String {
+    let exe = std::env::current_exe().unwrap();
+    let pid = std::process::id().to_string();
+    let args = [HELPER, address, token, pid.as_str(), session];
+    let mut command;
+    let out = scratch.join(format!("helper-{marked}.txt"));
+    if cfg!(unix) {
+        let _ = std::fs::remove_file(&out);
+        command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(r#"( "$0" "$@" > "$HELPER_OUT" 2>&1; echo HELPER-DONE >> "$HELPER_OUT" ) &"#)
+            .arg(&exe)
+            .args(args)
+            .env("HELPER_OUT", &out);
+    } else {
+        command = tokio::process::Command::new(&exe);
+        command.args(args);
+    }
+    if marked {
+        command.env(imperium_tools::SPAWNED_MARK, "1");
+    } else {
+        command.env_remove(imperium_tools::SPAWNED_MARK);
+    }
+    command
         .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    let output = tokio::time::timeout(Duration::from_secs(60), output)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(60), command.output())
         .await
         .expect("the helper finished")
         .unwrap();
-    server.abort();
-    let printed = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{printed}");
-    assert!(printed.contains("handshake ok"), "{printed}");
-    for method in ["terminal.open", "terminal.list"] {
-        assert!(
-            printed.contains(&format!("{method} {FORBIDDEN}")),
-            "{printed}"
-        );
+    if !cfg!(unix) {
+        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert!(output.status.success(), "{printed}");
+        return printed;
     }
-    assert!(fixture.state.terminals().ids().is_empty());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let printed = std::fs::read_to_string(&out).unwrap_or_default();
+        if printed.contains("HELPER-DONE") {
+            assert!(printed.contains("handshake ok"), "{printed}");
+            return printed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the orphaned helper did not finish: {printed}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// The helper's argument.
@@ -783,8 +864,14 @@ pub(super) fn run_helper(args: &[String]) {
             if method == "system.handshake" {
                 assert!(reply["result"].is_object(), "{reply}");
                 println!("handshake ok");
+            } else if reply["result"].is_object() {
+                println!("{method} ok");
             } else {
-                println!("{method} {}", reply["error"]["code"]);
+                println!(
+                    "{method} {} {}",
+                    reply["error"]["code"],
+                    reply["error"]["message"].as_str().unwrap_or_default()
+                );
             }
         }
     });
@@ -864,4 +951,100 @@ pub(super) async fn a_command_at_the_os_sandbox_tier_cannot_open_the_terminal_de
         );
         fixture.state.stop_terminals(BOUND).await;
     }
+}
+
+/// No agent command inherits a terminal's descriptors: a storm of commands run while terminals
+/// open and close (`portable-pty` marks a new pseudo terminal close-on-exec only after it is
+/// open) never shows a `/dev/pts/<n>` or `/dev/ptmx` among its own descriptors. Linux, where
+/// `/proc/self/fd` names them.
+pub(super) async fn no_command_inherits_a_terminal_while_terminals_open() {
+    #[cfg(target_os = "linux")]
+    {
+        use std::sync::atomic::AtomicBool;
+        let fixture = fixture(&known_shell());
+        let session = fixture.session();
+        let done = Arc::new(AtomicBool::new(false));
+        let opener = {
+            let state = Arc::clone(&fixture.state);
+            let done = Arc::clone(&done);
+            tokio::spawn(async move {
+                for _ in 0..12 {
+                    let info = state.open_terminal(&session, 80, 24).await.unwrap();
+                    state.close_terminal(&info.terminal_id).await.unwrap();
+                }
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+        let mut ran = 0;
+        let mut leaks = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while !done.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "the terminals did not open and close in time"
+            );
+            let batch = (0..8).map(|_| async {
+                let mut command = imperium_tools::shell("ls -l /proc/self/fd/");
+                command.stdin(std::process::Stdio::null());
+                command.output().await.unwrap()
+            });
+            for output in futures_util::future::join_all(batch).await {
+                ran += 1;
+                let text = String::from_utf8_lossy(&output.stdout).into_owned();
+                // The probe sees its own descriptors: stdout is the pipe it prints on.
+                assert!(text.contains("pipe:"), "{text}");
+                leaks.extend(
+                    text.lines()
+                        .filter(|line| line.contains("/dev/pts/") || line.contains("ptmx"))
+                        .map(str::to_owned),
+                );
+            }
+        }
+        opener.await.unwrap();
+        assert!(ran > 0);
+        assert!(leaks.is_empty(), "after {ran} commands: {leaks:?}");
+        fixture.state.stop_terminals(BOUND).await;
+    }
+}
+
+/// The terminal settings choose what a terminal runs, outside every isolation tier: a token
+/// holder may not change them with `config.set` (other settings it still may), and a connection
+/// the gate lets in may.
+pub(super) async fn a_token_holder_cannot_change_the_terminal_settings() {
+    let fixture = fixture("");
+    let file = imperium_config::Paths::under(fixture.home()).user_config_file();
+    let before = std::fs::read_to_string(&file).unwrap_or_default();
+    let mut token_holder = connect(Connection::new(Arc::clone(&fixture.state)), "agent").await;
+    for (key, value) in [
+        ("terminal.shell", json!(["/tmp/planted-shell"])),
+        ("terminal.enabled", json!(false)),
+        ("terminal", json!({"shell": ["/tmp/planted-shell"]})),
+    ] {
+        let outcome = call(
+            &mut token_holder,
+            "config.set",
+            json!({"key": key, "value": value}),
+        )
+        .await;
+        assert_eq!(code(&outcome), Some(FORBIDDEN), "{key}: {outcome:?}");
+    }
+    assert_eq!(std::fs::read_to_string(&file).unwrap_or_default(), before);
+    // Another setting is still the token holder's to change.
+    ok(
+        &mut token_holder,
+        "config.set",
+        json!({"key": "pets.fidget", "value": false}),
+    )
+    .await;
+    // The desktop app changes the terminal settings.
+    let mut app = admitted(&fixture.state).await;
+    ok(
+        &mut app,
+        "config.set",
+        json!({"key": "terminal.enabled", "value": false}),
+    )
+    .await;
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("[terminal]"), "{text}");
+    assert!(!text.contains("planted"), "{text}");
 }

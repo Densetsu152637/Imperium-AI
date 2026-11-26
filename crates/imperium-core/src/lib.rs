@@ -82,6 +82,8 @@ pub use phone::Devices;
 pub use pr_monitor::{PrMonitor, disable_before_push as disable_auto_merge_before_push};
 pub use project_agent::ProjectAgents;
 pub use resources::{ResourceMonitor, Watch as ResourceWatch};
+#[cfg(feature = "testing")]
+pub use rpc::terminal_gate_testing;
 pub use rpc::{
     Connection, Deferred, Handled, Subscription, TerminalCaller, TerminalFrames, TerminalGate,
     next_event,

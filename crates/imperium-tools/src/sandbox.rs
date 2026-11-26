@@ -447,6 +447,10 @@ impl Sandbox {
     ) -> Result<Command, ToolError> {
         let mut process =
             self.unscoped_command(roots, grants, command, name, read_only, session_gh)?;
+        // Every tier: the command (or its sandbox or container runtime) inherits nothing beyond
+        // stdio, so a descriptor not yet marked close-on-exec (a terminal pane's pseudo
+        // terminal while it opens) cannot reach it.
+        imperium_ipc::close_inherited_on_exec(process.as_std_mut());
         if !session_gh {
             for name in GITHUB_ENV {
                 process.env_remove(name);

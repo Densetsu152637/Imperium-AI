@@ -1115,11 +1115,45 @@ from the repository. The list is **not exhaustive**: it guards against what the 
 inherited, and the user's own start-up files (direnv, prompt hooks) do in a repository what they
 do in any terminal opened there.
 
-**Residual risk at tier 0.** A command at isolation tier 0 runs as the user, so it can open the
-terminal's device itself (`/dev/pts/<n>` on Linux, `/dev/ttys<n>` on macOS, `AttachConsole` on
-Windows), read what is typed and write to it; no protocol gate stops that, as tier 0 gives code
-the user's full rights. The OS sandbox tier hides the device: bubblewrap mounts a fresh `/dev`
-(`--dev /dev`, with a devpts of its own), so the host's `/dev/pts/<n>` is not there, and the
+**Residual risks at tier 0.** A command at isolation tier 0 runs as the user with the user's
+full rights, so the gate is not a boundary against it, and neither are resource caps (a tier-0
+command can start whatever it likes outside them). What it can still do:
+
+- open the terminal's device itself (`/dev/pts/<n>` on Linux, `/dev/ttys<n>` on macOS,
+  `AttachConsole` and `WriteConsoleInput` on Windows), read what is typed and write to it;
+- on Linux, pass the app check by running the desktop app's own executable: it opens
+  `/proc/<pid>/exe` of the running app (or the installed file) lazily, forks, calls `setsid`
+  to leave the daemon's session, clears the spawn mark and `exec`s the app with arguments or an
+  environment of its choosing, and the peer the daemon sees is then the installed app outside
+  the daemon's tree;
+- on Windows, `DuplicateHandle` the desktop app's own connection (the named pipe the app
+  holds) out of the app's process, which runs as the same user, and speak on it;
+- with a per-user install (the AppImage or a folder in the user's home, a per-user Windows
+  install), replace the app's binary, which the identity check then accepts.
+
+These are why the plan narrows its goals at tier 0 to the plain case: an agent's shell or an
+`imperium` command reaching for a terminal is refused; a command set on evading the check is
+not stopped. The OS sandbox tier keeps a command from the terminal devices (tested, below);
+how far it and the container tier stop the other three is not claimed here.
+
+What a connection can make the daemon hold is bounded: there are at most sixteen terminals
+(four per session), each with a 1 MiB ring, and for each terminal it is attached to a connection
+has at most 1 MiB of output queued (what its transport has not taken yet, plus what waits to be
+sent) before it is told it lagged and nothing more is queued for it, so at most 16 × 1 MiB per
+connection.
+
+Every command the daemon starts for an agent (every tier's `run_command` and background
+commands, hooks, scheduled commands, MCP servers and remote-runtime clients) inherits no
+descriptor beyond stdin, stdout and stderr: between `fork` and `exec` everything from 3 up is
+made close-on-exec (`close_range` with `CLOSE_RANGE_CLOEXEC` on Linux, a loop up to the
+descriptor limit elsewhere; `imperium_ipc::close_inherited_on_exec`). `portable-pty` marks a new
+pseudo terminal close-on-exec only after `openpty` returns, so without this a command forked in
+that moment would hold the user's terminal (a test runs a storm of commands while terminals open
+and close and checks none holds one). Opening the pseudo terminal with close-on-exec in one step
+would need replacing `portable-pty`'s spawn; it is not done.
+
+The OS sandbox tier hides the device: bubblewrap mounts a fresh `/dev` (`--dev /dev`, with a
+devpts of its own), so the host's `/dev/pts/<n>` is not there, and the
 Seatbelt profile refuses reading, writing and `ioctl` on every `/dev/tty...` but `/dev/tty`
 itself (the command's own controlling terminal), every `/dev/pty...` and `/dev/ptmx`, after every
 allow (`/dev/null`, `/dev/zero` and `/dev/urandom` stay). A test opens a terminal, runs a

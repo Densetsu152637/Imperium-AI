@@ -6,6 +6,18 @@ impl Connection {
         &mut self,
         c: &mut Dispatch<'_>,
     ) -> Option<Result<Value, ErrorObject>> {
+        // The terminal settings choose the program a terminal runs, outside every isolation
+        // tier: only a connection the terminal gate lets in may change them.
+        if c.method == ConfigSet::NAME
+            && c.params
+                .as_ref()
+                .and_then(|params| params.get("key"))
+                .and_then(Value::as_str)
+                .is_some_and(|key| key == "terminal" || key.starts_with("terminal."))
+            && let Err(refused) = self.terminal_admitted()
+        {
+            return Some(Err(refused));
+        }
         Some(match c.method {
             ConfigDescribe::NAME => {
                 call::<ConfigDescribe>(c.params.take(), |_: ConfigDescribeParams| {

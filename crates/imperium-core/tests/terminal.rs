@@ -100,6 +100,8 @@ fn main() {
         protocol::opening_while_archiving_or_stopping_leaves_nothing,
         protocol::a_real_child_with_the_spawn_mark_is_refused,
         protocol::a_command_at_the_os_sandbox_tier_cannot_open_the_terminal_device,
+        protocol::no_command_inherits_a_terminal_while_terminals_open,
+        protocol::a_token_holder_cannot_change_the_terminal_settings,
         the_path_search_never_returns_the_working_folder_or_the_session_folders,
         unix_shell_choice,
         windows_shell_choice_ignores_comspec_and_path,

@@ -88,16 +88,51 @@ pub(crate) struct DesktopGate;
 
 impl TerminalGate for DesktopGate {
     fn admit(&self, caller: &TerminalCaller<'_>) -> Result<(), String> {
-        desktop_verdict(
-            &crate::app_identity::InstalledApp,
-            caller,
-            crate::peer::may_grant,
-        )
+        let installed = crate::app_identity::InstalledApp;
+        #[cfg(any(test, feature = "testing"))]
+        let stand_in = testing::StandIn;
+        #[cfg(any(test, feature = "testing"))]
+        let identify: &dyn crate::app_identity::Identify = if testing::app_check_skipped() {
+            &stand_in
+        } else {
+            &installed
+        };
+        #[cfg(not(any(test, feature = "testing")))]
+        let identify: &dyn crate::app_identity::Identify = &installed;
+        desktop_verdict(identify, caller, crate::peer::may_grant)
+    }
+}
+
+/// Test support: lets the production gate's app check pass for any peer, so a test on the real
+/// local socket sees the grant check (`peer::may_grant`) judge a real process on its own. Only
+/// unit tests and the `testing` feature have it.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static SKIP_APP_CHECK: AtomicBool = AtomicBool::new(false);
+
+    /// While `skip`, the desktop gate's app check passes for any peer; the grant check still runs.
+    pub fn skip_app_check(skip: bool) {
+        SKIP_APP_CHECK.store(skip, Ordering::SeqCst);
+    }
+
+    pub(super) fn app_check_skipped() -> bool {
+        SKIP_APP_CHECK.load(Ordering::SeqCst)
+    }
+
+    /// The app check standing in for `InstalledApp` meanwhile.
+    pub(super) struct StandIn;
+
+    impl crate::app_identity::Identify for StandIn {
+        fn identify(&self, _peer: Option<&crate::app_identity::Peer>) -> Result<(), String> {
+            Ok(())
+        }
     }
 }
 
 /// Why a peer that passed the app check still gets no terminal.
-const NOT_A_PERSON: &str = "the caller was started by the daemon or runs below a process it \
+pub(crate) const NOT_A_PERSON: &str = "the caller was started by the daemon or runs below a process it \
      started (an agent's command, a hook, a terminal), or came through SSH";
 
 /// The desktop-app check (`identify`), then the grant check (`may_grant`) of the peer.
@@ -498,7 +533,7 @@ impl TerminalLink {
 impl Connection {
     /// Whether this connection may use terminals: never a paired device; otherwise the gate's
     /// verdict, asked on the first call and kept.
-    fn terminal_admitted(&mut self) -> Result<(), ErrorObject> {
+    pub(super) fn terminal_admitted(&mut self) -> Result<(), ErrorObject> {
         if self.allowed.is_some() {
             return Err(ErrorObject::new(
                 codes::FORBIDDEN,
@@ -781,6 +816,31 @@ mod tests {
             let _ = process.kill();
             let _ = process.wait();
         }
+    }
+
+    /// The production gate's own composition runs the grant check: with the app check passed, a
+    /// real process carrying the spawn mark is still refused. Fails if `may_grant` is dropped
+    /// from `DesktopGate::admit`.
+    #[test]
+    fn the_production_gate_runs_the_grant_check() {
+        let (state, _home) = daemon();
+        let mut agent = child(true);
+        let later = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 60;
+        let caller = TerminalCaller {
+            daemon: &state,
+            identity: None,
+            peer: Some((agent.id(), later)),
+        };
+        testing::skip_app_check(true);
+        let verdict = DesktopGate.admit(&caller);
+        testing::skip_app_check(false);
+        assert_eq!(verdict, Err(NOT_A_PERSON.to_string()));
+        let _ = agent.kill();
+        let _ = agent.wait();
     }
 
     /// The production gate refuses a connection that did not come in on the local socket
