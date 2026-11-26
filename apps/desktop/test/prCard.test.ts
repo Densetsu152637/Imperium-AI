@@ -28,6 +28,7 @@ const status = (over: Partial<PrStatus> = {}): PrStatus => ({
   auto_merge: { enabled: false },
   auto_archive_on_close: false,
   untrusted_handled: false,
+  ignored_comments: 0,
   updated_at: 1_700_000_000_000,
   ...over,
 });
@@ -106,12 +107,18 @@ test("an error keeps the last good data and shows the reason", () => {
   assert.equal(view.checks.label, "All 4 passing");
 });
 
-test("auto-fix stays off and says why; auto-merge is offered and says it lands code unseen", () => {
+test("auto-fix is offered and says every edit asks; auto-merge is offered and says it lands code unseen", () => {
   const view = describePr(status({ auto_fix: false }));
-  assert.match(view.autoFix.reason, /not available yet/);
-  assert.equal(view.autoFix.canTurnOn, false);
+  assert.match(view.autoFix.reason, /every edit and command asking you first/);
+  assert.equal(view.autoFix.canTurnOn, true);
   assert.equal(view.autoFix.canTurnOff, false);
   assert.equal(view.autoFix.on, false);
+  assert.equal(view.untrusted, null);
+  assert.equal(view.ignored, null);
+  const on = describePr(status({ auto_fix: true }));
+  assert.equal(on.autoFix.canTurnOn, false);
+  assert.equal(on.autoFix.canTurnOff, true);
+  assert.equal(describePr(status({ state: "merged" })).autoFix.canTurnOn, false);
   assert.equal(view.autoMerge.on, false);
   assert.equal(view.autoMerge.hint, null);
   assert.equal(view.autoMerge.canTurnOn, true);
@@ -289,4 +296,12 @@ test("the card draws GitHub text only as React text", () => {
   assert.doesNotMatch(source, /dangerouslySetInnerHTML|innerHTML|ReactMarkdown|react-markdown/);
   assert.doesNotMatch(source, /href=/);
   assert.match(source, /openExternal\(view\.link!\)/);
+});
+
+test("the card says untrusted text was handled until it is acknowledged, and counts ignored comments", () => {
+  const view = describePr(status({ auto_fix: true, untrusted_handled: true, ignored_comments: 2 }));
+  assert.match(view.untrusted ?? "", /review text written by other people/);
+  assert.equal(view.ignored, "2 comments from people without write access did not wake the session.");
+  assert.equal(describePr(status({ ignored_comments: 1 })).ignored, "1 comment from people without write access did not wake the session.");
+  assert.equal(describePr(status({ untrusted_handled: false })).untrusted, null);
 });

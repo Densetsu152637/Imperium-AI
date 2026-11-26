@@ -357,6 +357,7 @@ export function SessionPanel({
               onOpenAgent={onOpenAgent}
               agentName={(id) => agentName(session, id)}
               onBranch={archived ? undefined : onBranch}
+              capped={session.summary.capped === true}
             />
           ),
         )}
@@ -526,6 +527,14 @@ export function SessionPanel({
             disabled={archived}
             onChange={onSetPermissionMode}
           />
+        )}
+        {session.summary.capped && (
+          <Badge
+            tone="warn"
+            title="Every call that is not a read asks, whatever the mode or the rules say, and an approval covers one call only. A session started from review comments written by other people stays capped for good: start a new session, or branch, to work uncapped. A session woken by review comments is capped until the wake ends."
+          >
+            capped (review wake)
+          </Badge>
         )}
         <span className="session-footer-spacer" />
         {sum.costUsd !== null && (
@@ -728,9 +737,12 @@ export function EntryView({
   onOpenAgent,
   agentName = (id) => id,
   onBranch,
+  capped = false,
 }: {
   entry: Entry;
   rendered: boolean;
+  /** The session is capped (review wake): an approval covers one call and cannot be kept for the session. */
+  capped?: boolean;
   onRespond: Props["onRespond"];
   onAlwaysAllow?: Props["onAlwaysAllow"];
   onAnswer: Props["onAnswer"];
@@ -819,7 +831,9 @@ export function EntryView({
               <Menu
                 label="More ways to allow"
                 items={[
-                  { label: "Always this session", icon: ShieldCheck, onSelect: () => onRespond(entry.requestId, "allow_for_session") },
+                  ...(capped
+                    ? []
+                    : [{ label: "Always this session", icon: ShieldCheck, onSelect: () => onRespond(entry.requestId, "allow_for_session") }]),
                   ...(entry.suggestedRule && onAlwaysAllow
                     ? [
                         {

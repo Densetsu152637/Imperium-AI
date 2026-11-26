@@ -746,6 +746,155 @@ async fn a_provider_tool_runs_one_at_a_time_unless_it_says_it_is_read_only() {
     assert_eq!(results.len(), 3);
 }
 
+/// A read-only provider tool that numbers its runs, so a test can tell a run kept from the
+/// run-ahead from a fresh one. `on_first_run` fires as the first run starts (while the
+/// others of the step are still running ahead); `needs_sampler` makes a run without a sampler
+/// fail, as an MCP tool that samples does when it runs ahead.
+struct Numbered {
+    runs: AtomicUsize,
+    needs_sampler: bool,
+    on_first_run: Box<dyn Fn() + Send + Sync>,
+}
+
+impl std::fmt::Debug for Numbered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Numbered")
+    }
+}
+
+impl ToolProvider for Numbered {
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![ToolSpec {
+            name: "lookup".into(),
+            description: "Look a word up.".into(),
+            parameters: json!({"type": "object", "properties": {"word": {"type": "string"}}}),
+        }]
+    }
+
+    fn handles(&self, name: &str) -> bool {
+        name == "lookup"
+    }
+
+    fn read_only(&self, name: &str) -> bool {
+        name == "lookup"
+    }
+
+    fn check(&self, _name: &str, _arguments: &str) -> Result<ToolCheck, String> {
+        Ok(ToolCheck {
+            summary: "look a word up".into(),
+            ask: false,
+            needs_context: false,
+            command: None,
+        })
+    }
+
+    fn call<'a>(
+        &'a self,
+        context: &'a ToolContext<'a>,
+        _name: &'a str,
+        _arguments: &'a str,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+            if run == 1 {
+                (self.on_first_run)();
+            }
+            if self.needs_sampler && context.sampler.is_none() {
+                return Err("needs a sampler".into());
+            }
+            Ok(format!("run {run}"))
+        })
+    }
+}
+
+/// Runs three `lookup` calls of one step against `provider`, answering every approval request
+/// with Allow; returns the tool messages and how many approvals were asked.
+async fn run_numbered(
+    provider: Arc<Numbered>,
+    permissions: Option<Permissions>,
+) -> (Vec<(String, String)>, usize) {
+    let calls = ["w1", "w2", "w3"]
+        .into_iter()
+        .map(|id| call(id, "lookup", json!({"word": id})))
+        .collect();
+    let (fake, url) = serve_calls(calls).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut workspace = Workspace::new(dir.path()).unwrap();
+    if let Some(permissions) = permissions {
+        workspace = workspace.with_permissions(permissions);
+    }
+    let session = start_full(
+        &url,
+        workspace,
+        4,
+        None,
+        vec![provider as Arc<dyn ToolProvider>],
+    );
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+    let mut asked = 0;
+    loop {
+        match next(&mut events).await {
+            SessionEvent::PermissionRequested { request_id, .. } => {
+                asked += 1;
+                session
+                    .respond(request_id, PermissionDecision::Allow)
+                    .unwrap();
+            }
+            SessionEvent::TurnCompleted { .. } => break,
+            _ => {}
+        }
+    }
+    let results = tool_messages(&fake.requests.lock().unwrap()[1]);
+    (results, asked)
+}
+
+#[tokio::test]
+async fn a_provider_call_that_starts_to_ask_after_the_run_runs_again_after_the_approval() {
+    // The tools run ahead while they are allowed; before their turns the mode changes so that
+    // they ask. The user approves, and each call runs fresh instead of using the kept output.
+    let environment = rules(&[]);
+    let changing = environment.clone();
+    let provider = Arc::new(Numbered {
+        runs: AtomicUsize::new(0),
+        needs_sampler: false,
+        on_first_run: Box::new(move || {
+            changing.set(vec![PermissionRule {
+                tool: "lookup".into(),
+                pattern: String::new(),
+                action: RuleAction::Ask,
+            }]);
+        }),
+    });
+    let (results, asked) = run_numbered(
+        provider.clone(),
+        Some(Permissions::new(rules(&[]), environment)),
+    )
+    .await;
+    assert_eq!(asked, 3);
+    // Three runs ahead, three fresh ones in call order.
+    assert_eq!(provider.runs.load(Ordering::SeqCst), 6);
+    assert_eq!(results[0].1, "run 4", "{results:?}");
+    assert_eq!(results[1].1, "run 5", "{results:?}");
+    assert_eq!(results[2].1, "run 6", "{results:?}");
+}
+
+#[tokio::test]
+async fn a_provider_result_kept_from_a_failed_run_ahead_is_run_again_with_the_sampler() {
+    let provider = Arc::new(Numbered {
+        runs: AtomicUsize::new(0),
+        needs_sampler: true,
+        on_first_run: Box::new(|| {}),
+    });
+    let (results, asked) = run_numbered(provider.clone(), None).await;
+    assert_eq!(asked, 0);
+    // The three runs ahead had no sampler and failed; each call ran again at its turn.
+    assert_eq!(provider.runs.load(Ordering::SeqCst), 6);
+    assert_eq!(results[0].1, "run 4", "{results:?}");
+    assert_eq!(results[1].1, "run 5", "{results:?}");
+    assert_eq!(results[2].1, "run 6", "{results:?}");
+}
+
 /// A file of 1,000 lines and about 60,000 characters: under the 2,000-line cap of a read, past
 /// the 32,000 characters a read gets when the window is unknown, and within the 100,000 a
 /// hosted model with an unknown window is given.

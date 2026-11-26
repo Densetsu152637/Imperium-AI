@@ -1579,8 +1579,12 @@ in a terminal, and `imperium pr automerge status|off SESSION` shows or turns off
   checks line.
 - **Details:** the branches, the *Fix CI and review comments* and *Auto-merge* switches, the merge
   method picker and *Stop following this pull request* (`pull_requests.unbind`; while auto-merge is on the button reads *Stop following and turn auto-merge off*, because unbinding turns it off first and, if GitHub refuses, keeps the binding and says why). The auto-fix
-  switch is **disabled** until the stage that builds it, with its reason beside it and in its
-  accessible name (`Switch` `disabled`). The *Auto-merge* switch is on while GitHub holds the
+  switch is an ordinary `pull_requests.set_monitor` call: it can be turned on while the pull
+  request is open (the daemon refuses a pull request the signed-in account did not open and says
+  so) and off at any time, with what it does beside it and in its accessible name. After a wake
+  the card shows a warning notice, *Untrusted comment text was handled*, with a *Got it* button
+  (`ack_untrusted`) that clears it, and a line saying how many comments from people without write
+  access woke nothing (`ignored_comments`). The *Auto-merge* switch is on while GitHub holds the
   request, and its note says plainly that GitHub then merges when its own rules pass **with nobody
   looking at the code again** and that Imperium never merges it itself. Turning it **on** runs the
   app's own `auto_merge_enable` command (`src-tauri/src/auto_merge.rs`): a native confirmation

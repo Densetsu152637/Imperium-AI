@@ -155,6 +155,19 @@ pub struct AutofixEventParams {
     pub status: String,
     pub session_id: Option<String>,
     pub summary: String,
+    /// What started the work: `ci` (a failing check), `review` (a review comment or review) or
+    /// `conflict`.
+    #[serde(default = "ci_trigger")]
+    pub trigger: String,
+    /// For a `review` trigger, the ids of the comments and reviews that woke the session (their
+    /// text is not sent). Empty otherwise.
+    #[serde(default)]
+    #[ts(type = "Array<number>")]
+    pub comment_ids: Vec<u64>,
+}
+
+fn ci_trigger() -> String {
+    "ci".to_string()
 }
 
 /// `projects.list`: projects with a running project agent.

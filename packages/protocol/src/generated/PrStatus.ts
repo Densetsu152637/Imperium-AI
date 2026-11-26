@@ -10,4 +10,4 @@ import type { PrState } from "./PrState";
  * A pull request as the card shows it. Every text field came from GitHub, was written by
  * someone there, is length-capped and free of control characters, and renders as plain text.
  */
-export type PrStatus = { url: string, repo: string, number: number, title: string, state: PrState, draft: boolean, head_sha: string, base: string, branch: string, checks: PrChecks, review: PrReview, mergeable: PrConflictState, merge_state: string, allowed_methods: Array<PrMergeMethod>, auto_fix: boolean, auto_merge: PrAutoMerge, auto_archive_on_close: boolean, untrusted_handled: boolean, updated_at: number, error?: string, };
+export type PrStatus = { url: string, repo: string, number: number, title: string, state: PrState, draft: boolean, head_sha: string, base: string, branch: string, checks: PrChecks, review: PrReview, mergeable: PrConflictState, merge_state: string, allowed_methods: Array<PrMergeMethod>, auto_fix: boolean, auto_merge: PrAutoMerge, auto_archive_on_close: boolean, untrusted_handled: boolean, ignored_comments: number, updated_at: number, error?: string, };

@@ -63,6 +63,8 @@ mod worktrees;
 mod writers;
 
 pub use approvals::Approvals;
+#[cfg(feature = "testing")]
+pub use autofix::review::testing as review_testing;
 pub use autofix::{FIX_TOOLS, ci_config_paths, ci_prompt, fix_ci, push_approval};
 pub use bench::Bench;
 pub use downloads::Downloads;

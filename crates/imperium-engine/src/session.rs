@@ -561,6 +561,16 @@ impl Session {
         self.workspace.permissions().set_mode(mode);
     }
 
+    /// Denies the permission requests waiting for an answer now (the calls fail as denied).
+    /// Requests made later are asked as usual. For a wake the daemon gave up on: nobody is
+    /// there to answer, and a late "allow" must not run a call in a session already reported
+    /// as failed.
+    pub fn deny_pending_requests(&self) {
+        if let Some(shared) = self.shared.0.get() {
+            shared.broker.deny_pending();
+        }
+    }
+
     /// Resumes a stopped session: every agent goes on from where it halted.
     pub fn resume_work(&self) {
         if self.controls.is_stopped() {
@@ -1757,6 +1767,14 @@ impl PermissionBroker {
     fn resolve(&self, id: u64, decision: PermissionDecision) {
         if let Some(answer) = lock(&self.pending).remove(&id) {
             let _ = answer.send(decision);
+        }
+    }
+
+    /// Denies the requests pending now; later ones are asked as usual.
+    fn deny_pending(&self) {
+        let mut pending = lock(&self.pending);
+        for (_, answer) in pending.drain() {
+            let _ = answer.send(PermissionDecision::Deny);
         }
     }
 
