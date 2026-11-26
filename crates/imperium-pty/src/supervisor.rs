@@ -48,10 +48,6 @@ pub const EXIT_SETUP: i32 = 124;
 
 /// How long `SIGHUP` gets before `SIGKILL`.
 const HUP_WAIT: Duration = Duration::from_secs(2);
-/// How long the kill-all repeats `SIGKILL`.
-const KILL_BOUND: Duration = Duration::from_secs(5);
-/// Most rounds of walk, `SIGKILL` and reap.
-const KILL_ROUNDS: usize = 20;
 const POLL: Duration = Duration::from_millis(20);
 
 /// A start-up failure: what to say and what to exit with.
@@ -195,25 +191,67 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Config, Failure> {
 }
 
 /// The fields of `/proc/<pid>/stat` the supervisor needs.
-struct Stat {
-    state: char,
-    ppid: i32,
-    start: u64,
+pub(crate) struct Stat {
+    pub(crate) state: char,
+    pub(crate) ppid: i32,
+    pub(crate) session: i32,
+    pub(crate) start: u64,
 }
 
 fn parse_stat(stat: &str) -> Option<Stat> {
     // The command name (field 2) may hold spaces and parentheses; everything after the last
-    // `)` is plain: state (field 3), parent (4) ... start time (22), so index 0, 1 and 19 here.
+    // `)` is plain: state (field 3), parent (4), group (5), session (6) ... start time (22), so
+    // index 0, 1, 2, 3 and 19 here.
     let rest = &stat[stat.rfind(')')? + 1..];
     let mut fields = rest.split_whitespace();
     let state = fields.next()?.chars().next()?;
     let ppid = fields.next()?.parse().ok()?;
-    let start = fields.nth(17)?.parse().ok()?;
-    Some(Stat { state, ppid, start })
+    fields.next()?;
+    let session = fields.next()?.parse().ok()?;
+    let start = fields.nth(15)?.parse().ok()?;
+    Some(Stat {
+        state,
+        ppid,
+        session,
+        start,
+    })
 }
 
-fn read_stat(pid: i32) -> Option<Stat> {
+pub(crate) fn read_stat(pid: i32) -> Option<Stat> {
     parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// The state of every thread of `pid`. A thread-group leader that called `SYS_exit` while other
+/// threads live shows state `Z` in `/proc/<pid>/stat`, yet the process runs on in its other
+/// threads; only its tasks tell.
+pub(crate) fn thread_states(pid: i32) -> Vec<char> {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+    tasks
+        .flatten()
+        .filter_map(|task| {
+            let stat = std::fs::read_to_string(task.path().join("stat")).ok()?;
+            parse_stat(&stat).map(|stat| stat.state)
+        })
+        .collect()
+}
+
+/// Whether the process still runs (or is stopped) in any thread: not a zombie, or a zombie
+/// leader with a live thread.
+pub(crate) fn is_live(pid: i32, state: char) -> bool {
+    state != 'Z' || thread_states(pid).iter().any(|&state| state != 'Z')
+}
+
+/// Whether the process is live and not stopped (so it may still fork).
+pub(crate) fn is_running(pid: i32, state: char) -> bool {
+    if state == 'Z' {
+        thread_states(pid)
+            .iter()
+            .any(|&state| !matches!(state, 'Z' | 'T' | 't'))
+    } else {
+        !matches!(state, 'T' | 't')
+    }
 }
 
 /// A process's start time (field 22 of `/proc/<pid>/stat`, in clock ticks after boot): with the
@@ -427,16 +465,20 @@ fn reap(shell: Pid, status: &mut Option<i32>) {
     }
 }
 
-/// A descendant seen by the walk: its pid and the start time that tells it from a later process
-/// with the same pid.
+/// A descendant seen by the walk: its pid, the start time that tells it from a later process with
+/// the same pid, and whether it is live and whether it is running (see [`is_live`]).
 struct Target {
     pid: i32,
     start: u64,
+    live: bool,
+    running: bool,
 }
 
-/// Every live (not zombie) descendant of `root`: children by parent pid, recursively.
+/// Every descendant of `root`: children by parent pid, recursively. Zombies are kept in the
+/// parent map and walked through (a zombie leader may have live threads and live children), and
+/// each target says whether it is live.
 fn descendants(root: i32) -> Vec<Target> {
-    let mut children: HashMap<i32, Vec<Target>> = HashMap::new();
+    let mut children: HashMap<i32, Vec<(i32, Stat)>> = HashMap::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
@@ -449,23 +491,30 @@ fn descendants(root: i32) -> Vec<Target> {
             continue;
         };
         // A process that ended since the listing is skipped.
-        if let Some(stat) = read_stat(pid)
-            && stat.state != 'Z'
-        {
-            children.entry(stat.ppid).or_default().push(Target {
-                pid,
-                start: stat.start,
-            });
+        if let Some(stat) = read_stat(pid) {
+            children.entry(stat.ppid).or_default().push((pid, stat));
         }
     }
     let mut found = Vec::new();
     let mut queue = vec![root];
     while let Some(parent) = queue.pop() {
-        for child in children.remove(&parent).unwrap_or_default() {
-            queue.push(child.pid);
-            found.push(child);
+        for (pid, stat) in children.remove(&parent).unwrap_or_default() {
+            queue.push(pid);
+            found.push(Target {
+                pid,
+                start: stat.start,
+                live: is_live(pid, stat.state),
+                running: is_running(pid, stat.state),
+            });
         }
     }
+    found
+}
+
+/// The live descendants of `root`.
+fn live_descendants(root: i32) -> Vec<Target> {
+    let mut found = descendants(root);
+    found.retain(|target| target.live);
     found
 }
 
@@ -475,7 +524,8 @@ fn descendants(root: i32) -> Vec<Target> {
 /// a pidfd is opened for whatever holds the pid now, the start time is read again, and the
 /// signal goes through the pidfd only if the start time is the one the walk recorded. A process
 /// that ended and whose pid was reused has a later start time, and an open pidfd cannot follow
-/// the pid to another process.
+/// the pid to another process. A zombie leader is signalled too: a signal to a thread group
+/// reaches its live threads.
 fn send_signal(target: &Target, signal: Signal) {
     let Some(pid) = pid_of(target.pid) else {
         return;
@@ -483,17 +533,22 @@ fn send_signal(target: &Target, signal: Signal) {
     let Ok(pidfd) = pidfd_open(pid, PidfdFlags::empty()) else {
         return;
     };
-    if read_stat(target.pid).is_some_and(|stat| stat.start == target.start && stat.state != 'Z') {
+    if read_stat(target.pid).is_some_and(|stat| stat.start == target.start) {
         let _ = pidfd_send_signal(&pidfd, signal);
     }
 }
 
-/// Ends every descendant: `SIGHUP` (and `SIGCONT`, so a stopped one gets it), up to 2 s of
-/// reaping, then `SIGKILL` and reaping again until nothing is left, at most 20 rounds or 5 s. The
-/// repetition catches a process that forks while it is being killed.
+/// Ends every descendant: `SIGHUP` (and `SIGCONT`, so a stopped one gets it) and up to 2 s of
+/// reaping; then, until nothing is left, **freeze, then kill**: every running descendant gets
+/// `SIGSTOP` and the walk is repeated at once until none runs (a stopped process cannot fork, so
+/// a fork bomb is overtaken), then all get `SIGKILL`. There is no bound after the grace: the
+/// supervisor does not exit while a live descendant remains (the daemon's `end` then falls back
+/// to its session sweep, which can also kill the supervisor). A future form is `cgroup.kill` of
+/// a cgroup of the terminal's own, which kills the whole tree atomically where the host
+/// delegates a cgroup to the user.
 fn kill_all(me: Pid, shell: Pid, status: &mut Option<i32>) {
     let root = me.as_raw_pid();
-    let first = descendants(root);
+    let first = live_descendants(root);
     if first.is_empty() {
         reap(shell, status);
         return;
@@ -505,22 +560,31 @@ fn kill_all(me: Pid, shell: Pid, status: &mut Option<i32>) {
     let deadline = Instant::now() + HUP_WAIT;
     loop {
         reap(shell, status);
-        if descendants(root).is_empty() || Instant::now() >= deadline {
+        if live_descendants(root).is_empty() || Instant::now() >= deadline {
             break;
         }
         sleep(POLL);
     }
-    let started = Instant::now();
-    for _ in 0..KILL_ROUNDS {
+    loop {
         reap(shell, status);
-        let left = descendants(root);
-        if left.is_empty() || started.elapsed() >= KILL_BOUND {
+        let left = live_descendants(root);
+        if left.is_empty() {
             break;
+        }
+        // Freeze what still runs and look again at once, with no sleep: the walk finds the
+        // children it forked meanwhile.
+        let running: Vec<&Target> = left.iter().filter(|target| target.running).collect();
+        if !running.is_empty() {
+            for target in running {
+                send_signal(target, Signal::STOP);
+            }
+            continue;
         }
         for target in &left {
             send_signal(target, Signal::KILL);
         }
-        sleep(POLL);
+        // Everything is frozen and killed; give the kernel a moment to end and reap it.
+        sleep(Duration::from_millis(1));
     }
     reap(shell, status);
 }
@@ -534,7 +598,16 @@ mod tests {
         let stat = "123 (we ird) name)) S 1 123 123 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 \
                     987654 4096 10 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0";
         let parsed = parse_stat(stat).expect("parses");
-        assert_eq!((parsed.state, parsed.ppid, parsed.start), ('S', 1, 987_654));
+        assert_eq!(
+            (
+                parsed.state,
+                parsed.ppid,
+                parsed.pgrp,
+                parsed.session,
+                parsed.start
+            ),
+            ('S', 1, 123, 987_654)
+        );
     }
 
     #[test]
@@ -575,6 +648,8 @@ mod tests {
             &Target {
                 pid,
                 start: start + 1,
+                live: true,
+                running: true,
             },
             Signal::KILL,
         );
@@ -583,7 +658,15 @@ mod tests {
             child.try_wait().unwrap().is_none(),
             "a process with another start time was signalled"
         );
-        send_signal(&Target { pid, start }, Signal::KILL);
+        send_signal(
+            &Target {
+                pid,
+                start,
+                live: true,
+                running: true,
+            },
+            Signal::KILL,
+        );
         assert!(!child.wait().unwrap().success());
     }
 }

@@ -27,6 +27,7 @@ mod sweep;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -57,10 +58,14 @@ pub struct Spec {
     pub env: Vec<(OsString, OsString)>,
     pub cols: u16,
     pub rows: u16,
-    /// Linux: how the supervisor is started. `None` re-runs this process's executable with
-    /// [`supervisor::SUBCOMMAND`].
+    /// Linux: how the supervisor is started. `None` re-runs this process's own executable
+    /// (through `/proc/self/exe`, so a replaced file on disk cannot change what runs) with
+    /// [`supervisor::SUBCOMMAND`]. **Never fill this from protocol input, a setting a repository
+    /// can write or any other untrusted source**: it names a program that runs with the user's
+    /// rights. It exists for tests.
     pub supervisor: Option<Supervisor>,
-    /// Linux: the process whose death ends the terminal. `None` is this process.
+    /// Linux: the process whose death ends the terminal. `None` is this process. **Never fill
+    /// this from untrusted input** either; it exists for tests.
     pub daemon: Option<DaemonRef>,
 }
 
@@ -158,6 +163,9 @@ struct State {
     subscribers: Vec<(u64, Arc<Callback>)>,
     next_id: u64,
     exit: Option<Exit>,
+    /// Whether the exit has been announced to the subscribers present at that moment; a later
+    /// subscriber is handed the exit by `subscribe` instead.
+    announced: bool,
     reader_done: bool,
 }
 
@@ -174,6 +182,7 @@ impl Shared {
                 subscribers: Vec::new(),
                 next_id: 0,
                 exit: None,
+                announced: false,
                 reader_done: false,
             }),
             changed: Condvar::new(),
@@ -196,7 +205,10 @@ impl Shared {
             (seq, subscribers)
         };
         for callback in subscribers {
-            callback(Event::Data { seq, bytes: chunk });
+            // A panicking subscriber must not end the reader thread (and with it the output).
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                callback(Event::Data { seq, bytes: chunk });
+            }));
         }
     }
 
@@ -233,13 +245,17 @@ impl Shared {
     }
 
     fn announce(&self, exit: &Exit) {
-        let subscribers: Vec<Arc<Callback>> = lock(&self.state)
-            .subscribers
-            .iter()
-            .map(|(_, callback)| Arc::clone(callback))
-            .collect();
+        let subscribers: Vec<Arc<Callback>> = {
+            let mut state = lock(&self.state);
+            state.announced = true;
+            state
+                .subscribers
+                .iter()
+                .map(|(_, callback)| Arc::clone(callback))
+                .collect()
+        };
         for callback in subscribers {
-            callback(Event::Exited(exit));
+            let _ = catch_unwind(AssertUnwindSafe(|| callback(Event::Exited(exit))));
         }
     }
 }
@@ -373,6 +389,10 @@ struct Terminator {
     #[cfg(any(target_os = "linux", windows))]
     shared: Arc<Shared>,
     master: Master,
+    /// A pidfd of the supervisor, opened before anything could reap it: `SIGTERM` goes to the
+    /// process that was started, never to a reused pid.
+    #[cfg(target_os = "linux")]
+    pidfd: Option<rustix::fd::OwnedFd>,
     /// The job holding the shell and its descendants; closing it kills them all.
     #[cfg(windows)]
     job: Option<win32job::Job>,
@@ -390,10 +410,10 @@ impl Terminator {
         // Linux: the supervisor ends every descendant, whichever session it is in.
         #[cfg(target_os = "linux")]
         {
-            if let Some(pid) = sid
+            if let Some(pidfd) = &self.pidfd
                 && !self.shared.exited()
             {
-                let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+                let _ = rustix::process::pidfd_send_signal(pidfd, rustix::process::Signal::TERM);
                 self.shared.wait_exit(END_WAIT);
             }
         }
@@ -407,7 +427,6 @@ impl Terminator {
 
     #[cfg(windows)]
     fn run(self) {
-        use std::path::Path;
         use std::process::{Command, Stdio};
 
         let Self {
@@ -424,9 +443,14 @@ impl Terminator {
                 .is_ok_and(|pids| pid.is_some_and(|pid| pids.contains(&(pid as usize)))),
             None => !shared.exited(),
         };
-        if ours && let Some(pid) = pid {
-            let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-            let _ = Command::new(Path::new(&root).join("System32").join("taskkill.exe"))
+        // `taskkill` from the System32 folder (SHGetKnownFolderPath), never through `PATH` or an
+        // environment variable.
+        if ours
+            && let Some(pid) = pid
+            && let Some(system) =
+                dirs_sys::known_folder(windows_sys::Win32::UI::Shell::FOLDERID_System)
+        {
+            let _ = Command::new(system.join("taskkill.exe"))
                 .args(["/PID", &pid.to_string(), "/T", "/F"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -486,10 +510,10 @@ fn launch_argv(spec: &Spec) -> Result<Vec<OsString>, SpawnError> {
         };
         let (exe, mut argv) = match &spec.supervisor {
             Some(supervisor) => (supervisor.exe.clone(), supervisor.args.clone()),
+            // `/proc/self/exe` is resolved by the forked child at `exec`, to this very executable,
+            // even if the file on disk was replaced or deleted since (an update).
             None => (
-                std::env::current_exe().map_err(|error| {
-                    SpawnError::Start(format!("cannot find our executable: {error}"))
-                })?,
+                PathBuf::from("/proc/self/exe"),
                 vec![OsString::from(supervisor::SUBCOMMAND)],
             ),
         };
@@ -554,13 +578,17 @@ fn start(
 }
 
 #[cfg(windows)]
-fn assign_job(child: &dyn portable_pty::Child) -> Option<win32job::Job> {
-    let handle = child.as_raw_handle()?;
+fn assign_job(child: &dyn portable_pty::Child) -> Result<win32job::Job, String> {
+    let handle = child
+        .as_raw_handle()
+        .ok_or_else(|| "the shell has no process handle".to_owned())?;
     let mut limits = win32job::ExtendedLimitInfo::new();
     limits.limit_kill_on_job_close();
-    let job = win32job::Job::create_with_limit_info(&limits).ok()?;
-    job.assign_process(handle as isize).ok()?;
-    Some(job)
+    let job = win32job::Job::create_with_limit_info(&limits)
+        .map_err(|error| format!("could not create a job: {error}"))?;
+    job.assign_process(handle as isize)
+        .map_err(|error| format!("could not put the shell in its job: {error}"))?;
+    Ok(job)
 }
 
 impl Pty {
@@ -590,8 +618,23 @@ impl Pty {
             .take_writer()
             .map_err(|error| SpawnError::Start(format!("no writer: {error}")))?;
         let pid = child.process_id();
+        // Fail closed: a shell that cannot be put in its job could not be ended reliably, so it
+        // is killed and the terminal refused.
         #[cfg(windows)]
-        let job = assign_job(child.as_ref());
+        let job = match assign_job(child.as_ref()) {
+            Ok(job) => job,
+            Err(reason) => {
+                let _ = child.kill();
+                return Err(SpawnError::Start(reason));
+            }
+        };
+        #[cfg(target_os = "linux")]
+        let pidfd = pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .and_then(rustix::process::Pid::from_raw)
+            .and_then(|pid| {
+                rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).ok()
+            });
 
         let shared = Arc::new(Shared::new());
         let queue = Arc::new(WriteQueue::default());
@@ -628,8 +671,10 @@ impl Pty {
             #[cfg(any(target_os = "linux", windows))]
             shared: Arc::clone(&shared),
             master: Arc::clone(&master),
+            #[cfg(target_os = "linux")]
+            pidfd,
             #[cfg(windows)]
-            job,
+            job: Some(job),
         };
         Ok(Self {
             shared,
@@ -678,21 +723,33 @@ impl Pty {
 
     /// Replays the output from `from` and then delivers new output and the exit to `callback`,
     /// with nothing missed or doubled in between. The callback runs on the reader thread: it must
-    /// not block.
+    /// not block, and a panic in it is caught and dropped.
+    ///
+    /// The third value is the exit, **only if it was already announced to the earlier
+    /// subscribers**: such a subscriber would never get an [`Event::Exited`], so it is handed the
+    /// exit here, under the same lock. If the shell has ended but the announcement is still
+    /// pending (the reader is draining, up to a second), the callback gets the event instead.
     pub fn subscribe(
         &self,
         from: u64,
         callback: impl Fn(Event<'_>) + Send + Sync + 'static,
-    ) -> (SubscriptionId, Replay) {
+    ) -> (SubscriptionId, Replay, Option<Exit>) {
         let callback: Arc<Callback> = Arc::new(callback);
         let mut state = lock(&self.shared.state);
         let id = state.next_id;
         state.next_id += 1;
         let replay = state.ring.replay(from);
-        state.subscribers.push((id, callback));
-        (SubscriptionId(id), replay)
+        let exit = if state.announced {
+            state.exit.clone()
+        } else {
+            state.subscribers.push((id, callback));
+            None
+        };
+        (SubscriptionId(id), replay, exit)
     }
 
+    /// Stops a subscription. A callback that the reader thread has already begun to call may
+    /// still run once after this returns.
     pub fn unsubscribe(&self, id: SubscriptionId) {
         lock(&self.shared.state)
             .subscribers
@@ -718,6 +775,29 @@ impl Pty {
         }
         self.queue.close();
         self.shared.wait_exit(Duration::from_secs(5))
+    }
+}
+
+#[cfg(all(windows, feature = "test-support"))]
+impl Pty {
+    /// Test support: the pids in the terminal's Job Object (`None` once it is closed).
+    pub fn job_process_ids(&self) -> Option<Vec<u32>> {
+        let guard = lock(&self.terminator);
+        let job = guard.as_ref()?.job.as_ref()?;
+        let pids = job.query_process_id_list().ok()?;
+        Some(
+            pids.into_iter()
+                .filter_map(|pid| u32::try_from(pid).ok())
+                .collect(),
+        )
+    }
+
+    /// Test support: closes the Job Object alone, with no walk of the process tree, to show that
+    /// the job by itself ends what is in it.
+    pub fn close_job_only(&self) {
+        if let Some(terminator) = lock(&self.terminator).as_mut() {
+            terminator.job = None;
+        }
     }
 }
 

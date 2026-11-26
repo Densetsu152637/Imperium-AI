@@ -8,8 +8,8 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use common::{
-    BOUND, alive, find_program, session_members, spec, spec_with_flags, stat_field, wait_for,
-    wait_for_number, wait_for_pid_file, wait_gone, wait_until, work_dir,
+    BOUND, alive, alive_threads, find_program, session_members, spec, spec_with_flags, stat_field,
+    wait_for, wait_for_number, wait_for_pid_file, wait_gone, wait_until, work_dir,
 };
 use imperium_pty::supervisor::{EXIT_DAEMON_GONE, EXIT_MISSING_SYSCALL, process_start_time};
 use imperium_pty::{DaemonRef, Pty};
@@ -354,4 +354,47 @@ fn a_host_without_pidfd_open_fails_closed_with_a_clear_error() {
     let exit = pty.wait_exit(BOUND).expect("the supervisor refuses");
     assert_eq!(i64::from(exit.code), i64::from(EXIT_MISSING_SYSCALL));
     wait_for(&pty, "refuses pidfd_open");
+}
+
+/// A thread-group leader that calls `SYS_exit` while another thread lives shows state `Z` in
+/// `/proc/<pid>/stat` and yet the process runs on; it must be walked through, signalled and counted
+/// as live.
+#[test]
+fn a_zombie_leader_with_a_live_thread_is_ended() {
+    let Some(python) = find_program("python3") else {
+        eprintln!("python3 is not installed; skipped");
+        return;
+    };
+    let dir = work_dir();
+    let script = dir.path().join("zombie_leader.py");
+    let pid_file = dir.path().join("zombie.pid");
+    std::fs::write(
+        &script,
+        "import ctypes, os, platform, sys, threading, time\n\
+         with open(sys.argv[1], 'w') as out:\n    out.write(str(os.getpid()))\n\
+         threading.Thread(target=time.sleep, args=(120,)).start()\n\
+         time.sleep(0.3)\n\
+         number = {'x86_64': 60, 'aarch64': 93}[platform.machine()]\n\
+         ctypes.CDLL(None).syscall(number, 0)\n",
+    )
+    .unwrap();
+    let pty = Pty::spawn(spec(BASH, &BASH_ARGS, dir.path())).unwrap();
+    pty.write(
+        format!(
+            "{} {} {} &\n",
+            python.display(),
+            script.display(),
+            pid_file.display()
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let leader = wait_for_pid_file(&pid_file);
+    // The reproduction: the leader is a zombie while its worker thread lives.
+    wait_until("the leader to become a zombie", || {
+        stat_field(leader, 0).as_deref() == Some("Z")
+    });
+    assert!(alive_threads(leader), "the worker thread must be running");
+    pty.end();
+    wait_until("the process to be gone", || !alive_threads(leader));
 }

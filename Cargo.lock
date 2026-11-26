@@ -2749,6 +2749,7 @@ dependencies = [
 name = "imperium-pty"
 version = "0.2.0"
 dependencies = [
+ "dirs-sys 0.5.0",
  "imperium-pty",
  "portable-pty",
  "rustix",
@@ -2757,6 +2758,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "win32job",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

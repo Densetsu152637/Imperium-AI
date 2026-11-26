@@ -237,7 +237,7 @@ const CURSOR_QUERY: &[u8] = b"[6n";
 pub fn spawn_pty(spec: Spec) -> Arc<Pty> {
     let pty = Arc::new(Pty::spawn(spec).expect("the terminal starts"));
     let weak = Arc::downgrade(&pty);
-    let (_, replay) = pty.subscribe(0, move |event| {
+    let (_, replay, _) = pty.subscribe(0, move |event| {
         if let Event::Data { bytes, .. } = event
             && bytes
                 .windows(CURSOR_QUERY.len())
@@ -255,4 +255,45 @@ pub fn spawn_pty(spec: Spec) -> Arc<Pty> {
         let _ = pty.write(b"[1;1R");
     }
     pty
+}
+
+/// Whether any thread of the process runs (a thread-group leader that called `SYS_exit` shows
+/// state `Z` in `/proc/<pid>/stat` while its other threads live).
+#[cfg(target_os = "linux")]
+pub fn alive_threads(pid: u32) -> bool {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return false;
+    };
+    tasks.flatten().any(|task| {
+        std::fs::read_to_string(task.path().join("stat"))
+            .ok()
+            .and_then(|stat| stat.rsplit(')').next()?.trim().chars().next())
+            .is_some_and(|state| state != 'Z')
+    })
+}
+
+/// The pids of `ping.exe` processes run with `marker` among their arguments (`ping -n 61 ...`):
+/// no other process runs with that count.
+#[cfg(windows)]
+pub fn ping_pids(marker: &str) -> Vec<u32> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    system
+        .processes()
+        .values()
+        .filter(|process| {
+            process.name().eq_ignore_ascii_case("ping.exe")
+                && process
+                    .cmd()
+                    .iter()
+                    .any(|argument| argument.to_string_lossy() == marker)
+        })
+        .map(|process| process.pid().as_u32())
+        .collect()
 }

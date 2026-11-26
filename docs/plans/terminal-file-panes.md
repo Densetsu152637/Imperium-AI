@@ -68,7 +68,14 @@ OS sandbox and container tiers; a tier-0 command runs as the user and is covered
    itself crashes, the Linux supervisor and the Windows Job Object still end the terminal's
    processes (D5); on macOS the shell and its jobs survive it. Linux residual: if the supervisor
    itself is killed with `SIGKILL` (by the user or the OOM killer), its descendants are reparented
-   to init and are not ended.
+   to init and are not ended by the supervisor (the daemon's `end` still sweeps the session, but a
+   daemon crash does not). **Residuals that no stage closes**, because the terminal is the user's
+   shell and the user's rights: a shell can deliberately kill its own supervisor (`kill -9 $PPID`)
+   and then `setsid`; a privileged or setuid descendant cannot be signalled by an unprivileged
+   daemon; and a process started by a launcher outside the tree (`systemd-run --user`, `at`,
+   `cron`, `launchctl`, and on Windows `wmic`, `schtasks` or a COM activation) is not a
+   descendant at all. The goal is that nothing the shell starts the ordinary way outlives its
+   terminal, not a sandbox.
 7. **The file pane reads only inside the session's folders.** No path, `..`, absolute or UNC
    spelling, symbolic link, junction, Windows stream or device name, special file, other session's
    worktree, and no race that swaps a link in, makes `files.*` return bytes or names from outside
@@ -200,10 +207,13 @@ Each records the choice, the reasons, the rejected options and when to revisit i
       time again and exits at once if it differs (the pid was reused), and treats the pidfd turning
       readable as the daemon's death. Rejected: a daemon-owned Unix socket the supervisor connects
       to (another socket to secure and name). Stage 1 confirms against the pinned `portable-pty`
-      source that descriptors above 2 are closed and that argv reaches the child unchanged. Before
-      starting the shell the supervisor marks every descriptor it holds above 2 close-on-exec
-      (`/proc/self/fd`, `rustix::io::fcntl_setfd`; the pidfd is close-on-exec already); any pipe
-      the daemon creates for terminals is made with `pipe2(O_CLOEXEC)` in one step.
+      source that descriptors above 2 are closed and that argv reaches the child unchanged. The
+      supervisor does **not** sweep `/proc/self/fd` with `fcntl_setfd` (that needs a
+      `BorrowedFd` from a raw number, which is `unsafe`): everything it opens is close-on-exec by
+      construction (std and rustix always set it, the pidfd included), `portable-pty` has closed
+      what it inherited, and a test with a non-close-on-exec canary descriptor in the daemon
+      checks that only 0 to 2 reach the shell; any pipe the daemon creates for terminals is
+      made with `pipe2(O_CLOEXEC)` in one step.
     - **Process groups and Ctrl+C.** The supervisor is the PTY's session leader and starts in its
       foreground group. It starts the shell in a process group of its own
       (`CommandExt::process_group(0)`, the safe form of `setpgid(0, 0)`) and then, from the
@@ -222,13 +232,25 @@ Each records the choice, the reasons, the rejected options and when to revisit i
       never reads, writes or changes the terminal after the `tcsetpgrp`.
     - **One loop.** The supervisor runs a single `poll` over two descriptors and nothing else: the
       daemon's pidfd, and a self-pipe that `signal-hook` writes for `SIGCHLD`, `SIGHUP` and
-      `SIGTERM`. On `SIGCHLD` it reaps with `waitpid(-1, WNOHANG)` in a loop until nothing is left
-      to reap, noting the shell's status when the shell is reaped; it never blocks anywhere else.
-    - **Kill-all.** It walks `/proc` for its descendants (children by `PPid`, recursively), sends
-      `SIGHUP`, waits up to 2 s while reaping, then repeats the walk and sends `SIGKILL`, and repeats
-      walk, `SIGKILL` and reap until no descendant remains, at most 20 rounds or 5 s, then exits
-      with the shell's code (or 128 plus the signal). The repeat catches a process that forks while
-      it is being killed.
+      `SIGTERM` (with a 200 ms timeout as a net). On every wake it reaps with `wait4(-1, WNOHANG)`
+      (not `waitpid(None)`: that waits for the caller's process group only) in a loop until nothing
+      is left to reap, noting the shell's status when the shell is reaped; it never blocks
+      anywhere else.
+    - **Kill-all.** It walks `/proc` for its descendants (children by `PPid`, recursively, through
+      zombies: a thread-group leader that called `SYS_exit` shows state `Z` while its other
+      threads run, so a process counts as live when any `/proc/<pid>/task/*/stat` is not `Z`, and
+      a zombie leader is signalled too), sends `SIGHUP` and `SIGCONT`, waits up to 2 s while
+      reaping, then **freezes and kills**: every running descendant gets `SIGSTOP` and the walk is
+      repeated at once, with no sleep, until none runs (a stopped process cannot fork, so a fork
+      bomb is overtaken), then all get `SIGKILL`, and the cycle repeats until no live descendant
+      remains. There is no bound after the grace: the supervisor does not exit while one is left,
+      and the daemon's `end` (9 s, then its own session sweep with the same freeze and kill, 30 s
+      at most) can still kill the supervisor itself. Each signal goes through a pidfd opened after
+      the walk, only if the start time still matches (no pid reuse). The robust future form is
+      `cgroup.kill` on a cgroup of the terminal's own, which ends the whole tree atomically
+      where the host delegates a cgroup to the user; it is not used because that needs systemd or
+      a writable cgroup tree. The supervisor then exits with the shell's code (or 128 plus the
+      signal).
   - **macOS** has no subreaper: a process that deliberately leaves the session escapes
     ([goal 6](#goals)), and if the daemon crashes the shell and its jobs survive it (closing the PTY
     master sends `SIGHUP` to the foreground job only). The spawner-thread rule applies on every
@@ -239,7 +261,8 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     then closes the job. Rejected: atomic assignment with `PROC_THREAD_ATTRIBUTE_JOB_LIST`, which
     would mean replacing `portable-pty`'s ConPTY spawn with an unsafe `CreateProcessW` of our own in
     `imperium-ipc` for a window that the tree walk already covers. A daemon crash closes its last
-    handle to the job, which ends the job's processes.
+    handle to the job, which ends the job's processes. A shell that cannot be put in its job is
+    killed and the terminal refused (fail closed).
 - **D6. The shell and its environment.**
   - **Program.** `terminal.shell` (user layer only; not on the environment layer's allow-list, so a
     repository's `.imperium/config.toml` cannot choose what runs). Otherwise, on Unix the
@@ -764,6 +787,20 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     `tcgetpgrp` shows the supervisor's own group in the foreground (trace test); a refused
     `pidfd_open` fails closed twice (forced in the supervisor, and in `Pty::spawn`); pid reuse as
     above (unit test with a wrong start time).
+  - **Review round 2 (B1, M1 to M7):** the walk and the session sweep go through zombie
+    thread-group leaders and count a process live when any thread is (test: a Python child whose
+    main thread calls `SYS_exit` while a worker sleeps, under `bash -i`); the kill-all freezes
+    before it kills and never gives up while a descendant lives (test: an exponential fork bomb
+    under `ulimit -u`, in a test binary of its own); a failed Job Object assignment kills the
+    shell and refuses the terminal; a Windows test shows the shell and its child in the job and
+    closes the job alone; an environment test (a variable left out of `Spec.env` is not in the
+    shell) and a canary descriptor test (`fd_canary.rs`) run on the OSes they apply to;
+    `subscribe` returns the exit if it was already announced, callbacks are run under
+    `catch_unwind`, and a callback already running may still run once after `unsubscribe`; the
+    supervisor is started through `/proc/self/exe`, `SIGTERM` goes through a pidfd of the
+    supervisor, `taskkill` is run from the System32 folder (`SHGetKnownFolderPath`);
+    `Spec.supervisor` and `Spec.daemon` must never come from untrusted input (documented). The
+    residuals are in goal 6.
   - **Known window:** a Ctrl+C that reaches the supervisor between its `exec` and the handlers
     being installed (milliseconds) has the default action and ends it; the test sends the Ctrl+C
     once the supervisor reports its handlers in place. The supervisor's poll also wakes every

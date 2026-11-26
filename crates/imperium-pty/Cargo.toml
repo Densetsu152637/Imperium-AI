@@ -13,24 +13,30 @@ portable-pty = "0.9.0"
 thiserror = "2.0.21"
 
 [target.'cfg(unix)'.dependencies]
-# Lists processes to end a terminal by session.
-sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 # Signals, polling, process groups, sessions and the terminal's foreground group, all through
 # safe wrappers (the workspace forbids unsafe code).
 rustix = { version = "1.1.6", features = ["event", "process", "termios"] }
+
+[target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
+# Lists processes to end a terminal by session on macOS (Linux reads `/proc`).
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The supervisor's self-pipe for SIGCHLD, SIGHUP and SIGTERM, and its caught-and-discarded set.
 signal-hook = "0.4.6"
 
 [target.'cfg(windows)'.dependencies]
+# The System32 folder from SHGetKnownFolderPath through dirs-sys's safe wrapper (as imperium-core
+# does), so `taskkill` is never found through an environment variable or the search path.
+dirs-sys = "0.5.0"
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell"] }
 # The terminal's processes run in a Job Object that kills every process in it when closed.
 win32job = "2.0.3"
 
 [features]
 # Fault injection for the supervisor's tests (a delayed handover of the terminal, a missing
-# syscall, a trace file). Only this crate's own dev-dependency below turns it on; no production
-# build does.
+# syscall, a trace file) and a look at the Windows job. Only this crate's own dev-dependency
+# below turns it on; no production build does.
 test-support = []
 
 [[bin]]
@@ -42,6 +48,8 @@ workspace = true
 
 [dev-dependencies]
 imperium-pty = { path = ".", features = ["test-support"] }
+tempfile = "3.27.0"
+
+[target.'cfg(windows)'.dev-dependencies]
 # Finds the leftover `ping` of a Windows terminal in the tests.
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
-tempfile = "3.27.0"

@@ -128,35 +128,35 @@ fn a_background_job_dies_with_its_terminal() {
 #[cfg(windows)]
 #[test]
 fn a_background_job_dies_with_its_terminal() {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-
-    // `ping -n 61` is the marker: no other process runs with that count.
-    let pings = || {
-        let mut system = System::new();
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
-        );
-        system
-            .processes()
-            .values()
-            .filter(|process| {
-                process.name().eq_ignore_ascii_case("ping.exe")
-                    && process
-                        .cmd()
-                        .iter()
-                        .any(|argument| argument.to_string_lossy() == "61")
-            })
-            .count()
-    };
     let dir = work_dir();
     let pty = common::spawn_pty(spec(cmd(), &[], dir.path()));
     pty.write(b"start /b ping -n 61 127.0.0.1 > nul\r\n")
         .unwrap();
-    wait_until("the ping to start", || pings() > 0);
+    wait_until("the ping to start", || !common::ping_pids("61").is_empty());
     pty.end();
-    wait_until("the ping to end", || pings() == 0);
+    wait_until("the ping to end", || common::ping_pids("61").is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn the_job_alone_ends_what_is_in_it() {
+    let dir = work_dir();
+    let pty = common::spawn_pty(spec(cmd(), &[], dir.path()));
+    pty.write(b"start /b ping -n 62 127.0.0.1 > nul\r\n")
+        .unwrap();
+    wait_until("the ping to start", || !common::ping_pids("62").is_empty());
+    // The shell and what it started are in the job.
+    let job = pty.job_process_ids().expect("the terminal has a job");
+    assert!(
+        job.contains(&pty.pid().expect("a pid")),
+        "the shell is not in the job: {job:?}"
+    );
+    let ping = common::ping_pids("62")[0];
+    assert!(job.contains(&ping), "the ping is not in the job: {job:?}");
+    // Closing the job alone, with no walk of the process tree, ends them: this is what ends a
+    // process the walk cannot reach (an orphan whose parent exited), and what a daemon crash does.
+    pty.close_job_only();
+    wait_until("the ping to end", || common::ping_pids("62").is_empty());
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn a_character_split_across_reads_arrives_whole() {
     let pty = common::spawn_pty(spec(SHELL, &["-c", script], dir.path()));
     let chunks = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let sink = Arc::clone(&chunks);
-    let (_, replay) = pty.subscribe(0, move |event| {
+    let (_, replay, _) = pty.subscribe(0, move |event| {
         if let Event::Data { bytes, .. } = event {
             sink.lock().unwrap().push(bytes.to_vec());
         }
@@ -288,4 +288,30 @@ fn a_bad_request_is_refused_before_anything_starts() {
         Pty::spawn(missing),
         Err(SpawnError::NotAFolder(_))
     ));
+}
+
+#[test]
+fn the_environment_is_exactly_what_the_spec_says() {
+    // A variable the test process has, left out of the spec's environment, is not in the shell's.
+    #[cfg(unix)]
+    let var = "HOME";
+    #[cfg(windows)]
+    let var = "USERNAME";
+    assert!(
+        std::env::var_os(var).is_some(),
+        "the test needs {var} to be set in its own environment"
+    );
+    let dir = work_dir();
+    #[cfg(unix)]
+    let mut spec = spec(SHELL, &["-c", "echo \"ENV[${HOME-unset}]\""], dir.path());
+    #[cfg(windows)]
+    let mut spec = spec(cmd(), &["/c", "echo ENV[%USERNAME%]"], dir.path());
+    spec.env
+        .retain(|(key, _)| !key.to_string_lossy().eq_ignore_ascii_case(var));
+    let pty = common::spawn_pty(spec);
+    // An unset variable is empty to `sh` (here with a default) and left as typed by `cmd`.
+    #[cfg(unix)]
+    wait_for(&pty, "ENV[unset]");
+    #[cfg(windows)]
+    wait_for(&pty, "ENV[%USERNAME%]");
 }
