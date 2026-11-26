@@ -124,6 +124,10 @@ class Spawner(Protocol):
 
     def release(self, proc: WorkerProcess) -> None: ...
 
+    def poller(self):
+        """The front's usage poll for this spawner's workers (`pid -> (bytes, CPU seconds)` or
+        `None`), or `None` when the workers' own limits are enough."""
+
 
 class PosixSpawner:
     """Start workers with `subprocess` (Linux and macOS).
@@ -161,6 +165,10 @@ class PosixSpawner:
 
     def release(self, proc: WorkerProcess) -> None:
         """Nothing to release."""
+
+    def poller(self):
+        """macOS enforces neither `RLIMIT_AS` nor the hard `RLIMIT_CPU`: poll both."""
+        return macos_usage if sys.platform == "darwin" else None
 
 
 class WindowsSpawner:
@@ -208,6 +216,21 @@ class WindowsSpawner:
         if job is not None:
             job.close()
 
+    def poller(self):
+        """Windows checks a job's CPU time limit only now and then, and counts user time only:
+        the front polls each worker's user and kernel time (and committed memory) itself."""
+        return self.usage
+
+    def usage(self, pid: int):
+        with self.lock:
+            job = self.jobs.get(pid)
+        if job is None:
+            return None
+        try:
+            return job.usage()
+        except OSError:
+            return None
+
 
 class BrokerSpawner:
     """Windows: ask the broker for a worker in its own Job Object. Stage 5 fills this in."""
@@ -223,6 +246,9 @@ class BrokerSpawner:
 
     def release(self, proc: WorkerProcess) -> None:
         """Nothing to release."""
+
+    def poller(self):
+        return None
 
 
 def default_spawner(environ=None) -> Spawner:
@@ -268,7 +294,7 @@ class Pool:
         self.limits = limits or Limits()
         # pid -> (footprint bytes, CPU seconds) or `None`, polled every `POLL_SECONDS`: macOS's
         # only memory limit, and its CPU backstop. A `None` for a live worker stops it.
-        self.usage = usage or (macos_usage if sys.platform == "darwin" else None)
+        self.usage = usage or spawner.poller()
         self.spare: WorkerProcess | None = None
         self.running: Run | None = None
         self.current = None  # the call dequeued and not yet finished, so a cancel is never lost

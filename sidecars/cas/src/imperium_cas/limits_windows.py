@@ -6,9 +6,11 @@ handle comes from `OpenProcess` on the new PID; `subprocess.Popen` holds its own
 whole life of the worker, so that PID cannot be reused meanwhile. The job has:
 
 - `JOB_OBJECT_LIMIT_PROCESS_MEMORY`: committed memory;
-- `JOB_OBJECT_LIMIT_PROCESS_TIME`: user-mode CPU time only (the job ends the process when it
-  is out). Kernel time is not counted, so a worker spending its time in system calls is bounded
-  by the front's wall clock instead;
+- `JOB_OBJECT_LIMIT_PROCESS_TIME`: user-mode CPU time. Windows checks this limit only
+  "periodically" (its documentation gives no period; on CI runners a 2 s limit took 4 to 9 s to
+  act), and it does not count kernel time. So it is the hard backstop, and the front's 50 ms
+  poll (`WorkerJob.usage`, from `GetProcessTimes`, user and kernel time) stops the worker one
+  second past its CPU limit, as on macOS;
 - `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: closing the job's handle (the front ending, for one)
   kills the worker;
 - `JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION`: no error dialog and no Windows Error Reporting
@@ -175,10 +177,20 @@ class WorkerJob:
         if NTDLL.NtResumeProcess(self.process) != 0:
             raise OSError("NtResumeProcess failed")
 
-    def cpu_ticks(self) -> int:
+    def times(self) -> tuple[int, int]:
+        """The worker's user and kernel CPU time, in 100 ns ticks."""
         times = [ctypes.c_uint64() for _ in range(4)]  # creation, exit, kernel, user
         check(KERNEL32.GetProcessTimes(self.process, *(ctypes.byref(t) for t in times)))
-        return times[3].value
+        return times[3].value, times[2].value
+
+    def cpu_ticks(self) -> int:
+        """User CPU time, what the job's `PerProcessUserTimeLimit` counts."""
+        return self.times()[0]
+
+    def usage(self) -> tuple[int, float]:
+        """Committed memory in bytes and CPU seconds (user and kernel), for the front's poll."""
+        user, kernel = self.times()
+        return self.committed(), (user + kernel) / TICKS_PER_SECOND
 
     def committed(self) -> int:
         counters = MemoryCounters()

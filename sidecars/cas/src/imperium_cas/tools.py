@@ -413,7 +413,10 @@ def tool_equal(builder: Builder, args: dict) -> dict:
         differences = list(left - right)
     else:
         differences = [left - right]
-    if all(simplify(d) == 0 for d in differences) or all(d.equals(0) is True for d in differences):
+    # SymPy's `Expr.equals` is not used: it can call `nsimplify`, whose `mpmath.identify` returns
+    # a string that SymPy then parses with `sympify` (and `eval`); under the hook that is a
+    # `compile` refusal. Without a proof, the random points decide `false` or `unknown`.
+    if all(simplify(d) == 0 for d in differences):
         return verdict("true", "symbolic", "proved equal")
     free = set()
     for d in differences:

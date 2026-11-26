@@ -749,11 +749,13 @@ Every tool declares an `inputSchema` and an `outputSchema`. Schemas set:
 `{-2, 2} (complex)`, so a model never mistakes a complex answer for a real one. The default stays
 `complex`, SymPy's own.
 
-**`equal`.** It tries `simplify(left - right) == 0`, then SymPy's `equals`, then 10 random points
+**`equal`.** It tries `simplify(left - right) == 0`, then 10 random points
 at 30 digits under the assumptions. The points come from a `random.Random` seeded with a fixed
 value, so results are reproducible. A difference over 10<sup>-20</sup> gives `false` with the
 point. Agreement at every point without a proof is reported as `unknown` ("agrees at 10 random
-points"), never `true`.
+points"), never `true`. SymPy's `equals` is not used (stage 3): it can call `nsimplify`, whose
+`mpmath.identify` returns a string that SymPy parses with `sympify`, which the audit hook refuses
+as `compile`.
 
 **Assumptions** are an object from a symbol name to a list drawn from the enum `real`,
 `positive`, `negative`, `nonnegative`, `nonpositive`, `nonzero`, `integer`, `rational` and
@@ -1508,7 +1510,11 @@ Commands are what CI runs; nothing needs a local Rust build.
       The allow-list stays `array.__new__` only.
     - SymPy's own lazily built tables call `sympify` on fixed strings in its source (the units
       prefixes, `S('3/2')` in the Meijer G table). The worker's warm-up builds them before the
-      hook; the test session runs the warm-up before the string trap.
+      hook; the test session runs the warm-up before the string trap. `Expr.equals` goes further:
+      through `nsimplify` and `mpmath.identify` it parses a numeric string with `sympify`, so a
+      call reaching it was refused (`compile`) on some hash seeds; `equal` no longer calls it, and
+      a test keeps `equals`, `nsimplify` and `identify` out of the package. A refusal now names
+      its event (and, for `compile` and `exec`, the file name the code came from).
     - **Memory explosions.** Corpus line `(x+y+z)^5000` passes D2's guard (it is the expand rule's
       exponent of 10,000 that refuses only `expand`) and `simplify`, `expand` and others multiply
       it out: 12.5 million terms. A first in-process round-trip run over the corpus reached
@@ -1534,9 +1540,11 @@ Commands are what CI runs; nothing needs a local Rust build.
         (`JOB_OBJECT_LIMIT_PROCESS_MEMORY`, a per-process CPU time limit, kill on close, no error
         reporting). The worker is created suspended, assigned to the job and then resumed, so it
         runs no instruction outside it; the job is armed from the post-warm-up baseline when the
-        worker reports ready. The CPU limit is `PerProcessUserTimeLimit`, which counts user time
-        only: kernel time is bounded by the front's wall clock, and Windows checks the limit only
-        every few seconds (a 2 s spin is stopped after about 4 to 5 s). The tests use it on
+        worker reports ready. The job's CPU limit, `PerProcessUserTimeLimit`, counts user time only,
+        and Windows checks it only "periodically" (no period is documented; on CI a 2 s limit took
+        up to 9 s to act). So it is the hard backstop, and the front polls each worker every 50 ms
+        through `GetProcessTimes` (user and kernel time, and committed memory), stopping it one
+        second past its CPU limit as on macOS. The tests use it on
         Windows, so the spin and allocation workers are stopped there too. D3 rejects front-side
         Job Objects for production (the front cannot create processes in the AppContainer, and
         the broker owns the jobs), so `default_spawner()` on Windows stays the broker stub unless

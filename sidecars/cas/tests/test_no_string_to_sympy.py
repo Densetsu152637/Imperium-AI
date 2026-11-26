@@ -187,3 +187,15 @@ def test_the_static_check_catches_string_arguments():
     ):
         assert string_arguments(source), source
     assert string_arguments("x.subs(x, value)") == []
+
+
+def test_no_tool_reaches_sympys_string_round_trips():
+    """`Expr.equals` and `nsimplify` can call `mpmath.identify`, which returns a string SymPy then
+    parses with `sympify` (and `eval`): none of the package's modules call them."""
+    names = {"equals", "nsimplify", "identify"}
+    for path in sympy_facing_modules():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute | ast.Name):
+                name = node.attr if isinstance(node, ast.Attribute) else node.id
+                assert name not in names, (path.name, node.lineno, name)
