@@ -6,7 +6,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Puzzle, Search, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import type { InstalledPlugin, MarketplaceInfo, PluginsBrowseResult, PluginsListResult, SuggestedMarketplace } from "@imperium/protocol";
+import type { InstalledPlugin, MarketplaceInfo, PluginsBrowseResult, PluginsListResult, SkillInfo, SuggestedMarketplace } from "@imperium/protocol";
 import { Dialog } from "../components/Dialog";
 import { EmptyState } from "../components/EmptyState";
 import { LoadingState } from "../components/LoadingState";
@@ -39,7 +39,7 @@ import {
   type Offers,
   type Reloaded,
 } from "./model";
-import { approvalSource, approvePlugin, cannotApprove, describeOutcome, loadFolderTrust, loadTrust, platformReason, type ApproveAction, type Told, type TrustData } from "./trust";
+import { approvalSource, approvePlugin, cannotApprove, describeOutcome, folderName, loadFolderTrust, loadTrust, platformReason, type ApproveAction, type Told, type TrustData } from "./trust";
 
 export type PluginsTab = "installed" | "browse" | "marketplaces";
 
@@ -66,6 +66,8 @@ export function PluginsWindow({
   const [marketplaces, setMarketplaces] = useState<MarketplaceInfo[] | null>(null);
   const [browse, setBrowse] = useState<PluginsBrowseResult | null>(null);
   const [installed, setInstalled] = useState<PluginsListResult | null>(null);
+  /** Skills an agent installed that await the user's approval. */
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [offers, setOffers] = useState<Offers | null>(null);
   const [changed, setChanged] = useState<ReadonlySet<string>>(new Set());
   const [notes, setNotes] = useState<string[]>([]);
@@ -75,7 +77,7 @@ export function PluginsWindow({
   /** What the last install, approval, update or uninstall did; an uninstall also carries the change to undo. */
   const [told, setTold] = useState<(Told & { undo?: number }) | null>(null);
   const [scope, setScope] = useState<Scope>(environment ? "environment" : "user");
-  const [trust, setTrust] = useState<{ action: ApproveAction; id: string; name: string; data: TrustData | null } | null>(null);
+  const [trust, setTrust] = useState<{ action: ApproveAction; id: string; name: string; kind?: "skill"; data: TrustData | null } | null>(null);
   /** Set when the app or daemon says this platform cannot approve at all. */
   const [blocked, setBlocked] = useState<string | null>(null);
   const idBase = useId();
@@ -114,6 +116,11 @@ export function PluginsWindow({
       const [list, data] = await Promise.all([api!.installed(scopeEnv(value)), reload(api!)]);
       if (generation.current !== token) return;
       setInstalled(list);
+      // The skills awaiting approval load on their own, so a slow listing never holds up the rest.
+      void api!.withheldSkills().then(
+        (held) => generation.current === token && setSkills(held),
+        () => undefined,
+      );
       applyReloaded(data);
     } catch (failure) {
       if (generation.current === token) setError(message(failure));
@@ -157,6 +164,7 @@ export function PluginsWindow({
         failed(failure);
       },
     );
+    api.withheldSkills().then((held) => live() && setSkills(held), () => undefined);
     api.suggestions().then((result) => live() && setOffers(result), failed);
     return () => {
       generation.current++;
@@ -243,13 +251,13 @@ export function PluginsWindow({
     );
 
   /** Opens the trust view: `id` is `name@marketplace`, or, for `folder`, the name of an installed folder that did not come from a marketplace. */
-  const openTrust = async (action: ApproveAction, id: string, name: string, commit: string | null, folder = false) => {
+  const openTrust = async (action: ApproveAction, id: string, name: string, commit: string | null, folder = false, kind?: "skill") => {
     const token = generation.current;
     setTold(null);
     setError(null);
-    setTrust({ action, id, name, data: null });
+    setTrust({ action, id, name, kind, data: null });
     try {
-      const data = folder ? await loadFolderTrust(api!, id) : await loadTrust(api!, action, id, commit);
+      const data = folder ? await loadFolderTrust(api!, id, kind) : await loadTrust(api!, action, id, commit);
       if (generation.current === token) setTrust((current) => (current && current.id === id ? { ...current, data } : current));
     } catch (failure) {
       if (generation.current !== token) return;
@@ -262,7 +270,7 @@ export function PluginsWindow({
   const approve = () =>
     act(
       "trust",
-      () => approvePlugin(invoke, trust!.id, trust!.action),
+      () => approvePlugin(invoke, trust!.id, trust!.action, undefined, trust!.kind),
       (outcome) => {
         setTold(describeOutcome(outcome));
         if (cannotApprove(outcome.reason)) setBlocked(plain(outcome.reason));
@@ -442,6 +450,7 @@ export function PluginsWindow({
     body = (
       <InstalledView
         result={installed}
+        skills={skills}
         query={query}
         scope={scope}
         environmentName={environment ? (environmentName ?? "this environment") : null}
@@ -453,6 +462,7 @@ export function PluginsWindow({
           const source = approvalSource(p);
           void openTrust("approve", source.name, p.name, null, source.folder);
         }}
+        onApproveSkill={(skill) => void openTrust("approve", folderName(skill.dir), skill.name, null, true, "skill")}
         onUpdate={(p) => void openTrust("update", p.id!, p.name, p.commit)}
         onUninstall={(p, deleteSecrets) => void uninstall(p, deleteSecrets)}
         onSetSecret={(p, variable, value) => secret(p, () => api!.setSecret(p.name, variable, value), `Saved ${plain(variable)} for ${plain(p.name)}.`)}

@@ -255,7 +255,40 @@ struct Placement {
 /// of the user's settings. A writer agent that can reach one of those folders could otherwise plant a
 /// plugin, so a write there is always asked about.
 fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
-    use imperium_policy::permissions::protect_dir;
+    use imperium_policy::permissions::{protect_dir, refuse_writes_under};
+    // What the daemon loads as the user's own and runs or follows is never written by a file
+    // tool: `write_file` and `edit_file` refuse (they do not ask) in every mode, whatever a rule
+    // or an answer says. Only these paths, not the whole config folder: on macOS the config,
+    // data and cache folders are one folder, which also holds the workspaces and worktrees.
+    for folder in ["skills", "agents", "commands", "mods", "plugins"] {
+        refuse_writes_under(&paths.config_dir().join(folder));
+    }
+    refuse_writes_under(&paths.user_config_file());
+    // `models.toml` is a full settings layer (hooks, MCP servers, plugin folders), `connectors.json`
+    // can replace a catalogue connector's command, and personalities are instructions.
+    refuse_writes_under(&paths.app_models_file());
+    refuse_writes_under(&paths.config_dir().join("connectors.json"));
+    refuse_writes_under(&paths.config_dir().join("personalities"));
+    // The daemon's approval records are unsigned: a write would be an approval.
+    for store in [
+        "skill-installs.json",
+        "plugin-installs.json",
+        "mod-approvals.json",
+    ] {
+        refuse_writes_under(&paths.data_dir().join(store));
+    }
+    // The rest of the daemon's own state, which it reads back as trusted: paired devices,
+    // environments (folders, permissions, agents), the initiative and schedules (they start work
+    // unasked) and the journal of changes agents made.
+    for state in [
+        "devices.json",
+        "environments.json",
+        "initiative.json",
+        "schedules",
+        "config-changes.json",
+    ] {
+        refuse_writes_under(&paths.data_dir().join(state));
+    }
     protect_dir(&paths.config_dir().join("mods"));
     protect_dir(&paths.config_dir().join("plugins"));
     // Pinned policy packs: agents read their files as instructions, so a write is always asked.
@@ -264,6 +297,9 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     protect_dir(&paths.data_dir().join("marketplaces"));
     for dir in &settings.extensions.plugin_dirs {
         protect_dir(dir);
+        // Plugins in the user's own folders skip the load-time gate, so a file tool never writes
+        // there.
+        refuse_writes_under(dir);
     }
 }
 
@@ -427,6 +463,10 @@ pub enum CreateError {
     Runtime(String),
     #[error("could not start on a worktree: {0}")]
     Worktree(String),
+    /// The daemon runs as a server (`daemon.server`) and the session needs this feature (one of
+    /// `imperium_protocol::jsonrpc::server_features`): commands in containers.
+    #[error("unavailable on a server (daemon.server): {0}")]
+    UnavailableOnServer(&'static str),
 }
 
 impl DaemonState {
@@ -514,6 +554,9 @@ impl DaemonState {
             terminals: crate::terminal::TerminalService::default(),
         });
         state.apply_load_view();
+        // After a restart the folders environments add are guarded from the start, not only once
+        // a session in each has loaded.
+        state.guard_environment_plugin_folders();
         if let Some(local) = state.local.get() {
             local.set_runtime_hooks(crate::llama_runtime::Hooks::new(&state));
             if tokio::runtime::Handle::try_current().is_ok() {

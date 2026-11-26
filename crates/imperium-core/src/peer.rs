@@ -24,6 +24,12 @@
 //! Not a boundary against an agent that is trying to evade it: one that detaches a process and
 //! clears its environment, or reaches the daemon some other way, is not caught. It stops the
 //! mistake and the plain case, an agent's shell running the CLI.
+//!
+//! **On a server** (`daemon.server`) no grant is made at all, whatever the peer: [`may_grant`]
+//! takes the daemon's state and refuses before any process is looked at, so every caller
+//! inherits it. A daemon in a container cannot tell from its own `/proc` that it is in one
+//! (Docker, Podman, distrobox and toolbox mount a fresh `/proc`), so server mode is the rule
+//! there, set by the image.
 
 use imperium_tools::SPAWNED_MARK;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
@@ -33,15 +39,40 @@ const MAX_DEPTH: usize = 128;
 /// How much later than the accept time a peer may have started, in seconds, for clock rounding.
 const START_SLACK_SECS: u64 = 2;
 
-/// Whether the process `peer`, whose connection was accepted at `accepted_at` (Unix seconds),
-/// may make grants: see the module documentation.
-pub(crate) fn may_grant(peer: u32, accepted_at: u64) -> bool {
-    may_grant_from(peer, std::process::id(), Some(accepted_at))
+/// Why a grant was not made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// The daemon runs as a server (`daemon.server`): nobody makes grants there.
+    Server,
+    /// The peer failed the checks of the module documentation.
+    NotAPerson,
 }
 
-/// [`may_grant`] for a daemon with process id `daemon`; `accepted_at` of `None` skips the
-/// check that the peer did not start after its connection.
+/// Whether the process `peer`, whose connection to `daemon` was accepted at `accepted_at` (Unix
+/// seconds), may make grants: never on a server, otherwise see the module documentation.
+pub(crate) fn may_grant(
+    daemon: &crate::DaemonState,
+    peer: u32,
+    accepted_at: u64,
+) -> Result<(), Refused> {
+    if daemon.settings().daemon.server {
+        return Err(Refused::Server);
+    }
+    if may_grant_from(peer, std::process::id(), Some(accepted_at)) {
+        Ok(())
+    } else {
+        Err(Refused::NotAPerson)
+    }
+}
+
+/// The walk of [`may_grant`] for a daemon with process id `daemon`; `accepted_at` of `None`
+/// skips the check that the peer did not start after its connection.
 pub(crate) fn may_grant_from(peer: u32, daemon: u32, accepted_at: Option<u64>) -> bool {
+    // PID 0 is what a peer outside the daemon's PID namespace reads as (the host's `sshd`
+    // forwarding into a container): nobody to vouch for.
+    if peer == 0 {
+        return false;
+    }
     let mut system = System::new();
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -191,6 +222,47 @@ mod tests {
         let _ = gone.wait();
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(!may_grant_from(pid, u32::MAX - 1, None));
+    }
+
+    fn daemon(server: bool) -> (std::sync::Arc<crate::DaemonState>, tempfile::TempDir) {
+        let home = tempfile::tempdir().unwrap();
+        let mut settings =
+            imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+                .settings()
+                .unwrap();
+        settings.daemon.server = server;
+        let state =
+            crate::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        (state, home)
+    }
+
+    /// The production entry point refuses every grant on a server before any process is looked
+    /// at; off a server the same peer is judged by the walk (here: a descendant of this process,
+    /// which stands in for the daemon, so not a person).
+    #[test]
+    fn a_server_makes_no_grant_through_the_production_entry_point() {
+        let mut person = child(false);
+        settle();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let (server, _home) = daemon(true);
+        assert_eq!(may_grant(&server, person.id(), now), Err(Refused::Server));
+        assert_eq!(may_grant(&server, 0, now), Err(Refused::Server));
+        let (desktop, _home) = daemon(false);
+        assert_eq!(
+            may_grant(&desktop, person.id(), now),
+            Err(Refused::NotAPerson)
+        );
+        let _ = person.kill();
+        let _ = person.wait();
+    }
+
+    #[test]
+    fn a_peer_reported_as_pid_0_is_refused() {
+        // What a peer outside the daemon's PID namespace (the host's sshd) reads as.
+        assert!(!may_grant_from(0, u32::MAX - 1, None));
     }
 
     /// A child that was killed and not waited for stays a zombie until reaped.

@@ -195,6 +195,10 @@ pub struct HandshakeParams {
 pub struct HandshakeResult {
     pub daemon: Peer,
     pub protocol: ProtocolVersion,
+    /// The daemon runs as a server (`daemon.server`): the desktop-only features are refused
+    /// with `-32010`, so a client hides their controls. False from a daemon before 0.66.
+    #[serde(default)]
+    pub server: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -207,4 +211,29 @@ pub struct PingResult {
     /// Milliseconds since the daemon started.
     #[ts(type = "number")]
     pub uptime_ms: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_handshake_says_server_and_an_older_daemon_reads_as_not_one() {
+        let answer = HandshakeResult {
+            daemon: Peer {
+                name: "imperium-core".into(),
+                version: "0".into(),
+            },
+            protocol: crate::PROTOCOL_VERSION,
+            server: true,
+        };
+        let value = serde_json::to_value(&answer).unwrap();
+        assert_eq!(value["server"], true);
+        let older: HandshakeResult = serde_json::from_value(serde_json::json!({
+            "daemon": {"name": "imperium-core", "version": "0"},
+            "protocol": {"major": 0, "minor": 63}
+        }))
+        .unwrap();
+        assert!(!older.server);
+    }
 }

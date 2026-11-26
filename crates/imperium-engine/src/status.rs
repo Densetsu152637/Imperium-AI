@@ -362,6 +362,7 @@ mod tests {
                 tool: "w".into(),
                 summary: "s".into(),
                 suggested_rule: None,
+                user_only: None,
             },
         });
         assert_eq!(controls.status().0, SessionStatus::NeedsAttention);

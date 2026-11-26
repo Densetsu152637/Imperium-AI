@@ -217,6 +217,17 @@ impl Permissions {
         floor_override: Option<bool>,
     ) -> Judgement {
         let rule = self.evaluate(tool, target);
+        // Writing the user's own configuration is refused before anyone is asked.
+        if kind == CallKind::Edit
+            && let Target::Path { absolute, .. } = target
+            && refused_write(absolute)
+        {
+            return Judgement {
+                decision: Decision::Refuse(Refusal::Configuration),
+                rule,
+                floored: true,
+            };
+        }
         let floored = floor_override.unwrap_or_else(|| safety_floor(kind, target));
         let mut decision = decide_call(self.mode(), kind, rule, floored);
         let mut floored = floored;
@@ -318,6 +329,9 @@ pub enum Refusal {
     Rule,
     /// The session is in plan mode, which only reads.
     Plan,
+    /// A file tool would write what the daemon loads as the user's own configuration
+    /// ([`refuse_writes_under`]): refused in every mode, whatever a rule or an answer says.
+    Configuration,
 }
 
 /// How a call is decided from the session's mode, the matching rules' action (`rule`), and
@@ -412,19 +426,112 @@ fn normalise_dir(path: &str) -> String {
 /// reached through a symbolic link, a junction, an 8.3 name or a redirected config folder is
 /// still covered.
 pub fn protect_dir(dir: &std::path::Path) {
-    let mut forms = vec![normalise_dir(&dir.to_string_lossy())];
-    if let Some(resolved) = resolved_form(dir) {
+    register(&PROTECTED_DIRS, dir);
+}
+
+/// Adds `path` as given and as it resolves (see [`protect_dir`]) to `list`.
+fn register(list: &std::sync::Mutex<Vec<String>>, path: &std::path::Path) {
+    let mut forms = vec![normalise_dir(&path.to_string_lossy())];
+    if let Some(resolved) = resolved_form(path) {
         forms.push(normalise_dir(&resolved.to_string_lossy()));
     }
-    let mut dirs = PROTECTED_DIRS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut entries = list.lock().unwrap_or_else(PoisonError::into_inner);
     for form in forms {
-        if !form.is_empty() && !dirs.contains(&form) {
-            dirs.push(form);
+        if !form.is_empty() && !entries.contains(&form) {
+            entries.push(form);
         }
     }
 }
+
+/// Folders and files the file tools refuse to write, whatever the mode, rules or answers. The
+/// list is process-wide and de-duplicated: every daemon in the process adds its own paths, a path
+/// added twice (as given and as it resolves) is kept once, and nothing removes one.
+static REFUSED_WRITES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Makes `write_file` and `edit_file` refuse (not ask) any write to `path`, or under it when it
+/// is a folder: the daemon uses it for what it loads as the user's own and runs or follows,
+/// the user's skills, agents, commands, mods and plugins folders and `config.toml`. A write there
+/// would plant an extension no one approved. Both the path as given and the one it resolves to
+/// are refused, as for [`protect_dir`]. A process-wide list.
+pub fn refuse_writes_under(path: &std::path::Path) {
+    register(&REFUSED_WRITES, path);
+}
+
+/// Whether a write to `absolute` is refused ([`refuse_writes_under`]). Compared folded both ways
+/// (lower and upper case), as the workspace compares its configuration files: some file systems
+/// fold `ſ` to `S`, which lowercasing alone does not undo.
+pub fn refused_write(absolute: &str) -> bool {
+    let path = normalise_dir(absolute);
+    let upper = path.to_uppercase();
+    let under = |path: &str, entry: &str| path == entry || path.starts_with(&format!("{entry}/"));
+    REFUSED_WRITES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|entry| {
+            under(&path, entry)
+                || (cfg!(any(windows, target_os = "macos")) && under(&upper, &entry.to_uppercase()))
+        })
+}
+
+/// Whether `absolute` is a file a project uses to add extensions or change what the daemon
+/// starts for it: `.imperium/` or `.claude/` `skills`, `commands` or `agents`, `.mcp.json`, and
+/// `.imperium/config.toml` or `config.local.toml` (they can add plugin folders and MCP servers).
+/// Matched by name wherever the project is, after the folding the workspace's configuration-file
+/// check does (case both ways, no `:stream`, no trailing dots or spaces), so no spelling of
+/// one slips by; over-matching is harmless, a write there only asks.
+pub fn project_extension_file(absolute: &str) -> bool {
+    // Tidied without touching the file system: `.` and `..` parts are resolved lexically, so
+    // `.claude/./skills` and `.claude/sub/../skills` are `.claude/skills`. A part is what it is
+    // before any `:stream` and without trailing dots or spaces (`..` itself is read first).
+    let mut parts: Vec<String> = Vec::new();
+    for part in absolute.split('/').filter(|part| !part.is_empty()) {
+        match part {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => {
+                let name = part.split(':').next().unwrap_or_default();
+                parts.push(name.trim_end_matches(['.', ' ']).to_string());
+            }
+        }
+    }
+    let is = |name: &str, want: &str| {
+        name.to_lowercase() == want || name.to_uppercase() == want.to_uppercase()
+    };
+    if parts.last().is_some_and(|last| is(last, ".mcp.json")) {
+        return true;
+    }
+    // A plugin's code-running parts, whenever its folder was registered: `hooks/hooks.json`, and
+    // anything in a `.claude-plugin` folder (its manifest, which can point hooks and servers
+    // anywhere).
+    if parts
+        .windows(2)
+        .any(|pair| is(&pair[0], "hooks") && is(&pair[1], "hooks.json"))
+        || parts
+            .iter()
+            .take(parts.len().saturating_sub(1))
+            .any(|part| is(part, ".claude-plugin"))
+    {
+        return true;
+    }
+    parts.windows(2).any(|pair| {
+        let (folder, name) = (&pair[0], &pair[1]);
+        let tool_folder = is(folder, ".imperium") || is(folder, ".claude");
+        (tool_folder
+            && ["skills", "commands", "agents"]
+                .iter()
+                .any(|want| is(name, want)))
+            || (is(folder, ".imperium")
+                && ["config.toml", "config.local.toml"]
+                    .iter()
+                    .any(|want| is(name, want)))
+    })
+}
+
+/// What a file tool tells the agent when a write is refused ([`refused_write`]).
+pub const REFUSED_WRITE_ADVICE: &str = "this path holds what Imperium loads as the user's own configuration (skills, plugins, mods, agents, commands, config.toml), so file tools never write there, in any permission mode. To add a skill, plugin or mod use install_extension, which asks the user and then needs their approval in the Imperium desktop app; to change the configuration, ask the user to do it in the app";
 
 /// `path` with its nearest existing ancestor canonicalised and the missing rest appended.
 fn resolved_form(path: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -467,6 +574,7 @@ const FLOOR_PATHS: &[&str] = &[
     // The daemon's records of installed plugins and their approvals, the marker that says the
     // first-start migration ran, and its cache of what each marketplace lists.
     "plugin-installs.json",
+    "skill-installs.json",
     "plugin-migration.json",
     "marketplaces.json",
     // The encrypted secret file used where there is no OS keychain, and its scratch files
@@ -498,6 +606,7 @@ pub fn safety_floor(kind: CallKind, target: &Target) -> bool {
                 }
             });
             in_git
+                || project_extension_file(absolute)
                 || in_protected_dir(absolute)
                 || FLOOR_PATHS.iter().any(|pattern| {
                     path_matches(pattern, absolute, None)
@@ -1482,6 +1591,7 @@ mod tests {
             "/floor-plugin-config/plugins/x",
             "/floor-plugin-data/marketplaces/mk/.claude-plugin/marketplace.json",
             "/floor-plugin-data/plugin-installs.json",
+            "/floor-plugin-data/skill-installs.json",
             "/floor-plugin-data/plugin-migration.json",
             "/floor-plugin-data/marketplaces.json",
         ] {
@@ -1496,6 +1606,35 @@ mod tests {
         ] {
             assert!(!safety_floor(CallKind::Edit, &path(open)), "{open}");
         }
+    }
+
+    #[test]
+    fn writes_to_the_extension_folders_are_refused_and_others_are_not() {
+        for name in ["skills", "agents", "commands", "mods", "plugins"] {
+            refuse_writes_under(std::path::Path::new(&format!("/refuse-config/{name}")));
+        }
+        refuse_writes_under(std::path::Path::new("/refuse-config/config.toml"));
+        for refused in [
+            "/refuse-config/config.toml",
+            "/refuse-config/skills/x/SKILL.md",
+            "/refuse-config/skills",
+            "/refuse-config/agents/a.md",
+            "/refuse-config/commands/c.md",
+            "/refuse-config/mods/m/mod.json",
+            "/refuse-config/plugins/p/hooks/hooks.json",
+        ] {
+            assert!(refused_write(refused), "{refused}");
+        }
+        for allowed in [
+            "/refuse-config/workspaces/w/file.rs",
+            "/refuse-config/worktrees/t/file.rs",
+            "/refuse-config/skillset/x.md",
+            "/refuse-config/config.toml.bak",
+            "/refuse-config-other/skills/x.md",
+        ] {
+            assert!(!refused_write(allowed), "{allowed}");
+        }
+        assert!(REFUSED_WRITE_ADVICE.contains("install_extension"));
     }
 
     #[test]
