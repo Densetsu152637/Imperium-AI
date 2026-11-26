@@ -45,6 +45,9 @@ pub const WRITE_QUEUE_CAPACITY: usize = 1024 * 1024;
 /// the session sweep.
 #[cfg(target_os = "linux")]
 const END_WAIT: Duration = Duration::from_secs(9);
+/// How long after the supervisor's own cap a supervisor still ending its tree is killed.
+#[cfg(target_os = "linux")]
+const BACKSTOP_MARGIN: Duration = Duration::from_secs(5);
 /// How long the exit waits for the reader to finish before announcing itself.
 const DRAIN_WAIT: Duration = Duration::from_secs(1);
 
@@ -411,20 +414,49 @@ impl Terminator {
             .and_then(Pid::from_raw);
         // Linux: the supervisor ends every descendant, whichever session it is in.
         #[cfg(target_os = "linux")]
-        {
-            if let Some(pidfd) = &self.pidfd
-                && !self.shared.exited()
-            {
+        let still_ending = match &self.pidfd {
+            Some(pidfd) if !self.shared.exited() => {
+                let sent = std::time::Instant::now();
                 let _ = rustix::process::pidfd_send_signal(pidfd, rustix::process::Signal::TERM);
-                self.shared.wait_exit(END_WAIT);
+                self.shared.wait_exit(END_WAIT).is_none().then_some(sent)
             }
-        }
+            _ => None,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let still_ending: Option<std::time::Instant> = None;
         // Everywhere: by session (the PTY's child is its leader). On Linux this catches what
-        // survives a supervisor that was itself killed; on macOS it is the whole job.
+        // survives a supervisor that was itself killed; on macOS it is the whole job. A
+        // supervisor that is still ending its tree (inside its own cap) is left alone: killing
+        // it would reparent what it has not ended yet to init.
         if let Some(sid) = sid {
-            let _ = sweep::sweep(sid);
+            let _ = sweep::sweep(sid, still_ending.is_some());
+        }
+        #[cfg(target_os = "linux")]
+        if let (Some(sent), Some(sid)) = (still_ending, sid) {
+            self.backstop(sent, sid);
         }
         close_master(&self.master);
+    }
+
+    /// A supervisor that outlives its own cap (it should exit by then, with a log) is killed,
+    /// and its session swept again, on a thread of its own so `end` does not wait for it.
+    #[cfg(target_os = "linux")]
+    fn backstop(&self, sent: std::time::Instant, sid: rustix::process::Pid) {
+        let Some(pidfd) = self.pidfd.as_ref().and_then(|pidfd| pidfd.try_clone().ok()) else {
+            return;
+        };
+        let shared = Arc::clone(&self.shared);
+        let _ = thread::Builder::new()
+            .name("imperium-pty-backstop".into())
+            .spawn(move || {
+                let deadline = sent + supervisor::LIFETIME_AFTER_END + BACKSTOP_MARGIN;
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if shared.wait_exit(left).is_none() {
+                    let _ =
+                        rustix::process::pidfd_send_signal(&pidfd, rustix::process::Signal::KILL);
+                    let _ = sweep::sweep(sid, false);
+                }
+            });
     }
 
     #[cfg(windows)]

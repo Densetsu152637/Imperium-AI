@@ -621,6 +621,8 @@ impl DaemonState {
         if let Some(session) = removed {
             session.stop_processes();
         }
+        // So do its terminals.
+        self.end_session_terminals(id);
         self.placements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

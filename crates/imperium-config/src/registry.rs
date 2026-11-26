@@ -291,6 +291,8 @@ pub static SETTINGS: &[SettingDef] = &[
     def("attachments.describe_timeout_s", "Description timeout (seconds)", Integer, "Seconds one description may take, a local model's loading included, before the image is noted as not described. A message's descriptions take twice this at most; a model that timed out or failed is not asked again for its other images."),
     def("attachments.describe_max_images", "Images described per message", Integer, "Most images described for one message; the rest are noted as not described."),
     def("attachments.describe_max_chars", "Description budget (characters)", Integer, "Most characters of image descriptions one message may carry in all."),
+    live(def("terminal.enabled", "Terminals", Bool, "Let the desktop app open terminals in a session's working folder. Off refuses new terminals. Only this file is read for it, never a project's.")),
+    live(def("terminal.shell", "Terminal shell", StringList, "The shell terminals run, as the program and its arguments. Empty: your account's login shell on macOS and Linux (when /etc/shells lists it), PowerShell on Windows. A bare name is looked up on PATH, skipping relative folders and the session's own folders. Only this file is read for it, never a project's.")),
     live(def("sessions.attachment_max_mib", "Largest attachment (MiB)", Integer, "The largest file that can be attached to a message. Files pasted or dropped from outside the session's folders are copied into its attachments folder; uploads from the app travel over the daemon connection, which takes about 12 MiB at most.")),
 ];
 
@@ -737,6 +739,46 @@ mod tests {
         set_user_setting(&paths, "github.session_gh", &Json::from(vec!["env-a"]), []).unwrap();
         let config = load(&paths, None, owned(&[])).unwrap();
         assert_eq!(config.settings().unwrap().github.session_gh, ["env-a"]);
+    }
+
+    #[test]
+    fn terminals_are_on_by_default_and_only_the_users_file_chooses_the_shell() {
+        let (home, paths) = home();
+        let settings = load(&paths, None, owned(&[])).unwrap().settings().unwrap();
+        assert!(settings.terminal.enabled);
+        assert!(settings.terminal.shell.is_empty());
+
+        let project = home.path().join("project");
+        std::fs::create_dir_all(project.join(".imperium")).unwrap();
+        std::fs::write(
+            project.join(".imperium/config.toml"),
+            "[terminal]
+enabled = false
+shell = [\"./planted\"]
+",
+        )
+        .unwrap();
+        let settings = load(&paths, Some(&project), owned(&[]))
+            .unwrap()
+            .settings()
+            .unwrap();
+        assert!(settings.terminal.enabled);
+        assert!(settings.terminal.shell.is_empty());
+
+        set_user_setting(
+            &paths,
+            "terminal.shell",
+            &Json::from(vec!["fish", "-l"]),
+            [],
+        )
+        .unwrap();
+        set_user_setting(&paths, "terminal.enabled", &Json::from(false), []).unwrap();
+        let settings = load(&paths, Some(&project), owned(&[]))
+            .unwrap()
+            .settings()
+            .unwrap();
+        assert!(!settings.terminal.enabled);
+        assert_eq!(settings.terminal.shell, ["fish", "-l"]);
     }
 
     #[test]

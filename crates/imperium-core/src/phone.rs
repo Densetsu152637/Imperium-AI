@@ -278,6 +278,12 @@ mod tests {
         );
         // A phone never inspects, installs or approves a plugin folder.
         assert!(allowed.iter().all(|method| !method.starts_with("plugins.")));
+        // Nor reaches a terminal (terminal panes, D8).
+        assert!(
+            allowed
+                .iter()
+                .all(|method| !method.starts_with("terminal."))
+        );
         assert!(devices.allowed("not-a-token").is_none());
         // The token itself is never stored.
         let stored = std::fs::read_to_string(dir.path().join("devices.json")).unwrap();
