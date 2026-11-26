@@ -219,7 +219,8 @@ outright. Limits: interpreters and scripts (`python -c "import subprocess; …"`
 the floor; the daemon RPC through a `run_command` that reads the endpoint file under the policy
 tier is a residual; and a launch-time hash check of the binary against its install record is a
 residual too (roadmap: a manifest of the executable plus the libraries it loads).
-`status`, `candidates` and `vllm status` stay unfloored.
+`status`, `candidates`, `vllm status` and `ncm status` stay unfloored. The daemon's `config.set` of
+those keys is refused unless the caller is a process of the user's own on the local socket.
 
 **Implemented:** `imperium runtime install [--pack <id>]` (and `runtime.install`, *Install
 llama.cpp* in the app) installs llama.cpp's own release build from

@@ -53,6 +53,43 @@ impl Connection {
                     }
                 })
             }
+            // A setting that names a runtime binary, path, arguments or update policy is what the
+            // daemon launches or fetches: only a person's own process on the local socket may
+            // change it, not an agent, a mod, a phone or a client over TCP.
+            ConfigSet::NAME
+                if c.params
+                    .as_ref()
+                    .and_then(|params| params.get("key"))
+                    .and_then(Value::as_str)
+                    .is_some_and(imperium_policy::permissions::runtime_binary_key) =>
+            {
+                const WHY: &str = "this setting names a runtime binary, a path, extra arguments or the update policy, so only a process of your own on the local socket may change it (not an agent, a mod, a phone or a remote client): run `imperium config set` from your own terminal or use the app's settings";
+                match self.peer {
+                    None => call::<ConfigSet>(c.params.take(), |_: ConfigSetParams| {
+                        Err(ErrorObject::new(codes::INVALID_PARAMS, WHY))
+                    }),
+                    Some((pid, accepted_at)) => {
+                        call_later::<ConfigSet, _>(c.params.take(), c.later, |params| {
+                            let state = Arc::clone(&self.state);
+                            async move {
+                                let may = tokio::task::spawn_blocking(move || {
+                                    crate::peer::may_grant(pid, accepted_at)
+                                })
+                                .await
+                                .unwrap_or(false);
+                                if !may {
+                                    return Err(ErrorObject::new(codes::INVALID_PARAMS, WHY));
+                                }
+                                tokio::task::spawn_blocking(move || {
+                                    crate::config::set(&state, params)
+                                })
+                                .await
+                                .map_err(|error| refused(error.to_string()))?
+                            }
+                        })
+                    }
+                }
+            }
             ConfigSet::NAME => call::<ConfigSet>(c.params.take(), |params: ConfigSetParams| {
                 crate::config::set(&self.state, params)
             }),

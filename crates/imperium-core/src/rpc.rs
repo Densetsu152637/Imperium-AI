@@ -1025,6 +1025,47 @@ mod tests {
         assert_eq!(error_code(&unknown), Some(codes::INVALID_PARAMS));
     }
 
+    #[test]
+    fn a_setting_that_names_a_runtime_binary_needs_a_process_of_the_users_own() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        // No local-socket peer: an agent over TCP, a mod, a phone.
+        let mut connection = Connection::new(DaemonState::new(paths.clone(), settings, None));
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        for (id, key, value) in [
+            (
+                2,
+                "runtime.llamacpp.custom_path",
+                json!("/opt/evil/llama-server"),
+            ),
+            (3, "runtime.llamacpp.extra_args", json!(["--x"])),
+            (4, "runtime.vllm.command", json!("/opt/evil/vllm")),
+            (5, "runtime.ncm.custom_path", json!("/opt/evil/ncm")),
+            (6, "runtime.ncm.extra_args", json!(["--x"])),
+            (7, "runtime.llamacpp.update_external", json!("auto")),
+        ] {
+            let refused = connection.handle_text(&request(
+                id,
+                ConfigSet::NAME,
+                json!({"key": key, "value": value}),
+            ));
+            assert_eq!(error_code(&refused), Some(codes::INVALID_PARAMS), "{key}");
+        }
+        assert!(!paths.user_config_file().exists());
+        // An ordinary runtime setting is not held back.
+        let set = result(connection.handle_text(&request(
+            8,
+            ConfigSet::NAME,
+            json!({"key": "runtime.llamacpp.idle_unload_s", "value": 60}),
+        )));
+        assert_eq!(set["entry"]["value"], 60);
+    }
+
     fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
         std::fs::create_dir_all(to).unwrap();
         for entry in std::fs::read_dir(from).unwrap().flatten() {

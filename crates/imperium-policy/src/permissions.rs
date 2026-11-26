@@ -398,6 +398,33 @@ pub fn decide_call(
     }
 }
 
+/// Whether a settings key (`runtime.llamacpp.custom_path`, `runtime.ncm`, ...) names a runtime
+/// binary, a path, extra arguments, a version, an image or the update policy, or is a whole
+/// `runtime` table: what the daemon would launch or fetch. The command-line floor and the
+/// daemon's `config.set` both use it. Case-insensitive; a false alarm only asks or refuses.
+pub fn runtime_binary_key(key: &str) -> bool {
+    const RISKY: &[&str] = &[
+        "custom_path",
+        "command",
+        "extra_args",
+        "update",
+        "auto_install",
+        "find_existing",
+        "backend",
+        "version",
+        "docker_image",
+        "wsl_distro",
+    ];
+    let key = key.to_ascii_lowercase();
+    let Some(tail) = key.strip_prefix("runtime") else {
+        return false;
+    };
+    if tail.is_empty() || matches!(tail, ".llamacpp" | ".vllm" | ".ncm") {
+        return true;
+    }
+    tail.starts_with('.') && RISKY.iter().any(|name| tail.contains(name))
+}
+
 /// Folders the daemon asks the floor to guard, as normalised text (see [`protect_dir`]).
 static PROTECTED_DIRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
@@ -1531,6 +1558,34 @@ mod tests {
             "/floor-plugin-data/plugin-installs.json.bak",
         ] {
             assert!(!safety_floor(CallKind::Edit, &path(open)), "{open}");
+        }
+    }
+
+    #[test]
+    fn runtime_binary_keys_are_told_from_ordinary_runtime_settings() {
+        for key in [
+            "runtime",
+            "runtime.ncm",
+            "Runtime.LlamaCpp",
+            "runtime.vllm",
+            "runtime.ncm.custom_path",
+            "runtime.ncm.extra_args",
+            "runtime.llamacpp.custom_path",
+            "runtime.llamacpp.update_external",
+            "runtime.llamacpp.models.m.extra_args",
+            "runtime.vllm.command",
+            "runtime.vllm.docker_image",
+        ] {
+            assert!(runtime_binary_key(key), "{key}");
+        }
+        for key in [
+            "runtime.llamacpp.context",
+            "runtime.llamacpp.idle_unload_s",
+            "runtime.vllm.max_gpu_memory_utilization",
+            "models.default",
+            "policy.personality",
+        ] {
+            assert!(!runtime_binary_key(key), "{key}");
         }
     }
 

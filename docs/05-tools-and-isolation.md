@@ -876,8 +876,11 @@ answers:
   `wsl_distro`, or a whole `runtime` table): they download and install software or point the
   daemon at a binary it will launch ([04](04-models-and-routing.md#runtimes)). Like every
   floored call they ask in every permission mode, every time, and no allow rule or "always
-  this session" answer lifts it. `runtime status|candidates` and `runtime vllm status` do not
-  ask.
+  this session" answer lifts it. This covers every backend, `runtime ncm use|install|remove|update`
+  and `runtime.ncm.*` included. `runtime status|candidates`, `runtime vllm status` and `runtime ncm
+  status` do not ask. The daemon's own `config.set` refuses those `runtime.*` keys too unless the
+  caller is a process of the user's own on the local socket, so an agent, a mod, a phone or a
+  client over TCP cannot set them even by calling the RPC.
 - `imperium env set-runtime …`, which changes an environment's isolation and pulls images.
 - Arguments of `imperium` are read as a shell reads them (quotes, backslashes and `^` removed,
   so `ins""tall` is `install`), and a line that runs `imperium` with arguments the floor cannot

@@ -594,18 +594,6 @@ fn changes_agents(args: &[String]) -> bool {
 /// arguments, a version, an image or the update policy (or of a whole `runtime` table): the
 /// daemon would launch what it names, or fetch and install it. A false alarm only asks.
 fn changes_runtime_setting(args: &[String]) -> bool {
-    const RISKY: &[&str] = &[
-        "custom_path",
-        "command",
-        "extra_args",
-        "update",
-        "auto_install",
-        "find_existing",
-        "backend",
-        "version",
-        "docker_image",
-        "wsl_distro",
-    ];
     args.iter()
         .position(|word| word == "config")
         .is_some_and(|at| {
@@ -613,16 +601,7 @@ fn changes_runtime_setting(args: &[String]) -> bool {
             rest.iter()
                 .any(|word| matches!(word.as_str(), "set" | "unset"))
                 && rest.iter().any(|word| {
-                    let key = word.to_ascii_lowercase();
-                    let key = key.split('=').next().unwrap_or(&key);
-                    let Some(tail) = key.strip_prefix("runtime") else {
-                        return false;
-                    };
-                    // `runtime`, `runtime.llamacpp`, `runtime.vllm`: a whole table.
-                    if tail.is_empty() || matches!(tail, ".llamacpp" | ".vllm") {
-                        return true;
-                    }
-                    tail.starts_with('.') && RISKY.iter().any(|name| tail.contains(name))
+                    crate::permissions::runtime_binary_key(word.split('=').next().unwrap_or(word))
                 })
         })
 }
@@ -831,6 +810,13 @@ mod tests {
             "& \"C:\\Program Files\\Imperium\\imperium.exe\" runtime install",
             "'/opt/my tools/imperium' runtime use /tmp/x",
             "\"C:\\Program Files\\Imperium\\imperium.exe\" config set runtime.llamacpp.custom_path x",
+            "imperium runtime ncm use /opt/evil/ncm",
+            "imperium runtime ncm install",
+            "imperium runtime ncm remove",
+            "imperium runtime ncm update",
+            "imperium config set runtime.ncm.custom_path /opt/evil/ncm",
+            "imperium config set runtime.ncm.extra_args '[\"--x\"]'",
+            "imperium config set runtime.ncm {}",
             "imperium runtime vllm setup",
             "imperium runtime vllm setup --docker --yes",
             "imperium.exe runtime vllm remove --yes",
@@ -866,6 +852,8 @@ mod tests {
             "imperium runtime vllm",
             "imperium runtime status",
             "imperium runtime candidates",
+            "imperium runtime ncm status",
+            "imperium runtime ncm",
             "\"C:\\Program Files\\Imperium\\imperium.exe\" runtime status",
             "imperium env list",
             "imperium vllm setup",
@@ -938,11 +926,14 @@ mod tests {
             "imperium config set runtime.llamacpp.extra_args '[\"--x\"]'",
             "imperium config set runtime.llamacpp.update_external auto",
             "imperium config set runtime.vllm.command /opt/evil/vllm",
+            "imperium runtime ncm use /opt/evil/ncm",
+            "imperium config set runtime.ncm.custom_path /opt/evil/ncm",
         ];
         let open = [
             "imperium runtime status",
             "imperium runtime candidates",
             "imperium runtime vllm status",
+            "imperium runtime ncm status",
             "imperium config set runtime.llamacpp.context 8192",
         ];
         for mode in [
