@@ -577,12 +577,24 @@ what guards them is exact and less than a wall:
   listed, not the whole config folder, because on macOS the config and data folders are one folder
   that also holds the workspaces and worktrees. The list is process-wide and de-duplicated, and
   paths are compared folded both ways for case, as the workspace compares its configuration files.
+- **Also refused, in `<data>`:** `devices.json`, `environments.json`, `initiative.json`,
+  `schedules/` and `config-changes.json`, the daemon's own state that it reads back as trusted.
 - **Asked, every time, in every mode** (the safety floor, non-sticky, past the auto classifier and
   any allow rule; a `deny` rule refuses): a file-tool write to a project's own extension files,
   `.imperium/` or `.claude/` `skills`, `commands` and `agents`, `.mcp.json`, and
   `.imperium/config.toml` or `config.local.toml` (matched by name with the workspace's folding,
   wherever the project is), and to the daemon's other records in `<data>` (`plugin-migration.json`,
   `marketplaces.json`), the pinned packs and the marketplace clones.
+  Unlike an agent's install, these project files are asked about but **not** withheld until the
+  desktop app approves them: a skill, command or agent a project holds loads as repository content
+  the user chose to open (agents only for a trusted project), and an `.imperium/config.toml`
+  or `.mcp.json` the user lets an agent write takes effect as it always did. A project's
+  skills or commands folder reached through a symbolic link is not loaded, and the `imperium
+  mcp-serve` harness refuses to answer a write request for these files.
+  **Warning on `extensions.plugin_dirs`:** every folder listed there, in the user's settings or
+  added by a trusted project's `.imperium/config.toml` for an environment, blocks agent writes
+  under it, so a broad folder (a whole repository, a home folder) blocks agent writes to
+  everything below it. List the folder that holds plugins, nothing wider.
 - **Residual, not closed here:** these are guards on the file tools, not a boundary. Under the
   default `policy` isolation tier, in `full` mode or with an allow rule, an agent's `run_command`
   runs with the user's own rights, so it can still write those paths or reach the daemon's local

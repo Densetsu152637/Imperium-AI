@@ -180,6 +180,13 @@ impl DaemonState {
         // can only add to the set.
         let mut plugin_dirs = vec![self.paths.config_dir().join("plugins")];
         plugin_dirs.extend(settings.extensions.plugin_dirs.iter().cloned());
+        // Plugins in `extensions.plugin_dirs` skip the load-time gate, and a trusted project's own
+        // `.imperium/config.toml` can add folders to an environment's list, which only this merge
+        // sees: no file tool writes into any of them (a hook there would run next session unasked).
+        for dir in &settings.extensions.plugin_dirs {
+            imperium_policy::permissions::protect_dir(dir);
+            imperium_policy::permissions::refuse_writes_under(dir);
+        }
         let mut downloaded = imperium_extensions::plugins::agent_installed_folders(&plugin_dirs);
         // The load-time gate: a plugin it withholds loads nothing, whatever `disabled_plugins` says.
         let gate =
@@ -649,5 +656,37 @@ body
         let style: Vec<_> = after.skills.iter().filter(|s| s.name == "style").collect();
         assert_eq!(style.len(), 1);
         assert!(style[0].dir.starts_with(&root), "{:?}", style[0].dir);
+    }
+}
+
+#[cfg(test)]
+mod environment_plugin_folder_tests {
+    use imperium_config::{Config, Layer, Paths};
+
+    use super::*;
+
+    #[test]
+    fn a_plugin_folder_an_environment_adds_is_refused_to_file_tools() {
+        let home = tempfile::tempdir().unwrap();
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        let tools = tempfile::tempdir().unwrap();
+        let folder = tools.path().join("plugins");
+        let hook = folder.join("p/hooks/hooks.json");
+        let shown = hook.to_string_lossy().replace('\\', "/");
+        assert!(!imperium_policy::permissions::refused_write(&shown));
+        // The settings of a session in an environment whose trusted project added the folder.
+        let mut merged = (*state.settings()).clone();
+        merged.extensions.plugin_dirs = vec![folder.clone()];
+        let project = tempfile::tempdir().unwrap();
+        let _ = state.extensions(project.path(), &merged, None, None, &[]);
+        assert!(imperium_policy::permissions::refused_write(&shown));
+        // Only that folder: a neighbour is untouched.
+        let beside = tools
+            .path()
+            .join("src/main.rs")
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert!(!imperium_policy::permissions::refused_write(&beside));
     }
 }

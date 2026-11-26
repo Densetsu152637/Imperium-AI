@@ -43,6 +43,11 @@ fn guarded(paths: &Paths) {
         "skill-installs.json",
         "plugin-installs.json",
         "mod-approvals.json",
+        "devices.json",
+        "environments.json",
+        "initiative.json",
+        "schedules/s1.json",
+        "config-changes.json",
     ] {
         let path = paths.data_dir().join(store);
         assert!(refused_write(&slash(&path)), "{store}");

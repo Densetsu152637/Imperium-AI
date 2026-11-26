@@ -270,6 +270,18 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     ] {
         refuse_writes_under(&paths.data_dir().join(store));
     }
+    // The rest of the daemon's own state, which it reads back as trusted: paired devices,
+    // environments (folders, permissions, agents), the initiative and schedules (they start work
+    // unasked) and the journal of changes agents made.
+    for state in [
+        "devices.json",
+        "environments.json",
+        "initiative.json",
+        "schedules",
+        "config-changes.json",
+    ] {
+        refuse_writes_under(&paths.data_dir().join(state));
+    }
     protect_dir(&paths.config_dir().join("mods"));
     protect_dir(&paths.config_dir().join("plugins"));
     // Pinned policy packs: agents read their files as instructions, so a write is always asked.

@@ -882,18 +882,35 @@ async fn get_transcript(hub: &Hub, args: &Value) -> Result<Value, String> {
     Ok(result)
 }
 
-/// Why the harness may not answer a request for `tool`: installing or removing an extension is the
-/// user's call alone (an agent never installs one without the user's explicit approval), so a
-/// harness driven by another agent cannot give it. `None` for any other tool.
-fn user_only_tool(tool: &Value) -> Option<&'static str> {
-    matches!(
-        tool.as_str(),
-        Some("install_extension" | "uninstall_extension")
-    )
-    .then_some(
-        "this request is an agent installing or removing an extension: only the user can answer \
-         it, in the desktop app or the imperium CLI",
-    )
+/// Why the harness may not answer the permission request `event`: installing or removing an
+/// extension is the user's call alone (an agent never installs one without the user's explicit
+/// approval), and so is a file write into a project's own extension files (`.claude/skills`,
+/// `.mcp.json`, `.imperium/config.toml`, and the like), which the safety floor asks about; a
+/// harness driven by another agent cannot give either. `None` for any other request.
+fn user_only_request(event: &Value) -> Option<&'static str> {
+    let tool = event["tool"].as_str()?;
+    if matches!(tool, "install_extension" | "uninstall_extension") {
+        return Some(
+            "this request is an agent installing or removing an extension: only the user can \
+             answer it, in the desktop app or the imperium CLI",
+        );
+    }
+    if matches!(tool, "write_file" | "edit_file") {
+        // The summary is `write <path> (<n> bytes)` or `edit <path>`.
+        let summary = event["summary"].as_str()?;
+        let path = summary
+            .strip_prefix("write ")
+            .map(|rest| rest.rsplit_once(" (").map_or(rest, |(path, _)| path))
+            .or_else(|| summary.strip_prefix("edit "))?;
+        if imperium_policy::permissions::project_extension_file(&path.replace('\\', "/")) {
+            return Some(
+                "this request is a write to a project's extension files (skills, commands, \
+                 agents, .mcp.json or .imperium/config.toml): only the user can answer it, in \
+                 the desktop app or the imperium CLI",
+            );
+        }
+    }
+    None
 }
 
 async fn respond_permission(hub: &Hub, args: &Value) -> Result<Value, String> {
@@ -939,7 +956,7 @@ async fn respond_permission(hub: &Hub, args: &Value) -> Result<Value, String> {
                 .into(),
         );
     }
-    if let Some(reason) = user_only_tool(&asked["event"]["tool"]) {
+    if let Some(reason) = user_only_request(&asked["event"]) {
         return Err(reason.into());
     }
     hub.call(
@@ -1667,15 +1684,43 @@ mod tests {
 mod user_only_tests {
     use super::*;
 
+    fn event(tool: &str, summary: &str) -> Value {
+        json!({"tool": tool, "summary": summary})
+    }
+
     #[test]
-    fn the_harness_does_not_answer_a_request_to_install_or_remove_an_extension() {
+    fn the_harness_does_not_answer_an_install_or_a_write_to_a_projects_extension_files() {
         for tool in ["install_extension", "uninstall_extension"] {
-            let reason = user_only_tool(&json!(tool)).expect(tool);
+            let reason = user_only_request(&event(tool, "x")).expect(tool);
             assert!(reason.contains("only the user can answer"), "{reason}");
         }
-        for tool in ["write_file", "set_model_card", "run_command"] {
-            assert!(user_only_tool(&json!(tool)).is_none(), "{tool}");
+        for summary in [
+            "write .claude/skills/x/SKILL.md (12 bytes)",
+            "write /work/app/.mcp.json (3 bytes)",
+            "edit .imperium/config.toml",
+            "edit C:\\work\\app\\.imperium\\agents\\a.md",
+        ] {
+            let tool = if summary.starts_with("write") {
+                "write_file"
+            } else {
+                "edit_file"
+            };
+            assert!(
+                user_only_request(&event(tool, summary)).is_some(),
+                "{summary}"
+            );
         }
-        assert!(user_only_tool(&Value::Null).is_none());
+        for (tool, summary) in [
+            ("write_file", "write src/main.rs (4 bytes)"),
+            ("edit_file", "edit docs/skills/x.md"),
+            ("set_model_card", "x"),
+            ("run_command", "run `ls`"),
+        ] {
+            assert!(
+                user_only_request(&event(tool, summary)).is_none(),
+                "{summary}"
+            );
+        }
+        assert!(user_only_request(&Value::Null).is_none());
     }
 }

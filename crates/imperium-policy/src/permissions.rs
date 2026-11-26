@@ -389,7 +389,7 @@ pub fn refused_write(absolute: &str) -> bool {
 /// Matched by name wherever the project is, after the folding the workspace's configuration-file
 /// check does (case both ways, no `:stream`, no trailing dots or spaces), so no spelling of
 /// one slips by; over-matching is harmless, a write there only asks.
-fn project_extension_file(absolute: &str) -> bool {
+pub fn project_extension_file(absolute: &str) -> bool {
     let parts: Vec<String> = absolute
         .split('/')
         .filter(|part| !part.is_empty())
