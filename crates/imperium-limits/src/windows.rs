@@ -80,7 +80,8 @@ const JOB_OBJECT_MEMORY_USAGE_INFORMATION: JOBOBJECTINFOCLASS = 28;
 #[derive(Default)]
 struct JobMemoryUsage {
     job_memory: u64,
-    peak_job_memory_used: u64,
+    // The layout's second field; the documented peak is read instead.
+    _peak_job_memory_used: u64,
 }
 
 /// The completion key that stops the port thread.
@@ -260,13 +261,14 @@ impl Job {
     /// The job's committed memory now and at its peak.
     #[must_use]
     pub fn memory(&self) -> (u64, u64) {
-        if let Ok(usage) = self.query::<JobMemoryUsage>(JOB_OBJECT_MEMORY_USAGE_INFORMATION) {
-            return (usage.job_memory, usage.peak_job_memory_used);
-        }
+        // The peak is the documented one, which the job's memory limit bounds.
         let peak = self
             .query::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>(JobObjectExtendedLimitInformation)
             .map_or(0, |limits| limits.PeakJobMemoryUsed as u64);
-        (peak, peak)
+        let now = self
+            .query::<JobMemoryUsage>(JOB_OBJECT_MEMORY_USAGE_INFORMATION)
+            .map_or(peak, |usage| usage.job_memory);
+        (now, peak)
     }
 
     /// The job's CPU time and active processes.
@@ -838,6 +840,48 @@ impl Monitor {
     }
 }
 
+/// Test support: commits `bytes` of pagefile-backed section memory (`CreateFileMapping` on
+/// `INVALID_HANDLE_VALUE`) and touches every page, so the `alloc --section` probe can see whether
+/// a job's memory limit counts it (L15). The mapping is leaked on purpose.
+///
+/// # Errors
+/// When the section cannot be created or mapped (as when a job limit refuses it).
+#[cfg(feature = "test-support")]
+pub fn commit_section(bytes: usize) -> io::Result<()> {
+    use windows_sys::Win32::System::Memory::{
+        CreateFileMappingW, FILE_MAP_WRITE, MapViewOfFile, PAGE_READWRITE,
+    };
+    let size = bytes as u64;
+    // SAFETY: a pagefile-backed section with no name and no attributes.
+    let section = unsafe {
+        CreateFileMappingW(
+            INVALID_HANDLE_VALUE,
+            ptr::null(),
+            PAGE_READWRITE,
+            (size >> 32) as u32,
+            size as u32,
+            ptr::null(),
+        )
+    };
+    if section.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the section was just created with `bytes` bytes, mapped whole for writing.
+    let view = unsafe { MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, bytes) };
+    if view.Value.is_null() {
+        let err = io::Error::last_os_error();
+        // SAFETY: the section handle created above.
+        unsafe { CloseHandle(section) };
+        return Err(err);
+    }
+    let base = view.Value.cast::<u8>();
+    for offset in (0..bytes).step_by(4096) {
+        // SAFETY: `offset` is inside the `bytes`-long view mapped for writing.
+        unsafe { base.add(offset).write_volatile(1) };
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -903,46 +947,4 @@ mod tests {
         let threads = threads_of(std::process::id()).unwrap();
         assert!(!threads.is_empty());
     }
-}
-
-/// Test support: commits `bytes` of pagefile-backed section memory (`CreateFileMapping` on
-/// `INVALID_HANDLE_VALUE`) and touches every page, so the `alloc --section` probe can see whether
-/// a job's memory limit counts it (L15). The mapping is leaked on purpose.
-///
-/// # Errors
-/// When the section cannot be created or mapped (as when a job limit refuses it).
-#[cfg(feature = "test-support")]
-pub fn commit_section(bytes: usize) -> io::Result<()> {
-    use windows_sys::Win32::System::Memory::{
-        CreateFileMappingW, FILE_MAP_WRITE, MapViewOfFile, PAGE_READWRITE,
-    };
-    let size = bytes as u64;
-    // SAFETY: a pagefile-backed section with no name and no attributes.
-    let section = unsafe {
-        CreateFileMappingW(
-            INVALID_HANDLE_VALUE,
-            ptr::null(),
-            PAGE_READWRITE,
-            (size >> 32) as u32,
-            size as u32,
-            ptr::null(),
-        )
-    };
-    if section.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: the section was just created with `bytes` bytes, mapped whole for writing.
-    let view = unsafe { MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, bytes) };
-    if view.Value.is_null() {
-        let err = io::Error::last_os_error();
-        // SAFETY: the section handle created above.
-        unsafe { CloseHandle(section) };
-        return Err(err);
-    }
-    let base = view.Value.cast::<u8>();
-    for offset in (0..bytes).step_by(4096) {
-        // SAFETY: `offset` is inside the `bytes`-long view mapped for writing.
-        unsafe { base.add(offset).write_volatile(1) };
-    }
-    Ok(())
 }
