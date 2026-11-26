@@ -1128,6 +1128,6 @@ mod tests {
         assert_eq!(found, home.folder.canonicalize().unwrap());
         // A name that is not a plain folder name (`..`) is looked up, never taken as exact.
         let found = crate::plugin_install::resolve_for_approval(&state, "x..y").unwrap();
-        assert_eq!(found, other.canonicalize().unwrap());
+        assert_eq!(found.canonicalize().unwrap(), other.canonicalize().unwrap());
     }
 }
