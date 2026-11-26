@@ -46,6 +46,10 @@ toml = "1.2.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
+[target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
+# `O_NOFOLLOW` for the plugin content hash (`plugin_records.rs`) on the other Unix targets.
+rustix = { version = "1.1.6", features = ["fs"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # The hidden `pty-supervisor` subcommand (`main.rs`); the terminal service of stage 2a will use
 # the library on every OS and move this to the main table.

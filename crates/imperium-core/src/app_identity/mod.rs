@@ -1011,6 +1011,14 @@ mod tests {
             "C:\\x\\.git\\h.bat",
             "cat /x/.git",
             "\"/x/.git\"",
+            "sh ./.git/hooks/h.sh",
+            "sh a/../.git/h",
+            "sh .git/hooks/h.sh",
+            ".git/h",
+            "a/./.GIT/h",
+            "a\\.git\\h.bat",
+            "\\.git\\h.bat",
+            "x --dir='.git'",
         ] {
             assert!(crate::plugin_install::mentions_dot_git(text), "{text}");
         }
@@ -1020,6 +1028,8 @@ mod tests {
             "/x/a.git/h",
             "/x/.gitignore",
             "git status",
+            "my.git",
+            "./.github/h",
         ] {
             assert!(!crate::plugin_install::mentions_dot_git(text), "{text}");
         }
@@ -1072,5 +1082,17 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("link"), "{error}");
         assert!(crate::plugin_install::resolve_for_approval(&state, "p").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_exact_folder_name_must_be_one_plain_name() {
+        let home = home();
+        let state = state_of(&home);
+        // A path or a name with a separator never names a folder, exact or not.
+        assert!(crate::plugin_install::resolve_for_approval(&state, "../plugins/p").is_err());
+        assert!(crate::plugin_install::resolve_for_approval(&state, "./p").is_err());
+        assert!(crate::plugin_install::resolve_for_approval(&state, "p/").is_err());
+        assert!(crate::plugin_install::resolve_for_approval(&state, "p").is_ok());
     }
 }
