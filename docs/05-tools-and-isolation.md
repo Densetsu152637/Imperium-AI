@@ -878,8 +878,19 @@ answers:
   floored call they ask in every permission mode, every time, and no allow rule or "always
   this session" answer lifts it. `runtime status|candidates` and `runtime vllm status` do not
   ask.
-- Writing into the installed runtimes (`<data>/runtimes`), so a verified binary cannot be swapped
-  after install.
+- `imperium env set-runtime …`, which changes an environment's isolation and pulls images.
+- Arguments of `imperium` are read as a shell reads them (quotes, backslashes and `^` removed,
+  so `ins""tall` is `install`), and a line that runs `imperium` with arguments the floor cannot
+  read (a variable, `$( )`, a backtick, a group, `%VAR%`, a PowerShell `@splat`) or through
+  `xargs` asks outright. A quoted program path with spaces (`"C:\Program Files\Imperium\imperium.exe"`)
+  is one word.
+- Writing into the installed runtimes (`<data>/runtimes`) is **refused** without asking, in
+  every mode, so a verified binary cannot be swapped after install.
+- Limits, stated: the floor reads command lines, not what an interpreter or script runs
+  (`python -c "import subprocess; …"` is unseen); an agent's `run_command` that reads the
+  daemon's endpoint file could call the daemon RPC under the policy tier (a residual, see the
+  credential list above). A launch-time hash check of the runtime binary is not done: it is a
+  residual, on the roadmap as a manifest of the executable plus the libraries it loads.
 - Writing into the installed mods (`<config>/mods`) and the daemon's approvals file
   (`mod-approvals.json`), which a mod approval vouches for; and into the installed plugins
   (`<config>/plugins`), the marketplace clones (`<data>/marketplaces`) and the plugin records

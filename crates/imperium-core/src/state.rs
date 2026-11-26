@@ -260,8 +260,9 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     // The marketplaces' clones: a plugin installed from one is copied out of its folder.
     protect_dir(&paths.data_dir().join("marketplaces"));
     // The installed runtimes (`llama-server` and the managed vLLM environment): a write there
-    // would swap a binary the daemon launches after it was verified at install.
-    protect_dir(&paths.data_dir().join("runtimes"));
+    // would swap a binary the daemon launches after it was verified at install, so it is
+    // refused, not asked about.
+    imperium_policy::permissions::refuse_writes_under(&paths.data_dir().join("runtimes"));
     for dir in &settings.extensions.plugin_dirs {
         protect_dir(dir);
     }

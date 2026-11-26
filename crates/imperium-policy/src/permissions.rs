@@ -217,6 +217,13 @@ impl Permissions {
         floor_override: Option<bool>,
     ) -> Judgement {
         let rule = self.evaluate(tool, target);
+        if write_refused(kind, target) {
+            return Judgement {
+                decision: Decision::Refuse(Refusal::Protected),
+                rule,
+                floored: true,
+            };
+        }
         let floored = floor_override.unwrap_or_else(|| safety_floor(kind, target));
         let mut decision = decide_call(self.mode(), kind, rule, floored);
         let mut floored = floored;
@@ -318,6 +325,8 @@ pub enum Refusal {
     Rule,
     /// The session is in plan mode, which only reads.
     Plan,
+    /// A write into a folder the daemon refuses writes to (see [`refuse_writes_under`]).
+    Protected,
 }
 
 /// How a call is decided from the session's mode, the matching rules' action (`rule`), and
@@ -412,13 +421,40 @@ fn normalise_dir(path: &str) -> String {
 /// reached through a symbolic link, a junction, an 8.3 name or a redirected config folder is
 /// still covered.
 pub fn protect_dir(dir: &std::path::Path) {
+    add_dir(&PROTECTED_DIRS, dir);
+}
+
+/// Folders writes into which are refused outright, never asked about (see
+/// [`refuse_writes_under`]).
+static REFUSED_DIRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Makes any file-tool write under `dir` refused without asking, in every permission mode: the
+/// daemon uses it for the installed runtimes, whose binaries were verified when installed and
+/// are launched as they are. The match is on the whole path, as in [`protect_dir`], and covers
+/// the folder as given and as it resolves.
+pub fn refuse_writes_under(dir: &std::path::Path) {
+    add_dir(&REFUSED_DIRS, dir);
+}
+
+/// Whether `kind` on `target` is a write into a folder given to [`refuse_writes_under`].
+pub fn write_refused(kind: CallKind, target: &Target) -> bool {
+    let (CallKind::Edit, Target::Path { absolute, .. }) = (kind, target) else {
+        return false;
+    };
+    let path = normalise_dir(absolute);
+    REFUSED_DIRS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|dir| path == *dir || path.starts_with(&format!("{dir}/")))
+}
+
+fn add_dir(list: &std::sync::Mutex<Vec<String>>, dir: &std::path::Path) {
     let mut forms = vec![normalise_dir(&dir.to_string_lossy())];
     if let Some(resolved) = resolved_form(dir) {
         forms.push(normalise_dir(&resolved.to_string_lossy()));
     }
-    let mut dirs = PROTECTED_DIRS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut dirs = list.lock().unwrap_or_else(PoisonError::into_inner);
     for form in forms {
         if !form.is_empty() && !dirs.contains(&form) {
             dirs.push(form);
@@ -1499,23 +1535,29 @@ mod tests {
     }
 
     #[test]
-    fn the_floor_guards_the_installed_runtimes_folder() {
-        protect_dir(std::path::Path::new("/floor-runtime-data/runtimes"));
+    fn writes_into_the_installed_runtimes_folder_are_refused() {
+        refuse_writes_under(std::path::Path::new("/floor-runtime-data/runtimes"));
         let path = |absolute: &str| Target::Path {
             absolute: absolute.to_string(),
             relative: None,
         };
-        for guarded in [
+        for refused in [
+            "/floor-runtime-data/runtimes",
             "/floor-runtime-data/runtimes/llamacpp/b1/llama-server",
             "/floor-runtime-data/runtimes/vllm.env",
+            "/floor-runtime-data/runtimes/a/../b/x",
         ] {
-            assert!(safety_floor(CallKind::Edit, &path(guarded)), "{guarded}");
-            assert!(!safety_floor(CallKind::Read, &path(guarded)), "{guarded}");
+            assert!(write_refused(CallKind::Edit, &path(refused)), "{refused}");
+            // Reading and running are never covered.
+            assert!(!write_refused(CallKind::Read, &path(refused)), "{refused}");
         }
-        assert!(!safety_floor(
-            CallKind::Edit,
-            &path("/floor-runtime-data/runtimes-notes/x")
-        ));
+        for open in [
+            "/floor-runtime-data/runtimes-notes/x",
+            "/elsewhere/floor-runtime-data/runtimes/x",
+            "/floor-runtime-data/plugins/x",
+        ] {
+            assert!(!write_refused(CallKind::Edit, &path(open)), "{open}");
+        }
     }
 
     #[test]

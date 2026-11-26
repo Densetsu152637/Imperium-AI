@@ -1300,6 +1300,9 @@ pub(super) fn denied_by_rule(summary: &str) -> String {
 pub(super) fn refused(why: Refusal, summary: &str) -> String {
     match why {
         Refusal::Rule => denied_by_rule(summary),
+        Refusal::Protected => format!(
+            "{summary} was refused: the installed runtimes folder is not written by agents, so a              verified binary cannot be swapped. Ask the user to run `imperium runtime install`              or `imperium runtime use` themselves."
+        ),
         Refusal::Plan => format!(
             "The session is in plan mode, which only reads: {summary} was not run. Read and \
              search what you need, then present your plan; the user switches the mode when \

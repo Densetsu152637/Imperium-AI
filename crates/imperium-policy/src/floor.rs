@@ -43,6 +43,10 @@ fn dangerous_line(line: &str, depth: usize) -> bool {
     if line.contains("$IFS") || line.contains("${IFS}") {
         return true;
     }
+    // `imperium` with arguments built by the shell, or fed by `xargs`: ask.
+    if unreadable_imperium(line) {
+        return true;
+    }
     // A shell reading commands from a pipe (`echo 'rm -rf x' | sh`): ask.
     if pipes_into_shell(line) {
         return true;
@@ -99,13 +103,74 @@ fn pipes_into_shell(line: &str) -> bool {
     })
 }
 
-/// A command's words, without surrounding quotes.
+/// A command's words, without surrounding quotes. A quoted span (one that is closed) stays
+/// inside its word, so `"C:\Program Files\Imperium\imperium.exe"` is one word; a quote that is
+/// never closed is an ordinary character.
 fn words(command: &str) -> Vec<String> {
-    command
-        .split_whitespace()
+    let chars: Vec<char> = command.chars().collect();
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for (index, &c) in chars.iter().enumerate() {
+        match quote {
+            Some(open) => {
+                current.push(c);
+                if c == open {
+                    quote = None;
+                }
+            }
+            None if c == '"' || c == '\'' => {
+                if chars[index + 1..].contains(&c) {
+                    quote = Some(c);
+                }
+                current.push(c);
+            }
+            None if c.is_whitespace() => {
+                if !current.is_empty() {
+                    out.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out.into_iter()
         .map(|word| word.trim_matches(|c| c == '"' || c == '\'').to_string())
         .filter(|word| !word.is_empty())
         .collect()
+}
+
+/// A word as a shell reads it: quotes, backslashes and `^` removed (`ins""tall`, `ins\tall`).
+fn unescape(word: &str) -> String {
+    word.chars()
+        .filter(|c| !matches!(c, '"' | '\'' | '\\' | '^'))
+        .collect()
+}
+
+/// Whether a line runs `imperium` with arguments the floor cannot read: a variable, a
+/// substitution, a group, an `%VAR%` or a PowerShell `@splat`; or runs it through `xargs`,
+/// which feeds it words from elsewhere. Looked for before the line is taken apart, since a
+/// substitution splits it. A false alarm only asks.
+fn unreadable_imperium(line: &str) -> bool {
+    let line = line.replace("&&", ";").replace("||", ";");
+    line.split([';', '|', '\n']).any(|segment| {
+        let words = words(segment);
+        let names_imperium =
+            |word: &String| program_names(word).iter().any(|name| name == "imperium");
+        if !words.iter().any(names_imperium) {
+            return false;
+        }
+        words
+            .iter()
+            .any(|word| program_names(word).iter().any(|name| name == "xargs"))
+            || segment.contains(['$', '`', '(', ')'])
+            || segment.matches('%').count() >= 2
+            || words
+                .iter()
+                .any(|word| word.starts_with('@') && word.len() > 1)
+    })
 }
 
 /// A program's name as compared: no folder, no `.exe`/`.cmd`/`.bat`/`.com`/`.ps1`, lower case.
@@ -163,7 +228,7 @@ fn skip_options<'a>(args: &'a [String], takes_value: &[&str]) -> &'a [String] {
 
 /// Shell keywords that may come before a command (`if rm …`, `do rm …`, `! rm …`).
 const KEYWORDS: &[&str] = &[
-    "do", "then", "else", "elif", "if", "while", "until", "!", "time", "{",
+    "do", "then", "else", "elif", "if", "while", "until", "!", "time", "{", "&",
 ];
 
 /// The command's words from its program on: leading assignments, shell keywords, and
@@ -463,7 +528,17 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
 /// plugin code in, or turn it on, or point the daemon at a folder of it, so a person decides
 /// those too (a plugin with code still needs the desktop app's approval, which no command line
 /// gives); browsing, inspecting, listing, disabling and uninstalling change nothing that runs.
+/// `imperium runtime install|update|upgrade|remove|uninstall|use|setup …` of any backend and
+/// `config set|unset` of a `runtime.*` key that names a binary, a path, extra arguments, a
+/// version, an image or the update policy install, switch or point at a binary the daemon will
+/// launch; `imperium env set-runtime …` changes an environment's isolation and pulls images.
+/// Arguments are read as a shell reads them (quotes, backslashes and `^` removed), and a line
+/// whose `imperium` arguments are built by the shell asks outright (see
+/// [`unreadable_imperium`]).
 fn changes_agents(args: &[String]) -> bool {
+    // Arguments as a shell reads them: `ins""tall` and `ins\tall` are `install`.
+    let unescaped: Vec<String> = args.iter().map(|word| unescape(word)).collect();
+    let args = &unescaped[..];
     // Global options such as `--remote <name>` may sit between the words, so the subcommand is
     // looked for anywhere after the group word (a false alarm only asks a person).
     let after = |group: &str, subs: &[&str]| {
@@ -498,6 +573,10 @@ fn changes_agents(args: &[String]) -> bool {
         ],
     ) || changes_runtime_setting(args)
     {
+        return true;
+    }
+    // `env set-runtime …` changes isolation and pulls images.
+    if after("env", &["set-runtime"]) {
         return true;
     }
     let Some(at) = args.iter().position(|word| word == "env") else {
@@ -733,6 +812,25 @@ mod tests {
             "imperium config set runtime.vllm.extra_args []",
             "imperium config set runtime.llamacpp {}",
             "imperium --remote box config set Runtime.LlamaCpp.Custom_Path /tmp/x",
+            "imperium env set-runtime work docker",
+            "imperium --remote box env set-runtime work wsl",
+            "imperium runtime ins\"\"tall",
+            "imperium runtime ins\\tall",
+            "imperium run''time use /tmp/x",
+            "imperium config set runtime.llamacpp.custom\"\"_path /tmp/x",
+            "imperium runtime $(echo install)",
+            "imperium runtime `echo install`",
+            "imperium runtime $V",
+            "imperium runtime %V%",
+            "imperium runtime (\"ins\"+\"tall\")",
+            "imperium @a",
+            "imperium @args",
+            "echo install | xargs imperium runtime",
+            "echo install | xargs -I{} imperium runtime {}",
+            "\"C:\\Program Files\\Imperium\\imperium.exe\" runtime install",
+            "& \"C:\\Program Files\\Imperium\\imperium.exe\" runtime install",
+            "'/opt/my tools/imperium' runtime use /tmp/x",
+            "\"C:\\Program Files\\Imperium\\imperium.exe\" config set runtime.llamacpp.custom_path x",
             "imperium runtime vllm setup",
             "imperium runtime vllm setup --docker --yes",
             "imperium.exe runtime vllm remove --yes",
@@ -768,6 +866,8 @@ mod tests {
             "imperium runtime vllm",
             "imperium runtime status",
             "imperium runtime candidates",
+            "\"C:\\Program Files\\Imperium\\imperium.exe\" runtime status",
+            "imperium env list",
             "imperium vllm setup",
             "imperium config set runtime.llamacpp.context 8192",
             "imperium config set runtime.llamacpp.idle_unload_s 60",
