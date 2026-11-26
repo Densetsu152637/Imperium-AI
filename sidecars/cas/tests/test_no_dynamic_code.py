@@ -69,7 +69,7 @@ EXCEPTIONS = {
     "limits_macos.py": {"ctypes"},
     "limits_windows.py": {"ctypes"},
     "landlock.py": {"ctypes", "os", "open"},  # `os.open` of the interpreter and the roots
-    "worker.py": {"os"},  # `os._exit` and `os.getpid` only (test_worker_uses_os_narrowly)
+    "worker.py": {"os"},  # `os._exit`, `os.getpid` and `os.write` (test_worker_uses_os_narrowly)
     "limits_posix.py": {"open"},  # `/proc/self/statm` only, before the hook (test below)
 }
 # Attributes starting with `_` that a module may use (R2), each a documented need.
@@ -128,7 +128,7 @@ TOOL_NAMES |= {"simplify", "solveset"}
 SYMPY_IMPORTERS = {
     "build.py": SYMPY_NAMES,
     "tools.py": TOOL_NAMES,
-    "format.py": {"MatrixBase", "latex", "sstr"},
+    "format.py": {"Equality", "MatrixBase", "Unequality", "latex", "sstr"},
     "nocodegen.py": {"rings"},  # `from sympy.polys import rings`, to replace its MonomialOps
 }
 SYMPY_SUBMODULES = {"nocodegen.py": {"sympy.polys"}}
@@ -365,7 +365,7 @@ def test_worker_uses_os_narrowly():
         and isinstance(node.value, ast.Name)
         and node.value.id == "os"
     }
-    assert used == {"_exit", "getpid"}
+    assert used == {"_exit", "getpid", "write"}  # `write`: the hook's refusal frame
 
 
 def test_the_r2_exception_is_per_module():

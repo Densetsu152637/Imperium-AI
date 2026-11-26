@@ -10,7 +10,7 @@ Each result's text plus LaTeX is at most 64 KiB; a bigger one is a `math` error 
 it was. It is never cut.
 """
 
-from sympy import MatrixBase, latex, sstr
+from sympy import Equality, MatrixBase, Unequality, latex, sstr
 
 from .build import MathError
 
@@ -30,6 +30,9 @@ def plain(value) -> str:
             return "[" + ", ".join(map(plain, value)) + "]"
         if isinstance(value, str):
             return value
+        if isinstance(value, Equality | Unequality):  # SymPy prints `Eq(a, b)` and `Ne(a, b)`
+            sign = " = " if isinstance(value, Equality) else " != "
+            return plain(value.lhs) + sign + plain(value.rhs)
         return "^".join(sstr(value).split("**"))  # str.split, so no SymPy call takes a string
     except RecursionError:
         raise MathError("the result is nested too deeply to print") from None

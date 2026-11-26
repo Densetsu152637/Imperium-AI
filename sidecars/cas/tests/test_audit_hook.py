@@ -36,7 +36,9 @@ def probes():
 def test_forbidden_events_end_the_worker_with_refused(probes, action):
     ready, reply, code = probes[action]
     assert ready["ready"]
-    assert reply is None, f"{action} survived the hook: {reply}"
+    # The hook's own last frame names the event, and nothing else.
+    assert reply is not None and set(reply) == {"ok", "category", "event"}, (action, reply)
+    assert reply["category"] == "refused" and reply["event"], f"{action} survived: {reply}"
     assert code == worker.REFUSED
 
 

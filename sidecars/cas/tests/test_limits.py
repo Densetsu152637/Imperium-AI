@@ -223,7 +223,9 @@ def test_a_normal_call_succeeds_right_after_each_limit(pools):
         pool = pools(script, **limits)
         reply, _ = timed(pool, {"go": True})
         assert reply["category"] == "limit", (script, reply)
-    pool = pools(cpu_seconds=1, memory_mib=128, wall_seconds=5)
+    # The first call pays the spawn and the warm-up (every tool, a second or more), so the wall
+    # clock is generous here; CPU and memory are what this test is about.
+    pool = pools(cpu_seconds=1, memory_mib=128, wall_seconds=30)
     reply, _ = timed(pool, {"tool": "build", "expression": "factorial(20)"})
     assert reply == {"ok": True, "text": "2432902008176640000"}
 

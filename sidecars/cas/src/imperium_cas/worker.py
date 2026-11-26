@@ -176,15 +176,37 @@ def warm_up() -> None:
 STATE = {"audit_hook": False}
 
 
+def refusal_frame(event) -> bytes:
+    """The reply frame the hook writes before it exits: the refused event's name, at most 80
+    printable ASCII characters."""
+    name = event[:80] if isinstance(event, str) else "?"
+    name = "".join(ch if " " <= ch < "\x7f" else "?" for ch in name)
+    return encode_frame({"ok": False, "category": "refused", "event": name}, REPLY_CAP)
+
+
 def install_audit_hook(allowed: frozenset[str] = ALLOWED_EVENTS) -> None:
     """Install the allow-list hook. It cannot be removed, and it exits rather than raises.
 
     `os._exit` and the exit code are bound as defaults, so rebinding `os` or the module's names
-    later cannot change what the hook does.
+    later cannot change what the hook does. Before exiting it writes one reply frame naming the
+    event (only its name, which is Python's or SymPy's, never input), straight to the stdout
+    file descriptor, so the front can say which event was refused.
     """
 
-    def hook(event: str, args: tuple, allowed=allowed, exit=os._exit, status=REFUSED) -> None:
+    def hook(
+        event: str,
+        args: tuple,
+        allowed=allowed,
+        exit=os._exit,
+        write=os.write,
+        status=REFUSED,
+        frame=refusal_frame,
+    ) -> None:
         if event not in allowed:
+            try:
+                write(1, frame(event))
+            except BaseException:  # noqa: BLE001, S110 - exiting matters, the report does not
+                pass
             exit(status)
 
     sys.addaudithook(hook)

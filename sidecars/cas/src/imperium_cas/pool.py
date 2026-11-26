@@ -65,6 +65,7 @@ WINDOWS_JOBS = "IMPERIUM_CAS_WINDOWS_JOBS"  # set to 1: the front's own Job Obje
 
 POLL_SECONDS = 0.05  # the macOS footprint and CPU poll (D3)
 CPU_GRACE = 1.0  # the poll kills this long past the CPU limit, as Linux's hard limit does
+EXIT_GRACE = 0.2  # how long a worker whose usage read failed may take to show it has exited
 
 # Exit statuses that mean the CPU limit: the worker's own status, and `SIGXCPU` when the handler
 # did not run. A `SIGKILL` the front did not send is a limit, but not necessarily the CPU one.
@@ -396,6 +397,8 @@ class Pool:
             self.spawner.arm(proc)
             if self.usage is not None:
                 baseline = self.usage(proc.pid)
+                if baseline is None and self.still_alive(proc):
+                    baseline = self.usage(proc.pid)  # one more try: it may have been exiting
                 if baseline is None:
                     run.stop("unmonitored")
                     return None
@@ -422,7 +425,7 @@ class Pool:
                 continue
             used = self.usage(run.proc.pid)
             if used is None:
-                if run.proc.poll() is None:
+                if self.still_alive(run.proc):
                     run.stop("unmonitored")
                     return
                 continue
@@ -433,6 +436,15 @@ class Pool:
             if used[1] > run.cpu_limit:
                 run.stop("cpu")
                 return
+
+    def still_alive(self, proc: WorkerProcess) -> bool:
+        """Whether a worker whose usage could not be read is still running. A worker that is
+        exiting can fail the read before `poll` sees its status, so it gets a moment to exit."""
+        try:
+            proc.wait(EXIT_GRACE)
+        except subprocess.TimeoutExpired:
+            return True
+        return False
 
     def wall_clock(self, queued: bool = False) -> dict:
         seconds = f"{self.limits.wall_seconds:g} s"
@@ -471,7 +483,9 @@ class Pool:
                 limit="killed",
             )
         if status == REFUSED:
-            return error("refused", "the call did something the CAS does not allow")
+            event = reply.get("event") if isinstance(reply, dict) else None
+            shown = f" (audit event {event})" if isinstance(event, str) else ""
+            return error("refused", f"the call did something the CAS does not allow{shown}")
         return error("crashed", f"the worker exited with status {status}", status=status)
 
 
