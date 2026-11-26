@@ -1238,7 +1238,6 @@ Commands are what CI runs; nothing needs a local Rust build.
   - **Measured** (printed under "cas measurements" in each `python-cas` log; the worker is the
     base interpreter, so the PID and memory are its own):
 
-
     | OS (GitHub runner) | Spawn to ready frame | Warm-up after imports | Memory after warm-up |
     | --- | --- | --- | --- |
     | Linux (`ubuntu-latest`) | 0.23 s | 0.06 s | 52 MiB (`VmHWM`) |
