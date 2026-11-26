@@ -12,6 +12,11 @@ for package in imperium-core imperium-cli imperium-desktop; do
     echo "$package enables imperium-github's test-host feature in a normal build." >&2
     exit 1
   fi
+  # Nor may code mode's test hooks (forcing a confinement stage to fail).
+  if grep -E 'imperium-script(-worker)? feature "test-support"' <<<"$tree"; then
+    echo "$package enables a code-mode test-support feature in a normal build." >&2
+    exit 1
+  fi
 done
 # Positive control: with dev edges the feature is listed, so the grep above matches the real format.
 tree="$(cargo tree --locked -p imperium-github --edges all,features)"

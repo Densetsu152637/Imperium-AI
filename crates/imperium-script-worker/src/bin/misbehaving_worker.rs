@@ -112,6 +112,20 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        "hog" => {
+            // Memory the interpreter never sees: 16 MiB at a time, every page touched, kept.
+            let mut held: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..64 {
+                held.push(vec![1_u8; 16 * 1024 * 1024]);
+                thread::sleep(Duration::from_millis(20));
+            }
+            loop {
+                thread::sleep(Duration::from_secs(3600));
+                if held.is_empty() {
+                    break;
+                }
+            }
+        }
         "hang" => loop {
             thread::sleep(Duration::from_secs(3600));
         },

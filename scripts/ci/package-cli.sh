@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build and archive the CLI and daemon: package-cli.sh <platform-id> <rust-targets>
+# Build and archive the CLI, the daemon and code mode's script worker (found beside the daemon):
+# package-cli.sh <platform-id> <rust-targets>
 # <rust-targets> is comma-separated; two macOS targets are merged into a universal binary.
 set -euo pipefail
 
@@ -10,12 +11,12 @@ stage="dist/stage/$name"
 mkdir -p "$stage"
 
 for t in "${targets[@]}"; do
-  cargo build --release --locked -p imperium-cli -p imperium-core --target "$t"
+  cargo build --release --locked -p imperium-cli -p imperium-core -p imperium-script-worker --target "$t"
 done
 
 ext=""
 if [[ "${targets[0]}" == *windows* ]]; then ext=".exe"; fi
-for bin in imperium imperium-core; do
+for bin in imperium imperium-core imperium-script; do
   if [ "${#targets[@]}" -gt 1 ]; then
     inputs=()
     for t in "${targets[@]}"; do inputs+=("target/$t/release/$bin"); done

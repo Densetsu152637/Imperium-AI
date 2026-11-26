@@ -75,6 +75,9 @@ nix = { version = "0.31.3", default-features = false, features = ["socket"] }
 security-framework = { version = "3.7.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
+# Code mode's NO_READ_UP labels on the daemon's folders (`code_mode.rs`); stage 2 uses the
+# crate's launcher on every OS.
+imperium-script = { version = "0.2.0", path = "../imperium-script" }
 # Check 7 of plugin approvals: the per-machine Program Files folder from
 # SHGetKnownFolderPath(FOLDERID_ProgramFiles) through dirs-sys's safe wrapper.
 dirs-sys = "0.5.0"

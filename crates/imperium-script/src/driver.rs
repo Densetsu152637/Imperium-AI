@@ -1,11 +1,10 @@
 //! The protocol driver: launch, event allowlist, suspension budget, kill-on-end.
-#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
 use std::{
+    any::Any,
     ffi::OsString,
-    io,
+    fmt, io,
     path::{Path, PathBuf},
-    process::Stdio,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -18,11 +17,15 @@ use monty_types::{
     OsPolicy, ResourceLimits, SleepMode,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStdin, ChildStdout, Command},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     sync::{OwnedSemaphorePermit, Semaphore},
     task::JoinHandle,
     time::timeout,
+};
+
+use crate::{
+    process::{Reader, Spawned, WorkerProcess, Writer},
+    runner::{BoxFuture, ScriptProgram, ScriptRunner},
 };
 
 /// The largest event frame the driver accepts. A program's printed output and call arguments are
@@ -69,6 +72,13 @@ impl Limits {
     pub fn request_timeout(&self) -> Duration {
         self.exec.saturating_add(self.request_slack)
     }
+
+    /// The OS memory backstop: twice `memory_mb` (the job on Windows, `RLIMIT_DATA` and the
+    /// delegated cgroup on Linux, the resident-memory watchdog on macOS).
+    #[must_use]
+    pub fn os_memory_bytes(&self) -> u64 {
+        self.memory_mb.saturating_mul(2 * 1024 * 1024)
+    }
 }
 
 /// Why a program or its worker did not finish normally.
@@ -77,6 +87,9 @@ pub enum ScriptError {
     /// The worker could not be started or confined; no program ran.
     #[error("code mode is unavailable: {0}")]
     Unavailable(String),
+    /// The program was refused before any worker started (it names `eval` or `exec`).
+    #[error("{0}")]
+    Refused(String),
     /// The program raised (including its time and memory budgets as the interpreter reports them).
     #[error("{rendered}")]
     Program {
@@ -114,7 +127,8 @@ pub enum ScriptError {
 /// A call from the program to a host function.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Call {
-    /// The function name the program called, as the driver issued it in a name lookup.
+    /// The function name the program called. The worker is untrusted: check it again at call
+    /// time ([`crate::HandleTable::admit`]).
     pub function: String,
     /// Positional arguments.
     pub args: Vec<MontyObject>,
@@ -141,6 +155,10 @@ pub struct Launcher {
     worker: PathBuf,
     extra_args: Vec<OsString>,
     slots: Arc<Semaphore>,
+    /// Test hook: the stage of the daemon-side launch to fail (Windows).
+    #[cfg(feature = "test-support")]
+    #[cfg_attr(not(windows), allow(dead_code))]
+    forced: Option<String>,
 }
 
 impl Launcher {
@@ -151,6 +169,8 @@ impl Launcher {
             worker: worker.into(),
             extra_args: Vec::new(),
             slots: Arc::new(Semaphore::new(max_workers)),
+            #[cfg(feature = "test-support")]
+            forced: None,
         }
     }
 
@@ -158,6 +178,15 @@ impl Launcher {
     #[must_use]
     pub fn with_args(mut self, args: impl IntoIterator<Item = impl Into<OsString>>) -> Self {
         self.extra_args = args.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Test hook: fails the named stage of the daemon-side launch instead of applying it (on
+    /// Windows `labels`, `token`, `job`, `folder`, `pipes`, `process`, `assign` or `resume`).
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn with_forced_failure(mut self, stage: &str) -> Self {
+        self.forced = Some(stage.to_owned());
         self
     }
 
@@ -174,8 +203,11 @@ impl Launcher {
     }
 
     /// Starts a confined worker, configures it and feeds it `code`. Waits for a free slot first.
-    /// Fails with [`ScriptError::Unavailable`], naming why, when the worker cannot confine itself.
+    /// Fails with [`ScriptError::Refused`] when the program names `eval` or `exec` (before any
+    /// worker starts), and with [`ScriptError::Unavailable`], naming why, when the worker cannot
+    /// be confined.
     pub async fn start(&self, code: &str, limits: &Limits) -> Result<ScriptRun, ScriptError> {
+        crate::scan::dynamic_code(code).map_err(ScriptError::Refused)?;
         let permit = Arc::clone(&self.slots)
             .acquire_owned()
             .await
@@ -183,7 +215,25 @@ impl Launcher {
         self.launch(code, limits, permit).await
     }
 
-    #[cfg(unix)]
+    /// Whether code mode can run here: starts a worker on an empty program and ends it. `Err`
+    /// is the reason it cannot, naming the stage that failed.
+    pub async fn check(&self) -> Result<(), String> {
+        let mut run = self
+            .start("pass", &Limits::default())
+            .await
+            .map_err(|err| err.to_string())?;
+        match run.next().await {
+            ScriptEvent::Done(Ok(())) => Ok(()),
+            ScriptEvent::Done(Err(err)) => Err(err.to_string()),
+            other => {
+                run.finish().await;
+                Err(format!(
+                    "the worker did not run an empty program: {other:?}"
+                ))
+            }
+        }
+    }
+
     async fn launch(
         &self,
         code: &str,
@@ -191,74 +241,58 @@ impl Launcher {
         permit: OwnedSemaphorePermit,
     ) -> Result<ScriptRun, ScriptError> {
         let started = Instant::now();
-        let scratch = ScratchDir::create().map_err(|err| {
-            ScriptError::Unavailable(format!("cannot make the worker's working folder: {err}"))
-        })?;
-        let mut command = Command::new(&self.worker);
-        command
-            .current_dir(&scratch.0)
-            .arg("--memory-mb")
-            .arg(limits.memory_mb.to_string())
-            .args(&self.extra_args)
-            // An empty environment: no tokens, no paths.
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command.spawn().map_err(|err| {
-            ScriptError::Unavailable(format!(
-                "cannot start the worker {}: {err}",
-                self.worker.display()
-            ))
-        })?;
-        let (Some(stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            let _ = child.start_kill();
-            return Err(ScriptError::Unavailable(
-                "the worker's pipes are missing".to_owned(),
+        let spawned = self.spawn(limits).await.map_err(ScriptError::Unavailable)?;
+        let mut run = ScriptRun::new(spawned, limits, permit);
+        // Linux: the worker joins its own memory-limited cgroup before it is sent a program.
+        #[cfg(target_os = "linux")]
+        if let (Some(cgroups), Some(pid)) = (crate::cgroup::delegated(), run.pid())
+            && let Ok(lease) = cgroups.place(pid, limits.os_memory_bytes())
+        {
+            run._keep.push(Box::new(lease));
+        }
+        // macOS: no OS memory limit, so the daemon watches the worker's resident memory.
+        #[cfg(target_os = "macos")]
+        if let Some(pid) = run.pid() {
+            run.watchdog = Some(crate::watchdog::Watchdog::start(
+                pid,
+                limits.os_memory_bytes(),
             ));
-        };
-        let stderr_text = Arc::new(Mutex::new(String::new()));
-        let stderr_task = tokio::spawn(collect_stderr(stderr, Arc::clone(&stderr_text)));
-
-        let mut run = ScriptRun {
-            child,
-            stdin,
-            stdout,
-            stderr_text,
-            stderr_task: Some(stderr_task),
-            limits: limits.clone(),
-            request_timeout: limits.request_timeout(),
-            send_buf: Vec::new(),
-            pending: None,
-            call_name: String::new(),
-            suspensions: 0,
-            finished: false,
-            startup: Duration::ZERO,
-            deadline: None,
-            _permit: permit,
-            _scratch: scratch,
-        };
+        }
         run.open(code, started).await?;
         Ok(run)
     }
 
-    #[cfg(not(unix))]
-    async fn launch(
-        &self,
-        _code: &str,
-        _limits: &Limits,
-        _permit: OwnedSemaphorePermit,
-    ) -> Result<ScriptRun, ScriptError> {
-        Err(ScriptError::Unavailable(
-            "the Windows launch (restricted token, job object, labels) is stage 1b of the code-mode plan".to_owned(),
-        ))
+    /// Unix: the worker confines itself, so it starts as a plain child.
+    #[cfg(unix)]
+    async fn spawn(&self, limits: &Limits) -> Result<Spawned, String> {
+        crate::process::spawn(&self.worker, limits.memory_mb, &self.extra_args)
+    }
+
+    /// Windows: the daemon confines the worker as it launches it.
+    #[cfg(windows)]
+    async fn spawn(&self, limits: &Limits) -> Result<Spawned, String> {
+        #[cfg(feature = "test-support")]
+        let forced = self.forced.as_deref();
+        #[cfg(not(feature = "test-support"))]
+        let forced = None;
+        crate::process::spawn(&self.worker, limits.memory_mb, &self.extra_args, forced).await
     }
 }
 
-async fn collect_stderr(mut stderr: tokio::process::ChildStderr, into: Arc<Mutex<String>>) {
+impl ScriptRunner for Launcher {
+    fn start<'a>(
+        &'a self,
+        code: &'a str,
+        limits: &'a Limits,
+    ) -> BoxFuture<'a, Result<Box<dyn ScriptProgram>, ScriptError>> {
+        Box::pin(async move {
+            let run = Launcher::start(self, code, limits).await?;
+            Ok(Box::new(run) as Box<dyn ScriptProgram>)
+        })
+    }
+}
+
+async fn collect_stderr(mut stderr: impl AsyncRead + Unpin, into: Arc<Mutex<String>>) {
     let mut buf = [0_u8; 512];
     loop {
         match stderr.read(&mut buf).await {
@@ -289,13 +323,13 @@ enum ReadFailure {
     Frame(String),
 }
 
-/// One program in one worker. Dropping it kills the worker (`kill_on_drop` sends the signal and
-/// does not wait); [`ScriptRun::finish`] and the program's end wait for the OS to confirm the exit.
-#[derive(Debug)]
+/// One program in one worker. Dropping it kills the worker (`kill_on_drop` on Unix, closing the
+/// job on Windows; neither waits); [`ScriptRun::finish`] and the program's end wait for the OS
+/// to confirm the exit.
 pub struct ScriptRun {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: ChildStdout,
+    process: WorkerProcess,
+    stdin: Writer,
+    stdout: Reader,
     stderr_text: Arc<Mutex<String>>,
     stderr_task: Option<JoinHandle<()>>,
     limits: Limits,
@@ -310,44 +344,61 @@ pub struct ScriptRun {
     /// The wall deadline of the `next_until` call in progress, so `send` honours it too.
     deadline: Option<Instant>,
     _permit: OwnedSemaphorePermit,
-    /// The worker's working folder, empty, removed when the run is dropped.
-    #[cfg(unix)]
-    _scratch: ScratchDir,
+    /// Kept as long as the run: the worker's working folder and, on Linux, its cgroup.
+    _keep: Vec<Box<dyn Any + Send + Sync>>,
+    /// macOS: the resident-memory watchdog.
+    #[cfg(target_os = "macos")]
+    watchdog: Option<crate::watchdog::Watchdog>,
 }
 
-/// An empty folder made for one worker to start in (plan C1: an empty working folder).
-#[cfg(unix)]
-#[derive(Debug)]
-struct ScratchDir(PathBuf);
-
-#[cfg(unix)]
-impl ScratchDir {
-    fn create() -> io::Result<Self> {
-        use std::os::unix::fs::DirBuilderExt as _;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "imperium-script-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
-        Ok(Self(path))
-    }
-}
-
-#[cfg(unix)]
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir(&self.0);
+impl fmt::Debug for ScriptRun {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScriptRun")
+            .field("process", &self.process)
+            .field("pending", &self.pending)
+            .field("suspensions", &self.suspensions)
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
     }
 }
 
 impl ScriptRun {
+    fn new(spawned: Spawned, limits: &Limits, permit: OwnedSemaphorePermit) -> Self {
+        let Spawned {
+            process,
+            stdin,
+            stdout,
+            stderr,
+            keep,
+        } = spawned;
+        let stderr_text = Arc::new(Mutex::new(String::new()));
+        let stderr_task = tokio::spawn(collect_stderr(stderr, Arc::clone(&stderr_text)));
+        Self {
+            process,
+            stdin,
+            stdout,
+            stderr_text,
+            stderr_task: Some(stderr_task),
+            limits: limits.clone(),
+            request_timeout: limits.request_timeout(),
+            send_buf: Vec::new(),
+            pending: None,
+            call_name: String::new(),
+            suspensions: 0,
+            finished: false,
+            startup: Duration::ZERO,
+            deadline: None,
+            _permit: permit,
+            _keep: keep,
+            #[cfg(target_os = "macos")]
+            watchdog: None,
+        }
+    }
+
     /// The worker's process id while it runs.
     #[must_use]
     pub fn pid(&self) -> Option<u32> {
-        self.child.id()
+        self.process.id()
     }
 
     /// Time from spawning the worker to its answer to `Configure`: the cold start of plan A4.
@@ -362,14 +413,24 @@ impl ScriptRun {
         self.suspensions
     }
 
+    /// Test hook: leaves `deadline` behind as a cancelled [`next_until`](Self::next_until)
+    /// would, so a test can check that an answer is not bound by it.
+    #[cfg(feature = "test-support")]
+    pub fn leave_stale_deadline(&mut self, deadline: Instant) {
+        self.deadline = Some(deadline);
+    }
+
     /// Kills the worker and waits for the OS to confirm it is gone.
     pub async fn finish(mut self) {
         self.kill_and_wait().await;
     }
 
     async fn kill_and_wait(&mut self) {
-        let _ = self.child.start_kill();
-        let _ = self.child.wait().await;
+        // The watchdog stops before the worker is reaped, so it never signals a reused id.
+        #[cfg(target_os = "macos")]
+        drop(self.watchdog.take());
+        self.process.start_kill();
+        let _ = self.process.wait().await;
         self.finished = true;
     }
 
@@ -416,10 +477,16 @@ impl ScriptRun {
                 "the worker did not accept its configuration: {err}"
             )),
             Ok(()) => match self.read_event(None).await {
-                Ok(event) if matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))) => None,
-                Ok(_) => {
-                    Some("the worker answered its configuration with something else".to_owned())
-                }
+                Ok(event) => match event.kind {
+                    Some(pb::worker_event::Kind::Ok(_)) => None,
+                    Some(pb::worker_event::Kind::SessionRefused(refused)) => Some(format!(
+                        "the worker refused its configuration: {}",
+                        refused.message
+                    )),
+                    _ => {
+                        Some("the worker answered its configuration with something else".to_owned())
+                    }
+                },
                 Err(ReadFailure::Timeout | ReadFailure::Deadline) => {
                     Some("the worker did not answer its configuration".to_owned())
                 }
@@ -428,7 +495,15 @@ impl ScriptRun {
                 }
             },
         };
-        if let Some(reason) = reason {
+        if let Some(mut reason) = reason {
+            #[cfg(target_os = "macos")]
+            drop(self.watchdog.take());
+            // A worker that exited by itself says how; anything else is killed first.
+            if reason.contains("exited")
+                && let Ok(Some(exit)) = timeout(Duration::from_secs(2), self.process.wait()).await
+            {
+                reason = format!("{reason} ({})", exit.text);
+            }
             self.kill_and_wait().await;
             let stderr = self.stderr_snapshot().await;
             let reason = if stderr.is_empty() {
@@ -755,16 +830,26 @@ impl ScriptRun {
             ReadFailure::Deadline => ScriptError::WallBudget,
             ReadFailure::Frame(what) => ScriptError::Misbehaved(what),
             ReadFailure::Eof | ReadFailure::Io => {
-                let status = timeout(Duration::from_secs(2), self.child.wait())
+                // Stopped before the wait reaps the worker, so it never signals a reused id.
+                #[cfg(target_os = "macos")]
+                let watched_out = self
+                    .watchdog
+                    .take()
+                    .is_some_and(|watchdog| watchdog.tripped());
+                let status = timeout(Duration::from_secs(2), self.process.wait())
                     .await
                     .ok()
-                    .and_then(Result::ok);
-                if status.and_then(|status| status.code()) == Some(OOM_EXIT_CODE) {
+                    .flatten();
+                if status.as_ref().and_then(|status| status.code) == Some(OOM_EXIT_CODE) {
+                    return ScriptError::OutOfMemory;
+                }
+                #[cfg(target_os = "macos")]
+                if watched_out {
                     return ScriptError::OutOfMemory;
                 }
                 let stderr = self.stderr_snapshot().await;
                 let status =
-                    status.map_or_else(|| "no exit status".to_owned(), |status| status.to_string());
+                    status.map_or_else(|| "no exit status".to_owned(), |status| status.text);
                 ScriptError::Crashed(if stderr.is_empty() {
                     status
                 } else {
@@ -793,9 +878,13 @@ impl ScriptRun {
                 .min(deadline.saturating_duration_since(Instant::now())),
             None => self.request_timeout,
         };
-        timeout(wait, self.stdin.write_all(&self.send_buf))
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the worker stopped reading"))??;
+        let (stdin, frame) = (&mut self.stdin, &self.send_buf);
+        timeout(wait, async move {
+            stdin.write_all(frame).await?;
+            stdin.flush().await
+        })
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the worker stopped reading"))??;
         Ok(())
     }
 
@@ -840,5 +929,31 @@ impl ScriptRun {
         })?;
         decode_frame_with_budget::<pb::WorkerEvent>(&body, DECODE_BUDGET)
             .map_err(|err| ReadFailure::Frame(format!("an undecodable event: {err}")))
+    }
+}
+
+impl ScriptProgram for ScriptRun {
+    fn next_until(&mut self, deadline: Option<Instant>) -> BoxFuture<'_, ScriptEvent> {
+        Box::pin(ScriptRun::next_until(self, deadline))
+    }
+
+    fn resume_value(&mut self, value: MontyObject) -> BoxFuture<'_, Result<(), ScriptError>> {
+        Box::pin(ScriptRun::resume_value(self, value))
+    }
+
+    fn resume_error(&mut self, message: String) -> BoxFuture<'_, Result<(), ScriptError>> {
+        Box::pin(async move { ScriptRun::resume_error(self, &message).await })
+    }
+
+    fn resume_not_found(&mut self) -> BoxFuture<'_, Result<(), ScriptError>> {
+        Box::pin(ScriptRun::resume_not_found(self))
+    }
+
+    fn resume_name(&mut self, function: Option<String>) -> BoxFuture<'_, Result<(), ScriptError>> {
+        Box::pin(async move { ScriptRun::resume_name(self, function.as_deref()).await })
+    }
+
+    fn finish(self: Box<Self>) -> BoxFuture<'static, ()> {
+        Box::pin(ScriptRun::finish(*self))
     }
 }

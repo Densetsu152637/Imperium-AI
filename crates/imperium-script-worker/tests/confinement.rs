@@ -174,8 +174,9 @@ fn the_worker_exits_without_reading_when_confinement_fails() {
     } else if cfg!(target_os = "macos") {
         "sandbox_init"
     } else {
-        // Without a hook, an unconfined platform refuses by itself.
-        "platform"
+        // Started by hand rather than by the daemon's confined launch, the worker is not at Low
+        // integrity, and refuses by itself.
+        "integrity"
     };
     let mut command = Command::new(worker_path());
     if cfg!(any(target_os = "linux", target_os = "macos")) {
@@ -219,20 +220,40 @@ async fn no_program_runs_when_confinement_is_forced_to_fail() {
         }
         other => panic!("expected Unavailable, got {other:?}"),
     }
+    let reason = launcher.check().await.unwrap_err();
+    assert!(reason.contains(stage), "{reason}");
+    assert!(common::launcher().check().await.is_ok());
 }
 
-/// Windows is launched confined by the daemon in stage 1b; until then nothing runs there.
+/// F10 on Windows: every stage of the daemon's confined launch, and each of the worker's own
+/// checks, fails closed. No program runs, the reason names the stage, and the slot is returned.
 #[cfg(windows)]
 #[tokio::test]
-async fn windows_reports_code_mode_unavailable() {
-    let error = common::launcher()
-        .start("print(1)", &common::quick_limits())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(error, imperium_script::ScriptError::Unavailable(_)),
-        "{error:?}"
-    );
+async fn no_program_runs_when_any_windows_stage_is_forced_to_fail() {
+    for stage in [
+        "labels", "token", "job", "folder", "pipes", "process", "assign", "resume",
+    ] {
+        let launcher = common::launcher().with_forced_failure(stage);
+        match launcher.start("print(1)", &common::quick_limits()).await {
+            Err(imperium_script::ScriptError::Unavailable(reason)) => {
+                assert!(reason.contains(stage), "{stage}: {reason}");
+            }
+            other => panic!("{stage}: expected Unavailable, got {other:?}"),
+        }
+        let reason = launcher.check().await.unwrap_err();
+        assert!(reason.contains(stage), "{stage}: {reason}");
+        assert_eq!(
+            launcher.free_slots(),
+            8,
+            "{stage}: the slot was not returned"
+        );
+    }
+    for stage in ["integrity", "privileges", "job"] {
+        let launcher = common::launcher().with_args(["--force-confinement-failure", stage]);
+        let reason = launcher.check().await.unwrap_err();
+        assert!(reason.contains(stage), "worker {stage}: {reason}");
+    }
+    assert!(common::launcher().check().await.is_ok());
 }
 
 #[allow(dead_code)]
