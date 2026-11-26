@@ -4,8 +4,10 @@
 //! killing the shell's group would miss `sleep 60 &`. The PTY's child leads a new session (its
 //! session id is its pid) and every process it starts stays in that session unless it calls
 //! `setsid`. So the daemon lists the processes of that session, sends `SIGHUP` (and `SIGCONT`) to
-//! each, waits 2 s, then freezes (`SIGSTOP`, repeated until none runs: a stopped process cannot
-//! fork) and `SIGKILL`s them, for at most 30 s.
+//! each, waits 2 s, then runs the freeze-and-kill loop of [`crate::freeze`] for at most 30 s.
+//!
+//! The session leader (the supervisor on Linux, the shell on macOS) is never stopped, only
+//! killed: stopping the supervisor would stop the very process that is ending the tree.
 //!
 //! On Linux the child is the supervisor, which also ends processes that left the session; this
 //! sweep then only catches what survives it (for example after the supervisor itself was
@@ -24,20 +26,23 @@ use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal, getpid};
 
+use crate::freeze::{self, Candidate, Delivery};
+
 /// How long `SIGHUP` gets before the freeze and kill.
 const HUP_WAIT: Duration = Duration::from_secs(2);
-/// The most the freeze and kill repeats: the daemon's thread must not wait for ever.
+/// The most the freeze and kill goes on: the daemon's thread must not wait for ever.
 const KILL_WAIT: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
 
-/// A process of the session.
+/// A process of the session. `start` is its start time on Linux (checked again before each
+/// signal) and 0 on macOS.
 struct Member {
     pid: Pid,
+    start: u64,
     /// Live and not stopped, so it may still fork.
     running: bool,
-    /// The start time the listing saw (Linux: checked again before each signal).
-    #[cfg(target_os = "linux")]
-    start: u64,
+    /// In `D` state: killed at once.
+    disk_wait: bool,
 }
 
 /// The live members of session `sid`. A zombie thread-group leader with live threads is live.
@@ -63,8 +68,9 @@ fn members(sid: Pid) -> Vec<Member> {
             }
             Some(Member {
                 pid,
-                running: is_running(raw, stat.state),
                 start: stat.start,
+                running: is_running(raw, stat.state),
+                disk_wait: stat.state == 'D',
             })
         })
         .collect()
@@ -101,31 +107,49 @@ fn members(sid: Pid) -> Vec<Member> {
             }
             Some(Member {
                 pid,
+                start: 0,
                 running: process.status() != ProcessStatus::Stop,
+                disk_wait: process.status() == ProcessStatus::UninterruptibleDiskSleep,
             })
         })
         .collect()
 }
 
-/// Signals a member.
+/// Signals a process of the session.
 #[cfg(target_os = "linux")]
-fn signal_member(member: &Member, signal: Signal, sid: Pid) {
+fn signal_member(pid: i32, start: u64, signal: Signal, sid: Pid) -> Delivery {
     use crate::supervisor::read_stat;
+    use rustix::io::Errno;
     use rustix::process::{PidfdFlags, pidfd_open, pidfd_send_signal};
 
-    let Ok(pidfd) = pidfd_open(member.pid, PidfdFlags::empty()) else {
-        return;
+    let Some(pid_value) = Pid::from_raw(pid) else {
+        return Delivery::Gone;
     };
-    if read_stat(member.pid.as_raw_pid())
-        .is_some_and(|stat| stat.start == member.start && stat.session == sid.as_raw_pid())
-    {
-        let _ = pidfd_send_signal(&pidfd, signal);
+    let Ok(pidfd) = pidfd_open(pid_value, PidfdFlags::empty()) else {
+        return Delivery::Gone;
+    };
+    if !read_stat(pid).is_some_and(|stat| stat.start == start && stat.session == sid.as_raw_pid()) {
+        return Delivery::Gone;
+    }
+    match pidfd_send_signal(&pidfd, signal) {
+        Ok(()) => Delivery::Sent,
+        Err(Errno::PERM) => Delivery::Denied,
+        Err(_) => Delivery::Gone,
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn signal_member(member: &Member, signal: Signal, _sid: Pid) {
-    let _ = rustix::process::kill_process(member.pid, signal);
+fn signal_member(pid: i32, _start: u64, signal: Signal, _sid: Pid) -> Delivery {
+    use rustix::io::Errno;
+
+    let Some(pid) = Pid::from_raw(pid) else {
+        return Delivery::Gone;
+    };
+    match rustix::process::kill_process(pid, signal) {
+        Ok(()) => Delivery::Sent,
+        Err(Errno::PERM) => Delivery::Denied,
+        Err(_) => Delivery::Gone,
+    }
 }
 
 /// Ends every process of session `sid`: `SIGHUP`, then freeze and `SIGKILL`.
@@ -135,9 +159,9 @@ pub(crate) fn sweep(sid: Pid) {
         return;
     }
     for member in &first {
-        signal_member(member, Signal::HUP, sid);
+        signal_member(member.pid.as_raw_pid(), member.start, Signal::HUP, sid);
         // A stopped process gets its `SIGHUP` only once it continues.
-        signal_member(member, Signal::CONT, sid);
+        signal_member(member.pid.as_raw_pid(), member.start, Signal::CONT, sid);
     }
     let deadline = Instant::now() + HUP_WAIT;
     while Instant::now() < deadline {
@@ -146,23 +170,20 @@ pub(crate) fn sweep(sid: Pid) {
         }
         sleep(POLL);
     }
-    let deadline = Instant::now() + KILL_WAIT;
-    while Instant::now() < deadline {
-        let left = members(sid);
-        if left.is_empty() {
-            return;
-        }
-        // Freeze what runs and look again at once; kill only when nothing can fork.
-        let running: Vec<&Member> = left.iter().filter(|member| member.running).collect();
-        if !running.is_empty() {
-            for member in running {
-                signal_member(member, Signal::STOP, sid);
-            }
-            continue;
-        }
-        for member in &left {
-            signal_member(member, Signal::KILL, sid);
-        }
-        sleep(Duration::from_millis(1));
-    }
+    let leader = sid.as_raw_pid();
+    freeze::run(
+        || {
+            members(sid)
+                .into_iter()
+                .map(|member| Candidate {
+                    key: (member.pid.as_raw_pid(), member.start),
+                    running: member.running,
+                    disk_wait: member.disk_wait,
+                    leader: member.pid.as_raw_pid() == leader,
+                })
+                .collect()
+        },
+        |candidate, signal| signal_member(candidate.key.0, candidate.key.1, signal, sid),
+        Instant::now() + KILL_WAIT,
+    );
 }

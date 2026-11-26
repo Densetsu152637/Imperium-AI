@@ -398,3 +398,59 @@ fn a_zombie_leader_with_a_live_thread_is_ended() {
     pty.end();
     wait_until("the process to be gone", || !alive_threads(leader));
 }
+
+/// A `vfork` parent waits, in `D` state, for its child to `exec` or exit; if the child stops itself
+/// first, the parent never shows `T` and a loop that waits for everything to freeze would wait
+/// for ever. Everything must be killed all the same.
+#[test]
+fn a_vfork_parent_stuck_behind_a_stopped_child_is_ended() {
+    let Some(cc) = find_program("cc").or_else(|| find_program("gcc")) else {
+        eprintln!("no C compiler is installed; skipped");
+        return;
+    };
+    let dir = work_dir();
+    let source = dir.path().join("vfork_stuck.c");
+    let helper = dir.path().join("vfork_stuck");
+    std::fs::write(
+        &source,
+        "#include <signal.h>\n#include <stdio.h>\n#include <unistd.h>\n\
+         int main(void) {\n\
+         \x20   printf(\"VFORK:%d:E\\n\", (int)getpid());\n\
+         \x20   fflush(stdout);\n\
+         \x20   pid_t child = vfork();\n\
+         \x20   if (child == 0) {\n\
+         \x20       kill(getpid(), SIGSTOP);\n\
+         \x20       _exit(0);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    )
+    .unwrap();
+    let compiled = Command::new(&cc)
+        .arg("-w")
+        .arg("-o")
+        .arg(&helper)
+        .arg(&source)
+        .status()
+        .unwrap();
+    assert!(compiled.success(), "the helper did not compile");
+    let pty = Pty::spawn(spec(SHELL, &["-c", helper.to_str().unwrap()], dir.path())).unwrap();
+    let supervisor = pty.pid().unwrap();
+    let parent = wait_for_number(&pty, "VFORK:", ":E");
+    // Give the child time to stop itself; the parent then waits on it.
+    sleep(Duration::from_millis(500));
+    assert!(
+        alive_threads(parent),
+        "the vfork parent must be stuck, alive"
+    );
+    let started = Instant::now();
+    pty.end();
+    assert!(
+        started.elapsed() < BOUND,
+        "end took {:?}; a stuck descendant held the kill",
+        started.elapsed()
+    );
+    wait_until("the tree to be gone", || {
+        !alive_threads(parent) && session_members(supervisor).is_empty()
+    });
+}

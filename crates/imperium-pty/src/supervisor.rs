@@ -34,6 +34,8 @@ use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SI
 use signal_hook::flag;
 use signal_hook::low_level::pipe;
 
+use crate::freeze::{self, Candidate, Delivery};
+
 /// The hidden subcommand of the daemon's executable that runs the supervisor.
 pub const SUBCOMMAND: &str = "pty-supervisor";
 
@@ -46,6 +48,9 @@ pub const EXIT_DAEMON_GONE: i32 = 122;
 /// Something else in the set-up failed.
 pub const EXIT_SETUP: i32 = 124;
 
+/// The longest the freeze and kill goes on before the supervisor logs what is left and exits: a
+/// process that cannot be ended must not keep the supervisor spinning for ever.
+const SAFETY_CAP: Duration = Duration::from_secs(120);
 /// How long `SIGHUP` gets before `SIGKILL`.
 const HUP_WAIT: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(20);
@@ -466,12 +471,24 @@ fn reap(shell: Pid, status: &mut Option<i32>) {
 }
 
 /// A descendant seen by the walk: its pid, the start time that tells it from a later process with
-/// the same pid, and whether it is live and whether it is running (see [`is_live`]).
+/// the same pid, and whether it is live, running (see [`is_live`]) or in disk wait (`D`).
 struct Target {
     pid: i32,
     start: u64,
     live: bool,
     running: bool,
+    disk_wait: bool,
+}
+
+impl Target {
+    fn candidate(&self) -> Candidate {
+        Candidate {
+            key: (self.pid, self.start),
+            running: self.running,
+            disk_wait: self.disk_wait,
+            leader: false,
+        }
+    }
 }
 
 /// Every descendant of `root`: children by parent pid, recursively. Zombies are kept in the
@@ -505,6 +522,7 @@ fn descendants(root: i32) -> Vec<Target> {
                 start: stat.start,
                 live: is_live(pid, stat.state),
                 running: is_running(pid, stat.state),
+                disk_wait: stat.state == 'D',
             });
         }
     }
@@ -526,26 +544,32 @@ fn live_descendants(root: i32) -> Vec<Target> {
 /// that ended and whose pid was reused has a later start time, and an open pidfd cannot follow
 /// the pid to another process. A zombie leader is signalled too: a signal to a thread group
 /// reaches its live threads.
-fn send_signal(target: &Target, signal: Signal) {
-    let Some(pid) = pid_of(target.pid) else {
-        return;
+fn send_signal(pid: i32, start: u64, signal: Signal) -> Delivery {
+    let Some(pid_value) = pid_of(pid) else {
+        return Delivery::Gone;
     };
-    let Ok(pidfd) = pidfd_open(pid, PidfdFlags::empty()) else {
-        return;
+    let Ok(pidfd) = pidfd_open(pid_value, PidfdFlags::empty()) else {
+        return Delivery::Gone;
     };
-    if read_stat(target.pid).is_some_and(|stat| stat.start == target.start) {
-        let _ = pidfd_send_signal(&pidfd, signal);
+    if !read_stat(pid).is_some_and(|stat| stat.start == start) {
+        return Delivery::Gone;
+    }
+    match pidfd_send_signal(&pidfd, signal) {
+        Ok(()) => Delivery::Sent,
+        Err(Errno::PERM) => Delivery::Denied,
+        Err(_) => Delivery::Gone,
     }
 }
 
 /// Ends every descendant: `SIGHUP` (and `SIGCONT`, so a stopped one gets it) and up to 2 s of
-/// reaping; then, until nothing is left, **freeze, then kill**: every running descendant gets
-/// `SIGSTOP` and the walk is repeated at once until none runs (a stopped process cannot fork, so
-/// a fork bomb is overtaken), then all get `SIGKILL`. There is no bound after the grace: the
-/// supervisor does not exit while a live descendant remains (the daemon's `end` then falls back
-/// to its session sweep, which can also kill the supervisor). A future form is `cgroup.kill` of
-/// a cgroup of the terminal's own, which kills the whole tree atomically where the host
-/// delegates a cgroup to the user.
+/// reaping; then [`freeze::run`]: running descendants are frozen with `SIGSTOP` (a stopped process
+/// cannot fork, so a fork bomb is overtaken) while every one already stopped, in disk wait or
+/// stubborn is `SIGKILL`ed in the same round, so progress never waits on a process that will not
+/// freeze. A descendant that answers `EPERM` (setuid, privileged) is set aside and reported: it is
+/// the documented residual. After [`SAFETY_CAP`] the supervisor logs what is left and exits (the
+/// daemon's session sweep can still try). A future form is `cgroup.kill` of a cgroup of the
+/// terminal's own, which kills the whole tree atomically where the host delegates a cgroup to the
+/// user.
 fn kill_all(me: Pid, shell: Pid, status: &mut Option<i32>) {
     let root = me.as_raw_pid();
     let first = live_descendants(root);
@@ -554,8 +578,8 @@ fn kill_all(me: Pid, shell: Pid, status: &mut Option<i32>) {
         return;
     }
     for target in &first {
-        send_signal(target, Signal::HUP);
-        send_signal(target, Signal::CONT);
+        send_signal(target.pid, target.start, Signal::HUP);
+        send_signal(target.pid, target.start, Signal::CONT);
     }
     let deadline = Instant::now() + HUP_WAIT;
     loop {
@@ -565,26 +589,30 @@ fn kill_all(me: Pid, shell: Pid, status: &mut Option<i32>) {
         }
         sleep(POLL);
     }
-    loop {
-        reap(shell, status);
-        let left = live_descendants(root);
-        if left.is_empty() {
-            break;
-        }
-        // Freeze what still runs and look again at once, with no sleep: the walk finds the
-        // children it forked meanwhile.
-        let running: Vec<&Target> = left.iter().filter(|target| target.running).collect();
-        if !running.is_empty() {
-            for target in running {
-                send_signal(target, Signal::STOP);
-            }
-            continue;
-        }
-        for target in &left {
-            send_signal(target, Signal::KILL);
-        }
-        // Everything is frozen and killed; give the kernel a moment to end and reap it.
-        sleep(Duration::from_millis(1));
+    let outcome = freeze::run(
+        || {
+            reap(shell, status);
+            live_descendants(root)
+                .iter()
+                .map(Target::candidate)
+                .collect()
+        },
+        |candidate, signal| send_signal(candidate.key.0, candidate.key.1, signal),
+        Instant::now() + SAFETY_CAP,
+    );
+    if !outcome.denied.is_empty() {
+        let pids: Vec<i32> = outcome.denied.iter().map(|&(pid, _)| pid).collect();
+        say(&format!(
+            "could not signal {} descendant(s), permission denied: {pids:?}",
+            pids.len()
+        ));
+    }
+    if outcome.left > 0 {
+        say(&format!(
+            "giving up after {} s with {} descendant(s) still alive",
+            SAFETY_CAP.as_secs(),
+            outcome.left
+        ));
     }
     reap(shell, status);
 }
@@ -638,29 +666,27 @@ mod tests {
         let pid = i32::try_from(child.id()).unwrap();
         let start = process_start_time(child.id()).unwrap();
         // A different start time is a pid that was reused since the walk: nothing is sent.
-        send_signal(
-            &Target {
-                pid,
-                start: start + 1,
-                live: true,
-                running: true,
-            },
-            Signal::KILL,
-        );
-        sleep(Duration::from_millis(200));
-        assert!(
-            child.try_wait().unwrap().is_none(),
+        assert_eq!(
+            send_signal(pid, start + 1, Signal::KILL),
+            Delivery::Gone,
             "a process with another start time was signalled"
         );
-        send_signal(
-            &Target {
-                pid,
-                start,
-                live: true,
-                running: true,
-            },
-            Signal::KILL,
-        );
+        sleep(Duration::from_millis(200));
+        assert!(child.try_wait().unwrap().is_none());
+        assert_eq!(send_signal(pid, start, Signal::KILL), Delivery::Sent);
         assert!(!child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn a_process_we_may_not_signal_is_denied_not_spun_on() {
+        // pid 1 belongs to root (or, in a container, to its init): an unprivileged `SIGSTOP`
+        // is refused with EPERM.
+        let Some(start) = read_stat(1).map(|stat| stat.start) else {
+            return;
+        };
+        if rustix::process::getuid().is_root() {
+            return;
+        }
+        assert_eq!(send_signal(1, start, Signal::STOP), Delivery::Denied);
     }
 }

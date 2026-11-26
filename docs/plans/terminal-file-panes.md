@@ -801,6 +801,15 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     supervisor, `taskkill` is run from the System32 folder (`SHGetKnownFolderPath`);
     `Spec.supervisor` and `Spec.daemon` must never come from untrusted input (documented). The
     residuals are in goal 6.
+  - **Review round 3 (B2):** the freeze-and-kill loop is shared (`freeze.rs`) and cannot spin or
+    stall: each round kills what it already saw stopped as it stops what runs; a process in `D`
+    state (a `vfork` parent whose child stopped before `exec`, a stalled network file system) is
+    killed at once, as is one still running after three `SIGSTOP`s; a process that answers
+    `EPERM` (setuid, privileged) is set aside and logged, the documented residual; a no-progress
+    round backs off (1 ms doubling to 50 ms); the supervisor gives up with a log after 120 s and
+    the daemon's sweep after 30 s; the sweep never stops the supervisor, only kills it. Tests: a C
+    helper whose `vfork` child stops itself before `exec` (the parent sits in `D`), and unit tests
+    of the loop with a fake that refuses signals, one that never stops, and the ordering rules.
   - **Known window:** a Ctrl+C that reaches the supervisor between its `exec` and the handlers
     being installed (milliseconds) has the default action and ends it; the test sends the Ctrl+C
     once the supervisor reports its handlers in place. The supervisor's poll also wakes every
@@ -854,7 +863,10 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   clock abstraction so tests do not wait.
 - Status: pending
 - Outcome: -
-- Handoff notes: no agent path is added (no tool, no `session.run_tool` entry, no hook event).
+- Handoff notes: stage 2a must test the production path: the daemon's own executable started
+  through `/proc/self/exe pty-supervisor` (stage 1's tests start the supervisor through a test
+  binary, and the `main` dispatch is only built, not run, by them).
+  No agent path is added (no tool, no `session.run_tool` entry, no hook event).
 
 ### Stage 2b: Terminal protocol and the gate
 

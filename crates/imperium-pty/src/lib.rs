@@ -17,6 +17,8 @@
 //! passes [`Spec::env`] as the whole environment. A missing working folder falls back to
 //! `$HOME` silently, so [`Pty::spawn`] checks the folder itself.
 
+#[cfg(unix)]
+mod freeze;
 mod ring;
 mod spawner;
 #[cfg(target_os = "linux")]
@@ -736,7 +738,9 @@ impl Pty {
     /// The third value is the exit, **only if it was already announced to the earlier
     /// subscribers**: such a subscriber would never get an [`Event::Exited`], so it is handed the
     /// exit here, under the same lock. If the shell has ended but the announcement is still
-    /// pending (the reader is draining, up to a second), the callback gets the event instead.
+    /// pending (the reader is draining, up to a second), the callback gets the event instead. A
+    /// callback is **not registered** once the exit was announced: nothing more will come, and
+    /// the returned [`SubscriptionId`] then names nothing.
     pub fn subscribe(
         &self,
         from: u64,
