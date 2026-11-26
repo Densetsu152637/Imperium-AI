@@ -31,7 +31,7 @@ use imperium_api::encoding::hex;
 use imperium_config::Paths;
 use imperium_protocol::methods::{PluginsApprovalChallengeResult, PluginsApproveResult};
 
-use crate::plugin_records::{self, ApprovalKind, ApprovalVerifier};
+use crate::plugin_records::{self, ApprovalKind, ApprovalVerifier, Subject};
 
 pub(crate) mod presence;
 
@@ -184,6 +184,23 @@ pub(crate) struct Asked<'a> {
     pub(crate) hash: &'a str,
     pub(crate) runs: &'a str,
     pub(crate) now_ms: u64,
+    /// A plugin folder or a skill folder.
+    pub(crate) subject: Subject,
+}
+
+/// The folder (canonical), its content hash, the digest an approval is bound to and the name the
+/// presence prompt shows, as they are now.
+fn content_for(
+    subject: Subject,
+    folder: &Path,
+) -> Result<(PathBuf, String, String, String), String> {
+    match subject {
+        Subject::Plugin => {
+            let (canon, hash, runs, plugin) = plugin_records::content(folder)?;
+            Ok((canon, hash, runs, plugin.name))
+        }
+        Subject::Skill => crate::skill_records::content(folder),
+    }
 }
 
 /// `plugins.approval_challenge`: answered only to a peer passing checks 1 to 4, and only while
@@ -195,9 +212,12 @@ pub(crate) fn challenge(
     asked: &Asked<'_>,
 ) -> Result<PluginsApprovalChallengeResult, String> {
     identify.identify(peer)?;
-    let (canon, hash, runs, _) = plugin_records::content(asked.folder)?;
+    let (canon, hash, runs, _) = content_for(asked.subject, asked.folder)?;
     if hash != asked.hash || runs != asked.runs {
-        return Err("the plugin is not what was shown: inspect it again".into());
+        return Err(format!(
+            "the {} is not what was shown: inspect it again",
+            asked.subject.noun()
+        ));
     }
     let (challenge, expires_unix_ms) = challenges.issue(canon, &hash, &runs, asked.now_ms);
     Ok(PluginsApprovalChallengeResult {
@@ -209,6 +229,7 @@ pub(crate) fn challenge(
 /// What checks 1 to 5 established about an approval: the folder and the content the challenge
 /// was issued for, and the plugin id the presence prompt names.
 pub(crate) struct Redeemed {
+    subject: Subject,
     folder: PathBuf,
     hash: String,
     runs: String,
@@ -233,14 +254,21 @@ pub(crate) fn redeem(
         .map_err(|error| format!("{}: {error}", asked.folder.display()))?;
     challenges.redeem(token, &canon, asked.hash, asked.runs, asked.now_ms)?;
     // The folder must still hold what the challenge was issued for.
-    let (_, hash, runs, plugin) = plugin_records::content(&canon)?;
+    let (_, hash, runs, name) = content_for(asked.subject, &canon)?;
     if hash != asked.hash || runs != asked.runs {
-        return Err("the plugin changed since the challenge: nothing was recorded".into());
+        return Err(format!(
+            "the {} changed since the challenge: nothing was recorded",
+            asked.subject.noun()
+        ));
     }
-    let plugin = plugin_records::record_for(paths, &canon)
-        .and_then(|record| record.id)
-        .unwrap_or(plugin.name);
+    let plugin = match asked.subject {
+        Subject::Plugin => plugin_records::record_for(paths, &canon)
+            .and_then(|record| record.id)
+            .unwrap_or(name),
+        Subject::Skill => name,
+    };
     Ok(Redeemed {
+        subject: asked.subject,
         folder: canon,
         hash,
         runs,
@@ -269,14 +297,25 @@ pub(crate) fn conclude(
     // The check can take minutes: the peer must still be the app that asked.
     identify.identify(peer)?;
     // `record_approval` reads the folder again and refuses content other than the challenged.
-    plugin_records::record_approval(
-        paths,
-        verifier,
-        &redeemed.folder,
-        kind,
-        &redeemed.hash,
-        &redeemed.runs,
-    )?;
+    let recorded = match redeemed.subject {
+        Subject::Plugin => plugin_records::record_approval(
+            paths,
+            verifier,
+            &redeemed.folder,
+            kind,
+            &redeemed.hash,
+            &redeemed.runs,
+        ),
+        Subject::Skill => crate::skill_records::record_approval(
+            paths,
+            verifier,
+            &redeemed.folder,
+            kind,
+            &redeemed.hash,
+            &redeemed.runs,
+        ),
+    };
+    recorded?;
     Ok(kind)
 }
 
@@ -377,6 +416,7 @@ mod tests {
             hash: &hash,
             runs: &runs,
             now_ms: 0,
+            subject: Subject::Plugin,
         };
         let mut challenges = Challenges::default();
         let error = challenge(&InstalledApp, None, &mut challenges, &asked).unwrap_err();
@@ -440,6 +480,7 @@ mod tests {
             hash: "0000",
             runs: &runs,
             now_ms: 0,
+            subject: Subject::Plugin,
         };
         assert!(challenge(&LocalPeer, Some(&peer), &mut challenges, &stale).is_err());
         let stale = Asked {
@@ -447,6 +488,7 @@ mod tests {
             hash: &hash,
             runs: "0000",
             now_ms: 0,
+            subject: Subject::Plugin,
         };
         assert!(challenge(&LocalPeer, Some(&peer), &mut challenges, &stale).is_err());
         assert!(challenges.open.is_empty());
@@ -461,6 +503,7 @@ mod tests {
             hash: &hash,
             runs: &runs,
             now_ms: 0,
+            subject: Subject::Plugin,
         };
         let peer = Peer::test_peer();
         let mut challenges = Challenges::default();
@@ -521,6 +564,7 @@ mod tests {
             hash: &hash,
             runs: &runs,
             now_ms: 0,
+            subject: Subject::Plugin,
         };
         let peer = Peer::test_peer();
         let mut challenges = Challenges::default();
@@ -593,6 +637,7 @@ mod tests {
             hash: &hash,
             runs: &runs,
             now_ms: 0,
+            subject: Subject::Plugin,
         };
         let peer = Peer::test_peer();
         let presence = Answers::new(Presence::Passed);
@@ -634,7 +679,7 @@ mod tests {
                 "runs_digest": "r",
                 "challenge": "c",
                 "presence": "passed",
-                "kind": "counted",
+                "approved_kind": "counted",
                 "approval_kind": "counted",
             }))
             .unwrap();
@@ -642,6 +687,9 @@ mod tests {
         let mut keys: Vec<_> = read.as_object().unwrap().keys().cloned().collect();
         keys.sort();
         assert_eq!(keys, ["challenge", "name", "runs_digest", "sha256"]);
+        // `kind` names what is approved (a plugin or a skill), never an approval kind: one that
+        // claims `counted` is refused.
+        assert!(crate::plugin_records::Subject::parse(Some("counted")).is_err());
 
         // And with the check refused, nothing is recorded whatever the client claimed.
         let home = home();
@@ -662,6 +710,7 @@ mod tests {
             hash: &hash,
             runs: &runs,
             now_ms: 0,
+            subject: Subject::Plugin,
         };
         let peer = Peer::test_peer();
         let mut challenges = Challenges::default();
@@ -734,7 +783,10 @@ mod tests {
     }
 
     fn folder_params(name: &str) -> imperium_protocol::methods::PluginsInspectFolderParams {
-        imperium_protocol::methods::PluginsInspectFolderParams { name: name.into() }
+        imperium_protocol::methods::PluginsInspectFolderParams {
+            name: name.into(),
+            kind: None,
+        }
     }
 
     /// A symbolic link or junction `link` to the folder `target`, or false where the OS or the
@@ -768,6 +820,7 @@ mod tests {
             hash: &preview.sha256,
             runs: &preview.runs_digest,
             now_ms: 0,
+            subject: Subject::Plugin,
         };
         let peer = Peer::test_peer();
         let mut challenges = Challenges::default();
@@ -907,6 +960,175 @@ mod tests {
         assert!(preview.notes.iter().all(|note| !note.contains("no record")));
     }
 
+    /// Asks for and answers the challenge for the previewed folder `folder` of `subject`.
+    fn approve_folder(
+        home: &Home,
+        folder: &Path,
+        subject: Subject,
+        preview: &imperium_protocol::methods::PluginPreview,
+    ) -> PluginsApproveResult {
+        let asked = Asked {
+            folder,
+            hash: &preview.sha256,
+            runs: &preview.runs_digest,
+            now_ms: 0,
+            subject,
+        };
+        let peer = Peer::test_peer();
+        let mut challenges = Challenges::default();
+        let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
+        approve(
+            &home.paths,
+            &LocalPeer,
+            &TestVerifier,
+            &Answers::new(Presence::Passed),
+            Some(&peer),
+            &mut challenges,
+            &asked,
+            &issued.challenge,
+        )
+    }
+
+    #[test]
+    fn an_agent_installed_url_plugin_is_approved_through_the_challenge_and_then_loads() {
+        let home = home();
+        let state = state_of(&home);
+        // A plugin with no hooks or servers that an agent installed from a git URL: recorded
+        // with `origin = agent` and no approval.
+        let folder = home.paths.config_dir().join("plugins/from-url");
+        std::fs::create_dir_all(folder.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            folder.join(".claude-plugin/plugin.json"),
+            r#"{"name":"from-url"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(folder.join("agents")).unwrap();
+        std::fs::write(
+            folder.join("agents/helper.md"),
+            "---
+name: helper
+description: Helps.
+---
+Help.
+",
+        )
+        .unwrap();
+        let (canon, hash, runs, plugin) = plugin_records::content(&folder).unwrap();
+        plugin_records::add_record(
+            &home.paths,
+            &canon,
+            plugin_records::Record {
+                name: plugin.name,
+                origin: plugin_records::Origin::Agent,
+                id: None,
+                source: Some("https://example.test/from-url.git".into()),
+                commit: None,
+                hash,
+                runs,
+                approval: None,
+            },
+        )
+        .unwrap();
+        let gate = plugin_records::gate(&home.paths, &TestVerifier);
+        assert!(
+            gate.withheld.iter().any(
+                |withheld| withheld.folder == folder && withheld.reason.contains("desktop app")
+            ),
+            "{:?}",
+            gate.withheld
+        );
+        // The folder preview (item 60's path) names where an agent got it.
+        let preview =
+            crate::plugin_install::inspect_folder(&state, &folder_params("from-url")).unwrap();
+        assert!(
+            preview
+                .notes
+                .iter()
+                .any(|note| note.contains("https://example.test/from-url.git"))
+        );
+        assert_eq!(preview.agents.len(), 1);
+        let result = approve_folder(&home, &canon, Subject::Plugin, &preview);
+        if cfg!(windows) {
+            // Check 7: this unsigned test build counts nothing on Windows, whatever the verifier.
+            assert!(!result.approved);
+            let gate = plugin_records::gate(&home.paths, &TestVerifier);
+            assert!(
+                gate.withheld
+                    .iter()
+                    .any(|withheld| withheld.folder == folder)
+            );
+            return;
+        }
+        assert!(result.approved, "{:?}", result.reason);
+        let gate = plugin_records::gate(&home.paths, &TestVerifier);
+        assert!(
+            gate.withheld
+                .iter()
+                .all(|withheld| withheld.folder != folder),
+            "{:?}",
+            gate.withheld
+        );
+        assert!(gate.allowed.contains(&folder));
+        // The record is still the agent's, now with the approval.
+        let record = plugin_records::record_for(&home.paths, &folder).unwrap();
+        assert_eq!(record.origin, plugin_records::Origin::Agent);
+        assert!(record.approval.is_some());
+    }
+
+    #[test]
+    fn an_agent_installed_skill_is_approved_through_the_challenge_and_then_loads() {
+        let home = home();
+        let state = state_of(&home);
+        let folder = home.paths.config_dir().join("skills/notes");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("SKILL.md"),
+            "---
+name: notes
+description: Takes notes.
+---
+Write things down.
+",
+        )
+        .unwrap();
+        crate::skill_records::record_install(
+            &home.paths,
+            &folder,
+            "notes",
+            Some("https://example.test/notes.git".into()),
+            None,
+        )
+        .unwrap();
+        let gate = crate::skill_records::gate(&home.paths, &TestVerifier);
+        assert_eq!(gate.withheld.len(), 1);
+        let params = imperium_protocol::methods::PluginsInspectFolderParams {
+            name: "notes".into(),
+            kind: Some("skill".into()),
+        };
+        let preview = crate::plugin_install::inspect_folder(&state, &params).unwrap();
+        assert_eq!(preview.source_kind, "skill");
+        assert_eq!(preview.skills, ["notes"]);
+        assert!(preview.hooks.is_empty() && preview.servers.is_empty());
+        // A skill's name does not resolve as a plugin folder.
+        assert!(crate::plugin_install::resolve_subject(&state, Subject::Plugin, "notes").is_err());
+        let canon = folder.canonicalize().unwrap();
+        let result = approve_folder(&home, &canon, Subject::Skill, &preview);
+        if cfg!(windows) {
+            assert!(!result.approved);
+            assert_eq!(
+                crate::skill_records::gate(&home.paths, &TestVerifier)
+                    .withheld
+                    .len(),
+                1
+            );
+            return;
+        }
+        assert!(result.approved, "{:?}", result.reason);
+        let gate = crate::skill_records::gate(&home.paths, &TestVerifier);
+        assert!(gate.withheld.is_empty(), "{:?}", gate.withheld);
+        assert_eq!(gate.agent.len(), 1);
+    }
+
     #[test]
     fn a_change_after_the_challenge_or_the_approval_voids_it() {
         let home = home();
@@ -917,6 +1139,7 @@ mod tests {
             hash: &preview.sha256,
             runs: &preview.runs_digest,
             now_ms: 0,
+            subject: Subject::Plugin,
         };
         let peer = Peer::test_peer();
         let mut challenges = Challenges::default();
@@ -981,6 +1204,7 @@ mod tests {
             hash: &hash,
             runs: &runs,
             now_ms: 0,
+            subject: Subject::Plugin,
         };
         let peer = Peer::test_peer();
         let mut challenges = Challenges::default();
@@ -1005,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_that_runs_from_dot_git_is_flagged_because_the_hash_leaves_it_out() {
+    fn dot_git_is_hashed_only_when_a_hook_mentions_it() {
         for text in [
             "sh /x/p/.git/hooks/h.sh",
             "C:\\x\\.git\\h.bat",
@@ -1019,6 +1243,14 @@ mod tests {
             "a\\.git\\h.bat",
             "\\.git\\h.bat",
             "x --dir='.git'",
+            "GIT_DIR=.git sh h",
+            "x --git-dir=.git",
+            "cd .git;sh h",
+            "cd .git&&sh h",
+            "cd .git||sh h",
+            "cd .git|sh",
+            "$(cd .git)",
+            "PYTHONPATH=.git/lib",
         ] {
             assert!(crate::plugin_install::mentions_dot_git(text), "{text}");
         }
@@ -1035,27 +1267,108 @@ mod tests {
         }
         let home = home();
         let state = state_of(&home);
-        let clean = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        assert!(clean.notes.iter().all(|note| !note.contains(".git")));
+        let hash = || {
+            crate::plugin_install::inspect_folder(&state, &folder_params("p"))
+                .unwrap()
+                .sha256
+        };
+        // Every edit writes a file of a new length, so a cached hash is never reused by mistake.
+        let size = std::cell::Cell::new(0usize);
+        let edit = |relative: &str| {
+            let path = home.folder.join(".git").join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            size.set(size.get() + 1);
+            std::fs::write(path, "x".repeat(size.get())).unwrap();
+        };
+        let hook = |command: &str| {
+            let hooks = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": command}
+            ]}]}});
+            std::fs::write(home.folder.join("hooks/hooks.json"), hooks.to_string()).unwrap();
+        };
+        // Without a mention, the top-level `.git` is not content.
+        edit("h.sh");
+        let first = hash();
+        edit("h.sh");
+        assert_eq!(hash(), first);
+        // Any mention of `.git`, however the path is built, hashes all of it: an edit to
+        // `.git/refs/x` (a file git rewrites) then voids the approval.
+        for command in [
+            "sh .git/refs/x",
+            "sh .git/hooks/pre-commit",
+            "sh .git/hooks/\"../refs/x\"",
+            "cd .git/hooks && sh ../refs/x",
+            "cd .git;sh refs/x",
+            "GIT_DIR=.git sh h",
+            "sh ${CLAUDE_PLUGIN_ROOT}/.git/$X",
+            "python .git/x.lock",
+        ] {
+            hook(command);
+            for file in ["refs/x", "FETCH_HEAD", "x.lock", "hooks/pre-commit"] {
+                let last = hash();
+                edit(file);
+                let added = hash();
+                assert_ne!(added, last, "{command}: {file}");
+                edit(file);
+                assert_ne!(hash(), added, "{command}: {file}");
+            }
+        }
+        // No mention: `.git` stays out of the hash again.
+        hook("true");
+        let last = hash();
+        edit("refs/x");
+        assert_eq!(hash(), last);
+    }
+
+    #[test]
+    fn a_server_that_runs_from_dot_git_through_its_arguments_has_it_hashed() {
+        let home = home();
+        let state = state_of(&home);
+        std::fs::create_dir_all(home.folder.join(".git/refs")).unwrap();
+        let hash = || {
+            crate::plugin_install::inspect_folder(&state, &folder_params("p"))
+                .unwrap()
+                .sha256
+        };
+        // Arguments that reach `.git` from the server's own folder: `../refs/x` from `.git/hooks`.
         std::fs::write(
-            home.folder.join("hooks/hooks.json"),
-            r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"sh ${CLAUDE_PLUGIN_ROOT}/.git/h.sh"}]}]}}"#,
+            home.folder.join(".mcp.json"),
+            r#"{"mcpServers":{"s":{"command":"sh","args":["-c","cd .git/hooks && sh ../refs/x"]}}}"#,
         )
         .unwrap();
-        let flagged = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        assert!(
-            flagged
-                .notes
-                .iter()
-                .any(|note| note.contains("WARNING") && note.contains(".git"))
-        );
-        // The exclusion the warning is about: a file under the top-level `.git` is not hashed.
+        std::fs::write(home.folder.join(".git/refs/x"), "1").unwrap();
+        let first = hash();
+        std::fs::write(home.folder.join(".git/refs/x"), "22").unwrap();
+        assert_ne!(hash(), first);
+    }
+
+    #[test]
+    fn a_server_that_runs_from_dot_git_through_its_environment_has_it_hashed() {
+        let home = home();
+        let state = state_of(&home);
         std::fs::create_dir_all(home.folder.join(".git")).unwrap();
-        std::fs::write(home.folder.join(".git/h.sh"), "one").unwrap();
-        let first = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        std::fs::write(home.folder.join(".git/h.sh"), "two").unwrap();
-        let second = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        assert_eq!(first.sha256, second.sha256);
+        std::fs::write(home.folder.join(".git/x.js"), "one").unwrap();
+        let hash = || {
+            crate::plugin_install::inspect_folder(&state, &folder_params("p"))
+                .unwrap()
+                .sha256
+        };
+        std::fs::write(
+            home.folder.join(".mcp.json"),
+            r#"{"mcpServers":{"s":{"command":"node","env":{"MODE":"fast"}}}}"#,
+        )
+        .unwrap();
+        let before = hash();
+        std::fs::write(home.folder.join(".git/x.js"), "two").unwrap();
+        assert_eq!(hash(), before);
+        std::fs::write(
+            home.folder.join(".mcp.json"),
+            r#"{"mcpServers":{"s":{"command":"node","env":{"NODE_OPTIONS":"--require ./.git/x.js"}}}}"#,
+        )
+        .unwrap();
+        let first = hash();
+        std::fs::write(home.folder.join(".git/x.js"), "three").unwrap();
+        assert_ne!(hash(), first);
     }
 
     #[test]
@@ -1089,10 +1402,58 @@ mod tests {
     fn an_exact_folder_name_must_be_one_plain_name() {
         let home = home();
         let state = state_of(&home);
-        // A path or a name with a separator never names a folder, exact or not.
+        // A path or a name with a separator never names a folder.
         assert!(crate::plugin_install::resolve_for_approval(&state, "../plugins/p").is_err());
         assert!(crate::plugin_install::resolve_for_approval(&state, "./p").is_err());
         assert!(crate::plugin_install::resolve_for_approval(&state, "p/").is_err());
         assert!(crate::plugin_install::resolve_for_approval(&state, "p").is_ok());
+    }
+
+    #[test]
+    fn a_folder_name_wins_over_a_record_that_carries_the_same_name() {
+        let home = home();
+        let state = state_of(&home);
+        // Another folder whose record is named "p" (id `p@m`): looked up as a plugin name, "p" is
+        // ambiguous between the two folders; named exactly, it is the folder "p" and nothing else.
+        let other = copy_plugin(&home, "x..y");
+        plugin_records::add_record(
+            &home.paths,
+            &other,
+            plugin_records::Record {
+                name: "p".into(),
+                origin: plugin_records::Origin::User,
+                id: Some("p@m".into()),
+                source: None,
+                commit: None,
+                hash: String::new(),
+                runs: String::new(),
+                approval: None,
+            },
+        )
+        .unwrap();
+        assert!(crate::plugin_install::resolve(&state, "p").is_err());
+        let found = crate::plugin_install::resolve_for_approval(&state, "p").unwrap();
+        assert_eq!(found, home.folder.canonicalize().unwrap());
+        // A name that is not a plain folder name (`..`) is looked up, never taken as exact: a
+        // third folder whose record is named "x..y" makes it ambiguous.
+        let found = crate::plugin_install::resolve_for_approval(&state, "x..y").unwrap();
+        assert_eq!(found.canonicalize().unwrap(), other.canonicalize().unwrap());
+        let third = copy_plugin(&home, "third");
+        plugin_records::add_record(
+            &home.paths,
+            &third,
+            plugin_records::Record {
+                name: "x..y".into(),
+                origin: plugin_records::Origin::User,
+                id: None,
+                source: None,
+                commit: None,
+                hash: String::new(),
+                runs: String::new(),
+                approval: None,
+            },
+        )
+        .unwrap();
+        assert!(crate::plugin_install::resolve_for_approval(&state, "x..y").is_err());
     }
 }

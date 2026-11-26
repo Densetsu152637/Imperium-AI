@@ -180,11 +180,23 @@ impl DaemonState {
         // can only add to the set.
         let mut plugin_dirs = vec![self.paths.config_dir().join("plugins")];
         plugin_dirs.extend(settings.extensions.plugin_dirs.iter().cloned());
+        // Plugins in `extensions.plugin_dirs` skip the load-time gate, and a trusted project's own
+        // `.imperium/config.toml` can add folders to an environment's list, which only this merge
+        // sees: no file tool writes into any of them (a hook there would run next session unasked).
+        for dir in &settings.extensions.plugin_dirs {
+            imperium_policy::permissions::protect_dir(dir);
+            imperium_policy::permissions::refuse_writes_under(dir);
+        }
         let mut downloaded = imperium_extensions::plugins::agent_installed_folders(&plugin_dirs);
         // The load-time gate: a plugin it withholds loads nothing, whatever `disabled_plugins` says.
         let gate =
             crate::plugin_records::gate(&self.paths, crate::plugin_records::production_verifier());
         downloaded.extend(gate.downloaded);
+        // The same for the skills an agent installed into the user's own skills folder: those the
+        // user has not approved are not loaded, and approved ones rank after project and plugin
+        // skills, so they can never shadow one.
+        let skill_gate =
+            crate::skill_records::gate(&self.paths, crate::plugin_records::production_verifier());
         let plugin_secrets = crate::plugin_install::plugin_secrets(Arc::clone(&self.secrets));
         let mut extensions = imperium_extensions::load_with_secrets(
             &Sources {
@@ -212,6 +224,14 @@ impl DaemonState {
                 eager: self.settings().extensions.eager.clone(),
                 downloaded,
                 allowed: Some(gate.allowed),
+                skill_gate: imperium_extensions::SkillGate {
+                    withheld: skill_gate
+                        .withheld
+                        .iter()
+                        .map(|withheld| withheld.folder.clone())
+                        .collect(),
+                    agent: skill_gate.agent.clone(),
+                },
             },
             &|plugin| profile.is_none_or(|profile| profile.allows_plugin(plugin)),
             project_trusted,
@@ -225,6 +245,15 @@ impl DaemonState {
             extensions
                 .notices
                 .push(format!("plugin {name} is withheld: {}", withheld.reason));
+        }
+        for withheld in &skill_gate.withheld {
+            let name = withheld.folder.file_name().map_or_else(
+                || withheld.folder.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            extensions
+                .notices
+                .push(format!("skill {name} is withheld: {}", withheld.reason));
         }
         // HTTP hooks' `${secret:name}` headers read the keychain, nothing else.
         let secrets = Arc::clone(&self.secrets);
@@ -460,5 +489,238 @@ mod tests {
         let error = set("stray", true, None).unwrap_err();
         assert!(error.contains("withheld"), "{error}");
         assert!(set("stray", false, None).is_ok());
+    }
+
+    #[test]
+    fn what_an_agent_installed_adds_nothing_until_the_user_approves_it() {
+        use crate::plugin_records::{self, ApprovalKind, Origin, Record, TestVerifier};
+        let home = tempfile::tempdir().unwrap();
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        // Writes the marker, so records can be written.
+        state.migrate_plugins();
+        let config = state.paths().config_dir().to_path_buf();
+        // A plugin an agent installed: agents, a skill and a command, and no hooks or servers.
+        let root = config.join("plugins/helper");
+        write(
+            &root.join(".claude-plugin/plugin.json"),
+            r#"{"name": "helper"}"#,
+        );
+        write(
+            &root.join("agents/x.md"),
+            "---
+name: x
+description: Does x.
+---
+You do x.
+",
+        );
+        write(
+            &root.join("skills/style/SKILL.md"),
+            "---
+name: style
+description: House style
+---
+body
+",
+        );
+        write(
+            &root.join("commands/go.md"),
+            "---
+description: Go
+---
+Go.
+",
+        );
+        let seen = plugin_records::measure(&root).unwrap();
+        let plugin = plugin_records::parse(&root).unwrap();
+        plugin_records::add_record(
+            state.paths(),
+            &root,
+            Record {
+                name: plugin.name.clone(),
+                origin: Origin::Agent,
+                id: None,
+                source: None,
+                commit: None,
+                hash: seen.hash,
+                runs: imperium_extensions::plugins::runs(&plugin).digest(),
+                approval: None,
+            },
+        )
+        .unwrap();
+        // Two skills an agent installed: one named like the plugin's skill, one of its own.
+        let same = config.join("skills/agent-style");
+        write(
+            &same.join("SKILL.md"),
+            "---
+name: style
+description: Shadow
+---
+body
+",
+        );
+        let solo = config.join("skills/solo");
+        write(
+            &solo.join("SKILL.md"),
+            "---
+name: solo
+description: On its own
+---
+body
+",
+        );
+        for dir in [&same, &solo] {
+            crate::skill_records::record_install(state.paths(), dir, "x", None, None).unwrap();
+        }
+        // The user's own skill is never gated.
+        write(
+            &config.join("skills/mine/SKILL.md"),
+            "---
+name: mine
+description: Hand-made
+---
+body
+",
+        );
+        let project = tempfile::tempdir().unwrap();
+        let load = || {
+            let settings = state.settings();
+            state.extensions(project.path(), &settings, None, None, &[])
+        };
+
+        // Nothing it brings is loaded or listed before the approval.
+        let before = load();
+        assert!(before.agent("x").is_none());
+        assert!(before.agents_index().is_none());
+        assert!(
+            before
+                .commands
+                .iter()
+                .all(|command| !command.name.ends_with("go"))
+        );
+        let names: Vec<&str> = before.skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["mine"], "{names:?}");
+        assert!(
+            before
+                .notices
+                .iter()
+                .any(|notice| notice.contains("plugin helper is withheld")
+                    && notice.contains("desktop app")),
+            "{:?}",
+            before.notices
+        );
+        assert!(
+            before
+                .notices
+                .iter()
+                .any(|notice| notice.contains("skill solo is withheld")),
+            "{:?}",
+            before.notices
+        );
+
+        // Approved (the app's identity checks decide that elsewhere), they load.
+        let (_, hash, runs, _) = plugin_records::content(&root).unwrap();
+        plugin_records::record_approval(
+            state.paths(),
+            &TestVerifier,
+            &root,
+            ApprovalKind::Counted,
+            &hash,
+            &runs,
+        )
+        .unwrap();
+        for dir in [&same, &solo] {
+            let (_, hash, runs, _) = crate::skill_records::content(dir).unwrap();
+            crate::skill_records::record_approval(
+                state.paths(),
+                &TestVerifier,
+                dir,
+                ApprovalKind::Counted,
+                &hash,
+                &runs,
+            )
+            .unwrap();
+        }
+        let after = load();
+        assert!(after.agent("x").is_some());
+        assert!(after.agents_index().is_some());
+        assert!(
+            after
+                .commands
+                .iter()
+                .any(|command| command.name.ends_with("go"))
+        );
+        assert!(after.skills.iter().any(|skill| skill.name == "solo"));
+        // The agent's skill never shadows the plugin's skill of the same name.
+        let style: Vec<_> = after.skills.iter().filter(|s| s.name == "style").collect();
+        assert_eq!(style.len(), 1);
+        assert!(style[0].dir.starts_with(&root), "{:?}", style[0].dir);
+    }
+}
+
+#[cfg(test)]
+mod environment_plugin_folder_tests {
+    use imperium_config::{Config, Layer, Paths};
+
+    use super::*;
+
+    #[test]
+    fn a_plugin_folder_an_environment_adds_is_refused_to_file_tools() {
+        let home = tempfile::tempdir().unwrap();
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        let tools = tempfile::tempdir().unwrap();
+        let folder = tools.path().join("plugins");
+        let hook = folder.join("p/hooks/hooks.json");
+        let shown = hook.to_string_lossy().replace('\\', "/");
+        assert!(!imperium_policy::permissions::refused_write(&shown));
+        // The settings of a session in an environment whose trusted project added the folder.
+        let mut merged = (*state.settings()).clone();
+        merged.extensions.plugin_dirs = vec![folder.clone()];
+        let project = tempfile::tempdir().unwrap();
+        let _ = state.extensions(project.path(), &merged, None, None, &[]);
+        assert!(imperium_policy::permissions::refused_write(&shown));
+        // Only that folder: a neighbour is untouched.
+        let beside = tools
+            .path()
+            .join("src/main.rs")
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert!(!imperium_policy::permissions::refused_write(&beside));
+    }
+}
+
+#[cfg(test)]
+mod refused_configuration_tests {
+    use imperium_config::{Config, Layer, Paths};
+    use imperium_policy::permissions::refused_write;
+
+    use super::*;
+
+    fn shown(path: std::path::PathBuf) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
+    #[test]
+    fn config_toml_models_toml_and_the_installed_runtimes_are_refused_to_file_tools() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let _state = DaemonState::new(paths.clone(), settings, None);
+        for guarded in [
+            paths.user_config_file(),
+            paths.app_models_file(),
+            paths.data_dir().join("runtimes"),
+            paths
+                .data_dir()
+                .join("runtimes")
+                .join("llama.cpp/b1/llama-server"),
+        ] {
+            let guarded = shown(guarded);
+            assert!(refused_write(&guarded), "{guarded}");
+        }
+        let beside = shown(paths.config_dir().join("config.toml.bak"));
+        assert!(!refused_write(&beside), "{beside}");
     }
 }

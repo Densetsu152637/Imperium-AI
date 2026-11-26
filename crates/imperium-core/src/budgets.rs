@@ -23,6 +23,9 @@ use crate::state::DaemonState;
 
 /// The source of calls that come through the OpenAI-compatible API server.
 pub(crate) const SOURCE_API: &str = "api";
+/// The source of the model calls of auto-fix wakes: a woken turn of a session, and the sessions
+/// auto-fix starts. `github.autofix.budget_usd_per_day` counts them.
+pub(crate) const SOURCE_AUTOFIX: &str = "autofix";
 
 /// How many days of usage are kept.
 const KEEP_DAYS: u64 = 400;
@@ -119,6 +122,9 @@ pub struct BudgetBook {
     /// the user's, but not part of their settings (they are never saved).
     environment_limits: Mutex<BTreeMap<String, Vec<Budget>>>,
     next_reservation: std::sync::atomic::AtomicU64,
+    /// Sessions whose calls count under a source (an entry point) for now, with how many
+    /// holders tagged them: an auto-fix wake's turn, or a session auto-fix started.
+    sources: Mutex<HashMap<String, (String, u32)>>,
 }
 
 /// What an admitted call is expected to use until it is recorded.
@@ -158,6 +164,7 @@ impl BudgetBook {
             reserved: Mutex::new(Vec::new()),
             environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
+            sources: Mutex::default(),
         }
     }
 
@@ -248,6 +255,47 @@ impl BudgetBook {
     /// Forgets a reservation made by [`BudgetBook::reserve`].
     pub fn release(&self, id: u64) {
         lock(&self.reserved).retain(|held| held.id != id);
+    }
+
+    /// Counts `session_id`'s model calls under `source` from now on, until as many
+    /// [`BudgetBook::untag_session`] calls as tags were made.
+    pub fn tag_session(&self, session_id: &str, source: &str) {
+        let mut sources = lock(&self.sources);
+        let entry = sources
+            .entry(session_id.to_string())
+            .or_insert_with(|| (source.to_string(), 0));
+        entry.0 = source.to_string();
+        entry.1 += 1;
+    }
+
+    /// Drops one tag of [`BudgetBook::tag_session`].
+    pub fn untag_session(&self, session_id: &str) {
+        let mut sources = lock(&self.sources);
+        if let Some(entry) = sources.get_mut(session_id) {
+            entry.1 = entry.1.saturating_sub(1);
+            if entry.1 == 0 {
+                sources.remove(session_id);
+            }
+        }
+    }
+
+    /// The source `session_id`'s calls count under now, if any.
+    pub fn source_of(&self, session_id: &str) -> Option<String> {
+        lock(&self.sources)
+            .get(session_id)
+            .map(|(source, _)| source.clone())
+    }
+
+    /// What calls from `source` cost today (local time), in US dollars.
+    pub fn spent_today(&self, today: NaiveDate, source: &str) -> f64 {
+        let scope = Budget {
+            scope: BudgetScope::Source,
+            target: source.to_string(),
+            window: BudgetWindow::Daily,
+            ..Budget::default()
+        };
+        let (days, ..) = self.usage(today, 1, Some(&scope));
+        days.iter().map(|day| day.cost_usd).sum()
     }
 
     pub fn settings(&self) -> BudgetSettings {
@@ -677,9 +725,10 @@ pub(crate) fn watch_session(
             let Some(state) = daemon.upgrade() else {
                 return;
             };
+            // A wake's turn, or a session auto-fix started, counts under its source too.
             let call = CallUsage {
                 environment_id: environment_id.clone(),
-                source: None,
+                source: state.budgets().source_of(&session_id),
                 spec: model,
                 tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
                 cost_usd,
@@ -752,6 +801,7 @@ fn label(state: &DaemonState, budget: &Budget) -> String {
             .map_or_else(|_| budget.target.clone(), |env| env.name),
         BudgetScope::Endpoint | BudgetScope::Model => budget.target.clone(),
         BudgetScope::Source if budget.target == SOURCE_API => "API calls".to_string(),
+        BudgetScope::Source if budget.target == SOURCE_AUTOFIX => "Auto-fix wakes".to_string(),
         BudgetScope::Source => budget.target.clone(),
     };
     format!("{scope}, {window}")
@@ -1354,6 +1404,7 @@ mod tests {
             reserved: Mutex::new(Vec::new()),
             environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
+            sources: Mutex::default(),
             inner: Mutex::new((
                 settings(vec![Budget {
                     id: "router".into(),
@@ -1391,6 +1442,7 @@ mod tests {
             reserved: Mutex::new(Vec::new()),
             environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
+            sources: Mutex::default(),
             inner: Mutex::new((
                 settings(vec![
                     weekly_env(100, BudgetAction::Ask),
@@ -1461,6 +1513,7 @@ mod tests {
             reserved: Mutex::new(Vec::new()),
             environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
+            sources: Mutex::default(),
             inner: Mutex::new((
                 settings(vec![
                     cost_budget("wide", 10.0, BudgetAction::Ask),
@@ -1496,6 +1549,7 @@ mod tests {
             reserved: Mutex::new(Vec::new()),
             environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
+            sources: Mutex::default(),
             inner: Mutex::new((
                 settings(vec![cost_budget("asks", 1.0, BudgetAction::Ask)]),
                 Ledger::default(),
@@ -1509,6 +1563,7 @@ mod tests {
             reserved: Mutex::new(Vec::new()),
             environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
+            sources: Mutex::default(),
             inner: Mutex::new((
                 settings(vec![cost_budget("warns", 1.0, BudgetAction::Warn)]),
                 Ledger::default(),
@@ -1594,6 +1649,7 @@ mod tests {
             reserved: Mutex::new(Vec::new()),
             environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
+            sources: Mutex::default(),
             inner: Mutex::new((
                 settings(vec![Budget {
                     id: "api-cap".into(),
@@ -1621,5 +1677,30 @@ mod tests {
         let stop = book.gate(today, api).expect("the API budget is used up");
         assert_eq!(stop.budget.id, "api-cap");
         assert!(book.gate(today, origin(None, Some("llamacpp:m"))).is_none());
+    }
+
+    #[test]
+    fn a_tagged_sessions_calls_count_toward_its_source_today() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = BudgetBook::load(dir.path().join("usage.json"), settings(Vec::new()));
+        let today = date("2026-11-11");
+        book.record(today, &call(None, "openrouter:m", 10, Some(0.25)));
+        book.tag_session("s1", SOURCE_AUTOFIX);
+        book.tag_session("s1", SOURCE_AUTOFIX);
+        assert_eq!(book.source_of("s1").as_deref(), Some(SOURCE_AUTOFIX));
+        book.record(
+            today,
+            &CallUsage {
+                source: book.source_of("s1"),
+                ..call(None, "openrouter:m", 10, Some(0.5))
+            },
+        );
+        assert!((book.spent_today(today, SOURCE_AUTOFIX) - 0.5).abs() < 1e-9);
+        assert_eq!(book.spent_today(date("2026-11-12"), SOURCE_AUTOFIX), 0.0);
+        // Two holders tagged it: it counts under the source until both let go.
+        book.untag_session("s1");
+        assert!(book.source_of("s1").is_some());
+        book.untag_session("s1");
+        assert_eq!(book.source_of("s1"), None);
     }
 }

@@ -24,6 +24,16 @@ impl Paths {
         }
     }
 
+    /// Config, data and cache in the one folder `dir`, as on macOS, where the platform gives all
+    /// three the same folder. For tests of what a shared folder must not guard.
+    pub fn in_one_folder(dir: &Path) -> Self {
+        Paths {
+            config_dir: dir.to_path_buf(),
+            data_dir: dir.to_path_buf(),
+            cache_dir: dir.to_path_buf(),
+        }
+    }
+
     /// All locations as subdirectories of one root.
     pub fn under(home: &Path) -> Self {
         Paths {

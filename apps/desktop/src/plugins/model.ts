@@ -21,6 +21,8 @@ import type {
   PluginsMarketplaceRefreshResult,
   PluginsMarketplaceRemoveResult,
   PluginsSuggestionsResult,
+  McpListResult,
+  SkillInfo,
 } from "@imperium/protocol";
 
 import { message, plain } from "../shared/plainText.ts";
@@ -141,7 +143,10 @@ export function pluginsApi(client: Caller, environment: string | null) {
     inspect: (id: string, revision?: string): Promise<PluginPreview> =>
       client.call<PluginPreview>("plugins.inspect", revision ? { id, revision } : { id }),
     /** What an installed folder that did not come from a marketplace would run, read from the folder itself. */
-    inspectFolder: (name: string): Promise<PluginPreview> => client.call<PluginPreview>("plugins.inspect_folder", { name }),
+    inspectFolder: (name: string, kind?: "skill"): Promise<PluginPreview> =>
+      client.call<PluginPreview>("plugins.inspect_folder", kind ? { name, kind } : { name }),
+    /** The skills an agent installed that the user has not approved, which no session loads. */
+    withheldSkills: async (): Promise<SkillInfo[]> => (await client.call<McpListResult>("mcp.list")).skills.filter((skill) => !!skill.withheld_reason),
     install: (preview: Pick<PluginPreview, "id" | "sha256">, env?: string | null): Promise<PluginsInstallResult> =>
       client.call<PluginsInstallResult>("plugins.install", env ? { id: preview.id, sha256: preview.sha256, environment: env } : { id: preview.id, sha256: preview.sha256 }),
     update: (preview: Pick<PluginPreview, "id" | "sha256">): Promise<PluginsUpdateResult> =>

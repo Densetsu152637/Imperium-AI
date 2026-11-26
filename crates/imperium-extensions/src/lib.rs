@@ -62,6 +62,20 @@ pub struct Sources {
     /// Folders of `plugin_dirs` outside `<config_dir>/plugins` are not affected. `None` gates
     /// nothing.
     pub allowed: Option<Vec<PathBuf>>,
+    /// The daemon's gate for the skills in `<config_dir>/skills` that an agent installed.
+    pub skill_gate: SkillGate,
+}
+
+/// Which skill folders of `<config_dir>/skills` the daemon's gate keeps out or ranks last: the
+/// ones an agent installed. A skill there that is in neither list is the user's own.
+#[derive(Debug, Clone, Default)]
+pub struct SkillGate {
+    /// Skill folders an agent installed that the user has not approved: not loaded at all.
+    pub withheld: Vec<PathBuf>,
+    /// Skill folders an agent installed and the user approved: loaded after every project and
+    /// plugin skill (origin `agent`), so one never shadows a skill of the same name from those
+    /// or from the user.
+    pub agent: Vec<PathBuf>,
 }
 
 /// Everything extensions contribute to a session.
@@ -256,28 +270,39 @@ pub fn load_with_secrets(
     let eager = |name: &str| !sources.lazy || sources.eager.iter().any(|eager| eager == name);
 
     let project = &sources.project_dir;
-    let mut skill_dirs = vec![
-        (sources.config_dir.join("skills"), "user".to_string()),
-        (project.join(".imperium/skills"), "project".to_string()),
-        (project.join(".claude/skills"), "project".to_string()),
-    ];
-    let mut command_dirs = vec![
-        (
-            sources.config_dir.join("commands"),
-            "user".to_string(),
-            None,
-        ),
-        (
-            project.join(".imperium/commands"),
-            "project".to_string(),
-            None,
-        ),
-        (
-            project.join(".claude/commands"),
-            "project".to_string(),
-            None,
-        ),
-    ];
+    // A repository can point a skills or commands folder anywhere on the machine, and a write by a
+    // file tool is judged by where the link leads, not by the name it was written under: so a
+    // project's folder reached through a link is not loaded, as for its agent files.
+    let mut project_folder = |shown: &str| -> Option<PathBuf> {
+        let dir = project.join(shown);
+        if agents::is_linked_below(&dir, project) {
+            if dir.exists() {
+                notices.push(format!(
+                    "{shown} is reached through a symbolic link, so its files were skipped"
+                ));
+            }
+            return None;
+        }
+        Some(dir)
+    };
+    let mut skill_dirs = vec![(sources.config_dir.join("skills"), "user".to_string())];
+    skill_dirs.extend(
+        [".imperium/skills", ".claude/skills"]
+            .into_iter()
+            .filter_map(&mut project_folder)
+            .map(|dir| (dir, "project".to_string())),
+    );
+    let mut command_dirs = vec![(
+        sources.config_dir.join("commands"),
+        "user".to_string(),
+        None,
+    )];
+    command_dirs.extend(
+        [".imperium/commands", ".claude/commands"]
+            .into_iter()
+            .filter_map(&mut project_folder)
+            .map(|dir| (dir, "project".to_string(), None)),
+    );
     let mut hooks = Vec::new();
     for hook in sources.hooks.iter().cloned() {
         match hook.into_hook("user config") {
@@ -312,7 +337,11 @@ pub fn load_with_secrets(
             });
         }
     }
-    let (mut skills, mut skill_problems) = skills::discover(&skill_dirs);
+    let (mut skills, mut skill_problems) = skills::discover_gated(
+        &skill_dirs,
+        &sources.skill_gate.withheld,
+        &sources.skill_gate.agent,
+    );
     for skill in &mut skills {
         skill.eager = eager(&skill.name);
     }
@@ -378,6 +407,7 @@ mod tests {
             eager: eager.iter().map(|name| name.to_string()).collect(),
             downloaded: Vec::new(),
             allowed: None,
+            skill_gate: SkillGate::default(),
         }
     }
 
@@ -766,6 +796,42 @@ body
             imperium_tools::SPAWNED_MARK,
             "IMPERIUM_SPAWNED_BY_DAEMON",
             "imperium-mcp keeps a copy of the name"
+        );
+    }
+
+    #[test]
+    fn a_project_folder_reached_through_a_link_loads_no_skills_or_commands() {
+        let (config, project) = fixture();
+        let outside = tempfile::tempdir().unwrap();
+        write(
+            &outside.path().join("skills/planted/SKILL.md"),
+            "---\nname: planted\ndescription: Planted\n---\nbody\n",
+        );
+        write(
+            &outside.path().join("commands/go.md"),
+            "---\ndescription: Go\n---\nGo.\n",
+        );
+        std::fs::create_dir_all(project.path().join(".claude")).unwrap();
+        if !make_link(
+            &outside.path().join("skills"),
+            &project.path().join(".claude/skills"),
+        ) || !make_link(
+            &outside.path().join("commands"),
+            &project.path().join(".claude/commands"),
+        ) {
+            eprintln!("skipped: this account cannot make a link");
+            return;
+        }
+        let loaded = load(&sources(config.path(), project.path(), true, &[]));
+        assert!(loaded.skills.iter().all(|skill| skill.name != "planted"));
+        assert!(loaded.commands.iter().all(|command| command.name != "go"));
+        assert!(
+            loaded
+                .notices
+                .iter()
+                .any(|notice| notice.contains(".claude/skills") && notice.contains("symbolic link")),
+            "{:?}",
+            loaded.notices
         );
     }
 }

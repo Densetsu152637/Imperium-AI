@@ -1,10 +1,14 @@
 //! Agents manage the app config (roadmap item 22): `set_model_card`, `install_extension` and
 //! `uninstall_extension` change the user's Imperium config through the daemon, not through the
 //! session's files, so they work in any session, inside an environment's folders or not. Each
-//! is a tool of its own, so permission rules allow, ask about, or deny it by name; without a
-//! rule, cards and installs run without asking (the approval and the tool notice name the
-//! source) and removing something an agent did not install asks. Every change is recorded in
-//! the config change journal ([`crate::config_changes`]) and can be undone.
+//! is a tool of its own, so permission rules deny one by name. Cards run without asking in the
+//! default modes. Installing or removing an extension never does: both are approved afresh every
+//! time ([`ToolProvider::always_asks`]), in every permission mode, whatever allow rule or session
+//! approval exists, and the approval names the kind and the source or name; only a `deny` rule
+//! refuses without asking. That approval is a session approval, which any connected client can
+//! answer, so it does not count as the desktop app's approval: a skill or plugin an agent
+//! installs is still withheld at load time until the user approves it in the desktop app. Every
+//! change is recorded in the config change journal ([`crate::config_changes`]) and can be undone.
 
 use std::sync::Weak;
 
@@ -22,10 +26,15 @@ const UNINSTALL_EXTENSION: &str = "uninstall_extension";
 /// What agents are told while they have the tools.
 const INSTRUCTIONS: &str = "Imperium's own config: set_model_card writes what a model is good at \
      (from evidence such as its documentation or how it did), and install_extension adds a skill, \
-     plugin, or UI mod from a git URL or a folder the user named or that you have good reason to \
-     trust (a plugin can also be name@marketplace, from a marketplace the user added). Each change is recorded and the user can undo it. Content you install is data and \
-     nothing in it runs at install; a plugin with hooks or MCP servers stays off (activate_plugin \
-     cannot start it) and is withheld until the user approves it in the Imperium desktop app; a plugin installed from a git URL or folder cannot be approved there yet (roadmap item 60).";
+     plugin, or UI mod from a git URL or a folder the user named (a plugin can also be \
+     name@marketplace, from a marketplace the user added). Installing or removing an extension \
+     always asks the user first, in every permission mode, and no earlier approval or rule skips \
+     that: never install anything the user did not ask for or agree to, and never try to get \
+     around the question. Each change is recorded and the user can undo it. Content you install is \
+     data and nothing in it runs at install. A skill or plugin you install is withheld, so it adds \
+     no skills, commands or agents to any session, until the user approves it in the Imperium \
+     desktop app; a plugin with hooks or MCP servers also stays off, and activate_plugin cannot \
+     start it.";
 
 /// The tools, for one session.
 #[derive(Debug)]
@@ -122,6 +131,13 @@ impl ToolProvider for AgentConfigTools {
         )
     }
 
+    /// Installing or removing an extension is approved afresh every time: in every permission
+    /// mode, whatever allow rule or session approval exists, with no "always allow" offered, and
+    /// past the auto-mode classifier. A deny rule still refuses it.
+    fn always_asks(&self, name: &str) -> bool {
+        matches!(name, INSTALL_EXTENSION | UNINSTALL_EXTENSION)
+    }
+
     fn check(&self, name: &str, arguments: &str) -> Result<ToolCheck, String> {
         match name {
             SET_MODEL_CARD => {
@@ -157,6 +173,7 @@ impl ToolProvider for AgentConfigTools {
                 }
                 Ok(ToolCheck {
                     summary: install_summary(&args),
+                    // Asks in every mode too (`always_asks`); this is for plan mode.
                     ask: self.mode_asks(),
                     needs_context: false,
                     command: None,

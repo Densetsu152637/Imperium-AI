@@ -230,8 +230,33 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
             .iter()
             .map(|plugin| (plugin.skills_dir(), plugin.origin())),
     );
-    let (skills, mut skill_problems) = imperium_extensions::skills::discover(&skill_dirs);
+    // Skills an agent installed and the user has not approved are not loaded: they are listed
+    // after the others, with why, so the desktop app can offer to approve them.
+    let skill_gate =
+        crate::skill_records::gate(state.paths(), crate::plugin_records::production_verifier());
+    let withheld_dirs: Vec<PathBuf> = skill_gate
+        .withheld
+        .iter()
+        .map(|withheld| withheld.folder.clone())
+        .collect();
+    let (skills, mut skill_problems) =
+        imperium_extensions::skills::discover_gated(&skill_dirs, &withheld_dirs, &skill_gate.agent);
     problems.append(&mut skill_problems);
+    let held: Vec<(imperium_extensions::Skill, String)> = skill_gate
+        .withheld
+        .iter()
+        .filter_map(|withheld| {
+            let (found, _) = imperium_extensions::skills::discover_gated(
+                &[],
+                &[],
+                std::slice::from_ref(&withheld.folder),
+            );
+            found
+                .into_iter()
+                .next()
+                .map(|skill| (skill, withheld.reason.clone()))
+        })
+        .collect();
 
     // Named agents of plugins and the user (a project's are loaded per session, for trusted
     // projects only).
@@ -276,12 +301,18 @@ pub(crate) fn list(state: &DaemonState) -> McpListResult {
         plugins,
         skills: skills
             .into_iter()
-            .map(|skill| SkillInfo {
+            .map(|skill| (skill, None))
+            .chain(
+                held.into_iter()
+                    .map(|(skill, reason)| (skill, Some(reason))),
+            )
+            .map(|(skill, withheld_reason)| SkillInfo {
                 name: skill.name,
                 description: skill.description,
                 installed_from: crate::extension_install::read_source(&skill.dir),
                 origin: skill.origin,
                 dir: skill.dir.display().to_string(),
+                withheld_reason,
             })
             .collect(),
         agents: agents

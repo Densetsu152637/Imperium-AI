@@ -389,9 +389,15 @@ server. Agent text never reaches `sympify`, `parse_expr` or `eval`: a hand-writt
 small infix language, a size guard refuses runaway numbers before anything is computed, and a
 fixed table builds the result into SymPy objects. Each call is meant to run in a fresh worker
 process that has already imported SymPy, answers one call and exits; an audit hook ends the
-worker if anything opens a file, starts a process, compiles code or imports a module. The parser,
-guard, builder and worker exist so far, as the `sidecars/cas/` project and its `python-cas` CI
-job; the per-call resource limits, the server, its sandbox and its setup are later stages.
+worker if anything opens a file, starts a process, compiles code or imports a module. Each call
+has a CPU limit (15 s by default), a memory limit (1 GiB) and a wall clock (20 s, counted from
+when the call arrived, so time spent queued counts). On Linux the worker applies the CPU and
+memory limits itself; on macOS it applies the CPU limit, and the server polls the worker's memory
+every 50 ms, so a worker can overshoot the memory limit briefly, by at most 2 GiB; on Windows the
+limits come with the server's sandbox (a later stage). On Linux with Landlock, neither the server
+nor its workers can start programs outside the interpreter's installation. The parser, guard,
+builder, worker, limits and worker pool exist so far, as the `sidecars/cas/` project and its
+`python-cas` CI job; the MCP server, its sandbox and its setup are later stages.
 
 ### Resources, prompts, and sampling (implemented)
 
@@ -707,11 +713,17 @@ action: `allow` (run without asking), `ask` (ask even where the tool would not),
   working directory. Matching ignores case on Windows.
 - **Other tools** (MCP tools, web and browser tools, memory, and the app config tools
   `set_model_card`, `install_extension`, `uninstall_extension`): only rules without a pattern
-  match. The app config tools run without asking by default (removing an extension an agent
-  did not install asks); a rule narrows them to *ask* or *deny*
-  ([06](06-extensibility.md#agents-manage-the-app-config-implemented)). An install running
-  without asking does not let the installed code run: a plugin with hooks or MCP servers is
-  installed turned off, and `activate_plugin` (which never asks) cannot start it; it is withheld until the user approves it in the Imperium desktop app; a plugin installed from a git URL or folder cannot be approved there yet (roadmap item 60).
+  match. `set_model_card` runs without asking by default. `install_extension` and
+  `uninstall_extension` always ask, in every permission mode: an agent never installs an
+  extension without the user's explicit approval. They are the tool provider's `always_asks`
+  (as for `browser_download`, above): approved afresh for each call, not covered by "allow for
+  this session", an allow rule, pre-approval, the `auto` classifier or the `full` mode, with no
+  "always allow" rule offered; a deny rule or plan mode still refuses them
+  ([06](06-extensibility.md#agents-manage-the-app-config-implemented)). Approving the install does
+  not let the installed code run, or load: a skill or plugin an agent installs is withheld by
+  the load-time gate (no skills, commands, agents, hooks or servers) until the user approves it in
+  the Imperium desktop app, and a plugin with hooks or MCP servers is also installed turned off,
+  so `activate_plugin` (which never asks) cannot start it.
 - **The review pane's steps** `git_commit` (commit a session's changes) and
   `open_pull_request` (push the branch and open a pull request with `gh`): not agent tools but
   the user's own actions from the review pane, gated the same way with rules without a
@@ -782,7 +794,7 @@ allow, and tells the model to present its plan; it also refuses `start_session` 
 started would not be in plan mode) and `memory_remember`, `memory_edit` and `memory_forget`. Tools that never ask (searching the
 web or earlier sessions, `ask_user`, delegation) still run, and the app-config tools
 (`set_model_card`, `install_extension`, `uninstall_extension`) count as tools that ask in `ask`
-and `plan`.
+and `plan`; `install_extension` and `uninstall_extension` ask in every other mode too.
 
 **Woken turns are capped (implemented, pull-request card stage 7).** When the daemon wakes a
 session because someone wrote a review comment on its pull request
@@ -1151,10 +1163,10 @@ short for any reason says the same. A first line past the budget is shown cut, w
 bridge and the Claude harness (a caller that cannot give the window gets 32,000 characters).
 `list_dir` returns at most 500 entries per call, sorted, with a note (`use offset=500 to see more`);
 its optional `offset` skips entries. Edits stay UTF-8. `edit_file` takes an optional `replace_all`
-(boolean, default false; `"true"` and `"false"` in quotes are read as the flag): false keeps the exact, unique `old_string` rule (none or several matches
-is an error that names `replace_all`); true replaces every occurrence, says how many, and still
-refuses no match. `tool.before`
-and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
+(boolean, default false; `"true"` and `"false"` in quotes are read as the flag): false keeps the
+exact, unique `old_string` rule (none or several matches is an error that names `replace_all`);
+true replaces every occurrence, says how many, and still refuses no match. `tool.before` and
+`tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
 (`path`, `offset`, `limit`) whatever spelling the model used. Each reading is checked like any
 other path, and the first that lands inside a folder or grant is used. The OS tier makes every
 folder writable (one

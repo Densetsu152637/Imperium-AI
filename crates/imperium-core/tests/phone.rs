@@ -173,3 +173,76 @@ async fn a_paired_phone_approves_a_queued_action() {
         .insert("Authorization", format!("Bearer {token}").parse().unwrap());
     assert!(tokio_tungstenite::connect_async(again).await.is_err());
 }
+
+/// Terminal panes, D8: a paired phone gets no terminal. Every `terminal.*` call is refused with
+/// `-32005`, including on a session that has a terminal open, and nothing is opened.
+#[tokio::test]
+async fn a_paired_phone_cannot_open_or_type_into_a_terminal() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let settings = imperium_config::Config::from_layers([
+        imperium_config::Layer::defaults(),
+        imperium_config::Layer::new(
+            imperium_config::Source::User("test".into()),
+            "[phone]\nbind = \"127.0.0.1:0\"\n[models]\ndefault = \"fake:m\"\n\
+             [endpoints.fake]\nbase_url = \"http://127.0.0.1:9/v1\"\n[workflow]\nenabled = false"
+                .parse()
+                .unwrap(),
+        ),
+    ])
+    .settings()
+    .unwrap();
+    let daemon =
+        imperium_core::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+    let (session, _) = daemon
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    let session = session.id().to_string();
+    let address = daemon.start_phone().await.unwrap().unwrap();
+    let code = daemon.devices().new_code().code;
+    let paired: Value = reqwest::Client::new()
+        .post(format!("http://{address}/pair"))
+        .json(&json!({"code": code, "name": "Phone"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = paired["token"].as_str().unwrap().to_string();
+    let mut request = format!("ws://{address}/rpc").into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("Authorization", format!("Bearer {token}").parse().unwrap());
+    let (mut phone, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    send(
+        &mut phone,
+        1,
+        "system.handshake",
+        json!({"client": {"name": "phone", "version": "0"}, "protocol": PROTOCOL_VERSION}),
+    )
+    .await;
+    assert!(next(&mut phone, Some(1), None).await["result"].is_object());
+    let calls = [
+        "terminal.open",
+        "terminal.create",
+        "terminal.list",
+        "terminal.attach",
+        "terminal.input",
+        "terminal.resize",
+        "terminal.close",
+    ];
+    for (id, method) in (2..).zip(calls) {
+        send(
+            &mut phone,
+            id,
+            method,
+            json!({"session_id": session, "terminal_id": "t", "cols": 80, "rows": 24,
+                   "data": "ZWNobyBoaQo="}),
+        )
+        .await;
+        let refused = next(&mut phone, Some(id), None).await;
+        assert_eq!(refused["error"]["code"], -32005, "{method}: {refused}");
+    }
+    assert!(daemon.terminals().ids().is_empty());
+}

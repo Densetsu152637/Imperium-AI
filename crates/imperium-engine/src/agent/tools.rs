@@ -528,6 +528,22 @@ impl Agent {
         sticky: bool,
         floored: bool,
     ) -> bool {
+        self.approve_full(tool, summary, suggested, sticky, floored, false)
+            .await
+    }
+
+    /// [`Self::approve_with`], marking the request `user_only` when the daemon's own judgement
+    /// says only the user may answer it: the floor covers the call and it installs or removes an
+    /// extension, or writes a project's extension files at the path it resolves to.
+    pub(super) async fn approve_full(
+        &self,
+        tool: &str,
+        summary: &str,
+        suggested: Option<PermissionRule>,
+        sticky: bool,
+        floored: bool,
+        user_only: bool,
+    ) -> bool {
         if (!floored && self.shared.pre_approved.contains(tool))
             || (sticky && lock(&self.shared.allowed_tools).contains(tool))
         {
@@ -548,6 +564,7 @@ impl Agent {
             tool: tool.to_string(),
             summary: summary.to_string(),
             suggested_rule: suggested.map(wire_rule),
+            user_only: user_only.then_some(true),
         });
         // Observers only, started detached: a hook cannot answer the request, so it cannot widen
         // what is allowed, and it never delays the prompt.
@@ -654,13 +671,16 @@ impl Agent {
             }
             if gate != AutoGate::Allowed
                 && !self
-                    .approve_with(
+                    .approve_full(
                         rule_tool,
                         &gate.question(&summary),
                         suggest(rule_tool, &target)
                             .filter(|_| !(floored && check.command.is_none())),
                         sticky,
                         floored,
+                        // Installing or removing an extension is the user's call alone.
+                        check.command.is_none()
+                            && matches!(name, "install_extension" | "uninstall_extension"),
                     )
                     .await
             {
@@ -1161,12 +1181,17 @@ impl Agent {
             }
             if gate != AutoGate::Allowed
                 && !self
-                    .approve_with(
+                    .approve_full(
                         tool,
                         &gate.question(&summary),
                         suggest(tool, &target),
                         sticky,
                         floored,
+                        // The floor's own judgement, on the path as it resolves (`target`), not
+                        // as the model spelled it: a write to a project's extension files.
+                        floored
+                            && matches!(&target, Target::Path { absolute, .. }
+                                if imperium_policy::permissions::project_extension_file(absolute)),
                     )
                     .await
             {
@@ -1301,7 +1326,11 @@ pub(super) fn refused(why: Refusal, summary: &str) -> String {
     match why {
         Refusal::Rule => denied_by_rule(summary),
         Refusal::Protected => format!(
-            "{summary} was refused: it changes something only the user may change (the installed runtimes folder, or the trusted projects). Ask the user to do it themselves, for example with `imperium runtime install` or `imperium config set` from their own terminal."
+            "{summary} was refused: it changes something only the user may change (the trusted projects). Ask the user to do it themselves, with `imperium config set` from their own terminal."
+        ),
+        Refusal::Configuration => format!(
+            "{summary} was not run: {}.",
+            imperium_policy::permissions::REFUSED_WRITE_ADVICE
         ),
         Refusal::Plan => format!(
             "The session is in plan mode, which only reads: {summary} was not run. Read and \

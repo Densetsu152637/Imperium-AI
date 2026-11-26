@@ -3,7 +3,8 @@
 Revision: 2026-11-26, revision 5 (plan-gate review: F1 to F9, N1 to N5, R1 to R4 and S1 to S4 folded
 in);
 written against `experimental` at `3d5db869` (last updated). Roadmap
-[item 55](../12-roadmap.md#next-in-order). Status: planned (no stage started).
+[item 55](../12-roadmap.md#next-in-order). Status: in progress (stage 1 merged as #307; stage 2a in
+review).
 
 Claude's desktop app shows a terminal and a file viewer beside the conversation. Imperium gets the
 same two panes: a **Terminal** panel with one or more shells in the open session's working
@@ -68,7 +69,14 @@ OS sandbox and container tiers; a tier-0 command runs as the user and is covered
    itself crashes, the Linux supervisor and the Windows Job Object still end the terminal's
    processes (D5); on macOS the shell and its jobs survive it. Linux residual: if the supervisor
    itself is killed with `SIGKILL` (by the user or the OOM killer), its descendants are reparented
-   to init and are not ended.
+   to init and are not ended by the supervisor (the daemon's `end` still sweeps the session, but a
+   daemon crash does not). **Residuals that no stage closes**, because the terminal is the user's
+   shell and the user's rights: a shell can deliberately kill its own supervisor (`kill -9 $PPID`)
+   and then `setsid`; a privileged or setuid descendant cannot be signalled by an unprivileged
+   daemon; and a process started by a launcher outside the tree (`systemd-run --user`, `at`,
+   `cron`, `launchctl`, and on Windows `wmic`, `schtasks` or a COM activation) is not a
+   descendant at all. The goal is that nothing the shell starts the ordinary way outlives its
+   terminal, not a sandbox.
 7. **The file pane reads only inside the session's folders.** No path, `..`, absolute or UNC
    spelling, symbolic link, junction, Windows stream or device name, special file, other session's
    worktree, and no race that swaps a link in, makes `files.*` return bytes or names from outside
@@ -200,10 +208,13 @@ Each records the choice, the reasons, the rejected options and when to revisit i
       time again and exits at once if it differs (the pid was reused), and treats the pidfd turning
       readable as the daemon's death. Rejected: a daemon-owned Unix socket the supervisor connects
       to (another socket to secure and name). Stage 1 confirms against the pinned `portable-pty`
-      source that descriptors above 2 are closed and that argv reaches the child unchanged. Before
-      starting the shell the supervisor marks every descriptor it holds above 2 close-on-exec
-      (`/proc/self/fd`, `rustix::io::fcntl_setfd`; the pidfd is close-on-exec already); any pipe
-      the daemon creates for terminals is made with `pipe2(O_CLOEXEC)` in one step.
+      source that descriptors above 2 are closed and that argv reaches the child unchanged. The
+      supervisor does **not** sweep `/proc/self/fd` with `fcntl_setfd` (that needs a
+      `BorrowedFd` from a raw number, which is `unsafe`): everything it opens is close-on-exec by
+      construction (std and rustix always set it, the pidfd included), `portable-pty` has closed
+      what it inherited, and a test with a non-close-on-exec canary descriptor in the daemon
+      checks that only 0 to 2 reach the shell; any pipe the daemon creates for terminals is
+      made with `pipe2(O_CLOEXEC)` in one step.
     - **Process groups and Ctrl+C.** The supervisor is the PTY's session leader and starts in its
       foreground group. It starts the shell in a process group of its own
       (`CommandExt::process_group(0)`, the safe form of `setpgid(0, 0)`) and then, from the
@@ -222,13 +233,25 @@ Each records the choice, the reasons, the rejected options and when to revisit i
       never reads, writes or changes the terminal after the `tcsetpgrp`.
     - **One loop.** The supervisor runs a single `poll` over two descriptors and nothing else: the
       daemon's pidfd, and a self-pipe that `signal-hook` writes for `SIGCHLD`, `SIGHUP` and
-      `SIGTERM`. On `SIGCHLD` it reaps with `waitpid(-1, WNOHANG)` in a loop until nothing is left
-      to reap, noting the shell's status when the shell is reaped; it never blocks anywhere else.
-    - **Kill-all.** It walks `/proc` for its descendants (children by `PPid`, recursively), sends
-      `SIGHUP`, waits up to 2 s while reaping, then repeats the walk and sends `SIGKILL`, and repeats
-      walk, `SIGKILL` and reap until no descendant remains, at most 20 rounds or 5 s, then exits
-      with the shell's code (or 128 plus the signal). The repeat catches a process that forks while
-      it is being killed.
+      `SIGTERM` (with a 200 ms timeout as a net). On every wake it reaps with `wait4(-1, WNOHANG)`
+      (not `waitpid(None)`: that waits for the caller's process group only) in a loop until nothing
+      is left to reap, noting the shell's status when the shell is reaped; it never blocks
+      anywhere else.
+    - **Kill-all.** It walks `/proc` for its descendants (children by `PPid`, recursively, through
+      zombies: a thread-group leader that called `SYS_exit` shows state `Z` while its other
+      threads run, so a process counts as live when any `/proc/<pid>/task/*/stat` is not `Z`, and
+      a zombie leader is signalled too), sends `SIGHUP` and `SIGCONT`, waits up to 2 s while
+      reaping, then **freezes and kills**: every running descendant gets `SIGSTOP` and the walk is
+      repeated at once, with no sleep, until none runs (a stopped process cannot fork, so a fork
+      bomb is overtaken), then all get `SIGKILL`, and the cycle repeats until no live descendant
+      remains. There is no bound after the grace: the supervisor does not exit while one is left,
+      and the daemon's `end` (9 s, then its own session sweep with the same freeze and kill, 30 s
+      at most) can still kill the supervisor itself. Each signal goes through a pidfd opened after
+      the walk, only if the start time still matches (no pid reuse). The robust future form is
+      `cgroup.kill` on a cgroup of the terminal's own, which ends the whole tree atomically
+      where the host delegates a cgroup to the user; it is not used because that needs systemd or
+      a writable cgroup tree. The supervisor then exits with the shell's code (or 128 plus the
+      signal).
   - **macOS** has no subreaper: a process that deliberately leaves the session escapes
     ([goal 6](#goals)), and if the daemon crashes the shell and its jobs survive it (closing the PTY
     master sends `SIGHUP` to the foreground job only). The spawner-thread rule applies on every
@@ -239,7 +262,8 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     then closes the job. Rejected: atomic assignment with `PROC_THREAD_ATTRIBUTE_JOB_LIST`, which
     would mean replacing `portable-pty`'s ConPTY spawn with an unsafe `CreateProcessW` of our own in
     `imperium-ipc` for a window that the tree walk already covers. A daemon crash closes its last
-    handle to the job, which ends the job's processes.
+    handle to the job, which ends the job's processes. A shell that cannot be put in its job is
+    killed and the terminal refused (fail closed).
 - **D6. The shell and its environment.**
   - **Program.** `terminal.shell` (user layer only; not on the environment layer's allow-list, so a
     repository's `.imperium/config.toml` cannot choose what runs). Otherwise, on Unix the
@@ -729,8 +753,75 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   `portable-pty` uses `unsafe` internally (a dependency, allowed; the workspace's own crates stay
   `forbid(unsafe_code)`, so `prctl` goes through `nix`'s safe wrappers); the supervisor must stay
   tiny, because it runs for every Linux terminal.
-- Status: pending
-- Outcome: -
+- Status: implemented (#307, `0ab2baa2`)
+- Outcome:
+  - **`portable-pty` 0.9.0, read from source:** the Unix spawn closes every descriptor above 2 in
+    the child (`close_random_fds`, in the `pre_exec` hook, before `exec`), resets `SIGCHLD`,
+    `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGTERM` and `SIGALRM` to their defaults, clears the signal
+    mask, makes the child a session leader (`setsid`) and sets the PTY as its controlling terminal
+    (`TIOCSCTTY`). Argv reaches the program unchanged: `Command::new(<resolved path>)` with
+    `arg0` set to `argv[0]` and `args(argv[1..])`, no shell wrapping and no login rewriting for an
+    explicit program. Two traps, both handled: the environment starts as a copy of the parent's
+    and `SHELL` is always set (so the spawn calls `env_clear` and passes the whole environment),
+    and a working folder that does not exist falls back to `$HOME` silently (so `Pty::spawn`
+    checks the folder). On Windows it creates the ConPTY with `PSEUDOCONSOLE_INHERIT_CURSOR`,
+    passes no handle list, no job list and `bInheritHandles = 0`; the pseudo console sends a
+    cursor-position request (`ESC [ 6 n`) and **holds the shell back until it is answered**, so
+    the daemon's relay must deliver it to the emulator (xterm.js answers) and the tests answer it.
+  - **Decisions:** the supervisor's own `pidfd_open` check is repeated in `Pty::spawn` so the
+    refusal is a typed `SpawnError::MissingSyscall` before anything starts; the supervisor still
+    fails closed on its own (exit 121). `openat2` belongs to stage 6a, whose notes now say so. The
+    explicit sweep of `/proc/self/fd` with `fcntl_setfd` is **not done**: it needs a
+    `BorrowedFd` from a raw number, which is `unsafe`. Everything the supervisor opens is
+    close-on-exec by construction (std and rustix always set it), `portable-pty` has already
+    closed the inherited descriptors, and a test lists the shell's descriptors. Pid reuse in the
+    kill-all is **closed, not accepted**: each target is signalled through a pidfd opened after
+    the walk, only if the start time read from `/proc` still equals the walk's (a pidfd cannot
+    follow a pid to another process). The by-session sweep after the supervisor exits accepts
+    that its session id is a pid that is free once reaped. On Windows the Job Object needs no
+    unsafe code (`win32job`, as `processes.rs` does), so nothing was added to `imperium-ipc`.
+    The supervisor's wait uses `rustix::process::wait` (any child): `waitpid(None)` waits for the
+    caller's process group only. `getsid` is not used on Linux: `rustix` panics on the 0 the kernel
+    reports for a session outside the pid namespace, so the sweep reads `/proc`.
+  - **Stage notes:** SIGCONT to the shell's group follows `tcsetpgrp` (test: handover delayed
+    800 ms, `bash -i` and `python3 -q` reach a prompt); `tcsetpgrp` is called once, only after
+    `tcgetpgrp` shows the supervisor's own group in the foreground (trace test); a refused
+    `pidfd_open` fails closed twice (forced in the supervisor, and in `Pty::spawn`); pid reuse as
+    above (unit test with a wrong start time).
+  - **Review round 2 (B1, M1 to M7):** the walk and the session sweep go through zombie
+    thread-group leaders and count a process live when any thread is (test: a Python child whose
+    main thread calls `SYS_exit` while a worker sleeps, under `bash -i`); the kill-all freezes
+    before it kills and never gives up while a descendant lives (test: an exponential fork bomb
+    under `ulimit -u`, in a test binary of its own); a failed Job Object assignment kills the
+    shell and refuses the terminal; a Windows test shows the shell and its child in the job and
+    closes the job alone; an environment test (a variable left out of `Spec.env` is not in the
+    shell) and a canary descriptor test (`fd_canary.rs`) run on the OSes they apply to;
+    `subscribe` returns the exit if it was already announced, callbacks are run under
+    `catch_unwind`, and a callback already running may still run once after `unsubscribe`; the
+    supervisor is started through `/proc/self/exe`, `SIGTERM` goes through a pidfd of the
+    supervisor, `taskkill` is run from the System32 folder (`SHGetKnownFolderPath`);
+    `Spec.supervisor` and `Spec.daemon` must never come from untrusted input (documented). The
+    residuals are in goal 6.
+  - **Review round 3 (B2):** the freeze-and-kill loop is shared (`freeze.rs`) and cannot spin or
+    stall: each round kills what it already saw stopped as it stops what runs; a process in `D`
+    state (a `vfork` parent whose child stopped before `exec`, a stalled network file system) is
+    killed at once, as is one still running after three `SIGSTOP`s; a process that answers
+    `EPERM` (setuid, privileged) is set aside and logged, the documented residual; a no-progress
+    round backs off (1 ms doubling to 50 ms); the supervisor gives up with a log after 120 s and
+    the daemon's sweep after 30 s; the sweep never stops the supervisor, only kills it. Tests: a C
+    helper whose `vfork` child stops itself before `exec` (the parent sits in `D`), and unit tests
+    of the loop with a fake that refuses signals, one that never stops, and the ordering rules.
+  - **Known window:** a Ctrl+C that reaches the supervisor between its `exec` and the handlers
+    being installed (milliseconds) has the default action and ends it; the test sends the Ctrl+C
+    once the supervisor reports its handlers in place. The supervisor's poll also wakes every
+    200 ms, a net under the self-pipe.
+  - **Acceptance mapping** (`cargo test -p imperium-pty`): `tests/pty.rs` (all OSes: echo round
+    trip, size and resize, working folder, background job, exit code, split character, 2 MiB
+    burst, input queue bound, short-lived thread, bad requests) and the unit tests of `ring.rs`;
+    `tests/supervisor.rs` (Linux: setsid job, master closed, `SIGKILL` of the stand-in daemon,
+    wrong start time, `SIGTERM`, fork loop, no zombie, unrelated `waitpid`, no descriptor above 2,
+    the three Ctrl+C checks, the late handover, the `tcsetpgrp` trace, the missing `pidfd_open`);
+    `tests/missing_syscall.rs`.
 - Handoff notes: the crate knows nothing of sessions or protocol; the shell choice and
   environment are stage 2a's. Changing `Cargo.lock` runs the presence end-to-end job (detect
   lists it); expect it.
@@ -771,9 +862,68 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 - Size: about 800 lines.
 - Risks: shutdown ordering (terminals end before the runtime stops); the timer uses the daemon's
   clock abstraction so tests do not wait.
-- Status: pending
-- Outcome: -
-- Handoff notes: no agent path is added (no tool, no `session.run_tool` entry, no hook event).
+- Status: in review (every check runs in CI, nothing was built locally)
+- Outcome:
+  - **Built:** `crates/imperium-core/src/terminal.rs` (`TerminalService` on `DaemonState`:
+    `open_terminal`, `attach_terminal`, `detach_terminal`, `close_terminal`,
+    `end_session_terminals`, `end_unattached_terminals`, the minute sweeper and `stop_terminals`)
+    and `terminal/shell.rs` (`resolve_shell` over an explicit `ShellSources`, and `shell_env`).
+    A terminal opens attached once for its opener (stage 2b's `terminal.open` attaches the
+    caller); the limits are checked under one open lock, so two opens at once cannot both pass;
+    a session archived or deleted while its shell starts gets the shell ended. Archive and
+    `forget_session` (delete and the project agents' stops) each make one call; shutdown ends
+    terminals and background commands together inside the existing 5 s wait; ending runs on
+    threads of their own, so archiving never waits for a shell. Nothing logs terminal bytes.
+  - **Settings:** `terminal.enabled` and `terminal.shell` in `[terminal]`, read from the user's
+    file at each open (no restart), else the start-up settings; a project's or environment's
+    `.imperium/config.toml` is never merged as settings, so it cannot set them (tested).
+  - **The production supervisor path (review N7):** `tests/terminal.rs` is a test binary with no
+    libtest harness whose `main` first calls `imperium_core::run_pty_supervisor_if_asked` (moved
+    from `main.rs` into the library, and called by the daemon's `main` too), so on Linux every
+    terminal the tests open re-runs that executable through `/proc/self/exe pty-supervisor`, and a
+    test checks `/proc/<pid>/exe`. One more test starts the built `imperium-core` itself as the
+    supervisor (through a `testing`-feature hook that only tests set), so the daemon's own `main`
+    dispatch runs as well. `Spec.supervisor` and `Spec.daemon` are never set from anything but that
+    hook; no caller's input reaches them.
+  - **Review N10:** the daemon's session sweep now leaves a supervisor that has not exited after
+    `end`'s 9 s alone (it may still be ending its tree inside its 120 s cap; killing it would hand
+    what is left to init) and sweeps only the session's other members; a backstop thread kills
+    it, and sweeps again, only once its cap and 5 s have passed. Test: a supervisor that lingers
+    14 s after ending its tree exits by itself, not by `SIGKILL`. N9 (plain `SIGKILL` each round)
+    is not taken: the stop-then-kill rounds are tested and bounded as they are.
+  - **Who can reach a terminal (resource-caps review):** terminals are uncapped, so only the
+    installed desktop app may open or type into one; a tier-0 process that reads the endpoint
+    file (an agent's command, an MCP server, a hook, a plugin) must not. In this stage no
+    protocol method reaches the service at all, and three regression tests hold that for stage
+    2b's gate to keep: a client with the daemon's token (`Connection::new`, what loopback TCP and
+    the local socket give any token holder) gets an error for every `terminal.*` call, opens
+    nothing and types nothing into an open terminal (with a positive control); a paired phone
+    gets `-32005` for each (`tests/phone.rs`, and the phone scopes' unit test lists no
+    `terminal.`); and the mod host's request allowlist, the mod SDK, the mod frames' native side
+    and `mods.rs` name no terminal call (`apps/desktop/test/terminalScan.test.ts`). The mod host
+    APIs of `c0b3a9b8` (`sessions.list`/`selected`, `pets.list`/`strip`, `storage.get`/`set`)
+    are that same closed allowlist, answered in the webview; none reaches `terminal.*`.
+  - **Deviations:** `IMPERIUM_HOME` is kept in the shell's environment (it is a path, and an
+    `imperium` command in the terminal must reach this daemon); every other `IMPERIUM_*` is
+    dropped, and `PWD` is set to the working folder (an inherited one names the daemon's). On
+    Windows PowerShell gets `-NoLogo`. `imperium-pty` moved to the main dependency table of
+    `imperium-core` (all OSes).
+  - **Acceptance mapping** (`cargo test -p imperium-core --test terminal`): start in the root
+    with the default shell (and the `/proc/self/exe` check), the real daemon as supervisor, the
+    fifth and seventeenth refused, archive, delete, the hour unattached on an explicit clock
+    (`end_unattached_terminals(now)`), shutdown, close, the environment file ignored, turned off,
+    remote-runtime and archived sessions refused, the `PATH` search, the Unix shell choice cases,
+    the Windows choice (planted `pwsh.exe` on `PATH`; `ComSpec` is not an input), and the
+    environment. `imperium-config`'s registry test covers the settings' defaults and the project
+    file; `imperium-pty`'s supervisor tests cover N10.
+- Handoff notes: no agent path was added (no tool, no `session.run_tool` entry, no hook event),
+  and no protocol: stage 2b adds `terminal.*` on top of `open_terminal`, `attach_terminal`,
+  `detach_terminal`, `close_terminal`, `terminals().list` and `Terminal::pty().subscribe`. The
+  gate (D2) belongs there; until then nothing outside the daemon's process can reach a terminal.
+  Stage 2b must gate `terminal.open` and `terminal.input` (every `terminal.*`) on
+  `InstalledApp` and `may_grant` (or a desktop lease such as a per-launch secret over the app's
+  own pipe, never written to disk) and keep the three refusal tests above passing; its sentinel
+  and spawn-mark tests add the real gate's cases.
 
 ### Stage 2b: Terminal protocol and the gate
 
@@ -1000,7 +1150,10 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 - Status: pending
 - Outcome: -
 - Handoff notes: `files.read` never applies agent deny rules (D12); the docs say so. Stage 7a is
-  the client.
+  the client. `openat2` (Linux 5.6 and later) can answer `ENOSYS` or `EPERM`, for example under a
+  container's seccomp filter: the Linux root open then fails closed with a clear error and
+  `files.*` is refused on that host, never falling back to a following open. Test the branch by
+  forcing it (stage 1 does the same for the supervisor's `pidfd_open`).
 
 ### Stage 6b: File listing and locate
 
