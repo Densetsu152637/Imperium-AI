@@ -1,0 +1,80 @@
+# cargo-deny policy (docs/plans/code-mode.md, C1 "Pinning and supply chain"): known vulnerabilities,
+# licences (Monty bundles parts of the Python standard library under Python-2.0.1), and sources
+# limited to crates.io. Run in CI by the `deny` job and weekly by .github/workflows/advisories.yml.
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+# An advisory is ignored only with a reason, one entry each. The first group was in the workspace
+# before code mode added this check; the last two (zip 8.6.0 through the Monty worker's type checker) are what stage 1b's owned loop removes.
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0594", reason = "cookie nonces repeat in processes that fork. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2025-0075", reason = "unic-char-range is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2025-0080", reason = "unic-common is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2025-0081", reason = "unic-char-property is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0592", reason = "url: stack overflow on nested blob: URLs. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0403", reason = "zstd-safe. Present in the workspace before code mode (stage 1a added the check); triage separately." },
+  { id = "RUSTSEC-2026-0367", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313); present before code mode, not Monty-related. Stays until the updater can move off zip 4.6.1 (its newer zip needs MSRV 1.90)." },
+  { id = "RUSTSEC-2026-0368", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313); present before code mode, not Monty-related. Stays until the updater can move off zip 4.6.1 (its newer zip needs MSRV 1.90)." },
+  { id = "RUSTSEC-2026-0369", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313); present before code mode, not Monty-related. Stays until the updater can move off zip 4.6.1 (its newer zip needs MSRV 1.90)." },
+  { id = "RUSTSEC-2026-0429", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313); present before code mode, not Monty-related. Stays until the updater can move off zip 4.6.1 (its newer zip needs MSRV 1.90)." },
+  { id = "RUSTSEC-2026-0545", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313), and also zip 0.6.6 via monty-typeshed; present before code mode, so not only Monty-related. The 4.6.1 copy stays until the updater can move (MSRV 1.90); the 0.6.6 copy until Monty drops it." },
+  { id = "RUSTSEC-2026-0548", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313); present before code mode, not Monty-related. Stays until the updater can move off zip 4.6.1 (its newer zip needs MSRV 1.90)." },
+  { id = "RUSTSEC-2026-0546", reason = "zip 8.6.0 via monty-type-checking, which reads only Monty's bundled typeshed archive; revisit if the worker drops the type checker (code-mode plan F12)." },
+  { id = "RUSTSEC-2026-0547", reason = "zip 8.6.0 via monty-type-checking, which reads only Monty's bundled typeshed archive; revisit if the worker drops the type checker (code-mode plan F12)." },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "MPL-2.0",
+  "CC0-1.0",
+  "0BSD",
+  "BSL-1.0",
+  "Unlicense",
+  "OpenSSL",
+  "CDLA-Permissive-2.0",
+  "BlueOak-1.0.0",
+  # The CPython standard-library parts Monty bundles.
+  "Python-2.0",
+  "Python-2.0.1",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
