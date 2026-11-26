@@ -433,17 +433,17 @@ impl HttpGitHub {
             .collect())
     }
 
-    async fn comments_after(
+    /// The items of a paged REST list whose id is above `since`, oldest first, from the first
+    /// [`MAX_COMMENT_PAGES`] pages. `keep` drops items that are not comments to act on.
+    async fn paged_after(
         &self,
-        repo: &str,
-        number: u64,
+        path: &str,
         since: Option<u64>,
+        keep: impl Fn(&Value) -> bool,
     ) -> Result<Vec<ReviewComment>, String> {
-        let (owner, name) = split_repo(repo)?;
         let mut found = Vec::new();
         for page in 1..=MAX_COMMENT_PAGES {
-            let path =
-                format!("/repos/{owner}/{name}/pulls/{number}/comments?per_page=100&page={page}");
+            let path = format!("{path}?per_page=100&page={page}");
             let Some(Value::Array(items)) = self.rest(&path, false).await? else {
                 break;
             };
@@ -451,6 +451,7 @@ impl HttpGitHub {
             found.extend(
                 items
                     .iter()
+                    .filter(|item| keep(item))
                     .filter_map(|c| parse_comment(c, None))
                     .filter(|c| since.is_none_or(|id| c.id > id)),
             );
@@ -458,7 +459,81 @@ impl HttpGitHub {
                 break;
             }
         }
+        found.sort_by_key(|c| c.id);
         Ok(found)
+    }
+
+    async fn comments_after(
+        &self,
+        repo: &str,
+        number: u64,
+        since: Option<u64>,
+    ) -> Result<Vec<ReviewComment>, String> {
+        let (owner, name) = split_repo(repo)?;
+        self.paged_after(
+            &format!("/repos/{owner}/{name}/pulls/{number}/comments"),
+            since,
+            |_| true,
+        )
+        .await
+    }
+
+    async fn reviews_after(
+        &self,
+        repo: &str,
+        number: u64,
+        since: Option<u64>,
+    ) -> Result<Vec<ReviewComment>, String> {
+        let (owner, name) = split_repo(repo)?;
+        self.paged_after(
+            &format!("/repos/{owner}/{name}/pulls/{number}/reviews"),
+            since,
+            // A review without text is its inline comments; a pending one is its author's draft.
+            |review| {
+                review["state"] != "PENDING"
+                    && review["body"]
+                        .as_str()
+                        .is_some_and(|b| !b.trim().is_empty())
+            },
+        )
+        .await
+    }
+
+    async fn issue_comments_after(
+        &self,
+        repo: &str,
+        number: u64,
+        since: Option<u64>,
+    ) -> Result<Vec<ReviewComment>, String> {
+        let (owner, name) = split_repo(repo)?;
+        self.paged_after(
+            &format!("/repos/{owner}/{name}/issues/{number}/comments"),
+            since,
+            |_| true,
+        )
+        .await
+    }
+
+    async fn head_repo(&self, repo: &str, number: u64) -> Result<Option<String>, String> {
+        let (owner, name) = split_repo(repo)?;
+        let pull = self
+            .rest(&format!("/repos/{owner}/{name}/pulls/{number}"), false)
+            .await?
+            .unwrap_or(Value::Null);
+        Ok(pull["head"]["repo"]["full_name"]
+            .as_str()
+            .map(str::to_string))
+    }
+
+    async fn is_own(&self, repo: &str, number: u64) -> Result<bool, String> {
+        let (owner, name) = split_repo(repo)?;
+        let pull = self
+            .rest(&format!("/repos/{owner}/{name}/pulls/{number}"), false)
+            .await?
+            .unwrap_or(Value::Null);
+        let author = pull["user"]["login"].as_str().unwrap_or_default();
+        let viewer = self.viewer_login().await?;
+        Ok(!author.is_empty() && author.eq_ignore_ascii_case(&viewer))
     }
 
     async fn permission(&self, repo: &str, login: &str) -> Result<Permission, String> {
@@ -640,6 +715,36 @@ impl GitHub for HttpGitHub {
         since: Option<u64>,
     ) -> GhFuture<'a, Vec<ReviewComment>> {
         Box::pin(self.comments_after(repo, number, since))
+    }
+
+    fn new_reviews<'a>(
+        &'a self,
+        repo: &'a str,
+        number: u64,
+        since: Option<u64>,
+    ) -> GhFuture<'a, Vec<ReviewComment>> {
+        Box::pin(self.reviews_after(repo, number, since))
+    }
+
+    fn new_issue_comments<'a>(
+        &'a self,
+        repo: &'a str,
+        number: u64,
+        since: Option<u64>,
+    ) -> GhFuture<'a, Vec<ReviewComment>> {
+        Box::pin(self.issue_comments_after(repo, number, since))
+    }
+
+    fn is_own_pull_request<'a>(&'a self, repo: &'a str, number: u64) -> GhFuture<'a, bool> {
+        Box::pin(self.is_own(repo, number))
+    }
+
+    fn pr_head_repo<'a>(&'a self, repo: &'a str, number: u64) -> GhFuture<'a, Option<String>> {
+        Box::pin(self.head_repo(repo, number))
+    }
+
+    fn login(&self) -> GhFuture<'_, String> {
+        Box::pin(self.viewer_login())
     }
 
     fn collaborator_permission<'a>(

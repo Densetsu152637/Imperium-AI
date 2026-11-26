@@ -117,6 +117,7 @@ impl DaemonState {
             read_only: meta["read_only"] == true,
             started_by: serde_json::from_value(meta["started_by"].clone()).ok(),
             pull_request_url: meta["pull_request_url"].as_str().map(str::to_string),
+            capped: meta["capped"].as_bool().filter(|capped| *capped),
         };
         self.archived_map().insert(id.to_string(), summary);
     }

@@ -15,6 +15,8 @@ use imperium_protocol::methods::{AUTOFIX_EVENT, AutofixEventParams};
 
 use crate::DaemonState;
 
+pub(crate) mod review;
+
 /// Tools the fix session may use without asking: file writes and edits in its own worktree.
 /// `run_command` is deliberately absent: the CI log the session reads is third-party text, and
 /// a command (with network access and the user's `gh` login in reach) could exfiltrate
@@ -27,7 +29,13 @@ const FIX_TIMEOUT: Duration = Duration::from_secs(1800);
 /// Starts polling every watched repository. Returns immediately.
 pub(crate) fn start(daemon: &Arc<DaemonState>, github: Arc<dyn GitHub>) {
     let settings = daemon.settings();
-    if !settings.github.autofix.enabled || settings.github.watch.is_empty() {
+    let fix_ci_on = settings
+        .github
+        .autofix
+        .responders
+        .iter()
+        .any(|r| r == "fix_ci");
+    if !settings.github.autofix.enabled || settings.github.watch.is_empty() || !fix_ci_on {
         return;
     }
     let poll = Duration::from_secs(settings.github.autofix.poll_s.max(10));
@@ -461,7 +469,31 @@ fn announce(
     session_id: Option<String>,
     summary: String,
 ) {
-    tracing::info!(%repo, pr = number, %status, "auto-fix");
+    announce_with(
+        state,
+        repo,
+        number,
+        status,
+        session_id,
+        summary,
+        "ci",
+        Vec::new(),
+    );
+}
+
+/// Like [`announce`], saying what started the work and, for a review, which comments did.
+#[allow(clippy::too_many_arguments)]
+fn announce_with(
+    state: &DaemonState,
+    repo: &str,
+    number: u64,
+    status: &str,
+    session_id: Option<String>,
+    summary: String,
+    trigger: &str,
+    comment_ids: Vec<u64>,
+) {
+    tracing::info!(%repo, pr = number, %status, %trigger, "auto-fix");
     state.announce(
         AUTOFIX_EVENT,
         AutofixEventParams {
@@ -470,6 +502,8 @@ fn announce(
             status: status.to_string(),
             session_id,
             summary,
+            trigger: trigger.to_string(),
+            comment_ids,
         },
     );
 }

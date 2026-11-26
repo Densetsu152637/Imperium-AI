@@ -533,6 +533,8 @@ impl Agent {
         {
             return true;
         }
+        // An "always allow" rule would not lift the cap, so none is offered.
+        let suggested = suggested.filter(|_| !self.workspace.permissions().is_capped());
         let (request_id, answer) = self.shared.broker.request();
         // A bridged call's request is marked: it is the user's to answer, not the harness's.
         let summary = if self.bridged.load(Ordering::SeqCst) {
@@ -559,12 +561,17 @@ impl Agent {
         let waiting = self
             .local_models()
             .map(|local| local.waiting(&self.model.model, &self.holder()));
+        let capped_when_asked = self.workspace.permissions().is_capped();
         let decision = answer.await.unwrap_or(PermissionDecision::Deny);
         drop(waiting);
         match decision {
             PermissionDecision::Allow => true,
             PermissionDecision::AllowForSession => {
-                lock(&self.shared.allowed_tools).insert(tool.to_string());
+                // An approval made in a capped turn covers this call only: remembered, it
+                // would outlive the cap and let the tool run unasked in later turns.
+                if !(capped_when_asked || self.workspace.permissions().is_capped()) {
+                    lock(&self.shared.allowed_tools).insert(tool.to_string());
+                }
                 true
             }
             PermissionDecision::Deny => false,
@@ -988,6 +995,58 @@ impl Agent {
             && self.workspace.permissions().mode() == PermissionMode::Plan
         {
             return self.tool_finished(call, name, false, refused(Refusal::Plan, summary), None);
+        }
+        // A turn the daemon woke from text other people wrote asks before anything that changes
+        // state outside the conversation (starting agents and sessions, saving or editing
+        // memory, loading plugins), whatever the tool's own policy says. The call is already
+        // the effective one (`call_tool` is unwrapped). Planning and state notes stay in the
+        // conversation, and the other agent tools only read or wait, so they run.
+        // The plan and the state notes are read again at the top of later turns (and after a
+        // compaction), where they would be trusted: a turn woken by text other people wrote
+        // writes neither, so nothing it plants outlives it.
+        if self.workspace.permissions().is_capped()
+            && matches!(tool, AgentTool::UpdatePlan | AgentTool::UpdateState)
+        {
+            return self.tool_finished(
+                call,
+                name,
+                false,
+                format!(
+                    "error: {name} is not available in a turn woken by review comments, because what it writes is read again in later turns; put the plan in your reply instead. It was not run."
+                ),
+                None,
+            );
+        }
+        if self.workspace.permissions().is_capped()
+            && matches!(
+                tool,
+                AgentTool::SpawnAgent
+                    | AgentTool::SteerAgent
+                    | AgentTool::QueueAgent
+                    | AgentTool::ResumeAgent
+                    | AgentTool::KeepAsKnowledge
+                    | AgentTool::AskAgent
+                    | AgentTool::DelegateChunks
+                    | AgentTool::ActivatePlugin
+                    | AgentTool::StartSession
+                    | AgentTool::MemoryRemember
+                    | AgentTool::MemoryEdit
+                    | AgentTool::MemoryForget
+            )
+        {
+            if self.fork.is_some() {
+                return self.tool_finished(call, name, false, fork::ask_refusal(summary), None);
+            }
+            let question = format!("{summary} (in a turn woken by review comments)");
+            if !self.approve_with(name, &question, None, false, true).await {
+                return self.tool_finished(
+                    call,
+                    name,
+                    false,
+                    "The user denied this action.".into(),
+                    None,
+                );
+            }
         }
         let started = self.tool_started(call, name, summary.to_string());
         let result = match tool {
