@@ -341,6 +341,37 @@ fn tcsetpgrp_is_called_once_and_only_while_the_supervisor_is_foreground() {
     pty.end();
 }
 
+/// Review N10: a supervisor that is still ending its tree when `end` stops waiting for it (9 s)
+/// is left alone by the session sweep inside its own cap, not killed as the session's leader
+/// (which would hand what it has not ended yet to init). The stand-in lingers 14 s after ending
+/// the tree; the sweep would have killed it at about 11 s.
+#[test]
+fn the_session_sweep_leaves_a_supervisor_that_is_still_ending_alone() {
+    let dir = work_dir();
+    let pty = Pty::spawn(spec_with_flags(
+        SHELL,
+        &["-c", "echo READY; sleep 60"],
+        dir.path(),
+        &["--test-linger-ms", "14000"],
+    ))
+    .unwrap();
+    wait_for(&pty, "READY");
+    let started = Instant::now();
+    pty.end();
+    let exit = pty
+        .wait_exit(Duration::from_secs(20))
+        .expect("the supervisor exits by itself");
+    assert!(
+        started.elapsed() >= Duration::from_secs(13),
+        "it lingered until it was done ({:?})",
+        started.elapsed()
+    );
+    assert_eq!(
+        exit.signal, None,
+        "the supervisor exited by itself, it was not killed: {exit:?}"
+    );
+}
+
 #[test]
 fn a_host_without_pidfd_open_fails_closed_with_a_clear_error() {
     let dir = work_dir();

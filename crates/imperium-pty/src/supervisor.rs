@@ -53,6 +53,9 @@ pub const EXIT_SETUP: i32 = 124;
 const SAFETY_CAP: Duration = Duration::from_secs(120);
 /// How long `SIGHUP` gets before `SIGKILL`.
 const HUP_WAIT: Duration = Duration::from_secs(2);
+/// The longest a supervisor told to end goes on ending its tree before it exits by itself; the
+/// daemon's sweep leaves it alone until then.
+pub(crate) const LIFETIME_AFTER_END: Duration = HUP_WAIT.saturating_add(SAFETY_CAP);
 const POLL: Duration = Duration::from_millis(20);
 
 /// A start-up failure: what to say and what to exit with.
@@ -82,6 +85,8 @@ struct Hooks {
     no_pidfd: bool,
     #[cfg(feature = "test-support")]
     trace: Option<std::path::PathBuf>,
+    #[cfg(feature = "test-support")]
+    linger: Duration,
 }
 
 #[cfg(feature = "test-support")]
@@ -101,6 +106,14 @@ impl Hooks {
                 self.no_pidfd = true;
                 true
             }
+            "--test-linger-ms" => {
+                let millis = rest
+                    .next()
+                    .and_then(|value| value.into_string().ok())
+                    .and_then(|value| value.parse().ok());
+                self.linger = Duration::from_millis(millis.unwrap_or(0));
+                true
+            }
             "--test-trace" => {
                 self.trace = rest.next().map(std::path::PathBuf::from);
                 self.trace.is_some()
@@ -111,6 +124,11 @@ impl Hooks {
 
     fn delay_handover(&self) {
         sleep(self.delay_handover);
+    }
+
+    /// Stays alive this long after ending the tree, as a supervisor slow to end it would.
+    fn linger(&self) {
+        sleep(self.linger);
     }
 
     fn pidfd_open(&self, pid: Pid) -> rustix::io::Result<OwnedFd> {
@@ -139,6 +157,8 @@ impl Hooks {
     }
 
     fn delay_handover(&self) {}
+
+    fn linger(&self) {}
 
     fn pidfd_open(&self, pid: Pid) -> rustix::io::Result<OwnedFd> {
         pidfd_open(pid, PidfdFlags::empty())
@@ -407,6 +427,7 @@ fn supervise(args: impl IntoIterator<Item = OsString>) -> Result<i32, Failure> {
         }
     }
     kill_all(me, shell, &mut status);
+    hooks.linger();
     Ok(status.unwrap_or(128 + 9))
 }
 

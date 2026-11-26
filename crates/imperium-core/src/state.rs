@@ -409,6 +409,8 @@ pub struct DaemonState {
     workspaces_lock: Mutex<()>,
     /// Why the working folders are not where the configuration says (a move that failed at start).
     workspaces_warning: Mutex<Option<String>>,
+    /// The desktop app's terminals ([`crate::terminal`]).
+    terminals: crate::terminal::TerminalService,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -509,6 +511,7 @@ impl DaemonState {
             compare_fault: std::sync::atomic::AtomicUsize::new(0),
             workspaces_lock: Mutex::new(()),
             workspaces_warning: Mutex::new(None),
+            terminals: crate::terminal::TerminalService::default(),
         });
         state.apply_load_view();
         if let Some(local) = state.local.get() {
@@ -800,6 +803,11 @@ impl DaemonState {
     ) -> Result<crate::initiative::Outcome, String> {
         crate::initiative::run_review(self, agent_id, crate::initiative::Trigger::User).await
     }
+    /// The desktop app's terminals.
+    pub fn terminals(&self) -> &crate::terminal::TerminalService {
+        &self.terminals
+    }
+
     pub fn approvals(&self) -> &Approvals {
         &self.approvals
     }

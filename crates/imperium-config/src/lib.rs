@@ -74,8 +74,8 @@ pub use settings::{
     OFFICIAL_MARKETPLACE, OFFICIAL_MARKETPLACE_SOURCE, OpenAiApiSettings, PetSettings,
     PhoneSettings, PluginSettings, PolicySettings, Preference, ProjectSettings, ResumeSettings,
     RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef, SessionSearchScope,
-    SessionSettings, Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, VoiceSettings,
-    VoiceTranscription, WebSettings, WorkflowSettings, WorkspacesSettings, WritePolicy,
-    default_workspaces_root, same_marketplace_source,
+    SessionSettings, Settings, TerminalSettings, Tier, TriggerSettings, VLLM_ENDPOINT,
+    VllmSettings, VoiceSettings, VoiceTranscription, WebSettings, WorkflowSettings,
+    WorkspacesSettings, WritePolicy, default_workspaces_root, same_marketplace_source,
 };
 pub use settings::{SuggestionCandidate, default_suggestions};
