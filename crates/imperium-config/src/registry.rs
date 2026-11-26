@@ -125,6 +125,7 @@ const HARNESS_MODE: &[&str] = &["auto", "on", "off"];
 #[rustfmt::skip]
 pub static SETTINGS: &[SettingDef] = &[
     def("daemon.port", "Port", Integer, "Port of the local WebSocket listener; 0 picks a free port at each start."),
+    def("daemon.server", "Server mode", Bool, "Run as a server: plugin approvals, turning auto-merge on, trust and prompt grants of mods, and the container tier are refused, and clients are told. The server image sets it through IMPERIUM_DAEMON__SERVER, which config.toml cannot override."),
     def("daemon.socket", "Local socket", Bool, "Also listen on a local socket only your user can open (a Unix domain socket, or a Windows named pipe), speaking the same protocol with the same token, which the `imperium` command needs for evaluation runs and the desktop app for plugin approvals, and which an SSH forward can reach. On by default."),
     def("agents.max_steps", "Steps per turn", Integer, "Model calls an agent may make in one turn before it stops."),
     def("agents.resume_days", "Resume sessions (days)", Integer, "Sessions active within this many days continue after the daemon restarts."),

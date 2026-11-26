@@ -75,6 +75,13 @@ impl DaemonState {
             },
             _ => sandbox_for(isolation),
         };
+        // A server has no Docker socket to give (it would be root on the host): neither the
+        // container tier nor an image runtime starts there.
+        if self.settings().daemon.server && matches!(sandbox, Sandbox::Container { .. }) {
+            return Err(CreateError::UnavailableOnServer(
+                imperium_protocol::jsonrpc::server_features::CONTAINER_TIER,
+            ));
+        }
         grants.extend(self.permissions.global_grants());
         Ok(Workspace::new(Path::new(project_dir))
             .map_err(|error| CreateError::Project(project_dir.to_string(), error))?

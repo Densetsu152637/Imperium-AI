@@ -1,4 +1,5 @@
 use super::*;
+use imperium_protocol::jsonrpc::server_features;
 use imperium_protocol::methods::{
     PullRequestsAutoMergeChallenge, PullRequestsAutoMergeChallengeParams,
     PullRequestsAutoMergeChallengeResult, PullRequestsBind, PullRequestsBindParams,
@@ -73,6 +74,7 @@ impl Connection {
             PullRequestsAutoMergeChallenge::NAME => call::<PullRequestsAutoMergeChallenge>(
                 c.params.take(),
                 |params: PullRequestsAutoMergeChallengeParams| {
+                    self.refuse_on_server(server_features::AUTO_MERGE_ENABLE)?;
                     self.require_desktop_app()?;
                     let asked = crate::automerge::Asked {
                         session_id: params.session_id,
@@ -98,7 +100,8 @@ impl Connection {
     /// the challenge: the caller is the desktop app (never a phone, a mod's page, an agent, a hook
     /// or a plugin), the challenge is this connection's, unused, young and for exactly this
     /// session, pull request, head commit and method. Only then does the call go to GitHub.
-    /// Turning it off is allowed for any caller that may call the method at all.
+    /// Turning it off is allowed for any caller that may call the method at all; turning it on
+    /// is refused on a server (`-32010`) before anything else.
     fn set_auto_merge(&mut self, c: &mut Dispatch<'_>) -> Result<Value, ErrorObject> {
         let params: PullRequestsSetAutoMergeParams =
             decode::<PullRequestsSetAutoMerge>(c.params.take())?;
@@ -115,6 +118,7 @@ impl Connection {
             }));
             return Ok(Value::Null);
         }
+        self.refuse_on_server(server_features::AUTO_MERGE_ENABLE)?;
         self.require_desktop_app()?;
         let (Some(method), Some(token)) = (params.merge_method, params.challenge.as_deref()) else {
             return Err(forbidden(

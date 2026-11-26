@@ -150,7 +150,20 @@ impl LocalRuntime {
                 launcher = launcher.with_program(imperium_local::backend::VLLM, program);
             }
             imperium_local::vllm_env::Launch::Docker { docker, image } => {
-                launcher = launcher.with_docker_vllm(docker, image, paths.data_dir());
+                match imperium_local::vllm_env::Mode::Docker.allowed(settings.daemon.server) {
+                    Ok(()) => {
+                        launcher = launcher.with_docker_vllm(docker, image, paths.data_dir());
+                    }
+                    // A data folder carried over from a desktop may record a Docker setup: the
+                    // server starts the `vllm` on PATH instead, as with no setup at all.
+                    Err(why) => {
+                        tracing::warn!("{why}; starting `vllm` from PATH instead");
+                        launcher = launcher.with_program(
+                            imperium_local::backend::VLLM,
+                            PathBuf::from(imperium_local::vllm_env::DEFAULT_COMMAND),
+                        );
+                    }
+                }
             }
             imperium_local::vllm_env::Launch::Wsl {
                 wsl,

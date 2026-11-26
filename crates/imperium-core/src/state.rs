@@ -418,6 +418,10 @@ pub enum CreateError {
     Runtime(String),
     #[error("could not start on a worktree: {0}")]
     Worktree(String),
+    /// The daemon runs as a server (`daemon.server`) and the session needs this feature (one of
+    /// `imperium_protocol::jsonrpc::server_features`): commands in containers.
+    #[error("unavailable on a server (daemon.server): {0}")]
+    UnavailableOnServer(&'static str),
 }
 
 impl DaemonState {

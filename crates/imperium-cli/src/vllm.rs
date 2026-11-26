@@ -101,6 +101,8 @@ pub fn setup(docker: bool, in_wsl: bool, yes: bool, version: Option<String>) -> 
     } else {
         Mode::Venv
     };
+    mode.allowed(settings.daemon.server)
+        .map_err(anyhow::Error::msg)?;
     if docker && version.is_some() {
         println!(
             "note: --version applies to the virtual environment; with --docker the image \

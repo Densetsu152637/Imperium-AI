@@ -8,6 +8,9 @@
 //!
 //! 1. the connection came in on the local socket (never loopback TCP, a paired phone or a mod
 //!    frame); this is decided before any process is looked at;
+//!    then, on Linux, the daemon must not run in a nested PID namespace (a container, distrobox,
+//!    toolbox): there every approval is refused, whatever the peer ([`Guarded`],
+//!    [`crate::peer`]);
 //! 2. the peer was identified at accept without races ([`Peer`], per platform);
 //! 3. its executable is the app installed beside `imperium-core`, outside any sandbox;
 //! 4. its environment holds none of the loader or WebView2 overrides [`refused_variable`] names;
@@ -102,14 +105,43 @@ pub(crate) trait Identify {
     fn identify(&self, peer: Option<&Peer>) -> Result<(), String>;
 }
 
-/// The production check: the desktop app installed beside `imperium-core`.
+/// The production check: the desktop app installed beside `imperium-core`, never from a daemon
+/// in a nested PID namespace.
 pub(crate) struct InstalledApp;
 
 impl Identify for InstalledApp {
     fn identify(&self, peer: Option<&Peer>) -> Result<(), String> {
-        // Check 1 comes first: a TCP caller is refused before any process is looked at.
+        Guarded {
+            namespace: &crate::peer::ProcSelf,
+            inner: BesideTheDaemon,
+        }
+        .identify(peer)
+    }
+}
+
+/// Checks 1 to 4 against the app installed beside `imperium-core`.
+struct BesideTheDaemon;
+
+impl Identify for BesideTheDaemon {
+    fn identify(&self, peer: Option<&Peer>) -> Result<(), String> {
         let peer = local_only(peer)?;
         platform::identify(peer, &installed_app()?)
+    }
+}
+
+/// `inner`, after check 1 and the nested-PID-namespace rule ([`crate::peer::refuse_nested`]),
+/// read by `namespace`: in a nested namespace nothing is identified, whatever the peer.
+pub(crate) struct Guarded<'a, I> {
+    pub(crate) namespace: &'a dyn crate::peer::NamespaceReader,
+    pub(crate) inner: I,
+}
+
+impl<I: Identify> Identify for Guarded<'_, I> {
+    fn identify(&self, peer: Option<&Peer>) -> Result<(), String> {
+        // Check 1 comes first: a TCP caller is refused before any process is looked at.
+        local_only(peer)?;
+        crate::peer::refuse_nested(self.namespace)?;
+        self.inner.identify(peer)
     }
 }
 
@@ -535,6 +567,83 @@ mod tests {
             &asked,
             &issued.challenge,
         )
+    }
+
+    /// The kernel's answer for the nested-namespace rule, as a test chooses it.
+    struct Nspid(&'static str);
+
+    impl crate::peer::NamespaceReader for Nspid {
+        fn status(&self) -> std::io::Result<Option<String>> {
+            Ok(Some(format!("Name:\timperium-core\nNSpid:\t{}\n", self.0)))
+        }
+    }
+
+    /// In a nested PID namespace a plugin approval is refused even for a peer every other check
+    /// accepts: no challenge is issued, nobody is asked and nothing is recorded. With one
+    /// `NSpid` entry the same peer gets its challenge and its approval.
+    #[test]
+    fn a_nested_namespace_refuses_an_approval_the_identity_check_would_accept() {
+        let home = home();
+        let (hash, runs) = content(&home);
+        let asked = Asked {
+            folder: &home.folder,
+            hash: &hash,
+            runs: &runs,
+            now_ms: 0,
+        };
+        let peer = Peer::test_peer();
+        let nested = Guarded {
+            namespace: &Nspid("9021\t7"),
+            inner: LocalPeer,
+        };
+        let mut challenges = Challenges::default();
+        let error = challenge(&nested, Some(&peer), &mut challenges, &asked).unwrap_err();
+        assert!(error.contains("nested PID namespace"), "{error}");
+        // A challenge issued before (say, by the same peer through a check without the rule)
+        // is not redeemed either.
+        let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
+        let presence = Answers::new(Presence::Passed);
+        let result = approve(
+            &home.paths,
+            &nested,
+            &TestVerifier,
+            &presence,
+            Some(&peer),
+            &mut challenges,
+            &asked,
+            &issued.challenge,
+        );
+        assert!(!result.approved);
+        assert!(result.reason.unwrap().contains("nested PID namespace"));
+        assert!(presence.asked().is_empty());
+        assert_eq!(recorded_kind(&home), None);
+        // Check 1 still comes first.
+        let error = nested.identify(None).unwrap_err();
+        assert!(error.contains("local socket"), "{error}");
+
+        // The host's namespace: the same peer is approved.
+        let single = Guarded {
+            namespace: &Nspid("812"),
+            inner: LocalPeer,
+        };
+        let issued = challenge(&single, Some(&peer), &mut challenges, &asked).unwrap();
+        let result = approve(
+            &home.paths,
+            &single,
+            &TestVerifier,
+            &presence,
+            Some(&peer),
+            &mut challenges,
+            &asked,
+            &issued.challenge,
+        );
+        if cfg!(windows) {
+            // Check 7: this unsigned test build counts nothing on Windows.
+            assert!(!result.approved);
+            return;
+        }
+        assert!(result.approved, "{:?}", result.reason);
+        assert_eq!(recorded_kind(&home), Some(ApprovalKind::Counted));
     }
 
     fn recorded_kind(home: &Home) -> Option<ApprovalKind> {

@@ -852,7 +852,8 @@ and `environments.agent_update` (protocol 0.28)
     (ruff and pytest over the tools, the parser's refusals and the limits), and a daemon test
     drives one tool call through the MCP client ([plan](plans/cas-mcp.md)).
 <!-- markdownlint-disable-next-line MD029 -->
-63. **Server package (Docker Compose)** (planned). Imperium can be self-hosted on a server and
+63. **Server package (Docker Compose)** (in progress: stage 1 of 11, server mode and its
+    refusals, [implemented](02-architecture.md#server-mode-implemented)). Imperium can be self-hosted on a server and
     run there. The release workflow builds and publishes a container image of `imperium-core`
     and the `imperium` CLI for Linux x64 and arm64, and the repository ships a
     `docker-compose.yml`:

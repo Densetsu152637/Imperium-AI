@@ -3,7 +3,7 @@
 Revision: 2026-11-26, revision 5 (plan-gate round 4: C1 opt-outs match origin and name; over
 revision 4's B1 and B2, revision 3's A1 and A2 and revision 2's F1 to F10); written against
 `experimental` at `2cb50590`, merged with `experimental` at revision 2 (last updated).
-Roadmap [item 63](../12-roadmap.md#next-in-order). Status: planned (no stage started).
+Roadmap [item 63](../12-roadmap.md#next-in-order). Status: in progress (stage 1 done).
 
 Imperium runs today as one daemon per user on a desktop or an SSH host. This plan packages it to
 be self-hosted on a server: a container image of `imperium-core` and the `imperium` CLI for Linux
@@ -828,8 +828,49 @@ estimates of changed lines, tests included.
   start-up warning is logged once; with server mode off and a single entry, nothing is logged. A
   peer reported as PID 0 is refused (existing behaviour, now tested). The handshake snapshot shows
   `server`. `cargo clippy` clean.
-- Status: pending.
-- Outcome:
+- Status: done.
+- Outcome: built as planned, with these differences.
+  - **Protocol 0.63, not 0.62**: 0.62 was taken by `plugins.inspect_folder` before this stage
+    merged. `HandshakeResult.server` (`#[serde(default)]`, so an older daemon reads as `false`)
+    and `codes::UNAVAILABLE_ON_SERVER` (`-32010`) are in `imperium-protocol`, with every
+    `feature` name of the table as a constant in `jsonrpc::server_features`, including the ones
+    later stages use (`secret_write`, `mcp_login`).
+  - **Where the refusals sit.** `Connection::refuse_on_server` is the first check of
+    `plugins.approval_challenge`, `plugins.approve`, `pull_requests.auto_merge_challenge` and
+    `set_auto_merge` with `enabled: true`; `mods.install` refuses `trusted` with `-32010`
+    (`terminal_grant`) and a message that still starts with `trust was not granted`, so the CLI's
+    sandbox fallback is unchanged, and drops `interactive` with a note. `config.set` of
+    `isolation.tier = "container"` answers `-32010`; `Settings::validate` refuses that tier with
+    `daemon.server` (the daemon does not start with it).
+  - **Session start** needed files outside the owned paths: `CreateError::UnavailableOnServer`
+    (`state.rs`) and a check in `state/create.rs` that refuses any session whose sandbox is
+    `Sandbox::Container` on a server. That also covers an environment's Docker image runtime
+    (the same `docker run` per command), which the plan did not name.
+  - **Docker-mode vLLM** is `vllm_env::Mode::allowed(server)`: `imperium runtime vllm setup
+    --docker` fails with its message (a CLI error, not a `-32010` reply: no RPC is involved), and
+    a server daemon whose data folder records a Docker setup starts `vllm` from `PATH` instead
+    (`crates/imperium-core/src/local.rs`, outside the owned paths, and
+    `crates/imperium-cli/src/vllm.rs`).
+  - **The nested-namespace rule** is in `peer.rs`: `nested_pid_namespace(status)`, the
+    `NamespaceReader` trait (the real `ProcSelf` reads `/proc/self/status` on Linux and answers
+    "no namespaces" elsewhere), `refuse_nested`, and `may_grant_in`, which `may_grant` calls with
+    `ProcSelf`. `app_identity::InstalledApp` is now `Guarded { namespace: ProcSelf, inner: the
+    platform check }`, so check 1 (local socket) still comes first, then the rule, then checks 2
+    to 4; the auto-merge challenge uses the same `InstalledApp`. A peer of PID 0 is refused
+    explicitly at the top of the walk.
+  - **The "IMPERIUM_* variables leave the answer unchanged" check** cannot set variables in the
+    test process (`unsafe_code` is forbidden in the workspace), so it compares the answer with
+    the `NSpid` line of a child started with `IMPERIUM_*` variables (Linux), and the reader takes
+    no setting as input.
+  - **SIGTERM** is listened for before the endpoint file is written, so one that arrives during
+    start-up waits for the shutdown path; the test sends it to the real binary
+    (`tests/server_mode.rs`, Unix only).
+  - Tests: `crates/imperium-core/tests/server_mode.rs` (new), a server case in
+    `tests/pr_automerge.rs` (outside the owned paths; it needs that file's fake GitHub), unit
+    tests in `peer.rs`, `app_identity/mod.rs`, `vllm_env.rs` and the protocol's `system.rs`.
+  - Docs: 02 gained [server mode](../02-architecture.md#server-mode-implemented) and the SIGTERM
+    note, 05 the container tier and auto-merge on a server, 06 the nested-namespace rule and
+    server mode in both approval sections.
 - Handoff notes: server mode's refusals sit at the RPC boundary before any challenge is issued.
   The nested-namespace rule is the one change inside the identity code: it is a guard at the top
   of `peer::may_grant` and of the app-identity check, evaluated before the walk, and it does not
