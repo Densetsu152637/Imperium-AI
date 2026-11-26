@@ -1,11 +1,16 @@
 # Plan: built-in text editor with Markdown presentation
 
-Revision: 2026-11-26, revision 8 (round-4 review: the F2 state machine closed (every
+Revision: 2026-11-26, revision 9 (round-5 review, the notes it asked for before merging:
+agents refused from naming or turning on servers, one spawn point that enforces the F2
+deferral, the ESLint closure resolved like Node and Yarn Plug'n'Play files, toolchain
+children ended by `TerminateProcess` on Windows and defined by executable, and the F4
+wording; in [D20](#decisions), [D28](#decisions) and stages E8, E9 and E10c). Revision 8
+answered round 4: the F2 state machine closed (every
 reference change, start and pause under one lock and generation), TypeScript's automatic
 typings install turned off, the package sweep scoped to what servers load, npm's own
 location found without a shim, graceful ending of toolchain children, the stop-and-list
 freeze where Linux has no delegated cgroup, and the user's own installs; in
-[D19](#decisions), [D21](#decisions), [D28](#decisions) and stages E9, E10c and E15).
+[D19](#decisions), [D21](#decisions), [D28](#decisions) and stages E9, E10c and E15.
 Revision 7 answered round 3: the freeze rules F1 to F5, a full
 stat-only sweep of installed packages before starts, and S1, resolving npm servers and every
 interpreter from their packages and real executables, in [D21](#decisions),
@@ -1055,6 +1060,14 @@ Decisions D18 to D27 are new in revision 4 (revised in 5); D28 is new in revisio
     mcp.trusted_projects` from an agent's command is **refused outright** (as resource caps do
     for `limits.mode`), adds that if #330 lands with only an ask, and makes the daemon's
     `config.set` of that key refuse a caller that fails `may_grant`.
+  - **Agents cannot name or turn on servers (round 5).** The same rule covers the keys that
+    choose what runs: `imperium config set|unset editor.lang.servers.*` (any field: `command`,
+    `args`, `languages`, `enabled`, or the whole table) and `editor.lang.enabled` from `false` to
+    `true` (or an `unset` that would restore the default `true` over a user's `false`) are
+    **refused outright** to an agent's command by the safety floor, in every mode, and the
+    daemon's `config.set` and `config.unset` of them refuse a caller that fails `may_grant`.
+    Turning servers **off** (`editor.lang.enabled = false`, or a server's `enabled = false`)
+    stays open to agents, since it runs nothing.
   - **Re-consent for projects trusted before revision 4 (major 2, the settled answer to
     question 9).** A project trusted for MCP servers was trusted before trust meant "language
     servers may run its build scripts". So the first time a language server would start in a
@@ -1407,7 +1420,9 @@ Decision D28 is new in revision 5.
       level); `tsconfig*.json` and `jsconfig*.json` (their `plugins` and `extends`); `package.json`
       (`eslintConfig`, `type`, dependencies); `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`,
       `.npmrc`, `.yarnrc.yml`, `.pnpmfile.cjs`; any file under the resolved folder of an approved
-      project-local package (D20);
+      project-local package (D20); and for **Yarn Plug'n'Play** `.pnp.cjs` and `.pnp.loader.mjs`
+      (on the list every forward check sweeps, since they decide where every package loads
+      from);
     - Python: `pyproject.toml` (its `[tool.*]` sections and build backend), `ruff.toml`,
       `.ruff.toml`, `pyrightconfig.json`, `setup.cfg`, `uv.lock`, and files under an approved
       `.venv` program's folder;
@@ -1416,7 +1431,8 @@ Decision D28 is new in revision 5.
     - Imperium's own: `.imperium/` and the harness files of D7 are already guarded and listed
       too;
     - **for agents' file-tool writes only (R1d),** everything under `node_modules/**` and
-      `.venv/**` (and `venv/**`, `.tox/**`, `__pypackages__/**`): code there is loaded by ESLint,
+      `.venv/**` (and `venv/**`, `.tox/**`, `__pypackages__/**`, and Yarn's `.yarn/cache/**`
+      and `.yarn/unplugged/**`): code there is loaded by ESLint,
       TypeScript plugins and Python tools, and is too large to fingerprint in full, so a tool
       write there pauses first; changes there by commands are caught by the approved programs'
       package hashes (D20) and the lockfiles above.
@@ -1461,10 +1477,20 @@ Decision D28 is new in revision 5.
           while A's end sweep runs moves the count to 1 and bumps the generation, so A's sweep
           does not thaw and B's own end decides;
         - **no server starts while the count is above 0** (or while the state is `frozen`):
-          every start or resume (a crash or cap restart, a new `lang.open`, an LRU replacement,
-          the user's *Resume*) is **deferred** until the thaw decision; a start that cannot wait
-          (none in this plan) would start frozen and join the end sweep. A deferred start runs
-          after the thaw, after the start sweep below; after a pause it does not run;
+          every start or resume is **deferred** until the thaw decision; a start that cannot
+          wait (none in this plan) would start frozen and join the end sweep. A deferred start
+          runs after the thaw, after the start sweep below; after a pause it does not run. The
+          rule is enforced at **one spawn point**: `LspHost::spawn` is the only code that
+          creates a server's cap unit, and it reads the project state under the lock before
+          spawning; a source scan in `imperium-lsp`'s tests fails if any other code calls
+          `Limits::spawn` with the `lsp` class or constructs a server's command. The starts
+          that go through it are named, so none is missed: a crash or cap restart, a new
+          `lang.open`, an LRU replacement, the user's *Resume*, a restart at a stricter tier when
+          a stricter session opens (D21), `lang.set_build_code`, `projects.trust` and
+          `lang.consent`, a server found again after an install (D19), and a restart after a
+          settings change. Requests that make a running server reload (rust-analyzer's
+          `reloadWorkspace` and `rebuildProcMacros`, a server's own restart command) are
+          forwards, so the forward check sweeps first and the freeze holds them;
         - **every pause source takes the same lock and bumps the generation:** the file-tool
           pre-write pause, the poll, the forward check, the start sweep, untrusting the project,
           *Keep paused*, and the death of a server's unit while frozen. A pause always wins: once
@@ -1481,16 +1507,26 @@ Decision D28 is new in revision 5.
         rust-analyzer **only when *Run project build code* is on** (with it off it runs no
         project code and is not frozen); clangd only when started with `--query-driver`; and
         `gopls` (it runs `go list`). The data servers (JSON, TOML, YAML, Markdown), Ruff and
-        Pyright are not frozen. For a server being frozen, its **in-flight toolchain children**
-        (`cargo`, `rustc`, `go`, `npm`, `node` subprocesses other than the server itself) are
-        **ended** at freeze time, not suspended: first **gracefully** (`SIGTERM` on Unix;
-        `CTRL_BREAK_EVENT` to the child's console process group on Windows, since server
-        children are started in their own group), then killed after about 500 ms if still
-        alive. A graceful end lets cargo, Go and npm release their locks and finish writing
-        their caches; the kill only follows a child that ignores it. So a suspended child can never hold the cargo,
+        Pyright are not frozen. A server being frozen may have started **toolchain children**
+        of its own (the server starts them, not Imperium; they are in its unit). Those are
+        **ended** at freeze time, not suspended, so a suspended child can never hold the cargo,
         Go or npm cache lock that the agent's own command is waiting for (a deadlock that would
         otherwise last the command's whole timeout). The server re-runs its check after the
         thaw.
+        - **Which children (round 5), by executable:** `cargo` and `rustc` (resolved paths
+          under the user's toolchain), `go`, a `node` process whose script is an `npm-cli.js`
+          (or `pnpm.cjs`), and build-script binaries under the server's own target folder
+          (`<target>/debug/build/*/build-script-build`). Everything else in the unit is one of
+          the server's **own workers** (`tsserver` under `typescript-language-server`,
+          `proc-macro-srv` under rust-analyzer, clangd's indexers) and is **never ended**: it is
+          frozen with the unit.
+        - **How:** on Unix `SIGTERM`, then `SIGKILL` after about 500 ms if the child is still
+          alive; on Windows `TerminateProcess` on each child's process id (Windows has no
+          reliable graceful signal for a console-less child). Cache safety rests on the
+          toolchains themselves: cargo, Go and npm write their caches atomically (write then
+          rename) and hold their locks as OS file locks that the system releases when the
+          process exits, so an ended child leaves at worst a partial temporary file that the next
+          run ignores.
       - **F5, the freeze is complete before the command starts.** The agent's command is
         spawned only after the freeze is confirmed: on Linux after `cgroup.events` reports
         `frozen 1`; on Linux **without a delegated cgroup** (item 68's fallback of RLIMIT and a
@@ -1502,8 +1538,19 @@ Decision D28 is new in revision 5.
     restart and resume, the daemon runs a **stat-only sweep** of the installed packages that the
     project's servers actually load, against the fingerprint:
     - for ESLint, the dependency closure of `eslint` plus the packages its config imports,
-      resolved from `package.json` and each package's own `package.json` (`dependencies`,
-      `peerDependencies`, `optionalDependencies`) through Node's resolution from the project;
+      resolved **as Node resolves them** (round 5): each dependency (`dependencies`,
+      `peerDependencies`, `optionalDependencies`) is looked up from the **real path** of the
+      package that requires it, walking up through each parent's `node_modules`, so a nested
+      copy at a conflicting version is the one swept; under pnpm, the hoisted fallback
+      `node_modules/.pnpm/node_modules` is searched after the walk, as pnpm's layout makes
+      Node do. The closure is marked **incomplete** (and the sweep falls back to the lockfile,
+      with "closure incomplete: checked by lockfile" in `lang.status`) on any specifier that does
+      not resolve, any computed `import()` or `require()` in the config, and any legacy
+      `.eslintrc` that names plugins or configs by string (`plugins: ["x"]`, `extends`). Under
+      **Yarn Plug'n'Play** there is no `node_modules`: the sweep covers `.pnp.cjs`,
+      `.pnp.loader.mjs` and the zip files under `.yarn/cache/` and folders under
+      `.yarn/unplugged/` that `.pnp.cjs` maps the closure to, or falls back to the lockfile when
+      that map cannot be read;
     - for `tsserver`, only the approved project-local TypeScript package (D20), or nothing when
       the user's own TypeScript is used;
     - for Python servers, only the approved program's package in `.venv` (D20), or nothing.
@@ -2337,7 +2384,15 @@ the entries are added beside theirs).
     banner; *Allow* records it and the server starts; a project trusted from the banner after
     revision 4 is not asked again;
   - the floor checks run against #330's rule if it has landed, and the refusal holds whichever
-    lands first.
+    lands first;
+  - **round 5:** an agent's `imperium config set editor.lang.servers.x.command /tmp/evil`,
+    `config set editor.lang.servers.rust-analyzer.args '["--x"]'`, `config unset
+    editor.lang.servers.ruff` and `config set editor.lang.enabled true` (with the user's value
+    `false`) are refused in every mode, Bypass included, with any key case and `--remote`
+    anywhere; `config set editor.lang.enabled false` and `config set
+    editor.lang.servers.ruff.enabled false` from an agent pass (they turn servers off); the
+    daemon's `config.set` of `editor.lang.servers.x.command` from a caller that fails
+    `may_grant` is refused.
 - Size: about 600 lines.
 - Status: pending
 - Outcome: -
@@ -2537,7 +2592,10 @@ the entries are added beside theirs).
   are alive; `Unit::freeze` and `Unit::thaw` in `imperium-limits` (cgroup `freeze`, `SIGSTOP`
   and `SIGCONT`, job process suspension) around each foreground agent command, then sweep and
   thaw or pause; `node_modules/**` and `.venv/**` as execution-relevant for file tools;
-  `--allowLocalPluginLoads` never passed. Revision 8 (round 4): every reference change, start
+  `--allowLocalPluginLoads` never passed. Revision 9 (round 5): the single spawn point
+  `LspHost::spawn` with its source scan, toolchain children by executable (workers frozen,
+  never ended), `TerminateProcess` on Windows, the Node-style closure with pnpm's fallback and
+  Yarn Plug'n'Play. Revision 8 (round 4): every reference change, start
   and pause under the one lock and generation, starts deferred during a freeze, graceful ending
   of toolchain children, the stop-and-list freeze without a delegated cgroup, the scoped
   package sweep by directory enumeration, and the user's terminal changes attributed. Revision
@@ -2609,15 +2667,36 @@ the entries are added beside theirs).
     and the user's *Resume* during a freeze are deferred the same way; untrusting the project,
     *Keep paused* and a frozen unit's death each move the state to `paused` and bump the
     generation, and a parked thaw then does nothing;
-  - **graceful end:** a fake toolchain child that handles `SIGTERM` (Unix) or `CTRL_BREAK`
-    (Windows) by releasing its lock file and exiting is ended without a kill; one that ignores
-    it is killed after about 500 ms; the agent's fake `cargo build` completes in both cases;
+  - **ending children:** on Unix a fake toolchain child that handles `SIGTERM` by releasing its
+    lock file and exiting is ended without a kill, and one that ignores it is killed after about
+    500 ms; on Windows the child is ended by `TerminateProcess` and its OS file lock is
+    released; the agent's fake `cargo build` completes in every case;
+  - **workers stay:** a fake server whose child is a fake `tsserver` (a `node` process not
+    running `npm-cli.js`) and one whose child is a fake `proc-macro-srv` keep those children
+    alive through the freeze, frozen with the unit, and they answer after the thaw; a child
+    whose executable is `cargo` is ended;
+  - **one spawn point:** the source scan fails on a test file that calls `Limits::spawn` with
+    the `lsp` class outside `LspHost::spawn`; with barriers, each named start (crash restart,
+    `lang.open`, LRU replacement, *Resume*, stricter-tier restart, `lang.set_build_code`,
+    `projects.trust`, `lang.consent`, found-again after install, settings-change restart)
+    requested during a freeze is deferred, and a `reloadWorkspace` request during a freeze is
+    held by the freeze and preceded by a sweep;
   - **no delegated cgroup (Linux):** with the cgroup root unavailable, the freeze uses the
     stop-and-list pass, and a child forked during the stop is stopped before the command
     starts;
   - **scoped sweep:** with ESLint's config importing `eslint-plugin-x`, a change under
     `node_modules/eslint-plugin-x/` pauses the next start, and a change under an unrelated
-    `node_modules/left-pad/` does not; with the user's own TypeScript, `node_modules/typescript/`
+    `node_modules/left-pad/` does not;
+  - **closure matrix (round 5):** the same check passes for an **npm hoisted** layout; a
+    **nested conflicting version** (`eslint-plugin-x` depending on `dep@2` under its own
+    `node_modules` while the top level has `dep@1`: a change to the nested copy pauses, a change
+    to the top-level copy does not); **pnpm** (packages under `.pnpm/`, reached through their
+    real paths, and the `.pnpm/node_modules` fallback); a **phantom dependency** (a plugin that
+    requires a package it does not declare, found only through the hoisted fallback: swept,
+    and with no fallback the closure is marked incomplete); **Yarn Plug'n'Play** (a change to
+    `.pnp.cjs` pauses before the next forward, and a changed zip under `.yarn/cache/` for a
+    closure package pauses the next start); a config with a computed `import()` and a legacy
+    `.eslintrc` with string plugins each report "closure incomplete: checked by lockfile"; with the user's own TypeScript, `node_modules/typescript/`
     is not swept; the sweep uses the directory-enumeration calls (counted by a test hook) and
     reports "bound reached: checked by lockfile" past 200,000 entries;
   - **the user's terminal:** a change made by a scripted process in a terminal unit of the
