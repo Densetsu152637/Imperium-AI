@@ -17,10 +17,15 @@ from test_worker import call
 FORBIDDEN = ("open", "socket", "subprocess", "compile", "exec", "import")
 
 
+# Actions whose exception reaches the worker's own handling (stage 2b's crash wrapper).
+ESCAPES = ("escape", "bad-str", "memory", "rlimits")
+
+
 @pytest.fixture(scope="module")
 def probes():
     """Start every probe worker at once: each one pays SymPy's import."""
-    started = {action: spawn_worker(script="audit_probe.py") for action in (*FORBIDDEN, "none")}
+    actions = (*FORBIDDEN, *ESCAPES, "none")
+    started = {action: spawn_worker(script="audit_probe.py") for action in actions}
     results = {action: call(proc, {"action": action}) for action, proc in started.items()}
     return results
 
@@ -31,6 +36,54 @@ def test_forbidden_events_end_the_worker_with_refused(probes, action):
     assert ready["ready"]
     assert reply is None, f"{action} survived the hook: {reply}"
     assert code == worker.REFUSED
+
+
+def test_an_exception_escaping_after_the_hook_is_crashed_not_refused(probes):
+    """Printing a traceback opens the source file, which the hook would call `REFUSED`; the
+    worker exits `CRASHED` instead, without a reply."""
+    ready, reply, code = probes["escape"]
+    assert ready["audit_hook"] is True
+    assert reply is None
+    assert code == worker.CRASHED
+
+
+def test_an_exception_whose_str_fails_still_gets_a_reply(probes):
+    _, reply, code = probes["bad-str"]
+    assert reply == {"ok": False, "category": "math", "message": "math: an unexpected error"}
+    assert code == worker.EXIT_OK
+
+
+def test_a_memory_error_after_the_hook_is_the_memory_code(probes):
+    _, reply, code = probes["memory"]
+    assert reply is None
+    assert code == worker.MEMORY
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="rlimits are Unix")
+def test_the_worker_runs_with_its_rlimits(probes):
+    """Read from inside, after the hook: core files off, the CPU limit (and on Linux the
+    address-space limit) as the ready frame reported."""
+    ready, reply, code = probes["rlimits"]
+    assert code == worker.EXIT_OK
+    limits, applied = reply["limits"], ready["applied"]
+    assert limits["core"] == [0, 0]
+    assert limits["cpu"] == [applied["cpu_soft"], applied["cpu_hard"]]
+    if sys.platform.startswith("linux"):
+        assert limits["as"] == [applied["address_space"]] * 2
+
+
+def test_describe_never_raises():
+    class Hostile(Exception):
+        def __str__(self):
+            raise MemoryError
+
+    class Huge(Exception):
+        def __str__(self):
+            return "x" * 10_000
+
+    assert worker.describe(Hostile()) == "an unexpected error"
+    assert worker.describe(Huge()) == "x" * 500
+    assert worker.describe(ValueError("plain")) == "plain"
 
 
 def test_an_allowed_call_survives(probes):
