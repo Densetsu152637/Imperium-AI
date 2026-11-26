@@ -1,9 +1,15 @@
 # Plan: built-in text editor with Markdown presentation
 
-Revision: 2026-11-26, revision 7 (round-3 review: the freeze rules F1 to F5, a full
+Revision: 2026-11-26, revision 8 (round-4 review: the F2 state machine closed (every
+reference change, start and pause under one lock and generation), TypeScript's automatic
+typings install turned off, the package sweep scoped to what servers load, npm's own
+location found without a shim, graceful ending of toolchain children, the stop-and-list
+freeze where Linux has no delegated cgroup, and the user's own installs; in
+[D19](#decisions), [D21](#decisions), [D28](#decisions) and stages E9, E10c and E15).
+Revision 7 answered round 3: the freeze rules F1 to F5, a full
 stat-only sweep of installed packages before starts, and S1, resolving npm servers and every
 interpreter from their packages and real executables, in [D21](#decisions),
-[D28](#decisions) and stages E9 and E10c). Revision 6 answered round 2: R1, closing the remaining command-path
+[D28](#decisions) and stages E9 and E10c. Revision 6 answered round 2: R1, closing the remaining command-path
 gap of B2 by checking before every forward, polling during background commands and freezing
 servers during foreground ones, and the Windows `.cmd` shim fix, in [D21](#decisions),
 [D28](#decisions) and stage E10c. Revision 5 answered the Opus review of revision 4: blockers B1, project
@@ -987,6 +993,15 @@ Decisions D18 to D27 are new in revision 4 (revised in 5); D28 is new in revisio
       `go install` and `cargo install` in general) is added to the safety floor's always-ask list,
       the rule of pull requests #304 and #330: asked every time in every mode, never "always
       allow".
+    - **Nothing installs by itself, servers included.** Some servers install on their own unless
+      told not to; the catalogue turns each off and the tests check it:
+      - `tsserver`'s **Automatic Type Acquisition** (ATA) runs a typings installer that calls
+        `npm install` for `@types/*` packages: `typescript-language-server` is always started
+        with `disableAutomaticTypingAcquisition: true` in its initialization options, and no
+        `npmLocation` (or any other npm path for the typings installer) is ever passed;
+      - rust-analyzer gets `RUSTUP_AUTO_INSTALL=0` (B1), so it never installs a toolchain or
+        component; `gopls` gets `GOTOOLCHAIN=local` and `GOFLAGS` removed;
+      - JSON, TOML and YAML servers fetch no remote schemas (above).
     - **Nothing is bundled** in this item ([settled](#settled-decisions); bundling Ruff may
       follow): shipping
       servers would add hundreds of megabytes, their own update and licence notices, and a
@@ -1141,9 +1156,17 @@ Decisions D18 to D27 are new in revision 4 (revised in 5); D28 is new in revisio
     folder (`.tool-versions`, `.node-version`, `.nvmrc`, `.python-version`, a `volta` key in
     `package.json`). So the daemon never launches a server through a shim:
     - **npm-installed servers** (`typescript-language-server`, `vscode-langservers-extracted`,
-      `pyright`, `yaml-language-server`): the daemon runs `npm root -g` (or `pnpm root -g` when
-      the server was found under pnpm's global folder) **from `<data>/lsp-work` with the
-      scrubbed environment of D19**, reads `<root>/<package>/package.json`, takes the `bin`
+      `pyright`, `yaml-language-server`): the daemon finds npm's **global root** without running
+      any shim (`npm` and `pnpm` are themselves `.cmd` shims on Windows and version-manager shims
+      elsewhere). It either runs `<real node> <node folder>/node_modules/npm/bin/npm-cli.js root
+      -g` (on Unix `<node prefix>/lib/node_modules/npm/bin/npm-cli.js`), after judging that the
+      script path is a regular file inside the real node's own installation, **from
+      `<data>/lsp-work` with the scrubbed environment of D19**; or computes it from npm's
+      prefix: the `prefix` in the user's `~/.npmrc`, else `%APPDATA%\npm` on Windows, else the
+      real node's prefix, with `node_modules` (Windows) or `lib/node_modules` (Unix) appended.
+      pnpm is handled the same way (its `pnpm.cjs` run with the real node, or its global folder
+      from `PNPM_HOME`, user-set only). The daemon then reads `<root>/<package>/package.json`,
+      takes the `bin`
       entry for the server's command, and judges the resolved script path to stay inside the
       package folder (after links are resolved; a `bin` that climbs out is refused). It launches
       `<real node> <absolute script> <args>`. Parsing npm's shim is at most a cross-check: if
@@ -1430,11 +1453,23 @@ Decision D28 is new in revision 5.
         takes a freeze reference. The servers are frozen on the count's 0 to 1 step; only the 1
         to 0 step sweeps and thaws, so two overlapping commands never thaw each other's freeze.
       - **F2, one state lock per project.** The project's server state (`running`, `frozen` or
-        `paused`) sits behind one lock with a **generation counter**, bumped on every change.
-        The end-of-command sweep records the generation when it starts; afterwards it thaws only
-        if the state is still `frozen` **and** the generation is unchanged. A pause always wins:
-        a file-tool pause, a poll or a forward check that pauses during the sweep moves the state
-        to `paused` and bumps the generation, so the sweep's thaw is skipped.
+        `paused`) and the F1 reference count sit behind one lock with a **generation counter**.
+        The end-of-command sweep records the generation when it starts; afterwards, under the
+        lock, it thaws only if the state is still `frozen`, the generation is unchanged **and
+        the count is still 0**. Round 4 closed the remaining paths:
+        - **every reference change bumps the generation:** a command B that takes a reference
+          while A's end sweep runs moves the count to 1 and bumps the generation, so A's sweep
+          does not thaw and B's own end decides;
+        - **no server starts while the count is above 0** (or while the state is `frozen`):
+          every start or resume (a crash or cap restart, a new `lang.open`, an LRU replacement,
+          the user's *Resume*) is **deferred** until the thaw decision; a start that cannot wait
+          (none in this plan) would start frozen and join the end sweep. A deferred start runs
+          after the thaw, after the start sweep below; after a pause it does not run;
+        - **every pause source takes the same lock and bumps the generation:** the file-tool
+          pre-write pause, the poll, the forward check, the start sweep, untrusting the project,
+          *Keep paused*, and the death of a server's unit while frozen. A pause always wins: once
+          the state is `paused`, only the user's *Resume* (itself under the lock, and deferred
+          while the count is above 0) changes it.
       - **F3, "the command ended" means its unit is empty.** The end is when the command's job
         (Windows) or cgroup (Linux), or its process group as polled on macOS, has no process
         left, not when the main process exits. If descendants are still alive 5 s after the main
@@ -1448,26 +1483,51 @@ Decision D28 is new in revision 5.
         `gopls` (it runs `go list`). The data servers (JSON, TOML, YAML, Markdown), Ruff and
         Pyright are not frozen. For a server being frozen, its **in-flight toolchain children**
         (`cargo`, `rustc`, `go`, `npm`, `node` subprocesses other than the server itself) are
-        **ended** at freeze time, not suspended, so a suspended child can never hold the cargo,
+        **ended** at freeze time, not suspended: first **gracefully** (`SIGTERM` on Unix;
+        `CTRL_BREAK_EVENT` to the child's console process group on Windows, since server
+        children are started in their own group), then killed after about 500 ms if still
+        alive. A graceful end lets cargo, Go and npm release their locks and finish writing
+        their caches; the kill only follows a child that ignores it. So a suspended child can never hold the cargo,
         Go or npm cache lock that the agent's own command is waiting for (a deadlock that would
         otherwise last the command's whole timeout). The server re-runs its check after the
         thaw.
       - **F5, the freeze is complete before the command starts.** The agent's command is
         spawned only after the freeze is confirmed: on Linux after `cgroup.events` reports
-        `frozen 1`; on macOS and Windows after repeating "list the unit's processes, stop or
+        `frozen 1`; on Linux **without a delegated cgroup** (item 68's fallback of RLIMIT and a
+        poll), on macOS and on Windows after repeating "list the unit's processes, stop or
         suspend each one not yet stopped" until a pass finds none unstopped (a process forked
         between the listing and the stop is caught by the next pass), with a 2 s limit, after
         which the servers are paused instead.
-  - **Installed packages before every start (round 3).** Before every server start, restart
-    and resume, the daemon runs a **full stat-only sweep** of `node_modules/**` and
-    `.venv/**` (and the other package folders of the file list) against the fingerprint: size
-    and modification time of every file, no hashing, bounded at 200,000 entries and 2 s (past
-    the bound it hashes the lockfile and the approved packages' bound instead, D20, and says
-    so). The sweep is skipped when the lockfile changed since the fingerprint, because that
-    change alone already pauses. A difference not explained by a user action pauses the
-    servers before the start.
+  - **Installed packages before every start (rounds 3 and 4).** Before every server start,
+    restart and resume, the daemon runs a **stat-only sweep** of the installed packages that the
+    project's servers actually load, against the fingerprint:
+    - for ESLint, the dependency closure of `eslint` plus the packages its config imports,
+      resolved from `package.json` and each package's own `package.json` (`dependencies`,
+      `peerDependencies`, `optionalDependencies`) through Node's resolution from the project;
+    - for `tsserver`, only the approved project-local TypeScript package (D20), or nothing when
+      the user's own TypeScript is used;
+    - for Python servers, only the approved program's package in `.venv` (D20), or nothing.
+    Size and modification time come from **directory enumeration**, not one `stat` per file:
+    `FindFirstFileExW` with `FindExInfoBasic` and `FIND_FIRST_EX_LARGE_FETCH`, or
+    `GetFileInformationByHandleEx(FileIdBothDirectoryInfo)` on Windows; `getattrlistbulk` on
+    macOS; `getdents64` with `statx` on Linux. No file is hashed. The sweep is bounded at
+    200,000 entries and 2 s; past either it reports **"bound reached: checked by lockfile"** in
+    `lang.status` and falls back to the lockfile and the approved packages' bound hashes (D20).
+    It is skipped when the lockfile changed since the fingerprint, because that change alone
+    pauses. A difference not explained by a user action pauses the servers before the start.
   - **Pausing** stops the project's servers (`shutdown`, then the unit) and starts none until
     the user resumes; diagnostics stay, marked stale.
+  - **The user's own changes pause too.** A change the daemon cannot attribute to the user's
+    editor saves pauses, so the user's own `npm install`, `cargo update` or `git pull` in their
+    terminal or another editor pauses the servers, and the user is expected to click *Resume*
+    (the banner says "changed outside the editor"). Changes written by processes in the
+    user's own **terminal units** (item 55's terminal panes, which run behind the desktop gate
+    and are the user's, item 68's S2) are attributed as **user actions** when the daemon can tie
+    the write to them: a change found by the sweep while only a terminal unit of the project,
+    and no agent command or agent background process, ran since the last fingerprint is shown
+    as "changed in your terminal" and still pauses, with *Resume* as the default button. The
+    pause is kept for user changes because the daemon cannot tell a user's command from one
+    the user pasted from an agent's suggestion.
   - **Watching goes through the client where the server allows it** (R1e), so the daemon's
     notifications, checked first, are the trigger: rust-analyzer with `files.watcher =
     "client"` and `cargo.buildScripts.rebuildOnSave = false`; ESLint's server, which relies on
@@ -2352,10 +2412,16 @@ the entries are added beside theirs).
     `PATH` are not run when the fake server is installed as an npm `.cmd` shim; the child's
     environment has `NoDefaultCurrentDirectoryInExePath=1`, and its `PATH` has no relative or
     in-project entry;
-  - **S1, from the package:** with a fake global npm root, the daemon runs `npm root -g` from
-    `<data>/lsp-work` (the fake records its working folder and environment), reads the
+  - **S1, from the package:** with a fake global npm root, the daemon finds it by running
+    `<real node> <node folder>/node_modules/npm/bin/npm-cli.js root -g` from `<data>/lsp-work`
+    (the fake records its working folder and environment) or from the npm prefix, reads the
     package's `bin`, and launches `<real node> <absolute script>`; a `bin` of
     `../../outside.js` is refused; a shim that names another script is reported and not used;
+    an `npm-cli.js` path outside the real node's installation is refused; **on Windows the
+    recorded process tree of discovery and start contains no `cmd.exe`**;
+  - **ATA off:** the fake standing in for `typescript-language-server` records its
+    initialization options: `disableAutomaticTypingAcquisition` is `true` and no `npmLocation`
+    is present;
   - **S1, real interpreters:** the hostile fixture holds `.tool-versions` (`nodejs 0.0.1`),
     `.node-version`, `.nvmrc`, `.python-version` and a `volta` pin in `package.json`, and a fake
     version-manager shim on `PATH` that would run a sentinel script if it saw any of them in
@@ -2471,7 +2537,11 @@ the entries are added beside theirs).
   are alive; `Unit::freeze` and `Unit::thaw` in `imperium-limits` (cgroup `freeze`, `SIGSTOP`
   and `SIGCONT`, job process suspension) around each foreground agent command, then sweep and
   thaw or pause; `node_modules/**` and `.venv/**` as execution-relevant for file tools;
-  `--allowLocalPluginLoads` never passed. Revision 7 (round 3): the freeze reference count (F1),
+  `--allowLocalPluginLoads` never passed. Revision 8 (round 4): every reference change, start
+  and pause under the one lock and generation, starts deferred during a freeze, graceful ending
+  of toolchain children, the stop-and-list freeze without a delegated cgroup, the scoped
+  package sweep by directory enumeration, and the user's terminal changes attributed. Revision
+  7 (round 3): the freeze reference count (F1),
   the per-project state lock with its generation (F2), the command's end as its empty unit with
   the 5 s grace (F3), freezing only the servers that can run project code and ending their
   toolchain children (F4), the confirmed freeze before the command starts (F5), and the full
@@ -2532,6 +2602,26 @@ the entries are added beside theirs).
   - **F2, with barriers:** the end-of-command sweep is parked after recording the generation; a
     file-tool write to `build.rs` pauses the servers meanwhile; on release the sweep finds the
     generation changed and does not thaw, and the project stays paused with no sentinel;
+  - **F2, round 4, with barriers:** command B starts while A's end sweep is parked; on release
+    the servers stay frozen (count 1, generation changed) until B ends and its own sweep thaws
+    them; a fake server crash during a freeze schedules a restart that stays deferred (no new
+    process) until the thaw, then starts after the start sweep; a `lang.open` of a new language
+    and the user's *Resume* during a freeze are deferred the same way; untrusting the project,
+    *Keep paused* and a frozen unit's death each move the state to `paused` and bump the
+    generation, and a parked thaw then does nothing;
+  - **graceful end:** a fake toolchain child that handles `SIGTERM` (Unix) or `CTRL_BREAK`
+    (Windows) by releasing its lock file and exiting is ended without a kill; one that ignores
+    it is killed after about 500 ms; the agent's fake `cargo build` completes in both cases;
+  - **no delegated cgroup (Linux):** with the cgroup root unavailable, the freeze uses the
+    stop-and-list pass, and a child forked during the stop is stopped before the command
+    starts;
+  - **scoped sweep:** with ESLint's config importing `eslint-plugin-x`, a change under
+    `node_modules/eslint-plugin-x/` pauses the next start, and a change under an unrelated
+    `node_modules/left-pad/` does not; with the user's own TypeScript, `node_modules/typescript/`
+    is not swept; the sweep uses the directory-enumeration calls (counted by a test hook) and
+    reports "bound reached: checked by lockfile" past 200,000 entries;
+  - **the user's terminal:** a change made by a scripted process in a terminal unit of the
+    project, with no agent process running, pauses with "changed in your terminal";
   - **F3:** a command whose main process exits while a child sleeps 2 s keeps the servers frozen
     until the child exits; a child that lives 20 s is handed to the poll after 5 s, the servers
     thaw, and a change it makes at 10 s pauses them within 1 s;
@@ -2688,7 +2778,10 @@ the entries are added beside theirs).
   `eslint.config.js` that would write sentinel files leave none); trusted, a type error appears
   as a problem, a quick fix applies to the buffer and format on save formats; the agents'
   `diagnostics` tool returns the same problem; an agent's edit of the fixture's `build.rs`
-  pauses rust-analyzer and nothing runs until *Resume*; rust-analyzer's peak memory on the fixture and on
+  pauses rust-analyzer and nothing runs until *Resume*; with the real `typescript-language-server`
+  open on a TypeScript fixture that imports an untyped package, **no typings-installer process
+  runs** (the job's process list never shows `typingsInstaller.js` or an `npm` child) and no
+  `@types` folder appears in the TypeScript cache; rust-analyzer's peak memory on the fixture and on
   this repository is recorded for D21's numbers. Docs: 02 (`lang.*`, `projects.*`), 05 (trust,
   the diagnostics tool, the install floor), 07 (problems, fixes, themes), 10 (settings), 12
   (item 66's text), 14 (trusted projects).
