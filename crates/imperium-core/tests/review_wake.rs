@@ -1288,8 +1288,9 @@ async fn a_timed_out_wake_stays_capped_until_its_turn_really_ends() {
     assert_eq!(session.permission_mode(), PermissionMode::Ask);
     let mut events = session.subscribe();
     session.resume_work();
+    // The approval card of the request the wake gave up on is gone.
     assert!(
-        world
+        !world
             .daemon
             .approvals()
             .respond(request.expect("the command asked"), false)
