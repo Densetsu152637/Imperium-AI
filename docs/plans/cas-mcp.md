@@ -1237,8 +1237,17 @@ Commands are what CI runs; nothing needs a local Rust build.
     interpreter's `site-packages`, so they run only where `CI` is set.
   - **Measured** (printed under "cas measurements" in each `python-cas` log; the worker is the
     base interpreter, so the PID and memory are its own):
-    MEASUREMENTS_PLACEHOLDER
-    The warm-up after the import is about 0.1 s; nearly all of "ready" is importing SymPy.
+
+
+    | OS (GitHub runner) | Spawn to ready frame | Warm-up after imports | Memory after warm-up |
+    | --- | --- | --- | --- |
+    | Linux (`ubuntu-latest`) | 0.23 s | 0.06 s | 52 MiB (`VmHWM`) |
+    | macOS (`macos-latest`) | 0.16 s | 0.04 s | 58 MiB (resident, from `ps`) |
+    | Windows (`windows-latest`) | 0.28 to 0.45 s | 0.06 to 0.10 s | 53 MiB (peak working set) |
+
+    These are with SymPy's bytecode already cached; most of "ready" is importing SymPy. A local
+    Windows machine took 1.3 s. D3's estimate of about 1 s for the first call holds as an upper
+    figure, and stage 2b and stage 5 can budget about 64 MiB and 2 s of CPU for the warm-up.
   - **Audit allow-list:** `array.__new__` only, which SymPy's prime sieve raises whenever it grows
     (`factorial(25000)`, `prime(10^6)`). Nothing else is raised by a warmed worker over the table
     and the corpus on any OS. Two lazy paths had to join the warm-up: printing an integer over
