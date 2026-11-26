@@ -256,7 +256,7 @@ impl UnitOs {
 
     pub(crate) fn monitor(self: &Arc<Self>) -> Monitor {
         let watch = match &self.kind {
-            Kind::Cgroup(cgroup) => cgroup.watch().ok().and_then(|fd| AsyncFd::new(fd).ok()),
+            Kind::Cgroup(cgroup) => cgroup.watch().ok().and_then(crate::notify::register),
             Kind::Fallback { .. } => None,
         };
         Monitor {

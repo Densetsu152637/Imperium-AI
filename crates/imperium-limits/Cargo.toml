@@ -46,10 +46,11 @@ windows-sys = { version = "0.61.2", features = [
 [dev-dependencies]
 imperium-limits = { path = ".", features = ["test-support"] }
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
 
-# The Job Objects (windows.rs) and the macOS process calls (macos.rs) are Win32 and C calls, all
-# unsafe. Only those modules opt in (`#![allow(unsafe_code)]`); the rest of the crate denies it.
+# The Job Objects (windows.rs), the macOS process calls (macos.rs) and Tokio's inotify
+# registration (notify.rs) are unsafe. Only those modules opt in (`#![allow(unsafe_code)]`);
+# the rest of the crate denies it.
 [lints.rust]
 unsafe_code = "deny"
 

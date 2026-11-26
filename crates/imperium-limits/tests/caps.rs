@@ -272,7 +272,11 @@ async fn a_cpu_spin_is_held_to_its_cap() {
     let started = Instant::now();
     let mut probe = Probe::start(&limits, spec(caps), &["spin", "4", "3"]);
     if probe.unit.not_enforced().contains(&Limit::Cpu) {
-        assert!(cfg!(not(windows)), "Windows jobs enforce CPU caps");
+        assert_ne!(
+            limits.mechanism(),
+            imperium_limits::Mechanism::Job,
+            "jobs enforce CPU caps"
+        );
         println!(
             "MEASURE cpu mechanism={} not_enforced",
             limits.mechanism().as_str()
@@ -500,7 +504,7 @@ mod windows {
             .stdout(std::process::Stdio::piped())
             .kill_on_drop(true);
         let mut child = command.spawn().unwrap();
-        job.assign(child.raw_handle().unwrap().cast()).unwrap();
+        job.assign_child(&child).unwrap();
         let mut stdin = child.stdin.take().unwrap();
         stdin.write_all(b"go\n").await.unwrap();
         stdin.flush().await.unwrap();

@@ -21,6 +21,7 @@ use std::{
     ffi::{OsStr, c_void},
     io,
     mem::size_of,
+    os::windows::io::{AsRawHandle as _, BorrowedHandle},
     ptr,
     sync::{
         Arc, Mutex, Weak,
@@ -229,8 +230,24 @@ impl Job {
     ///
     /// # Errors
     /// When the assignment is refused.
-    pub fn assign(&self, process: HANDLE) -> io::Result<()> {
-        // SAFETY: both handles are open for the call.
+    pub fn assign(&self, process: BorrowedHandle<'_>) -> io::Result<()> {
+        self.assign_raw(process.as_raw_handle())
+    }
+
+    /// Puts a Tokio child in the job.
+    ///
+    /// # Errors
+    /// When the child has been reaped or the assignment is refused.
+    pub fn assign_child(&self, child: &Child) -> io::Result<()> {
+        let process = child
+            .raw_handle()
+            .ok_or_else(|| io::Error::other("the child has exited"))?;
+        // The child's handle stays open while it is borrowed here.
+        self.assign_raw(process)
+    }
+
+    fn assign_raw(&self, process: HANDLE) -> io::Result<()> {
+        // SAFETY: both handles are open for the call (the callers hold them).
         check(unsafe { AssignProcessToJobObject(self.as_raw(), process) })
     }
 
@@ -628,19 +645,19 @@ impl Prepared {
                 inner
                     .total
                     .job
-                    .assign(process.0)
+                    .assign_raw(process.0)
                     .map_err(|err| LimitError::new("assign", err))?;
             }
             if let Some(group) = &session {
                 group
                     .job
-                    .assign(process.0)
+                    .assign_raw(process.0)
                     .map_err(|err| LimitError::new("assign", err))?;
             }
             if fail_at == Some(FailAt::Assign) {
                 return Err(LimitError::new("assign", "forced to fail by the test hook"));
             }
-            job.assign(process.0)
+            job.assign_raw(process.0)
                 .map_err(|err| LimitError::new("assign", err))?;
             if fail_at == Some(FailAt::Resume) {
                 return Err(LimitError::new("resume", "forced to fail by the test hook"));

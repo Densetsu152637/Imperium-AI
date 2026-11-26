@@ -22,6 +22,8 @@ pub mod launcher;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+mod notify;
+#[cfg(target_os = "linux")]
 use linux as backend;
 #[cfg(target_os = "macos")]
 pub mod macos;
