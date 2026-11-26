@@ -803,6 +803,11 @@ fn check_tar_entry<R: std::io::Read>(entry: &tar::Entry<'_, R>) -> std::io::Resu
     if kind.is_gnu_sparse() {
         return Err(refuse("sparse files are not allowed"));
     }
+    // `git archive` and some posix tars lead with a pax global header; the tar crate writes
+    // nothing for it.
+    if kind.is_pax_global_extensions() {
+        return Ok(());
+    }
     if kind.is_symlink() || kind.is_hard_link() {
         let target = entry
             .link_name()?
@@ -2088,7 +2093,6 @@ echo 'version: 6000 (abc)'
     fn tar_extraction_refuses_unsafe_entry_types() {
         use tar::EntryType;
         let cases = [
-            ("sparse file", EntryType::GNUSparse, "x", ""),
             ("fifo", EntryType::Fifo, "x", ""),
             ("character device", EntryType::Char, "x", ""),
             ("block device", EntryType::Block, "x", ""),
@@ -2120,10 +2124,7 @@ echo 'version: 6000 (abc)'
         for (what, kind, name, link) in cases {
             let root = tempfile::tempdir().unwrap();
             let error = untar_bytes(tar_entry(kind, name, link), root.path()).unwrap_err();
-            // The tar crate may reject a bare sparse header itself, with its own error kind.
-            if kind != EntryType::GNUSparse {
-                assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{what}");
-            }
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{what}");
             assert!(
                 std::fs::read_dir(root.path().join("out"))
                     .unwrap()
@@ -2132,6 +2133,66 @@ echo 'version: 6000 (abc)'
                 "{what}"
             );
         }
+    }
+
+    /// A GNU tar header field holding `n` in octal.
+    fn octal12(n: u64) -> [u8; 12] {
+        let mut field = [0u8; 12];
+        field.copy_from_slice(format!("{n:011o}\0").as_bytes());
+        field
+    }
+
+    #[test]
+    fn tar_extraction_refuses_well_formed_sparse_entries() {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::GNUSparse);
+        header.set_path("sparse").unwrap();
+        header.set_size(512);
+        header.set_mode(0o644);
+        let gnu = header.as_gnu_mut().unwrap();
+        gnu.sparse[0].offset = octal12(1 << 20);
+        gnu.sparse[0].numbytes = octal12(512);
+        gnu.realsize = octal12((1 << 20) + 512);
+        header.set_cksum();
+        let mut builder = tar::Builder::new(Vec::new());
+        builder.append(&header, &[7u8; 512][..]).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let error = untar_bytes(builder.into_inner().unwrap(), root.path()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("sparse"), "{error}");
+        assert!(
+            std::fs::read_dir(root.path().join("out"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn tar_extraction_accepts_a_pax_global_header() {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::XGlobalHeader);
+        header.set_path("pax_global_header").unwrap();
+        let record = b"15 comment=abc\n";
+        header.set_size(record.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        let mut builder = tar::Builder::new(Vec::new());
+        builder.append(&header, &record[..]).unwrap();
+        let mut file = tar::Header::new_gnu();
+        file.set_size(7);
+        file.set_mode(0o755);
+        file.set_cksum();
+        builder
+            .append_data(&mut file, "top/llama-server", &b"payload"[..])
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        untar_bytes(builder.into_inner().unwrap(), root.path()).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("out/top/llama-server")).unwrap(),
+            b"payload"
+        );
+        assert!(!root.path().join("out/pax_global_header").exists());
     }
 
     #[cfg(unix)]

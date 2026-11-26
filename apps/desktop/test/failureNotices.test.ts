@@ -13,6 +13,8 @@ const event = (over: Partial<AutofixEventParams> = {}): AutofixEventParams => ({
   status: "failed",
   session_id: null,
   summary: "auto-merge on owner/repo#7 could not be turned off yet; Imperium will try again",
+  trigger: "ci",
+  comment_ids: [],
   ...over,
 });
 

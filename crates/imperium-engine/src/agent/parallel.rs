@@ -290,14 +290,16 @@ impl Agent {
         }
     }
 
-    /// The output the run kept for a provider's call `call` (`name` with `arguments`), if it ran
-    /// ahead with exactly these; the provider is called otherwise.
+    /// The output the run kept for a provider's call `call` (`name` with `arguments`) and how
+    /// long it took, if it ran ahead with exactly these and succeeded; the provider is called
+    /// otherwise. A failure kept from the run is dropped: the run had no sampler, so the call
+    /// is made again at its turn with one.
     pub(super) fn kept_provider_result(
         &self,
         call: &ToolCall,
         name: &str,
         arguments: &str,
-    ) -> Option<Result<String, String>> {
+    ) -> Option<(String, Duration)> {
         let kept = lock(&self.prefetched).remove(&call.id);
         match kept {
             Some((
@@ -305,8 +307,8 @@ impl Agent {
                     name: ran,
                     arguments: with,
                 },
-                (result, _),
-            )) if ran == name && with == arguments => Some(result),
+                (Ok(output), took),
+            )) if ran == name && with == arguments => Some((output, took)),
             _ => None,
         }
     }
