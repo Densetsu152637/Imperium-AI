@@ -1223,6 +1223,41 @@ mod tests {
         let _ = person.wait();
     }
 
+    #[tokio::test]
+    async fn a_local_peer_that_is_not_the_daemons_child_may_choose_a_server() {
+        let mut person = bystander();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let fake = home.path().join("llama-server-fake");
+        std::fs::write(&fake, "not a program").unwrap();
+        let mut connection = Connection::new(DaemonState::new(paths.clone(), settings, None))
+            .with_peer(Some((person.id(), now)))
+            .with_daemon_pid(u32::MAX - 1);
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        let handled = connection.handle_text(&request(
+            2,
+            RuntimeSetServer::NAME,
+            json!({"path": fake.display().to_string()}),
+        ));
+        let response = handled.deferred.expect("a deferred reply").await;
+        match response.outcome {
+            Outcome::Result(result) => assert_eq!(result["source"], "custom"),
+            other => panic!("expected the server to be saved, got {other:?}"),
+        }
+        let _ = person.kill();
+        let _ = person.wait();
+    }
+
     fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
         std::fs::create_dir_all(to).unwrap();
         for entry in std::fs::read_dir(from).unwrap().flatten() {
