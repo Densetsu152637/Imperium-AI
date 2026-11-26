@@ -387,8 +387,8 @@ reported as needing one, and the user signs in to it on purpose
 computer algebra server, `imperium_cas`, backed by SymPy and started per session like any stdio
 server. Agent text never reaches `sympify`, `parse_expr` or `eval`: a hand-written parser reads a
 small infix language, a size guard refuses runaway numbers before anything is computed, and a
-fixed table builds the result into SymPy objects. A second estimate refuses obvious blow-ups
-before a tool expands anything (more than 10,000 terms, such as `(x+y+z)^5000`, or an expanded
+fixed table builds the result into SymPy objects. A second, heuristic estimate refuses obvious
+blow-ups before a tool expands anything (more than 10,000 terms, such as `(x+y+z)^5000`, or an expanded
 form far over the 64 KiB result cap), and matrix operations whose cost grows like n! have a size
 cap. Each call is meant to run in a fresh worker
 process that has already imported SymPy, answers one call and exits; an audit hook ends the
@@ -398,7 +398,8 @@ when the call arrived, so time spent queued counts). On Linux the worker applies
 memory limits itself; on macOS it applies the CPU limit, and the server polls the worker's memory
 every 50 ms, so a worker can overshoot the memory limit briefly, by at most 2 GiB; on Windows each
 worker runs in its own Job Object with both limits (from the server's sandbox broker in a later
-stage; the tests use Job Objects the server itself creates). On Linux with Landlock, neither the
+stage; the tests use Job Objects the server itself creates; the CPU limit there counts user time
+only, so kernel time is bounded by the wall clock). On Linux with Landlock, neither the
 server nor its workers can `execve` a program other than the interpreter (the ELF loader can
 still map other files, so the `bwrap` sandbox is the boundary there). The MCP server offers
 eleven tools: `simplify`, `expand`, `factor`, `solve` (every answer states its domain, complex

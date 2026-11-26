@@ -1486,7 +1486,8 @@ Commands are what CI runs; nothing needs a local Rust build.
     warm-up calls), `format.py` (text, LaTeX, kind and the 64 KiB cap), `nocodegen.py` (below),
     `limits_windows.py` and `WindowsSpawner` (below), the expansion estimate in `guard.py`
     (below), and `__main__.py` serving MCP after the Landlock statement. Tests:
-    `test_tools.py`, `test_roundtrip.py`, `test_server.py`, `test_no_inprocess_corpus.py`, the
+    `test_tools.py`, `test_tools_limited.py`, `test_roundtrip.py`, `test_server.py`,
+    `test_no_inprocess_corpus.py`, the
     test worker `trap_probe.py`, and additions to `test_limits.py`, `test_landlock.py`,
     `test_audit_hook.py` and `test_no_dynamic_code.py`.
   - **Checks to tests.** Per-tool cases, `equal`'s three outcomes with the fixed seed,
@@ -1511,31 +1512,44 @@ Commands are what CI runs; nothing needs a local Rust build.
     - **Memory explosions.** Corpus line `(x+y+z)^5000` passes D2's guard (it is the expand rule's
       exponent of 10,000 that refuses only `expand`) and `simplify`, `expand` and others multiply
       it out: 12.5 million terms. A first in-process round-trip run over the corpus reached
-      about 16 GB on a local Windows machine. Three fixes:
+      about 16 GB on a local Windows machine. What now stands in the way, none of it a proof:
       - the guard's **expansion estimate** (`guard.check_expansion`, a heuristic first line)
         bounds the terms of the expanded form (multinomial counts through sums, products and
-        whole powers) and refuses over 10,000 terms for every tool that expands, and for
-        `expand` an expanded form over about 128 KiB (`(x+y)^1000`). Matrix operations whose cost
-        grows like n! have side caps (8 with symbols, 30 without; eigenvalues 4 and 10). The OS
-        limits stay the backstop;
-      - **hostile inputs never run in the test process**: the corpus runs only through the pool
-        in limited workers, and `test_no_inprocess_corpus.py` fails if a test or script hands the
-        corpus to the worker's handlers in process (fixed small inputs may still run there);
+        powers) and refuses over 10,000 terms for every tool that expands, and for `expand` an
+        expanded form over about 128 KiB (`(x+y)^1000`). The exponent's value comes from the
+        magnitude estimate, so `5000.0`, `10000/2`, `10^4/2`, `Abs(-5000)`, `floor(5000.5)` and
+        `sqrt(25000000)` count like `5000` (its exact value when known, else the bound
+        `10^mag` as the worst case for a base with more than one term; a review found the first
+        version took only literal exponents). Matrix operations whose cost grows like n! have
+        side caps (8 with symbols, 30 without; eigenvalues 4 and 10). It refuses the obvious
+        cases it models; the OS limits stay the backstop for the rest;
+      - **hostile and blow-up inputs never run in the test process**: the corpus runs only
+        through the pool in limited workers, and so does every test whose safety depends on a
+        refusal (`test_tools_limited.py`). `test_no_inprocess_corpus.py` fails if a test or
+        script hands the corpus to the handlers in process, and if any literal that can reach a
+        handler in process (through a test's own wrappers too, and in the warm-up lists) is not
+        known to be small: it must fail to parse, or pass both estimates with at most 25,000
+        digits, 2,000 expanded terms and a 6-by-6 matrix. One known literal is listed with why;
       - **Windows limits now**: `WindowsSpawner` puts each worker in its own Job Object
         (`JOB_OBJECT_LIMIT_PROCESS_MEMORY`, a per-process CPU time limit, kill on close, no error
-        reporting), assigned right after the worker starts and before it reads its call, then
-        armed from the post-warm-up baseline when it reports ready. The tests use it on Windows,
-        so the spin and allocation workers are stopped there too. D3 rejects front-side Job
-        Objects for production (the front cannot create processes in the AppContainer, and the
-        broker owns the jobs), so `default_spawner()` on Windows stays the broker stub unless
-        `IMPERIUM_CAS_WINDOWS_JOBS=1` is set; stage 5's broker replaces it. The test run itself
-        is capped too (`conftest.py`: a 4 GiB Job Object on Windows, `RLIMIT_AS` on Linux;
-        `CAS_TEST_MEMORY_GIB` changes it).
+        reporting). The worker is created suspended, assigned to the job and then resumed, so it
+        runs no instruction outside it; the job is armed from the post-warm-up baseline when the
+        worker reports ready. The CPU limit is `PerProcessUserTimeLimit`, which counts user time
+        only: kernel time is bounded by the front's wall clock, and Windows checks the limit only
+        every few seconds (a 2 s spin is stopped after about 4 to 5 s). The tests use it on
+        Windows, so the spin and allocation workers are stopped there too. D3 rejects front-side
+        Job Objects for production (the front cannot create processes in the AppContainer, and
+        the broker owns the jobs), so `default_spawner()` on Windows stays the broker stub unless
+        `IMPERIUM_CAS_WINDOWS_JOBS=1` is set; stage 5's broker replaces it;
+      - **the test run itself is capped** (`conftest.py`): a 4 GiB Job Object on Windows,
+        `RLIMIT_AS` on Linux, and on macOS (which ignores `RLIMIT_AS`) a thread that polls the
+        process's footprint and ends the run over the cap. `CAS_TEST_MEMORY_GIB` changes it.
   - **Measured.** The tool list a model sees (names, descriptions and input schemas) is about
-    6.9 KB: about 1,700 to 2,000 tokens at 3.5 to 4 characters per token, over D6's estimate of
-    1,500; the test keeps it under 7,000 characters. The repeated `assume` schema is most of it.
+    7.1 KB: about 1,800 to 2,000 tokens at 3.5 to 4 characters per token, over D6's estimate of
+    1,500; the test keeps it under 7,200 characters. The repeated `assume` schema is most of it.
     The warm-up now runs every tool once (about 1.2 s on a local Windows machine; the CI figures
-    are in the "cas measurements" section of each `python-cas` log).
+    are in the "cas measurements" section of each `python-cas` log). Every call through the pool
+    pays a fresh worker's warm-up, so the corpus suites run in parallel pools and chunks.
   - **Choices the plan left open.**
     - The worker request is `{"tool": <name>, "args": {...}}`; the worker keeps stage 2a's
       `build` call for its own tests, and the front offers only the eleven tools.
@@ -1546,10 +1560,14 @@ Commands are what CI runs; nothing needs a local Rust build.
     - A result holding a SymPy function outside D1's table (the derivative of `x!` holds
       `polygamma`, an unsolved integral `Integral`) does not parse back; sets, lists and the
       `O()` term are not in the input language either. The round trip covers expressions,
-      numbers, matrices and series without `O()`, and the corpus through `simplify` then `equal`
-      of input and output.
-    - The identifier pattern in the schemas is written `^[A-Za-z](_?[A-Za-z0-9])*$`, the same
-      language as D1's, and a test checks it against `is_identifier`.
+      numbers, matrices and series without `O()`, and the corpus lines the guard accepts
+      through `simplify` then `equal` of input and output.
+    - The identifier pattern in the schemas is written `^[A-Za-z](_?[A-Za-z0-9])*(?![\s\S])`,
+      the same language as D1's (a test checks it against `is_identifier`). It ends in a
+      lookahead rather than `$`, which in Python also matches before a final newline, or `\Z`,
+      which is not an anchor in ECMA-262, the dialect JSON Schema specifies.
+    - The front reads stdin through a line reader capped at 1 MiB per message: a longer line is
+      skipped in pieces, never held whole, and reported by the SDK as a parse error.
     - Only the handshake-era `initialize` carries `confinement`; a client on the 2026-07-28
       protocol (no handshake) does not see it. Imperium's client speaks `2025-06-18`.
 

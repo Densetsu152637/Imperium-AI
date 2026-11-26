@@ -20,7 +20,8 @@ settings.load_profile("cas")
 # The test run itself is capped, so a runaway test fails the run instead of the machine: on
 # Windows the pytest process and every process it starts share a Job Object with a total memory
 # cap; on Linux the pytest process's address space is capped (its workers inherit the cap and set
-# their own lower limits). `CAS_TEST_MEMORY_GIB` sets the cap (default 4; 0 turns it off).
+# their own lower limits); on macOS a thread polls the process's footprint.
+# `CAS_TEST_MEMORY_GIB` sets the cap (default 4; 0 turns it off).
 TEST_MEMORY = int(float(os.environ.get("CAS_TEST_MEMORY_GIB", "4")) * 2**30)
 if TEST_MEMORY and sys.platform == "win32":
     from imperium_cas.limits_windows import cap_this_process
@@ -32,6 +33,23 @@ elif TEST_MEMORY and sys.platform.startswith("linux"):
     _hard = resource.getrlimit(resource.RLIMIT_AS)[1]
     _soft = TEST_MEMORY if _hard == resource.RLIM_INFINITY else min(TEST_MEMORY, _hard)
     resource.setrlimit(resource.RLIMIT_AS, (_soft, _hard))
+elif TEST_MEMORY and sys.platform == "darwin":
+    # macOS ignores RLIMIT_AS: a thread polls this process's footprint, as the pool polls each
+    # worker's, and ends the run when it is over the cap (workers have their own poll).
+    import threading
+
+    from imperium_cas.limits_macos import usage
+
+    def _watch_footprint() -> None:
+        while True:
+            used = usage(os.getpid())
+            if used is not None and used[0] > TEST_MEMORY:
+                message = f"cas tests: footprint {used[0] >> 20} MiB over the cap\n"
+                os.write(2, message.encode())
+                os._exit(70)
+            threading.Event().wait(0.5)
+
+    threading.Thread(target=_watch_footprint, name="footprint cap", daemon=True).start()
 
 # Plan D1 point 4: no `str` reaches `sympify` or `parse_expr`, and nothing calls `lambdify`, for
 # the whole test session (test_no_string_to_sympy.py checks the trap and runs the corpus).

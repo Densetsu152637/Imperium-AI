@@ -39,8 +39,8 @@ from support import (  # noqa: I001
 )
 from test_hostile import ENTRIES
 
-TOOL_LIST_BUDGET = 7_000  # characters of what a model sees: names, descriptions, input schemas
-CORPUS_CHUNKS = 4
+TOOL_LIST_BUDGET = 7_200  # characters of what a model sees: names, descriptions, input schemas
+CORPUS_CHUNKS = 8  # each chunk well inside the 300 s per-test watchdog
 # Servers per corpus chunk, each with its own pool, so the chunk runs in parallel (two on
 # Windows, where the test run shares one Job Object with a memory cap).
 PARALLEL = 2 if sys.platform == "win32" else 4
@@ -340,3 +340,28 @@ def test_a_real_stdio_server():
     assert call["isError"] is False
     assert call["content"][0]["text"].startswith("{-2, 2} (complex)\nLaTeX: ")
     assert call["structuredContent"]["kind"] == "set"
+
+
+def test_a_name_with_a_trailing_newline_is_refused_by_the_schema():
+    """`$` would match before a final newline in Python's `re` (which `jsonschema` uses)."""
+    from imperium_cas.server import VALIDATORS
+
+    good = {"expression": "x", "variable": "x"}
+    assert not list(VALIDATORS["differentiate"].iter_errors(good))
+    for name in ("x\n", "x\r\n", "x\n\n"):
+        bad = {"expression": "x", "variable": name}
+        assert list(VALIDATORS["differentiate"].iter_errors(bad)), repr(name)
+
+
+def test_stdin_lines_over_the_cap_are_skipped_not_held():
+    import io
+
+    from imperium_cas.server import CappedLines
+
+    stream = io.BytesIO(b"a" * 100 + b"\n" + b"b" * 5000 + b"\n" + b'{"ok": 1}\n')
+    lines = CappedLines(stream, cap=1000)
+
+    async def read_all():
+        return [line async for line in lines]
+
+    assert run(read_all) == ["a" * 100 + "\n", "\n", '{"ok": 1}\n']

@@ -721,98 +721,93 @@ def check(root, *, expand: bool = False):
 # (plan D3) stay the backstop for everything it does not model.
 #
 # Per node it bounds the number of terms of the fully expanded form and the digits of its
-# largest coefficient: a sum adds terms, a product multiplies them, `p^n` with a constant whole
-# `n` has at most C(n+k-1, k-1) terms for a `k`-term base (the multinomial count) and
-# coefficients of at most `n*(digits + log10(k))` digits. A function call is one term outside,
-# and its arguments are counted where they are (SymPy expands inside calls too). The largest
-# count anywhere in the tree is what is checked.
+# largest coefficient: a sum adds terms, a product multiplies them, and `p^e` for a `k`-term base
+# has at most C(n+k-1, k-1) terms (the multinomial count) with coefficients of at most
+# `n*(digits + log10(k))` digits, where `n` is the whole part of `|e|`. The exponent's value comes
+# from the magnitude estimate above, so every spelling of it counts the same (`5000`, `5000.0`,
+# `10^4/2`, `Abs(-5000)`, `floor(5000.5)`): its exact value when the estimate has one, otherwise
+# its magnitude bound `10^mag` as the worst case (`sqrt(25000000)`, `exp(10)`). A function call
+# is one term outside, and its arguments are counted where they are (SymPy expands inside calls
+# too). The largest count anywhere in the tree is what is checked.
 
 MAX_TERMS = 10_000  # expanded terms any expanding tool may face
-SMALL_INT = 10**7  # constant whole exponents are tracked up to this
 
 
 @dataclass(frozen=True, slots=True)
 class Terms:
-    terms: float  # terms of the expanded form (log-free: a float that may be inf)
+    terms: float  # terms of the expanded form (a float that may be inf)
     digits: float  # digits of the largest coefficient
-    value: int | None  # the exact value of a small constant whole number, else None
     worst: float  # the most terms anywhere in this subtree
 
 
-def multinomial(power: int, count: float) -> float:
+def multinomial(power: float, count: float) -> float:
     """C(power + count - 1, count - 1): the terms of `(t1 + ... + t_count)^power` expanded."""
-    if count <= 1:
+    if count <= 1 or power <= 0:
         return 1.0
-    if count == math.inf:
+    if math.inf in (power, count):
         return math.inf
     log = math.lgamma(power + count) - math.lgamma(power + 1) - math.lgamma(count)
     return math.inf if log > 700 else math.exp(log)
 
 
-def small_int(value: int | None) -> int | None:
-    return value if value is not None and abs(value) <= SMALL_INT else None
+def whole_power(exponent) -> float:
+    """The whole part of `|exponent|`: exact when the magnitude estimate knows the value, else
+    the bound `10^mag` (infinite for an unbounded exponent)."""
+    if not isinstance(exponent, Est):
+        return math.inf  # a list or matrix as an exponent: assume the worst
+    if exponent.val is not None:
+        p, q = exponent.val
+        return float(abs(p) // q)
+    if exponent.unb or exponent.mag == math.inf:
+        return math.inf
+    return math.floor(10.0 ** min(exponent.mag, 300.0))
 
 
-def expand_visit(node, kids: list[Terms]) -> Terms:
+def expand_visit(node, kids: list[Terms], ests: list) -> Terms:
     worst = max((kid.worst for kid in kids), default=1.0)
     if isinstance(node, Num):
-        value = None
-        if node.exponent >= 0 and len(str(node.mantissa)) + node.exponent <= 8:
-            value = small_int(node.mantissa * 10**node.exponent)
-        return Terms(1.0, float(len(str(abs(node.mantissa))) + max(node.exponent, 0)), value, 1.0)
+        digits = float(len(str(abs(node.mantissa))) + max(node.exponent, 0))
+        return Terms(1.0, digits, 1.0)
     if isinstance(node, Sym | Const):
-        return Terms(1.0, 0.0, None, 1.0)
+        return Terms(1.0, 0.0, 1.0)
     if isinstance(node, Neg):
-        kid = kids[0]
-        return Terms(
-            kid.terms, kid.digits, small_int(None if kid.value is None else -kid.value), worst
-        )
-    if isinstance(node, BinOp):
+        return Terms(kids[0].terms, kids[0].digits, worst)
+    if isinstance(node, BinOp | Rel):
         left, right = kids
-        both = left.value is not None and right.value is not None
-        if node.op in {"+", "-"}:
-            value = None
-            if both:
-                value = small_int(left.value + (right.value if node.op == "+" else -right.value))
+        if isinstance(node, Rel) or node.op in {"+", "-"}:
             terms = left.terms + right.terms
             digits = max(left.digits, right.digits) + math.log10(2)
-            return Terms(terms, digits, value, max(worst, terms))
+            return Terms(terms, digits, max(worst, terms))
         if node.op == "*":
             terms = left.terms * right.terms
-            value = small_int(left.value * right.value) if both else None
-            return Terms(terms, left.digits + right.digits, value, max(worst, terms))
+            return Terms(terms, left.digits + right.digits, max(worst, terms))
         if node.op == "/":
-            return Terms(left.terms, left.digits + right.digits, None, worst)
-        # A power: multiplied out only for a constant whole exponent.
-        power = right.value
-        if power is None or power == 0:
-            return Terms(left.terms, left.digits, None, worst)
-        n = abs(power)
+            return Terms(left.terms, left.digits + right.digits, worst)
+        if left.terms <= 1:  # a one-term base: nothing to multiply out
+            return Terms(1.0, left.digits, worst)
+        n = whole_power(ests[1])
         terms = multinomial(n, left.terms)
-        digits = n * (left.digits + math.log10(max(left.terms, 1.0)))
-        value = None
-        if left.value is not None and power > 0 and n * math.log10(max(abs(left.value), 2)) < 8:
-            value = small_int(left.value**n)
-        return Terms(terms, digits, value, max(worst, terms))
-    if isinstance(node, Rel):
-        left, right = kids
-        terms = left.terms + right.terms
-        return Terms(terms, max(left.digits, right.digits), None, max(worst, terms))
+        digits = n * (left.digits + math.log10(left.terms)) if n else left.digits
+        return Terms(terms, digits, max(worst, terms))
     if isinstance(node, Seq):
         terms = max((kid.terms for kid in kids), default=1.0)
         digits = max((kid.digits for kid in kids), default=0.0)
-        return Terms(terms, digits, None, worst)
-    return Terms(1.0, max((kid.digits for kid in kids), default=0.0), None, worst)  # a call
+        return Terms(terms, digits, worst)
+    return Terms(1.0, max((kid.digits for kid in kids), default=0.0), worst)  # a call
 
 
 def expansion(root) -> Terms:
-    """The expansion estimate of a parsed tree (see above)."""
-    values: list = []
+    """The expansion estimate of a tree that passed `check` (see above)."""
+    values: list[Terms] = []
+    ests: list = []
     for node in postorder(root):
         count = len(children(node))
         kids = values[len(values) - count :] if count else []
+        kid_ests = ests[len(ests) - count :] if count else []
         del values[len(values) - count :]
-        values.append(expand_visit(node, kids))
+        del ests[len(ests) - count :]
+        values.append(expand_visit(node, kids, kid_ests))
+        ests.append(visit(node, kid_ests, False))
     return values[0]
 
 

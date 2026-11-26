@@ -59,7 +59,7 @@ from .framing import (
 if sys.platform == "darwin":
     from .limits_macos import usage as macos_usage
 if sys.platform == "win32":
-    from .limits_windows import WorkerJob
+    from .limits_windows import CREATE_SUSPENDED, WorkerJob
 
 WINDOWS_JOBS = "IMPERIUM_CAS_WINDOWS_JOBS"  # set to 1: the front's own Job Objects (see above)
 
@@ -141,7 +141,7 @@ class PosixSpawner:
         self.env = {} if env is None else dict(env)
         self.stderr = subprocess.DEVNULL if stderr is None else stderr
 
-    def spawn(self, limits: Limits) -> WorkerProcess:
+    def spawn(self, limits: Limits, creationflags: int = 0) -> WorkerProcess:
         return subprocess.Popen(  # noqa: S603 - a fixed interpreter, module and limits
             [*self.command, *limits.argv()],
             stdin=subprocess.PIPE,
@@ -149,6 +149,7 @@ class PosixSpawner:
             stderr=self.stderr,
             env=self.env,
             close_fds=True,
+            creationflags=creationflags,
         )
 
     def arm(self, proc: WorkerProcess) -> None:
@@ -163,7 +164,8 @@ class PosixSpawner:
 
 class WindowsSpawner:
     """Windows before stage 5: each worker in its own Job Object with the call's CPU and memory
-    limits, assigned right after it starts and before it reads anything (`limits_windows.py`).
+    limits. The worker is created suspended, assigned to its job and only then resumed, so it
+    never runs outside the job (`limits_windows.py`).
     """
 
     def __init__(self, command=None, env=None, stderr=None):
@@ -173,9 +175,11 @@ class WindowsSpawner:
         self.lock = threading.Lock()
 
     def spawn(self, limits: Limits) -> WorkerProcess:
-        proc = self.posix.spawn(limits)
+        # Started suspended, put in its job, then resumed: it runs no instruction outside it.
+        proc = self.posix.spawn(limits, creationflags=CREATE_SUSPENDED)
         try:
             job = WorkerJob(proc.pid, limits.cpu_seconds, limits.memory_mib)
+            job.resume()
         except OSError:
             discard(proc)
             raise

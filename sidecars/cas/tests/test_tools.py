@@ -1,13 +1,13 @@
 """Stage 3: the eleven tools of plan D6, run in process as the worker runs them.
 
-The worker's warm-up ran in `conftest.py`. Results are checked by their text, kind and domain;
-the hook, the limits and the MCP front have their own tests.
+The worker's warm-up ran in `conftest.py`. Only small inputs run here, in process; every test
+whose safety depends on a refusal (a blow-up the guard refuses) is in `test_tools_limited.py`,
+which runs in limited workers. `test_no_inprocess_corpus.py` checks the inputs here are small.
 """
 
 import pytest
 
 from imperium_cas import tools, worker
-from imperium_cas.format import OUTPUT_CAP
 
 
 def call(tool: str, **args) -> dict:
@@ -54,7 +54,6 @@ def test_simplify_and_expand():
         "latex": "x^{3} + 3 x^{2} + 3 x + 1",
         "kind": "expression",
     }
-    assert "guard" in refused("expand", "guard", expression="(x + y)^20000")
 
 
 def test_factor():
@@ -65,7 +64,6 @@ def test_factor():
     assert ok("factor", expression="x^2 - 1")["text"] == "(x - 1)*(x + 1)"
     assert ok("factor", expression="x^2 + 1")["text"] == "x^2 + 1"
     assert ok("factor", expression="x^2 + 1", gaussian=True)["text"] == "(x - I)*(x + I)"
-    assert "100 digits" in refused("factor", "math", expression="10^100 + 1")
 
 
 def test_solve_states_its_domain_on_every_result():
@@ -255,51 +253,7 @@ def test_a_parse_error_names_its_column_with_a_caret():
     assert "(column 5)" in message and message.endswith("^")
 
 
-def test_a_result_over_the_output_cap_is_an_error_not_cut():
-    message = refused("expand", "math", expression="(x + y + z)^50")
-    assert "over the 64 KiB limit" in message and "evaluate" in message
-    assert OUTPUT_CAP == 64 * 1024
-
-
 @pytest.mark.parametrize(("tool", "args"), tools.WARM_UP, ids=lambda value: str(value)[:30])
 def test_every_warm_up_call_gives_a_reply(tool, args):
     reply = call(tool, **args)
     assert reply["ok"] or reply["category"] in {"math", "parse", "guard"}, reply
-
-
-def test_obvious_blow_ups_are_refused_before_sympy_starts():
-    """The guard's expansion estimate (a heuristic first line; the limits are the backstop)."""
-    assert "characters" in refused("expand", "guard", expression="(x + y)^1000")
-    assert ok("expand", expression="(x + y)^100")["kind"] == "expression"
-    for tool, args in (
-        ("simplify", {"expression": "(x + y + z)^5000"}),
-        ("factor", {"expression": "(x + y + z)^5000 - 1"}),
-        ("solve", {"equations": ["(x + y + z)^5000 = 1"], "variables": ["x"]}),
-        ("integrate", {"expression": "(x + y + z)^5000", "variable": "x"}),
-        ("series", {"expression": "exp(x) * (x + y + z)^5000", "variable": "x"}),
-        ("limit", {"expression": "(x + y + z)^5000", "variable": "x", "to": "0"}),
-        ("equal", {"left": "(x + y + z)^5000", "right": "x"}),
-        ("matrix", {"matrix": "[[(a + b + c)^5000]]", "operation": "det"}),
-    ):
-        message = refused(tool, "guard", **args)
-        assert "terms, over the limit of 10,000" in message, (tool, message)
-    # Differentiating does not expand: the same power is fine there.
-    assert ok("differentiate", expression="(x + y + z)^5000", variable="x")["text"] == (
-        "5000*(x + y + z)^4999"
-    )
-
-
-def test_matrix_operations_whose_cost_grows_too_fast_are_refused():
-    symbolic = "[" + ", ".join(
-        "[" + ", ".join(f"a{i}{j}" for j in range(9)) + "]" for i in range(9)
-    )
-    assert "at most 8 rows" in refused("matrix", "math", matrix=symbolic + "]", operation="det")
-    small = "[[a, b, c, d, e], [b, a, 0, 0, 0], [c, 0, a, 0, 0], [d, 0, 0, a, 0], [e, 0, 0, 0, a]]"
-    assert "at most 4 rows" in refused("matrix", "math", matrix=small, operation="eigenvalues")
-    numbers = "[" + ", ".join(
-        "[" + ", ".join(str((i * j) % 7) for j in range(12)) + "]" for i in range(12)
-    )
-    assert "at most 10 rows" in refused(
-        "matrix", "math", matrix=numbers + "]", operation="eigenvalues"
-    )
-    assert ok("matrix", matrix=numbers + "]", operation="rank")["text"].isdigit()

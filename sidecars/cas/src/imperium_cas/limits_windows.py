@@ -1,10 +1,14 @@
 """Per-worker Job Objects on Windows, from the front (`ctypes` on `kernel32`, no agent data).
 
-Each worker gets its own job, assigned right after it is started and long before it reads its
-call (it is still importing SymPy), with:
+Each worker gets its own job. The worker is created suspended (`CREATE_SUSPENDED`), assigned to
+the job and then resumed (`NtResumeProcess`), so it runs no instruction outside it. The process
+handle comes from `OpenProcess` on the new PID; `subprocess.Popen` holds its own handle for the
+whole life of the worker, so that PID cannot be reused meanwhile. The job has:
 
 - `JOB_OBJECT_LIMIT_PROCESS_MEMORY`: committed memory;
-- `JOB_OBJECT_LIMIT_PROCESS_TIME`: user-mode CPU time (the job ends the process when it is out);
+- `JOB_OBJECT_LIMIT_PROCESS_TIME`: user-mode CPU time only (the job ends the process when it
+  is out). Kernel time is not counted, so a worker spending its time in system calls is bounded
+  by the front's wall clock instead;
 - `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: closing the job's handle (the front ending, for one)
   kills the worker;
 - `JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION`: no error dialog and no Windows Error Reporting
@@ -30,7 +34,9 @@ LIMIT_PROCESS_MEMORY = 0x0100
 LIMIT_JOB_MEMORY = 0x0200
 LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x0400
 LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-PROCESS_ACCESS = 0x0001 | 0x0010 | 0x0100 | 0x1000  # terminate, VM read, set quota, query
+# Terminate, VM read, set quota, suspend and resume, query.
+PROCESS_ACCESS = 0x0001 | 0x0010 | 0x0100 | 0x0800 | 0x1000
+CREATE_SUSPENDED = 0x00000004
 TICKS_PER_SECOND = 10_000_000  # FILETIME and the time limits count 100 ns ticks
 WARM_UP_CPU_SECONDS = 30  # allowance before arming: SymPy's import and the warm-up
 WARM_UP_MEMORY = 512 * 1024 * 1024
@@ -113,6 +119,9 @@ if sys.platform == "win32":
     KERNEL32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
     KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
     KERNEL32.GetCurrentProcess.restype = wintypes.HANDLE
+    NTDLL = ctypes.WinDLL("ntdll")
+    NTDLL.NtResumeProcess.argtypes = [wintypes.HANDLE]
+    NTDLL.NtResumeProcess.restype = ctypes.c_long
 
 
 def check(ok) -> None:
@@ -160,6 +169,11 @@ class WorkerJob:
         except OSError:
             self.close()
             raise
+
+    def resume(self) -> None:
+        """Resume a worker created suspended, once it is in its job."""
+        if NTDLL.NtResumeProcess(self.process) != 0:
+            raise OSError("NtResumeProcess failed")
 
     def cpu_ticks(self) -> int:
         times = [ctypes.c_uint64() for _ in range(4)]  # creation, exit, kernel, user

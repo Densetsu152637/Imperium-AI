@@ -78,7 +78,9 @@ def test_a_cpu_spin_ends_with_the_cpu_limit(pools):
     assert reply["category"] == "limit" and reply["limit"] == "cpu", reply
     assert reply["message"] == "limit: CPU time (2 s)"
     # Soft limit = ceil(CPU used after warm-up) + 2 s, so at most 3 s of CPU after the call.
-    assert elapsed <= 2 + 1 + SLACK, elapsed
+    # Windows checks a job's per-process time limit only every few seconds: allow that much.
+    grace = 4 if sys.platform == "win32" else 1
+    assert elapsed <= 2 + grace + SLACK, elapsed
     MEASUREMENTS.append(f"cpu spin, limit 2 s ({sys.platform}): stopped after {elapsed:.2f} s")
 
 

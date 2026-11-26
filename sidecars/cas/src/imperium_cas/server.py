@@ -15,6 +15,7 @@ The `initialize` reply's `serverInfo` carries `confinement` (`landlock`, `no-lan
 """
 
 import itertools
+import sys
 import time
 from functools import partial
 
@@ -29,8 +30,11 @@ from .pool import Pool
 VERSION = "0.1.0"
 NO_LANDLOCK_NOTE = "Landlock unavailable: programs in /usr can be started inside the sandbox"
 # D1's identifier pattern `[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*`, written shorter (the same
-# language: a letter, then letters or digits, each optionally after one underscore).
-NAME_PATTERN = "^[A-Za-z](_?[A-Za-z0-9])*$"
+# language: a letter, then letters or digits, each optionally after one underscore). It ends in
+# `(?![\s\S])`, a true end of string in both Python and ECMA-262 regular expressions: `$` also
+# matches before a final newline in Python (so `x` and a newline would pass), and `\Z` is not
+# an anchor in ECMA-262, the dialect JSON Schema specifies.
+NAME_PATTERN = r"^[A-Za-z](_?[A-Za-z0-9])*(?![\s\S])"
 ASSUMPTIONS = [
     "real",
     "positive",
@@ -44,6 +48,9 @@ ASSUMPTIONS = [
 ]
 SYNTAX = "Syntax: x^2, 2x, sqrt(x), pi, E, I, oo."
 ERROR_CHARS = 300  # a schema error's message is cut to this, since it can quote the input
+# The longest line (one JSON-RPC message) read from stdin. Eleven tools' largest arguments are
+# ten 16 KiB equations; a longer line is skipped without being held whole.
+MESSAGE_CAP = 1024 * 1024
 
 EXPRESSION = {"type": "string", "maxLength": 16384}
 NAME = {"type": "string", "pattern": NAME_PATTERN}
@@ -262,12 +269,43 @@ def make_server(pool: Pool, confinement: str) -> Server:
     return server
 
 
+class CappedLines:
+    """stdin as lines of at most `cap` bytes, for the SDK's stdio reader (`async for line`).
+
+    A longer line is read through to its end in small pieces and replaced by an empty line,
+    which the SDK reports as a parse error, so no message is ever held whole past the cap."""
+
+    def __init__(self, stream, cap: int = MESSAGE_CAP):
+        self.stream, self.cap = stream, cap
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> str:
+        line = await anyio.to_thread.run_sync(self.read_line)
+        if line is None:
+            raise StopAsyncIteration
+        return line
+
+    def read_line(self) -> str | None:
+        data = self.stream.readline(self.cap + 1)
+        if not data:
+            return None
+        if len(data) > self.cap and not data.endswith(b"\n"):
+            while True:  # skip the rest of the line
+                rest = self.stream.readline(64 * 1024)
+                if not rest or rest.endswith(b"\n"):
+                    break
+            return "\n"
+        return data.decode("utf-8", errors="replace")
+
+
 def run_stdio(pool: Pool, confinement: str) -> None:
     """Serve MCP on stdin and stdout until stdin ends."""
     server = make_server(pool, confinement)
 
     async def main() -> None:
-        async with stdio_server() as (read_stream, write_stream):
+        async with stdio_server(stdin=CappedLines(sys.stdin.buffer)) as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
 
     anyio.run(main)

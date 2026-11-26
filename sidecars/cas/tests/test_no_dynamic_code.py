@@ -95,6 +95,7 @@ EXTRA_IMPORTS = {
     "nocodegen.py": {"sympy.polys"},
     "server.py": {
         "itertools",
+        "sys",
         "time",
         "functools",
         "anyio",

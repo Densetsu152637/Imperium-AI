@@ -87,3 +87,130 @@ def test_the_check_catches_in_process_corpus_runs():
     )
     for source in good:
         assert not violations(source), source
+
+
+# --- Every input the test process hands to a handler is known to be small ---
+
+SMALL_DIGITS = 25_000  # the stage 1 estimate of a result's digits
+SMALL_TERMS = 2_000  # the expansion estimate
+SMALL_SIDE = 6  # rows and columns of a matrix literal
+
+
+def small(text: str) -> bool:
+    """A literal may run in process if the parser refuses it (pure, nothing is built) or if both
+    estimates show it small. A literal the guard refuses depends on that refusal, so it belongs
+    in a limited worker (`test_tools_limited.py`)."""
+    from imperium_cas.guard import Est, check, expansion, size
+    from imperium_cas.parse import CasInputError, ParseError, parse
+
+    try:
+        root = parse(text)
+    except ParseError:
+        return True
+    try:
+        est = check(root)
+        terms = expansion(root)
+    except CasInputError:
+        return False
+    if isinstance(est, Est):
+        return size(est) <= SMALL_DIGITS and terms.worst <= SMALL_TERMS
+    return max(est.rows, est.cols) <= SMALL_SIDE and terms.worst <= SMALL_TERMS
+
+
+def runs_handlers(tree: ast.AST, names=HANDLERS) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+            if name in names:
+                return True
+    return False
+
+
+def handler_names(tree: ast.Module) -> set[str]:
+    """The handlers, plus every function of the module that calls one, directly or through
+    another (a test's `ok(...)` that wraps `worker.handle`)."""
+    names = set(HANDLERS)
+    functions = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)]
+    while True:
+        more = {f.name for f in functions if f.name not in names and runs_handlers(f, names)}
+        if not more:
+            return names
+        names |= more
+
+
+def literals(tree: ast.AST) -> list[tuple[int, str]]:
+    return [
+        (node.lineno, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value
+    ]
+
+
+# Literals known to be refused cheaply, with why running them in process is safe even if the
+# refusal regressed.
+KNOWN = {
+    # The warm-up's guard path (worker.py): were the guard to regress, `2^(10^7)` is about three
+    # million digits, a second of CPU and a few MB, not a runaway.
+    "2^(10^7)": "bounded even unrefused",
+}
+
+
+def scopes_with_inputs(tree: ast.Module) -> list[ast.AST]:
+    """The functions that call a handler, and the module's own top level if any does (its
+    constants can feed them)."""
+    names = handler_names(tree)
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and runs_handlers(node, names)
+    ]
+    if not functions:
+        return []
+    top = [
+        item
+        for item in tree.body
+        if not isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+    ]
+    return functions + top
+
+
+def test_in_process_inputs_are_small():
+    """Every string literal that can reach a handler in the test process (in a function that
+    calls one, or at the top level of such a module, and in the warm-up lists, which
+    `conftest.py` runs in process) parses to a small input or not at all."""
+    found = {}
+    modules = sorted((ROOT / "tests").glob("*.py"))
+    modules += [ROOT / "src" / "imperium_cas" / name for name in ("tools.py", "worker.py")]
+    for path in modules:
+        if path.name == "test_no_inprocess_corpus.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        scopes = [tree] if path.parent.name == "imperium_cas" else scopes_with_inputs(tree)
+        big = sorted(
+            {
+                f"line {line}: {text[:40]!r}"
+                for scope in scopes
+                for line, text in literals(scope)
+                if text not in KNOWN and not small(text)
+            }
+        )
+        if big:
+            found[path.name] = big
+    assert not found, f"inputs that are not known to be small run in process: {found}"
+
+
+def test_the_smallness_check():
+    assert small("(x + y)^20") and small("x +") and small("not invertible")
+    for text in ("(x + y + z)^5000", "(x + y)^20000", "2^(10^7)", "(x+y+z)^sqrt(25000000)"):
+        assert not small(text), text
+
+
+def test_the_lint_follows_wrappers_of_the_handlers():
+    source = (
+        "def ok(tool, **args):\n    return worker.handle({'tool': tool, 'args': args})\n\n"
+        "def test_x():\n    ok('simplify', expression='(x + y + z)^5000')\n"
+    )
+    tree = ast.parse(source)
+    texts = [text for scope in scopes_with_inputs(tree) for _, text in literals(scope)]
+    assert "(x + y + z)^5000" in texts and not small("(x + y + z)^5000")
