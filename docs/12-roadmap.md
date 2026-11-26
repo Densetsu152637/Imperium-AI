@@ -939,18 +939,20 @@ and `environments.agent_update` (protocol 0.28)
     ([plan](plans/text-editor.md)).
 <!-- markdownlint-disable-next-line MD029 -->
 67. **Princeps local model and harness profiles** (planned). Emperor and Consul are no longer two
-    models (user decision 2026-11-26): there is one local model, Princeps (`princeps-ncm-250m`,
-    a Next Concept Model, and `princeps-tok-250m`, its token baseline), served by `ncm-server`
-    from Imperium-Models, and Emperor (the root agent) and Consul (the critic) become two harness
-    profiles over it. The app work: an `ncm:` runtime backend; for now (no releases yet) a
-    user-built `ncm-server` at a path only the user sets, its hash approved and re-checked at each
-    launch, and later one installed only on the user's action from a pinned release, checked
-    against SHA-256s pinned in this repository and unpacked under the llama.cpp extraction rules; Princeps in the house-model catalogue in place
-    of item 44's two entries; one loaded model serving both profiles; harness profiles as item
-    58's first slice; item 64's rejection count and escalation hook with no workflow bound; and
-    `--profile` with server timings in headless evals. The harness content belongs to the
-    Imperium Harnesses session, the server and weights to the NCM session
-    ([plan](plans/princeps-local-model.md)).
+    models (user decision 2026-11-26): there is one local model, Princeps, a Next Concept Model
+    served by `ncm-server` from Imperium-Models, in two sizes: Princeps (`princeps-ncm-1b`, about
+    1B, the default where it fits) and Princeps-Lite (`princeps-lite-ncm-250m`, the research
+    model, for small machines, with the evaluation-only baseline `princeps-lite-tok-250m`).
+    Emperor (the root agent) and Consul (the critic) become two harness profiles over it. The app
+    work: an `ncm:` runtime backend; for now (no releases yet) a user-built `ncm-server` at a path
+    only the user sets, copied on approval and hash-checked at each launch, and later one
+    installed only on the user's action from a pinned release, checked against SHA-256s pinned in
+    this repository and unpacked under the llama.cpp extraction rules; both sizes in the
+    house-model catalogue in place of item 44's two entries; one loaded model serving both
+    profiles; harness profiles as item 58's first slice; item 64's rejection count and escalation
+    hook with no workflow bound; and `--profile` with server timings in headless evals. The
+    harness content belongs to the Imperium Harnesses session, the server and weights to the NCM
+    session ([plan](plans/princeps-local-model.md)).
 
 Custom agents come from Imperium's own open-weight model (Princeps, run under the Emperor and
 Consul harness profiles, [item 67](#next-in-order)), or from agent files

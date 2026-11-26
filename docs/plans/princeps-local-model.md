@@ -1,20 +1,30 @@
 # Plan: Princeps, the local model, and the Emperor and Consul harness profiles
 
-Revision: 2026-11-26, revision 4 (the NCM session's relayed user decisions: no releases yet, so an
+Revision: 2026-11-26, revision 5 (two sizes, Princeps `princeps-ncm-1b` and Princeps-Lite
+`princeps-lite-ncm-250m`; copy on approval for the user-built server; stage 1 owned by the NCM
+session; revision 4 folded in the NCM session's relayed user decisions: no releases yet, so an
 interim user-built path and a deferred stage 2b; weights, licence and GPU scope decided; revision 3
 folded in the re-review's R1, trusted-profile and escalation
 settings, and R2, every runtime file verified and held at launch; revision 2 folded in the plan
 review's B1 to B4, should-fix 1 to 7 and nits, and the NCM session's answers, from its branch
 `feat/ncm-speed-2` at `61350bc`); written against `experimental` at `9ce002c5` (last updated).
-Revision 1 was `7d4f11c5`, revision 2 `6d1cdf5c`, revision 3 `10b67a66`.
+Revision 1 was `7d4f11c5`, revision 2 `6d1cdf5c`, revision 3 `10b67a66`, revision 4 `e0da1e0c`.
 Status: planned; stage 1 in progress in the Imperium Princeps (NCM) session (`feat/ncm-runtime`), no other stage started. Roadmap [item 67](../12-roadmap.md#next-in-order).
 
 **User decision (2026-11-26).** Emperor and Consul stop being two models. There is one local
 model, **Princeps**, and Emperor and Consul become two **harness profiles** over it: the Emperor
 profile is the root agent (plans, delegates, checks) and the Consul profile is the critic (of
-plans, diffs and agent reports). Princeps has two planned builds, `princeps-ncm-250m` (a Next
-Concept Model, a non-transformer model trained from scratch) and `princeps-tok-250m` (a token
-baseline of the same size), both served by `ncm-server`. Ownership:
+plans, diffs and agent reports). Princeps is a Next Concept Model (NCM, a non-transformer model
+trained from scratch), served by `ncm-server`, in two sizes (user decision, 2026-11-26, relayed by
+the NCM session):
+
+| Model | Id | Size | Role |
+| --- | --- | --- | --- |
+| Princeps | `princeps-ncm-1b` | about 1B | The final model; the default where it fits |
+| Princeps-Lite | `princeps-lite-ncm-250m` | 250M | The research model, published alongside; for small machines |
+| Princeps-Lite token baseline | `princeps-lite-tok-250m` | 250M | Evaluation only |
+
+Ownership:
 
 | Who | Owns |
 | --- | --- |
@@ -31,8 +41,8 @@ Each goal is boolean, with the check that decides it. "CI" is this repository's 
 request; "ncm-live" is the opt-in workflow [stage 2a](#stage-2a-the-user-built-ncm-server-interim)
 adds, which runs a CPU build only (the CUDA path has no CI check; see [risks](#risks)).
 
-1. A model file `princeps-ncm-250m.safetensors` in a model folder is listed as
-   `ncm:princeps-ncm-250m` and loads through the supervisor like a llama.cpp model. Check: CI
+1. A model file `princeps-lite-ncm-250m.safetensors` (or `princeps-ncm-1b.safetensors`) in a
+   model folder is listed as `ncm:princeps-lite-ncm-250m` (or `ncm:princeps-ncm-1b`) and loads through the supervisor like a llama.cpp model. Check: CI
    tests over a fake `ncm-server`; ncm-live loads a CPU build of `ncm-server` with `--random-weights`.
 2. Until releases exist, `ncm-server` runs only from a path the user set and approved, with its
    hash re-checked at every launch (stage 2a). Once releases exist, it is obtained only from a
@@ -56,8 +66,8 @@ adds, which runs a CPU build only (the CUDA path has no CI check; see [risks](#r
 ### D1. Model ids, spec and format
 
 - **Spec prefix `ncm:`**, beside `llamacpp:` and `vllm:`. The id is the weight file's stem:
-  `ncm:princeps-ncm-250m`, `ncm:princeps-tok-250m`. One runtime serves both builds; the
-  architecture is read from the file, never from the id.
+  `ncm:princeps-ncm-1b`, `ncm:princeps-lite-ncm-250m`, `ncm:princeps-lite-tok-250m`. One runtime
+  serves every size and architecture; both are read from the file, never from the id.
 - **A new `Format::NcmSafetensors`.** The scanner recognises a `.safetensors` file whose header
   `__metadata__` has `ncm_format = "ncm-safetensors-v1"` (stable, per the NCM session). It reads
   the 8-byte header length and then at most 1 MiB of JSON header. The 1 MiB cap is for scanning
@@ -74,12 +84,18 @@ adds, which runs a CPU build only (the CUDA path has no CI check; see [risks](#r
   out-of-range value lists the model with a `problem` rather than producing a footprint. The
   server's own bounds checks are an [open question](#open-questions-for-the-ncm-session) (Q14).
 - **Catalogue rows.** When an `ncm:` model is found, the daemon offers it as a local row with id
-  the stem, tags `princeps`, `no-vision`, `reasoning`, tier `basic` until the stage 6 evals say
-  otherwise, and `context_window` from the clamped config. Users override it in
-  `[[models.catalog]]` as for any row.
-- **`princeps-tok-250m` is an eval build.** It is listed when present, but the first-run card
-  offers only the shipping build (expected `princeps-ncm-250m`; the research plan scales only the
-  winning architecture).
+  the stem, tags `princeps` (plus `princeps-lite` for the 250M models), `no-vision`, `reasoning`,
+  tier `basic` until the stage 6 evals say otherwise, and `context_window` from the clamped config.
+  Users override it in `[[models.catalog]]` as for any row.
+- **Both sizes in the catalogue.** The house-model catalogue lists Princeps (`princeps-ncm-1b`)
+  and Princeps-Lite (`princeps-lite-ncm-250m`). The first-run card sizes both against this machine
+  the way download suggestions do: it offers Princeps as the default when it fits (on the GPU, or
+  on the CPU within the memory budget), and Princeps-Lite when only Lite fits, with Lite always
+  available as the smaller choice. With both installed, the `princeps` alias (D5) and routing
+  prefer the 1B where it fits and fall back to Lite. Memory figures in D4 are Lite's measurements;
+  the 1B's come from its header and calibration.
+- **`princeps-lite-tok-250m` is an eval build.** It is listed when present, but the card never
+  offers it (the research plan scales only the winning architecture).
 - **The `emperor` tag migrates.** `is_emperor` (knowledge agents prefer that row,
   [21](../21-knowledge-agents.md)) matches the `princeps` tag first; `emperor` stays accepted as a
   deprecated alias for one minor version. `routing.knowledge_model` is unchanged.
@@ -255,7 +271,7 @@ below is deferred (stage 2b).
 ### D4. One loaded model, two profiles
 
 - **One process per Princeps build.** Profiles name a model; the supervisor keys servers by model,
-  so the Emperor and Consul profiles on `ncm:princeps-ncm-250m` share one `ncm-server`.
+  so the Emperor and Consul profiles on `ncm:princeps-ncm-1b` (or Lite) share one `ncm-server`.
 - **One slot, queued in Imperium.** `ncm-server` runs requests one at a time, `--parallel N` only
   divides the context, and no batching is planned (NCM answer 4). So Imperium launches it with
   `--parallel 1` and the full context, and concurrency is the residency controller's slot queue:
@@ -264,8 +280,10 @@ below is deferred (stage 2b).
   whose next call extends its last prompt. Alternating profiles evicts that prefix; stage 6
   measures the cost, and if it matters the fix is in the server (a prefix per profile), not a
   second process.
-- **Memory.** Weights are about 470 MiB in bf16 (150 to 310 MiB quantised) and the NCM cache tens
-  of MiB at 32k and about 1 GiB at 1M tokens. Default context: `runtime.ncm.context = 32768` per
+- **Memory.** For Princeps-Lite, weights are about 470 MiB in bf16 (150 to 310 MiB quantised) and
+  the NCM cache tens of MiB at 32k and about 1 GiB at 1M tokens (R4 measurements). Princeps (1B)
+  needs roughly four times the weights; its footprint comes from its header and calibration, not
+  from these figures. Default context: `runtime.ncm.context = 32768` per
   call (the NCM session agrees), because prefill, not memory, is the cost (128k prefill took 23 to
   28 s); `auto` and up to the model's 1M ceiling are settings.
 
@@ -275,7 +293,8 @@ stage 6 evals show the Consul queue wait above 20 % of turn wall time.
 
 ### D5. Harness profiles before Ratio
 
-A **harness profile** is a named bundle: `model`, `system_prompt` (the file body), `tools` (an
+A **harness profile** is a named bundle: `model` (a spec, a catalogue id, or the alias
+`princeps`: Princeps where it fits, else Princeps-Lite), `system_prompt` (the file body), `tools` (an
 allowlist), `workflow` (workflow-contract rule files, [18](../18-workflow-contract.md)), `harness`
 (the agent-loop engine: `default` today) and `role: root | subagent | both`. It is item 58's
 per-subagent harness, prompt and workflow under one name, so stage 4 is item 58's first slice.
@@ -524,7 +543,8 @@ the Imperium Implementation session, which also reviews and merges stage 1.
 
 ### Stage 3: Princeps in the catalogue and the app
 
-- Objective: one Princeps entry replaces Emperor and Consul in `houseModels.ts`, with its pinned
+- Objective: two entries, Princeps (`princeps-ncm-1b`) and Princeps-Lite
+  (`princeps-lite-ncm-250m`), replace Emperor and Consul in `houseModels.ts`, each with its pinned
   file set (weights, `tokenizer.json`) and SHA-256s; a daemon method `models.install_house`
   downloads the set, verifies every file and offers to install `ncm-server` in the same consent;
   the Local models panel shows `ncm:` models and an `ncm-server` runtime card; the `princeps` tag
@@ -538,7 +558,10 @@ the Imperium Implementation session, which also reviews and merges stage 1.
 - Acceptance checks (CI): catalogue parsing tests; a download whose file hash differs is deleted
   and reported; `models.install_house` is refused to agents (no tool reaches it), mod frames and
   paired phones; knowledge routing prefers a `princeps` row and still honours `emperor`; the card
-  never shows a download without a source.
+  never shows a download without a source; with a machine where both fit the card offers Princeps
+  as the default and Lite as the smaller choice, where only Lite fits it offers Lite, and it never
+  offers `princeps-lite-tok-250m`; with both installed the `princeps` alias resolves to the 1B
+  where it fits and to Lite otherwise.
 - Status: pending.
 
 ### Stage 4: harness profiles
