@@ -639,6 +639,9 @@ impl Agent {
             return finish(false, missing);
         }
         if let Decision::Ask { sticky } = decision {
+            // A call run ahead while the judge let it run is not used once it asks (a rule or
+            // the mode changed): it runs again after the approval.
+            self.forget_prefetched(&call.id);
             // In auto mode a classifier may settle a call that would ask; what it leaves
             // open (or a floored call) is asked as before, with its reason.
             let gate = self
@@ -677,9 +680,10 @@ impl Agent {
             sampler: Some(&sampler),
         };
         // A read-only call that ran with the others of its step already has its output.
-        let result = match self.kept_provider_result(call, name, arguments) {
-            Some(result) => result,
-            None => provider.call(&context, name, arguments).await,
+        // Its duration is counted back from the announcement, as for a kept read.
+        let (result, started) = match self.kept_provider_result(call, name, arguments) {
+            Some((output, took)) => (Ok(output), started.checked_sub(took).unwrap_or(started)),
+            None => (provider.call(&context, name, arguments).await, started),
         };
         let (ok, output) = match result {
             Ok(output) => (true, output),

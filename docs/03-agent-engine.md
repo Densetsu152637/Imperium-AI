@@ -554,7 +554,9 @@ section, with the omitted lines counted either side of it.
   deletes it. Saved files are not compacted away or cleaned earlier: they are the session's. The
   folder is created, empty, when the session spawns, whether or not anything is ever saved. A
   session's saved results are capped at 512 MiB in all (`spill::MAX_SESSION_BYTES`); a result
-  that would pass it stays in the conversation, as when a write fails.
+  that would pass it stays in the conversation, as when a write fails. The cap is checked
+  before each write, not held across them, so concurrent saves of one session (tools running
+  at once) can overshoot it by about one result each.
 - **Never a link.** The results folder must be a real folder. One that is a symbolic link, or on
   Windows a junction or other reparse point, is looked at with `symlink_metadata` (never
   followed) and refused: the session saves nothing (results stay in the conversation, with a
