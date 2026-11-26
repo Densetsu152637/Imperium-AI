@@ -95,6 +95,11 @@ pub struct ApprovalInfo {
     pub kind: String,
     pub summary: String,
     pub requested_at: String,
+    /// For a request whose text may be edited before it is used (a `reply` to a review
+    /// thread), the exact text that will be posted; `approvals.respond` may send an edited one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub text: Option<String>,
 }
 
 /// `approvals.list`: pending approval requests.
@@ -133,6 +138,11 @@ pub struct ApprovalRespondParams {
     #[ts(type = "number")]
     pub id: u64,
     pub approve: bool,
+    /// With `approve`, the text to use instead of the proposed one; only for a request that
+    /// has `text`, and refused for any other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -151,7 +161,8 @@ pub struct AutofixEventParams {
     pub repo: String,
     #[ts(type = "number")]
     pub pull_request: u64,
-    /// `started`, `awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, or `stopped`.
+    /// `started`, `awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, `stopped`, or
+    /// for a reply to a review thread `replied`, `reply_declined` or `held` (over the hourly cap).
     pub status: String,
     pub session_id: Option<String>,
     pub summary: String,

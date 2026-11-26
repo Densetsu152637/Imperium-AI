@@ -168,6 +168,9 @@ Why agent text cannot reach `eval`, `exec`, `__import__` or attribute access:
      - `pool.py` may use `subprocess` and `os`;
      - `worker.py` may use `os` for `os._exit` and `os.getpid` only (and R2 allows its `_exit`);
      - `limits_macos.py` and `landlock.py` may use `ctypes`. They take no agent data.
+     - `landlock.py` may use `os` (with `os.open`, for the interpreter and the rule's roots), and
+       `limits_posix.py` may call `open` on the fixed path `/proc/self/statm` only, before the
+       audit hook (stage 2b; both are checked by `test_no_dynamic_code.py`).
    - **R2.** An `Attribute` whose attribute name starts with `_`.
    - **R3.** An `import` inside a function.
    - **R4.** Any import in `parse.py`, `guard.py` and `build.py` other than `re`, `math`,
@@ -299,6 +302,21 @@ Details:
   measured in stage 2b). So a macOS worker can briefly exceed its limit by that much before it
   is killed. Stage 2b records the measured worst overshoot, and 05 states the bound.
 - **Core dumps.** Every worker sets `RLIMIT_CORE = 0`.
+- **Applied or only requested (stage 2b).** The worker passes nothing to the call until its
+  limits are in place, and it must not be spawned in production without them:
+  - Linux: CPU (`RLIMIT_CPU`) and memory (`RLIMIT_AS`) are applied by the worker itself, core
+    files are off, and the front's wall clock kills it.
+  - macOS: CPU (`RLIMIT_CPU`) is applied by the worker and core files are off; memory is only
+    requested on the command line, and enforced by the front's footprint poll. The wall clock is
+    the front's.
+  - Windows: both are only requested on the command line until stage 5; the broker applies them
+    through the worker's Job Object. `PosixSpawner` refuses Windows unless a test opts in to
+    unlimited workers.
+  - A worker that ignores or never runs its `SIGXCPU` handler (stuck in C code) is killed on
+    Linux by the hard limit's `SIGKILL` one second later; the front reads that `SIGKILL`, which
+    it did not send, as `limit: CPU time`. macOS does not kill at the hard limit (measured in
+    stage 2b: such a worker ran on to the wall clock), so there the front's 50 ms poll also reads
+    the worker's CPU time (`proc_pid_rusage`) and kills it one second past the limit.
 - **Hash seed.** `PYTHONHASHSEED=0` is set for every process on every OS, so a call's result does
   not depend on the process.
 - **Unix spawning.** The worker sets its own `rlimit`s after warm-up and before reading the call,
@@ -415,8 +433,10 @@ This is stricter than the commands' OS tier, which starts from `--ro-bind / /` w
 
 Inside, the front applies a **Landlock** ruleset (`landlock.py`, raw syscalls through `ctypes`,
 no agent data). The ruleset handles `LANDLOCK_ACCESS_FS_EXECUTE` and allows it only beneath the
-environment root, so neither the front nor a worker can `execve` anything in `/usr/bin` (a
-shell, `curl`). Workers inherit the ruleset.
+interpreter's own installation (`sys.base_prefix`, inside the environment root) and for the
+interpreter's ELF loader (`PT_INTERP`, which the kernel also opens for execution, so without it
+the interpreter could not start a worker). So neither the front nor a worker can `execve`
+anything in `/usr/bin` (a shell, `curl`). Workers inherit the ruleset.
 
 - **Timing (R2-3).** The ruleset is applied by the first statement of `imperium_cas.__main__`,
   before any other import (the MCP SDK, `pool`) and before stdin is read. `landlock.py` imports
@@ -1317,11 +1337,79 @@ Commands are what CI runs; nothing needs a local Rust build.
     - it skips with a reason when Landlock is absent, and then `confinement` is `no-landlock`.
 
   About 650 lines.
-- Status: pending.
+- Status: done (pull request #324 pending merge; see the outcome).
 - Handoff notes: on Windows these tests skip; the Windows limits are covered by stages 5 and 7.
   `imperium_cas/__init__.py` must stay empty, or import nothing: importing the package must not
   import `pool`, `worker` or the SDK before the Landlock statement. Stage 1 creates it empty and
   `test_no_dynamic_code.py::test_init_is_empty` enforces it; the AST check covers it.
+- Outcome (2026-11-26):
+  - **Delivered.** `limits_posix.py` (`RLIMIT_CORE` = 0, `RLIMIT_CPU` soft = CPU after warm-up +
+    limit and hard = soft + 1 s, with a `SIGXCPU` handler that exits `CPU`; on Linux `RLIMIT_AS`
+    = address space after warm-up + limit), `limits_macos.py` (`proc_pid_rusage`: footprint and
+    CPU time), `pool.py` (`Limits`, `Spawner`, `PosixSpawner`, the `BrokerSpawner` stub, `Pool`),
+    `landlock.py` and `__main__.py`, with `test_limits.py`, `test_landlock.py` and the test
+    workers `spin.py`, `alloc.py`, `sleep.py` and `hookless_probe.py`.
+  - **Applied or only requested, per OS** (also in D3 and `worker.py`'s docstring): Linux applies
+    CPU and memory in the worker; macOS applies CPU in the worker, and the front polls memory and
+    the CPU backstop; Windows only requests both until stage 5's broker. The worker must not be
+    spawned in production without them: `PosixSpawner` always passes them and refuses Windows
+    unless a test opts in to unlimited workers.
+  - **Measured** (the "cas measurements" section of each `python-cas` log):
+
+    | | Linux (`ubuntu-latest`) | macOS (`macos-latest`) | Windows (`windows-latest`) |
+    | --- | --- | --- | --- |
+    | Applying the limits in the worker | 0.2 to 0.3 ms | under 0.1 ms | none applied |
+    | `RLIMIT_AS` for 1 GiB | 1,099 MiB (75 MiB baseline) | not enforced (poll) | not applied |
+    | Spawn to ready | 0.18 to 0.24 s | 0.33 to 0.39 s | 0.29 to 0.34 s |
+    | First call (lazy start) / warm call | 0.19 to 0.25 s / 4 to 7 ms | 0.32 to 0.35 s / 4 to 7 ms | 0.34 s / under 16 ms |
+    | CPU spin, limit 2 s | `SIGXCPU`, 2.8 s | `SIGXCPU`, 2.6 to 2.7 s | wall clock only |
+    | Spin ignoring `SIGXCPU`, limit 2 s | hard-limit `SIGKILL`, 3.8 s | front's CPU poll, 3.1 s | n/a |
+    | Allocation, limit 256 MiB | `MemoryError` after 0.1 s | poll kill after 0.27 s, 22 to 56 MiB over | n/a |
+    | Blocking sleep, wall clock 2 s | 2.00 s | 2.02 to 2.05 s | 2.02 s |
+
+    The limits cost nothing measurable per call; the pool's warm call is a few milliseconds.
+    The macOS overshoot was 22 to 56 MiB at the poll that killed the worker (about 1 GiB/s of
+    allocation on the runner), well under the 2 GiB bound 05 states.
+  - **Found on the way.** macOS sends `SIGXCPU` at the soft `RLIMIT_CPU` but does not kill at the
+    hard limit: a worker ignoring `SIGXCPU` ran on to the 30 s wall clock. The front's 50 ms poll
+    now also reads the worker's CPU time (Mach ticks converted with `mach_timebase_info`, checked
+    against `getrusage`) and kills it one second past the limit (D3 updated).
+  - **The 2a security review, folded in.**
+    - From the hook on, any exception ends the worker with its own code: `MemoryError` exits
+      `MEMORY` (66), anything else `CRASHED` (70, new), instead of `REFUSED` from the traceback
+      printer's `open`. `CPU` (67, new) is the `SIGXCPU` handler's. `describe()` never raises
+      and caps `str(exc)` at 500 characters. Probes: an escaping `BaseException` exits
+      `CRASHED`; a failing `__str__` still gets a reply; a `MemoryError` exits `MEMORY`.
+    - The ready frame reports `audit_hook` and the applied limits, and the request reader exits
+      `CRASHED` without the hook (probe: `hookless_probe.py`).
+    - `10^5000` (5,001 digits, over CPython's default of 4,300) returns ok through a real worker.
+    - `RLIMIT_CORE` = 0 is read from `/proc/<pid>/limits` on Linux and from inside the hooked
+      worker on Linux and macOS (`resource.getrlimit` raises no audit event).
+    - Every test runs under a 300 s `faulthandler` watchdog (`conftest.py`), so an in-process
+      corpus or fuzz run that hangs dumps its traceback and fails; no new dependency.
+    - The hook binds `os._exit` and `REFUSED` as defaults; `handle` checks the tool is a `str`.
+    - Stage 5 now notes that Windows Error Reporting dumps could capture a crashed worker's
+      request.
+  - **Choices the plan left open.**
+    - The exit codes and limit bounds moved to `framing.py`, the module the front and the worker
+      share, because the front must not import `worker` (which imports SymPy). A missing
+      command-line limit takes D3's default.
+    - Until stage 3, `__main__` serves length-prefixed request frames through the pool, one reply
+      each, until stdin ends; its reader calls `require_confined()` first.
+    - The Landlock rule allows execution beneath `sys.base_prefix` (the interpreter's own
+      installation, inside the environment root) and for the interpreter's ELF loader
+      (`PT_INTERP`), which the kernel opens for execution too; D4 updated. `landlock.py` uses
+      `os.open` and `limits_posix.py` opens `/proc/self/statm`, both listed as R1 exceptions in
+      D1 and `test_no_dynamic_code.py`.
+    - `confinement` is `landlock`, `no-landlock`, or `not-linux` off Linux.
+    - The front reads a `SIGKILL` it did not send as the hard CPU limit, so an out-of-memory kill
+      by the kernel would also read as `limit: CPU time`; with `RLIMIT_AS` that should not
+      happen on Linux.
+    - The goal 2 inputs are checked through stage 2b's `build` call only, where `expand`,
+      `integrate` and `det` are unknown names (`parse`); stage 3 runs them through its tools.
+  - **For later stages.** Under `-I` Python ignores `PYTHONHASHSEED`, so D3's hash seed does not
+    reach a worker started with `-I`; stage 7 (or 6) needs another way, or D3 must drop the
+    claim. Landlock was present on `ubuntu-latest` and the execve checks ran there.
 
 ### Stage 3: MCP front and the eleven tools
 
@@ -1443,6 +1531,11 @@ Commands are what CI runs; nothing needs a local Rust build.
   An unarmed spare therefore has no wall clock, only CPU, memory and active-process limits, so
   the "never armed" test becomes "an unarmed worker is stopped at the default CPU limit". (D3's
   `arm` and wall-clock wording, which count from "ready", needs this change when stage 5 edits it.)
+  **Crash dumps (from the stage 2a review).** Unix workers set `RLIMIT_CORE = 0`, but Windows has
+  no such limit: Windows Error Reporting can write a crashed worker's memory, which holds the
+  request, to a dump under the user's profile (`LocalDumps` or a queued report). Stage 5 turns
+  that off for workers: `SetErrorMode(SEM_NOGPFAULTERRORBOX)` inherited from the broker, or
+  `WerAddExcludedApplication`, and a test that a crashing probe leaves no dump.
 
 ### Stage 6: Managed environment and the CLI
 

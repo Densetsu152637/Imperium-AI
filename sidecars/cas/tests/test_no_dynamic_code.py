@@ -67,8 +67,9 @@ FORBIDDEN_ATTRIBUTES = frozenset(
 EXCEPTIONS = {
     "pool.py": {"subprocess", "os"},
     "limits_macos.py": {"ctypes"},
-    "landlock.py": {"ctypes", "os"},
+    "landlock.py": {"ctypes", "os", "open"},  # `os.open` of the interpreter and the roots
     "worker.py": {"os"},  # `os._exit` and `os.getpid` only (test_worker_uses_os_narrowly)
+    "limits_posix.py": {"open"},  # `/proc/self/statm` only, before the hook (test below)
 }
 # Attributes starting with `_` that a module may use (R2), each a documented need.
 R2_EXCEPTIONS = {
@@ -79,11 +80,13 @@ BASE_IMPORTS = {"re", "math", "dataclasses", "typing"}
 DEFAULT_IMPORTS = BASE_IMPORTS | {"types"}  # plus any `imperium_cas` module
 # Imports beyond the default, per module (the exceptions of R1, and what each stage needs).
 EXTRA_IMPORTS = {
-    "pool.py": {"subprocess", "os"},
-    "limits_macos.py": {"ctypes"},
+    "pool.py": {"subprocess", "os", "signal", "sys", "threading", "time"},
+    "limits_macos.py": {"ctypes", "sys"},
+    "limits_posix.py": {"resource", "signal", "sys"},
     "landlock.py": {"ctypes", "os", "sys"},
     "framing.py": {"json"},
-    "worker.py": {"os", "sys", "time", "resource"},
+    "worker.py": {"os", "sys", "time"},
+    "__main__.py": {"sys"},
 }
 # R4's list plus the sibling modules each pure module is built on. The plan's R4 names no sibling
 # imports, but `guard` needs `parse`'s tree types and every module needs the function table.
@@ -339,3 +342,35 @@ def test_the_r2_exception_is_per_module():
     assert scan("import json", "build.py") != []
     assert scan("from sympy import sstr, Tuple, true", "build.py") == []
     assert scan("from sympy import sympify", "build.py") != []
+
+
+def test_the_stage_2b_modules_exist():
+    names = {path.name for path in modules()}
+    assert {"pool.py", "landlock.py", "limits_posix.py", "limits_macos.py", "__main__.py"} <= names
+
+
+def test_limits_posix_opens_only_statm():
+    """Its `open` exception covers one fixed procfs path, read before the hook."""
+    tree = ast.parse((PACKAGE / "limits_posix.py").read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open"
+    ]
+    assert len(calls) == 1
+    assert isinstance(calls[0].args[0], ast.Name) and calls[0].args[0].id == "STATM"
+    assert 'STATM = "/proc/self/statm"' in (PACKAGE / "limits_posix.py").read_text(encoding="utf-8")
+
+
+def test_the_front_never_imports_sympy_or_the_worker():
+    """`pool.py`, `landlock.py` and `__main__.py` reach neither SymPy nor `worker`/`build`."""
+    for name in ("pool.py", "landlock.py", "__main__.py", "limits_macos.py", "framing.py"):
+        tree = ast.parse((PACKAGE / name).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import | ast.ImportFrom):
+                for target in import_targets(node)[0]:
+                    assert target.split(".")[0] != "sympy", (name, target)
+                    assert target not in {"imperium_cas.worker", "imperium_cas.build"}, (
+                        name,
+                        target,
+                    )

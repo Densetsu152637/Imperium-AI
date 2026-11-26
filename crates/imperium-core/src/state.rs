@@ -186,6 +186,9 @@ pub struct SessionOptions {
     /// a session started from text other people wrote. Kept in the session's meta and set
     /// again when it resumes.
     pub capped: bool,
+    /// The entry point the session's model calls are counted under in the budgets (`autofix`
+    /// for the sessions auto-fix starts), beside its environment and model.
+    pub budget_source: Option<String>,
     /// The caller already holds the working-folders lock (a Home session made its folder under
     /// it), so the session must not take it again.
     #[doc(hidden)]

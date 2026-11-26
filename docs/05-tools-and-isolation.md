@@ -389,9 +389,15 @@ server. Agent text never reaches `sympify`, `parse_expr` or `eval`: a hand-writt
 small infix language, a size guard refuses runaway numbers before anything is computed, and a
 fixed table builds the result into SymPy objects. Each call is meant to run in a fresh worker
 process that has already imported SymPy, answers one call and exits; an audit hook ends the
-worker if anything opens a file, starts a process, compiles code or imports a module. The parser,
-guard, builder and worker exist so far, as the `sidecars/cas/` project and its `python-cas` CI
-job; the per-call resource limits, the server, its sandbox and its setup are later stages.
+worker if anything opens a file, starts a process, compiles code or imports a module. Each call
+has a CPU limit (15 s by default), a memory limit (1 GiB) and a wall clock (20 s, counted from
+when the call arrived, so time spent queued counts). On Linux the worker applies the CPU and
+memory limits itself; on macOS it applies the CPU limit, and the server polls the worker's memory
+every 50 ms, so a worker can overshoot the memory limit briefly, by at most 2 GiB; on Windows the
+limits come with the server's sandbox (a later stage). On Linux with Landlock, neither the server
+nor its workers can start programs outside the interpreter's installation. The parser, guard,
+builder, worker, limits and worker pool exist so far, as the `sidecars/cas/` project and its
+`python-cas` CI job; the MCP server, its sandbox and its setup are later stages.
 
 ### Resources, prompts, and sampling (implemented)
 

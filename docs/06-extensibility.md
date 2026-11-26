@@ -604,7 +604,7 @@ what guards them is exact and less than a wall:
   `.imperium/config.toml` or `.mcp.json` the user lets an agent write takes effect as it always
   did. A project's skills or commands folder reached through a symbolic link is not loaded. The
   daemon marks such a request, and any install or removal, `user_only` on the `permission_requested`
-  event (additive, protocol 0.64), from its own judgement of the resolved path, and the
+  event (additive, protocol 0.65), from its own judgement of the resolved path, and the
   `imperium mcp-serve` harness refuses to answer a request carrying it (it reads the flag, not
   the summary, which holds the model's spelling of the path). Plugin folders an environment's
   merged settings list are registered as refused at daemon start and whenever the environments
@@ -691,7 +691,7 @@ read the daemon's environment through `${VAR}` in `.mcp.json` (see [Compatibilit
 even after the user turns them on. Plugins agents installed before this change and that are
 already enabled stay enabled; only their `${VAR}` expansion tightens.
 
-**Skills an agent installed (protocol 0.64).** An installed skill lands in `<config>/skills/<name>`
+**Skills an agent installed (protocol 0.65).** An installed skill lands in `<config>/skills/<name>`
 and is recorded in `<data>/skill-installs.json` (by canonical folder path: name, `origin = agent`,
 source, content hash, optional approval; the hash is the plugin gate's, over the folder without
 `.git` and `.imperium-source.json`). The skill gate (`skill_records::gate`) runs at each session

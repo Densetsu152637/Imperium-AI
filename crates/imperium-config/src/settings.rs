@@ -483,7 +483,7 @@ impl Settings {
 }
 
 /// GitHub watching and auto-fix (see docs/14-projects-and-automation.md#github-auto-fix).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct GithubSettings {
     #[serde(default)]
     pub watch: Vec<GithubWatch>,
@@ -529,7 +529,7 @@ pub struct GithubWatch {
     pub project: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AutofixSettings {
     pub enabled: bool,
@@ -543,6 +543,14 @@ pub struct AutofixSettings {
     /// request's own auto-fix switch then turns them on for that pull request; a wake needs
     /// both.
     pub responders: Vec<String>,
+    /// `ask` (default): a reply to a review thread waits until the user approved its exact
+    /// text; `auto` posts it without asking.
+    pub comment: String,
+    /// Replies the daemon posts per pull request per hour; more are held.
+    pub comment_replies_per_hour: u32,
+    /// What auto-fix wakes may spend per local day, in US dollars, counted over the model calls
+    /// of their turns (models with prices only); `0` is no limit.
+    pub budget_usd_per_day: f64,
 }
 
 impl Default for AutofixSettings {
@@ -558,6 +566,9 @@ impl Default for AutofixSettings {
                 "address_review".into(),
                 "resolve_conflicts".into(),
             ],
+            comment: "ask".into(),
+            comment_replies_per_hour: 6,
+            budget_usd_per_day: 0.0,
         }
     }
 }

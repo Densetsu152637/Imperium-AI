@@ -1591,3 +1591,153 @@ async fn a_replacement_wake_that_times_out_on_a_pending_write_stops_and_runs_not
         .join("greeting.txt");
     assert_eq!(std::fs::read_to_string(worktree).unwrap(), "hello");
 }
+
+#[tokio::test]
+async fn a_timed_out_wake_leaves_another_sessions_card_alone() {
+    let mut world = World::new(
+        vec![("run_command", json!({"command": "echo hi"}))],
+        vec![],
+        "",
+    )
+    .await;
+    let session = world.new_session();
+    world.arm(&session).await;
+    // Another session's card quotes this session's id in text the model wrote.
+    let other = world.new_session();
+    world.daemon.bridge_permission(
+        &other,
+        4242,
+        "run_command",
+        format!("command `echo in session {}: hi`", session.id()),
+    );
+    imperium_core::review_testing::set_wake_timeout(session.id(), Duration::from_secs(1));
+    comment(&world, "Run it.");
+    while world.notices.try_recv().is_ok() {}
+    let mut gave_up = false;
+    for _ in 0..8 {
+        world.poll().await;
+        while let Some(notice) = world.next(Duration::from_secs(2)).await {
+            if notice.method == "autofix.event" && notice.params["status"] == "failed" {
+                gave_up = true;
+                break;
+            }
+        }
+        if gave_up {
+            break;
+        }
+    }
+    assert!(gave_up, "the wake gave up");
+    // The woken session's own card is gone; the other session's card is still waiting.
+    let cards = world.daemon.approvals().list();
+    let tag = format!("in session {}:", other.id());
+    assert!(
+        cards
+            .iter()
+            .any(|card| card.kind == "tool" && card.summary.contains(&tag)),
+        "{cards:?}"
+    );
+    assert_eq!(cards.iter().filter(|card| card.kind == "tool").count(), 1);
+}
+
+/// Adds a subagent record to the session, working or (with `paused`) paused.
+fn fake_subagent(session: &Session, paused: bool) {
+    session.notify(SessionEvent::TaskSpawned {
+        task_id: "t-busy".into(),
+        brief: "keep busy".into(),
+        model: "fake:m".into(),
+        title: "busy".into(),
+        at_ms: None,
+    });
+    if paused {
+        session.notify(SessionEvent::TaskPaused {
+            task_id: "t-busy".into(),
+            progress: "half way".into(),
+            at_ms: None,
+        });
+    }
+}
+
+fn subagent_status(session: &Session) -> imperium_protocol::session::AgentStatus {
+    session
+        .agents()
+        .into_iter()
+        .find(|agent| agent.agent_id == "t-busy")
+        .expect("the subagent is listed")
+        .status
+}
+
+/// Polls `passes` times and returns the `autofix.event`s.
+async fn passes(world: &mut World, passes: usize) -> Vec<Value> {
+    while world.notices.try_recv().is_ok() {}
+    let mut events = Vec::new();
+    for _ in 0..passes {
+        world.poll().await;
+        while let Some(notice) = world.next(Duration::from_millis(300)).await {
+            if notice.method == "autofix.event" {
+                events.push(notice.params);
+            }
+        }
+    }
+    events
+}
+
+fn woken(world: &World) -> bool {
+    world.model.requests.lock().unwrap().iter().any(|request| {
+        request["messages"].as_array().is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|m| m["content"].to_string().contains("CI-DATA-"))
+        })
+    })
+}
+
+#[tokio::test]
+async fn a_session_whose_subagent_keeps_working_is_not_woken_and_the_user_hears_of_it() {
+    let mut world = World::new(vec![], vec![], "").await;
+    let session = world.new_session();
+    let id = session.id().to_string();
+    world.arm(&session).await;
+    fake_subagent(&session, false);
+    assert_eq!(
+        subagent_status(&session),
+        imperium_protocol::session::AgentStatus::Running
+    );
+    comment(&world, "Please fix it.");
+    let events = passes(&mut world, 5).await;
+    // Five passes in a row could not wake it: one notice, and the comment waits.
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["status"], "failed");
+    assert_eq!(events[0]["trigger"], "review");
+    assert!(
+        events[0]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("could not be woken 5 times"),
+        "{events:?}"
+    );
+    assert!(!woken(&world));
+    assert_eq!(world.status(&id).await["untrusted_handled"], false);
+}
+
+#[tokio::test]
+async fn a_session_with_a_paused_subagent_is_not_woken_and_the_subagent_is_left_alone() {
+    let mut world = World::new(vec![], vec![], "").await;
+    let session = world.new_session();
+    let id = session.id().to_string();
+    world.arm(&session).await;
+    fake_subagent(&session, true);
+    assert_eq!(
+        subagent_status(&session),
+        imperium_protocol::session::AgentStatus::Paused
+    );
+    comment(&world, "Please fix it.");
+    let events = passes(&mut world, 2).await;
+    assert!(events.is_empty(), "{events:?}");
+    assert!(!woken(&world));
+    // The user's paused subagent was not cancelled, and the comment is still unhandled.
+    assert_eq!(
+        subagent_status(&session),
+        imperium_protocol::session::AgentStatus::Paused
+    );
+    assert_eq!(world.status(&id).await["untrusted_handled"], false);
+}
