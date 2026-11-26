@@ -164,3 +164,24 @@ def test_measured_events_are_inside_the_allow_list():
     MEASUREMENTS.append(f"audit events in a warmed worker ({sys.platform}): {sorted(seen)}")
     stray = {event: text for event, text in seen.items() if event not in worker.ALLOWED_EVENTS}
     assert not stray, f"events outside the allow-list (first tool that raised each): {stray}"
+
+
+# Inputs CI saw refused (`compile`) on some hash seeds; each runs in several fresh workers, so
+# several seeds, with a recording hook that reports where an event came from.
+SEED_DEPENDENT = [
+    ("simplify", {"expression": "x+1<y+2"}),
+    ("simplify", {"expression": "x>=y"}),
+    ("simplify", {"expression": "x<=y"}),
+    ("equal", {"left": "x_1_2", "right": "x"}),
+]
+
+
+@pytest.mark.parametrize("attempt", range(6))
+def test_seed_dependent_paths_raise_no_event_outside_the_allow_list(attempt):
+    pool = Pool(make_spawner("events_probe.py"), Limits(cpu_seconds=30, wall_seconds=60))
+    try:
+        reply = pool.call({"calls": SEED_DEPENDENT})
+    finally:
+        pool.close()
+    assert reply.get("ok"), reply
+    assert reply["seen"] == [], "\n".join([reply["seen"][0]["event"], *reply["seen"][0]["stack"]])
