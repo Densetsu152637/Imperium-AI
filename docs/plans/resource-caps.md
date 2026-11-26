@@ -1,7 +1,8 @@
 # Plan: resource caps on every child process
 
-Revision: 2026-11-26, revision 2 (the user's answers to the open questions recorded as
-[settled decisions](#settled-decisions)); revision 1 was the first draft. Written
+Revision: 2026-11-26, revision 3 (plan review: blockers B1 to B5, majors M1 to M7 and the
+minor and missing-resource findings folded in; revision 2 recorded the user's answers as
+[settled decisions](#settled-decisions); revision 1 was the first draft). Written
 against `experimental` at `cd791003`. Roadmap [item 68](../12-roadmap.md#next-in-order).
 Status: planned (no stage started).
 
@@ -34,12 +35,18 @@ Recorded from the user's answers (2026-11-26). They override anything else in th
   agent-driven path starts (MCP servers, hooks, plugins, the CAS, code mode, the browser), are
   capped. A terminal pane still runs in a unit, so it keeps its kill-on-close and tree stop, but
   the unit has no memory, process or CPU cap. It is outside the session aggregate, and the
-  watchdog never stops it.
+  watchdog never stops it. This holds only for terminals created and typed into through the
+  desktop gate; any other terminal is a command unit ([L13](#l13-uncapped-terminals-only-behind-the-desktop-gate)).
 - **S3. `limits.mode = "off"` is allowed, and only the user can set it.** Agents can never
   change `limits.mode`: an agent's `imperium config set|unset limits.mode` is refused outright,
   not asked. Every other `limits.*` key from an agent asks every time (the safety floor). The
   project and environment layers may only move it towards `enforce`
-  ([L7](#l7-settings-user-layer-only-narrowing-elsewhere)).
+  ([L7](#l7-settings-user-layer-only-narrowing-elsewhere)). As the
+  [threat model](#threat-model) says, "only the user" holds against agents' tool calls, the
+  confined tiers, project files, plugins and protocol callers. It is a guard, not a boundary,
+  at tier 0: a tier-0 command has the user's rights and can edit `config.toml` from a shell. Such
+  a change is detected and announced (a toast and a journal entry naming the source, L7), not
+  prevented.
 - **S4. The watchdog acts on low memory whatever the cause.** It stops Imperium's
   lowest-value units first, then unloads idle models, and never touches a program Imperium did
   not start ([L11](#l11-the-daemon-watchdog)).
@@ -62,27 +69,44 @@ Each goal is boolean, with a check that runs in CI on the three OSes and needs n
 1. **Every spawn site is covered.** Every place in the workspace that starts a process goes
    through `imperium-limits` (one class per site), or appears on a short allow-list of
    daemon-internal one-shot probes with a reason. Check: a source test (in the style of the
-   existing source checks) fails on any `Command::new`, `tokio::process::Command::new`,
-   `portable_pty` spawn or `CreateProcess*` outside `imperium-limits` that is not on the list.
+   existing source checks) fails on any `Command::new`, `Command::from`, a `Command` imported
+   under another name (`use ... Command as X`), `std::process::Command`,
+   `tokio::process::Command`, a `portable_pty` spawn or `CreateProcess*` outside
+   `imperium-limits` that is not on the list. It covers `crates/` and
+   `apps/desktop/src-tauri/`.
 2. **An allocation bomb is stopped at its cap.** A probe that allocates and touches memory in
    64 MiB steps, under a 256 MiB unit, is killed, and the reported peak is at most the cap. On
    macOS the peak may exceed the cap by the measured poll overshoot, which the test bounds.
-3. **A fork bomb is stopped at its cap.** A probe that starts copies of itself in a loop, under a
-   32-process unit, is stopped. No probe process is left afterwards, and the notice names the
-   process cap.
+3. **A fork bomb is stopped at its cap.** A probe that starts copies of itself in a loop is
+   stopped: under a 32-process unit on Windows and macOS, and under a 256-task unit on Linux
+   (`pids.max` counts tasks, which are threads as well as processes;
+   [L6](#l6-default-caps-per-class)). No probe process is left afterwards, and the notice names
+   the process or task cap.
 4. **A CPU spin is held to its cap.** On Linux and Windows a four-thread spin under a 25% cap
-   uses at most 35% of the machine over 3 s. On macOS the cap is reported as "not enforced" (see
+   uses at most 35% of the machine over 3 s, measured as the unit's own CPU time (the job's
+   accounting, `cpu.stat` `usage_usec`), not the machine's load. On macOS the cap is reported as "not enforced" (see
    [L4](#l4-macos-a-daemon-side-poll-no-jetsam)) and the test checks that report.
 5. **The session aggregate holds.** Two units, each under its own cap, whose sum passes the
    session cap: the larger one is stopped with a `session memory` notice.
 6. **The watchdog acts before the machine runs out.** With an injected free-memory reader that
-   reports less than the reserve, the watchdog stops the largest eligible unit within two
-   samples. It never touches a model with a call in flight while non-model units remain, and
-   never touches the daemon itself.
-7. **Caps cannot be raised from outside the user layer.** A project or environment
-   `.imperium/config.toml`, a plugin manifest, an `.mcp.json` and an agent's `imperium config set`
-   each fail to raise a cap: the project file is refused as widening, the manifest field is
-   ignored with a warning, and the command hits the safety floor. A user-layer value raises it.
+   reports less than the reserve, the watchdog stops the lowest-value unit within two samples,
+   and the fastest-growing one within that group. It never touches a model with a call in
+   flight while non-model units remain, and never touches the daemon itself. When the reader
+   shows no recovery after a stop, the watchdog treats the cause as external and stops acting
+   until free memory is critical ([L11](#l11-the-daemon-watchdog)).
+7. **Caps cannot be raised from outside the user layer.**
+   - These fail to raise a cap: a project or environment `.imperium/config.toml` (refused as
+     widening), a plugin manifest or an `.mcp.json` (the field is ignored with a warning), an
+     `IMPERIUM_LIMITS__*` variable (narrow-only), an `.mcp.json` `env` block that sets
+     `IMPERIUM_CGROUP_ROOT` (ignored by an on-demand daemon), and an agent's `imperium config
+     set` (the safety floor; refused outright for `limits.mode`).
+   - In the OS tier, writing the unit's cgroup files and reaching the daemon's endpoint are
+     blocked.
+   - The tier-0 bypasses are tested as the documented residuals they are: a tier-0 shell that
+     edits `config.toml`, or writes its own cgroup's `memory.max`, succeeds. The first is
+     detected at once (a toast and a journal entry naming the source), and the second shows in
+     `imperium limits status` as a unit whose cap no longer matches.
+   - A user-layer value raises a cap, with the same toast and journal entry.
 8. **Notices are clear.** For each class, a stopped unit produces a tool result (or a
    server/runtime status) and a `resource.limited` event that name the class, the limit, its
    value, the peak and the setting key.
@@ -167,12 +191,15 @@ What the caps are:
 - **A guard, not a boundary, at tier 0.** A tier-0 command runs with the user's rights
   ([05](../05-tools-and-isolation.md#isolation-tiers)). A deliberately hostile tier-0 process can
   raise its own cgroup's `memory.max` (the file belongs to the user), move itself to another
-  cgroup in the delegated tree, or open the daemon with `PROCESS_DUP_HANDLE` and change its job.
-  The caps still stop every accident and every process that is not written to evade them, which
-  covers the incident. The plan does not claim more.
+  cgroup in the delegated tree, open the daemon with `PROCESS_DUP_HANDLE` and change its job, or
+  edit `config.toml` from a shell. The caps still stop every accident and every process that is
+  not written to evade them, which covers the incident. A raised cap or a changed `limits.mode`
+  is detected and announced, whatever its source (L7). The plan does not claim more, and the
+  same holds for "only the user can raise a cap" (S3).
 
-Not in scope: GPU memory (the residency controller owns VRAM), disk space and file descriptors
-(a later item could add them), network bandwidth, and processes the user starts outside Imperium.
+Not in scope: capping GPU memory (the residency controller owns VRAM; the watchdog only reads
+it, L15), capping disk space and file descriptors (the watchdog only warns on low disk, L15),
+network bandwidth, and processes the user starts outside Imperium.
 
 ## Decisions
 
@@ -184,7 +211,12 @@ the three platforms. Every spawn site builds a `UnitSpec` and spawns through it.
 ```rust
 pub enum Class { Command, Terminal /* no caps, S2 */, Mcp, Hook, Cas, Script, Browser, Internal, Model }
 
-pub struct Caps { memory_bytes: Option<u64>, processes: Option<u32>, cpu_percent: Option<u16> }
+pub struct Caps {
+    memory_bytes: Option<u64>,
+    processes: Option<u32>, // Windows (active processes) and macOS (the poll's count)
+    tasks: Option<u32>,     // Linux: `pids.max` counts threads too
+    cpu_percent: Option<u16>,
+}
 
 pub struct UnitSpec { class: Class, caps: Caps, session: Option<SessionId>, label: String }
 
@@ -205,9 +237,12 @@ impl Unit {
 - `imperium-limits` depends only on `tokio`, `rustix` (Unix), `libc` (macOS, as #328 uses) and
   `windows-sys`. The `unsafe` code sits in per-OS modules with `#![allow(unsafe_code)]` and a
   soundness note on each block, the pattern `imperium-ipc/src/windows.rs` uses.
-- #328's `cgroup.rs`, `watchdog.rs` and the job part of `windows/launch.rs` move into it. The
-  code-mode worker keeps its token, labels, pipes and handle list in `imperium-script`, and asks
-  `imperium-limits` for its job (one job, not two: see [L8](#l8-reuse-not-double-limits)).
+- `imperium-limits` lands first (stage 1), and #328 rebases onto it: #328's `cgroup.rs`,
+  `watchdog.rs` and the job part of `windows/launch.rs` become calls into it, with the M5 setup
+  fix of [L3](#l3-linux-a-delegated-cgroup-v2-tree-rlimit-and-a-poll-where-there-is-none) folded
+  in. The code-mode worker keeps its token, labels, pipes and handle list in `imperium-script`,
+  and asks `imperium-limits` for its job (one job, not two: see
+  [L8](#l8-reuse-not-double-limits)).
 - CAS stage 5's broker and server job (in `imperium-ipc`) create their jobs through
   `imperium-limits`' job wrapper, so the limits code exists once.
 
@@ -232,19 +267,31 @@ children-only total job. The process is created suspended, assigned, then resume
   total job → session job → unit job`. The daemon itself is only in the daemon job, so no limit
   can make the daemon's own allocations fail. Daemon tools have no session and go under
   the total job in an `internal` job. Model runtimes are outside the total (L6) and sit in a
-  `models` job directly under the daemon job. Nested jobs need
-  Windows 8 or later; Windows 10 and 11 have them.
+  `models` job directly under the daemon job. The uncapped terminal job (S2) sits directly
+  under the daemon job too, outside the total and every session job, with kill-on-close and no
+  limits. Nested jobs need Windows 8 or later; Windows 10 and 11 have them. Every job is
+  anonymous (no name), so no other process can open one by name.
+- **Nesting order.** A job is nested by the first process assigned to it, under the job that
+  process is in at that moment. So every spawn assigns in one order: total, then session, then
+  unit (or models then unit; or the terminal job alone). The first process ever assigned to the
+  total job makes it a child of the daemon job, the first of a session nests the session job
+  under the total, and so on. A job already in the chain is never assigned out of order.
 - **Limits per unit job.** `JOB_OBJECT_LIMIT_JOB_MEMORY` (the committed private memory of the
   whole tree), `JOB_OBJECT_LIMIT_ACTIVE_PROCESS`, `KILL_ON_JOB_CLOSE`,
   `DIE_ON_UNHANDLED_EXCEPTION`, **no** `BREAKAWAY_OK` and no `SILENT_BREAKAWAY_OK`. A CPU cap is
   `JobObjectCpuRateControlInformation` with `JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP`. The session
   and total jobs carry only the job memory limit and the active-process limit.
 - **Assignment with no window.** The command gets `CREATE_SUSPENDED`. After `spawn`, the process
-  handle (held, so its id cannot be reused) is assigned to the session job and then to the unit
-  job, which nests the unit job under the session job. The process's only thread is then found
-  with a Toolhelp thread snapshot filtered by process id, opened, and resumed. This keeps
-  `tokio::process::Command`, its pipes and `kill_on_drop` at every site. The process starts
-  inside its job, and so does everything it starts.
+  handle (held, so its id cannot be reused) is assigned in the nesting order above. The
+  process's only thread is then found with a Toolhelp thread snapshot filtered by process id,
+  opened, and resumed. This keeps `tokio::process::Command`, its pipes and `kill_on_drop` at
+  every site. The process starts inside its job, and so does everything it starts.
+  - **A failed assignment fails closed.** If any assignment or the resume fails, the suspended
+    process is ended with `TerminateProcess` before any of its code runs, and the spawn reports
+    `refused_start` with the reason.
+  - **The snapshot's cost.** A Toolhelp thread snapshot walks every thread on the machine.
+    Stage 1 measures it on a busy machine. If it is more than a few milliseconds, the resume uses
+    the thread id from a `PROCESS_BASIC_INFORMATION` query instead.
 - **Notices.** One I/O completion port per daemon is associated with every job.
   `JOB_OBJECT_MSG_JOB_MEMORY_LIMIT` and `JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT` mark the unit as
   limited. A memory limit on Windows makes allocations fail rather than killing anything, so on
@@ -252,14 +299,20 @@ children-only total job. The process is created suspended, assigned, then resume
   `limited: memory`. This gives one behaviour on every OS: a unit that reaches its memory cap is
   stopped whole. An 80% warning uses `JobObjectNotificationLimitInformation` (a notification
   limit, not enforced) and gives one `near limit` notice per unit.
+- **A session or total limit names the right unit.** The message on a session or total job
+  comes from whichever process happened to allocate last, which may be small. The daemon does
+  not blame that process: it stops the session's (or Imperium's) largest unit, preferring the
+  fastest-growing, and reports `session_memory` (or `total_memory`) naming the unit it stopped.
 - **The terminal.** ConPTY's spawn in `portable-pty` cannot take `CREATE_SUSPENDED`, so the
   terminal keeps its assign-after-spawn and tree walk (terminal plan D5) through
   `Limits::adopt`.
 - **The daemon job's breakaway.** `BREAKAWAY_OK` stays on the daemon job, because opening a
   folder in Explorer must outlive the daemon. Units cannot use it: their own jobs lack it. Stage 1
   tests that a capped probe's `CREATE_BREAKAWAY_FROM_JOB` child either fails to start or stays in
-  the unit job (F2). If breakaway were to succeed through a nested hierarchy, the daemon job
-  loses `BREAKAWAY_OK` and the opener uses a broker process outside it instead.
+  the unit job (F2). As a control, the same probe in a plain job with `BREAKAWAY_OK` must break
+  away, which shows the probe really tries. If breakaway were to succeed through a nested
+  hierarchy, the daemon job loses `BREAKAWAY_OK` and the opener uses a broker process outside it
+  instead.
 
 Rejected: `PROC_THREAD_ATTRIBUTE_JOB_LIST` through our own `CreateProcessW`. It assigns at
 creation too, but needs our own pipe and environment plumbing at every site. The CAS broker and
@@ -272,38 +325,72 @@ Ordinary sites do not need it.
 cgroup. Where no subtree is delegated, the daemon falls back to per-process rlimits plus the
 daemon-side poll of L4.**
 
+- **When.** The daemon sets up its subtree at start, **before** it takes the single-instance
+  lock and writes `daemon.json`, so a daemon that fails here has published nothing. Every step
+  falls back cleanly: nothing is executed again, and a failure leaves the daemon where it was, in
+  fallback mode.
+- **Skipped inside a unit.** A daemon that already sits inside an Imperium unit (for example one
+  an agent's command started on demand) does not move. It stays inside that unit's caps and
+  runs in fallback mode. This is detected by path (its `/proc/self/cgroup` is under an
+  `imperium-core-*.scope/total/` or `models/` cgroup) or by the `IMPERIUM_LIMITS_UNIT` marker the
+  launcher sets on every child. The path check alone is enough; the marker is a hint, because a
+  child can clear its environment.
 - **Getting a delegated subtree, in order.**
-  1. The daemon is already in one: #328's check (cgroup v2, the cgroup owned by the daemon's
-     user, the needed controllers in `cgroup.controllers`, not running as root). The package's
-     systemd user unit (if the user installs one) sets `Delegate=yes`.
-  2. Otherwise, at start, before its runtime or logging start, the daemon re-executes itself
-     once with `systemd-run --user --scope --collect -p Delegate=yes
-     --unit=imperium-core-<random>.scope -- <self> <args>`, marked with
-     `IMPERIUM_CGROUP_REEXEC=1` so it never loops. `systemd-run` is found by absolute path
-     (`/usr/bin`, then `/bin`). This is about 30 to 60 ms once per daemon start (estimate,
-     measured in stage 2).
-  3. `IMPERIUM_CGROUP_ROOT=<path>` names a subtree the administrator delegated (for CI, servers
-     and containers: the server package, item 63).
-  4. None of these: fallback mode, reported by `imperium limits status` and in Settings.
+  1. **Already delegated.** The daemon is in a cgroup that passes the M5 checks below (the
+     package's systemd user unit, if the user installs one, sets `Delegate=yes`).
+  2. **A transient scope over D-Bus.** The daemon asks the user's systemd manager to move its
+     own process into a new scope: `StartTransientUnit("imperium-core-<random>.scope", "fail",
+     [("PIDs", [own pid]), ("Delegate", true), ("CollectMode", "inactive-or-failed")], [])`. The
+     call is made with `busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1
+     org.freedesktop.systemd1.Manager StartTransientUnit ...`, with `busctl` found by absolute
+     path (`/usr/bin`, then `/bin`), and the daemon then waits up to 2 s for
+     `/proc/self/cgroup` to show the scope. The process is not executed again, so the daemon's
+     arguments, environment and open files are untouched. Cost: one `busctl` process and one
+     D-Bus round trip at start, about 20 to 50 ms (estimate, measured in stage 2). A new scope
+     holds only the daemon, which also meets M5's "alone in the cgroup" rule.
+  3. **`IMPERIUM_CGROUP_ROOT=<path>`** names a subtree the administrator delegated (for CI,
+     servers and containers: the server package, item 63). It is honoured only for a daemon
+     started by hand or by the autostart entry, never for an on-demand start (L7), and only
+     after the M5 checks.
+  4. **None of these:** fallback mode, reported by `imperium limits status` and in Settings.
+- **M5: checks before using a subtree.**
+  - The path is on a `cgroup2` filesystem (`statfs` magic), under `/sys/fs/cgroup`, owned by
+    the daemon's user (not root), and the daemon is not running as root.
+  - The daemon is **alone** in its cgroup (`cgroup.procs` lists only it). Under cgroup v2's
+    no-internal-process rule, enabling controllers for children fails while other processes
+    share the cgroup, and moving them is not the daemon's business. Otherwise it falls back.
+  - Setup works on an opened directory handle, with every later file opened relative to it,
+    and reads each value back after writing it. #328's setup checks a path and then writes to
+    it; a path swapped between the two would be written blindly. The rebase onto
+    `imperium-limits` fixes that.
+- **systemd-oomd.** Where `systemd-oomd` runs, it can kill a whole user scope under memory
+  pressure. The scope is created with `ManagedOOMPreference=avoid` where systemd honours it for
+  user units. Stage 2 records whether it does, and the units' own caps make a whole-scope kill
+  unlikely.
 - **Layout.** `<scope>/imperium-daemon` (the daemon, a leaf, as in #328), `<scope>/models/` (model
-  runtimes, outside the total), `<scope>/total/` with `internal/` and `s-<session>/`, and units
-  below them (`cmd-p3`, `mcp-<name>`,
-  `hook-<n>`, `term-<n>`, `script-<pid>`, `cas`, `browser`). The controllers enabled are
+  runtimes, outside the total), `<scope>/terminals/` (uncapped terminals, S2, outside the total),
+  `<scope>/total/` with `internal/` and `s-<session>/`, and units below them (`cmd-p3`,
+  `mcp-<name>`, `hook-<n>`, `script-<pid>`, `cas`, `browser`). The controllers enabled are
   `memory`, `pids` and `cpu` (where delegated).
 - **Per unit.** `memory.max`; `memory.swap.max = 0`, so a capped unit is stopped rather than
   pushed to swap (models are exempt, see [L6](#l6-default-caps-per-class)); `memory.oom.group =
-  1`, so the kernel kills the whole unit, not one process of it; `pids.max`; `cpu.max` for a CPU
-  cap. Session and total cgroups carry `memory.max` and `pids.max`.
+  1`, so the kernel kills the whole unit, not one process of it; `pids.max` set from the unit's
+  **task** cap (it counts threads as well as processes, so Linux task caps are larger than the
+  Windows process counts, L6); `cpu.max` for a CPU cap. Session and total cgroups carry
+  `memory.max` and `pids.max`.
 - **Joining with no window.** A hidden launcher, `imperium-core limit --cgroup <path> [--rlimit
   ...] [--oom-adj N] -- <program> <args>`, writes its own process id to the unit's
-  `cgroup.procs`, sets what it was asked to, and then `exec`s the program. `exec` replaces it, so
-  no extra process stays, and nothing of the program runs outside the unit. It needs no `unsafe`
-  (a file write and `CommandExt::exec`), unlike a `pre_exec` hook in the daemon, which the
-  workspace forbids. Cost: one extra `exec`, about 1 to 3 ms (estimate). For the OS tier the
-  launcher comes first: `limit → bwrap → sh -c`.
+  `cgroup.procs`, reads `/proc/self/cgroup` back and refuses to go on (exit 125, reported as
+  `refused_start`) unless it shows the unit, sets what it was asked to, sets
+  `IMPERIUM_LIMITS_UNIT=<class>`, and then `exec`s the program. `exec` replaces it, so no extra
+  process stays, and nothing of the program runs outside the unit. It needs no `unsafe` (a file
+  write and `CommandExt::exec`), unlike a `pre_exec` hook in the daemon, which the workspace
+  forbids. Cost: one extra `exec`, about 1 to 3 ms (estimate). For the OS tier the launcher
+  comes first: `limit → bwrap → sh -c`. (Revision 2's `IMPERIUM_CGROUP_REEXEC` marker is gone
+  with the re-exec. Apart from `IMPERIUM_LIMITS_UNIT`, which grants nothing, no launcher variable reaches children.)
 - **Notices.** `memory.events` (`oom_kill`, `max`) and `pids.events` (`max`) are watched with
   inotify, which cgroup files support. A unit whose `oom_kill` count rose reports
-  `limited: memory`, and `pids.events max` reports `limited: processes`. Stop is `cgroup.kill`
+  `limited: memory`, and `pids.events max` reports `limited: tasks`. Stop is `cgroup.kill`
   (kernel 5.14 or later), else the freeze-and-kill walk. The 80% warning comes from polling
   `memory.current` once a second.
 - **Fallback (no delegation).** The launcher sets `RLIMIT_DATA` (not `RLIMIT_AS`, which large
@@ -315,11 +402,22 @@ daemon-side poll of L4.**
   Process count: the same poll, plus the freeze-and-kill walk past the cap. `RLIMIT_NPROC` is
   **not** used: it counts all of the user's processes, so a child's limit would fail on the
   user's own unrelated processes.
+- **Signalling a group.** `killpg` is sent only while the group's leader is a child the daemon
+  has not reaped, so the group id cannot have been reused. After the leader is reaped, the walk
+  signals each process through a pidfd whose start time was checked (the terminal supervisor's
+  rule).
 
 Rejected:
 
 - **`systemd-run --user --scope` per spawn.** It needs a D-Bus round trip (tens of milliseconds)
   on every command, hook and MCP start, and a fallback where no user manager runs anyway.
+- **Re-executing the daemon under `systemd-run` at start** (revision 2). A failure half-way
+  leaves two daemons racing for the lock, the arguments and environment pass through a second
+  program, and a fallback needs a second exec. Moving the running process over D-Bus has none
+  of these problems.
+- **`zbus` for the D-Bus call.** It would avoid the `busctl` process, but it adds a large
+  dependency for one call at start. It is the revisit if `busctl` proves missing on supported
+  distributions.
 - **A daemon-wide cgroup without per-unit children.** It protects the host but cannot say which
   unit broke its cap, and it stops every session to stop one.
 - **`clone3(CLONE_INTO_CGROUP)`.** It is the atomic form, but std has no way to call it without
@@ -333,7 +431,8 @@ rlimits where Darwin honours them. CPU caps are not enforced on macOS, and say s
 - **Memory.** #328's watchdog, generalised to trees: every 100 ms (50 ms for the CAS, script and
   hook classes, which are small and short), sum `ri_phys_footprint` (`proc_pid_rusage`) over the
   unit's processes (its process group, and descendants found with `proc_listchildpids`).
-  `SIGSTOP` the group past the cap, then `SIGKILL` it. Overshoot is bounded by the allocation
+  `SIGSTOP` the group past the cap, then `SIGKILL` it (`killpg` only while the leader is
+  unreaped, as on Linux). Overshoot is bounded by the allocation
   rate times the interval. The CAS measured 22 to 56 MiB over at 50 ms; stage 1 measures the
   overshoot at 100 ms and 05 states it.
 - **Processes.** The same poll counts the tree and runs the freeze-and-kill walk past the cap.
@@ -356,46 +455,69 @@ on current macOS (the CAS plan measured this).
 - **The container tier.** `container_args` adds `--memory=<cap> --memory-swap=<cap>
   --pids-limit=<cap>` and, with a CPU cap, `--cpus=<n>`. The container's memory sits in the
   container runtime's cgroup, not in ours. So the session aggregate counts a container at its
-  cap when it starts (admission: a container whose cap does not fit in what the session has left
-  is refused, with the reason), and the watchdog stops it with `docker rm -f` as today.
-- **vLLM in Docker.** `docker_run_args` adds the same flags with the model class's cap.
+  cap when it starts (S6; admission: a container whose cap does not fit in what the session has
+  left is refused, with the reason). Each run writes `--cidfile`, and the container is stopped
+  by that **ID** (`docker rm -f <id>`), not by its name.
+- **Rootless runtimes.** Rootless Docker or Podman can apply `--memory` and `--pids-limit` only
+  where the user's cgroup is delegated. Where the runtime reports that it cannot (a warning from
+  `run`, or `docker info` / `podman info` showing no cgroup v2 delegation), the flags are
+  dropped. The container is then polled with `stats`, its status says "limits not enforced by
+  the container runtime", and the watchdog still covers it.
+- **vLLM in Docker.** In `enforce` mode, `docker_run_args` adds the same flags with the model
+  class's cap.
 - **vLLM in WSL2.** A job on `wsl.exe` holds nothing, because vLLM runs in the WSL VM. The VM
   itself is bounded by `.wslconfig` `memory=`, which defaults to half the host's RAM. Imperium
   reads the effective value and shows it, and never writes `.wslconfig` (a user file that
-  affects every distribution). Inside the distribution, when it runs systemd, the serve command
-  is wrapped in `systemd-run --user --scope -p MemoryMax=<cap>`. Otherwise only the VM's bound
-  applies, and the model's status says so.
+  affects every distribution). In `enforce` mode, when the distribution runs systemd, the serve
+  command is wrapped in `systemd-run --user --scope -p MemoryMax=<cap>`. Otherwise only the VM's
+  bound applies, and the model's status says so.
+- **Warn mode sets no enforced limit (B3).** In `warn` (`limits.mode`, or `limits.models.mode`
+  for models, which start in `warn`) no OS-enforced limit is set anywhere. That means no
+  `--memory` or `--pids-limit`, no WSL `MemoryMax`, no job memory or process limit, and no
+  `memory.max` or `pids.max`. Warn mode may only set notification limits: a Windows
+  notification limit, and on Linux and macOS the poll. Containers and WSL are polled instead
+  (`docker stats` every 10 s, and for WSL the host's `vmmemWSL` process), and a crossing gives a
+  `warned` notice.
 
 ### L6. Default caps per class
 
 Caps are per **unit** (a whole process tree), not per process. "RAM" is the machine's physical
 memory as `hardware` reads it (with `[hardware]` overrides). The 64 GB column is the user's
-machine.
+machine. "Processes" is the Windows active-process limit and the macOS poll's count; "Linux
+tasks" is `pids.max`, which counts every thread as well as every process (B2), so it is set much
+higher. A build with 16 rustc processes of 20 threads each is already 320 tasks, and Chromium
+starts hundreds of threads. Stage 1 measures a real `cargo build` of this workspace and a
+headless Chromium session in CI and adjusts the task numbers before any class enforces them.
 
-| Class | What it covers | Memory | 64 GB machine | Processes | CPU |
-| --- | --- | --- | --- | --- | --- |
-| `command` | `run_command` (foreground and background), scheduled and auto-fix commands, environment runtimes | 25% of RAM, between 2 and 16 GiB | 16 GiB | 1,024 | none; below-normal priority |
-| `terminal` | the user's terminal panes | **not capped** (S2) | none | none | none; normal priority |
-| `mcp` | stdio MCP servers, plugin MCP servers | 2 GiB | 2 GiB | 256 | none; below-normal |
-| `hook` | command hooks (and the existing 300 s clamp) | 512 MiB | 512 MiB | 64 | none; below-normal |
-| `cas` | the CAS server tree (outer unit only) | D4's formula: twice D3's per-call memory + 512 MiB | 2.5 GiB | D4's measured limit (3 on Windows), 8 on Unix | D3's per-call CPU time stays |
-| `script` | the code-mode worker | twice `script_memory_mb` (C5) | 512 MiB | 1 | C5's budgets stay |
-| `browser` | the CDP browser | 4 GiB | 4 GiB | 512 | none |
-| `internal` | git, `gh`, installs, probes, the updater | 2 GiB | 2 GiB | 128 | none |
-| `model` | llama.cpp, whisper, vLLM, the planned `ncm-server`, the media sidecar | 1.5 × the planner's RAM estimate + 2 GiB, at most RAM − the reserve | per model | 128 | none |
-| session aggregate | every unit of one session (not models) | 50% of RAM, at most 48 GiB | 32 GiB | 4,096 | none |
-| total | every unit except models | 75% of RAM − the reserve | about 43 GiB | 8,192 | none |
-| watchdog reserve | free memory the watchdog keeps | 8% of RAM, at least 2 GiB | 5.1 GiB | n/a | n/a |
+| Class | What it covers | Memory | 64 GB machine | Processes (Windows, macOS) | Linux tasks | CPU |
+| --- | --- | --- | --- | --- | --- | --- |
+| `command` | `run_command` (foreground and background), scheduled and auto-fix commands, environment runtimes, extension installs (`git clone`, plugin setup) | 25% of RAM, between 2 and 16 GiB (S1) | 16 GiB | 1,024 | 16,384 | none; below-normal priority |
+| `terminal` | the user's terminal panes, behind the desktop gate (L13) | **not capped** (S2) | none | none | none | none; normal priority |
+| `mcp` | stdio MCP servers, plugin MCP servers | 2 GiB | 2 GiB | 256 | 4,096 | none; below-normal |
+| `hook` | command hooks (and the existing 300 s clamp) | 2 GiB | 2 GiB | 64 | 1,024 | none; below-normal |
+| `cas` | the CAS server tree (outer unit only) | D4's formula: twice D3's per-call memory + 512 MiB | 2.5 GiB | D4's measured limit (3 on Windows), 8 on macOS | 256 | D3's per-call CPU time stays |
+| `script` | the code-mode worker | twice `script_memory_mb` (C5) | 512 MiB | 1 | 64 | C5's budgets stay |
+| `browser` | the CDP browser | 4 GiB | 4 GiB | 512 | 4,096 | none |
+| `internal` | git, `gh`, probes, the updater (installs are `command`) | 2 GiB | 2 GiB | 128 | 1,024 | none |
+| `model` | llama.cpp, whisper, vLLM, the planned `ncm-server`, the media sidecar | 1.5 × the planner's RAM estimate + 2 GiB, at most RAM − the reserve | per model | 128 | 8,192 | none |
+| session aggregate | every capped unit of one session (not models, not terminals) | 50% of RAM, at most 48 GiB | 32 GiB | 4,096 | 32,768 | none |
+| total | every capped unit except models | 75% of RAM − the reserve | about 43 GiB | 8,192 | 65,536 | none |
+| watchdog reserve | free memory the watchdog keeps | 8% of RAM, at least 2 GiB | 5.1 GiB | n/a | n/a | n/a |
 
 Reasons:
 
 - **Commands are sized for real builds.** A Rust build of this workspace or a webpack build can
   take several gigabytes legitimately, so commands get a quarter of RAM. The incident's process
   (20 GB) is stopped at 16 GiB on the user's machine. A user who wants a tighter guard sets it
-  lower.
-- **Small classes are small.** MCP servers, hooks, CAS and the script worker have no
-  legitimate reason to use gigabytes. A Playwright-style MCP server that starts a browser is the
-  largest real case seen, and fits 2 GiB.
+  lower. The 2 GiB floor matters on small machines: below 8 GiB of RAM, 25% would be under
+  2 GiB, so the floor applies (on a 4 GiB machine a command may use half of RAM).
+- **Small classes are small.** MCP servers, CAS and the script worker have no legitimate reason
+  to use gigabytes. A Playwright-style MCP server that starts a browser is the largest real case
+  seen, and fits 2 GiB. Hooks get 2 GiB too, since a hook may run a formatter or a linter on the
+  whole project.
+- **Extension installs are commands.** An install runs a repository's own code paths (`git
+  clone` with its filters, a plugin's setup), and it can be large, so it takes the `command` cap,
+  not the small `internal` one.
 - **Models are large and legitimate.** Their cap is derived from the residency planner's own
   estimate (`Footprint::required_bytes`), so it is a leak guard, not a tight bound. It is
   `warn` before `enforce` (see [rollout](#rollout)). Memory-mapped weights count differently per
@@ -410,13 +532,14 @@ Reasons:
 
 ### L7. Settings: user layer only, narrowing elsewhere
 
-**Accepted: a `[limits]` section in the user config. Only the user layers (the user file, the
-app layer that Settings writes, and `IMPERIUM_LIMITS__*` variables set for the daemon) can raise
-a cap. Every other source can only lower one.**
+**Accepted: a `[limits]` section in the user config. Only the user file and the app layer that
+Settings writes can raise a cap. Every other source can only lower one, environment variables
+included. As S3 says, this holds against everything except a tier-0 process with the user's
+rights, which is detected rather than prevented.**
 
 ```toml
 [limits]
-mode = "enforce"                 # "enforce", "warn" (notices only) or "off" (no caps; the watchdog stays)
+mode = "enforce"                 # "enforce", "warn" (notification limits only, L5) or "off" (no caps; the watchdog stays)
 commands.memory_mb = "auto"      # "auto" (the L6 default) or MiB
 commands.processes = "auto"
 commands.cpu_percent = 0         # 0 = no cap; else percent of the whole machine
@@ -428,12 +551,28 @@ session.processes = "auto"
 total.memory_mb = "auto"
 watchdog.enabled = true
 watchdog.reserve_mb = "auto"
+mcp.servers."playwright".memory_mb = 4096      # a server by name, wherever it is defined
+environments."<environment id>".commands.memory_mb = 32768   # one environment's commands
 ```
 
 - **Per server.** A stdio server in the user config may carry `limits = { memory_mb = ...,
-  processes = ... }` (`mcp.servers.<name>.limits`). A server defined anywhere else (a plugin's
-  `.mcp.json`, a trusted project's servers) takes the `mcp` class cap, and a `limits` field there
-  is ignored with a warning in `mcp.list`.
+  processes = ... }` (`mcp.servers.<name>.limits`). The user layer can also set a cap for a
+  server **by name** wherever that server is defined (`limits.mcp.servers."<name>"`), which
+  covers plugin and project servers. A `limits` field in a plugin's `.mcp.json` or a trusted
+  project's servers is ignored with a warning in `mcp.list`; those servers take the `mcp` class
+  cap unless the user names them.
+- **Per environment.** `limits.environments."<id>".commands.memory_mb` (user layer only) raises
+  or lowers the command cap for one environment's sessions. This is how the user lets agents run
+  `scripts/check-rust.sh` at its full S7 cap. A unit cannot exceed the unit it runs in, so
+  inside an agent's command unit the 16 GiB command cap binds, and the script's 32 GiB launcher
+  cap cannot apply (L12).
+- **Environment variables narrow.** `IMPERIUM_LIMITS__*` may only lower a value, like the
+  project layer, because an on-demand daemon can inherit the environment of whatever started it
+  (an `.mcp.json` `env` block that runs `imperium`, an agent's command). A higher value is
+  ignored and reported by `config explain`. `IMPERIUM_CGROUP_ROOT` is honoured only for a daemon
+  started by hand or by the autostart entry. The on-demand launcher (`imperium-client`'s
+  `launch`) removes it and `IMPERIUM_LIMITS__*` from the daemon's environment and passes
+  `--on-demand`, and a daemon started with that flag ignores both.
 - **The environment and project layers narrow.** `limits.*` joins the environment layer's
   allow-list as narrow-only ([10](../10-configuration.md#layers)): a value at or below the user's
   is applied, a higher one is listed as refused by `imperium env config` and `config explain`.
@@ -450,6 +589,16 @@ watchdog.reserve_mb = "auto"
 - **Changes apply to new units.** A changed cap applies to processes started afterwards.
   Running units keep their caps (`restart: false`, no daemon restart needed), except that
   lowering the total or the reserve applies to the watchdog at once.
+- **Every raise is detected and announced (B4).** The daemon keeps the effective limits it last
+  ran with in `<data>/limits-seen.json`. A raised cap or a changed `limits.mode`, from any
+  source, gives a toast and an entry in the change journal (Settings → *Changes*), naming:
+  - the source: `config.set` with the connection's peer, a file changed between starts or while
+    running (the daemon watches `config.toml` and `models.toml`), or an environment variable;
+  - the old and new values.
+  This is how a tier-0 edit of `config.toml` is caught: not prevented, but never silent. Running
+  units whose OS cap no longer matches the daemon's record (a tier-0 write to `memory.max`, a job
+  changed through a duplicated handle) are found by a 30 s check, and get the same toast and
+  entry.
 
 ### L8. Reuse, not double limits
 
@@ -498,8 +647,8 @@ never two at the same level.
 where an agent is waiting.**
 
 - **Protocol.** `resource.limited { session_id?, agent_id?, class, unit, limit, value, peak,
-  action, setting }`. `limit` is one of `memory`, `processes`, `cpu`, `session_memory`,
-  `session_processes`, `total_memory` or `system_pressure`. `action` is `stopped`,
+  action, setting }`. `limit` is one of `memory`, `processes`, `tasks`, `cpu`, `session_memory`,
+  `session_processes`, `total_memory`, `system_pressure` or `cap_changed` (L7's detection). `action` is `stopped`,
   `refused_start`, `near_limit` or `warned` (warn mode). `setting` is the key that raises it.
   This adds a protocol minor version.
 - **What the agent sees.**
@@ -542,13 +691,23 @@ the shortage.**
 - **Acting.** Below the reserve for two samples in a row, it acts once, then waits 2 s before
   acting again. In order:
   1. stop the lowest-value unit that uses more than 256 MiB: `internal` and `browser` first,
-     then background `command`s, `mcp` and `hook`, then `cas` and `script`, then foreground
-     `command`s, the largest first within each group;
+     then lingering descendants of finished foreground commands (L14), then background
+     `command`s, `mcp` and `hook`, then `cas` and `script`, then foreground `command`s. Within a
+     group it picks the **fastest-growing** unit (memory gained over the last 10 s), then the
+     largest;
   2. ask the residency controller to unload idle models (`pressure`);
   3. only below half the reserve for 5 s: stop a model with a call in flight (`pressure`).
   It never stops the daemon, the desktop app, the user's terminals (S2) or any program Imperium
-  did not start, even when the pressure comes from elsewhere. Each act is a `resource.limited` with `system_pressure`,
-  naming the free memory and the reserve.
+  did not start, even when the pressure comes from elsewhere. Each act is a `resource.limited`
+  with `system_pressure`, naming the free memory and the reserve.
+- **Checking that it helped (M1).** After each stop, the watchdog checks the next three samples.
+  If free memory has not recovered by at least half of what the stopped unit used, or is still
+  below the reserve with no Imperium unit over 256 MiB left, it treats the cause as **external**.
+  It then stops acting except at critical (below half the reserve), so it does not take
+  Imperium apart for a shortage it did not cause. It also shows one notice naming the five
+  non-Imperium processes using the most memory (name, process id, usage; read only, nothing is
+  done to them). It goes back to normal once free memory has been above twice the reserve for
+  a minute.
 - **Self-protection.** The thread is started at daemon start with its buffers allocated, runs at
   above-normal priority, and takes no lock that a session holds, so it keeps running when the
   rest of the daemon is slow. The total job or cgroup keeps children from taking the daemon's own
@@ -561,20 +720,95 @@ the shortage.**
 
 F5's runaway ran outside Imperium. The launcher in L3 is also usable on its own:
 `imperium-core limit --memory 4G --processes 256 -- <command>` puts any command in a unit (a job
-on Windows, a cgroup or rlimits and a poll elsewhere). Stage 2 wraps `scripts/check-python.sh`'s
+on Windows, a cgroup or rlimits and a poll elsewhere). Used on its own there is no daemon to
+poll, so on macOS and on Linux without delegation the launcher does **not** `exec` (M7). It stays
+as the supervising parent: it starts the command in its own process group, runs L4's poll over
+it, forwards signals and returns the command's exit code. On Windows it holds the job and waits.
+Only with a delegated cgroup, where the kernel enforces the caps, does it `exec`. Stage 2 wraps `scripts/check-python.sh`'s
 pytest run in it on every OS (4 GiB by default, `IMPERIUM_TEST_MEMORY_MB` to change). It
 also wraps `scripts/check-rust.sh` if that costs only the launcher's `exec` (50% of RAM, at most
-32 GiB, `IMPERIUM_RUST_MEMORY_MB`; S7). Stage 2
+32 GiB, `IMPERIUM_RUST_MEMORY_MB`; S7). When an agent runs `check-rust.sh` inside its command
+unit, the smaller command cap (16 GiB on the user's machine) binds, because a unit cannot exceed
+the one it runs in. The user can raise one environment's command cap (L7) if agents should run
+the full build there. Stage 2
 also removes the CAS tests' `unlimited_on_windows` opt-in for in-process corpus and fuzz tests,
 which then run inside that unit. A development agent that runs the scripts gets the cap without
 having to know about it.
+
+### L13. Uncapped terminals only behind the desktop gate
+
+S2 leaves the user's terminals uncapped. That would be an escape if anything other than the
+user could create a terminal or type into one. A terminal is uncapped only while both its
+creation and every input it has received came through the terminal plan's gate. That gate is
+`app_identity::InstalledApp` plus `peer::may_grant`, checked once per connection and cached
+(the [terminal plan](terminal-file-panes.md#decisions), stage 2b, roadmap item 55).
+
+- **Any other terminal is a command unit.** A terminal created on a connection that did not
+  pass the gate (a stub gate in a test build, a future client such as the phone), or one that
+  receives any `terminal.input` from such a connection, is placed under the `command` class caps
+  from that moment, and counted in its session's aggregate. On Windows this sets the limits on
+  its existing job; on Linux it moves it from `terminals/` to the session; on macOS the poll
+  starts enforcing. It stays capped until it is closed.
+- **A stronger gate, if wanted.** A per-launch secret that the desktop's native side gets over
+  its pipe at start and never writes to disk (a lease) would tie `terminal.*` to the running
+  desktop process rather than to its identity. The plan does not require it, because the gate
+  above is what item 55 specifies. It is the revisit if the gate is weakened or a non-desktop
+  client gets terminals.
+- **Mods do not reach `terminal.*`.** The mod host bridge (commit `c0b3a9b8`,
+  `apps/desktop/src/mods/ModFrame.tsx`) answers only the methods in its permission table:
+  `sessions.list`, `sessions.selected`, `pets.list`, `pets.strip`, `storage.get` and
+  `storage.set`. Anything else is `unknown method`. Stage 7 adds a test that the table has no
+  `terminal.*` entry.
+- **Residual.** `may_grant` is not a boundary against a process that evades it, as 06 says. A
+  tier-0 process that does so could get an uncapped terminal, the same tier-0 residual as
+  editing `config.toml`.
+
+### L14. What a unit's end means, per class
+
+When a unit's main process exits while descendants still run (a dev server started with `&`,
+`sccache`, a Gradle daemon, a language server), each class does this:
+
+| Class | When the main process exits | Descendants left running |
+| --- | --- | --- |
+| `command`, foreground | the result is returned at once | they keep running in the unit, still capped and counted in the session, shown as *lingering* in the resource monitor and in the result ("2 processes still running: sccache, ..."). They are stopped when the session stops, is archived or deleted, or by the watchdog (first among commands) |
+| `command`, background | as today: the command counts as running while any remain | as today, stopped by `command_stop` or with the session |
+| `mcp` | the server is gone | stopped at once with the unit; the restart rule of L10 applies |
+| `hook` | the hook's answer is read | stopped at once: a hook must not leave processes |
+| `cas`, `script` | the server or worker is gone | stopped at once (they cannot start any) |
+| `browser` | the browser is closed | stopped at once |
+| `internal` | the tool's answer is read | stopped at once |
+| `model` | the server is unloaded or crashed | stopped at once |
+| `terminal` | the shell exited | the terminal plan's D5 (stopped) |
+
+Build servers that should outlive one build should be started as background commands. That is
+the one way to keep them across a session's turns without counting them against a foreground
+command.
+
+### L15. Other resources the watchdog watches
+
+- **GPU memory.** The watchdog reads VRAM: NVML on NVIDIA, and `D3DKMTQueryVideoMemoryInfo`
+  on Windows for any adapter. It reports VRAM in its notices and hands the readings to the
+  residency controller, which owns VRAM decisions. It never stops a unit for VRAM.
+- **Disk.** It checks free space on the volumes of `<data>`, the temporary folder and, on
+  Windows, the pagefile, every 30 s. Below 2 GiB (or 2%) it gives a notice. A pagefile volume
+  below 1 GiB is treated as memory pressure, because the commit limit can then no longer grow.
+- **Shared memory and tmpfs.** On Linux, files in `/dev/shm` or another tmpfs are charged to the
+  unit's cgroup but are **not** freed when the unit is killed. They stay charged to the parent
+  cgroup until deleted. The OS tier has a private `/tmp` (freed with it), but a tier-0 command's
+  `/dev/shm` files survive. The watchdog counts `Shmem` from `/proc/meminfo` in its readings and
+  names a large value in its notice. It deletes nothing.
+- **Pagefile-backed sections on Windows.** A section from `CreateFileMapping(INVALID_HANDLE_VALUE,
+  ...)` is charged to the system commit, and it is not clear that it counts against a job's
+  memory limit. Stage 1's `alloc --section` probe settles it. If such sections escape the job,
+  the watchdog's commit reading is the backstop, and 05 states it.
 
 ## Scope and non-goals
 
 In scope: every process Imperium starts on the three OSes, per-unit and aggregate caps, the
 watchdog, settings, notices, CI tests, and the docs (05, 04, 10, 11, 13).
 
-Not in scope: GPU memory, disk and descriptor caps, network bandwidth, remote and SSH hosts
+Not in scope: GPU memory caps, disk and descriptor caps (L15 only reads them), network
+bandwidth, remote and SSH hosts
 (their own daemon applies its own caps), and processes the user starts outside Imperium (except
 the repository's scripts, L12).
 
@@ -582,26 +816,29 @@ the repository's scripts, L12).
 
 - A1. Windows 8 or later (nested jobs); the supported Windows 10 and 11 qualify.
 - A2. Linux desktops with systemd 244 or later delegate `memory` and `pids` to the user manager,
-  and `systemd-run --user` works in a graphical session. Stage 2 records what CI and common
-  distributions show. Without it, the RLIMIT and poll fallback holds.
+  and its `StartTransientUnit` accepts a scope with the caller's own process and
+  `Delegate=yes`. `busctl` is at `/usr/bin/busctl` wherever systemd is. Stage 2 records what CI
+  and common distributions show. Without these, the RLIMIT and poll fallback holds.
 - A3. A suspended process created by `tokio::process::Command` has exactly one thread until it
   is resumed, so resuming the one thread a Toolhelp snapshot finds for its process id starts it.
   Stage 1 tests this.
 - A4. `memory.oom.group` and `cgroup.kill` are present on the kernels in CI. Where `cgroup.kill`
   is missing (before 5.14), the freeze-and-kill walk stands in.
 - A5. GitHub's runners allow `sudo` to create and `chown` a cgroup subtree (for the delegated-tree
-  job), and `loginctl enable-linger` to start a user manager (for the `systemd-run` path).
+  job), and `loginctl enable-linger` to start a user manager (for the D-Bus scope path).
 
 ## Relevant paths
 
 - New: `crates/imperium-limits/**`, `crates/imperium-core/src/limits.rs` (the registry,
   sessions, the watchdog), `crates/imperium-core/src/main.rs` (the hidden `limit` launcher, the
-  cgroup re-exec), `crates/imperium-protocol/src/limits.rs`.
+  D-Bus scope move before the lock), `crates/imperium-protocol/src/limits.rs`.
 - Changed: `crates/imperium-tools/src/{exec.rs,processes.rs,sandbox.rs,runtime.rs}`,
   `crates/imperium-core/src/scheduler.rs`, `crates/imperium-mcp/src/servers.rs`,
   `crates/imperium-extensions/src/hooks.rs`, `crates/imperium-local/src/{process.rs,speech.rs,vllm_env.rs,wsl.rs}`,
   `crates/imperium-web/src/browser.rs`, `crates/imperium-script/src/{cgroup.rs,watchdog.rs,windows/launch.rs}`
   (moved), `crates/imperium-pty/src/lib.rs`, `crates/imperium-config/src/{settings.rs,registry.rs}`,
+  `crates/imperium-client/src/launch.rs` (`--on-demand`, the scrubbed variables),
+  `apps/desktop/src-tauri/` (its spawn sites),
   `scripts/check-python.sh`, `sidecars/cas/tests/support.py`, `.github/workflows/ci.yml`, the
   desktop's Settings and resource monitor.
 
@@ -623,30 +860,48 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
 
 - Objective: the crate of L1 with the three OS back ends (L2, L3 with a given cgroup path and
   the fallback, L4), the completion-port and inotify notices, and a test-only `limit_probe`
-  binary (`alloc <step-MiB> <ceiling-MiB>`, `fork <ceiling>`, `spin <threads> <secs>`,
-  `breakaway`). #328's three modules move in, and `imperium-script` uses them with no change in
-  values.
-- Depends on: #328 merged.
+  binary (`alloc <step-MiB> <ceiling-MiB> [--section]`, `fork <ceiling>`, `spin <threads>
+  <secs>`, `breakaway`). It lands **before** #328; #328 then rebases onto it, replacing its
+  three modules with calls into the crate and taking the M5 setup fix (L1).
+- Depends on: none.
 - Acceptance checks, `cargo test -p imperium-limits` on the matrix:
   - alloc bomb, fork bomb and CPU spin (goals 2 to 4) per OS and mechanism;
-  - Windows: the probe's `CREATE_BREAKAWAY_FROM_JOB` child stays in the unit or fails to start
-    (F2); a unit job nests under a session job and the session's memory limit stops the pair; A3;
+  - Windows:
+    - the probe's `CREATE_BREAKAWAY_FROM_JOB` child stays in the unit or fails to start (F2),
+      and the control breaks away from a plain `BREAKAWAY_OK` job;
+    - the nesting order holds, and a session limit hit stops the session's largest unit, not
+      the allocator;
+    - a failed assignment leaves no running process;
+    - A3, and the Toolhelp snapshot's cost on a runner with many threads;
+    - `alloc --section` against the job limit (L15);
   - Linux, in a job that creates a delegated subtree with `sudo`: `memory.oom.group` kills the
     whole tree; `cgroup.kill` stops it; the fallback (no subtree) stops the alloc bomb through
     `RLIMIT_DATA` and the tree poll;
   - macOS: the measured overshoot at 100 ms, recorded in the outcome;
-  - `imperium-script`'s tests pass unchanged.
+  - **measurements** for L6, recorded in the outcome: the peak tasks (Linux) and processes
+    (Windows, macOS) of a real `cargo build` of this workspace and of a headless Chromium
+    session, so the task and process defaults are set from data before stage 3 enforces them;
+  - the units' CPU time is read from the job's accounting and `cpu.stat` (goal 4).
 
 ### Stage 2: the daemon's cgroup, the settings and a capped launcher for scripts
 
-- Objective: the cgroup bootstrap (L3's order, the `systemd-run` re-exec), the `[limits]`
-  settings and their registry rows (L7) with narrowing and the floor rule for `config set
-  limits.*`, `imperium limits status`, the hidden `limit` launcher, and L12 (check scripts and
-  the CAS tests).
-- Depends on: stage 1. The floor rule follows #330's pattern, so it comes after #330.
-- Acceptance checks: goal 7; `imperium limits status` reports `cgroup`, `rlimit + poll`, `job`
-  or `poll` correctly in each CI job (including a `loginctl enable-linger` job for the
-  `systemd-run` path); `python-cas` on Windows runs inside a 4 GiB unit.
+- Objective: the cgroup bootstrap (L3's order: the D-Bus scope move before the lock, the
+  M5 checks, the skip inside a unit), the `[limits]` settings and their registry rows (L7) with
+  narrowing, narrow-only environment variables, `--on-demand`, the floor rule for `config set
+  limits.*` and the outright refusal for `limits.mode`, the change detection and its journal,
+  `imperium limits status`, the hidden `limit` launcher (exec or supervising, M7), and L12
+  (check scripts and the CAS tests).
+- Depends on: stage 1, and #330, which depends on #304 (the floor rule follows #330's pattern,
+  and the `config.toml` refusal is #304's).
+- Acceptance checks:
+  - goal 7;
+  - `imperium limits status` reports `cgroup`, `rlimit + poll`, `job` or `poll` correctly in each
+    CI job, including a `loginctl enable-linger` job for the D-Bus path and one where the call
+    fails (the daemon falls back, starts once, and writes `daemon.json` once);
+  - a daemon started inside a command unit does not move;
+  - `IMPERIUM_CGROUP_ROOT` naming a root-owned path, a non-cgroup2 path or a shared cgroup is
+    refused;
+  - `python-cas` on Windows runs inside a 4 GiB unit.
 
 ### Stage 3: commands
 
@@ -676,25 +931,32 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
   the `pressure` reason). Starts in `warn` (L7 `models.mode`). The planned `ncm-server` gets the
   class when it lands.
 - Depends on: stage 3.
-- Acceptance checks: a fake model server past its cap gives `warned` in warn mode and is stopped
-  in enforce mode, reported as `crashed` with the detail; the WSL path reports the VM bound.
+- Acceptance checks: a fake model server past its cap gives `warned` in warn mode, with no
+  OS-enforced limit set (B3: no job memory limit, no `memory.max`, no Docker flags), and is
+  stopped in enforce mode, reported as `crashed` with the detail; the WSL path reports the VM
+  bound.
 
 ### Stage 6: the watchdog, the total cap and the interface
 
 - Objective: L11, the total job or cgroup, Settings → Limits, the resource monitor's per-unit
   rows, and the toasts.
 - Depends on: stages 3 and 5.
-- Acceptance checks: goal 6 with an injected reader; the order of victims; the watchdog's act
-  with `limits.mode = "warn"`; the desktop shows the event (web tests).
+- Acceptance checks: goal 6 with an injected reader; the order of victims and the
+  fastest-growing pick; the external-cause rule (M1); the VRAM, disk and `Shmem` readings in
+  notices (L15); the watchdog's act with `limits.mode = "warn"`; the desktop shows the event (web
+  tests).
 
 ### Stage 7: terminals
 
 - Objective: terminal panes through `Limits::adopt` with the uncapped `terminal` class (S2),
-  and `cgroup.kill` in the Linux supervisor where delegated (L8).
+  the switch to `command` caps for a terminal reached from outside the gate (L13), and
+  `cgroup.kill` in the Linux supervisor where delegated (L8).
 - Depends on: stage 3 and the terminal plan's stage 2a (#331).
 - Acceptance checks: the terminal plan's stop tests pass through the unit; a terminal that
   allocates past the `command` cap is not stopped and is not counted in the session aggregate;
-  the watchdog's victim order never includes a terminal.
+  the watchdog's victim order never includes a terminal; a terminal created or typed into by a
+  connection that fails the gate (a stub gate) gets the command caps; the mod bridge's permission
+  table has no `terminal.*` method.
 
 ### Stage 8: review, measurement and enforce for models
 
@@ -736,6 +998,7 @@ The user's questions are answered ([settled decisions](#settled-decisions)). For
 
 1. **Roadmap number.** Item 67 is taken by the open Princeps plan (#325), so this is item 68. If
    #325 does not merge first, renumbering is a one-line change.
-2. **Ordering with #328 and CAS stage 5.** Stage 1 moves #328's modules, so it waits for #328.
-   CAS stage 5 should create its jobs through `imperium-limits` if stage 1 lands first; if CAS
-   stage 5 lands first, stage 4 moves its job code over.
+2. **Ordering (settled in revision 3).** `imperium-limits` (stage 1) lands first and #328
+   rebases onto it. Stage 2 waits for #330, which waits for #304, and stage 7 for #331. CAS
+   stage 5 creates its jobs through `imperium-limits`. If it lands before stage 1 after all,
+   stage 4 moves its job code over.
