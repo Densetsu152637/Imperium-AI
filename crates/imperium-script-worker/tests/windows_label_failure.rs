@@ -34,11 +34,12 @@ fn user_sid() -> String {
         .to_owned()
 }
 
-/// Gives `path` a protected access list that lets this user do everything but change its owner,
-/// which setting a mandatory label needs.
+/// Gives `path` a protected access list that lets this user, its owner included, do everything but
+/// change its owner (which setting a label needs) or read its security descriptor (which checking
+/// a label needs).
 fn deny_relabelling(path: &std::path::Path) {
     let sddl = format!(
-        "D:P(D;;WO;;;{sid})(A;;FA;;;{sid})(A;;FA;;;SY)",
+        "D:P(D;;WORC;;;{sid})(D;;WORC;;;OW)(A;;FA;;;{sid})(A;;FA;;;SY)",
         sid = user_sid()
     );
     let sddl: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
@@ -89,6 +90,11 @@ async fn a_file_that_cannot_be_labelled_makes_code_mode_unavailable_naming_it() 
     let stuck = data.join("not-mine.json");
     std::fs::write(&stuck, "secret").unwrap();
     deny_relabelling(&stuck);
+    eprintln!(
+        "LOCKED sid={} label={:?}",
+        user_sid(),
+        labels::label_of(&stuck)
+    );
 
     let reason = labels::apply(std::slice::from_ref(&data)).unwrap_err();
     eprintln!("LABEL FAILURE {reason}");
