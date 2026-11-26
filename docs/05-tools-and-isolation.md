@@ -1253,29 +1253,55 @@ home folder cannot write `<config>` or `<data>`.
 ### Programs (`run_script`): the interpreter worker (implemented in part)
 
 Code mode ([plan](plans/code-mode.md), roadmap item 65) is **not reachable yet**: there is no
-`run_script` tool and no setting. What exists is the worker that will run the programs and the
-daemon-side driver, built and tested but not wired into the engine.
+`run_script` tool and no setting. What exists is the worker that will run the programs, the
+daemon-side driver and the interface the engine will drive it through, built and tested but not
+wired into the engine. Every bundle and CLI package already carries the worker.
 
-- **The worker** is `crates/imperium-script-worker` (binary `imperium-script`): the Monty
-  interpreter behind `monty-proto`'s worker loop, in a process of its own, one per program. The
-  Monty crates are pinned to one release, exactly, in `runtimes/monty.env` and Imperium's
+- **The worker** is `crates/imperium-script-worker` (binary `imperium-script`, shipped beside
+  `imperium-core`, where the daemon looks for it): the Monty interpreter in a process of its own,
+  one per program. Its protocol loop is Imperium's own, over `monty::MontyRun`; it serves one
+  `Configure`, one program and the answers to that program's requests, and refuses everything else
+  (type checking, dumps and loads, futures, a second program). Monty's type checker is not in it.
+  The Monty crates are pinned to one release, exactly, in `runtimes/monty.env` and Imperium's
   `Cargo.lock`.
-- **Confinement is applied by the worker to itself before it reads any request**, and the worker
-  exits when any part cannot be applied (fail closed). First it closes every inherited file
-  descriptor above 2, and the driver starts it in an empty folder of its own. On Linux it sets `PR_SET_NO_NEW_PRIVS`,
+- **On Linux and macOS the worker confines itself before it reads any request**, and exits when
+  any part cannot be applied (fail closed). First it closes every inherited file descriptor above
+  2, and the driver starts it in an empty folder of its own. On Linux it sets `PR_SET_NO_NEW_PRIVS`,
   `RLIMIT_DATA` (twice the program's memory budget), Landlock where the kernel has it (no file
   access at all) and a seccomp allowlist: reads from stdin, writes to stdout and stderr, memory,
   futexes, clocks, `getrandom`, signals, exit, `kill` of itself and `clone` for threads only. Every
-  other system call fails, `clone3` with `ENOSYS`; another architecture kills the process. On macOS
-  it calls `sandbox_init` with a profile that starts from `(deny default)` and allows reading its
-  own binary and the system libraries and a few `sysctl` keys, so there is no file access, network,
-  process creation or `mach-lookup` (no pasteboard). macOS has no enforced memory limit at the OS level (Monty's own limit and allocator ceiling apply while no escape has happened). The Windows launch (restricted token, job
-  object, labels) is stage 1b; until then the worker refuses to run there.
-- **The driver** is `crates/imperium-script`. It starts one worker per program with an empty
-  environment, accepts only the events of the plan's allowlist (anything else kills the worker),
-  answers every OS call with an error, counts every suspension against `script_suspensions` and
-  ends the program with `AbortFeed` past it, times out a worker that stops answering, and kills the
-  worker when the program ends.
+  other system call fails, `clone3` with `ENOSYS`; another architecture kills the process. When the
+  daemon runs in a cgroup v2 delegated to its user, each worker also gets a cgroup of its own with
+  `memory.max` at twice the budget. On macOS it calls `sandbox_init` with a profile that starts from
+  `(deny default)` and allows reading its own binary and the system libraries and a few `sysctl`
+  keys, so there is no file access, network, process creation or `mach-lookup` (no pasteboard).
+  macOS enforces no memory limit on a process, so the daemon watches the worker's resident memory
+  and kills it past twice the budget (the program ends as out of memory).
+- **On Windows the daemon confines the worker as it launches it**: suspended, with a restricted
+  copy of its own token (no privileges, the Administrators group deny-only) at Low integrity, in a
+  job object (memory at twice the budget, one process, killed when the job closes, every UI
+  restriction), with an empty environment, an empty working folder labelled Low outside Imperium's
+  folders, and only its three pipe ends inherited (a handle list). Only then does its thread run.
+  The worker checks it is at Low integrity, without privileges and in a job, and refuses to run
+  otherwise. So that a Low process cannot read what Imperium keeps, the daemon puts one
+  inheritable Medium `NO_READ_UP` label on the data folder, the config folder and the
+  environments' working folders (when `workspaces.root` puts them elsewhere) at start, and again
+  where the working folders move; files and environments made later inherit it. A folder already
+  labelled is only read. When a file in them cannot take the label, code mode is unavailable and
+  the reason names the file. What remains after an escape from the interpreter on Windows (reading
+  the user's other files, the network) is the accepted risk the plan records
+  ([C9](plans/code-mode.md#windows-confinement-mitigation-and-accepted-risk)).
+- **The driver** is `crates/imperium-script`. It refuses a program that names `eval` or `exec`
+  before any worker starts (hygiene, not a boundary: every host effect still passes through
+  dispatch). It starts one worker per program, accepts only the events of the plan's allowlist
+  (anything else kills the worker), answers every OS call with an error, counts every suspension
+  against `script_suspensions` and ends the program with `AbortFeed` past it, times out a worker
+  that stops answering, and kills the worker when the program ends. `Launcher::check` starts a
+  worker on an empty program to say whether code mode can run here, and why not.
+- **The engine's side** is a pair of traits, `ScriptRunner` and `ScriptProgram`, with a fake
+  runner that replays scripted events (including ones a real worker never sends) for the engine's
+  tests, and a handle table that re-checks the name of every call a program makes at call time: a
+  program that calls a bare name reaches the host with no lookup before it.
 
 ### Environment runtimes (implemented)
 
