@@ -808,6 +808,81 @@ async fn background_commands_are_killed_when_the_session_stops() {
     assert_eq!(processes.running(), 0, "stopping the session kills it");
 }
 
+/// A subagent that started a background command and finished: the command is stopped and its
+/// entry leaves the session's table (the root's own commands are not touched).
+#[tokio::test]
+async fn a_finished_subagents_background_commands_are_released() {
+    let slow = if cfg!(windows) {
+        "ping -n 60 127.0.0.1"
+    } else {
+        "sleep 60"
+    };
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let sub_calls = Arc::new(AtomicUsize::new(0));
+    let (roots, subs) = (Arc::clone(&root_calls), Arc::clone(&sub_calls));
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let (roots, subs) = (Arc::clone(&roots), Arc::clone(&subs));
+            async move {
+                let system = body["messages"][0]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let reply = if system.starts_with("You are an Imperium subagent") {
+                    match subs.fetch_add(1, Ordering::SeqCst) {
+                        0 => tool_call_body(
+                            "run_command",
+                            &serde_json::json!({"command": slow, "background": true}).to_string(),
+                        ),
+                        _ => text_body("report"),
+                    }
+                } else if system.starts_with("You are Imperium, a coding agent") {
+                    match roots.fetch_add(1, Ordering::SeqCst) {
+                        0 => tool_call_body("spawn_agent", r#"{"brief":"start a server"}"#),
+                        1 => tool_call_body("await_tasks", "{}"),
+                        _ => text_body("Done."),
+                    }
+                } else {
+                    text_body("Title")
+                };
+                ([("content-type", "text/event-stream")], reply)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let endpoint = Endpoint {
+        base_url,
+        api_key: None,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(endpoint, dir.path());
+    session.set_permission_mode(PermissionMode::Full);
+    let mut events = session.subscribe();
+    session.send("serve".into()).unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap();
+        match event.event {
+            SessionEvent::TurnCompleted { .. } if event.agent_id == "root" => break,
+            SessionEvent::TurnFailed { message } => panic!("{} failed: {message}", event.agent_id),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        sub_calls.load(Ordering::SeqCst),
+        2,
+        "the subagent ran its command"
+    );
+    let processes = session.workspace().processes().clone();
+    assert_eq!(processes.running(), 0, "its command was stopped");
+    assert!(processes.ended("p1").is_err(), "its entry is gone");
+}
+
 /// The personality joins the root agent's system prompt after its reply rules, and never a
 /// subagent's.
 #[tokio::test]

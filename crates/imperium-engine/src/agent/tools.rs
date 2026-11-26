@@ -279,16 +279,41 @@ impl Agent {
         }
     }
 
-    pub(super) async fn after_tool(&self, tool: &str, arguments: &str, ok: bool, output: &str) {
+    /// Runs `tool.after` hooks on a finished call and returns the result the model reads: what
+    /// the tool returned, or a hook's replacement (`updated_output`; only the user's own hooks
+    /// may, and one over the size limit was refused by the hook layer). The hooks see the
+    /// result cut to [`REPORT_CHARS`]. A replacement is journalled as a notice with the result
+    /// before and after, like a rewritten call.
+    pub(super) async fn after_tool(
+        &self,
+        tool: &str,
+        arguments: &str,
+        ok: bool,
+        output: String,
+    ) -> String {
         let payload = json!({
             "agent_id": self.id,
             "tool_input": tool_input(arguments),
             "ok": ok,
-            "tool_output": truncate(output, REPORT_CHARS),
+            "tool_output": truncate(&output, REPORT_CHARS),
         });
-        self.shared
-            .hook_in(&self.workspace, HookEvent::ToolAfter, Some(tool), payload)
+        let outcome = self
+            .shared
+            .hook_rewriting_in(&self.workspace, HookEvent::ToolAfter, Some(tool), payload)
             .await;
+        match outcome.updated_output {
+            Some(new) if new != output => {
+                self.emit(SessionEvent::Notice {
+                    message: format!(
+                        "A hook replaced the result of {tool}.\nBefore: {}\nAfter: {}",
+                        crate::agent::shown(&output),
+                        crate::agent::shown(&new)
+                    ),
+                });
+                new
+            }
+            _ => output,
+        }
     }
 
     /// Under `required-before-action`, the message refusing a write or command while required
@@ -648,7 +673,7 @@ impl Agent {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
-        self.after_tool(name, arguments, ok, &output).await;
+        let output = self.after_tool(name, arguments, ok, output).await;
         self.tool_finished(call, name, ok, output, Some(started))
     }
 
@@ -1087,7 +1112,7 @@ impl Agent {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
-        self.after_tool(tool, &hook_arguments, ok, &output).await;
+        let output = self.after_tool(tool, &hook_arguments, ok, output).await;
         self.tool_finished(call, tool, ok, output, Some(started))
     }
 
