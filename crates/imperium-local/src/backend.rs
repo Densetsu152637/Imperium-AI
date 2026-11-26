@@ -2,8 +2,9 @@
 //! its server is invoked.
 //!
 //! The supervisor holds a list of [`RuntimeBackend`]s and serves a model with the first one that
-//! accepts the model's [`Format`] and is available here. [`builtin`] gives llama.cpp then vLLM; a
-//! new runtime implements the trait and is passed to [`Supervisor::with_backends`].
+//! accepts the model's [`Format`] and is available here. [`builtin`] gives llama.cpp, vLLM, then
+//! `ncm-server`; a new runtime implements the trait and is passed to
+//! [`Supervisor::with_backends`].
 //!
 //! [`Supervisor::with_backends`]: crate::supervisor::Supervisor::with_backends
 
@@ -11,7 +12,7 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
-use imperium_config::{LlamaCppSettings, VllmSettings};
+use imperium_config::{LlamaCppSettings, ModelLaunch, NcmSettings, VllmSettings};
 
 use crate::planner::{Budget, Footprint, Placement, place, place_on_cpu, place_on_gpu};
 use crate::scan::Format;
@@ -21,6 +22,8 @@ use crate::supervisor::{LaunchSpec, Runtimes};
 pub const LLAMA_CPP: &str = "llamacpp";
 /// The id of the vLLM runtime ([`Vllm`]).
 pub const VLLM: &str = "vllm";
+/// The id of the NCM runtime ([`Ncm`]), `ncm-server`.
+pub const NCM: &str = "ncm";
 
 /// Why a llama.cpp model cannot load when `program` (the `llama-server` looked for) is missing,
 /// with what to do in the app and on the command line.
@@ -122,9 +125,29 @@ pub trait RuntimeBackend: Send + Sync + fmt::Debug {
     fn check_program(&self, _program: &Path) -> Result<(), String> {
         Ok(())
     }
+
+    /// The launch settings for this runtime's models, from the ones the settings give
+    /// (`runtime.llamacpp.*` and the model's own): unchanged for runtimes sized like llama.cpp.
+    fn adjust_launch(&self, launch: ModelLaunch) -> ModelLaunch {
+        launch
+    }
+
+    /// Whether every request must carry `max_tokens`, because the server would otherwise
+    /// generate to the end of its context (`ncm-server`). Leases then always carry one.
+    fn requires_max_tokens(&self) -> bool {
+        false
+    }
+
+    /// The only environment variables the server is started with, when the runtime takes an
+    /// allowlist (every other one, secrets included, is dropped); `None` keeps the daemon's
+    /// environment less [`scrubbed_env`].
+    fn env_allowlist(&self) -> Option<&'static [&'static str]> {
+        None
+    }
 }
 
-/// llama.cpp then vLLM, configured from the settings.
+/// llama.cpp, vLLM, then `ncm-server`, configured from the settings. Each takes its own
+/// format, so the order decides nothing between them.
 pub fn builtin(settings: &LlamaCppSettings, runtimes: Runtimes) -> Vec<Arc<dyn RuntimeBackend>> {
     vec![
         Arc::new(LlamaCpp {
@@ -133,6 +156,9 @@ pub fn builtin(settings: &LlamaCppSettings, runtimes: Runtimes) -> Vec<Arc<dyn R
         Arc::new(Vllm {
             settings: runtimes.vllm,
             available: runtimes.vllm_available,
+        }),
+        Arc::new(Ncm {
+            settings: runtimes.ncm,
         }),
     ]
 }
@@ -327,5 +353,447 @@ impl RuntimeBackend for Vllm {
         ];
         args.extend(spec.extra_args.iter().cloned());
         args
+    }
+}
+
+/// The environment an `ncm-server` starts with ([`Ncm::env_allowlist`]): what a process needs to
+/// run and find temporary and home folders, and `CUDA_PATH`, where CubeCL finds NVRTC's headers
+/// (and NVRTC itself) for a CUDA build. `CUDA_VISIBLE_DEVICES` is kept so a GPU the user hid stays
+/// hidden. Every other variable, `CUBECL_*` and secrets included, is dropped.
+pub const NCM_ENV: &[&str] = &[
+    "PATH",
+    "SYSTEMROOT",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HOME",
+    "USERPROFILE",
+    "LANG",
+    "CUDA_PATH",
+    "CUDA_VISIBLE_DEVICES",
+];
+
+/// The variables of `present` an allowlisted server keeps, compared without regard to case on
+/// Windows (where `Path` is `PATH`).
+pub fn allowed_env(
+    allowlist: &[&str],
+    present: impl IntoIterator<Item = (String, std::ffi::OsString)>,
+    windows: bool,
+) -> Vec<(String, std::ffi::OsString)> {
+    present
+        .into_iter()
+        .filter(|(name, _)| {
+            allowlist.iter().any(|allowed| {
+                if windows {
+                    allowed.eq_ignore_ascii_case(name)
+                } else {
+                    allowed == name
+                }
+            })
+        })
+        .collect()
+}
+
+/// `args` without anything that moves where a server listens: `--host`/`--port` (and their
+/// abbreviations, [`imperium_config::moves_listener`]) with their value, and their `=` forms.
+pub fn without_listener_args(args: &[String]) -> Vec<String> {
+    let mut kept = Vec::with_capacity(args.len());
+    let mut skip_value = false;
+    for arg in args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if imperium_config::moves_listener(arg) {
+            if !arg.contains('=') {
+                skip_value = true;
+            }
+            tracing::warn!(
+                arg,
+                "dropped from the ncm-server arguments: it always listens on 127.0.0.1"
+            );
+            continue;
+        }
+        kept.push(arg.clone());
+    }
+    kept
+}
+
+/// `ncm-server` (Imperium-Models `models/ncm/runtime`), for NCM weight files (Princeps). It takes
+/// llama-server's launch line, answers `/health` with 503 while loading and 200 when ready, and
+/// serves one request at a time (`--parallel` only divides the context), so it runs with one
+/// slot and calls queue in Imperium. A model goes wholly on the GPU or wholly on the CPU.
+#[derive(Debug, Clone, Default)]
+pub struct Ncm {
+    /// `runtime.ncm.*`.
+    pub settings: NcmSettings,
+}
+
+impl RuntimeBackend for Ncm {
+    fn id(&self) -> &str {
+        NCM
+    }
+
+    fn accepts(&self, format: Format) -> bool {
+        format == Format::NcmSafetensors
+    }
+
+    /// Always: without an approved `ncm-server` the load fails with what to do
+    /// ([`crate::ncm_runtime::HOW_TO_INSTALL`]) rather than the model having no runtime.
+    fn available(&self) -> bool {
+        true
+    }
+
+    /// On the GPU when it fits there (unless `device = "cpu"`), else on the CPU (unless
+    /// `device = "cuda"`); never split.
+    fn place(&self, footprint: Footprint, budget: Budget) -> Option<Placement> {
+        let gpu = budget.vram_bytes > 0 && !budget.unified;
+        match self.settings.device.as_str() {
+            "cpu" => place_on_cpu(footprint, budget),
+            "cuda" => gpu.then(|| place_on_gpu(footprint, budget)).flatten(),
+            _ => gpu
+                .then(|| place_on_gpu(footprint, budget))
+                .flatten()
+                .or_else(|| place_on_cpu(footprint, budget)),
+        }
+    }
+
+    fn place_on_cpu(&self, footprint: Footprint, budget: Budget) -> Option<Placement> {
+        place_on_cpu(footprint, budget)
+    }
+
+    /// Unused: ncm-server allocates what its context needs at launch.
+    fn gpu_memory_utilization(&self, _placement: &Placement, _budget: Budget) -> f64 {
+        0.0
+    }
+
+    fn extra_args(&self) -> Vec<String> {
+        without_listener_args(&self.settings.extra_args)
+    }
+
+    /// One slot with the whole context, `runtime.ncm.context` unless the model's own settings
+    /// fix one, and nothing of llama.cpp's draft.
+    fn adjust_launch(&self, mut launch: ModelLaunch) -> ModelLaunch {
+        launch.slots = 1;
+        launch.draft = None;
+        if launch.context_auto
+            && let Some(tokens) = self.settings.context.tokens()
+        {
+            launch.context = tokens.max(1);
+            launch.context_auto = false;
+        }
+        if !launch.pool_fixed {
+            launch.pool_tokens = launch.context;
+            launch.pool_max = launch.context;
+        }
+        launch
+    }
+
+    fn requires_max_tokens(&self) -> bool {
+        true
+    }
+
+    fn env_allowlist(&self) -> Option<&'static [&'static str]> {
+        Some(NCM_ENV)
+    }
+
+    /// The model is served under its id, on `127.0.0.1` whatever the arguments say.
+    fn launch_args(&self, spec: &LaunchSpec) -> Vec<String> {
+        let tokenizer = spec.model_path.with_file_name("tokenizer.json");
+        let on_cpu = spec.cpu_only || spec.gpu_layers == 0;
+        let mut args = vec![
+            "--model".into(),
+            spec.model_path.display().to_string(),
+            "--tokenizer".into(),
+            tokenizer.display().to_string(),
+            "--host".into(),
+            "127.0.0.1".into(),
+            "--ctx-size".into(),
+            spec.pool_tokens.max(1).to_string(),
+            "--parallel".into(),
+            "1".into(),
+            "--n-gpu-layers".into(),
+            if on_cpu { "0" } else { "999" }.into(),
+            "--device".into(),
+            if on_cpu { "cpu" } else { "cuda" }.into(),
+            "--alias".into(),
+            spec.model_id.clone(),
+        ];
+        if self.settings.quant != "none" {
+            args.extend(["--quant".into(), self.settings.quant.clone()]);
+        }
+        if self.settings.speculate && !on_cpu {
+            args.push("--speculate".into());
+        }
+        args.extend(without_listener_args(&spec.extra_args));
+        args
+    }
+
+    fn check_program(&self, program: &Path) -> Result<(), String> {
+        if program.is_file() {
+            return Ok(());
+        }
+        Err(crate::ncm_runtime::HOW_TO_INSTALL.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn spec(ncm: &Ncm, gpu_layers: u32, cpu_only: bool) -> LaunchSpec {
+        LaunchSpec {
+            backend: Arc::new(ncm.clone()),
+            format: Format::NcmSafetensors,
+            model_id: "princeps-ncm-250m".into(),
+            model_path: PathBuf::from("/models/princeps/princeps-ncm-250m.safetensors"),
+            mmproj: None,
+            context: 32768,
+            pool_tokens: 32768,
+            slots: 1,
+            gpu_layers,
+            cpu_only,
+            cache_type_k: "f16".into(),
+            cache_type_v: "f16".into(),
+            flash_attn: "auto".into(),
+            cache_ram_mb: 0,
+            slot_save_path: None,
+            gpu_memory_utilization: 0.0,
+            draft: None,
+            extra_args: ncm.extra_args(),
+        }
+    }
+
+    fn defaults() -> LlamaCppSettings {
+        imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+            .settings()
+            .unwrap()
+            .runtime
+            .llamacpp
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn ncm_is_built_in_and_serves_only_ncm_files() {
+        let backends = builtin(&defaults(), Runtimes::default());
+        let ids: Vec<_> = backends.iter().map(|b| b.id().to_string()).collect();
+        assert_eq!(ids, [LLAMA_CPP, VLLM, NCM]);
+        let serving = |format| {
+            backends
+                .iter()
+                .filter(|b| b.accepts(format))
+                .map(|b| b.id().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(serving(Format::Gguf), [LLAMA_CPP]);
+        assert_eq!(serving(Format::Safetensors), [VLLM]);
+        assert_eq!(serving(Format::NcmSafetensors), [NCM]);
+    }
+
+    #[test]
+    fn the_launch_line_matches_the_ncm_server_contract() {
+        let ncm = Ncm::default();
+        let tokenizer = PathBuf::from("/models/princeps/tokenizer.json")
+            .display()
+            .to_string();
+        let model = PathBuf::from("/models/princeps/princeps-ncm-250m.safetensors")
+            .display()
+            .to_string();
+        assert_eq!(
+            ncm.launch_args(&spec(&ncm, u32::MAX, false)),
+            strings(&[
+                "--model",
+                &model,
+                "--tokenizer",
+                &tokenizer,
+                "--host",
+                "127.0.0.1",
+                "--ctx-size",
+                "32768",
+                "--parallel",
+                "1",
+                "--n-gpu-layers",
+                "999",
+                "--device",
+                "cuda",
+                "--alias",
+                "princeps-ncm-250m",
+            ])
+        );
+        let cpu = ncm.launch_args(&spec(&ncm, 0, true));
+        assert!(cpu.windows(2).any(|w| w == ["--device", "cpu"]));
+        assert!(cpu.windows(2).any(|w| w == ["--n-gpu-layers", "0"]));
+        // Nothing of llama.cpp's own: cache types, flash attention, drafts, slots.
+        for flag in [
+            "--cache-type-k",
+            "--flash-attn",
+            "--cache-ram",
+            "--slot-save-path",
+            "--spec-draft-model",
+            "--kv-unified",
+        ] {
+            assert!(!cpu.iter().any(|arg| arg == flag), "{flag}");
+        }
+
+        let tuned = Ncm {
+            settings: NcmSettings {
+                quant: "q4".into(),
+                speculate: true,
+                extra_args: strings(&["--prefill-chunk", "512"]),
+                ..NcmSettings::default()
+            },
+        };
+        let args = tuned.launch_args(&spec(&tuned, u32::MAX, false));
+        assert!(args.windows(2).any(|w| w == ["--quant", "q4"]));
+        assert!(args.iter().any(|arg| arg == "--speculate"));
+        assert!(args.ends_with(&strings(&["--prefill-chunk", "512"])));
+        // Speculation needs CUDA.
+        let on_cpu = tuned.launch_args(&spec(&tuned, 0, true));
+        assert!(!on_cpu.iter().any(|arg| arg == "--speculate"));
+    }
+
+    #[test]
+    fn host_and_port_in_extra_args_are_dropped_at_launch() {
+        let sneaky = strings(&[
+            "--host",
+            "0.0.0.0",
+            "--port=80",
+            "--ho",
+            "::",
+            "--PORT",
+            "81",
+            "--prefill-chunk",
+            "512",
+            "--host=0.0.0.0",
+        ]);
+        assert_eq!(
+            without_listener_args(&sneaky),
+            strings(&["--prefill-chunk", "512"])
+        );
+        let ncm = Ncm {
+            settings: NcmSettings {
+                extra_args: sneaky.clone(),
+                ..NcmSettings::default()
+            },
+        };
+        let mut launch = spec(&ncm, u32::MAX, false);
+        launch.extra_args.extend(sneaky);
+        let args = ncm.launch_args(&launch);
+        let hosts: Vec<_> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| arg.starts_with("--host") || arg.starts_with("--ho"))
+            .map(|(at, _)| args[at + 1].as_str())
+            .collect();
+        assert_eq!(hosts, ["127.0.0.1"]);
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.to_ascii_lowercase().starts_with("--po"))
+        );
+    }
+
+    #[test]
+    fn the_environment_is_an_allowlist_that_keeps_cuda_path() {
+        let present = [
+            ("Path", "C:\\Windows"),
+            ("CUDA_PATH", "C:\\CUDA\\v13.0"),
+            ("CUBECL_DEBUG_LOG", "1"),
+            ("CUBECL_CACHE_DIR", "/tmp/x"),
+            ("OPENAI_API_KEY", "sk-secret"),
+            ("GITHUB_TOKEN", "ghp_secret"),
+            ("TEMP", "C:\\Temp"),
+            ("LLAMA_ARG_SPEC_DRAFT_MODEL", "x"),
+        ]
+        .map(|(name, value)| (name.to_string(), std::ffi::OsString::from(value)));
+        let names = |windows| {
+            allowed_env(NCM_ENV, present.clone(), windows)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(true), ["Path", "CUDA_PATH", "TEMP"]);
+        assert_eq!(names(false), ["CUDA_PATH", "TEMP"]);
+        assert_eq!(Ncm::default().env_allowlist(), Some(NCM_ENV));
+        assert!(!NCM_ENV.iter().any(|name| name.starts_with("CUBECL")));
+    }
+
+    #[test]
+    fn a_model_is_placed_whole_on_the_gpu_or_the_cpu_never_split() {
+        let footprint = Footprint {
+            weights_bytes: 1 << 30,
+            kv_bytes: 64 << 20,
+            layers: None,
+            max_gpu_layers: None,
+            draft: crate::planner::DraftMemory::default(),
+            overhead_bytes: 512 << 20,
+        };
+        let roomy = Budget {
+            vram_bytes: 8 << 30,
+            ram_bytes: 16 << 30,
+            unified: false,
+        };
+        let tight = Budget {
+            vram_bytes: 1 << 30,
+            ..roomy
+        };
+        let auto = Ncm::default();
+        let on_gpu = auto.place(footprint, roomy).unwrap();
+        assert!(on_gpu.all_layers_on_gpu && on_gpu.ram_bytes == 0);
+        // Too little VRAM: all of it on the CPU, not some layers of each.
+        let on_cpu = auto.place(footprint, tight).unwrap();
+        assert_eq!((on_cpu.gpu_layers, on_cpu.vram_bytes), (0, 0));
+        let cuda_only = Ncm {
+            settings: NcmSettings {
+                device: "cuda".into(),
+                ..NcmSettings::default()
+            },
+        };
+        assert!(cuda_only.place(footprint, tight).is_none());
+        let cpu_only = Ncm {
+            settings: NcmSettings {
+                device: "cpu".into(),
+                ..NcmSettings::default()
+            },
+        };
+        assert_eq!(cpu_only.place(footprint, roomy).unwrap().gpu_layers, 0);
+        assert!(auto.place_on_cpu(footprint, roomy).is_some());
+    }
+
+    #[test]
+    fn launches_get_one_slot_and_the_ncm_context() {
+        let ncm = Ncm::default();
+        let launch = defaults().default_launch();
+        let adjusted = ncm.adjust_launch(launch.clone());
+        assert_eq!(adjusted.slots, 1);
+        assert_eq!(adjusted.context, imperium_config::NCM_DEFAULT_CONTEXT);
+        assert_eq!(adjusted.pool_tokens, imperium_config::NCM_DEFAULT_CONTEXT);
+        assert!(adjusted.draft.is_none());
+        // A context the model's own settings fix is kept.
+        let own = ModelLaunch {
+            context: 8192,
+            context_auto: false,
+            ..launch
+        };
+        assert_eq!(ncm.adjust_launch(own).context, 8192);
+        assert!(ncm.requires_max_tokens());
+        assert!(!LlamaCpp::default().requires_max_tokens());
+    }
+
+    #[test]
+    fn a_missing_server_says_how_to_build_and_approve_it() {
+        let error = Ncm::default()
+            .check_program(Path::new("/nowhere/ncm-server"))
+            .unwrap_err();
+        assert!(
+            error.contains("cargo build --release -p ncm-server"),
+            "{error}"
+        );
+        assert!(error.contains("imperium runtime ncm use"), "{error}");
     }
 }

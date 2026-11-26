@@ -522,6 +522,7 @@ function ModelRows({
             {row.alias && <span className="muted">{row.id}</span>}
             {row.repo && <span className="muted">{row.repo}</span>}
             {row.runtime === "vllm" && <Badge>vLLM</Badge>}
+            {row.runtime === "ncm" && <Badge>NCM</Badge>}
             {row.mmproj && <Badge title={row.mmproj}>vision</Badge>}
             {isDefault && <Badge tone="ok">default</Badge>}
             {!row.enabled && (
@@ -530,12 +531,12 @@ function ModelRows({
               </Badge>
             )}
             <span className="muted spec-inline">
-              {row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?")} · {gib(row.size_bytes)} · {context(row.context_length)} context{row.context > 0 && row.context !== row.context_length ? ` · ${context(row.context)}/agent` : ""}
+              {row.quantization ?? (row.runtime !== "llamacpp" ? "safetensors" : "?")} · {gib(row.size_bytes)} · {context(row.context_length)} context{row.context > 0 && row.context !== row.context_length ? ` · ${context(row.context)}/agent` : ""}
             </span>
             <span className="muted fit-inline">{fit}</span>
           </span>
         </td>
-        <td role="cell">{row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?")}</td>
+        <td role="cell">{row.quantization ?? (row.runtime !== "llamacpp" ? "safetensors" : "?")}</td>
         <td role="cell">{gib(row.size_bytes)}</td>
         <td
           role="cell"

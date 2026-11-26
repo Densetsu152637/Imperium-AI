@@ -1,5 +1,5 @@
 //! Local models: GGUF discovery, Hugging Face downloads, hardware probe, memory planning,
-//! runtime packs, and the supervised llama.cpp and vLLM servers that serve them.
+//! runtime packs, and the supervised llama.cpp, vLLM and ncm-server servers that serve them.
 
 #![warn(unreachable_pub)]
 
@@ -16,6 +16,8 @@ pub mod hardware;
 pub mod hf;
 pub mod ledger;
 pub mod monitor;
+pub mod ncm;
+pub mod ncm_runtime;
 pub mod planner;
 pub mod process;
 pub mod residency;

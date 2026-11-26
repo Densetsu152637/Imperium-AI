@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tokio::process::{Child, Command};
 
-use crate::backend::{LLAMA_CPP, VLLM};
+use crate::backend::{LLAMA_CPP, NCM, VLLM};
 use crate::supervisor::{
     LaunchError, LaunchFuture, LaunchSpec, Launcher, Server, SlotFuture, SlotTransfer,
     SpeculatingFuture, StopFuture,
@@ -59,6 +59,9 @@ pub struct ProcessLauncher {
     logs: PathBuf,
     /// Where llama.cpp servers save slots when their model is swapped out.
     slots: Option<PathBuf>,
+    /// The data folder, whose `runtimes/ncm-server` holds the approved `ncm-server` copy
+    /// ([`crate::ncm_runtime`]); `None` until set, when NCM models cannot load.
+    ncm_data: Mutex<Option<PathBuf>>,
     http: reqwest::Client,
 }
 
@@ -73,8 +76,27 @@ impl ProcessLauncher {
             hooks: Mutex::new(None),
             logs,
             slots: None,
+            ncm_data: Mutex::new(None),
             http: reqwest::Client::new(),
         }
+    }
+
+    /// Runs NCM models with the `ncm-server` approved under `data_dir`
+    /// ([`crate::ncm_runtime::verify`]), checked again at every launch.
+    pub fn with_ncm_data_dir(self, data_dir: PathBuf) -> Self {
+        *self.ncm_data.lock().unwrap_or_else(PoisonError::into_inner) = Some(data_dir);
+        self
+    }
+
+    /// The approved `ncm-server` copy, verified for one launch.
+    fn verified_ncm(&self) -> Result<crate::ncm_runtime::Verified, String> {
+        let data = self
+            .ncm_data
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| crate::ncm_runtime::HOW_TO_INSTALL.to_string())?;
+        crate::ncm_runtime::verify(&data)
     }
 
     /// Saves the slots of models swapped out to `dir` (see [`Launcher::slot_dir`]).
@@ -165,7 +187,18 @@ impl ProcessLauncher {
     }
 
     async fn start(&self, spec: &LaunchSpec) -> Result<Box<dyn Server>, LaunchError> {
-        let mut program = self.program(spec.backend.id())?;
+        // An NCM model runs the approved copy of ncm-server, hashed through a handle held for
+        // the server's life, from its own folder; nothing beside the binary the user named is
+        // loaded.
+        let ncm = if spec.backend.id() == NCM {
+            Some(self.verified_ncm()?)
+        } else {
+            None
+        };
+        let mut program = match &ncm {
+            Some(verified) => verified.program.clone(),
+            None => self.program(spec.backend.id())?,
+        };
         let hooks = (spec.backend.id() == LLAMA_CPP)
             .then(|| self.hooks())
             .flatten();
@@ -227,7 +260,8 @@ impl ProcessLauncher {
         };
         let program = program.as_path();
         std::fs::create_dir_all(&self.logs).map_err(|error| error.to_string())?;
-        let log_path = self.logs.join(format!("llama-{}.log", spec.model_id));
+        let prefix = if ncm.is_some() { "ncm" } else { "llama" };
+        let log_path = self.logs.join(format!("{prefix}-{}.log", spec.model_id));
         let log = std::fs::File::create(&log_path).map_err(|error| error.to_string())?;
         let mut command = Command::new(program);
         command
@@ -248,7 +282,19 @@ impl ProcessLauncher {
         for variable in crate::backend::scrubbed_env(spec) {
             command.env_remove(&variable);
         }
-        if container.is_none() && in_wsl.is_none() {
+        if let Some(allowlist) = spec.backend.env_allowlist() {
+            // Only what the server needs: no secrets, no CUBECL_* switches.
+            command.env_clear();
+            command.envs(crate::backend::allowed_env(
+                allowlist,
+                std::env::vars_os()
+                    .filter_map(|(name, value)| Some((name.into_string().ok()?, value))),
+                cfg!(windows),
+            ));
+        }
+        if let Some(verified) = &ncm {
+            command.current_dir(&verified.dir);
+        } else if container.is_none() && in_wsl.is_none() {
             library_path(&mut command, program);
         }
         if spec.backend.id() == VLLM {
@@ -278,6 +324,7 @@ impl ProcessLauncher {
             Ok(Ok(())) => Ok(Box::new(ProcessServer {
                 container,
                 wsl: wsl_guard,
+                _held: ncm.map(|verified| verified.held),
                 pid: child.id(),
                 child: Mutex::new(Some(child)),
                 base_url: format!("{base}/v1"),
@@ -350,6 +397,9 @@ struct ProcessServer {
     container: Option<ContainerGuard>,
     /// The `vllm` process inside WSL2 of a model run there; killed by [`Server::stop`] or on drop.
     wsl: Option<WslGuard>,
+    /// The handle the approved `ncm-server` copy was hashed through, held while the server
+    /// runs so the file cannot be replaced under it (Windows).
+    _held: Option<std::fs::File>,
     /// Killed on drop if [`Server::stop`] has not taken it.
     child: Mutex<Option<Child>>,
     /// The process id, for resource readings; kept after [`Server::stop`] takes the child.
@@ -824,6 +874,7 @@ mod tests {
     #[cfg(unix)]
     fn server_with(container: Option<ContainerGuard>) -> ProcessServer {
         ProcessServer {
+            _held: None,
             container,
             wsl: None,
             pid: None,
@@ -925,6 +976,7 @@ mod tests {
     #[cfg(unix)]
     fn wsl_server(guard: WslGuard) -> ProcessServer {
         ProcessServer {
+            _held: None,
             wsl: Some(guard),
             ..server_with(None)
         }

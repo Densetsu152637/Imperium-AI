@@ -382,6 +382,7 @@ pub(crate) fn start(
             let id = wanted
                 .strip_prefix("llamacpp:")
                 .or_else(|| wanted.strip_prefix("vllm:"))
+                .or_else(|| wanted.strip_prefix("ncm:"))
                 .unwrap_or(wanted);
             let Some(row) = listing.models.iter().find(|row| row.id == id) else {
                 return Err(invalid(format!(

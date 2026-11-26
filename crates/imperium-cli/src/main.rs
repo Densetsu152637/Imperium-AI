@@ -12,6 +12,7 @@ mod local;
 mod mcp_login;
 mod memory;
 mod mods;
+mod ncm;
 mod pack;
 mod phone;
 mod plugins;
@@ -760,6 +761,28 @@ enum RuntimeCommand {
         #[command(subcommand)]
         command: VllmCommand,
     },
+    /// The ncm-server for NCM (Princeps) models (`ncm:<id>`). There are no release builds yet:
+    /// build it (`cargo build --release -p ncm-server --features cuda` in Imperium-Models
+    /// models/ncm) and approve it with `use`. Nothing is searched for on PATH or downloaded.
+    Ncm {
+        #[command(subcommand)]
+        command: NcmCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum NcmCommand {
+    /// Approve an ncm-server you built: shows its path, size, SHA-256 and version, then copies
+    /// it into Imperium's data folder (the copy is what runs, re-checked at every launch) and
+    /// sets runtime.ncm.custom_path.
+    Use {
+        path: PathBuf,
+        /// Approve without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Show the approved ncm-server and whether its copy is intact.
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1094,6 +1117,18 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     command: VllmCommand::Remove { yes },
                 },
         } => vllm::remove(yes),
+        Command::Runtime {
+            command:
+                RuntimeCommand::Ncm {
+                    command: NcmCommand::Use { path, yes },
+                },
+        } => ncm::use_server(path, yes),
+        Command::Runtime {
+            command:
+                RuntimeCommand::Ncm {
+                    command: NcmCommand::Status,
+                },
+        } => ncm::status(),
         Command::Run(args) => {
             let outcome = block_on(async {
                 let (mut client, _) = connect().await?;

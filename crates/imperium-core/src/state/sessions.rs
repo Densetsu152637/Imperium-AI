@@ -514,8 +514,7 @@ impl DaemonState {
         }
         let spec = row.map_or(spec, |entry| entry.spec.as_str());
         let (endpoint, model) = spec.split_once(':').unwrap_or(("", spec));
-        let local = endpoint == imperium_config::LLAMACPP_ENDPOINT
-            || endpoint == imperium_config::VLLM_ENDPOINT;
+        let local = imperium_config::is_local_endpoint(endpoint);
         let runtime = self.local.get().filter(|_| local);
         runtime
             .and_then(|runtime| LocalModels::reasons(&*runtime.supervisor, model))

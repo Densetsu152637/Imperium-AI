@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use imperium_config::{LLAMACPP_ENDPOINT, VLLM_ENDPOINT};
 use imperium_local::monitor::{Probe, Sample, SystemProbe};
 use imperium_local::supervisor::LoadedStatus;
 use imperium_protocol::methods::{
@@ -379,10 +378,10 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The local model id a spec names (`llamacpp:<id>` or `vllm:<id>`).
+/// The local model id a spec names (`llamacpp:<id>`, `vllm:<id>` or `ncm:<id>`).
 fn local_model(spec: &str) -> Option<&str> {
     let (endpoint, model) = spec.split_once(':')?;
-    (endpoint == LLAMACPP_ENDPOINT || endpoint == VLLM_ENDPOINT).then_some(model)
+    imperium_config::is_local_endpoint(endpoint).then_some(model)
 }
 
 fn placement(model: &LoadedStatus, unified_memory: bool) -> &'static str {

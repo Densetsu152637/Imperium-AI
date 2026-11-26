@@ -172,7 +172,9 @@ fn need_now(
     let session = state.session(session_id)?;
     let model = session.model().unwrap_or_default();
     let (prefer_local, local) = state.suggestion_inputs();
-    let session_local = model.starts_with("llamacpp:") || model.starts_with("vllm:");
+    let session_local = model
+        .split_once(':')
+        .is_some_and(|(endpoint, _)| imperium_config::is_local_endpoint(endpoint));
     let signals = Signals {
         prefer_local,
         session_local,

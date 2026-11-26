@@ -150,6 +150,9 @@ pub fn metadata_card(model: &LocalModel) -> String {
     if model.format == Format::Safetensors {
         lines.push("A Hugging Face folder, served by vLLM.".into());
     }
+    if model.format == Format::NcmSafetensors {
+        lines.push("An NCM weight file (Princeps), served by ncm-server.".into());
+    }
 
     let tags: Vec<&str> = about
         .tags

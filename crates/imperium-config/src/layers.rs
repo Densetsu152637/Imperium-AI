@@ -860,6 +860,67 @@ max_wait_s = 9",
     }
 
     #[test]
+    fn ncm_settings_have_defaults_and_refuse_moving_the_listener() {
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let ncm = &settings.runtime.ncm;
+        assert_eq!(ncm.custom_path, None);
+        assert_eq!((ncm.device.as_str(), ncm.quant.as_str()), ("auto", "none"));
+        assert!(!ncm.speculate);
+        assert_eq!(
+            ncm.context,
+            crate::ContextLimit::Tokens(crate::NCM_DEFAULT_CONTEXT)
+        );
+        assert!(ncm.extra_args.is_empty());
+        let with = |toml: &str| {
+            Config::from_layers([
+                Layer::defaults(),
+                layer(Source::User("u".into()), &format!("[runtime.ncm]\n{toml}")),
+            ])
+            .settings()
+        };
+        for bad in [
+            r#"extra_args = ["--host", "0.0.0.0"]"#,
+            r#"extra_args = ["--host=0.0.0.0"]"#,
+            r#"extra_args = ["--port", "80"]"#,
+            r#"extra_args = ["--PORT=80"]"#,
+            r#"extra_args = ["--ho", "0.0.0.0"]"#,
+            r#"extra_args = ["--po=80"]"#,
+            r#"device = "rocm""#,
+            r#"quant = "q2""#,
+            r#"custom_path = "relative/ncm-server""#,
+        ] {
+            assert!(with(bad).is_err(), "{bad} is accepted");
+        }
+        let fine = with(
+            "extra_args = [\"--prefill-chunk\", \"512\", \"--no-prefix-reuse\"]\ncontext = \"auto\"",
+        )
+        .unwrap();
+        assert_eq!(fine.runtime.ncm.context, crate::ContextLimit::Auto);
+        assert!(crate::moves_listener("--host"));
+        assert!(!crate::moves_listener("--h"));
+        assert!(!crate::moves_listener("--hostname-for-logs"));
+        assert!(!crate::moves_listener("-c"));
+    }
+
+    #[test]
+    fn ncm_models_are_served_locally_and_its_endpoint_is_reserved() {
+        let reserved = "[endpoints.ncm]\nbase_url = \"http://x/v1\"";
+        assert!(
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), reserved)])
+                .settings()
+                .is_err()
+        );
+        let cloud = "[[models.catalog]]\nid = \"p\"\nspec = \"ncm:princeps-ncm-250m\"\nlocation = \"cloud\"\ntier = \"basic\"";
+        assert!(
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), cloud)])
+                .settings()
+                .is_err()
+        );
+        assert!(crate::is_local_endpoint("ncm"));
+        assert!(!crate::valid_endpoint_id("ncm"));
+    }
+
+    #[test]
     fn the_swap_gain_must_be_a_number_of_at_least_one() {
         let with_gain = |gain: &str| {
             let toml = format!("[runtime.llamacpp]\nswap_gain = {gain}");

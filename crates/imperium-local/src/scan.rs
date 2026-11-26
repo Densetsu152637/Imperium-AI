@@ -1,11 +1,12 @@
-//! Finds GGUF models in the configured folders.
+//! Finds GGUF models, Hugging Face folders and NCM weight files in the configured folders.
 //!
 //! Layouts recognised besides plain folders of files: LM Studio's and the download folder's
 //! `<publisher>/<repo>/<file>.gguf`, and the Hugging Face cache
 //! (`hub/models--<org>--<name>/snapshots/<revision>/...`), where only the revision `refs/main`
 //! names is scanned. Hidden folders (the cache's `.no_exist` placeholders, `.locks`), the
 //! cache's `blobs`, diffusers pipelines (`model_index.json`), and GGUF files that are not
-//! language models (image models such as FLUX) are left out.
+//! language models (image models such as FLUX) are left out. A lone `.safetensors` file is an
+//! NCM model only when its header carries the NCM marker ([`crate::ncm`]); others stay unlisted.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -40,6 +41,21 @@ pub enum Format {
     Gguf,
     /// A Hugging Face folder (`config.json` and safetensors), served by vLLM.
     Safetensors,
+    /// One NCM weight file (`ncm_format = "ncm-safetensors-v1"` in its header) with
+    /// `tokenizer.json` beside it, served by `ncm-server`.
+    NcmSafetensors,
+}
+
+impl Format {
+    /// The endpoint id its models are named under (`<endpoint>:<id>`), which is also the id of
+    /// the runtime that serves them.
+    pub fn endpoint(self) -> &'static str {
+        match self {
+            Format::Gguf => imperium_config::LLAMACPP_ENDPOINT,
+            Format::Safetensors => imperium_config::VLLM_ENDPOINT,
+            Format::NcmSafetensors => imperium_config::NCM_ENDPOINT,
+        }
+    }
 }
 
 /// Something skipped while scanning, reported rather than failing the scan.
@@ -67,6 +83,8 @@ struct Found {
 struct Walk {
     files: Vec<Found>,
     hf_dirs: Vec<Found>,
+    /// Lone `.safetensors` files, outside Hugging Face folders: NCM candidates.
+    safetensors: Vec<Found>,
 }
 
 /// Scans `folders` recursively. Symbolic links to folders are not followed, so loops are
@@ -79,11 +97,15 @@ pub fn scan(folders: &[PathBuf]) -> Scan {
         collect(folder, folder, None, &mut walk, &mut scan.skipped);
         walk.files.sort_by(|a, b| a.path.cmp(&b.path));
         walk.hf_dirs.sort_by(|a, b| a.path.cmp(&b.path));
+        walk.safetensors.sort_by(|a, b| a.path.cmp(&b.path));
         for dir_files in group_by_dir(&walk.files) {
             add_dir(&dir_files, &mut scan, &mut ids);
         }
         for dir in &walk.hf_dirs {
             add_hf_dir(dir, &mut scan, &mut ids);
+        }
+        for file in &walk.safetensors {
+            add_ncm(file, &mut scan, &mut ids);
         }
     }
     scan.models.sort_by(|a, b| a.id.cmp(&b.id));
@@ -196,6 +218,11 @@ fn collect(
             .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
         {
             walk.files.push(Found { path, repo: repo() });
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("safetensors"))
+        {
+            walk.safetensors.push(Found { path, repo: repo() });
         }
     }
 }
@@ -444,6 +471,55 @@ fn add_hf_dir(found: &Found, scan: &mut Scan, ids: &mut BTreeMap<String, PathBuf
         info,
         mmproj: None,
         format: Format::Safetensors,
+        repo: found.repo.clone(),
+    });
+}
+
+/// Adds a lone `.safetensors` file when its header marks it as an NCM model; an NCM file that
+/// cannot be used is listed with its problem ([`GgufInfo::load_problem`]), any other file is left
+/// out. The id is the file's stem.
+fn add_ncm(found: &Found, scan: &mut Scan, ids: &mut BTreeMap<String, PathBuf>) {
+    let path = found.path.as_path();
+    let (shape, problem) = match crate::ncm::read_header(path) {
+        crate::ncm::Header::NotNcm => return,
+        crate::ncm::Header::Ncm(shape) => {
+            let problem = crate::ncm::missing_tokenizer(path);
+            (Some(shape), problem)
+        }
+        crate::ncm::Header::Problem(problem) => (None, Some(problem)),
+    };
+    let id = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if let Some(first) = ids.get(&id) {
+        scan.skipped.push(Skipped {
+            path: path.to_path_buf(),
+            reason: format!("id {id:?} is already used by {}", first.display()),
+        });
+        return;
+    }
+    let size_bytes = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    let info = GgufInfo {
+        architecture: shape.as_ref().map(|shape| shape.arch.name().to_string()),
+        name: Some(id.clone()),
+        context_length: Some(crate::ncm::NCM_MAX_CONTEXT),
+        vocab_size: shape.as_ref().map(|shape| u64::from(shape.vocab_size)),
+        // Princeps is trained to reason (`<think>`, read as reasoning_content).
+        template_reasons: Some(true),
+        ncm: shape,
+        load_problem: problem,
+        ..GgufInfo::default()
+    };
+    ids.insert(id.clone(), path.to_path_buf());
+    scan.models.push(LocalModel {
+        id,
+        path: path.to_path_buf(),
+        parts: 1,
+        size_bytes,
+        info,
+        mmproj: None,
+        format: Format::NcmSafetensors,
         repo: found.repo.clone(),
     });
 }
@@ -718,6 +794,90 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn ncm_files_are_found_by_their_marker_and_ordinary_safetensors_are_not() {
+        let root = tempfile::tempdir().unwrap();
+        let princeps = root.path().join("princeps");
+        fs::create_dir_all(&princeps).unwrap();
+        fs::write(
+            princeps.join("princeps-ncm-250m.safetensors"),
+            crate::ncm::fixture::ncm(),
+        )
+        .unwrap();
+        fs::write(princeps.join("tokenizer.json"), "{}").unwrap();
+        // Named like an NCM file, but without the marker: not an NCM model.
+        fs::write(
+            princeps.join("princeps-tok-250m.safetensors"),
+            crate::ncm::fixture::file(&serde_json::json!({"format": "pt"})),
+        )
+        .unwrap();
+        // A marked file without a tokenizer beside it is listed with its problem.
+        let loose = root.path().join("loose");
+        fs::create_dir_all(&loose).unwrap();
+        fs::write(
+            loose.join("renamed.safetensors"),
+            crate::ncm::fixture::ncm(),
+        )
+        .unwrap();
+        // An oversized marked header is listed with a problem, never read whole.
+        let mut big = (crate::ncm::MAX_HEADER_BYTES * 4).to_le_bytes().to_vec();
+        big.extend(br#"{"__metadata__":{"ncm_format":"ncm-safetensors-v1"}}"#);
+        fs::write(loose.join("huge.safetensors"), big).unwrap();
+        // A Hugging Face folder stays vLLM's, and a GGUF file llama.cpp's.
+        let hf = root.path().join("Qwen3-0.6B");
+        fs::create_dir_all(&hf).unwrap();
+        fs::write(
+            hf.join("config.json"),
+            r#"{"architectures": ["Qwen3ForCausalLM"], "num_hidden_layers": 28}"#,
+        )
+        .unwrap();
+        fs::write(hf.join("model.safetensors"), crate::ncm::fixture::ncm()).unwrap();
+        fs::write(root.path().join("small.gguf"), llama("small")).unwrap();
+
+        let scan = scan(&[root.path().to_path_buf()]);
+        let found: Vec<_> = scan
+            .models
+            .iter()
+            .map(|m| (m.id.as_str(), m.format, m.info.load_problem.is_some()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("Qwen3-0.6B", Format::Safetensors, false),
+                ("huge", Format::NcmSafetensors, true),
+                ("princeps-ncm-250m", Format::NcmSafetensors, false),
+                ("renamed", Format::NcmSafetensors, true),
+                ("small", Format::Gguf, false),
+            ]
+        );
+        let princeps = &scan.models[2];
+        assert_eq!(princeps.info.architecture.as_deref(), Some("ncm"));
+        assert_eq!(
+            princeps.info.context_length,
+            Some(crate::ncm::NCM_MAX_CONTEXT)
+        );
+        assert!(princeps.info.ncm.is_some());
+        assert!(
+            scan.models[1]
+                .info
+                .load_problem
+                .as_deref()
+                .is_some_and(|p| p.contains("too large"))
+        );
+        assert!(
+            scan.models[3]
+                .info
+                .load_problem
+                .as_deref()
+                .is_some_and(|p| p.contains("tokenizer.json"))
+        );
+        assert_eq!(
+            [Format::Gguf, Format::Safetensors, Format::NcmSafetensors].map(Format::endpoint),
+            ["llamacpp", "vllm", "ncm"]
+        );
+        assert!(scan.skipped.is_empty(), "{:?}", scan.skipped);
     }
 
     #[test]

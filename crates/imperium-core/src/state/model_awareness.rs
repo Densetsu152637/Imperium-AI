@@ -164,10 +164,7 @@ impl DaemonState {
         let mut models = local.supervisor.models();
         models.sort_by(|a, b| a.id.cmp(&b.id));
         for model in models {
-            let runtime = match model.format {
-                imperium_local::scan::Format::Gguf => imperium_config::LLAMACPP_ENDPOINT,
-                imperium_local::scan::Format::Safetensors => imperium_config::VLLM_ENDPOINT,
-            };
+            let runtime = model.format.endpoint();
             let spec = format!("{runtime}:{}", model.id);
             if named.contains(spec.as_str())
                 || hidden.contains(spec.as_str())

@@ -41,6 +41,11 @@ pub struct GgufInfo {
     pub vocab_size: Option<u64>,
     /// What the model card fields of the header say (`general.*`), for the model's card.
     pub about: About,
+    /// The shape of an NCM weight file ([`crate::ncm`]), read from its `ncm_config`.
+    pub ncm: Option<crate::ncm::NcmShape>,
+    /// Why the model is listed but cannot load (an NCM header too large to read, a number out
+    /// of range, no `tokenizer.json`), shown with it; `None` when nothing stops it.
+    pub load_problem: Option<String>,
 }
 
 /// The descriptive `general.*` fields of a GGUF header.

@@ -53,7 +53,7 @@ export function memoryPlan(row: LocalModelRow): string {
  */
 export function localDescription(row: LocalModelRow): string {
   const parts: string[] = [];
-  parts.push(row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?"));
+  parts.push(row.quantization ?? (row.runtime !== "llamacpp" ? "safetensors" : "?"));
   if (row.context_length) parts.push(`${tokensShort(row.context_length)} ctx`);
   if (row.context > 0) {
     parts.push(`up to ${tokensShort(row.context)}/agent${row.context_auto ? " (auto)" : ""}`);

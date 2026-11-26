@@ -43,7 +43,7 @@ fn approve(
     ))
 }
 
-fn confirm(question: &str, yes: bool) -> anyhow::Result<bool> {
+pub(crate) fn confirm(question: &str, yes: bool) -> anyhow::Result<bool> {
     approve(
         question,
         yes,

@@ -174,6 +174,13 @@ async fn handle(api: &ApiState, body: &[u8]) -> Result<Response, ApiError> {
         )
     };
     let mut upstream = relayed_body(request, &resolved.model, streaming);
+    if resolved
+        .spec
+        .split_once(':')
+        .is_some_and(|(endpoint, _)| endpoint == imperium_config::NCM_ENDPOINT)
+    {
+        ncm_compatible(&mut upstream);
+    }
     if let Some(lease) = &lease {
         // The reservation the runtime made for this call caps its reply; the slot pins the
         // request to the cache of the prompt the holder used last.
@@ -355,6 +362,22 @@ fn relayed_body(request: &Map<String, Value>, model: &str, streaming: bool) -> V
         body.insert("stream_options".into(), json!({"include_usage": true}));
     }
     Value::Object(body)
+}
+
+/// Fits a request to what `ncm-server` takes: `tool_choice` only `none` or `auto` (a forced or
+/// named tool falls back to `auto`), and no `stop` strings or `response_format`, which it does
+/// not implement; it stops at its own end markers.
+fn ncm_compatible(body: &mut Value) {
+    let Some(body) = body.as_object_mut() else {
+        return;
+    };
+    if let Some(choice) = body.get("tool_choice")
+        && !matches!(choice.as_str(), Some("none" | "auto"))
+    {
+        body.insert("tool_choice".into(), json!("auto"));
+    }
+    body.remove("stop");
+    body.remove("response_format");
 }
 
 /// One call to the model, with what it takes to account for it when it ends.
@@ -653,6 +676,27 @@ mod tests {
         );
         let streamed = relayed_body(request.as_object().unwrap(), "m", true);
         assert_eq!(streamed["stream_options"], json!({"include_usage": true}));
+    }
+
+    #[test]
+    fn ncm_requests_drop_what_ncm_server_does_not_take() {
+        let mut body = json!({
+            "model": "princeps-ncm-250m",
+            "messages": [],
+            "tools": [{"type": "function", "function": {"name": "f"}}],
+            "tool_choice": {"type": "function", "function": {"name": "f"}},
+            "stop": ["END"],
+            "response_format": {"type": "json_object"},
+        });
+        ncm_compatible(&mut body);
+        assert_eq!(body["tool_choice"], "auto");
+        assert!(body.get("stop").is_none() && body.get("response_format").is_none());
+        let mut required = json!({"tool_choice": "required"});
+        ncm_compatible(&mut required);
+        assert_eq!(required["tool_choice"], "auto");
+        let mut none = json!({"tool_choice": "none"});
+        ncm_compatible(&mut none);
+        assert_eq!(none["tool_choice"], "none");
     }
 
     #[test]

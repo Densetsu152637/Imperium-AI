@@ -56,7 +56,9 @@ use imperium_api::{
     SuspendFuture, holder_session,
 };
 pub use imperium_config::{CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS};
-use imperium_config::{LaneRow, LlamaCppSettings, LocalModelSettings, ModelLaunch, VllmSettings};
+use imperium_config::{
+    LaneRow, LlamaCppSettings, LocalModelSettings, ModelLaunch, NcmSettings, VllmSettings,
+};
 use tokio::sync::{Notify, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore, broadcast};
 
 use crate::arbiter::{self, Decision, Outlook, Policy, Resident, Swaps, Use};
@@ -317,6 +319,8 @@ pub struct Runtimes {
     /// vLLM is supported on Linux (including WSL2); elsewhere Hugging Face models are listed
     /// but cannot be loaded.
     pub vllm_available: bool,
+    /// `runtime.ncm.*`, for NCM weight files.
+    pub ncm: NcmSettings,
 }
 
 /// A loaded model as the status view shows it.
@@ -519,6 +523,9 @@ struct SlotPool {
     last_interactive: Mutex<Option<Instant>>,
     /// Whether leases carry a slot index the runtime accepts in requests.
     pins_slots: bool,
+    /// Whether every lease carries a `max_tokens`, because the server would otherwise generate
+    /// to the end of its context ([`RuntimeBackend::requires_max_tokens`]).
+    always_caps: bool,
     last_used: Mutex<Instant>,
     /// The supervisor's change signal, raised when a slot is released.
     changed: Arc<Notify>,
@@ -529,6 +536,7 @@ impl SlotPool {
         base_url: String,
         launch: &ModelLaunch,
         pins_slots: bool,
+        always_caps: bool,
         changed: Arc<Notify>,
     ) -> Arc<Self> {
         let slots = launch.slots;
@@ -546,6 +554,7 @@ impl SlotPool {
             held_interactive: AtomicU32::new(0),
             last_interactive: Mutex::new(None),
             pins_slots,
+            always_caps,
             last_used: Mutex::new(Instant::now()),
             changed,
         })
@@ -567,6 +576,33 @@ impl SlotPool {
     fn reservation(&self, request: &LocalRequest) -> Reservation {
         let whole = self.context.min(self.pool_tokens).max(1);
         let max_output_tokens = self.max_output_tokens.load(Ordering::SeqCst);
+        let reservation = self.pool_reservation(request, whole, max_output_tokens);
+        if !self.always_caps || reservation.max_tokens.is_some() {
+            return reservation;
+        }
+        // The server would generate to the end of its context: the cap is the output budget, or
+        // what is left of the context after the prompt when the reply is uncapped.
+        let room = whole
+            .saturating_sub(request.prompt_tokens.unwrap_or(0))
+            .max(1);
+        let cap = if !request.uncapped && max_output_tokens > 0 {
+            max_output_tokens.min(room)
+        } else {
+            room
+        };
+        Reservation {
+            max_tokens: Some(cap),
+            ..reservation
+        }
+    }
+
+    /// [`SlotPool::reservation`] as the token pool sizes it.
+    fn pool_reservation(
+        &self,
+        request: &LocalRequest,
+        whole: u32,
+        max_output_tokens: u32,
+    ) -> Reservation {
         match request.prompt_tokens {
             Some(prompt) if !request.uncapped && max_output_tokens > 0 => {
                 let reserve = prompt.saturating_add(max_output_tokens).min(whole);
@@ -608,7 +644,7 @@ impl SlotPool {
         let lease = LocalLease::new(
             self.base_url.clone(),
             self.pins_slots.then_some(index),
-            max_tokens.filter(|_| tokens.is_some()),
+            max_tokens.filter(|_| tokens.is_some() || self.always_caps),
             Slot {
                 pool: Arc::clone(self),
                 index,
@@ -1665,7 +1701,13 @@ impl Supervisor {
             .settings
             .launch_with(lock(&self.model_settings).get(id), lane);
         match self.model(id) {
-            Some(model) => self.sized(&model, &configured),
+            Some(model) => {
+                let configured = match self.backend(model.format) {
+                    Some(backend) => backend.adjust_launch(configured),
+                    None => configured,
+                };
+                self.sized(&model, &configured)
+            }
             None => configured,
         }
     }
@@ -2416,6 +2458,9 @@ impl Supervisor {
         let model = self
             .model(id)
             .ok_or_else(|| format!("no local model {id:?} in models.folders"))?;
+        if let Some(problem) = &model.info.load_problem {
+            return Err(format!("local model {id} cannot load: {problem}").into());
+        }
         let ticket = self.ticket(id, priority);
         let lane = self.cpu_lane(id);
         let max_wait = Duration::from_secs(self.launch(id).max_wait_s);
@@ -3149,6 +3194,7 @@ impl Supervisor {
             server.base_url().to_string(),
             &served,
             backend.slot_aware(),
+            backend.requires_max_tokens(),
             Arc::clone(&self.changed),
         );
         let restorable = key.map_or(0, |key| self.reserve_saved_slots(&pool, key));
@@ -4839,6 +4885,93 @@ mod tests {
             )
         );
         assert_eq!(launched[1].0, "llamacpp");
+    }
+
+    fn ncm_model(id: &str) -> LocalModel {
+        LocalModel {
+            id: id.into(),
+            path: PathBuf::from(format!("{id}.safetensors")),
+            parts: 1,
+            size_bytes: GIB / 2,
+            info: GgufInfo {
+                architecture: Some("ncm".into()),
+                context_length: Some(crate::ncm::NCM_MAX_CONTEXT),
+                ncm: Some(crate::ncm::NcmShape {
+                    arch: crate::ncm::NcmArch::Ncm,
+                    vocab_size: 32000,
+                    layers: 16,
+                    width: 1024,
+                    k: 4,
+                    quant: None,
+                }),
+                ..GgufInfo::default()
+            },
+            mmproj: None,
+            repo: None,
+            format: Format::NcmSafetensors,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ncm_model_is_served_by_one_ncm_server_with_one_slot_and_capped_replies() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = Supervisor::start(
+            vec![ncm_model("princeps"), model("gguf", 2)],
+            settings(),
+            Runtimes::default(),
+            &hardware(),
+            launcher.clone(),
+        );
+        assert_eq!(supervisor.availability("princeps"), Availability::Fits);
+        let first = supervisor.acquire("princeps", "emperor").await.unwrap();
+        // ncm-server generates to the end of its context without a cap, and has no slots to pin.
+        assert!(first.max_tokens.is_some());
+        assert_eq!(first.slot, None);
+        // One request at a time: a second caller (another profile) queues in Imperium.
+        let waiting = tokio::time::timeout(
+            Duration::from_millis(200),
+            supervisor.acquire("princeps", "consul"),
+        )
+        .await;
+        assert!(waiting.is_err(), "a second call got the only slot");
+        drop(first);
+        let second = supervisor.acquire("princeps", "consul").await.unwrap();
+        assert!(second.max_tokens.is_some());
+        drop(second);
+        let launched = lock(&launcher.launched);
+        assert_eq!(launched.len(), 1, "{launched:?}");
+        let (runtime, args) = &launched[0];
+        assert_eq!(runtime, backend::NCM);
+        for pair in [
+            ["--host", "127.0.0.1"],
+            ["--parallel", "1"],
+            ["--alias", "princeps"],
+            ["--device", "cuda"],
+            ["--ctx-size", "4096"],
+        ] {
+            assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+        }
+        // llama.cpp's global extra arguments are not passed to ncm-server.
+        assert!(!args.iter().any(|arg| arg == "--kv-unified"), "{args:?}");
+    }
+
+    #[tokio::test]
+    async fn an_ncm_file_with_a_problem_is_listed_but_never_launched() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let mut broken = ncm_model("broken");
+        broken.info.ncm = None;
+        broken.info.load_problem = Some("its header is too large to read".into());
+        let supervisor = Supervisor::start(
+            vec![broken],
+            settings(),
+            Runtimes::default(),
+            &hardware(),
+            launcher.clone(),
+        );
+        assert_eq!(supervisor.models().len(), 1);
+        let error = supervisor.acquire("broken", "a").await.unwrap_err();
+        assert!(error.to_string().contains("too large"), "{error}");
+        assert!(lock(&launcher.launched).is_empty());
     }
 
     #[tokio::test]

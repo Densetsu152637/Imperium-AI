@@ -163,7 +163,7 @@ export function localSettings(draft: LocalDraft, config: LocalModelConfig): Loca
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  const vllm = config.runtime === "vllm";
+  const vllm = config.runtime !== "llamacpp";
   const settings: LocalLaunchSettings = {
     alias: aliasValue(draft.alias),
     card: cardValue(draft.card),

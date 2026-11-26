@@ -81,6 +81,19 @@ impl Footprint {
     /// What `model` needs started with `launch`: the KV cache is one pool of `pool_tokens`,
     /// whatever the slots.
     pub fn of(model: &LocalModel, launch: &ModelLaunch) -> Self {
+        if let Some(shape) = &model.info.ncm {
+            // ncm-server casts the weights to f32 on the CPU (bf16 on CUDA) and allocates its
+            // whole cache at launch; planned at f32 so either device fits. Never split by layer.
+            return Footprint {
+                weights_bytes: model.size_bytes.saturating_mul(2),
+                kv_bytes: crate::ncm::cache_bytes(shape, u64::from(launch.pool_tokens), 4)
+                    .unwrap_or(u64::MAX / 4),
+                layers: None,
+                max_gpu_layers: None,
+                draft: DraftMemory::default(),
+                overhead_bytes: RUNTIME_OVERHEAD_BYTES,
+            };
+        }
         let kv_bytes = model
             .info
             .kv_bytes_per_token_kv(
