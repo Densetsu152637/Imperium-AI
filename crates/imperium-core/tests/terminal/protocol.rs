@@ -916,11 +916,21 @@ pub(super) async fn a_command_at_the_os_sandbox_tier_cannot_open_the_terminal_de
             own.contains("READ-OPENED") && own.contains("WRITE-OPENED"),
             "{device} cannot be opened outside the sandbox either: {own:?}"
         );
-        let root = fixture.project.path();
+        // Next to the sources, as the OS sandbox's own tests do: the sandbox replaces `/tmp`.
+        let folder = tempfile::Builder::new()
+            .prefix(".terminal-sandbox")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap();
+        let root = folder.path();
         let run = |command: String| async move {
-            let mut process = imperium_tools::Sandbox::Os { network: true }
-                .command(&[root], &[], &command)
-                .ok()?;
+            let mut process = match (imperium_tools::Sandbox::Os { network: true }).command(
+                &[root],
+                &[],
+                &command,
+            ) {
+                Ok(process) => process,
+                Err(error) => return Some(format!("not started: {error}")),
+            };
             process
                 .stdin(std::process::Stdio::null())
                 .kill_on_drop(true);
@@ -928,7 +938,11 @@ pub(super) async fn a_command_at_the_os_sandbox_tier_cannot_open_the_terminal_de
                 .await
                 .ok()?
                 .ok()?;
-            Some(String::from_utf8_lossy(&output.stdout).into_owned())
+            Some(format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ))
         };
         match run("echo SANDBOX-RUNS".to_owned()).await {
             Some(text) if text.contains("SANDBOX-RUNS") => {}
