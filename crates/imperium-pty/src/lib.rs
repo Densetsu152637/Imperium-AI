@@ -625,6 +625,14 @@ impl Pty {
             Ok(job) => job,
             Err(reason) => {
                 let _ = child.kill();
+                // Closing the pseudo console can block until its output is read; not here.
+                let _ = thread::Builder::new()
+                    .name("imperium-pty-close".into())
+                    .spawn(move || {
+                        drop(reader);
+                        drop(writer);
+                        drop(master);
+                    });
                 return Err(SpawnError::Start(reason));
             }
         };
