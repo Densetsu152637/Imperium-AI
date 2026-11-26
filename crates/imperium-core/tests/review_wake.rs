@@ -1523,3 +1523,70 @@ async fn a_session_capped_for_life_that_owns_the_pull_request_is_woken_on_its_ow
         .expect("the session is listed");
     assert_eq!(row["capped"], true);
 }
+
+#[tokio::test]
+async fn a_replacement_wake_that_times_out_on_a_pending_write_stops_and_runs_nothing() {
+    let mut world = World::new(write_greeting(), vec![], "").await;
+    let session = world.new_session();
+    let id = session.id().to_string();
+    world.arm(&session).await;
+    drop(session);
+    world.daemon.delete_session(&id, false).unwrap();
+    imperium_core::review_testing::set_wake_timeout(
+        &format!("replacement:{REPO}#7"),
+        Duration::from_secs(1),
+    );
+    comment(&world, "Add a newline.");
+    while world.notices.try_recv().is_ok() {}
+    // Nobody answers the write's approval.
+    let mut request = None;
+    let mut failed = None;
+    for _ in 0..8 {
+        world.poll().await;
+        while let Some(notice) = world.next(Duration::from_secs(2)).await {
+            match notice.method.as_str() {
+                "approval.requested" => request = notice.params["id"].as_u64(),
+                "autofix.event" if notice.params["status"] == "failed" => {
+                    failed = Some(notice.params.clone());
+                }
+                _ => {}
+            }
+            if failed.is_some() {
+                break;
+            }
+        }
+        if failed.is_some() {
+            break;
+        }
+    }
+    let failed = failed.expect("the wake gave up");
+    assert!(request.is_some(), "the write asked");
+    let worker = failed["session_id"]
+        .as_str()
+        .expect("a replacement session")
+        .to_string();
+    let worker = world.daemon.session(&worker).unwrap();
+    // The replacement is stopped and capped, and the card of the request it left is gone.
+    assert!(worker.is_stopped());
+    assert!(worker.workspace().permissions().is_capped());
+    assert!(
+        world
+            .daemon
+            .approvals()
+            .list()
+            .iter()
+            .all(|info| info.kind != "tool"),
+        "a stale approval card was left"
+    );
+    // A late "allow" runs nothing: the request was denied, so the file is as it was.
+    assert!(!world.daemon.approvals().respond(request.unwrap(), true));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let worktree = world
+        .daemon
+        .data_dir()
+        .join("worktrees")
+        .join("owner__repo")
+        .join("pr-7")
+        .join("greeting.txt");
+    assert_eq!(std::fs::read_to_string(worktree).unwrap(), "hello");
+}

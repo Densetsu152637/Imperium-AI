@@ -2113,7 +2113,13 @@ async fn a_capped_turn_ignores_pre_approval_and_writes_no_plan() {
             continue;
         }
         match event.event {
-            SessionEvent::PermissionRequested { tool, .. } => {
+            SessionEvent::PermissionRequested {
+                tool,
+                suggested_rule,
+                ..
+            } => {
+                // No "always allow" rule is offered: it would not lift the cap.
+                assert!(suggested_rule.is_none(), "{suggested_rule:?}");
                 asked.push(tool);
                 // Nobody answers: the requests are denied together.
                 setup.session.deny_pending_requests();
@@ -2144,4 +2150,77 @@ async fn a_capped_turn_ignores_pre_approval_and_writes_no_plan() {
     );
     // Nothing was written: no plan appeared.
     assert!(!planned);
+}
+
+/// An approval made in a capped turn covers that call only: answering "always this session"
+/// there does not keep the tool allowed once the cap is lifted, so a later call in default mode
+/// still asks.
+#[tokio::test]
+async fn an_approval_for_the_session_given_in_a_capped_turn_does_not_outlive_the_cap() {
+    use imperium_protocol::session::PermissionDecision;
+    let steps = vec![
+        Some(("run_command", json!({"command": "echo first"}))),
+        None,
+        Some(("run_command", json!({"command": "echo second"}))),
+        None,
+    ];
+    let setup = start(options(HarnessMode::Off, steps)).await;
+    setup.session.workspace().permissions().cap();
+    let mut events = setup.session.subscribe();
+    setup.session.send("go".into()).unwrap();
+    let mut asked = 0;
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event within 20 s")
+            .unwrap();
+        if event.agent_id != ROOT_AGENT {
+            continue;
+        }
+        match event.event {
+            SessionEvent::PermissionRequested { request_id, .. } => {
+                asked += 1;
+                setup
+                    .session
+                    .respond(request_id, PermissionDecision::AllowForSession)
+                    .unwrap();
+            }
+            SessionEvent::TurnCompleted { .. } => break,
+            SessionEvent::TurnFailed { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    assert_eq!(asked, 1);
+    // The cap is lifted and the session is in default mode: the tool asks again.
+    setup.session.workspace().permissions().uncap();
+    setup
+        .session
+        .workspace()
+        .permissions()
+        .set_mode(PermissionMode::Default);
+    // (The cap was taken with `cap`, a count; the session had no standing cap.)
+    assert!(!setup.session.workspace().permissions().is_capped());
+    setup.session.send("again".into()).unwrap();
+    let again = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.agent_id != ROOT_AGENT {
+                continue;
+            }
+            match event.event {
+                SessionEvent::PermissionRequested {
+                    request_id, tool, ..
+                } => return (request_id, tool),
+                SessionEvent::TurnFailed { message } => panic!("{message}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the second call asked");
+    assert_eq!(again.1, "run_command");
+    setup
+        .session
+        .respond(again.0, PermissionDecision::Deny)
+        .unwrap();
 }

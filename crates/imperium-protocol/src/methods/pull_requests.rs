@@ -203,7 +203,8 @@ pub struct PrStatus {
     // (`pull_requests.set_monitor` with `ack_untrusted`).
     pub untrusted_handled: bool,
     // Comments from people without write access that did not wake the session, since the user
-    // last acknowledged.
+    // last acknowledged. Absent from a daemon that predates it (read as 0).
+    #[serde(default)]
     pub ignored_comments: u32,
     // When the status last changed, in milliseconds since the Unix epoch.
     #[ts(type = "number")]

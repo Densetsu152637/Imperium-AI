@@ -255,7 +255,7 @@ export function describePr(status: PrStatus, settings: AutoMergeSettings = DEFAU
     ended,
     autoFix: autoFixView(status),
     untrusted: status.untrusted_handled ? UNTRUSTED_NOTICE : null,
-    ignored: ignoredNotice(status.ignored_comments),
+    ignored: ignoredNotice(status.ignored_comments ?? 0),
     autoMerge: autoMergeView(status, settings),
     ...methodView(status, settings),
     error: status.error ? oneLine(status.error) : null,

@@ -686,6 +686,9 @@ fn ready(session: &Session) -> bool {
         session.status().0,
         SessionStatus::Idle | SessionStatus::Watching
     ) && !session.is_stopped()
+        // The user's own background subagents are work in progress: a wake neither waits on nor
+        // stops them.
+        && !subagents_running(session)
         // Another wake's cap on the session means it is busy; a standing cap (a replacement
         // session the user took over) is the wake's own cap.
         && !(session.workspace().permissions().is_capped()
@@ -864,6 +867,31 @@ async fn settle_agents(session: &Session, within: Option<Duration>) -> bool {
     }
 }
 
+/// Cancels the approval cards a stopped session's requests left in the queue, so a late
+/// "allow" cannot be mistaken for a live request.
+fn drop_stale_approvals(state: &DaemonState, session_id: &str) {
+    let tag = format!("in session {session_id}:");
+    for info in state.approvals().list() {
+        if info.kind == "tool" && info.summary.contains(&tag) {
+            state.approvals().respond(info.id, false);
+        }
+    }
+}
+
+/// Denies what the session still waits for, and the approval cards that stand for it.
+fn deny_waiting(state: &DaemonState, session: &Session) {
+    session.deny_pending_requests();
+    drop_stale_approvals(state, session.id());
+}
+
+/// Whether a subagent of the session is working (the user's own, or the wake's).
+fn subagents_running(session: &Session) -> bool {
+    session
+        .agents()
+        .iter()
+        .any(|agent| agent.agent_id != ROOT_AGENT && agent.status == AgentStatus::Running)
+}
+
 fn wake_timeout(_session: &str) -> Duration {
     #[cfg(feature = "testing")]
     if let Some(timeout) = testing::timeout_for(_session) {
@@ -939,7 +967,7 @@ async fn owner_turn(
             let settled = settle_agents(session, Some(timeout)).await;
             if !settled {
                 session.stop();
-                session.deny_pending_requests();
+                deny_waiting(state, session);
                 hold(
                     Arc::clone(state),
                     Arc::clone(session),
@@ -963,7 +991,7 @@ async fn owner_turn(
         Err(_) => {
             // Stopping pauses the turn; it would go on uncapped if the cap were lifted now.
             session.stop();
-            session.deny_pending_requests();
+            deny_waiting(state, session);
             hold(
                 Arc::clone(state),
                 Arc::clone(session),
@@ -986,6 +1014,7 @@ fn ready_after_cap(session: &Session) -> bool {
         session.status().0,
         SessionStatus::Idle | SessionStatus::Watching
     ) && !session.is_stopped()
+        && !subagents_running(session)
 }
 
 /// Keeps `cap` until the woken turn has really ended (it may be paused, and runs capped when
@@ -1108,6 +1137,7 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
                 return;
             }
             let model = settings.github.autofix.model.clone();
+            let replacement_timeout = wake_timeout(&format!("replacement:{repo}#{number}"));
             let (ok, summary, session_id) = state
                 .run_prompt(
                     &worktree.display().to_string(),
@@ -1122,7 +1152,7 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
                         capped: true,
                         ..crate::SessionOptions::default()
                     },
-                    WAKE_TIMEOUT,
+                    replacement_timeout,
                 )
                 .await;
             if !ok {
@@ -1130,9 +1160,24 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
                 // in a session already reported as failed.
                 if let Some(worker) = session_id.as_deref().and_then(|id| state.session(id)) {
                     worker.stop();
-                    worker.deny_pending_requests();
+                    deny_waiting(&state, &worker);
                 }
                 say("failed", session_id, summary);
+                return;
+            }
+            // Its subagents share its permissions and edit the same worktree: the commit waits
+            // for them.
+            if let Some(worker) = session_id.as_deref().and_then(|id| state.session(id))
+                && !settle_agents(&worker, Some(replacement_timeout)).await
+            {
+                worker.stop();
+                deny_waiting(&state, &worker);
+                say(
+                    "failed",
+                    session_id,
+                    "subagents were still working when the wake ended; the session was stopped"
+                        .to_string(),
+                );
                 return;
             }
             (worktree, session_id, summary)
@@ -1342,5 +1387,26 @@ pub mod testing {
             reached.notify_one();
             release.notified().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The "could not be woken" notice goes out on every fifth wake in a row that did not start
+    /// its turn, and a wake that did start resets the count.
+    #[test]
+    fn the_raced_notice_fires_at_the_limit_and_a_start_resets_it() {
+        let ledger = Ledger::default();
+        let notices: Vec<u32> = (0..RACED_LIMIT * 2)
+            .map(|_| ledger.note_raced("o/r", 7))
+            .filter(|times| times.is_multiple_of(RACED_LIMIT))
+            .collect();
+        assert_eq!(notices, [RACED_LIMIT, RACED_LIMIT * 2]);
+        // Another pull request counts on its own.
+        assert_eq!(ledger.note_raced("o/other", 7), 1);
+        ledger.clear_raced("O/R", 7);
+        assert_eq!(ledger.note_raced("o/r", 7), 1);
     }
 }

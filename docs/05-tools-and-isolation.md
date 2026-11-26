@@ -806,7 +806,11 @@ capped for its whole life (`SessionOptions::capped`, kept in its record). **The 
 that cap**: to work uncapped, start a new session or branch one. The session summary says so
 (`SessionSummary.capped`), the desktop shows a "capped (review wake)" badge in the session footer,
 and a capped session's approval requests offer no "always allow" rule. If the user binds such a
-session to the pull request and turns auto-fix on, later wakes run on that standing cap.
+session to the pull request and turns auto-fix on, later wakes run on that standing cap. In a
+capped turn "Always this session" is not offered and is answered as a single "allow" if sent: an
+approval given under the cap would otherwise outlive it. A branch of a session that handled
+review comments carries the comment text in its history, like the session itself, and is not
+capped: the card's notice applies to it too.
 The session's rules and approvals are untouched, and the session's own mode comes back when
 the turn **and its subagents** are over. Subagents share the session's permissions, so the cap
 is held until none is working (a paused one is cancelled). If the turn does not end in time the

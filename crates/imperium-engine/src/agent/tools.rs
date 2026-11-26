@@ -561,12 +561,17 @@ impl Agent {
         let waiting = self
             .local_models()
             .map(|local| local.waiting(&self.model.model, &self.holder()));
+        let capped_when_asked = self.workspace.permissions().is_capped();
         let decision = answer.await.unwrap_or(PermissionDecision::Deny);
         drop(waiting);
         match decision {
             PermissionDecision::Allow => true,
             PermissionDecision::AllowForSession => {
-                lock(&self.shared.allowed_tools).insert(tool.to_string());
+                // An approval made in a capped turn covers this call only: remembered, it
+                // would outlive the cap and let the tool run unasked in later turns.
+                if !(capped_when_asked || self.workspace.permissions().is_capped()) {
+                    lock(&self.shared.allowed_tools).insert(tool.to_string());
+                }
                 true
             }
             PermissionDecision::Deny => false,
