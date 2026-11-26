@@ -15,8 +15,9 @@ use windows_sys::Win32::Security::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT,
         SetNamedSecurityInfoW,
     },
-    DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR,
+    DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorSacl,
+    LABEL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    PROTECTED_SACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
 };
 
 /// The current user's SID as text, from `whoami /user /fo csv /nh`.
@@ -34,16 +35,34 @@ fn user_sid() -> String {
         .to_owned()
 }
 
-/// Gives `path` a protected access list that lets this user, its owner included, do everything but
-/// change its owner (which setting a label needs) or read its security descriptor (which checking
-/// a label needs).
-fn deny_relabelling(path: &std::path::Path) {
+/// Makes `path` a file that cannot take the folder's label, whatever privileges the test process
+/// holds: first its label part of the descriptor is made protected and empty (an inherited label
+/// can no longer reach it), then its access list lets this user, its owner included, do everything
+/// but change its owner (which setting a label needs) or read its descriptor (which checking a
+/// label needs). A process that bypasses the access list still meets the protected label part.
+fn make_unlabellable(path: &std::path::Path) {
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let protect = set(
+        &name,
+        "S:P",
+        LABEL_SECURITY_INFORMATION | PROTECTED_SACL_SECURITY_INFORMATION,
+    );
+    eprintln!("LOCKED protected label part: status {protect}");
     let sddl = format!(
         "D:P(D;;WORC;;;{sid})(D;;WORC;;;OW)(A;;FA;;;{sid})(A;;FA;;;SY)",
         sid = user_sid()
     );
+    let status = set(
+        &name,
+        &sddl,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+    );
+    assert_eq!(status, 0, "cannot set the test file's access list");
+}
+
+/// Sets the parts of `name`'s descriptor that `what` names from `sddl`; the Win32 status.
+fn set(name: &[u16], sddl: &str, what: u32) -> u32 {
     let sddl: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
-    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     // SAFETY: NUL-terminated strings and valid out-pointers; the descriptor is used while alive
     // and then leaked (a test).
     unsafe {
@@ -60,25 +79,28 @@ fn deny_relabelling(path: &std::path::Path) {
         let mut present = 0;
         let mut defaulted = 0;
         let mut dacl: *mut ACL = std::ptr::null_mut();
-        assert_ne!(
-            GetSecurityDescriptorDacl(
-                descriptor,
-                &raw mut present,
-                &raw mut dacl,
-                &raw mut defaulted
-            ),
-            0
+        let mut sacl: *mut ACL = std::ptr::null_mut();
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &raw mut present,
+            &raw mut dacl,
+            &raw mut defaulted,
         );
-        let status = SetNamedSecurityInfoW(
+        GetSecurityDescriptorSacl(
+            descriptor,
+            &raw mut present,
+            &raw mut sacl,
+            &raw mut defaulted,
+        );
+        SetNamedSecurityInfoW(
             name.as_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            what,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             dacl,
-            std::ptr::null(),
-        );
-        assert_eq!(status, 0, "cannot set the test file's access list");
+            sacl,
+        )
     }
 }
 
@@ -89,7 +111,7 @@ async fn a_file_that_cannot_be_labelled_makes_code_mode_unavailable_naming_it() 
     std::fs::create_dir(&data).unwrap();
     let stuck = data.join("not-mine.json");
     std::fs::write(&stuck, "secret").unwrap();
-    deny_relabelling(&stuck);
+    make_unlabellable(&stuck);
     eprintln!(
         "LOCKED sid={} label={:?}",
         user_sid(),
