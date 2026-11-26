@@ -28,7 +28,11 @@ pub fn respond(id: u64, approve: bool) -> anyhow::Result<()> {
     block_on(async {
         let (mut client, _) = connect().await?;
         let result = client
-            .call::<ApprovalRespond>(ApprovalRespondParams { id, approve })
+            .call::<ApprovalRespond>(ApprovalRespondParams {
+                id,
+                approve,
+                text: None,
+            })
             .await?;
         if !result.found {
             bail!("no pending approval #{id}");

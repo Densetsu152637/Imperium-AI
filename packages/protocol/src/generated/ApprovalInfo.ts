@@ -4,4 +4,9 @@ export type ApprovalInfo = { id: number,
 /**
  * What is being approved, such as `push`.
  */
-kind: string, summary: string, requested_at: string, };
+kind: string, summary: string, requested_at: string, 
+/**
+ * For a request whose text may be edited before it is used (a `reply` to a review
+ * thread), the exact text that will be posted; `approvals.respond` may send an edited one.
+ */
+text?: string, };

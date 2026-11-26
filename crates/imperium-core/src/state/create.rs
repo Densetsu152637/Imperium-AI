@@ -261,7 +261,11 @@ impl DaemonState {
         options: SessionOptions,
         timeout: std::time::Duration,
     ) -> (bool, String, Option<String>) {
+        let source = options.budget_source.clone();
         let created = self.create_session_with(project_dir, model, options);
+        if let (Ok((session, _)), Some(source)) = (&created, source) {
+            self.budgets().tag_session(session.id(), &source);
+        }
         self.run_created(created, prompt, timeout).await
     }
 
@@ -363,9 +367,10 @@ impl DaemonState {
         tool: &str,
         summary: String,
     ) {
-        let answer = self.approvals.request(
+        let answer = self.approvals.request_for_session(
             self,
             "tool",
+            session.id(),
             format!("{tool} in session {}: {summary}", session.id()),
         );
         let session = Arc::clone(session);
