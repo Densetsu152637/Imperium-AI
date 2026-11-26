@@ -173,6 +173,8 @@ impl LocalRuntime {
             vllm: vllm.clone(),
             vllm_available,
             ncm: settings.runtime.ncm.clone(),
+            // Read when the daemon starts, like the rest of runtime.ncm.
+            ncm_cuda: imperium_local::ncm_runtime::approved_cuda(paths.data_dir()),
         };
         let supervisor = Supervisor::start(
             found.models,

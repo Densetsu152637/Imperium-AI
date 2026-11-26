@@ -321,6 +321,9 @@ pub struct Runtimes {
     pub vllm_available: bool,
     /// `runtime.ncm.*`, for NCM weight files.
     pub ncm: NcmSettings,
+    /// Whether the approved `ncm-server` has CUDA; without it `device = "auto"` runs NCM models
+    /// on the CPU.
+    pub ncm_cuda: bool,
 }
 
 /// A loaded model as the status view shows it.
@@ -4918,7 +4921,10 @@ mod tests {
         let supervisor = Supervisor::start(
             vec![ncm_model("princeps"), model("gguf", 2)],
             settings(),
-            Runtimes::default(),
+            Runtimes {
+                ncm_cuda: true,
+                ..Runtimes::default()
+            },
             &hardware(),
             launcher.clone(),
         );

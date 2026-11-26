@@ -772,15 +772,11 @@ enum RuntimeCommand {
 
 #[derive(Debug, Subcommand)]
 enum NcmCommand {
-    /// Approve an ncm-server you built: shows its path, size, SHA-256 and version, then copies
-    /// it into Imperium's data folder (the copy is what runs, re-checked at every launch) and
-    /// sets runtime.ncm.custom_path.
-    Use {
-        path: PathBuf,
-        /// Approve without asking.
-        #[arg(long)]
-        yes: bool,
-    },
+    /// Approve an ncm-server you built, at a terminal (there is no --yes): shows its path,
+    /// size and SHA-256 without running it, then copies it into Imperium's data folder (the copy
+    /// is what runs, re-checked at every launch), records whether it has CUDA, and sets
+    /// runtime.ncm.custom_path.
+    Use { path: PathBuf },
     /// Show the approved ncm-server and whether its copy is intact.
     Status,
 }
@@ -1120,9 +1116,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command:
                 RuntimeCommand::Ncm {
-                    command: NcmCommand::Use { path, yes },
+                    command: NcmCommand::Use { path },
                 },
-        } => ncm::use_server(path, yes),
+        } => ncm::use_server(path),
         Command::Runtime {
             command:
                 RuntimeCommand::Ncm {

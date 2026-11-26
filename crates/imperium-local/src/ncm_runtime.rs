@@ -1,21 +1,30 @@
 //! The user-built `ncm-server`: approving it, and checking it at every launch.
 //!
 //! There are no `ncm-server` releases yet, so the only server Imperium runs is one the user built
-//! and approved (`imperium runtime ncm use <path>`). Approving shows the file's path, size and
-//! SHA-256, then copies it into `<data>/runtimes/ncm-server/user/<sha256>/` and records the hash
-//! in `<data>/runtimes/ncm-server/user.json`. Every launch runs that copy, never the original:
-//! the copy is re-hashed through a handle held open for the server's life (on Windows without
-//! write or delete sharing, so it cannot be replaced meanwhile), and the server starts with that
-//! folder as its working directory. Nothing the user left beside the original binary (a planted
-//! DLL, which Windows would load from the executable's folder first) is ever loaded. NVRTC, which
-//! a CUDA build loads at its first kernel compile, comes from the user's CUDA toolkit through
-//! `CUDA_PATH` and is not hashed (a recorded residual).
+//! and approved at a terminal (`imperium runtime ncm use <path>`). Approving shows the file's
+//! path, size and SHA-256 without running it; once the user confirms, the file is copied into
+//! `<data>/runtimes/ncm-server/user/<sha256>/`, the copy is asked for its `--version` (from that
+//! folder, with the server's environment allowlist), and the hash is recorded in
+//! `<data>/runtimes/ncm-server/user.json`. Every launch runs that copy, never the original: the
+//! copy folder must hold the executable and nothing else, the copy is re-hashed through a handle
+//! held open for the server's life (on Windows without write or delete sharing, so it cannot be
+//! replaced meanwhile), and the server starts with that folder as its working directory. Nothing
+//! the user left beside the original binary (a planted DLL, which Windows would load from the
+//! executable's folder first) is ever loaded.
+//!
+//! The trust anchor is the data folder: `<data>/runtimes/` is protected from agent file tools and
+//! commands (agent writes there are refused, #304/#330), so only the user's own processes can
+//! change the copy or the record. NVRTC, which a CUDA build loads at its first kernel compile,
+//! comes from the user's CUDA toolkit through `CUDA_PATH` and is not hashed (a recorded
+//! residual).
 //!
 //! Nothing here searches `PATH` or downloads anything.
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -25,9 +34,13 @@ pub const RECORD: &str = "user.json";
 
 /// What to do when no `ncm-server` is approved.
 pub const HOW_TO_INSTALL: &str = "ncm-server is not installed: there are no release builds yet, \
-     so build it yourself (`cargo build --release -p ncm-server --features cuda` in Imperium-Models \
-     models/ncm; leave out `--features cuda` for a CPU build) and approve it with \
-     `imperium runtime ncm use <path to ncm-server>`, which sets runtime.ncm.custom_path";
+     so build it yourself in Imperium-Models models/ncm (`cargo build --release -p ncm-server \
+     --features cuda` for an NVIDIA GPU, or without `--features cuda` for a CPU-only build) and \
+     approve it at a terminal with `imperium runtime ncm use <path to ncm-server>`, which also \
+     records whether the build has CUDA and sets runtime.ncm.custom_path";
+
+/// Longest `ncm-server --version` may take.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `<data>/runtimes/ncm-server`.
 pub fn runtime_dir(data_dir: &Path) -> PathBuf {
@@ -58,9 +71,13 @@ pub struct Approval {
     pub size: u64,
     /// Seconds since the Unix epoch.
     pub approved_at: u64,
-    /// What `ncm-server --version` printed, when the approval ran it.
+    /// What the approved copy printed for `--version`.
     #[serde(default)]
     pub version: Option<String>,
+    /// Whether the build has CUDA (`--features cuda`): its `--version` says so, or the user
+    /// said so when approving. Without it, `device = "auto"` runs models on the CPU.
+    #[serde(default)]
+    pub cuda: bool,
 }
 
 /// A binary the user named, as shown to them before they approve it.
@@ -71,9 +88,34 @@ pub struct Candidate {
     pub sha256: String,
 }
 
-/// Checks `path` and hashes it for the user to approve. It must be absolute, a regular file and
-/// not a symbolic link, and not inside any of `forbidden` (folders agents write to: projects,
-/// worktrees, session workspaces).
+/// What the approved copy says about itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Probe {
+    pub version: Option<String>,
+    /// `Some` when the version output says whether it was built with CUDA.
+    pub cuda: Option<bool>,
+}
+
+/// The temporary folders of this machine, where anyone (agents included) may write: refused as a
+/// place to approve a binary from.
+pub fn temp_folders() -> Vec<PathBuf> {
+    let mut folders = vec![std::env::temp_dir()];
+    for name in ["TEMP", "TMP", "TMPDIR"] {
+        if let Some(dir) = std::env::var_os(name).filter(|dir| !dir.is_empty()) {
+            folders.push(PathBuf::from(dir));
+        }
+    }
+    if cfg!(unix) {
+        folders.extend(["/tmp", "/var/tmp", "/dev/shm"].map(PathBuf::from));
+    }
+    folders.sort();
+    folders.dedup();
+    folders
+}
+
+/// Checks `path` and hashes it for the user to approve, without running it. It must be absolute,
+/// a regular file and not a symbolic link, and not inside any of `forbidden` (folders agents
+/// write to: session workspaces, worktrees, temporary folders).
 pub fn inspect(path: &Path, forbidden: &[PathBuf]) -> Result<Candidate, String> {
     if !path.is_absolute() {
         return Err(format!(
@@ -114,18 +156,66 @@ pub fn inspect(path: &Path, forbidden: &[PathBuf]) -> Result<Candidate, String> 
     })
 }
 
-/// Copies the approved `candidate` into [`copy_dir`] and records it in [`RECORD`], once the user
-/// approved it. The copy must hash to what the user was shown: a file changed since
-/// [`inspect`] is refused.
+/// Once the user approved `candidate`: copies it into [`copy_dir`] (unless a copy with its hash
+/// is already there, as when the user approves the build a running server uses again), asks the
+/// copy what it is with `probe` (never the original), and records it in [`RECORD`]. `ask_cuda`
+/// decides whether the build has CUDA when its version output does not say. The copy must hash
+/// to what the user was shown: a file changed since [`inspect`] is refused.
 pub fn approve(
     data_dir: &Path,
     candidate: &Candidate,
-    version: Option<String>,
     approved_at: u64,
+    probe: impl FnOnce(&Path, &Path) -> Probe,
+    ask_cuda: impl FnOnce(Option<&str>) -> bool,
 ) -> Result<Approval, String> {
+    let dir = install_copy(data_dir, candidate)?;
+    let program = dir.join(exe_name());
+    let found = probe(&program, &dir);
+    let cuda = match found.cuda {
+        Some(cuda) => cuda,
+        None => ask_cuda(found.version.as_deref()),
+    };
+    let approval = Approval {
+        source: candidate.path.clone(),
+        sha256: candidate.sha256.clone(),
+        size: candidate.size,
+        approved_at,
+        version: found.version,
+        cuda,
+    };
+    let record = runtime_dir(data_dir).join(RECORD);
+    let text = serde_json::to_string_pretty(&approval).map_err(|error| error.to_string())?;
+    let partial = record.with_extension("json.partial");
+    fs::write(&partial, text).map_err(|error| format!("{}: {error}", partial.display()))?;
+    fs::rename(&partial, &record).map_err(|error| format!("{}: {error}", record.display()))?;
+    Ok(approval)
+}
+
+/// Puts a copy of `candidate` in its [`copy_dir`], which then holds nothing else, and returns
+/// the folder.
+fn install_copy(data_dir: &Path, candidate: &Candidate) -> Result<PathBuf, String> {
     let dir = copy_dir(data_dir, &candidate.sha256);
     fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     let target = dir.join(exe_name());
+    // Anything else in the folder (a leftover partial copy, a dropped file) goes.
+    for entry in fs::read_dir(&dir).map_err(|error| format!("{}: {error}", dir.display()))? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry.file_name() != exe_name() {
+            let path = entry.path();
+            let removed = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path)
+            };
+            removed.map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+    }
+    let intact = File::open(&target)
+        .and_then(|mut file| hash(&mut file))
+        .is_ok_and(|(size, sha256)| size == candidate.size && sha256 == candidate.sha256);
+    if intact {
+        return Ok(dir);
+    }
     let staging = dir.join(format!("{}.partial", exe_name()));
     let copied = (|| -> Result<(u64, String), String> {
         let mut source = File::open(&candidate.path)
@@ -159,19 +249,72 @@ pub fn approve(
             .map_err(|error| error.to_string())?;
     }
     fs::rename(&staging, &target).map_err(|error| format!("{}: {error}", target.display()))?;
-    let approval = Approval {
-        source: candidate.path.clone(),
-        sha256: candidate.sha256.clone(),
-        size: candidate.size,
-        approved_at,
-        version,
+    Ok(dir)
+}
+
+/// Runs the approved copy `program` with `--version`, from its folder `dir` and with the
+/// server's environment allowlist, for at most [`VERSION_TIMEOUT`].
+pub fn probe(program: &Path, dir: &Path) -> Probe {
+    let mut command = Command::new(program);
+    command
+        .arg("--version")
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env_clear()
+        .envs(crate::backend::allowed_env(
+            crate::backend::NCM_ENV,
+            std::env::vars_os().filter_map(|(name, value)| Some((name.into_string().ok()?, value))),
+            cfg!(windows),
+        ));
+    let Ok(mut child) = command.spawn() else {
+        return Probe::default();
     };
-    let record = runtime_dir(data_dir).join(RECORD);
-    let text = serde_json::to_string_pretty(&approval).map_err(|error| error.to_string())?;
-    let partial = record.with_extension("json.partial");
-    fs::write(&partial, text).map_err(|error| format!("{}: {error}", partial.display()))?;
-    fs::rename(&partial, &record).map_err(|error| format!("{}: {error}", record.display()))?;
-    Ok(approval)
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut out = String::new();
+                if let Some(stdout) = child.stdout.take() {
+                    let _ = stdout.take(4096).read_to_string(&mut out);
+                }
+                if !status.success() {
+                    return Probe::default();
+                }
+                let version = out.trim().to_string();
+                return Probe {
+                    cuda: cuda_in_version(&version),
+                    version: Some(version),
+                };
+            }
+            Ok(None) if started.elapsed() < VERSION_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Probe::default();
+            }
+        }
+    }
+}
+
+/// Whether a `--version` line names the build's backends: `cuda` among its words says CUDA, a
+/// `cpu`-only list says none; `ncm-server 0.0.0` (today's output) says nothing.
+pub fn cuda_in_version(version: &str) -> Option<bool> {
+    let lower = version.to_ascii_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words.contains(&"cuda") {
+        Some(true)
+    } else if words.contains(&"cpu") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// The approval on record, if any.
@@ -197,6 +340,14 @@ pub fn approved(data_dir: &Path) -> Result<Option<Approval>, String> {
     Ok(Some(approval))
 }
 
+/// Whether the approved build has CUDA; false with no (readable) approval.
+pub fn approved_cuda(data_dir: &Path) -> bool {
+    approved(data_dir)
+        .ok()
+        .flatten()
+        .is_some_and(|approval| approval.cuda)
+}
+
 /// The approved copy, checked for this launch. `held` stays open for the server's life.
 #[derive(Debug)]
 pub struct Verified {
@@ -210,18 +361,43 @@ pub struct Verified {
     pub held: File,
 }
 
-/// Checks the approved copy before a launch: there is an approval, and the copy hashes to it
-/// through a handle that is kept ([`Verified::held`]).
+/// Checks the approved copy before a launch: there is an approval, its folder holds the
+/// executable and nothing else (a DLL dropped there would be loaded before any other), and the
+/// copy hashes to the approval through a handle that is kept ([`Verified::held`]).
 pub fn verify(data_dir: &Path) -> Result<Verified, String> {
     let approval = approved(data_dir)?.ok_or_else(|| HOW_TO_INSTALL.to_string())?;
     let dir = copy_dir(data_dir, &approval.sha256);
     let program = dir.join(exe_name());
+    let again = || {
+        format!(
+            "approve it again with `imperium runtime ncm use {}`",
+            approval.source.display()
+        )
+    };
+    let entries = fs::read_dir(&dir).map_err(|_| {
+        format!(
+            "the approved ncm-server copy {} is missing; {}",
+            program.display(),
+            again()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("{}: {error}", dir.display()))?;
+        if entry.file_name() != exe_name() {
+            return Err(format!(
+                "{} holds {}, which Imperium did not put there; ncm-server is not run from it \
+                 until you {}",
+                dir.display(),
+                entry.file_name().to_string_lossy(),
+                again()
+            ));
+        }
+    }
     let meta = fs::symlink_metadata(&program).map_err(|_| {
         format!(
-            "the approved ncm-server copy {} is missing; approve it again with `imperium runtime \
-             ncm use {}`",
+            "the approved ncm-server copy {} is missing; {}",
             program.display(),
-            approval.source.display()
+            again()
         )
     })?;
     if !meta.is_file() {
@@ -292,12 +468,37 @@ fn is_sha256(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     fn build(dir: &Path, body: &[u8]) -> PathBuf {
         fs::create_dir_all(dir).unwrap();
         let path = dir.join(exe_name());
         fs::write(&path, body).unwrap();
         path
+    }
+
+    /// Approves `candidate` with a probe that records where it ran and says `version`.
+    fn approve_with(
+        data: &Path,
+        candidate: &Candidate,
+        version: &str,
+        ran: &Mutex<Vec<(PathBuf, PathBuf)>>,
+    ) -> Result<Approval, String> {
+        approve(
+            data,
+            candidate,
+            1,
+            |program, dir| {
+                ran.lock()
+                    .unwrap()
+                    .push((program.to_path_buf(), dir.to_path_buf()));
+                Probe {
+                    version: Some(version.into()),
+                    cuda: cuda_in_version(version),
+                }
+            },
+            |_| false,
+        )
     }
 
     #[test]
@@ -308,6 +509,7 @@ mod tests {
             error.contains("cargo build --release -p ncm-server"),
             "{error}"
         );
+        assert!(error.contains("--features cuda"), "{error}");
         assert!(error.contains("imperium runtime ncm use"), "{error}");
     }
 
@@ -318,6 +520,9 @@ mod tests {
         assert!(inspect(Path::new("ncm-server"), &[]).is_err());
         assert!(inspect(root.path(), &[]).is_err());
         let error = inspect(&binary, &[root.path().to_path_buf()]).unwrap_err();
+        assert!(error.contains("agents can write to"), "{error}");
+        // The temporary folder (where this test's files are) is one of them.
+        let error = inspect(&binary, &temp_folders()).unwrap_err();
         assert!(error.contains("agents can write to"), "{error}");
         #[cfg(unix)]
         {
@@ -331,7 +536,12 @@ mod tests {
     }
 
     #[test]
-    fn an_approved_build_is_copied_and_the_copy_is_what_runs() {
+    fn temp_folders_include_the_system_one() {
+        assert!(temp_folders().contains(&std::env::temp_dir()));
+    }
+
+    #[test]
+    fn an_approved_build_is_copied_and_only_the_copy_is_ever_run() {
         let data = tempfile::tempdir().unwrap();
         let source_dir = tempfile::tempdir().unwrap();
         let binary = build(source_dir.path(), b"the server");
@@ -340,14 +550,21 @@ mod tests {
         fs::write(source_dir.path().join("nvrtc64_130_0.dll"), b"planted").unwrap();
         fs::write(source_dir.path().join("cudart64_13.dll"), b"planted").unwrap();
         let candidate = inspect(&binary, &[]).unwrap();
-        let approval = approve(data.path(), &candidate, Some("0.0.0".into()), 1).unwrap();
+        let ran = Mutex::new(Vec::new());
+        let approval = approve_with(data.path(), &candidate, "ncm-server 0.0.0", &ran).unwrap();
         assert_eq!(approval.source, binary);
+        assert_eq!(approval.version.as_deref(), Some("ncm-server 0.0.0"));
 
         let verified = verify(data.path()).unwrap();
         assert_eq!(verified.dir, copy_dir(data.path(), &candidate.sha256));
         assert_eq!(verified.program, verified.dir.join(exe_name()));
         assert_ne!(verified.dir, source_dir.path());
         assert!(verified.program.starts_with(data.path()));
+        // The version was asked of the copy, from its own folder, never of the original.
+        assert_eq!(
+            *ran.lock().unwrap(),
+            [(verified.program.clone(), verified.dir.clone())]
+        );
         // Only the executable is in the folder it runs from (and is its working directory), so
         // the planted DLLs are never found there.
         let in_copy: Vec<_> = fs::read_dir(&verified.dir)
@@ -366,12 +583,87 @@ mod tests {
     }
 
     #[test]
+    fn a_file_dropped_into_the_copy_folder_stops_the_launch() {
+        let data = tempfile::tempdir().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let binary = build(source_dir.path(), b"the server");
+        let candidate = inspect(&binary, &[]).unwrap();
+        approve_with(data.path(), &candidate, "x", &Mutex::new(Vec::new())).unwrap();
+        let dir = copy_dir(data.path(), &candidate.sha256);
+        fs::write(dir.join("nvrtc64_130_0.dll"), b"planted").unwrap();
+        let error = verify(data.path()).unwrap_err();
+        assert!(error.contains("nvrtc64_130_0.dll"), "{error}");
+        // Approving again clears the folder.
+        approve_with(data.path(), &candidate, "x", &Mutex::new(Vec::new())).unwrap();
+        assert!(verify(data.path()).is_ok());
+    }
+
+    #[test]
+    fn approving_the_build_already_copied_keeps_the_copy() {
+        let data = tempfile::tempdir().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let binary = build(source_dir.path(), b"the server");
+        let candidate = inspect(&binary, &[]).unwrap();
+        approve_with(data.path(), &candidate, "x", &Mutex::new(Vec::new())).unwrap();
+        // A running server holds the copy open (on Windows, without write or delete sharing):
+        // approving the same build again must not need to replace it.
+        let held = verify(data.path()).unwrap();
+        approve_with(data.path(), &candidate, "y", &Mutex::new(Vec::new())).unwrap();
+        drop(held);
+        assert_eq!(
+            approved(data.path()).unwrap().unwrap().version.as_deref(),
+            Some("y")
+        );
+    }
+
+    #[test]
+    fn whether_the_build_has_cuda_comes_from_its_version_or_the_user() {
+        assert_eq!(cuda_in_version("ncm-server 0.0.0"), None);
+        assert_eq!(cuda_in_version("ncm-server 0.1.0 (cuda)"), Some(true));
+        assert_eq!(
+            cuda_in_version("ncm-server 0.1.0 backends: cpu"),
+            Some(false)
+        );
+        let data = tempfile::tempdir().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let binary = build(source_dir.path(), b"the server");
+        let candidate = inspect(&binary, &[]).unwrap();
+        let asked = Mutex::new(None);
+        let approval = approve(
+            data.path(),
+            &candidate,
+            1,
+            |_, _| Probe {
+                version: Some("ncm-server 0.0.0".into()),
+                cuda: None,
+            },
+            |version| {
+                *asked.lock().unwrap() = version.map(str::to_string);
+                true
+            },
+        )
+        .unwrap();
+        assert!(approval.cuda);
+        assert_eq!(asked.lock().unwrap().as_deref(), Some("ncm-server 0.0.0"));
+        assert!(approved_cuda(data.path()));
+        let said = approve_with(
+            data.path(),
+            &candidate,
+            "ncm-server 0.1.0 cpu",
+            &Mutex::new(Vec::new()),
+        )
+        .unwrap();
+        assert!(!said.cuda);
+        assert!(!approved_cuda(data.path()));
+    }
+
+    #[test]
     fn a_copy_changed_after_approval_is_refused() {
         let data = tempfile::tempdir().unwrap();
         let source_dir = tempfile::tempdir().unwrap();
         let binary = build(source_dir.path(), b"the server");
         let candidate = inspect(&binary, &[]).unwrap();
-        approve(data.path(), &candidate, None, 1).unwrap();
+        approve_with(data.path(), &candidate, "x", &Mutex::new(Vec::new())).unwrap();
         let copy = copy_dir(data.path(), &candidate.sha256).join(exe_name());
         fs::write(&copy, b"tampered").unwrap();
         let error = verify(data.path()).unwrap_err();
@@ -388,8 +680,11 @@ mod tests {
         let binary = build(source_dir.path(), b"the server");
         let candidate = inspect(&binary, &[]).unwrap();
         fs::write(&binary, b"another server").unwrap();
-        assert!(approve(data.path(), &candidate, None, 1).is_err());
+        let ran = Mutex::new(Vec::new());
+        assert!(approve_with(data.path(), &candidate, "x", &ran).is_err());
         assert!(approved(data.path()).unwrap().is_none());
+        // Nothing was run.
+        assert!(ran.lock().unwrap().is_empty());
     }
 
     #[cfg(windows)]
@@ -398,7 +693,8 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let source_dir = tempfile::tempdir().unwrap();
         let binary = build(source_dir.path(), b"the server");
-        approve(data.path(), &inspect(&binary, &[]).unwrap(), None, 1).unwrap();
+        let candidate = inspect(&binary, &[]).unwrap();
+        approve_with(data.path(), &candidate, "x", &Mutex::new(Vec::new())).unwrap();
         let verified = verify(data.path()).unwrap();
         assert!(
             fs::OpenOptions::new()

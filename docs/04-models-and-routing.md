@@ -1095,8 +1095,8 @@ listed but unavailable, as before; the `problem` text says to run the command.
 Princeps, Imperium's own local model (`princeps-ncm-250m`, a Next Concept Model, and the token
 baseline `princeps-tok-250m`), is one safetensors file served by `ncm-server` from
 Imperium-Models (`models/ncm/runtime`). It is stage 1 and the interim part of stage 2a of the
-Princeps plan (`docs/plans/princeps-local-model.md`, PR #325); Emperor and Consul are harness profiles over
-it, not models.
+Princeps plan (`docs/plans/princeps-local-model.md`, PR #325); Emperor and Consul are harness
+profiles over it, not models.
 
 - **Detection.** A `.safetensors` file outside a Hugging Face folder is read for its header:
   the 8-byte length, then at most 1 MiB of JSON. It is an NCM model only when
@@ -1108,48 +1108,71 @@ it, not models.
   out-of-range number is listed with a `problem` and never loaded; so is one without
   `tokenizer.json` beside it. Hugging Face folders stay vLLM's and GGUF files llama.cpp's.
 - **The server.** There are no release builds yet. The user builds `ncm-server`
-  (`cargo build --release -p ncm-server --features cuda` in Imperium-Models `models/ncm`, or
-  without `--features cuda` for the CPU) and approves it with `imperium runtime ncm use <path>`:
-  the command shows the file's path, size, SHA-256 and `--version`, refuses a relative path, a
-  symbolic link, a non-file, or a file inside the session workspaces or the worktree folder,
-  and on approval copies it to `<data>/runtimes/ncm-server/user/<sha256>/` and records the
-  hash in `<data>/runtimes/ncm-server/user.json` (and `runtime.ncm.custom_path`). Nothing is
-  searched for on `PATH` and nothing is downloaded. Without an approval an `ncm:` model's
-  `problem` and a failed load say how to build and approve one. `imperium runtime ncm status`
-  shows the approved build.
-- **Launch.** Every launch runs the approved copy, never the original: the copy is re-hashed
-  through a handle held for the server's life (on Windows opened without write or delete
-  sharing, so it cannot be replaced while the server runs), and the server's working
-  directory is the copy's folder, which holds nothing else, so a DLL left beside the original
-  binary is never loaded. The line is `--model <file> --tokenizer <dir>/tokenizer.json --host
-  127.0.0.1 --ctx-size <context> --parallel 1 --n-gpu-layers <0|999> --device <cpu|cuda>
-  --alias <id>`, then `--quant` and `--speculate` from the settings, then
+  (`cargo build --release -p ncm-server --features cuda` in Imperium-Models `models/ncm` for an
+  NVIDIA GPU, or without `--features cuda` for a CPU-only build) and approves it with
+  `imperium runtime ncm use <path>`, at a terminal only: there is no `--yes`, and the command
+  refuses to run without an interactive terminal, so a script, a pipe or an agent cannot approve
+  a binary. It shows the file's path, size and SHA-256 without running it, and refuses a
+  relative path, a symbolic link, a non-file, or a file inside the session workspaces, the
+  worktree folder or a temporary folder (`%TEMP%`, `/tmp`, `/var/tmp`, `/dev/shm`). Once the user
+  confirms, the file is copied to `<data>/runtimes/ncm-server/user/<sha256>/` (kept when a copy
+  with that hash is already there, as when the build a running server uses is approved again),
+  and only then is the copy asked for its `--version`, from its own folder and with the server's
+  environment allowlist. Whether the build has CUDA comes from that output when it says, else
+  the user is asked; it is recorded with the hash in `<data>/runtimes/ncm-server/user.json` (and
+  `runtime.ncm.custom_path` is set). Nothing is searched for on `PATH` and nothing is
+  downloaded. Without an approval an `ncm:` model's `problem` and a failed load say how to build
+  and approve one. `imperium runtime ncm status` shows the approved build.
+- **Trust anchor.** `<data>/runtimes/` is protected from agent file tools and commands (agent
+  writes there are refused, #304 and #330), so only the user's own processes can change the copy
+  or the record; the checks below assume that. Another process of the same user running outside
+  Imperium's tools can still write the data folder, the same boundary as for the rest of it.
+- **Launch.** Every launch runs the approved copy, never the original. Its folder must hold the
+  executable and nothing else (a file dropped there, such as a DLL Windows would load from the
+  executable's folder first, refuses the launch until the build is approved again, which clears
+  the folder); the copy is re-hashed, off the async threads, through a handle held for the
+  server's life (on Windows opened without write or delete sharing, so it cannot be replaced
+  while the server runs); and the server's working directory is that folder. A DLL left beside
+  the original binary is never loaded. The line is `--model <file> --tokenizer
+  <dir>/tokenizer.json --host 127.0.0.1 --ctx-size <context> --parallel 1 --n-gpu-layers <0|999>
+  --device <cpu|cuda> --alias <id>`, then `--quant` and `--speculate` from the settings, then
   `runtime.ncm.extra_args`, then the port. `--host` and `--port` (with abbreviations and `=`
   forms) are refused in `runtime.ncm.extra_args` when the settings load and dropped from any
   extra arguments at launch. The child starts with an environment allowlist only: `PATH`,
-  `SYSTEMROOT`, `WINDIR`, `TEMP`, `TMP`, `TMPDIR`, `HOME`, `USERPROFILE`, `LANG`, `CUDA_PATH`
-  (CubeCL reads NVRTC's headers from it) and `CUDA_VISIBLE_DEVICES`; every other variable,
-  `CUBECL_*` and secrets included, is dropped. Readiness is `/health` answering 200 (503 while
-  loading); the log is `<data>/logs/ncm-<id>.log`.
-- **Memory and slots.** A model goes wholly on the GPU or wholly on the CPU
-  (`runtime.ncm.device`: `auto` tries the GPU first), never split by layer, and the CPU lane
-  takes `ncm:` rows. The footprint is the file size twice (weights are cast to f32 on the CPU)
-  plus the cache at f32, from the NCM session's published sizes (about 1 GiB at 1M tokens for
-  the NCM, 5 GiB for the token baseline, in bf16), plus the usual overhead. `ncm-server` runs
-  one request at a time, so it gets one slot and the whole context (`runtime.ncm.context`,
-  32768 by default); further calls, the Emperor and Consul profiles' included, queue in
-  Imperium. Every lease carries `max_tokens`, because the server would otherwise generate to the
-  end of its context.
-- **Requests.** Through the OpenAI-compatible API, a `tool_choice` other than `none` or `auto`
-  falls back to `auto`, and `stop` and `response_format`, which `ncm-server` does not
-  implement, are not sent. Its `reasoning_content` is read as reasoning.
+  `TEMP`, `TMP`, `HOME`, `LANG`, `CUDA_PATH` (CubeCL reads NVRTC's headers from it) and
+  `CUDA_VISIBLE_DEVICES`, plus `SYSTEMROOT`, `WINDIR` and `USERPROFILE` on Windows and `TMPDIR`,
+  `LD_LIBRARY_PATH`, `CUDA_HOME` and `CUDA_ROOT` on Unix; every other variable, `CUBECL_*` and
+  secrets included, is dropped. Readiness is `/health` answering 200 (503 while loading); the
+  log is `<data>/logs/ncm-<id>.log`.
+- **A server that stops serving.** After an internal engine error `ncm-server` keeps running but
+  answers 503 to every request, `/health` included. A loaded server's `/health` is asked every
+  2 s; a 503 counts as a crash: the supervisor stops the process, records the unload with reason
+  `crashed`, and the next call loads the model again. A request that fails or times out is not
+  taken for that.
+- **Memory and slots.** A model goes wholly on the GPU or wholly on the CPU, never split by
+  layer. `runtime.ncm.device = "auto"` uses the GPU only when the approved build has CUDA (read
+  when the daemon starts) and the model fits there, else the CPU; `cuda` and `cpu` force one, and
+  a launch on the GPU with a build approved without CUDA is refused with what to change. The CPU
+  lane takes `ncm:` rows. The footprint is the file size twice for a dense file (its weights are
+  cast to f32 on the CPU) or once for a quantised one (`ncm_quant`), plus the cache at f32, from
+  the NCM session's published sizes (about 1 GiB at 1M tokens for the NCM, 5 GiB for the token
+  baseline, in bf16), plus the usual overhead. `ncm-server` runs one request at a time, so it
+  gets one slot and the whole context (`runtime.ncm.context`, 32768 by default); further calls,
+  the Emperor and Consul profiles' included, queue in Imperium. Every lease carries
+  `max_tokens`, because the server would otherwise generate to the end of its context.
+- **Requests.** The agent loop never sends `tool_choice`, `stop` or `response_format`. Through
+  the OpenAI-compatible API, a `tool_choice` other than `none` or `auto` falls back to `auto`,
+  and `stop` and `response_format`, which `ncm-server` does not implement, are not sent. Its
+  `reasoning_content` is read as reasoning.
 - **Not yet:** the release download and verification (stage 2b, once Imperium-Models
   publishes releases), the `ncm-live` workflow, a held-descriptor exec on Linux (the copy is
   run by path there, defended by the data folder), refusing a binary inside any project folder
-  (only the session workspaces and worktree folder are known to the CLI), confirming CUDA from
-  `/props`, and the catalogue rows and `princeps` tag of the plan's D1. Tests cover detection,
-  the launch line, the allowlist, approval and tamper refusal and the queueing with a fake
-  launcher; nothing here has run against a real `ncm-server`.
+  (only the session workspaces, the worktree folder and the temporary folders are known to the
+  CLI), confirming CUDA from `/props` (today's `ncm-server --version` prints only `0.0.0`, so the
+  user is asked), and the catalogue rows and `princeps` tag of the plan's D1. Tests cover
+  detection, the launch line, the allowlist, approval, the copy folder and tamper refusal, the
+  503 watch and the queueing with a fake launcher; nothing here has run against a real
+  `ncm-server`.
 
 ## Hardware awareness
 

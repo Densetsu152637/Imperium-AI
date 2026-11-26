@@ -159,6 +159,7 @@ pub fn builtin(settings: &LlamaCppSettings, runtimes: Runtimes) -> Vec<Arc<dyn R
         }),
         Arc::new(Ncm {
             settings: runtimes.ncm,
+            cuda: runtimes.ncm_cuda,
         }),
     ]
 }
@@ -359,20 +360,42 @@ impl RuntimeBackend for Vllm {
 /// The environment an `ncm-server` starts with ([`Ncm::env_allowlist`]): what a process needs to
 /// run and find temporary and home folders, and `CUDA_PATH`, where CubeCL finds NVRTC's headers
 /// (and NVRTC itself) for a CUDA build. `CUDA_VISIBLE_DEVICES` is kept so a GPU the user hid stays
-/// hidden. Every other variable, `CUBECL_*` and secrets included, is dropped.
-pub const NCM_ENV: &[&str] = &[
-    "PATH",
-    "SYSTEMROOT",
-    "WINDIR",
-    "TEMP",
-    "TMP",
-    "TMPDIR",
-    "HOME",
-    "USERPROFILE",
-    "LANG",
-    "CUDA_PATH",
-    "CUDA_VISIBLE_DEVICES",
-];
+/// hidden. On Unix `LD_LIBRARY_PATH`, `CUDA_HOME` and `CUDA_ROOT` are kept too, where a CUDA
+/// toolkit outside the system's library path is found. Every other variable, `CUBECL_*` and
+/// secrets included, is dropped.
+pub const NCM_ENV: &[&str] = ncm_env(cfg!(unix));
+
+/// [`NCM_ENV`] for a Unix (`unix`) or a Windows machine.
+pub const fn ncm_env(unix: bool) -> &'static [&'static str] {
+    if unix {
+        &[
+            "PATH",
+            "TEMP",
+            "TMP",
+            "TMPDIR",
+            "HOME",
+            "LANG",
+            "CUDA_PATH",
+            "CUDA_VISIBLE_DEVICES",
+            "LD_LIBRARY_PATH",
+            "CUDA_HOME",
+            "CUDA_ROOT",
+        ]
+    } else {
+        &[
+            "PATH",
+            "SYSTEMROOT",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "HOME",
+            "USERPROFILE",
+            "LANG",
+            "CUDA_PATH",
+            "CUDA_VISIBLE_DEVICES",
+        ]
+    }
+}
 
 /// The variables of `present` an allowlisted server keeps, compared without regard to case on
 /// Windows (where `Path` is `PATH`).
@@ -428,6 +451,9 @@ pub fn without_listener_args(args: &[String]) -> Vec<String> {
 pub struct Ncm {
     /// `runtime.ncm.*`.
     pub settings: NcmSettings,
+    /// Whether the approved `ncm-server` has CUDA ([`crate::ncm_runtime::Approval::cuda`]).
+    /// Without it `device = "auto"` places every model on the CPU.
+    pub cuda: bool,
 }
 
 impl RuntimeBackend for Ncm {
@@ -445,14 +471,14 @@ impl RuntimeBackend for Ncm {
         true
     }
 
-    /// On the GPU when it fits there (unless `device = "cpu"`), else on the CPU (unless
-    /// `device = "cuda"`); never split.
+    /// With `device = "auto"`: on the GPU when the approved build has CUDA and the model fits
+    /// there, else on the CPU. `cuda` and `cpu` force one. Never split.
     fn place(&self, footprint: Footprint, budget: Budget) -> Option<Placement> {
         let gpu = budget.vram_bytes > 0 && !budget.unified;
         match self.settings.device.as_str() {
             "cpu" => place_on_cpu(footprint, budget),
             "cuda" => gpu.then(|| place_on_gpu(footprint, budget)).flatten(),
-            _ => gpu
+            _ => (gpu && self.cuda)
                 .then(|| place_on_gpu(footprint, budget))
                 .flatten()
                 .or_else(|| place_on_cpu(footprint, budget)),
@@ -647,6 +673,7 @@ mod tests {
                 extra_args: strings(&["--prefill-chunk", "512"]),
                 ..NcmSettings::default()
             },
+            cuda: true,
         };
         let args = tuned.launch_args(&spec(&tuned, u32::MAX, false));
         assert!(args.windows(2).any(|w| w == ["--quant", "q4"]));
@@ -680,6 +707,7 @@ mod tests {
                 extra_args: sneaky.clone(),
                 ..NcmSettings::default()
             },
+            cuda: true,
         };
         let mut launch = spec(&ncm, u32::MAX, false);
         launch.extra_args.extend(sneaky);
@@ -724,6 +752,24 @@ mod tests {
     }
 
     #[test]
+    fn on_unix_the_cuda_toolkit_variables_are_kept_too() {
+        let present = [
+            ("LD_LIBRARY_PATH", "/usr/local/cuda/lib64"),
+            ("CUDA_HOME", "/usr/local/cuda"),
+            ("CUDA_ROOT", "/usr/local/cuda"),
+            ("LD_PRELOAD", "/tmp/evil.so"),
+            ("CUBECL_DEBUG_LOG", "1"),
+        ]
+        .map(|(name, value)| (name.to_string(), std::ffi::OsString::from(value)));
+        let kept: Vec<_> = allowed_env(ncm_env(true), present.clone(), false)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(kept, ["LD_LIBRARY_PATH", "CUDA_HOME", "CUDA_ROOT"]);
+        assert!(allowed_env(ncm_env(false), present, true).is_empty());
+    }
+
+    #[test]
     fn a_model_is_placed_whole_on_the_gpu_or_the_cpu_never_split() {
         let footprint = Footprint {
             weights_bytes: 1 << 30,
@@ -742,7 +788,10 @@ mod tests {
             vram_bytes: 1 << 30,
             ..roomy
         };
-        let auto = Ncm::default();
+        let auto = Ncm {
+            cuda: true,
+            ..Ncm::default()
+        };
         let on_gpu = auto.place(footprint, roomy).unwrap();
         assert!(on_gpu.all_layers_on_gpu && on_gpu.ram_bytes == 0);
         // Too little VRAM: all of it on the CPU, not some layers of each.
@@ -753,6 +802,7 @@ mod tests {
                 device: "cuda".into(),
                 ..NcmSettings::default()
             },
+            cuda: true,
         };
         assert!(cuda_only.place(footprint, tight).is_none());
         let cpu_only = Ncm {
@@ -760,9 +810,13 @@ mod tests {
                 device: "cpu".into(),
                 ..NcmSettings::default()
             },
+            cuda: true,
         };
         assert_eq!(cpu_only.place(footprint, roomy).unwrap().gpu_layers, 0);
         assert!(auto.place_on_cpu(footprint, roomy).is_some());
+        // A build without CUDA runs on the CPU under `auto`, whatever the GPU has free.
+        let cpu_build = Ncm::default();
+        assert_eq!(cpu_build.place(footprint, roomy).unwrap().gpu_layers, 0);
     }
 
     #[test]
