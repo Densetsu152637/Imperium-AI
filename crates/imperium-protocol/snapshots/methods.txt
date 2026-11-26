@@ -144,6 +144,13 @@ method system.ping
 method system.resources
 method system.resources_subscribe
 method system.shutdown
+method terminal.attach
+method terminal.close
+method terminal.detach
+method terminal.input
+method terminal.list
+method terminal.open
+method terminal.resize
 method voice.transcribe
 method workspaces.move
 method workspaces.open
@@ -171,4 +178,6 @@ notification session.deleted
 notification session.event
 notification session.updated
 notification system.resources_changed
+notification terminal.changed
+notification terminal.output
 notification workspaces.progress

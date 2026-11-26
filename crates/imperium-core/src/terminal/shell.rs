@@ -234,16 +234,25 @@ fn installed_pwsh(sources: &ShellSources) -> Option<PathBuf> {
 }
 
 /// Variables dropped from the daemon's environment before a shell gets it: they make a shell or
-/// a tool run code it was not asked to.
+/// a tool run code it was not asked to. The list is **not exhaustive** (no list of every
+/// program's start-up variable can be): it covers the shells' own, the dynamic loaders' and the
+/// common interpreters' and git's. The shell is the user's own and runs outside every isolation
+/// tier, so this guards against what the daemon itself inherited, not against the user.
 const DROPPED: &[&str] = &[
     "ENV",
     "BASH_ENV",
     "ZDOTDIR",
     "PROMPT_COMMAND",
     "NODE_OPTIONS",
+    "PYTHONSTARTUP",
+    "PERL5OPT",
+    "RUBYOPT",
+    "JAVA_TOOL_OPTIONS",
 ];
-/// Prefixes of dropped variables: the dynamic loaders' and the daemon's own.
-const DROPPED_PREFIXES: &[&str] = &["LD_", "DYLD_", "IMPERIUM_"];
+/// Prefixes of dropped variables: the dynamic loaders', git's injected configuration
+/// (`GIT_CONFIG`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_PARAMETERS` and the
+/// like) and the daemon's own.
+const DROPPED_PREFIXES: &[&str] = &["LD_", "DYLD_", "GIT_CONFIG", "IMPERIUM_"];
 /// Set for the shell; any inherited value is replaced.
 const REPLACED: &[&str] = &[
     "TERM",
@@ -252,6 +261,7 @@ const REPLACED: &[&str] = &[
     "TERM_PROGRAM_VERSION",
     "PWD",
     "OLDPWD",
+    "NODEFAULTCURRENTDIRECTORYINEXEPATH",
 ];
 /// An `IMPERIUM_` variable a shell keeps: where the user's Imperium home is, so an `imperium`
 /// command in the terminal reaches this daemon. It is a path, not a secret.
@@ -275,9 +285,32 @@ fn dropped(name: &OsStr) -> bool {
             .any(|prefix| name.starts_with(prefix))
 }
 
+/// Whether `name` is `PATH` (any case on Windows).
+fn is_path(name: &OsStr) -> bool {
+    if cfg!(windows) {
+        name.to_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case("PATH"))
+    } else {
+        name == "PATH"
+    }
+}
+
+/// `PATH` without its empty and relative entries: a shell searches those from its working
+/// folder, the repository, which may hold a planted `git` or `ls`.
+fn absolute_path_entries(path: &OsStr) -> OsString {
+    let kept: Vec<PathBuf> = std::env::split_paths(path)
+        .filter(|entry| !entry.as_os_str().is_empty() && entry.is_absolute())
+        .collect();
+    // An entry that cannot be joined back (one holding the separator) was not split from it.
+    std::env::join_paths(kept).unwrap_or_default()
+}
+
 /// The shell's whole environment: the daemon's own (`inherited`) minus [`DROPPED`] and the
-/// daemon's internal `IMPERIUM_*` variables, plus the terminal's own and the spawn mark. `GH_TOKEN`
-/// and the like stay: this shell is the user's, outside every isolation tier and permission rule.
+/// daemon's internal `IMPERIUM_*` variables, with `PATH` cut to its absolute entries, plus the
+/// terminal's own and the spawn mark (and, on Windows, `NoDefaultCurrentDirectoryInExePath`, so
+/// `cmd` and `CreateProcess` do not look for a bare program in the working folder first).
+/// `GH_TOKEN` and the like stay: this shell is the user's, outside every isolation tier and
+/// permission rule.
 pub fn shell_env(
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
     session_id: &str,
@@ -286,7 +319,18 @@ pub fn shell_env(
     let mut env: Vec<(OsString, OsString)> = inherited
         .into_iter()
         .filter(|(name, _)| !dropped(name))
+        .map(|(name, value)| {
+            let value = if is_path(&name) {
+                absolute_path_entries(&value)
+            } else {
+                value
+            };
+            (name, value)
+        })
         .collect();
+    if cfg!(windows) {
+        env.push(("NoDefaultCurrentDirectoryInExePath".into(), "1".into()));
+    }
     let own: [(&str, OsString); 7] = [
         ("TERM", "xterm-256color".into()),
         ("COLORTERM", "truecolor".into()),

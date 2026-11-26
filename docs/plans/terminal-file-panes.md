@@ -962,10 +962,59 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 - Size: about 750 lines.
 - Risks: per-connection notification plumbing touches the connection's sender (keep it to one
   new method on `Connection`).
-- Status: pending
-- Outcome: -
+- Status: in review (every check runs in CI, nothing was built locally)
+- Outcome:
+  - **Built:** `crates/imperium-protocol/src/methods/terminal.rs` (the seven methods, the two
+    notifications, `TerminalInfo` and `TerminalState`; the next free protocol minor at merge,
+    0.67 when written, as 0.66 is server mode's), `crates/imperium-core/src/rpc/terminal.rs`
+    (the gate, `TerminalLink` on `Connection`, the coalescing forwarder) and one branch in
+    `server.rs` that writes a connection's terminal frames to it alone. `terminal.close` and
+    `terminal.attach` act on any terminal (the desktop app is the only caller); `terminal.detach`
+    is refused for a terminal the connection is not attached to. `TerminalInfo.title` is the
+    shell's name (the daemon parses no titles; xterm.js does), and `terminal.changed` is sent on
+    exit and close, to the other attached connections (the closer has its reply).
+  - **The gate (D2):** every method whose name holds `terminal` goes through
+    `Connection::dispatch_terminal` first, before its params are read; on the connection's first
+    such call `DesktopGate` runs `app_identity::InstalledApp` (checks 1 to 4) then
+    `peer::may_grant`, and the verdict is cached on the connection. No desktop lease is used; a
+    `system.lease` of kind `desktop` counts for nothing. When server mode (item 63, #327) merges,
+    the two calls become `InstalledApp::of(&daemon)` and `peer::may_grant(&daemon, ..)`: the
+    `TerminalCaller` the gate gets already carries the daemon (`TerminalCaller::daemon`).
+  - **Review entry conditions:** 2B-1, the token test is strict: it asserts `-32005` for every
+    method in the protocol's method table (`snapshots/methods.txt`, the table the router test
+    checks) holding `terminal`, plus an undefined `terminal.create`, and the same calls with the
+    same params all succeed from a connection identified as the desktop app (the input is
+    evaluated, the resize applied, the close done). 2B-2, a token holder that calls itself
+    `imperium-desktop`, comes in with a local-socket peer id and takes a `desktop` lease is
+    refused every call. 2B-3, a connection that closes detaches from every terminal it opened or
+    attached, and the hour rule then ends them. M1, `open_terminal` inserts the terminal, then
+    checks the session and a new `closing` flag (set by `stop_terminals` before it takes the
+    map) and removes and ends it if either says so; archive ends a session's terminals after
+    taking it out of the session map; a test runs open against archive at eight offsets and
+    against shutdown. M2, `PATH` keeps only absolute entries and Windows gets
+    `NoDefaultCurrentDirectoryInExePath=1`. M3, `PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`,
+    `JAVA_TOOL_OPTIONS` and every `GIT_CONFIG*` are dropped, and the list is documented as not
+    exhaustive (`shell.rs`, 05).
+  - **Acceptance mapping** (`cargo test -p imperium-core --test terminal --test phone`; the
+    stage 2b tests are in `tests/terminal/protocol.rs`): the stub gate opens a shell that prints
+    the workspace root and a resize reaches it (`stty size`, `mode con`); the counting stub is
+    asked once per connection and a refusal holds; loopback TCP and the token are refused, the
+    phone by scope (`tests/phone.rs`, now from the method table too); a real child of the test
+    with the spawn mark, on the real local socket with the real gate, gets `-32005`; the
+    gate's two halves are unit-tested with real marked and unmarked children
+    (`rpc/terminal.rs`); output reaches only the attached connection; the sentinel is absent
+    from every file under the daemon's home, the announcements, another connection's frames
+    and session events (it asked for every topic), `session.export`, `session.search` and the
+    log captured at TRACE (with a positive control that the log is captured); detach then
+    attach with `since` replays exactly the missed bytes; a connection that stops reading gets
+    `lagged` and comes back by attaching with `since`; the OS sandbox tier cannot open the
+    terminal's device for reading or writing while the user's own process can (Linux and
+    macOS).
 - Handoff notes: stage 3 is the only client. Touching `app_identity/` or `rpc/config.rs` runs the
-  presence end-to-end job.
+  presence end-to-end job. The relay reads `terminal.output` and `terminal.changed` that may
+  arrive before the reply of the `terminal.open` or `terminal.attach` that caused them, and
+  places output by `seq`. `Connection::terminal_frames` is the one new transport method; a
+  transport other than `server.rs` that serves the desktop app must write those frames too.
 
 ### Stage 3: The desktop app's relay
 

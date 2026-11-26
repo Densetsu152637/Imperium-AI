@@ -1095,6 +1095,34 @@ change anything are that mutation and `disablePullRequestAutoMerge`.
   repository allows it. Both are read from the user's own config only (a project's `.imperium`
   files are never merged as settings) and neither turns anything on.
 
+### The user's terminals (implemented)
+
+The desktop app's terminal panes ([plan](plans/terminal-file-panes.md)) run the user's own shell
+in a session's working folder. That shell is the user's, not an agent's: it runs **outside every
+isolation tier and permission rule**, keeps `GH_TOKEN` and the like, and has no resource caps. So
+no agent reaches it: no tool, hook, MCP bridge method, mod or export touches a terminal, and the
+daemon answers `terminal.*` only to the installed desktop app on the local socket, run by a
+person (`app_identity::InstalledApp` and `peer::may_grant`; see
+[02](02-architecture.md#protocol)). A command an agent runs at any tier holds the daemon's
+token, but fails that gate: it is not the app, and it carries the spawn mark.
+
+What the shell inherits from the daemon is cleaned (decision D6 of the plan): the start-up and
+loader variables (`ENV`, `BASH_ENV`, `ZDOTDIR`, `PROMPT_COMMAND`, `NODE_OPTIONS`,
+`PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `LD_*`, `DYLD_*`, `GIT_CONFIG*`)
+and the daemon's own `IMPERIUM_*` are dropped, `PATH` keeps only its absolute entries, and on
+Windows `NoDefaultCurrentDirectoryInExePath=1` keeps `cmd` from running a program of that name
+from the repository. The list is **not exhaustive**: it guards against what the daemon itself
+inherited, and the user's own start-up files (direnv, prompt hooks) do in a repository what they
+do in any terminal opened there.
+
+**Residual risk at tier 0.** A command at isolation tier 0 runs as the user, so it can open the
+terminal's device itself (`/dev/pts/<n>` on Linux, `/dev/ttys<n>` on macOS, `AttachConsole` on
+Windows), read what is typed and write to it; no protocol gate stops that, as tier 0 gives code
+the user's full rights. The OS sandbox tier hides the device: a test opens a terminal, runs a
+command at that tier (bubblewrap on Linux, Seatbelt on macOS) that tries to open the terminal's
+device for reading and for writing, and fails if either succeeds, while the same command outside
+the sandbox opens it.
+
 ## Isolation tiers
 
 The UI always shows the active tier for each session and agent.

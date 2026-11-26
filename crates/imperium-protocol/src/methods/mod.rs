@@ -42,6 +42,7 @@ mod schedules;
 mod session_control;
 mod sessions;
 mod system;
+mod terminal;
 
 pub use api::*;
 pub use attachments::*;
@@ -65,3 +66,4 @@ pub use schedules::*;
 pub use session_control::*;
 pub use sessions::*;
 pub use system::*;
+pub use terminal::*;
