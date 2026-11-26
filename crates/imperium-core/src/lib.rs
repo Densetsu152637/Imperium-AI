@@ -90,6 +90,11 @@ pub use state::{CreateError, DaemonState, SessionOptions};
 pub use token::AccessToken;
 pub use writers::GitWriterTrees;
 
+/// The release tag and short commit this build came from (`0.2.281-experimental (223a0d02)`;
+/// `0.2.0-dev (<commit or unknown>)` for a local build). `--version` prints it and the handshake
+/// reports it as the daemon's version.
+pub const BUILD_VERSION: &str = env!("IMPERIUM_BUILD_VERSION_STRING");
+
 /// The hidden `pty-supervisor` subcommand: on Linux each terminal's PTY child is the daemon's
 /// own executable re-run through `/proc/self/exe` (decision D5 of
 /// `docs/plans/terminal-file-panes.md`). Call it first thing in `main`, before a runtime,

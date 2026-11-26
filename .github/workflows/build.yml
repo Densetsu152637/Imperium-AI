@@ -11,6 +11,11 @@ on:
         description: Semantic version stamped into the bundles
         type: string
         required: true
+      commit:
+        description: Commit the bundles are built from, shown by `--version` (the caller's commit when empty)
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -50,6 +55,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
+      # `imperium --version` and `imperium-core --version` print these (build-support/build_version.rs).
+      IMPERIUM_BUILD_VERSION: ${{ inputs.version }}
+      IMPERIUM_BUILD_COMMIT: ${{ inputs.commit || github.sha }}
       # Pinned, and exported so rust-toolchain.toml's "stable" does not override it. Rust 1.100
       # (stable from 13 Nov 2026) moved a build script's OUT_DIR to build/<package>/<hash>/out;
       # tauri-build 2.6.3 finds the target directory by going three parents up from OUT_DIR, lands

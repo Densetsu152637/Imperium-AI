@@ -811,7 +811,7 @@ fn subagents_json(log: &EventLog, result: &EvalResult) -> Value {
 
 fn engine_json() -> Value {
     json!({
-        "imperium_version": env!("CARGO_PKG_VERSION"),
+        "imperium_version": crate::BUILD_VERSION,
         "protocol_version": PROTOCOL_VERSION.to_string(),
     })
 }

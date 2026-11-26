@@ -1295,7 +1295,7 @@ because the daemon answers for the absent user; the same goes for `ask_user` bat
 their recommended answers. The record lists both (`permission_requests`, `questions_asked`).
 
 **Output (schema version 1).** Keys: `schema_version`, `mode` (`run` or `print_prompt`),
-`engine` (`imperium_version`, `protocol_version`), `task` (`id`, `source`, `prompt`, `raw`),
+`engine` (`imperium_version`, the build version `imperium --version` prints; `protocol_version`), `task` (`id`, `source`, `prompt`, `raw`),
 `model` (`base_url`, `model_id`, `context_tokens`, `effort`, `chat_template_kwargs`, prices),
 `variant` (`id`, `description`, `source`, `config_hash`, `flags`, `overlay`, `warnings`),
 `prompt_hash`, `system_prompt` (exactly as sent), `tools` (the schemas, OpenAI `tools` shape),

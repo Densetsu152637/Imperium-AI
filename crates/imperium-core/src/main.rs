@@ -21,6 +21,13 @@ const IDLE_GRACE: Duration = Duration::from_secs(10);
 const BACKGROUND_STOP_WAIT: Duration = Duration::from_secs(5);
 
 fn main() -> anyhow::Result<()> {
+    if std::env::args()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "--version" | "-V"))
+    {
+        println!("imperium-core {}", imperium_core::BUILD_VERSION);
+        return Ok(());
+    }
     imperium_core::run_pty_supervisor_if_asked();
     tracing_subscriber::fmt()
         .with_env_filter(
