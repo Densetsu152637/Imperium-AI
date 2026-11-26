@@ -1048,6 +1048,7 @@ mod tests {
             (5, "runtime.ncm.custom_path", json!("/opt/evil/ncm")),
             (6, "runtime.ncm.extra_args", json!(["--x"])),
             (7, "runtime.llamacpp.update_external", json!("auto")),
+            (9, "mcp.trusted_projects", json!(["/tmp/x"])),
         ] {
             let refused = connection.handle_text(&request(
                 id,

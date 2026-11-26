@@ -606,6 +606,24 @@ fn changes_runtime_setting(args: &[String]) -> bool {
         })
 }
 
+/// Whether a command line changes `mcp.trusted_projects` through the CLI (`imperium config
+/// set|unset mcp.trusted_projects ...`, also nested in a shell string or with the words quoted or
+/// escaped): refused outright, not asked about, because trust gates the MCP servers (and later
+/// language servers) a folder may start. Read on the whole line, quotes and escapes removed, so
+/// a false alarm needs `imperium`, `config`, `set`/`unset` and the key all on one line.
+pub(crate) fn command_refused(line: &str) -> bool {
+    let flat = unescape(line).to_ascii_lowercase();
+    let words: Vec<&str> = flat.split_whitespace().collect();
+    words
+        .iter()
+        .any(|word| program_names(word).iter().any(|name| name == "imperium"))
+        && words.contains(&"config")
+        && words.iter().any(|word| matches!(*word, "set" | "unset"))
+        && words.iter().any(|word| {
+            crate::permissions::trusted_projects_key(word.split('=').next().unwrap_or(word))
+        })
+}
+
 /// `plugin [--remote x] marketplace add …`: the group word, then `marketplace`, then `add`.
 fn plugin_marketplace_add(args: &[String]) -> bool {
     args.iter()
@@ -909,6 +927,52 @@ mod tests {
             "git -C /repo push origin +HEAD:main",
         ] {
             assert!(dangerous_command(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn changing_trusted_projects_is_refused_in_every_mode() {
+        use crate::permissions::{CallKind, Decision, Permissions, Refusal, SharedRules, Target};
+        use imperium_api::PermissionMode;
+        let refused = [
+            "imperium config set mcp.trusted_projects '[\"/tmp/x\"]'",
+            "imperium config unset mcp.trusted_projects",
+            "imperium --remote box config set mcp.trusted_projects []",
+            "/usr/bin/imperium.exe config set MCP.Trusted_Projects []",
+            "imperium config set mcp.trusted_projects=[]",
+            "imperium config set mcp.trusted_pro\"\"jects []",
+            "bash -c 'imperium config set mcp.trusted_projects []'",
+            "cd x && imperium config set mcp.trusted_projects []",
+            "FOO=1 imperium config set mcp.trusted_projects []",
+            "imperium config set mcp {}",
+        ];
+        let allowed = [
+            "imperium config explain mcp.trusted_projects",
+            "imperium config set mcp.servers.x.allow []",
+            "imperium config set model.default x",
+            "cat mcp.trusted_projects",
+        ];
+        for mode in PermissionMode::ALL {
+            let permissions =
+                Permissions::new(SharedRules::new(Vec::new()), SharedRules::new(Vec::new()))
+                    .with_mode(mode);
+            for line in refused {
+                assert!(command_refused(line), "{line}");
+                let judged = permissions.judge(
+                    "run_command",
+                    &Target::Command(line.to_string()),
+                    CallKind::Execute,
+                    None,
+                );
+                assert_eq!(
+                    judged.decision,
+                    Decision::Refuse(Refusal::Protected),
+                    "{mode} {line}"
+                );
+            }
+        }
+        for line in allowed {
+            assert!(!command_refused(line), "{line}");
         }
     }
 

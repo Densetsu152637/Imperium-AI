@@ -54,16 +54,17 @@ impl Connection {
                 })
             }
             // A setting that names a runtime binary, path, arguments or update policy is what the
-            // daemon launches or fetches: only a person's own process on the local socket may
+            // daemon launches or fetches, and `mcp.trusted_projects` says which folders may start
+            // MCP servers: only a person's own process on the local socket may
             // change it, not an agent, a mod, a phone or a client over TCP.
             ConfigSet::NAME
                 if c.params
                     .as_ref()
                     .and_then(|params| params.get("key"))
                     .and_then(Value::as_str)
-                    .is_some_and(imperium_policy::permissions::runtime_binary_key) =>
+                    .is_some_and(imperium_policy::permissions::user_only_setting) =>
             {
-                const WHY: &str = "this setting names a runtime binary, a path, extra arguments or the update policy, so only a process of your own on the local socket may change it (not an agent, a mod, a phone or a remote client): run `imperium config set` from your own terminal or use the app's settings";
+                const WHY: &str = "this setting names a runtime binary, a path, extra arguments, the update policy or the trusted projects, so only a process of your own on the local socket may change it (not an agent, a mod, a phone or a remote client): run `imperium config set` from your own terminal or use the app's settings";
                 match self.peer {
                     None => call::<ConfigSet>(c.params.take(), |_: ConfigSetParams| {
                         Err(ErrorObject::new(codes::INVALID_PARAMS, WHY))

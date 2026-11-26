@@ -887,6 +887,10 @@ answers:
   read (a variable, `$( )`, a backtick, a group, `%VAR%`, a PowerShell `@splat`) or through
   `xargs` asks outright. A quoted program path with spaces (`"C:\Program Files\Imperium\imperium.exe"`)
   is one word.
+- `imperium config set|unset mcp.trusted_projects` (or the whole `mcp` table) is **refused**
+  outright, not asked about, in every mode: trust gates which folders may start MCP servers
+  (and later language servers). The daemon's `config.set` of it is likewise refused unless the
+  caller is a process of the user's own on the local socket.
 - Writing into the installed runtimes (`<data>/runtimes`) is **refused** without asking, in
   every mode, so a verified binary cannot be swapped after install.
 - Limits, stated: the floor reads command lines, not what an interpreter or script runs

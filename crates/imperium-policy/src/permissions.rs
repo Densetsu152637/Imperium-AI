@@ -217,7 +217,11 @@ impl Permissions {
         floor_override: Option<bool>,
     ) -> Judgement {
         let rule = self.evaluate(tool, target);
-        if write_refused(kind, target) {
+        let refused_command = matches!(
+            (kind, target),
+            (CallKind::Execute, Target::Command(line)) if crate::floor::command_refused(line)
+        );
+        if refused_command || write_refused(kind, target) {
             return Judgement {
                 decision: Decision::Refuse(Refusal::Protected),
                 rule,
@@ -423,6 +427,19 @@ pub fn runtime_binary_key(key: &str) -> bool {
         return true;
     }
     tail.starts_with('.') && RISKY.iter().any(|name| tail.contains(name))
+}
+
+/// Whether a settings key is `mcp.trusted_projects` (or the table holding it, `mcp`): the user's
+/// own list of folders whose MCP servers may start. Case-insensitive.
+pub fn trusted_projects_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key == "mcp" || key.starts_with("mcp.trusted_projects")
+}
+
+/// Whether only a process of the user's own may change this settings key through the daemon:
+/// a runtime binary, path, arguments or update policy, or the trusted projects.
+pub fn user_only_setting(key: &str) -> bool {
+    runtime_binary_key(key) || trusted_projects_key(key)
 }
 
 /// Folders the daemon asks the floor to guard, as normalised text (see [`protect_dir`]).
