@@ -122,22 +122,14 @@ child = subprocess.run(
     capture_output=True, text=True,
 )
 print(child.stdout.strip() or child.returncode)
-from imperium_cas.pool import Limits, Pool
+from imperium_cas.pool import Limits, Pool, PosixSpawner
 from support import make_spawner
-pool = Pool(make_spawner(), Limits(wall_seconds=60))
+# This process runs the base interpreter, so its own `worker_env()` would name the base
+# install's site-packages; the environment the test gave it already names the venv's.
+spawner = PosixSpawner(command=make_spawner().command, env=dict(os.environ))
+pool = Pool(spawner, Limits(wall_seconds=60))
 reply = pool.call({"tool": "build", "expression": "x + 1"})
 pool.close()
-if reply.get("text") != "x + 1":
-    import subprocess as sp
-    from imperium_cas.framing import REQUEST_CAP, encode_frame
-    from support import worker_env
-    probe = sp.run(
-        make_spawner().command + Limits().argv(),
-        input=encode_frame({"tool": "build", "expression": "x + 1"}, REQUEST_CAP),
-        capture_output=True, timeout=60, env=worker_env(),
-    )
-    reply["direct"] = [probe.returncode, probe.stdout[-300:].decode(errors="replace")]
-    reply["stderr"] = probe.stderr.decode(errors="replace")[-3000:]
 print(json.dumps(reply))
 try:
     os.execv("/bin/sh", ["sh", "-c", "exit 0"])
