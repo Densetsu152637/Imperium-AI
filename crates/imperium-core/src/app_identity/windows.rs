@@ -165,7 +165,11 @@ mod tests {
         let error = identify(&peer, &std::env::current_exe().unwrap()).unwrap_err();
         assert!(error.contains("not the desktop app"), "{error}");
         // The test binary itself is not the app installed beside imperium-core either.
-        assert!(InstalledApp.identify(Some(&Peer::test_peer())).is_err());
+        assert!(
+            InstalledApp::DESKTOP
+                .identify(Some(&Peer::test_peer()))
+                .is_err()
+        );
         let _ = child.kill();
         let _ = child.wait();
     }

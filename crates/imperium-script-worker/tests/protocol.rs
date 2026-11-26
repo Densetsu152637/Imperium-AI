@@ -1,21 +1,20 @@
-//! The driver's event allowlist against a worker that speaks the protocol wrongly (plan C3, F7).
-#![cfg(unix)]
+//! The driver's event allowlist against a worker that speaks the protocol wrongly (plan C3, F7),
+//! on every OS. The worker's own loop never sends these events (src/serve.rs); a misbehaving test
+//! worker does.
 
 mod common;
 
 use std::time::Duration;
 
-use common::{misbehaving_path, quick_limits};
+use common::{is_gone, launcher_for, misbehaving_path, quick_limits};
 use imperium_script::{Launcher, ScriptError, ScriptEvent};
 
-/// True when no process has this id any more.
-fn is_gone(pid: u32) -> bool {
-    let pid = rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap();
-    rustix::process::test_kill_process(pid).is_err()
+fn misbehaving(mode: &str) -> Launcher {
+    launcher_for(misbehaving_path(), 1).with_args([mode])
 }
 
 async fn outcome_of(mode: &str) -> Result<(), ScriptError> {
-    let launcher = Launcher::new(misbehaving_path(), 1).with_args([mode]);
+    let launcher = misbehaving(mode);
     let mut limits = quick_limits();
     limits.exec = Duration::from_secs(1);
     limits.request_slack = Duration::from_secs(1);
@@ -89,7 +88,7 @@ async fn an_oversized_event_frame_kills_the_worker() {
 /// worker is killed, rather than the driver reading on while a call is outstanding.
 #[tokio::test]
 async fn an_unanswered_call_ends_the_program_when_the_next_event_is_asked_for() {
-    let launcher = Launcher::new(misbehaving_path(), 1).with_args(["call"]);
+    let launcher = misbehaving("call");
     let mut run = launcher
         .start("f()", &quick_limits())
         .await
@@ -109,7 +108,7 @@ async fn an_unanswered_call_ends_the_program_when_the_next_event_is_asked_for() 
 /// longer `request_timeout`.
 #[tokio::test]
 async fn the_wall_deadline_cuts_a_wait_shorter_than_the_request_timeout() {
-    let launcher = Launcher::new(misbehaving_path(), 1).with_args(["hang"]);
+    let launcher = misbehaving("hang");
     let mut limits = quick_limits();
     limits.exec = Duration::from_secs(60);
     let mut run = launcher
@@ -134,7 +133,7 @@ async fn the_wall_deadline_cuts_a_wait_shorter_than_the_request_timeout() {
 /// M1: a worker that never stops writing frames is still cut at the deadline.
 #[tokio::test]
 async fn a_worker_that_floods_prints_is_cut_at_the_wall_deadline() {
-    let launcher = Launcher::new(misbehaving_path(), 1).with_args(["print_flood"]);
+    let launcher = misbehaving("print_flood");
     let mut limits = quick_limits();
     limits.exec = Duration::from_secs(60);
     let mut run = launcher
@@ -162,4 +161,32 @@ async fn a_worker_that_floods_prints_is_cut_at_the_wall_deadline() {
 #[tokio::test]
 async fn the_worker_starts_in_an_empty_private_working_folder() {
     assert_eq!(outcome_of("cwd_empty").await, Ok(()));
+}
+
+/// macOS has no OS memory limit, so the daemon's watchdog kills a worker whose resident memory
+/// passes twice `script_memory_mb`, as an escaped program allocating outside Monty would; the
+/// program ends as out of memory. (The test worker allocates with the system allocator.)
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn the_macos_watchdog_kills_a_worker_over_its_memory_ceiling() {
+    let launcher = misbehaving("hog");
+    let mut limits = quick_limits();
+    limits.memory_mb = 32;
+    limits.exec = Duration::from_secs(60);
+    let mut run = launcher
+        .start("print(1)", &limits)
+        .await
+        .expect("the test worker starts");
+    let pid = run.pid().unwrap();
+    let started = std::time::Instant::now();
+    match run.next().await {
+        ScriptEvent::Done(Err(ScriptError::OutOfMemory)) => {}
+        other => panic!("unexpected event {other:?}"),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert!(is_gone(pid), "the worker is still alive");
 }

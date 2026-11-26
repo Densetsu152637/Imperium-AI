@@ -140,12 +140,13 @@ impl LocalRuntime {
         let mut vllm_available = VLLM_NATIVE;
         // On Windows vLLM runs in WSL2 when the managed environment was set up there (or the
         // command points into WSL); anything else leaves its models unavailable.
-        match imperium_local::vllm_env::resolve_for(
+        let resolved = imperium_local::vllm_env::resolve_for(
             paths.data_dir(),
             vllm,
             cfg!(windows),
             &imperium_local::wsl::default_distro_name,
-        ) {
+        );
+        match vllm_launch(resolved, settings.daemon.server) {
             imperium_local::vllm_env::Launch::Command(program) => {
                 launcher = launcher.with_program(imperium_local::backend::VLLM, program);
             }
@@ -505,6 +506,27 @@ pub(crate) fn disabled() -> LocalModelListResult {
     }
 }
 
+/// What the daemon starts for vLLM, from what `resolve_for` found: the same, except that a
+/// server (`server`, `daemon.server`) never starts Docker-mode vLLM (it would need the Docker
+/// socket). A data folder carried over from a desktop may record a Docker setup; the server then
+/// starts the `vllm` on `PATH`, as with no setup at all.
+fn vllm_launch(
+    resolved: imperium_local::vllm_env::Launch,
+    server: bool,
+) -> imperium_local::vllm_env::Launch {
+    use imperium_local::vllm_env::{Launch, Mode};
+    match resolved {
+        Launch::Docker { docker, image } => match Mode::Docker.allowed(server) {
+            Ok(()) => Launch::Docker { docker, image },
+            Err(why) => {
+                tracing::warn!("{why}; starting `vllm` from PATH instead");
+                Launch::Command(PathBuf::from(imperium_local::vllm_env::DEFAULT_COMMAND))
+            }
+        },
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -517,6 +539,22 @@ mod tests {
     use imperium_local::supervisor::{LaunchFuture, LaunchSpec, Launcher, Server};
 
     use super::*;
+
+    #[test]
+    fn a_server_never_starts_docker_mode_vllm() {
+        use imperium_local::vllm_env::{DEFAULT_COMMAND, Launch};
+        let docker = || Launch::Docker {
+            docker: PathBuf::from("docker"),
+            image: "vllm/vllm-openai:v0.11.0".into(),
+        };
+        assert_eq!(
+            vllm_launch(docker(), true),
+            Launch::Command(PathBuf::from(DEFAULT_COMMAND))
+        );
+        assert_eq!(vllm_launch(docker(), false), docker());
+        let command = Launch::Command(PathBuf::from("/opt/vllm/bin/vllm"));
+        assert_eq!(vllm_launch(command.clone(), true), command);
+    }
 
     const GIB: u64 = 1024 * 1024 * 1024;
 

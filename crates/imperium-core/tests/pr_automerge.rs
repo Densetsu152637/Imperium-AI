@@ -439,6 +439,54 @@ async fn nobody_but_the_desktop_app_can_turn_it_on_or_ask_for_a_challenge() {
     assert_eq!(world.status().await["auto_merge"]["enabled"], false);
 }
 
+/// On a server (`daemon.server`) nobody turns auto-merge on, not even the desktop app: both calls
+/// answer `-32010` with the feature's name before the caller is looked at, and nothing reaches
+/// GitHub. Turning it off still works from any client.
+#[tokio::test]
+async fn on_a_server_auto_merge_cannot_be_turned_on_but_can_be_turned_off() {
+    let world = World::new("[daemon]\nserver = true").await;
+    let unavailable = |response: Response| {
+        let error = match response.outcome {
+            Outcome::Error(error) => error,
+            Outcome::Result(value) => panic!("expected -32010, got {value}"),
+        };
+        assert_eq!(
+            error.code,
+            codes::UNAVAILABLE_ON_SERVER,
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            error.data,
+            Some(
+                json!({"feature": imperium_protocol::jsonrpc::server_features::AUTO_MERGE_ENABLE})
+            )
+        );
+    };
+    let mut app = world.app().await;
+    unavailable(
+        call(
+            &mut app,
+            "pull_requests.auto_merge_challenge",
+            json!({"session_id": world.session, "url": URL, "head_sha": HEAD,
+                   "merge_method": "squash"}),
+        )
+        .await,
+    );
+    unavailable(
+        call(
+            &mut app,
+            "pull_requests.set_auto_merge",
+            world.enable(HEAD, "squash", Some("0123456789abcdef")),
+        )
+        .await,
+    );
+    let mut cli = world.other("imperium").await;
+    let status = result(call(&mut cli, "pull_requests.set_auto_merge", world.disable()).await);
+    assert_eq!(status["auto_merge"]["enabled"], false);
+    assert!(world.fake.mutations().is_empty());
+}
+
 /// Agents act through tools, and no tool turns auto-merge on: none is named for it or for pull
 /// requests, and `session.run_tool` (the daemon's bridge to the tools) refuses anything that is
 /// not one of them, whatever the method it is asked to run is called.

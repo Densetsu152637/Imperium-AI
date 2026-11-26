@@ -36,6 +36,41 @@ pub(super) fn switch_error(error: SwitchError) -> ErrorObject {
     ErrorObject::new(code, error.to_string())
 }
 
+/// `-32010`: the daemon runs as a server (`daemon.server`) and `feature` (one of
+/// `imperium_protocol::jsonrpc::server_features`) is unavailable there.
+pub(crate) fn unavailable_on_server(feature: &'static str) -> ErrorObject {
+    use imperium_protocol::jsonrpc::server_features as f;
+    let message = match feature {
+        f::PLUGIN_APPROVAL => {
+            "plugin approvals are unavailable on a server (daemon.server): approve the plugin in \
+             the desktop app on its own machine; approvals carried over in the data folder still \
+             count"
+        }
+        f::AUTO_MERGE_ENABLE => {
+            "turning auto-merge on is unavailable on a server (daemon.server): only the desktop \
+             app on its own machine may; turning it off works from any client"
+        }
+        f::TERMINAL_GRANT => {
+            "this daemon runs as a server (daemon.server), which counts no trust or prompt grant \
+             made at a terminal"
+        }
+        f::CONTAINER_TIER => imperium_config::CONTAINER_TIER_ON_SERVER,
+        _ => "unavailable on a server (daemon.server)",
+    };
+    unavailable_on_server_with(feature, message)
+}
+
+/// [`unavailable_on_server`] with its own `message`.
+pub(crate) fn unavailable_on_server_with(
+    feature: &'static str,
+    message: impl Into<String>,
+) -> ErrorObject {
+    ErrorObject {
+        data: Some(json!({ "feature": feature })),
+        ..ErrorObject::new(codes::UNAVAILABLE_ON_SERVER, message)
+    }
+}
+
 pub(super) fn incompatible(client: ProtocolVersion) -> ErrorObject {
     ErrorObject {
         data: Some(json!({ "daemon": PROTOCOL_VERSION })),

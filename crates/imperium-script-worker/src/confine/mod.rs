@@ -4,7 +4,8 @@
 //! seccomp-bpf allowlist ([`linux`]). macOS: `sandbox_init` with a `(deny default)` profile
 //! ([`macos`]). Any stage that cannot be applied is an error, and the worker then exits before it
 //! reads a request: it runs with the confinement the plan states or not at all. Windows is
-//! confined by the daemon at launch (stage 1b); until then the worker refuses to run there.
+//! confined by the daemon at launch (restricted Low-integrity token, job object); the worker
+//! checks that it was ([`windows`]) and refuses to run otherwise.
 
 use std::fmt;
 
@@ -16,15 +17,19 @@ mod fds;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod unsupported;
+#[cfg(windows)]
+mod windows;
 
 #[cfg(target_os = "linux")]
 use linux::apply as apply_platform;
 #[cfg(target_os = "macos")]
 use macos::apply as apply_platform;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 use unsupported::apply as apply_platform;
+#[cfg(windows)]
+use windows::apply as apply_platform;
 
 /// What to apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +111,10 @@ pub fn apply(settings: &Settings) -> Result<Report, ConfineError> {
 }
 
 /// Fails with the stage's name when a test asked for exactly that stage to fail.
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos", windows)),
+    allow(dead_code)
+)]
 pub(crate) fn forced(settings: &Settings, stage: &'static str) -> Result<(), ConfineError> {
     if settings.force_failure.as_deref() == Some(stage) {
         Err(ConfineError::new(stage, "forced to fail by the test hook"))

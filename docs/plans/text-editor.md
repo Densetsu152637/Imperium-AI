@@ -293,7 +293,7 @@ Each records the choice, the reasons, the rejected options and when to revisit i
   - **Saving.** `files.write` carries `base: {hash, file_id}` (or `null` with `create: true`).
     Under the lock below the daemon opens the target (D4), checks it is the same file and hashes
     its bytes; if either differs it writes nothing and fails with the new error `FILE_CONFLICT`
-    (the next free code, `-32010` today), whose data is the current `{hash, file_id, size,
+    (`-32011`; `-32010` is server mode's `UNAVAILABLE_ON_SERVER`), whose data is the current `{hash, file_id, size,
     modified_ms}` (or `deleted`). `etag` (item 55's size, time and partial hash) is used only to
     skip re-reads, never to accept a save.
   - **One lock per file, shared with every writer in the daemon.** A new
@@ -306,7 +306,7 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     of a missing file in a missing folder get one key. Not the requested spelling (aliases would
     get different locks) and not the file id (an atomic replace changes it). The holders:
     - `files.write`, around compare and replace; it waits at most 5 s and then fails with the new
-      error `FILE_BUSY` (the next free code after `FILE_CONFLICT`);
+      error `FILE_BUSY` (`-32012`);
     - `write_file` and `edit_file` (`imperium-tools/src/files.rs`), around their read and write.
       They take it **after** the permission check, any approval and the `tool.before` hook have
       finished (those run in the engine's dispatch before the tool body), so a waiting approval
@@ -759,8 +759,8 @@ requests may take the next ones first) and updates `PROTOCOL_VERSION`,
 | `files.stat` | E1a | `{session_id, files: [{root, path}], with_hash?}` (at most 50) → `{files: [{root, path, exists, size?, modified_ms?, file_id?, hash?}]}` |
 | `files.baseline` | E1a | `{session_id, root, path}` → `{source (checkpoint, head, none), text?, agent_changed_this_session}`: the file at the last checkpoint or `HEAD`, for the harness-file dialog |
 | `files.write` | E1b | `{session_id, root, path, base: {hash, file_id} \| null, create?, text, encoding (utf8, utf16le, utf16be), bom, confirmed?: [secret, harness]}` → `{hash, file_id, size, modified_ms, note?}`; desktop app only (D3) |
-| `FILE_CONFLICT` (`-32010`, or the next free code) | E1b | `files.write`'s base no longer matches; `data` is the current `{hash, file_id, size, modified_ms}` or `{deleted: true}` |
-| `FILE_BUSY` (the next free code after it) | E1b | the file's lock was not free within 5 s |
+| `FILE_CONFLICT` (`-32011`) | E1b | `files.write`'s base no longer matches; `data` is the current `{hash, file_id, size, modified_ms}` or `{deleted: true}` |
+| `FILE_BUSY` (`-32012`) | E1b | the file's lock was not free within 5 s |
 
 `files.write` is answered only to the identified release desktop app (D3), otherwise `-32005`
 with the reason; a guarded file without its confirmation gets `-32005` with `data: {needs}`.

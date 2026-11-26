@@ -155,6 +155,28 @@ pub mod codes {
     /// The daemon is exiting because nothing uses it and takes no more leases; a client
     /// waits for it to go and starts a new one.
     pub const DAEMON_STOPPING: i32 = -32009;
+    /// The daemon runs as a server (`daemon.server`) and this feature is unavailable there;
+    /// `data` is `{feature}` (one of [`super::server_features`]), plus `secret` for a refused
+    /// secret write.
+    pub const UNAVAILABLE_ON_SERVER: i32 = -32010;
+}
+
+/// The `feature` of an [`codes::UNAVAILABLE_ON_SERVER`] error: what a server refuses.
+pub mod server_features {
+    /// `plugins.approval_challenge` and `plugins.approve`.
+    pub const PLUGIN_APPROVAL: &str = "plugin_approval";
+    /// `pull_requests.auto_merge_challenge`, and `pull_requests.set_auto_merge` turning it on.
+    pub const AUTO_MERGE_ENABLE: &str = "auto_merge_enable";
+    /// A `trusted` or `interactive` grant of `mods.install`.
+    pub const TERMINAL_GRANT: &str = "terminal_grant";
+    /// Writing or deleting a secret.
+    pub const SECRET_WRITE: &str = "secret_write";
+    /// `mcp.login`.
+    pub const MCP_LOGIN: &str = "mcp_login";
+    /// `isolation.tier = "container"`, and a session whose commands would run in containers.
+    pub const CONTAINER_TIER: &str = "container_tier";
+    /// vLLM in Docker (`imperium runtime vllm setup --docker`).
+    pub const VLLM_DOCKER: &str = "vllm_docker";
 }
 
 #[cfg(test)]

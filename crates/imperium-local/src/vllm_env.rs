@@ -84,7 +84,23 @@ impl Mode {
             Mode::Wsl => "wsl",
         }
     }
+
+    /// Whether this mode may be set up or started by a daemon in server mode (`server`,
+    /// `daemon.server`): Docker mode starts sibling containers through the Docker socket, which
+    /// is root on the host, so a server refuses it ([`DOCKER_ON_SERVER`]).
+    pub fn allowed(self, server: bool) -> Result<(), String> {
+        if server && self == Mode::Docker {
+            Err(DOCKER_ON_SERVER.to_string())
+        } else {
+            Ok(())
+        }
+    }
 }
+
+/// Why Docker mode is refused in server mode.
+pub const DOCKER_ON_SERVER: &str = "vLLM in Docker is unavailable on a server (daemon.server): it \
+     needs the Docker socket, which is root on the host; run vLLM as its own compose service \
+     (docker-compose.vllm.yml) or in a virtual environment instead";
 
 /// What the user asked to set up.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1424,6 +1440,15 @@ pub fn sweep_stale_containers(
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn a_server_refuses_docker_mode_and_nothing_else() {
+        let error = Mode::Docker.allowed(true).unwrap_err();
+        assert!(error.contains("server"), "{error}");
+        assert!(Mode::Docker.allowed(false).is_ok());
+        assert!(Mode::Venv.allowed(true).is_ok());
+        assert!(Mode::Wsl.allowed(true).is_ok());
+    }
 
     /// A runner that records what it was asked and answers from a script; it can make the files
     /// a real `uv` would.
