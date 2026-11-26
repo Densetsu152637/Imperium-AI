@@ -1,6 +1,8 @@
 # Plan: Princeps, the local model, and the Emperor and Consul harness profiles
 
-Revision: 2026-11-26, revision 1; written against `experimental` at `243602ab` (last updated).
+Revision: 2026-11-26, revision 2 (folds in the plan review's B1 to B4, should-fix 1 to 7 and nits,
+and the NCM session's answers, from its branch `feat/ncm-speed-2` at `61350bc`); written against
+`experimental` at `0cbc6570` (last updated). Revision 1 was `7d4f11c5`.
 Status: planned, no stage started. Roadmap [item 67](../12-roadmap.md#next-in-order).
 
 **User decision (2026-11-26).** Emperor and Consul stop being two models. There is one local
@@ -16,27 +18,30 @@ baseline of the same size), both served by `ncm-server`. Ownership:
 | NCM session (Imperium-Models `models/ncm/`, Imperium-Research R4) | `ncm-server` itself, its release builds, the weights and their publication |
 | Imperium Harnesses session | The content of the Emperor and Consul harnesses (prompts, workflows, critic rules), later written in [Ratio](https://github.com/Densetsu152637/Ratio) |
 
+**Protocol versions.** Stages 3, 4, 5 and 6 change the protocol. Each takes the next protocol
+minor free when it merges; none is reserved here (0.63 went to #301, and #304 holds 0.64).
+
 ## Goals
 
 Each goal is boolean, with the check that decides it. "CI" is this repository's CI on the pull
 request; "ncm-live" is the opt-in workflow [stage 2](#stage-2-obtaining-and-verifying-ncm-server)
-adds.
+adds, which runs the CPU build only (the CUDA path has no CI check; see [risks](#risks)).
 
 1. A model file `princeps-ncm-250m.safetensors` in a model folder is listed as
    `ncm:princeps-ncm-250m` and loads through the supervisor like a llama.cpp model. Check: CI
-   tests over a fake `ncm-server`; ncm-live loads the real release build with `--random-weights`.
-2. `ncm-server` is obtained only from a pinned Imperium-Models release, every asset is checked
-   against a SHA-256 pinned in this repository, unpacked under the llama.cpp extraction rules,
-   and installed only on an explicit user action. Check: CI tests for refusal of a wrong hash, a
-   missing hash, a hostile archive and an install without consent.
+   tests over a fake `ncm-server`; ncm-live loads the real CPU release build with `--random-weights`.
+2. `ncm-server` is obtained only from a pinned Imperium-Models release whose attestation was
+   verified when it was pinned, every asset is checked against a SHA-256 pinned in this
+   repository, unpacked under the llama.cpp extraction rules, installed only on an explicit user
+   action, and re-checked against its recorded hash at every launch. Check: CI tests for each
+   refusal.
 3. One loaded Princeps serves the Emperor and the Consul profile in the same session from one
    process. Check: a CI test with a fake server sees one launch and two profiles' calls on it.
-4. A harness profile (model, system prompt, tool set, workflow) can be selected for the root, for
-   a subagent and for a headless run. Check: CI tests; `imperium run --profile consul
-   --print-prompt` prints the Consul prompt and tools.
-5. The rejection count and escalation hook of item 64 exist with no workflow bound. Check: CI
-   tests that two rejections of one subagent task fire the hook once, and that unbound it does
-   nothing.
+4. A harness profile can be selected for the root, for a subagent and for a headless run, and no
+   profile widens permissions or replaces the base and safety instructions. Check: the stage 4
+   tests.
+5. The rejection count and escalation hook of item 64 exist, unbound by default, bindable only by
+   the user. Check: the stage 5 tests.
 6. `imperium run --headless --json --profile <p> --model ncm:<id>` records the profile and the
    server's timings. Check: ncm-live runs one headless task on random weights and asserts the
    JSON fields.
@@ -49,21 +54,30 @@ adds.
   `ncm:princeps-ncm-250m`, `ncm:princeps-tok-250m`. One runtime serves both builds; the
   architecture is read from the file, never from the id.
 - **A new `Format::NcmSafetensors`.** The scanner recognises a `.safetensors` file whose header
-  `__metadata__` has `ncm_format = "ncm-safetensors-v1"` (the marker `ncm_model::weights` writes).
-  It reads only the 8-byte header length and the JSON header, capped at 1 MiB, so an unrelated or
-  hostile file costs nothing. Hugging Face folders (`config.json` plus safetensors) stay vLLM's;
-  a lone safetensors file without the marker stays unlisted, as today. A file with the marker but
-  no `tokenizer.json` beside it is listed with a `problem`.
-- **Catalogue rows.** When an `ncm:` model is found, the daemon offers it as a local row with
-  id `princeps-ncm-250m` (the stem), tags `princeps`, `no-vision`, `reasoning`, tier `basic`
-  until the stage 6 evals say otherwise, and `context_window` from the header's config. Users
-  override it in `[[models.catalog]]` as for any row.
-- **`princeps-tok-250m` is an eval build.** It is listed when present but the first-run card
+  `__metadata__` has `ncm_format = "ncm-safetensors-v1"` (stable, per the NCM session). It reads
+  the 8-byte header length and then at most 1 MiB of JSON header. The 1 MiB cap is for scanning
+  only: an NCM header holds a few hundred tensor entries, far below the 64 MiB that the
+  safetensors format itself allows. A file whose header is larger is listed with a `problem`
+  (*header too large to read*), not silently skipped. Hugging Face folders (`config.json` plus
+  safetensors) stay vLLM's; a lone safetensors file without the marker stays unlisted, as today. A
+  marked file with no `tokenizer.json` beside it is listed with a `problem`, since the server
+  needs it.
+- **The header is untrusted input.** `ncm_config` (TOML), `ncm_quant` (`q8`, `q4-g64`, with or
+  without a quantised head) and, once added, `ncm_model_id` and `ncm_model_version` are parsed
+  with size limits per field. Every number taken from them (layers, widths, vocabulary, context)
+  is clamped to a sane range and every footprint product uses checked arithmetic; an overflow or
+  out-of-range value lists the model with a `problem` rather than producing a footprint. The
+  server's own bounds checks are an [open question](#open-questions-for-the-ncm-session) (Q14).
+- **Catalogue rows.** When an `ncm:` model is found, the daemon offers it as a local row with id
+  the stem, tags `princeps`, `no-vision`, `reasoning`, tier `basic` until the stage 6 evals say
+  otherwise, and `context_window` from the clamped config. Users override it in
+  `[[models.catalog]]` as for any row.
+- **`princeps-tok-250m` is an eval build.** It is listed when present, but the first-run card
   offers only the shipping build (expected `princeps-ncm-250m`; the research plan scales only the
   winning architecture).
 - **The `emperor` tag migrates.** `is_emperor` (knowledge agents prefer that row,
-  [21](../21-knowledge-agents.md)) matches the `princeps` tag first; `emperor` stays accepted as
-  a deprecated alias for one minor version. `routing.knowledge_model` is unchanged.
+  [21](../21-knowledge-agents.md)) matches the `princeps` tag first; `emperor` stays accepted as a
+  deprecated alias for one minor version. `routing.knowledge_model` is unchanged.
 
 Rejected: reusing `llamacpp:` with a flag (the spec would lie about the runtime and the llama.cpp
 install hooks would fire); detecting by file name (a renamed file would load into the wrong
@@ -74,29 +88,48 @@ runtime).
 `ncm-server` already takes llama-server's launch line and endpoints (Imperium-Models
 [`models/ncm/runtime/README.md`](https://github.com/Densetsu152637/Imperium-Models/blob/main/models/ncm/runtime/README.md)):
 `/health` answers 503 while loading and 200 when ready, the process exits non-zero on a failed
-load, and `/v1/chat/completions` streams content, tool calls and usage. So the integration is a
-third `RuntimeBackend`, `Ncm` (id `ncm`), after llama.cpp and vLLM in `backend::builtin`:
+load, and `/v1/chat/completions` streams content, `reasoning_content`, tool calls and usage. So
+the integration is a third `RuntimeBackend`, `Ncm` (id `ncm`), after llama.cpp and vLLM in
+`backend::builtin`:
 
 - `accepts(Format::NcmSafetensors)`; `available()` when an `ncm-server` path is resolved.
 - `launch_args`: `--model <path> --tokenizer <dir>/tokenizer.json --host 127.0.0.1 --ctx-size
-  <pool> --parallel <slots> --n-gpu-layers <0 or 999> --alias <id>` plus
-  `runtime.ncm.extra_args`; the port is appended by the supervisor as for llama.cpp. No cache-type,
-  flash-attention, draft, `--cache-ram` or slot-save flags: they are llama.cpp's.
+  <pool> --parallel 1 --n-gpu-layers <0 or 999> --device <cpu|cuda> --alias <id>` plus
+  `runtime.ncm.extra_args`; the supervisor appends the port. No cache-type, flash-attention,
+  draft, `--cache-ram` or slot-save flags (llama.cpp's). `--speculate` stays off (the NCM
+  session's advice); a quantised file loads by its own layout, and `--quant` is left to
+  `extra_args`.
+- **`extra_args` cannot move the server.** `--host`, `--port`, their abbreviations and their
+  `=`-forms are refused at config time and dropped at launch (as for vLLM in WSL), and the server
+  is always bound to `127.0.0.1`.
 - `place`: wholly on the GPU or wholly on the CPU (no layer split). `place_on_cpu` is supported,
-  so the CPU lane works. Footprint: weights from the file size, cache from the header's config by
-  the formula the NCM session confirms ([Q3](#open-questions-for-the-ncm-session)), plus the
-  usual overhead and calibration.
-- `slot_aware() = false`: `ncm-server` resets its caches on every request, so slot pinning and
-  `--cache-ram` would buy nothing.
-- `check_program`: runs `ncm-server --version` (and `--list-devices` once it exists, Q3) with
-  the same timeout as `runtime_check`, so a CPU-only build on a GPU machine is reported the way
-  llama.cpp's is.
-- **Environment.** The server starts with the daemon's environment minus variables the NCM session
-  lists as changing kernels or devices (Q12), the same treatment as llama.cpp's `DRAFT_ENV`.
+  so the CPU lane works. Footprint: weights from the file size, cache from the clamped header
+  config by the NCM session's formula (`ncm_model::cache_bytes_with`, mirrored in Imperium and
+  tested against its published values: about 1 GiB for the NCM and 5 GiB for the token baseline
+  at 1M tokens in bf16), plus the usual overhead and calibration from `/props` `cache_bytes`.
+- `slot_aware() = false`, no `--cache-ram`: the server keeps its own prompt-prefix cache (on a
+  branch, default on), which needs nothing from Imperium.
+- `check_program`: runs `ncm-server --version` with the `runtime_check` timeout. Until the server
+  has `--list-devices` (Q3), CUDA use is confirmed from the first `/props` (`ncm.device`).
+- **Environment: an allowlist.** The server starts with only `PATH`, `SYSTEMROOT` and `WINDIR`,
+  `TEMP` and `TMP`, `HOME` and `USERPROFILE`, `LANG`, `CUDA_PATH` (kept: CubeCL reads NVRTC headers
+  from it until they ship in the archive, Q2) and `CUDA_VISIBLE_DEVICES` when the planner sets it.
+  Every other variable, `CUBECL_*` and secrets included, is dropped.
+- **Requests.** Every call sets `max_tokens` explicitly (the agent's output budget), because the
+  server otherwise generates to the end of the context. A cancelled call drops its connection;
+  whether that stops generation is Q16, and stage 1 tests that Imperium releases the slot either
+  way and that a server which keeps generating is treated as busy until its stream ends.
+- **Capabilities Imperium must cope without** (NCM answer 10): `tool_choice` is only `none` or
+  `auto`, there is no `response_format` or schema enforcement and no `stop` strings. So `ncm:`
+  rows never get a forced tool call (paths that set `tool_choice: required` or a named tool fall
+  back to `auto` with an instruction and one retry), structured outputs are parsed leniently and
+  re-asked once, and stop strings are not sent. The server stops at its own end markers.
+- **Reasoning is shown.** `reasoning_content` is read and shown like other models' reasoning.
 - **Supervision.** Unchanged: free loopback port, wait for `/health`, log to
   `<data>/logs/ncm-<id>.log`, idle unload, stop on daemon exit. The context pool grows by restart
   between calls as llama.cpp's does; `ncm-server` allocates its whole cache at launch, which is
-  exactly that model.
+  exactly that model. The first request compiles kernels (0.4 to 0.65 s); load time is not yet
+  measured.
 
 Rejected: linking `ncm-model` into `imperium-local` in-process. The research decision
 (Imperium-Research `docs/next-concept-modelling/runtime.md`) keeps the runtime beside the training
@@ -105,97 +138,134 @@ crash would take the daemon down. Revisit when the architecture is frozen after 
 
 ### D3. Obtaining, verifying and launching `ncm-server`
 
-The security bar is the llama.cpp runtime's ([04](../04-models-and-routing.md#runtimes)), with
-two changes because Imperium-Models is our own repository: hashes are pinned here rather than
-trusted from the release, and nothing installs without the user.
+The security bar is the llama.cpp runtime's ([04](../04-models-and-routing.md#runtimes)), raised
+because Imperium-Models is our own repository: the pin in this repository governs, the release's
+provenance is verified when pinning, and nothing installs without the user.
 
-- **Source.** GitHub releases of `Densetsu152637/Imperium-Models`, tag `ncm-server-v<version>`,
-  one archive per build: `ncm-server-<version>-<os>-<arch>-<backend>.{zip,tar.gz}`
-  (`windows-x64-cuda`, `windows-x64-cpu`, `linux-x64-cuda`, `linux-x64-cpu`,
-  `macos-arm64-cpu`; Q1 and Q11 settle the list). The NCM session builds them in Imperium-Models CI
-  (Q1). There is no other source: no PATH search, no package manager, no Downloads-folder
-  candidate run by itself.
-- **Pin.** `runtimes/ncm-server.env` holds `NCM_SERVER_REF` and one
-  `NCM_SERVER_SHA256_<build>` per asset, raised by pull request when a release is adopted. The
-  installer reads the release through the GitHub API, downloads each asset through its API URL
-  (as for llama.cpp, avoiding the flaky `releases/download` links), and refuses an asset whose
-  SHA-256 differs from the pinned one or from GitHub's published `digest`. An asset missing from
-  the pin is refused. A compromised release can therefore not change what installs.
-- **Provenance.** If the release workflow publishes GitHub artifact attestations (Q13), the
-  pinning pull request's CI checks them with `gh attestation verify`; the client relies on the
-  pinned hash. Code signing (Authenticode) follows [item 59](../12-roadmap.md#next-in-order);
-  until then the Windows binary is unsigned, which the pinned hash covers.
+- **Source.** GitHub releases of `Densetsu152637/Imperium-Models`, tag `ncm-server-v<semver>`,
+  archives `ncm-server-<version>-<target>-<cpu|cuda>.{zip,tar.gz}` for `windows-x64` and
+  `linux-x64` (CPU and CUDA) and `macos-arm64` (CPU), as the NCM session proposes (user decision
+  pending). AMD, Intel and Apple GPUs get the CPU build. There is no other source: no PATH search,
+  no package manager, no Downloads-folder candidate run by itself.
+- **Pin.** `runtimes/ncm-server.env` holds `NCM_SERVER_REF` and one `NCM_SERVER_SHA256_<target>`
+  per asset, raised only by pull request, with a CODEOWNERS entry requiring the owner's review.
+  The pin governs: an asset whose SHA-256 differs from the pin is refused; GitHub's published
+  `digest` is only a consistency check (a mismatch is also refused); an asset with no pin is
+  refused. The installer reads the release through the GitHub API at an injectable base URL (so
+  tests use a local server) and downloads assets through their API URLs.
+- **Provenance, mandatory at pin time.** A CI check (`ncm-pin`) on any pull request that changes
+  `runtimes/ncm-server.env` downloads each pinned asset, checks its hash, and runs
+  `gh attestation verify` with the signer workflow pinned to Imperium-Models' release workflow and
+  the source ref to `refs/tags/ncm-server-v*`. No attestation, another signer or another ref fails
+  the check. The client trusts the pinned hash, which that check vouched for.
+- **Revocation.** `runtimes/ncm-server.env` also lists `NCM_SERVER_REVOKED` refs. An installed
+  build of a revoked ref is never launched; the runtime card says to install the pinned one.
+- **Signing.** Authenticode follows [item 59](../12-roadmap.md#next-in-order); until then the
+  Windows binary is unsigned and the pinned hash covers it. On macOS the archive is unpacked by
+  Imperium, not the browser, so no quarantine attribute is set and Gatekeeper does not assess the
+  binary; that is acceptable only because of the pinned hash, and a notarised build is a follow-up
+  once releases are signed.
 - **Unpacking.** Reuse the llama.cpp extractor, moved out of `runtime.rs` into a shared
   `imperium-local` module with no behaviour change: staging folder, regular files and folders
   only, no absolute paths, `..`, drive prefixes, NUL, devices, FIFOs or zip symlinks, the 8 GiB,
   20 000 entry and 200:1 ratio caps, and nothing replaced on failure (the rules of #313 and #316).
-- **Consent.** No `auto_install`. `ncm-server` installs only when the user presses *Install*
-  (the Princeps card or the runtime card) or runs `imperium runtime ncm install`; the card states
-  the source, version, size and that it is Imperium's own build. An agent's shell command
-  `imperium runtime ncm install|remove` needs a person's approval, like `runtime vllm setup`. A
-  missing runtime fails a load with *No ncm-server yet: open Local models → Runtime to install
-  it*.
-- **Where and which.** `<data>/runtimes/ncm-server/<ref>/<build>/ncm-server[.exe]` with an
-  `imperium-runtime.json` record. Order: `runtime.ncm.custom_path` (a developer build; only a
-  path the user sets), then the installed build of the pinned ref, then an earlier installed ref
-  until the pinned one is installed. Update and rollback follow
-  [llama.cpp updates](../04-models-and-routing.md#llamacpp-updates): a new pin installs on the
-  next user-approved install or the next load after the user has once approved installs for this
-  runtime (`runtime.ncm.update = "ask"` by default, `auto` only if the user sets it), and one
-  earlier build is kept until the new one has loaded a model.
-- **Build choice.** CUDA on an NVIDIA GPU whose driver meets the build's minimum (Q2), otherwise
-  CPU; the readiness check decides as for llama.cpp. GPU builds that need NVRTC or other CUDA
-  libraries ship them in the archive or a pinned companion asset (Q2), as llama.cpp's `cudart`
-  archive does.
+- **Consent.** No auto-install. `ncm-server` installs only when the user presses *Install* (the
+  Princeps card or the runtime card) or runs `imperium runtime ncm install`; the card states the
+  source, version, size and that it is Imperium's own build. A missing runtime fails a load with
+  *No ncm-server yet: open Local models → Runtime to install it*.
+- **Updates.** `runtime.ncm.update` is `ask` by default: every new pinned ref asks, on the runtime
+  card, before anything is downloaded. Only `auto`, which the user must set, installs a new ref by
+  itself at the next load. `off` never offers. One earlier build is kept until the new one has
+  loaded a model; a new build that fails its check is removed and the earlier one stays.
+- **Where and which.** `<data>/runtimes/ncm-server/<ref>/<target>/ncm-server[.exe]` with an
+  `imperium-runtime.json` record of every file's SHA-256. Order: `runtime.ncm.custom_path` (a
+  developer build; only a path the user sets), then the installed build of the pinned ref, then an
+  earlier installed, unrevoked ref until the pinned one is installed.
+- **Tamper checks.** `<data>/runtimes/` becomes a protected folder (`protect_dir`, as for
+  `<config>/mods` and `plugins`), so no agent tool or command writes there, **and** the binary's
+  hash is re-checked against `imperium-runtime.json` at every launch; a mismatch refuses the
+  launch and says to reinstall. A `custom_path` build is the user's and is not hashed.
+- **Agents cannot drive it.** These need a person's approval in every permission mode, `auto` and
+  bypass included, with a test per mode: `imperium runtime ncm install|remove|update|use`, and
+  `imperium config set|unset` of `runtime.ncm.custom_path`, `runtime.ncm.update` and
+  `runtime.ncm.extra_args`. The matching daemon methods refuse agent, mod-frame and paired-phone
+  callers ([#304](https://github.com/Densetsu152637/Imperium-AI/pull/304) lands the same refusals
+  for extension installs).
+- **Build choice.** CUDA on an NVIDIA GPU, else CPU. The CUDA build loads the driver and NVRTC
+  dynamically (no cuBLAS or cudart) and needs a CUDA 13.x driver (minimum unverified, Q2); NVRTC
+  and its builtins ship in the archive or a pinned companion asset. A CUDA build that fails its
+  first `/props` check falls back to the CPU build, as llama.cpp's builds do.
 
 ### D4. One loaded model, two profiles
 
 - **One process per Princeps build.** Profiles name a model; the supervisor keys servers by model,
-  so the Emperor and Consul profiles on `ncm:princeps-ncm-250m` share one `ncm-server`. Nothing new
-  is needed for the sharing itself.
-- **One slot, queued in Imperium.** `ncm-server` runs requests one at a time and `--parallel N`
-  only divides the context. So Imperium launches it with `--parallel 1` and the full context, and
-  concurrency is the residency controller's slot queue: a Consul call waits while an Emperor call
-  runs, with the usual wait reason and `max_wait_s`. When `ncm-server` gains real batching (Q4),
-  slots rise to the batch size.
-- **Memory.** Weights are about 470 MiB in bf16 (150 to 310 MiB quantised) and the NCM cache about
-  1 GiB at 1M tokens (R4 measurements, random weights). Default context: `runtime.ncm.context =
-  32768` per call, because prefill, not memory, is the cost (128k prefill took 23 to 28 s); `auto`
-  and up to the model's 1M ceiling are settings.
-- **No cross-profile cache thrash.** The server keeps no prompt cache between requests, so
-  alternating profiles costs nothing extra today. If prompt-cache reuse lands (Q4), each profile
-  gets its own slot so their prefixes do not evict each other.
+  so the Emperor and Consul profiles on `ncm:princeps-ncm-250m` share one `ncm-server`.
+- **One slot, queued in Imperium.** `ncm-server` runs requests one at a time, `--parallel N` only
+  divides the context, and no batching is planned (NCM answer 4). So Imperium launches it with
+  `--parallel 1` and the full context, and concurrency is the residency controller's slot queue:
+  a Consul call waits while an Emperor call runs, with the usual wait reason and `max_wait_s`.
+- **Prefix reuse.** The server's prompt-prefix reuse (on a branch, default on) helps a profile
+  whose next call extends its last prompt. Alternating profiles evicts that prefix; stage 6
+  measures the cost, and if it matters the fix is in the server (a prefix per profile), not a
+  second process.
+- **Memory.** Weights are about 470 MiB in bf16 (150 to 310 MiB quantised) and the NCM cache tens
+  of MiB at 32k and about 1 GiB at 1M tokens. Default context: `runtime.ncm.context = 32768` per
+  call (the NCM session agrees), because prefill, not memory, is the cost (128k prefill took 23 to
+  28 s); `auto` and up to the model's 1M ceiling are settings.
 
 Rejected: two processes, one per profile. It doubles weights and cache for no throughput, since
 batch-1 decode on one GPU is the bottleneck and escalation is sequential anyway. Revisit if the
-stage 6 evals show the Consul queue wait above 20 % of turn wall time and batching is not
-available.
+stage 6 evals show the Consul queue wait above 20 % of turn wall time.
 
 ### D5. Harness profiles before Ratio
 
-A **harness profile** is a named bundle: `model` (a spec, a catalogue id, or the alias
-`princeps`, the best installed Princeps build), `system_prompt` (a file), `tools` (an allowlist,
-narrowing only), `workflow` (workflow-contract rule files, [18](../18-workflow-contract.md)) and
-`harness` (the agent-loop engine: `default` today). It is item 58's per-subagent harness, prompt
-and workflow, packaged under one name, so this stage is item 58's first slice and item 58 builds on
-it rather than beside it.
+A **harness profile** is a named bundle: `model`, `system_prompt` (the file body), `tools` (an
+allowlist), `workflow` (workflow-contract rule files, [18](../18-workflow-contract.md)), `harness`
+(the agent-loop engine: `default` today) and `role: root | subagent | both`. It is item 58's
+per-subagent harness, prompt and workflow under one name, so stage 4 is item 58's first slice.
 
-- **Format.** A named-agent file ([06](../06-extensibility.md#named-agents-implemented)) with two
-  new front-matter fields, `workflow` and `harness`, and `role: root | subagent | both`. Profiles
-  and named agents share one namespace, precedence and trust rules; a profile is a named agent
-  that may also run as the root.
+- **Format.** A named-agent file ([06](../06-extensibility.md#named-agents-implemented)) with the
+  new fields `workflow`, `harness` and `role`. Profiles and named agents share one namespace and
+  the existing trust rules (project files only in trusted projects).
 - **Built-in profiles.** `emperor` and `consul` ship in a new lowest-precedence source
-  (`crates/imperium-core/profiles/`), so a user or project file of the same name replaces them.
-  Emperor uses the vendored `emperor-root.md`; Consul ships a minimal critic prompt marked as a
-  placeholder. Both bodies belong to the Harnesses session, which replaces them by pull request;
-  the mechanism, tests and names are this plan's.
-- **Selection.** Root: `session.create` and the composer's model menu take `profile`, applied at
-  a turn boundary. Subagents: `spawn_agent` takes `agent` as today (a profile is an agent). Headless:
-  `imperium run --profile <name>`. A profile never widens permissions, budgets or the permission
-  mode, exactly as named agents.
+  (`crates/imperium-core/profiles/`). Emperor uses the vendored `emperor-root.md`; Consul ships a
+  minimal critic prompt marked as a placeholder. The bodies belong to the Harnesses session, which
+  replaces them by pull request; the mechanism, tests and names are this plan's.
+- **Reserved names and the root role.** `emperor` and `consul` are reserved: only a file in the
+  user's `<config>/agents/` replaces them. A plugin or project file with a reserved name, or with
+  `role: root` or `both`, loads with a notice but is never used as the root or as a takeover
+  target unless the user opts it in (`agents.root_trusted = ["<name>@<origin>"]`, a user-settings
+  key agents cannot set). Such a file can still be a subagent through `spawn_agent`, as today.
+- **Agent folders are on the safety floor** ([05](../05-tools-and-isolation.md)). Writes by agents
+  to every agent folder (`<config>/agents/`, `.claude/agents/`, `.imperium/agents/`, plugins'
+  `agents/`) and to the built-in source are refused in every mode, extending the project-folder
+  floors and `<config>` refusals that
+  [#304](https://github.com/Densetsu152637/Imperium-AI/pull/304) lands.
+- **`model` is a preference, never an override**, for every role. A root-role profile's model
+  goes through routing and the location confinement of the session and the user's rules; when it
+  is unavailable or outside the allowed location, normal routing applies with a notice, as for
+  named agents.
+- **Narrowing reference sets.** A subagent profile's `tools` intersect the delegator's tools at
+  that moment (as today). A root profile's `tools` intersect the session's root tool set under its
+  mode, permission rules, agent permission profile and allowlists. A takeover profile's `tools`
+  intersect the tools of the task it takes over. None widens mode, budget or location.
+- **The body is appended, never substituted.** The profile body follows the engine's base
+  instructions and safety instructions for its role; it cannot remove or replace them, for the
+  root as for subagents.
+- **Referenced files are confined.** `system_prompt` and `workflow` references are relative paths
+  inside the profile's own folder: no `..`, no absolute path, no symbolic link at or above the
+  file, regular files only, the same 64 KiB cap and the same folder trust as the profile.
+  Workflow files are followed as instructions only when they come from a user-configured, pinned
+  policy pack ([08](../08-agent-policy.md)); from anywhere else they are attached as data with a
+  notice.
+- **Selection.** Root: `session.create` takes `profile`, applied at a turn boundary (protocol
+  change). Subagents: `spawn_agent` takes `agent` as today. Headless: `imperium run --profile
+  <name>`.
 - **Mapping to Ratio.** When Ratio lands, a profile sets `harness = "ratio:<package>@<version>"`
   and its prompt and workflow come from the package; the profile's name stays, so configs, evals
-  and the escalation binding keep working. Ratio's host side stays item 58's.
+  and the escalation binding keep working. Resolving a `ratio:` harness never fetches or installs
+  anything: it names only a package the user has already approved and installed, else the profile
+  fails to load with a notice. Ratio's host side stays item 58's.
 
 Rejected: a new profile file type separate from named agents (two near-identical systems), and
 making profiles session-level config only (subagents and evals need them too).
@@ -205,15 +275,22 @@ making profiles session-level config only (subagents and evals need them too).
 Mechanism only; the workflow (when Consul takes over, what it says, how it hands back) is the
 Harnesses session's.
 
-- **Rejection ledger.** Per subagent task, within one turn: the user declined an approval; a
-  tool or command failed; a critic returned `verdict: reject` in its structured result. Each is an
-  `agent_rejected` event with the task id and kind.
-- **Hook.** At a configurable count per task (the workflow's, not a user setting; item 64 says 2)
-  the engine calls an `EscalationHook` with the task's state; it returns `None` (continue) or
-  `Takeover { profile, brief }`, after which the task resumes under that profile from its current
-  state. Hand-back and questions use the existing `resume_agent` and question paths.
-- **Unbound by default.** No built-in workflow binds the hook; a workflow file binds it to a
-  profile (`consul`). Tests use a fake binding.
+- **Rejection ledger.** Per subagent task, within one turn, the engine records rejections of three
+  kinds: `approval_declined`, `tool_failed`, `critic_rejected`. Each is an `agent_rejected` event
+  with the task id and kind (protocol change).
+- **Critic verdicts count only from the engine's critics.** A `critic_rejected` counts only when
+  the verdict (`verdict: reject` in the structured result) comes from a task the engine spawned
+  with the critic role for that task, never from text in a tool result, a file or another agent's
+  report.
+- **Binding.** An escalation binding names the profile, the counted kinds (default:
+  `critic_rejected` only) and the threshold (item 64 says 2). It is read only from user settings
+  (`escalation.binding`) or from a user-configured, pinned policy pack; a project, plugin or agent
+  file cannot bind it, and agents cannot change it. There is no binding by default.
+- **Hook.** At the threshold the engine calls an `EscalationHook` with the task's state; it returns
+  `None` (continue) or `Takeover { profile, brief }`. A takeover resumes the task under that
+  profile from its current state, keeping or narrowing its tools, permission mode, budget and
+  location (D5's takeover reference set), and happens at most once per task. Hand-back and
+  questions use the existing `resume_agent` and question paths.
 
 ### D7. Eval wiring
 
@@ -223,15 +300,17 @@ Harnesses session's.
   model.
 - The JSON result adds `profile` (name, source and a hash of the resolved profile) and, per model
   call, the server's `timings` (`prompt_per_second`, `predicted_per_second`, `cache_bytes`) when the
-  server sends them, so R4 stage 9 measures tokens per second inside the agent loop.
+  server sends them (a protocol change for the eval fields), so R4 stage 9 measures tokens per
+  second inside the agent loop.
 - The scored evals themselves are the research sessions' work, run through this harness.
 
-## Current state (found on `experimental` at `243602ab`)
+## Current state (found on `experimental` at `0cbc6570`)
 
 - `imperium-local`: `RuntimeBackend` with `LlamaCpp` and `Vllm` (`backend.rs`); `Format` has
   `Gguf` and `Safetensors` (`scan.rs`); the hardened installer and extractor live in `runtime.rs`;
   vLLM in WSL2 in `wsl.rs` and `vllm_env.rs`. Spec prefixes are matched in
-  `imperium-core/src/{model_config.rs,bench.rs,suggestions.rs}`.
+  `imperium-core/src/{model_config.rs,bench.rs,suggestions.rs}`. Protected folders are set with
+  `protect_dir` in `imperium-core/src/state.rs`.
 - House models: `apps/desktop/src/models/houseModels.ts` lists Emperor and Consul with no source;
   `HouseModelCard.tsx` shows them on first run. `ModelSuggestionCard.tsx` and
   `[[models.suggestions]]` offer Hugging Face GGUF repositories only.
@@ -239,45 +318,50 @@ Harnesses session's.
   `imperium-protocol/schemas/prompts/`.
 - Named agents (item 48) and headless evals with `--agent` (item 53) are implemented; item 58
   (harness switch) and item 64 (escalation) are planned with no code.
-- `ncm-server` (Imperium-Models `models/ncm/runtime/`, merged in #40): llama-server's flags and
-  endpoints, random weights for tests, one weight file with an `ncm_format` header, `tokenizer.json`
-  beside it. No release builds, no published weights; CI builds CPU only. Further training is on
-  hold until the Harnesses session has built the harnesses.
+- `ncm-server` (Imperium-Models `models/ncm/runtime/`, merged in #40; newer work on
+  `feat/ncm-speed-2`): llama-server's flags and endpoints, random weights for tests, one weight
+  file with an `ncm_format` header, `tokenizer.json` beside it. No release builds, no published
+  weights; CI builds CPU only on Ubuntu. Further training is on hold until the Harnesses session
+  has built the harnesses.
 
 ## Scope and non-goals
 
 In scope: D1 to D7. Not in scope: training, weights and their quality; the harness prompts and
-workflow content; Ratio and its host bindings; vision; quantised-weight selection beyond passing
-the file the user installed; offering Princeps through the generic download suggestions.
+workflow content; Ratio and its host bindings; vision; GPU support beyond CUDA; offering Princeps
+through the generic download suggestions.
 
 ## Assumptions
 
 - `ncm-server` keeps its llama-server-compatible launch line and endpoints; changes are announced
   by the NCM session and adopted by pinning a new ref.
-- Trained weights will be published at a pinned Hugging Face revision with per-file SHA-256 (Q5).
+- Trained weights will be published at a pinned revision with per-file SHA-256 (Q5).
 - The research harness suites already run through `imperium run --headless --json`.
 
 ## Relevant paths
 
 `crates/imperium-local/src/{backend.rs,scan.rs,runtime.rs,runtime_check.rs,supervisor.rs,planner.rs}`,
 a new `crates/imperium-local/src/{ncm.rs,extract.rs}`, `runtimes/ncm-server.env`,
-`crates/imperium-config/src/{settings.rs,registry.rs}`, `crates/imperium-core/src/{local.rs,model_config.rs,bench.rs,suggestions.rs}`,
+`.github/CODEOWNERS`, `crates/imperium-config/src/{settings.rs,registry.rs}`,
+`crates/imperium-core/src/{state.rs,local.rs,model_config.rs,bench.rs,suggestions.rs}`,
 `crates/imperium-core/profiles/`, `crates/imperium-engine/src/{model.rs,agent/delegation.rs}`,
 `crates/imperium-cli/src/` (`runtime ncm`, `run --profile`), `apps/desktop/src/models/houseModels.ts`,
-`apps/desktop/src/panels/{HouseModelCard.tsx,LocalModelsPanel.tsx}`, `.github/workflows/ncm-live.yml`.
+`apps/desktop/src/panels/{HouseModelCard.tsx,LocalModelsPanel.tsx}`,
+`.github/workflows/{ncm-live.yml,ncm-pin.yml}`.
 
 ## Related docs
 
 [04](../04-models-and-routing.md) (runtimes; wins on current behaviour),
-[06](../06-extensibility.md#named-agents-implemented), [12](../12-roadmap.md) items 44, 53, 58, 59
-and 64 (win on scope), Imperium-Models `models/ncm/runtime/README.md` (wins on the server's
-contract), Imperium-Research `docs/next-concept-modelling/` (wins on the models).
+[05](../05-tools-and-isolation.md) (safety floor), [06](../06-extensibility.md#named-agents-implemented),
+[12](../12-roadmap.md) items 44, 53, 58, 59 and 64 (win on scope), Imperium-Models
+`models/ncm/runtime/README.md` (wins on the server's contract), Imperium-Research
+`docs/next-concept-modelling/` (wins on the models).
 
 ## Stages
 
 Each stage is one pull request against `experimental` with its docs, CI green before the next.
-Stages 1, 4 and 5 need nothing from the NCM session; stage 2 needs a release (Q1, Q2); stage 3
-needs published weights (Q5) only for its last step.
+Stages 1 and 5 need nothing from the NCM session; stage 2 needs a release (Q1, Q2, Q19); stage 3
+needs published weights (Q5) only for its last step. Stages 3 to 6 change the protocol and take
+the next free minor at merge.
 
 ### Stage 1: `ncm` backend and format
 
@@ -285,26 +369,35 @@ needs published weights (Q5) only for its last step.
 - Depends on: none.
 - Owned paths: `imperium-local` `backend.rs`, `scan.rs`, new `ncm.rs`; spec prefixes in
   `imperium-core`; `runtime.ncm.*` settings and registry; docs 04 and 10.
-- Acceptance checks (CI): the scanner lists a marked file as `ncm:<stem>` and ignores an unmarked
-  or oversized header; launch arguments match a golden list; a fake `ncm-server` script answering
-  503 then 200 on `/health` is started once and served; a fake that exits non-zero fails the load
-  with its log tail; `place` never splits; the CPU lane accepts an `ncm:` row.
+- Acceptance checks (CI): the scanner lists a marked file as `ncm:<stem>`, ignores an unmarked
+  file and lists an oversized header with a `problem`; out-of-range or overflowing header numbers
+  give a `problem`, never a panic or a footprint; launch arguments match a golden list; `--host`
+  and `--port` in `extra_args` are refused and dropped; the child's environment holds only the
+  allowlist (with `CUDA_PATH`); a fake `ncm-server` answering 503 then 200 on `/health` is started
+  once and served, and every request carries `max_tokens`; a cancelled call releases its slot, and
+  a fake that keeps streaming after the disconnect holds the slot until it ends; a fake that exits
+  non-zero fails the load with its log tail; `place` never splits; the CPU lane accepts an `ncm:`
+  row; a forced tool choice on an `ncm:` row falls back to `auto`.
 - Status: pending.
 
 ### Stage 2: obtaining and verifying `ncm-server`
 
-- Objective: D3: `imperium runtime ncm install|status|remove`, `runtime.status` reporting the
-  `ncm` runtime, the shared extractor, `runtimes/ncm-server.env`, and the opt-in `ncm-live`
-  workflow (manual and nightly) that installs the pinned release and loads it with
-  `--random-weights`.
-- Depends on: stage 1; an Imperium-Models release (Q1, Q2).
+- Objective: D3: `imperium runtime ncm install|status|remove|update|use`, `runtime.status`
+  reporting the `ncm` runtime, the shared extractor, `runtimes/ncm-server.env` with CODEOWNERS, the
+  `ncm-pin` check, `protect_dir` on `<data>/runtimes/`, the launch-time hash check, and the opt-in
+  `ncm-live` workflow (manual and nightly, CPU build only) that installs the pinned release and
+  loads it with `--random-weights`.
+- Depends on: stage 1; an Imperium-Models release with attestations (Q1, Q2, Q19).
 - Owned paths: `imperium-local` `runtime.rs` (extractor moved out), new `extract.rs`,
-  `runtime_check.rs`; `imperium-cli` runtime commands; `.github/workflows/ncm-live.yml`; docs 04
-  and 11.
-- Acceptance checks (CI): the llama.cpp extractor tests pass unchanged against the moved module;
-  an asset whose hash differs from the pin, or from GitHub's digest, or with no pin, is refused and
-  nothing is replaced; hostile archives are refused; no install runs without the explicit call;
-  an agent's `imperium runtime ncm install` is classed as needing approval. ncm-live: install,
+  `runtime_check.rs`; `imperium-core` `state.rs`; `imperium-cli` runtime commands;
+  `.github/workflows/{ncm-pin.yml,ncm-live.yml}`, `.github/CODEOWNERS`; docs 04 and 11.
+- Acceptance checks (CI, against a local fake GitHub API): the llama.cpp extractor tests pass
+  unchanged against the moved module; an asset whose hash differs from the pin, or from GitHub's
+  digest, or with no pin, is refused and nothing is replaced; hostile archives are refused; a
+  revoked ref is not launched; a binary changed after install is refused at launch; nothing
+  installs without the explicit call, and under `update = "ask"` a new ref waits for the user; the
+  floored commands and config keys need approval in each permission mode, one test per mode;
+  `ncm-pin` fails on a missing attestation and on another signer (fixture). ncm-live: install,
   `/health` 200, one chat completion.
 - Status: pending.
 
@@ -312,46 +405,58 @@ needs published weights (Q5) only for its last step.
 
 - Objective: one Princeps entry replaces Emperor and Consul in `houseModels.ts`, with its pinned
   file set (weights, `tokenizer.json`) and SHA-256s; a daemon method `models.install_house`
-  downloads the set, verifies every file and offers to install `ncm-server` in the same consent
-  (protocol 0.63); the Local models panel shows `ncm:` models and an `ncm-server` runtime card;
-  the `princeps` tag and the `emperor` alias (D1).
+  downloads the set, verifies every file and offers to install `ncm-server` in the same consent;
+  the Local models panel shows `ncm:` models and an `ncm-server` runtime card; the `princeps` tag
+  and the `emperor` alias (D1).
 - Depends on: stages 1 and 2; Q5 for the real source (the card keeps *not yet available* until
   then).
 - Owned paths: `houseModels.ts`, `HouseModelCard.tsx`, `LocalModelsPanel.tsx`, the protocol method
   and its TS types, `imperium-engine` `model.rs`; docs 04, 07 and 12 item 44.
 - Acceptance checks (CI): catalogue parsing tests; a download whose file hash differs is deleted
-  and reported; knowledge routing prefers a `princeps` row and still honours `emperor`; the card
+  and reported; `models.install_house` is refused to agents (no tool reaches it), mod frames and
+  paired phones; knowledge routing prefers a `princeps` row and still honours `emperor`; the card
   never shows a download without a source.
 - Status: pending.
 
 ### Stage 4: harness profiles
 
 - Objective: D5: the profile fields on agent files, the built-in source with `emperor` and
-  `consul`, root selection on sessions, `--profile` on `imperium run`.
-- Depends on: none (stage 1 for the `princeps` alias to resolve to a real build).
-- Owned paths: agent-file parsing and the built-in source in `imperium-core`, `session.create`,
-  `imperium-cli` run; docs 03, 06 and 12 item 58.
-- Acceptance checks (CI): a user file named `consul` replaces the built-in; a profile's tools
-  narrow and never widen; `--print-prompt --profile consul` prints the Consul body and tools; two
-  profiles on one `ncm:` model in one session cause one launch (fake server).
+  `consul`, reserved names, the root opt-in, agent folders on the floor, root selection on
+  `session.create`, `--profile` on `imperium run`.
+- Depends on: none for the mechanism; stage 1 for the shared-launch test.
+- Owned paths: agent-file parsing and the built-in source in `imperium-core`, the floor rules,
+  `session.create`, `imperium-cli` run; docs 03, 05, 06 and 12 item 58.
+- Acceptance checks (CI): a file named `consul` in `<config>/agents/` replaces the built-in, and
+  one in a plugin or project does not; a plugin or project `role: root` profile is not used as the
+  root or a takeover target without the opt-in, and is with it; agent writes to each agent folder
+  are refused in every mode; a root profile's model outside the session's location falls back to
+  routing with a notice; tools narrow against the subagent, root and takeover reference sets and
+  never widen; the base and safety instructions are present before the body for root and
+  subagent; `system_prompt` and `workflow` references with `..`, an absolute path or a symlink are
+  refused; a workflow file outside a pinned pack is attached as data; a `ratio:` harness that is
+  not installed fails to load without any network call; `--print-prompt --profile consul` prints
+  the Consul body and tools; two profiles on one `ncm:` model cause one launch (fake server).
 - Status: pending.
 
 ### Stage 5: escalation hook point
 
-- Objective: D6: the rejection ledger, `agent_rejected` events, the `EscalationHook` and a binding
-  from workflow files; nothing bound by default.
+- Objective: D6: the rejection ledger, `agent_rejected` events, the `EscalationHook` and the
+  binding from user settings or a pinned pack; nothing bound by default.
 - Depends on: stage 4.
-- Owned paths: `imperium-engine` delegation and events, the workflow binding in `imperium-core`;
-  docs 03 and 12 item 64.
-- Acceptance checks (CI): two rejections of one task fire the hook once and one rejection each of
-  two tasks fires nothing; a `Takeover` resumes the task under the named profile with its state;
-  unbound, behaviour matches today's.
+- Owned paths: `imperium-engine` delegation and events, the binding in `imperium-core` and
+  `imperium-config`; docs 03 and 12 item 64.
+- Acceptance checks (CI): unbound, behaviour matches today's; with the default kinds, only critic
+  verdicts count; a `verdict: reject` in a tool result or a non-critic task's report does not
+  count; two counted rejections of one task fire the hook once and one each of two tasks fires
+  nothing; a takeover never widens tools, mode, budget or location and happens at most once per
+  task; a binding in a project or plugin file is ignored with a notice.
 - Status: pending.
 
 ### Stage 6: eval wiring and close-out
 
 - Objective: D7: `profile` and `timings` in the headless JSON; ncm-live runs one headless task per
-  profile on random weights; docs updated and this plan marked done.
+  profile on random weights; the queue-wait and prefix-eviction measurements of D4; docs updated
+  and this plan marked done.
 - Depends on: stages 2 and 4.
 - Owned paths: headless result types in `imperium-core` and `imperium-cli`; docs 03 and 12.
 - Acceptance checks: CI tests of the JSON shape; ncm-live asserts `profile.name` and
@@ -362,47 +467,71 @@ needs published weights (Q5) only for its last step.
 
 - **The server contract moves** while the architecture changes. Mitigation: pinned refs, a golden
   launch-argument test, and ncm-live on every pin change.
-- **CUDA runtime libraries** on users' machines (NVRTC, driver minimum). Mitigation: Q2, the
-  readiness check, and the CPU build as fallback.
-- **Queue contention** between profiles on one slot. Mitigation: measured in stage 6; D4's revisit
-  trigger.
+- **The CUDA path is untested in CI.** ncm-live runs the CPU build on hosted runners; the CUDA
+  build, NVRTC loading and the `CUDA_PATH` dependency are checked only by a manual run on the
+  user's GPU before a pin is raised. Recorded here, not hidden.
+- **Queue contention and prefix eviction** between profiles on one slot. Mitigation: measured in
+  stage 6; D4's revisit trigger.
+- **The loopback server has no authentication** today: any local process can call it. Mitigation:
+  Q17 (an API key and a Host check); until then the risk equals llama-server's, which Imperium
+  already accepts.
+
+## Answers from the NCM session (2026-11-26)
+
+From the session's branch `feat/ncm-speed-2` at `61350bc`, not yet on Imperium-Models `main`.
+
+| Q | Answer | Effect on this plan |
+| --- | --- | --- |
+| 1 Releases | None yet; CI is CPU on Ubuntu only. Proposed: tag `ncm-server-v<semver>`, archives `ncm-server-<ver>-<target>-<cpu or cuda>`, Windows and Linux x64 CPU and CUDA, macOS arm64 CPU; the release job can build CUDA without a GPU. User decision pending. | D3 uses the proposed names. |
+| 2 CUDA | Dynamic via cudarc 0.19: driver and NVRTC only; CUDA 13.4 symbols, so a 13.x driver (minimum unverified); CubeCL reads `CUDA_PATH` for NVRTC headers; NVRTC and builtins to ship. | D2 keeps `CUDA_PATH`; D3 ships NVRTC. |
+| 3 Readiness | `--version` prints 0.0.0; no `--list-devices`, `--check` or footprint flag yet (proposed). Cache size is `ncm_model::cache_bytes_with`; `/props` reports the actual. | D2 mirrors the formula and uses `/props`. |
+| 4 Concurrency | `--parallel` splits context only; sequential; prompt-prefix reuse on the branch (default on, `--no-prefix-reuse`); no batching planned. | D4: one slot, Imperium queues. |
+| 5 Weights | None published (training paused); host and licence pending the user; tokenizer from `--tokenizer`, else beside the weights, else an error. | Stage 3 waits. |
+| 6 Format | `ncm-safetensors-v1` is stable; the header also has `ncm_config` and `ncm_quant`; `ncm_model_id` and `ncm_model_version` proposed; exact-architecture loading. | D1. |
+| 7 Quantisation | Separate quantised files, or dense plus `--quant q8` or `q4` at load. | D2: by file layout; `--quant` via `extra_args`. |
+| 8 Flags | `--speculate` off by default (leave off); 8-bit indexer keys on by default. | D2. |
+| 9 Context | 32k is fine (tens of MiB); the first request compiles kernels in 0.4 to 0.65 s; load time unmeasured. | D4 default 32k. |
+| 10 Tools | `tool_choice` only `none` or `auto`; no `response_format` or schema; no stop strings; `reasoning_content` implemented, show it. | D2 copes; reasoning shown. |
+| 11 GPUs | CPU and CUDA only; AMD, Intel and Apple CPU-only for now (user decision pending). | D3. |
+| 12 Network, env | No outbound network; binds `--host:--port`, default `127.0.0.1`; reads `CUBECL_*`, `BENCH_*` and `CUDA_PATH`. | D2 allowlist with `CUDA_PATH`. |
+| 13 Provenance | `SHA256SUMS` and attestations planned with releases (user decision pending). | D3 makes attestation mandatory. |
 
 ## Open questions for the NCM session
 
-1. **Release builds.** Will Imperium-Models publish `ncm-server` as GitHub release assets, with
-   which tag scheme and archive names, for which targets (windows-x64 and linux-x64, CUDA and CPU;
-   macOS arm64 CPU)? CI builds CPU only today: can a release job build the `cuda` feature (a CUDA
-   toolkit on the runner, or a self-hosted runner)?
-2. **CUDA at run time.** Which libraries does the CUDA build load (driver, NVRTC, cuBLAS or
-   others), what is the minimum NVIDIA driver, and can the redistributable ones ship in the
-   archive the way llama.cpp ships `cudart`?
-3. **Readiness and sizing without loading.** Can `ncm-server` add `--list-devices` (or `--check`)
-   reporting whether CUDA works, a stable `--version` (version, commit, features), and either a
-   `--print-footprint --ctx-size N` (weights and cache bytes as JSON) or a documented formula from
-   the header's `ncm_config`, so Imperium plans memory before launch?
-4. **Concurrency and prompt cache.** Is batching two sequences (real `--parallel 2`) or
-   prompt-cache reuse across requests planned, and when? D4 depends on it.
-5. **Weights publication.** Which Hugging Face repository (or other host), file names for bf16,
-   8-bit and 4-bit, licence, pinned revision, and per-file SHA-256? Is `tokenizer.json` always
-   beside the weights?
-6. **Format and compatibility.** Is `ncm_format = "ncm-safetensors-v1"` the stable detection key?
-   Can the header also carry a model id and version (`princeps-ncm-250m`, training revision) for
-   display? Which server versions load which weight files, so a weights pin can name its minimum
-   server ref?
-7. **Quantised weights.** Are 8-bit and 4-bit weights separate files in the same format, and does
-   the server pick the kernels from the header or from a flag?
-8. **Speculation and quantised cache.** Which flags will enable self-speculation and an 8-bit
-   cache, and should Imperium pass them by default?
-9. **Context.** What context should Imperium allocate by default for Princeps (D4 proposes 32k),
-   and how long does a restart with a larger cache take (weights load plus allocation)?
-10. **Tool calls and reasoning.** Timeline for `tool_choice: "required"` or a named tool, schema
-    enforcement, and `stop` strings; and should Imperium show `reasoning_content` from Princeps?
-11. **Other GPUs.** Are AMD, Intel and Apple GPUs (Burn wgpu) in scope, or CPU-only there?
-12. **Network and environment.** Confirm the server makes no network calls and binds only
-    `--host`; list environment variables that change its kernels or device (`CUBECL_*` and
-    similar) so Imperium can scrub them.
-13. **Provenance.** Can the release workflow publish `SHA256SUMS` and GitHub artifact attestations
-    for each asset?
+Still open from the first round (numbers as in the answers table):
+
+- **Q1, Q13. Release decision.** Confirm the tag scheme, targets, and that releases ship
+  `SHA256SUMS` and attestations, once the user decides.
+- **Q2. CUDA minimum.** The minimum NVIDIA driver, and whether NVRTC headers ship so `CUDA_PATH` is
+  no longer needed.
+- **Q3. Introspection.** A real `--version` (version, commit, features), `--list-devices` or
+  `--check`, and a `--print-footprint`.
+- **Q5. Weights.** Host, licence, revision, file names and per-file SHA-256.
+- **Q6. Header fields.** Add `ncm_model_id` and `ncm_model_version`, and say which server versions
+  load which weight files.
+- **Q9. Load time.** How long a restart with a larger cache takes.
+
+New, from the plan review:
+
+- **Q14. Config bounds and fuzzing.** Does the server bound every header and config value (layers,
+  widths, vocabulary, context) with checked arithmetic, and is the header parser fuzzed? A weight
+  file is untrusted input.
+- **Q15. Tokenizer safety.** Can the header carry the tokenizer's SHA-256 so a mismatched
+  `tokenizer.json` is refused, and is the tokenizer's regex (the `onig` feature) safe against
+  pathological input (catastrophic backtracking)?
+- **Q16. Disconnect cancels.** Does a dropped client connection stop generation at once, freeing
+  the server for the next request?
+- **Q17. Loopback authentication.** Can the server take `--api-key` (read from a file or the
+  environment, never the command line) and refuse requests whose `Host` header is not a loopback
+  address (a DNS-rebinding defence)?
+- **Q18. Autotune cache.** Does CubeCL write an autotune or kernel cache at run time, and where? It
+  should go under a folder Imperium passes (inside `<data>`), not the user's home or the binary's
+  folder, and must not be trusted across versions.
+- **Q19. Release integrity.** Are `ncm-server-v*` tags protected so only the release workflow can
+  create them, are releases made only by CI, and which workflow path should Imperium pin as the
+  attestation signer?
+- **Q20. Licences.** The licence of the `ncm-server` binary and its bundled third-party code, and
+  whether NVRTC and its builtins may be redistributed in the archive under NVIDIA's terms.
 
 ## Questions for the Harnesses session (for later relay)
 
@@ -410,3 +539,5 @@ needs published weights (Q5) only for its last step.
   ledger, or does the Consul harness need more fields?
 - Which tool set should each profile start with (D5 ships Emperor with the root's tools and Consul
   read-only)?
+- Without forced tool calls or schemas on Princeps (D2), should the Consul verdict be a plain-text
+  convention the engine parses rather than a structured output?
