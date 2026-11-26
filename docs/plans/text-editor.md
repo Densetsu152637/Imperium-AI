@@ -1284,7 +1284,7 @@ Revision 4 adds language servers, which run project code, and themes from outsid
 untrusted inputs: a project's build scripts, proc macros, lint configs and plugins, local
 copies of tools and server config files; servers' messages and requests; imported theme files.
 
-<!-- markdownlint-disable-next-line MD029 -->
+<!-- markdownlint-disable MD029 -->
 11. **A cloned project runs code on open.** No server starts in an untrusted project (D20);
     trust is granted only by the user through the desktop gate and `may_grant`, or their own
     config; an agent's `config set mcp.trusted_projects` is refused (stage E8); trust is never
@@ -1310,6 +1310,8 @@ copies of tools and server config files; servers' messages and requests; importe
     no packages, icons or fonts (D25).
 18. **Servers exhausting the machine.** `lsp` cap units, a server limit, idle stops, bounded
     messages and result caps, restart backoff (D18, D21).
+
+<!-- markdownlint-enable MD029 -->
 
 ### Residual risks
 
@@ -2201,7 +2203,7 @@ settled questions are listed [above](#settled-decisions).
 
 New in revision 4, open until the user answers:
 
-<!-- markdownlint-disable-next-line MD029 -->
+<!-- markdownlint-disable MD029 -->
 7. **Which languages first?** Default: Rust, TypeScript and JavaScript (with ESLint) and Python
    (Ruff) in stage E15's real tests, since they cover this repository and the research work;
    Go, C and C++, Markdown, JSON, TOML and YAML are in the catalogue from E10b but tested for
@@ -2224,3 +2226,5 @@ New in revision 4, open until the user answers:
     agents type errors, at the cost of starting rust-analyzer without the user opening a file.
 13. **Lint on type or save by default?** Default: on type, debounced, for every server; `save`
     per language.
+
+<!-- markdownlint-enable MD029 -->
