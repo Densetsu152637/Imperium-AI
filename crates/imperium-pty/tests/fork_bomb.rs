@@ -38,9 +38,21 @@ fn an_exponential_fork_bomb_is_ended() {
     let supervisor = pty.pid().unwrap();
     // The cap is in force before the bomb's first fork, or the test stops here.
     wait_for_number(&pty, "CAP:", ":E");
-    wait_until("the bomb to spread", || {
-        session_members(supervisor).len() > 100
-    });
+    let deadline = Instant::now() + BOUND;
+    while session_members(supervisor).len() <= 100 {
+        if Instant::now() >= deadline {
+            let text = common::output(&pty);
+            let tail: String = text
+                .chars()
+                .skip(text.chars().count().saturating_sub(1500))
+                .collect();
+            panic!(
+                "the bomb did not spread: {} processes in the session; output ends {tail:?}",
+                session_members(supervisor).len()
+            );
+        }
+        sleep(Duration::from_millis(25));
+    }
     // Capped, the bomb levels off near its headroom; uncapped it reaches thousands in a second.
     sleep(Duration::from_secs(1));
     let spread = session_members(supervisor).len();
