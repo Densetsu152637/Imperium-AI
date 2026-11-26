@@ -1,18 +1,21 @@
 # Plan: built-in text editor with Markdown presentation
 
-Revision: 2026-11-26, revision 5 (the Opus review of revision 4: blockers B1, project
+Revision: 2026-11-26, revision 6 (round-2 review: R1, closing the remaining command-path
+gap of B2 by checking before every forward, polling during background commands and freezing
+servers during foreground ones, and the Windows `.cmd` shim fix, in [D21](#decisions),
+[D28](#decisions) and stage E10c). Revision 5 answered the Opus review of revision 4: blockers B1, project
 configuration read by probes and installs, and B2, agents changing execution-relevant files in a
 trusted project, majors 1 to 6, the minors and nits; and the user's answers to open questions 7
-to 13, recorded as [settled decisions](#settled-decisions)). Revision 4 brought the user's request for linting and themes: language
+to 13, recorded as [settled decisions](#settled-decisions). Revision 4 brought the user's request for linting and themes: language
 servers run by the daemon, a per-project trust gate, built-in syntax checks for untrusted
 projects, diagnostics, quick fixes, formatting, an agent diagnostics tool and a theme model, as
 decisions [D18 to D27](#decisions) and stages [E8 to E15](#stages) (revision 5 adds D28 and
 E10c), after a study of
-[how VS Code does it](#how-vs-code-does-it)). Revision 3 folded in the round-2 review (N1 and
+[how VS Code does it](#how-vs-code-does-it). Revision 3 folded in the round-2 review (N1 and
 the stage-text majors), the review of revision 1 (B1, B2, M1 to M5, the minor findings and nits)
 and the root's answers to open questions 1, 2, 3 and 7, recorded as
 [settled decisions](#settled-decisions). Revisions 1 to 3 were written against `experimental`
-at `243602ab`; revision 4's additions against `a2b26dc6`, revision 5's against `f17bdca5`. Roadmap
+at `243602ab`; revision 4's additions against `a2b26dc6`, revision 5's and 6's against `f17bdca5`. Roadmap
 [item 66](../12-roadmap.md#next-in-order). Status: planned (no stage started).
 
 The user asked for "an in-built text editor that can also do markdown presentation". The
@@ -940,6 +943,8 @@ Decisions D18 to D27 are new in revision 4 (revised in 5); D28 is new in revisio
       project folder, and with the project's folders absent from the environment
       (`CARGO_HOME`, `RUSTUP_HOME`, `npm_config_*`, `PIP_*`, `UV_*` taken from the user's
       environment only, never set from a project);
+    - on Windows, the program lookup of D21 (no current-folder search, no `cmd.exe` for shims,
+      no relative or in-project `PATH` entries) applies to probes and installs too;
     - the environment adds **`GOTOOLCHAIN=local`** and **`RUSTUP_AUTO_INSTALL=0`**, and removes
       `RUSTUP_TOOLCHAIN`, `GOFLAGS`, `RUSTC_WRAPPER` and `CARGO_BUILD_RUSTC_WRAPPER`;
     - installs name their source explicitly: npm with `--registry https://registry.npmjs.org/`
@@ -1115,6 +1120,20 @@ Decisions D18 to D27 are new in revision 4 (revised in 5); D28 is new in revisio
   - **Environment:** the server gets the user's environment with the daemon's token, endpoint
     and `IMPERIUM_*` variables removed and the spawn mark `IMPERIUM_SPAWNED_BY_DAEMON` set, so a
     server, or the project code it runs, cannot pass `may_grant` or the desktop gate.
+  - **Windows program lookup (round 2).** The catalogue's npm servers are installed as `.cmd`
+    shims (`typescript-language-server.cmd`), which `cmd.exe` runs, and `cmd.exe` looks for
+    `node` in the **current folder** first, which for a server is the project. So, for every
+    server, probe and install on Windows:
+    - the environment sets **`NoDefaultCurrentDirectoryInExePath=1`**, which stops `cmd.exe`
+      and the `CreateProcess` search from trying the current folder;
+    - a `.cmd` or `.bat` shim is **never run through `cmd.exe`**: the daemon reads the shim
+      (npm's generated form, matched exactly) for the script it names and launches
+      `<absolute node.exe> <absolute script path> <args>`, with `node.exe` resolved as below; a
+      shim that does not match npm's form is refused with a reason;
+    - every program, `node.exe` included, is resolved to an **absolute path** by a `PATH` search
+      that **drops empty and relative entries and every entry inside a project folder of any
+      open session**, as item 55's [D6](terminal-file-panes.md#decisions) does for shells; the
+      child's `PATH` is filtered the same way.
   - **Isolation tier ([settled](#settled-decisions), B2).** A server runs at the **strictest
     isolation tier of the project's open sessions** ([05](../05-tools-and-isolation.md#isolation-tiers))
     where that tier exists on the OS: tier 1 (the OS sandbox: Landlock and seccomp on Linux,
@@ -1123,7 +1142,10 @@ Decisions D18 to D27 are new in revision 4 (revised in 5); D28 is new in revisio
     readable, and the network as the session's tier allows; a session at tier 2 (a container)
     runs the server at tier 1 on the host, since the server must reach the host's toolchain,
     and the status says so. Windows has no OS tier ([05](../05-tools-and-isolation.md#isolation-tiers)),
-    so there servers run at tier 0 with the caps and D28's pause, and Settings says so. When a
+    so there servers run at tier 0 with the caps and D28's pause, and Settings says so. **With
+    no open session** on the project, the server uses the tier the environment is configured
+    for (its `[isolation]` setting, or the user's default), never tier 0 by default; **background
+    agents** (scheduled runs, auto-fix sessions) count as open sessions. When a
     stricter session opens on the project, running servers restart at the new tier. A server
     that fails under the sandbox (rust-analyzer fetching crates with the network off) reports
     the error in its status; it is never retried at a looser tier.
@@ -1344,7 +1366,12 @@ Decision D28 is new in revision 5.
     - Go: `go.mod`, `go.work`, `go.sum`;
     - C and C++: `.clangd`, `compile_commands.json`, `compile_flags.txt`, `.clang-tidy`;
     - Imperium's own: `.imperium/` and the harness files of D7 are already guarded and listed
-      too.
+      too;
+    - **for agents' file-tool writes only (R1d),** everything under `node_modules/**` and
+      `.venv/**` (and `venv/**`, `.tox/**`, `__pypackages__/**`): code there is loaded by ESLint,
+      TypeScript plugins and Python tools, and is too large to fingerprint in full, so a tool
+      write there pauses first; changes there by commands are caught by the approved programs'
+      package hashes (D20) and the lockfiles above.
   - **Detection.** The daemon keeps, per project with running servers, a fingerprint (path,
     size and SHA-256) of the execution-relevant files it found when the user last started or
     resumed the servers, persisted in `lsp-approvals.json` so a pause survives a restart. A
@@ -1353,20 +1380,45 @@ Decision D28 is new in revision 5.
       revert classify the target path; for an execution-relevant path in a trusted project with
       servers, the daemon **pauses** the project's servers (below) before writing, so no server
       or its own file watcher sees the new content while running;
-    - **after an agent's command finishes,** and **before forwarding** any `didSave` or
-      `didChangeWatchedFiles` and before any server start, restart or re-index request, by
-      re-checking the fingerprint; a difference not explained by the user's own saves in the
-      editor (the `files.write` record of D10) pauses the servers.
+    - **before forwarding anything that makes a server evaluate project code** (round-2 R1a):
+      `didOpen`, `didChange`, `didSave`, `didChangeWatchedFiles`, diagnostic pulls, code
+      actions, formatting, completion and hover requests, and any start, restart or re-index.
+      ESLint 9 re-imports a changed flat config on its next lint, and clangd re-reads `.clangd`
+      and `compile_commands.json` on its next parse, so any of these can run changed code. The
+      check is a **stat sweep** (size and modification time of each listed file, and whether one
+      appeared or went) that hashes only the files that moved; its result is cached for one
+      debounce window (D22, at most 800 ms), so typing costs one sweep per window, not one per
+      keystroke. A difference not explained by the user's own saves in the editor (the
+      `files.write` record of D10) pauses the servers before the message is sent;
+    - **every second while any agent command or background process started in the project is
+      alive** (R1b), by the same sweep, and once more when it ends;
+    - **during each foreground agent command** in the project (R1c), the project's servers are
+      **frozen** for the command's length: on Linux by `cgroup.freeze` on the server's unit
+      (item 68's cgroup), on macOS by `SIGSTOP` to the unit's processes and `SIGCONT` after, on
+      Windows by suspending every process in the server's job (`NtSuspendProcess` on each id
+      from `JobObjectBasicProcessIdList`, in `imperium-limits`' Windows module) and resuming
+      them after. A frozen server runs nothing, so it cannot react to a change mid-command. When
+      the command ends the daemon sweeps: if nothing moved it thaws them, else it pauses them
+      (stopping the frozen units). Freeze and thaw are `Unit::freeze` and `Unit::thaw`, added to
+      item 68's `imperium-limits` by stage E10c. Editor requests during a freeze wait, within
+      D18's 10 s limit, rather than fail.
   - **Pausing** stops the project's servers (`shutdown`, then the unit) and starts none until
-    the user resumes; diagnostics stay, marked stale. Servers that watch files themselves are
-    configured not to where they allow it (rust-analyzer `files.watcher = "client"` and
-    `cargo.buildScripts.rebuildOnSave = false`), so the daemon's notifications are the only
-    trigger.
+    the user resumes; diagnostics stay, marked stale.
+  - **Watching goes through the client where the server allows it** (R1e), so the daemon's
+    notifications, checked first, are the trigger: rust-analyzer with `files.watcher =
+    "client"` and `cargo.buildScripts.rebuildOnSave = false`; ESLint's server, which relies on
+    the client's watchers; `tsserver` with client watch events (`canUseWatchEvents`, TypeScript
+    5.4 and later) if `typescript-language-server` passes them through, which stage E9
+    verifies (if it does not, `tsserver` keeps its own watchers, and the freeze and the sweeps
+    above are what cover it). `--allowLocalPluginLoads` is **never** passed to `tsserver`, so it
+    never loads a plugin from the project folder by path.
   - **The banner.** "An agent changed files that decide what runs in `<project>`. Language
     servers are paused." It names each file, who changed it when known (the agent and session
     from the tool record; "changed outside the editor" otherwise), and shows the diff of each
-    against the fingerprinted version (kept by the daemon for files up to 1 MiB; larger files
-    show size and hash only) with `@codemirror/merge`. *Resume* (gated, `may_grant`) takes the
+    against the fingerprinted version (kept by the daemon for files up to 1 MiB) with
+    `@codemirror/merge`. A file with no stored version (over 1 MiB, newly appeared, or found by
+    the stat sweep in a folder whose contents are not stored, such as an approved package) is
+    listed with its old and new size and SHA-256, and *Open* shows its current text. *Resume* (gated, `may_grant`) takes the
     new fingerprint and restarts the servers; *Keep paused* leaves them stopped; *Review in
     Review panel* opens the session's changes. Resuming never happens by itself, by timer or by
     an agent; an agent's `diagnostics` call during a pause returns the built-in checks and says
@@ -1533,7 +1585,11 @@ copies of tools and server config files; servers' messages and requests; importe
 20. **An agent changing what servers run (B2).** Execution-relevant files changed by an agent
     pause the project's servers until the user resumes after seeing the diff; build code is off
     per project until the user turns it on; servers run at the project sessions' strictest OS
-    tier (D21, D28).
+    tier; every forwarded message is preceded by a sweep, background commands are polled each
+    second, and servers are frozen during foreground commands (D21, D28).
+21. **A planted program found first (Windows).** `NoDefaultCurrentDirectoryInExePath=1`, shims
+    run through an absolute `node.exe`, never `cmd.exe`, and `PATH` filtered of relative and
+    in-project entries (D21).
 
 <!-- markdownlint-enable MD029 -->
 
@@ -1562,11 +1618,14 @@ copies of tools and server config files; servers' messages and requests; importe
   start, as they would in VS Code or a build: at the project sessions' strictest OS tier, with
   the user's rights on Windows, which has no OS tier (D21). Caps bound their memory, not what
   they do.
-- **Agent commands and self-watching servers (D28).** A change made by an agent's
-  `run_command` is found when the command ends or before the next forwarded notification, not
-  before it lands. A server that watches files itself and cannot be told not to (TypeScript's
-  `tsserver` watches `tsconfig.json`) could react in that window. File tools pause first, and
-  rust-analyzer and ESLint are set to rely on the daemon's notifications.
+- **The sweep's own window (D28).** File tools pause before writing, foreground commands run
+  with the servers frozen, background processes are swept every second, and every message that
+  makes a server evaluate project code is preceded by a sweep. What remains is the few
+  milliseconds between a sweep's `stat` and the server's own read of the file. A change that
+  keeps both size and modification time (a deliberate `touch -r`) is not hashed by the sweep
+  until the next full fingerprint at resume or restart. On Windows, if stage E10c cannot
+  suspend a job's processes on the runner, changes during a foreground command are caught only
+  by the 1 s poll and the sweeps, and the stage records that as a named gap.
 - **User-installed servers are the user's.** Imperium runs the program the user installed or
   named; a compromised global install is outside this plan.
 
@@ -2212,7 +2271,18 @@ the entries are added beside theirs).
   - **sync owner:** two tabs on one file send one stream of versions; focusing the second
     re-sends full text with a new version;
   - `window/showDocument` with `takeFocus: true` not following a user action opens a background
-    tab and does not move focus.
+    tab and does not move focus;
+  - **tier with no session:** with no open session and the environment configured for tier 1,
+    the fake runs at tier 1, not 0; a scheduled run on the project counts as an open session;
+  - **client watching:** against the real `typescript-language-server` (installed in the job, as
+    in E15), the test checks whether `tsserver` is started with `--canUseWatchEvents` and the
+    server forwards its watch requests; the result is recorded in the catalogue entry, and D28
+    relies on the freeze and sweeps where it is not;
+  - **Windows shims:** a planted `node.bat` in the project folder and a relative `.` entry on
+    `PATH` are not run when the fake server is installed as an npm `.cmd` shim: the daemon
+    launches the absolute `node.exe` with the shim's script, the child's environment has
+    `NoDefaultCurrentDirectoryInExePath=1`, and its `PATH` has no relative or in-project entry;
+    a shim that is not in npm's form is refused.
 - Size: about 800 lines (E9a and E9b split possible).
 - Risks: item 68 is not merged; if E9 is ready first, the `lsp` unit waits for item 68's stage
   1 crate with the class added there, never a local job wrapper.
@@ -2289,13 +2359,16 @@ the entries are added beside theirs).
   server, `script-shell=` a sentinel script), `.cargo/config.toml` (`build.rustc-wrapper` a
   sentinel script), `rust-toolchain.toml` (`path =` a fake toolchain that writes a sentinel),
   `go.mod` (`toolchain go9.99.0`, which `GOTOOLCHAIN=auto` would fetch), `uv.toml` and
-  `pip.conf` (index URLs at the sentinel server). With that project open: `lang.status`,
+  `pip.conf` (index URLs at the sentinel server), and on Windows a planted `node.bat` and
+  `npm.cmd` in the project folder. With that project open: `lang.status`,
   discovery for every language and an approved install of each catalogue command (run against
   fakes of `npm`, `uv`, `pipx`, `cargo`, `go` and `rustup` on the test `PATH` that record their
   working folder, arguments and environment) leave **no sentinel** and no request to the
   sentinel server; every recorded working folder is `<data>/lsp-work`; the environment has
   `GOTOOLCHAIN=local` and `RUSTUP_AUTO_INSTALL=0` and no `RUSTC_WRAPPER`; npm got
-  `--registry https://registry.npmjs.org/` and `npm_config_userconfig` naming the user's file.
+  `--registry https://registry.npmjs.org/` and `npm_config_userconfig` naming the user's file;
+  on Windows the planted `node.bat` and `npm.cmd` never run and
+  `NoDefaultCurrentDirectoryInExePath=1` is set.
   The same project trusted: the `path` toolchain is not used until approved, and the status
   says the default toolchain runs.
 - Size: about 800 lines (the neutral-folder runner may split into its own E10b2 if it grows).
@@ -2312,7 +2385,13 @@ the entries are added beside theirs).
   event; the banner with names, authors and diffs; `lang.resume` (gated, `may_grant`); *Run
   project build code* per project (`lang.set_build_code`), which sets rust-analyzer's
   `cargo.buildScripts.enable`, `procMacro.enable` and `checkOnSave`, default off; rust-analyzer's
-  `files.watcher = "client"` and `cargo.buildScripts.rebuildOnSave = false`.
+  `files.watcher = "client"` and `cargo.buildScripts.rebuildOnSave = false`. Revision 6 (R1):
+  the stat sweep before every forwarded message that evaluates project code, cached per
+  debounce window; the 1 s poll while agent commands or background processes of the project
+  are alive; `Unit::freeze` and `Unit::thaw` in `imperium-limits` (cgroup `freeze`, `SIGSTOP`
+  and `SIGCONT`, job process suspension) around each foreground agent command, then sweep and
+  thaw or pause; `node_modules/**` and `.venv/**` as execution-relevant for file tools;
+  `--allowLocalPluginLoads` never passed.
 - Depends on: stages E9 and E10b; stage E4a for the diff view in the banner (until then the
   banner lists files and hashes). E11 does not merge before this stage.
 - Owned paths: `crates/imperium-lsp/src/exec_files.rs` (new), `crates/imperium-core/src/lang/`
@@ -2344,10 +2423,29 @@ the entries are added beside theirs).
     after `lang.set_build_code` from the stub app it receives `true` for all three; from a
     non-app caller the call is refused;
   - nothing resumes on its own: after an hour of simulated time and a daemon restart the project
-    is still paused (the fingerprint is kept in `lsp-approvals.json`).
+    is still paused (the fingerprint is kept in `lsp-approvals.json`);
+  - **R1, background command:** a background agent command that writes `eslint.config.js` two
+    seconds after it starts pauses the servers within 1 s of the write and **before** the next
+    `didChange` reaches the fake (the fake records the order; it receives no `didChange` after
+    the write);
+  - **R1, sweep before forward:** with no command running, `eslint.config.js` changed by an
+    outside process (the test writes it directly) is found by the sweep before the next
+    `didChange`, diagnostic pull or code action is forwarded; a run of 50 keystrokes in one
+    debounce window causes one sweep;
+  - **R1, node_modules:** an agent's `edit_file` to `node_modules/eslint-plugin-x/index.js`
+    pauses the servers before the write lands, as for `build.rs`;
+  - **R1, freeze:** during a scripted foreground agent command in the project the fake server
+    is suspended (on Linux its cgroup reports `frozen 1`, on macOS its state is stopped, on
+    Windows its threads are suspended) and answers nothing; after the command, with nothing
+    changed, it is thawed and answers; with `build.rs` changed by the command it is paused and
+    the sentinel is absent; on Windows, if the runner cannot suspend job processes, the test is
+    recorded as the named gap;
+  - `tsserver` is started without `--allowLocalPluginLoads` (the fake records its arguments);
+  - a file larger than 1 MiB changed by a command shows its old and new size and hash in
+    `lang.paused`.
   Browser checks: the banner shows the files and the diff; *Keep paused* keeps it; *Resume*
   restarts and the diagnostics stop being marked stale.
-- Size: about 750 lines.
+- Size: about 800 lines (the freeze in `imperium-limits` may split into its own E10d).
 - Status: pending
 - Outcome: -
 
