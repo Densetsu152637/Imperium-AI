@@ -778,6 +778,8 @@ pub(crate) enum Migration {
 /// summary; a folder whose plugin is not in `disabled` gets a carried-over approval, so nothing
 /// that runs today stops. Then writes the marker. Does nothing once the marker exists, and never
 /// overwrites a store it cannot read.
+/// (The daemon calls [`migrate_with`], which knows whether it is a server.)
+#[cfg(test)]
 pub(crate) fn migrate(paths: &Paths, disabled: &[String]) -> Result<Migration, String> {
     migrate_with(paths, disabled, true)
 }
