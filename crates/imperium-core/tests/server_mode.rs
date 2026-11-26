@@ -216,7 +216,7 @@ async fn an_approval_carried_over_in_the_data_folder_still_counts_on_a_server() 
         "name": "p", "origin": "preexisting", "hash": hash, "runs": runs,
         "approval": {"hash": hash, "runs": runs, "at_unix_ms": 1, "kind": "carried-over"}
     }}});
-    let data = Paths::under(home.path()).data_dir();
+    let data = Paths::under(home.path()).data_dir().to_path_buf();
     std::fs::create_dir_all(&data).unwrap();
     std::fs::write(data.join("plugin-installs.json"), store.to_string()).unwrap();
     let row = plugin_row(&mut connection).await;
