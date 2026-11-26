@@ -214,6 +214,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Cap tests (delegated cgroup)
         if: runner.os == 'Linux'
+        shell: bash
         env:
           IMPERIUM_REQUIRE_CGROUP: "1"
         run: bash scripts/ci/limits-cgroup.sh cargo test --locked -p imperium-limits -- --nocapture --test-threads=1 2>&1 | tee limits.log
@@ -223,6 +224,7 @@ jobs:
         run: cargo test --locked -p imperium-limits -- --nocapture --test-threads=1 2>&1 | tee limits.log
       - name: Measurements (workspace build, headless Chromium)
         if: runner.os == 'Linux'
+        shell: bash
         run: bash scripts/ci/limits-measure.sh 2>&1 | tee -a limits.log
       - name: Summary
         if: always()
