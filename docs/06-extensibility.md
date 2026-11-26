@@ -607,9 +607,10 @@ what guards them is exact and less than a wall:
   event (additive, protocol 0.65), from its own judgement of the resolved path, and the
   `imperium mcp-serve` harness refuses to answer a request carrying it (it reads the flag, not
   the summary, which holds the model's spelling of the path). Plugin folders an environment's
-  merged settings list are registered as refused at daemon start and whenever the environments
-  change, as well as when a session loads, so the name rule above also covers the gap before
-  that. The same rule asks for writes to the daemon's other records in `<data>` (`plugin-migration.json`,
+  merged settings list are registered as refused at daemon start, whenever the environments
+  change and whenever the user's settings change (a project newly added to
+  `mcp.trusted_projects` is guarded at once), as well as when a session loads, so the name rule
+  above also covers the gap before that. The same rule asks for writes to the daemon's other records in `<data>` (`plugin-migration.json`,
   `marketplaces.json`), the pinned packs and the marketplace clones.
   **Warning on `extensions.plugin_dirs`:** every folder listed there, in the user's settings or
   added by a trusted project's `.imperium/config.toml` for an environment, blocks agent writes
@@ -622,6 +623,12 @@ what guards them is exact and less than a wall:
   files is outside the file tools and is judged by its own approval, not these lists. And the
   install question is answered by any client holding the daemon's token, the user's own CLI
   included: only the `imperium mcp-serve` harness refuses to.
+- **Residual, remote workspaces:** for a session on a remote runtime (SSH, WSL, container) the
+  daemon names a path lexically (`locate_remote` tidies `.` and `..` and, for WSL, converts the
+  drive spelling) and cannot resolve links or the remote file system's case folding. A respelled
+  path there (through a symbolic link, or in another case on a case-folding remote) can miss the
+  `user_only` marking. This is accepted: remote files are not loaded as the local daemon's own
+  extensions, so the remote's own configuration and approvals govern them.
 
 The install question is a session approval, which any client connected to the session can answer;
 it does not count as the desktop app's approval, so it is kept apart from the next rule. The

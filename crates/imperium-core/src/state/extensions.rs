@@ -689,4 +689,70 @@ mod environment_plugin_folder_tests {
             .replace('\\', "/");
         assert!(!imperium_policy::permissions::refused_write(&beside));
     }
+
+    fn project_adding_plugin_folder() -> (tempfile::TempDir, String) {
+        let project = tempfile::tempdir().unwrap();
+        let config = project.path().join(".imperium/config.toml");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, "[extensions]\nplugin_dirs = [\"tools/plugins\"]\n").unwrap();
+        let hook = project.path().join("tools/plugins/p/hooks/hooks.json");
+        (project, hook.to_string_lossy().replace('\\', "/"))
+    }
+
+    fn create_environment(state: &DaemonState, project: &Path) {
+        state
+            .environments()
+            .create(imperium_protocol::methods::EnvironmentCreateParams {
+                name: "Work".into(),
+                folders: vec![project.display().to_string()],
+                ..imperium_protocol::methods::EnvironmentCreateParams::default()
+            })
+            .unwrap();
+    }
+
+    fn trusting(project: &Path) -> imperium_config::Settings {
+        let user = format!(
+            "[mcp]\ntrusted_projects = [\"{}\"]",
+            project.display().to_string().replace('\\', "/")
+        );
+        Config::from_layers([
+            Layer::defaults(),
+            Layer::new(
+                imperium_config::Source::User("test".into()),
+                user.parse().unwrap(),
+            ),
+        ])
+        .settings()
+        .unwrap()
+    }
+
+    #[test]
+    fn the_daemon_start_guards_plugin_folders_of_existing_environments() {
+        let home = tempfile::tempdir().unwrap();
+        let (project, hook) = project_adding_plugin_folder();
+        let settings = trusting(project.path());
+        // A previous run created the environment.
+        let first = DaemonState::new(Paths::under(home.path()), settings.clone(), None);
+        create_environment(&first, project.path());
+        drop(first);
+        assert!(!imperium_policy::permissions::refused_write(&hook));
+        // Starting the daemon guards the folder before any session loads.
+        let _state = DaemonState::new(Paths::under(home.path()), settings, None);
+        assert!(imperium_policy::permissions::refused_write(&hook));
+    }
+
+    #[test]
+    fn newly_trusting_a_project_guards_its_plugin_folders_at_once() {
+        let home = tempfile::tempdir().unwrap();
+        let (project, hook) = project_adding_plugin_folder();
+        let untrusted = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), untrusted, None);
+        create_environment(&state, project.path());
+        state.announce_environments();
+        // Not trusted: the folder is refused by the environment's config, so not guarded.
+        assert!(!imperium_policy::permissions::refused_write(&hook));
+        // The user's settings change to trust the project; no session has loaded.
+        state.replace_settings(trusting(project.path()));
+        assert!(imperium_policy::permissions::refused_write(&hook));
+    }
 }
