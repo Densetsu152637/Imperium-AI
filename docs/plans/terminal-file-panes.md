@@ -3,7 +3,8 @@
 Revision: 2026-11-26, revision 5 (plan-gate review: F1 to F9, N1 to N5, R1 to R4 and S1 to S4 folded
 in);
 written against `experimental` at `3d5db869` (last updated). Roadmap
-[item 55](../12-roadmap.md#next-in-order). Status: planned (no stage started).
+[item 55](../12-roadmap.md#next-in-order). Status: in progress (stage 1 merged as #307; stage 2a in
+review).
 
 Claude's desktop app shows a terminal and a file viewer beside the conversation. Imperium gets the
 same two panes: a **Terminal** panel with one or more shells in the open session's working
@@ -752,7 +753,7 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
   `portable-pty` uses `unsafe` internally (a dependency, allowed; the workspace's own crates stay
   `forbid(unsafe_code)`, so `prctl` goes through `nix`'s safe wrappers); the supervisor must stay
   tiny, because it runs for every Linux terminal.
-- Status: in review (PR #307; every check runs in CI, nothing was built locally)
+- Status: implemented (#307, `0ab2baa2`)
 - Outcome:
   - **`portable-pty` 0.9.0, read from source:** the Unix spawn closes every descriptor above 2 in
     the child (`close_random_fds`, in the `pre_exec` hook, before `exec`), resets `SIGCHLD`,
@@ -861,12 +862,52 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 - Size: about 800 lines.
 - Risks: shutdown ordering (terminals end before the runtime stops); the timer uses the daemon's
   clock abstraction so tests do not wait.
-- Status: pending
-- Outcome: -
-- Handoff notes: stage 2a must test the production path: the daemon's own executable started
-  through `/proc/self/exe pty-supervisor` (stage 1's tests start the supervisor through a test
-  binary, and the `main` dispatch is only built, not run, by them).
-  No agent path is added (no tool, no `session.run_tool` entry, no hook event).
+- Status: in review (every check runs in CI, nothing was built locally)
+- Outcome:
+  - **Built:** `crates/imperium-core/src/terminal.rs` (`TerminalService` on `DaemonState`:
+    `open_terminal`, `attach_terminal`, `detach_terminal`, `close_terminal`,
+    `end_session_terminals`, `end_unattached_terminals`, the minute sweeper and `stop_terminals`)
+    and `terminal/shell.rs` (`resolve_shell` over an explicit `ShellSources`, and `shell_env`).
+    A terminal opens attached once for its opener (stage 2b's `terminal.open` attaches the
+    caller); the limits are checked under one open lock, so two opens at once cannot both pass;
+    a session archived or deleted while its shell starts gets the shell ended. Archive and
+    `forget_session` (delete and the project agents' stops) each make one call; shutdown ends
+    terminals and background commands together inside the existing 5 s wait; ending runs on
+    threads of their own, so archiving never waits for a shell. Nothing logs terminal bytes.
+  - **Settings:** `terminal.enabled` and `terminal.shell` in `[terminal]`, read from the user's
+    file at each open (no restart), else the start-up settings; a project's or environment's
+    `.imperium/config.toml` is never merged as settings, so it cannot set them (tested).
+  - **The production supervisor path (review N7):** `tests/terminal.rs` is a test binary with no
+    libtest harness whose `main` first calls `imperium_core::run_pty_supervisor_if_asked` (moved
+    from `main.rs` into the library, and called by the daemon's `main` too), so on Linux every
+    terminal the tests open re-runs that executable through `/proc/self/exe pty-supervisor`, and a
+    test checks `/proc/<pid>/exe`. One more test starts the built `imperium-core` itself as the
+    supervisor (through a `testing`-feature hook that only tests set), so the daemon's own `main`
+    dispatch runs as well. `Spec.supervisor` and `Spec.daemon` are never set from anything but that
+    hook; no caller's input reaches them.
+  - **Review N10:** the daemon's session sweep now leaves a supervisor that has not exited after
+    `end`'s 9 s alone (it may still be ending its tree inside its 120 s cap; killing it would hand
+    what is left to init) and sweeps only the session's other members; a backstop thread kills
+    it, and sweeps again, only once its cap and 5 s have passed. Test: a supervisor that lingers
+    14 s after ending its tree exits by itself, not by `SIGKILL`. N9 (plain `SIGKILL` each round)
+    is not taken: the stop-then-kill rounds are tested and bounded as they are.
+  - **Deviations:** `IMPERIUM_HOME` is kept in the shell's environment (it is a path, and an
+    `imperium` command in the terminal must reach this daemon); every other `IMPERIUM_*` is
+    dropped, and `PWD` is set to the working folder (an inherited one names the daemon's). On
+    Windows PowerShell gets `-NoLogo`. `imperium-pty` moved to the main dependency table of
+    `imperium-core` (all OSes).
+  - **Acceptance mapping** (`cargo test -p imperium-core --test terminal`): start in the root
+    with the default shell (and the `/proc/self/exe` check), the real daemon as supervisor, the
+    fifth and seventeenth refused, archive, delete, the hour unattached on an explicit clock
+    (`end_unattached_terminals(now)`), shutdown, close, the environment file ignored, turned off,
+    remote-runtime and archived sessions refused, the `PATH` search, the Unix shell choice cases,
+    the Windows choice (planted `pwsh.exe` on `PATH`; `ComSpec` is not an input), and the
+    environment. `imperium-config`'s registry test covers the settings' defaults and the project
+    file; `imperium-pty`'s supervisor tests cover N10.
+- Handoff notes: no agent path was added (no tool, no `session.run_tool` entry, no hook event),
+  and no protocol: stage 2b adds `terminal.*` on top of `open_terminal`, `attach_terminal`,
+  `detach_terminal`, `close_terminal`, `terminals().list` and `Terminal::pty().subscribe`. The
+  gate (D2) belongs there; until then nothing outside the daemon's process can reach a terminal.
 
 ### Stage 2b: Terminal protocol and the gate
 

@@ -204,6 +204,32 @@ pub struct Settings {
     /// `[[hooks]]`: commands run at points in a session (see docs/06-extensibility.md#hooks).
     #[serde(default)]
     pub hooks: Vec<HookSettings>,
+    /// `[terminal]`: the desktop app's terminal panes (see docs/10-configuration.md#implemented-settings).
+    /// Read from the user's own layers only: an environment's `.imperium/config.toml` cannot
+    /// set it.
+    #[serde(default)]
+    pub terminal: TerminalSettings,
+}
+
+/// The terminals the daemon runs for the desktop app's Terminal panel.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TerminalSettings {
+    /// Off refuses every new terminal.
+    pub enabled: bool,
+    /// The program and its arguments; empty picks the account's shell (Unix) or PowerShell
+    /// (Windows). A bare program name is looked up on `PATH`, skipping relative entries and
+    /// entries inside the session's folders.
+    pub shell: Vec<String>,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            shell: Vec::new(),
+        }
+    }
 }
 
 /// The endpoint id that names models served by the supervised llama.cpp runtime, as in
