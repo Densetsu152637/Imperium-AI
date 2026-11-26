@@ -20,7 +20,7 @@ FORBIDDEN = ("open", "socket", "subprocess", "compile", "exec", "import")
 
 
 # Actions whose exception reaches the worker's own handling (stage 2b's crash wrapper).
-ESCAPES = ("escape", "bad-str", "memory", "rlimits", "ring")
+ESCAPES = ("escape", "bad-str", "memory", "rlimits", "ring", "nsimplify")
 
 
 @pytest.fixture(scope="module")
@@ -95,6 +95,14 @@ def test_a_new_polynomial_ring_generates_no_code_under_the_hook(probes):
     generated source there, which the hook refuses. `nocodegen` replaces it."""
     _, reply, code = probes["ring"]
     assert reply == {"ok": True, "ring": True}, (reply, code)
+    assert code == worker.EXIT_OK
+
+
+def test_nsimplify_parses_no_string_under_the_hook(probes):
+    """SymPy reaches `nsimplify` from inside `Expr.equals` and relational simplification; its
+    `mpmath.identify` path would `eval` and `sympify` a string, which `nocodegen` turns off."""
+    _, reply, code = probes["nsimplify"]
+    assert reply is not None and reply.get("ok") is True, (reply, code)
     assert code == worker.EXIT_OK
 
 

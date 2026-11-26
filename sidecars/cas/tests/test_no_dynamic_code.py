@@ -92,7 +92,7 @@ EXTRA_IMPORTS = {
     # Stage 3: the tools and the result printer use SymPy; the MCP front uses the SDK.
     "tools.py": {"random", "sympy"},
     "format.py": {"sympy"},
-    "nocodegen.py": {"sympy.polys"},
+    "nocodegen.py": {"sympy.polys", "mpmath"},
     "server.py": {
         "itertools",
         "sys",

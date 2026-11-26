@@ -1512,8 +1512,12 @@ Commands are what CI runs; nothing needs a local Rust build.
       prefixes, `S('3/2')` in the Meijer G table). The worker's warm-up builds them before the
       hook; the test session runs the warm-up before the string trap. `Expr.equals` goes further:
       through `nsimplify` and `mpmath.identify` it parses a numeric string with `sympify`, so a
-      call reaching it was refused (`compile`) on some hash seeds; `equal` no longer calls it, and
-      a test keeps `equals`, `nsimplify` and `identify` out of the package. A refusal now names
+      call reaching it was refused (`compile`) on some hash seeds. SymPy also calls `equals` from
+      inside relational and equation simplification, so `equal` no longer calls it, a test keeps
+      `equals`, `nsimplify` and `identify` out of the package, and `nocodegen` turns
+      `mpmath.identify` off in the worker (`nsimplify` then falls back to a rational
+      approximation, as it does whenever `identify` finds nothing). A probe calls `nsimplify` on
+      a decimal under the real hook. A refusal now names
       its event (and, for `compile` and `exec`, the file name the code came from).
     - **Memory explosions.** Corpus line `(x+y+z)^5000` passes D2's guard (it is the expand rule's
       exponent of 10,000 that refuses only `expand`) and `simplify`, `expand` and others multiply

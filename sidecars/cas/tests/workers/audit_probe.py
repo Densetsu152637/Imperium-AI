@@ -8,7 +8,7 @@ import socket
 import subprocess
 import sys
 
-from sympy import symbols
+from sympy import Float, Rational, nsimplify, symbols
 from sympy.polys.rings import ring
 
 from imperium_cas import worker
@@ -72,6 +72,11 @@ def probe(request: dict) -> dict:
             # monomial functions with `exec`, unless `nocodegen` is installed.
             ring(symbols("probe_a probe_b probe_c probe_d probe_e probe_f probe_g"), "QQ")
             return {"ok": True, "ring": True}
+        elif action == "nsimplify":
+            # `nsimplify` of a decimal would ask `mpmath.identify`, which `eval`s and returns a
+            # string that `sympify` parses, unless `nocodegen` turned it off.
+            value = nsimplify(Float(2) ** Rational(1, 2))
+            return {"ok": True, "nsimplify": str(value)[:40]}
         elif action == "corpus":
             # Every expression under the real hook: an event outside the allow-list exits.
             for expression in request.get("expressions", []):

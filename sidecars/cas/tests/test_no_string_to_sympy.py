@@ -194,6 +194,8 @@ def test_no_tool_reaches_sympys_string_round_trips():
     parses with `sympify` (and `eval`): none of the package's modules call them."""
     names = {"equals", "nsimplify", "identify"}
     for path in sympy_facing_modules():
+        if path.name == "nocodegen.py":
+            continue  # the module that turns `identify` off
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute | ast.Name):
