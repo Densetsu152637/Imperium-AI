@@ -162,8 +162,6 @@ fn create_dir(path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::MetadataExt as _;
-
     use super::*;
 
     /// A cgroup2 mount stand-in: `<mount>/user/app` with the memory controller available.
