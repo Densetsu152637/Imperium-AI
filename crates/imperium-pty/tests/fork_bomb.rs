@@ -22,11 +22,14 @@ const HEADROOM: usize = 400;
 /// the pids cgroup the runner's own agent shares (`pids.max` about 19,000); the agent's Go runtime
 /// died on `newosproc` and it shut the runner down mid-job. So the script checks that the limit
 /// took and exits before the bomb if it did not.
+///
+/// The shell then stays (`exec sleep`, which needs no fork once the cap is reached): a shell that
+/// exits ends the terminal, and the supervisor would kill the bomb before it spreads.
 fn script() -> String {
     format!(
         "n=$(ps -L -u \"$(id -u)\" -o lwp= | wc -l); cap=$((n + {HEADROOM})); \
          ulimit -u \"$cap\" && [ \"$(ulimit -u)\" = \"$cap\" ] || {{ echo NO-CAP; exit 99; }}; \
-         echo \"CAP:$cap:E\"; b() {{ b | b & }}; b"
+         echo \"CAP:$cap:E\"; b() {{ b | b & }}; b; exec sleep 60"
     )
 }
 
