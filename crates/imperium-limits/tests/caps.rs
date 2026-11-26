@@ -211,6 +211,12 @@ async fn an_allocation_bomb_is_stopped_at_its_cap() {
     if cfg!(target_os = "macos") {
         // 64 MiB every 50 ms against a 100 ms poll: at most three steps past the cap.
         assert!(peak <= cap + 3 * 64 * MIB, "peak {peak} too far over {cap}");
+    } else if cfg!(windows) {
+        // The job checks its limit against each commit request, but its peak
+        // (`PeakJobMemoryUsed`) also counts what the kernel charges without one (page tables,
+        // stack pages): it read 1.25 MiB over the limit on the runner. 2 MiB of slack is far
+        // under the probe's 64 MiB step, so a limit that let one more step through still fails.
+        assert!(peak <= cap + 2 * MIB, "peak {peak} over the cap {cap}");
     } else {
         assert!(peak <= cap, "peak {peak} over the cap {cap}");
     }

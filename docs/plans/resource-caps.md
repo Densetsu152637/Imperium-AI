@@ -5,7 +5,7 @@ the first review's blockers B1 to B5, majors M1 to M7 and the minor and missing-
 findings; revision 2 recorded the user's answers as
 [settled decisions](#settled-decisions); revision 1 was the first draft). Written
 against `experimental` at `cd791003`. Roadmap [item 68](../12-roadmap.md#next-in-order).
-Status: planned (no stage started).
+Status: stage 1 done (pull request #337); stages 2 to 8 planned.
 
 A CAS test process grew to about 20 GB on the user's 64 GB Windows machine and took the machine
 to about 100% RAM. Nothing stopped it: on Windows no process Imperium starts has a memory limit
@@ -929,6 +929,77 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
     (Windows, macOS) of a real `cargo build` of this workspace and of a headless Chromium
     session, so the task and process defaults are set from data before stage 3 enforces them;
   - the units' CPU time is read from the job's accounting and `cpu.stat` (goal 4).
+- Status: done (pull request #337).
+- Outcome (2026-11-26):
+  - **Delivered.** `crates/imperium-limits`: `Class`, `Caps`, `UnitSpec`, `Limits`,
+    `UnitCommand`, `Unit` and `Ending`; the Windows jobs and completion port (`windows.rs`), the
+    Linux cgroup tree, fallback poll and launcher (`cgroup.rs`, `linux.rs`, `launcher.rs`), the
+    macOS poll (`macos.rs`); `limit_probe` (built only with `test-support`); `tests/caps.rs`;
+    the `limits` CI job with `scripts/ci/limits-cgroup.sh` (a `sudo`-made subtree with a 6 GiB
+    and 16,384-task ceiling of its own) and `scripts/ci/limits-measure.sh`. `unsafe` is allowed
+    only in `windows.rs`, `macos.rs` and `notify.rs` (Tokio's `AsyncFd::register` for the
+    inotify descriptor, `AsyncFd::new` being deprecated as unsound).
+  - **#328's pieces, moved with their API.** `cgroup::{Cgroups, Lease, delegated}` (now
+    directory-relative, the M5 fix), `macos::{Watchdog, resident_bytes}` and `windows::Job`
+    (`limit`, `restrict_ui`, `assign` on a `BorrowedHandle`, `assign_child`, `terminate`).
+    #328 keeps its token, labels, pipes and handle list and calls these.
+  - **Measured on the hosted runners** (4 CPUs each):
+
+    | Check | Linux, cgroup | Linux, fallback | Windows, job |
+    | --- | --- | --- | --- |
+    | alloc bomb, 256 MiB cap, 64 MiB steps | stopped by `oom.group`, peak 256 MiB | refused by `RLIMIT_DATA` at 192 MiB | stopped, `PeakJobMemoryUsed` 1.2 to 1.25 MiB over the limit |
+    | tree of two 192 MiB holders, 256 MiB cap | n/a | stopped by the 250 ms poll, sampled peak 291 MiB | n/a |
+    | fork bomb | stopped at 256 tasks | n/a | stopped at 32 processes (sampled peak 31) |
+    | four-thread spin, 25% cap, 3 s | 25.5% of the machine | not enforced (reported) | 28.5% (hard cap in a nested job works) |
+
+  - **The L6 measurements** (Linux, a cgroup unit with no caps, sampled every 100 ms): a cold
+    `cargo build --locked --workspace` peaked at 12 processes, 39 to 40 tasks and about 10.5 GiB
+    charged (page cache included) over 260 to 281 s; a 20 s headless Chromium session on a real
+    page (the CDP browser's flags) peaked at 14 to 20 processes, 115 to 179 tasks and 355 to
+    503 MiB. **Defaults unchanged**: the `command` (16,384 tasks, 1,024 processes) and `browser`
+    (4,096 tasks, 512 processes) caps sit two orders of magnitude above these, which a build on
+    a machine with many more cores (cargo's jobs scale with them) still needs. The build's
+    memory charge is mostly page cache, which `memory.max` reclaims before it kills; stage 3
+    measures anonymous memory against the command cap on a small machine.
+  - **F2 settled.** In a capped unit (nested total, unit, no `BREAKAWAY_OK`)
+    `CREATE_BREAKAWAY_FROM_JOB` fails with access denied; the control in a plain
+    `BREAKAWAY_OK` job breaks away. The daemon job keeps `BREAKAWAY_OK` for the folder opener.
+  - **Nesting and sessions.** A unit's process is in its unit, session and total jobs, and a
+    session memory limit stops the session's largest unit while the allocator that hit it
+    goes on.
+  - **Gap: pagefile-backed sections escape the job (L15).** `alloc --section` committed its
+    whole 1 GiB ceiling under a 256 MiB job: section memory is not charged to the job's memory
+    limit. The watchdog's commit reading (stage 6) is the only backstop, and 05 says so when the
+    caps are documented (stage 8).
+  - **Gap: the Toolhelp snapshot is not cheap (L2).** With 3,000 extra threads on the runner it
+    took a median 33 ms (at most 46 ms) per spawn. L2's alternative needs the main thread's id
+    without a snapshot, which `PROCESS_BASIC_INFORMATION` does not carry; `NtGetNextThread`
+    (ntdll, not in windows-sys) enumerates only the process's own threads. Stage 3 adopts it
+    (or `PROC_THREAD_ATTRIBUTE_JOB_LIST` for hot sites such as hooks) before hooks spawn through
+    units, and stage 8 measures it. A3 holds: every suspended process had exactly one thread,
+    and a spawn refuses to resume any other count.
+  - **The job's peak tolerance.** The Windows alloc check allows 2 MiB over the cap, documented
+    in the test: the limit is checked per commit request, while the peak also counts kernel
+    charges made without one. A limit that let one more 64 MiB step through still fails.
+  - **macOS.** The 100 ms poll's overshoot is printed by the alloc test (`MEASURE alloc`); the
+    test bounds it at three 64 MiB steps. The value lands in the job summary of the `limits`
+    job.
+  - **Adjustments to the plan's API and scope.**
+    - `Limits::command(spec, program)` returns a `UnitCommand` (a `tokio::process::Command`
+      by `Deref`) that `spawn()` starts, instead of `spawn(spec, command)`: on Linux the
+      program must be the launcher, which a finished `Command` cannot be changed to. Callers set
+      arguments, environment and stdio as before; creation flags and the process group belong
+      to the unit.
+    - Not in stage 1, for the stages that wire spawn sites: the 80% `near limit` notice, the
+      launcher's exit 125 reported as `refused_start` (stage 2 maps it; stage 1 reports it as an
+      exit), `PRIO_DARWIN_BG` and below-normal priority, macOS session aggregates (the daemon's
+      own accounting), `Limits::adopt` (stage 7) and the pidfd start-time check after the
+      leader is reaped (the fallback and macOS check the group id instead).
+    - About 4,300 lines rather than 800: half is the tests and probes the acceptance list asks
+      for and #328's moved code with its tests.
+  - **A neighbouring flake fixed.** `imperium-pty`'s fork-bomb test set `ulimit -u` from the
+    user's process count, but `RLIMIT_NPROC` counts threads, so a runner whose user ran a few
+    hundred threads left the bomb too few slots to spread; it now counts threads (`ps -L`).
 
 ### Stage 2: the daemon's cgroup, the settings and a capped launcher for scripts
 
