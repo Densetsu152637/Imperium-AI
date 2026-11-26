@@ -1,6 +1,6 @@
 from hypothesis import HealthCheck, settings
 
-from support import FUZZ_EXAMPLES, FUZZ_SEED
+from support import FUZZ_EXAMPLES, FUZZ_SEED, MEASUREMENTS, install_string_trap
 
 settings.register_profile(
     "cas",
@@ -11,6 +11,17 @@ settings.register_profile(
 )
 settings.load_profile("cas")
 
+# Plan D1 point 4: no `str` reaches `sympify` or `parse_expr`, and nothing calls `lambdify`, for
+# the whole test session (test_no_string_to_sympy.py checks the trap and runs the corpus).
+install_string_trap()
+
 
 def pytest_report_header(config):
     return f"cas fuzz seed: {FUZZ_SEED} (CAS_FUZZ_SEED repeats it), examples: {FUZZ_EXAMPLES}"
+
+
+def pytest_terminal_summary(terminalreporter):
+    if MEASUREMENTS:
+        terminalreporter.section("cas measurements")
+        for line in MEASUREMENTS:
+            terminalreporter.write_line(line)

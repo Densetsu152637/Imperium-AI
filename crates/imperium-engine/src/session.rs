@@ -137,6 +137,7 @@ pub struct SessionOptions {
     /// Told what the root agent's tools are and which of them it reaches on demand.
     pub tool_watch: Option<Arc<dyn crate::ToolWatch>>,
     /// Held by every read a step runs ahead together before it reads (tests only).
+    #[cfg(feature = "testing")]
     pub read_gate: Option<Arc<dyn crate::ReadGate>>,
 }
 
@@ -296,7 +297,16 @@ impl Session {
         // session on this machine may read.
         let spill_dir = (config.harness.result_spill && config.workspace.runtime().is_none())
             .then(|| crate::spill::results_dir(&config.journal_path))
-            .filter(|dir| std::fs::create_dir_all(dir).is_ok());
+            .filter(|dir| {
+                // Made empty here, even if nothing is ever saved. A link is never used.
+                let made = crate::spill::refuse_link(dir)
+                    .and_then(|()| std::fs::create_dir_all(dir))
+                    .and_then(|()| crate::spill::refuse_link(dir));
+                if let Err(error) = &made {
+                    tracing::warn!(%error, "large tool results stay in the conversation");
+                }
+                made.is_ok()
+            });
         if let Some(dir) = &spill_dir {
             config.workspace = config.workspace.with_results_dir(dir);
         }
@@ -362,6 +372,7 @@ impl Session {
                 root_agent: options.root_agent,
                 tool_edits: options.tool_edits,
                 tool_watch: options.tool_watch,
+                #[cfg(feature = "testing")]
                 read_gate: options.read_gate,
             },
             Arc::clone(&model),
@@ -932,6 +943,7 @@ pub(crate) struct Shared {
     /// Answers subagents from recordings (an evaluation harness), when set.
     pub replay: Option<Arc<dyn crate::SubagentReplay>>,
     /// Held by every read of a parallel run before it reads (tests only).
+    #[cfg(feature = "testing")]
     pub read_gate: Option<Arc<dyn crate::ReadGate>>,
     /// The variant's edits of the root agent's tools, when an evaluation sets any or watches.
     pub tool_edits: Option<crate::tool_edits::ToolEditing>,
@@ -1035,6 +1047,7 @@ struct Started {
     root_agent: Option<imperium_extensions::AgentDef>,
     tool_edits: imperium_protocol::methods::ToolEdits,
     tool_watch: Option<Arc<dyn crate::ToolWatch>>,
+    #[cfg(feature = "testing")]
     read_gate: Option<Arc<dyn crate::ReadGate>>,
 }
 
@@ -1057,6 +1070,7 @@ async fn run(
         root_agent,
         tool_edits,
         tool_watch,
+        #[cfg(feature = "testing")]
         read_gate,
     } = started;
     let checkpoints = config.checkpoints.clone();
@@ -1078,7 +1092,7 @@ async fn run(
     // The folder the session made at its start, when large results are saved in it.
     let spill_dir = (config.harness.result_spill && config.workspace.runtime().is_none())
         .then(|| crate::spill::results_dir(&config.journal_path))
-        .filter(|dir| dir.is_dir());
+        .filter(|dir| !crate::spill::is_link(dir) && dir.is_dir());
     let shared = Arc::new(Shared {
         session_id: config.id.clone(),
         controls: Arc::clone(&emitter.controls),
@@ -1123,6 +1137,7 @@ async fn run(
         effort,
         knowledge: crate::knowledge::Knowledge::new(config.knowledge),
         replay,
+        #[cfg(feature = "testing")]
         read_gate,
         tool_edits: (tool_watch.is_some()
             || tool_edits != imperium_protocol::methods::ToolEdits::default())

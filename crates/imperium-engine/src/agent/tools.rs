@@ -669,7 +669,12 @@ impl Agent {
             emit: &emit,
             sampler: Some(&sampler),
         };
-        let (ok, output) = match provider.call(&context, name, arguments).await {
+        // A read-only call that ran with the others of its step already has its output.
+        let result = match self.kept_provider_result(call, name, arguments) {
+            Some(result) => result,
+            None => provider.call(&context, name, arguments).await,
+        };
+        let (ok, output) = match result {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };

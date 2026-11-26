@@ -32,5 +32,5 @@ pub use sandbox::{
     leave_writable_in_guards, require_present,
 };
 pub use search::{GrepQuery, Scope};
-pub use workspace::{GrantedPath, Workspace, plain as plain_path};
+pub use workspace::{GrantedPath, Workspace, is_link, plain as plain_path};
 pub use writer_trees::{WriterStart, WriterTrees};
