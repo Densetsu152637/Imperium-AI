@@ -21,6 +21,10 @@
 //!    per-machine Program Files folder (`windows::may_count`); a debug build's `dev` approval is
 //!    exempt.
 //!
+//! Before all of these, a daemon in server mode (`daemon.server`) refuses every approval, whatever
+//! the peer: [`InstalledApp`] is made from the daemon's state ([`InstalledApp::of`]), so every
+//! caller inherits the refusal.
+//!
 //! Linux, Windows and macOS are implemented (Windows reads no peer environment: the app checks
 //! its own, stage 8b); another platform refuses every approval.
 
@@ -102,12 +106,37 @@ pub(crate) trait Identify {
     fn identify(&self, peer: Option<&Peer>) -> Result<(), String>;
 }
 
-/// The production check: the desktop app installed beside `imperium-core`.
-pub(crate) struct InstalledApp;
+/// Why an approval is refused on a server.
+pub(crate) const ON_SERVER: &str = "this daemon runs as a server (daemon.server), where no \
+     approval is made: approve in the desktop app on its own machine";
+
+/// The production check: the desktop app installed beside `imperium-core`, and never on a
+/// server.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InstalledApp {
+    server: bool,
+}
+
+impl InstalledApp {
+    /// The check for `daemon`: on a server it refuses everything.
+    pub(crate) fn of(daemon: &crate::DaemonState) -> Self {
+        InstalledApp {
+            server: daemon.settings().daemon.server,
+        }
+    }
+
+    /// The check of a daemon that is not a server, for tests of the platform checks.
+    #[cfg(test)]
+    pub(crate) const DESKTOP: InstalledApp = InstalledApp { server: false };
+}
 
 impl Identify for InstalledApp {
     fn identify(&self, peer: Option<&Peer>) -> Result<(), String> {
-        // Check 1 comes first: a TCP caller is refused before any process is looked at.
+        // Server mode first, before any peer is looked at; then check 1, so a TCP caller is
+        // refused before any process is looked at.
+        if self.server {
+            return Err(ON_SERVER.to_string());
+        }
         let peer = local_only(peer)?;
         platform::identify(peer, &installed_app()?)
     }
@@ -407,7 +436,7 @@ mod tests {
     #[test]
     fn a_tcp_connection_is_refused_before_any_process_check() {
         // `None` is what a loopback TCP connection, a phone or a mod frame carries.
-        let error = InstalledApp.identify(None).unwrap_err();
+        let error = InstalledApp::DESKTOP.identify(None).unwrap_err();
         assert!(error.contains("local socket"), "{error}");
         let home = home();
         let (hash, runs) = content(&home);
@@ -419,7 +448,7 @@ mod tests {
             subject: Subject::Plugin,
         };
         let mut challenges = Challenges::default();
-        let error = challenge(&InstalledApp, None, &mut challenges, &asked).unwrap_err();
+        let error = challenge(&InstalledApp::DESKTOP, None, &mut challenges, &asked).unwrap_err();
         assert!(error.contains("local socket"), "{error}");
     }
 
@@ -581,6 +610,59 @@ mod tests {
         )
     }
 
+    /// On a server the production check refuses an approval for any peer, the app's included,
+    /// before any process is looked at: no challenge is issued, nobody is asked and nothing is
+    /// recorded. The check is made from the daemon's state, so a caller cannot leave it out.
+    #[test]
+    fn a_server_refuses_every_approval_through_the_production_check() {
+        let home = home();
+        let (hash, runs) = content(&home);
+        let asked = Asked {
+            folder: &home.folder,
+            hash: &hash,
+            runs: &runs,
+            now_ms: 0,
+            subject: Subject::Plugin,
+        };
+        let peer = Peer::test_peer();
+        let mut settings =
+            imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+                .settings()
+                .unwrap();
+        settings.daemon.server = true;
+        let server = crate::DaemonState::new(home.paths.clone(), settings, None);
+        let app = InstalledApp::of(&server);
+        for peer in [Some(&peer), None] {
+            assert_eq!(app.identify(peer).unwrap_err(), ON_SERVER);
+        }
+        let mut challenges = Challenges::default();
+        assert_eq!(
+            challenge(&app, Some(&peer), &mut challenges, &asked).unwrap_err(),
+            ON_SERVER
+        );
+        // A challenge some other check issued is not redeemed either.
+        let issued = challenge(&LocalPeer, Some(&peer), &mut challenges, &asked).unwrap();
+        let presence = Answers::new(Presence::Passed);
+        let result = approve(
+            &home.paths,
+            &app,
+            &TestVerifier,
+            &presence,
+            Some(&peer),
+            &mut challenges,
+            &asked,
+            &issued.challenge,
+        );
+        assert!(!result.approved);
+        assert_eq!(result.reason.as_deref(), Some(ON_SERVER));
+        assert!(presence.asked().is_empty());
+        assert_eq!(recorded_kind(&home), None);
+        // Off a server the same check goes on to the peer (and this test process is not the app).
+        let desktop = InstalledApp::of(&state_of(&home));
+        let error = desktop.identify(Some(&peer)).unwrap_err();
+        assert_ne!(error, ON_SERVER);
+    }
+
     fn recorded_kind(home: &Home) -> Option<ApprovalKind> {
         plugin_records::record_for(&home.paths, &home.folder)
             .and_then(|record| record.approval)
@@ -655,7 +737,7 @@ mod tests {
         assert!(!result.approved);
         let result = approve(
             &home.paths,
-            &InstalledApp,
+            &InstalledApp::DESKTOP,
             &ReleaseVerifier,
             &presence,
             None,

@@ -286,7 +286,11 @@ mod tests {
         )
         .unwrap();
         // The test binary is not the desktop app installed beside imperium-core.
-        assert!(super::super::InstalledApp.identify(Some(&peer)).is_err());
+        assert!(
+            super::super::InstalledApp::DESKTOP
+                .identify(Some(&peer))
+                .is_err()
+        );
     }
 
     #[test]

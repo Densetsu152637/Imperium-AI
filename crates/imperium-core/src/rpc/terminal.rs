@@ -88,7 +88,9 @@ pub(crate) struct DesktopGate;
 
 impl TerminalGate for DesktopGate {
     fn admit(&self, caller: &TerminalCaller<'_>) -> Result<(), String> {
-        let installed = crate::app_identity::InstalledApp;
+        // Both checks are made from the daemon's state, so a server (`daemon.server`) refuses
+        // every terminal before any peer is looked at.
+        let installed = crate::app_identity::InstalledApp::of(caller.daemon);
         #[cfg(any(test, feature = "testing"))]
         let stand_in = testing::StandIn;
         #[cfg(any(test, feature = "testing"))]
@@ -99,7 +101,9 @@ impl TerminalGate for DesktopGate {
         };
         #[cfg(not(any(test, feature = "testing")))]
         let identify: &dyn crate::app_identity::Identify = &installed;
-        desktop_verdict(identify, caller, crate::peer::may_grant)
+        desktop_verdict(identify, caller, |pid, accepted_at| {
+            crate::peer::may_grant(caller.daemon, pid, accepted_at).is_ok()
+        })
     }
 }
 

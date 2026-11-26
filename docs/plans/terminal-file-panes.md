@@ -977,9 +977,9 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     `Connection::dispatch_terminal` first, before its params are read; on the connection's first
     such call `DesktopGate` runs `app_identity::InstalledApp` (checks 1 to 4) then
     `peer::may_grant`, and the verdict is cached on the connection. No desktop lease is used; a
-    `system.lease` of kind `desktop` counts for nothing. When server mode (item 63, #327) merges,
-    the two calls become `InstalledApp::of(&daemon)` and `peer::may_grant(&daemon, ..)`: the
-    `TerminalCaller` the gate gets already carries the daemon (`TerminalCaller::daemon`).
+    `system.lease` of kind `desktop` counts for nothing. Both checks are made from the daemon's
+    state (`InstalledApp::of(&daemon)`, `peer::may_grant(&daemon, ..)`, server mode of item 63),
+    so a server refuses every terminal call with `-32005` before any peer is looked at (tested).
   - **Review entry conditions:** 2B-1, the token test is strict: it asserts `-32005` for every
     method in the protocol's method table (`snapshots/methods.txt`, the table the router test
     checks) holding `terminal`, plus an undefined `terminal.create`, and the same calls with the

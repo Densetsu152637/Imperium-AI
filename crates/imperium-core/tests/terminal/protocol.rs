@@ -1048,3 +1048,46 @@ pub(super) async fn a_token_holder_cannot_change_the_terminal_settings() {
     assert!(text.contains("[terminal]"), "{text}");
     assert!(!text.contains("planted"), "{text}");
 }
+
+/// On a server (`daemon.server`) no connection gets a terminal: the gate's checks are made from
+/// the daemon's state and refuse before any peer is looked at, the app's own process included.
+pub(super) async fn a_server_refuses_every_terminal() {
+    let fixture = fixture("[daemon]\nserver = true\n");
+    let session = fixture.session();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut local = connect(
+        Connection::new(Arc::clone(&fixture.state)).with_peer(Some((std::process::id(), now))),
+        "imperium-desktop",
+    )
+    .await;
+    let outcome = call(
+        &mut local,
+        "terminal.open",
+        json!({"session_id": session, "cols": 80, "rows": 24}),
+    )
+    .await;
+    assert_eq!(code(&outcome), Some(FORBIDDEN), "{outcome:?}");
+    let Outcome::Error(error) = outcome else {
+        unreachable!()
+    };
+    assert!(error.message.contains("server"), "{}", error.message);
+    // Even with the app check set aside, the grant check refuses on a server.
+    imperium_core::terminal_gate_testing::skip_app_check(true);
+    let mut other = connect(
+        Connection::new(Arc::clone(&fixture.state)).with_peer(Some((std::process::id(), now))),
+        "imperium-desktop",
+    )
+    .await;
+    let outcome = call(
+        &mut other,
+        "terminal.open",
+        json!({"session_id": session, "cols": 80, "rows": 24}),
+    )
+    .await;
+    imperium_core::terminal_gate_testing::skip_app_check(false);
+    assert_eq!(code(&outcome), Some(FORBIDDEN), "{outcome:?}");
+    assert!(fixture.state.terminals().ids().is_empty());
+}

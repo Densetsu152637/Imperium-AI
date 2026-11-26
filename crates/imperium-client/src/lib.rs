@@ -183,6 +183,7 @@ impl Client {
                     version: String::new(),
                 },
                 protocol: PROTOCOL_VERSION,
+                server: false,
             },
         };
         connection.daemon = connection

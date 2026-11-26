@@ -218,7 +218,7 @@ mod tests {
             .to_path()
             .unwrap();
         assert_eq!(path.canonicalize().unwrap(), exe);
-        assert!(InstalledApp.identify(Some(&peer)).is_err());
+        assert!(InstalledApp::DESKTOP.identify(Some(&peer)).is_err());
     }
 
     /// A child that is killed and reaped when dropped, so no test leaves one behind.
