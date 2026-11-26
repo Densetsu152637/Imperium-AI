@@ -7,7 +7,7 @@ export type HfVariant = {
 /**
  * The quantisation, such as `Q4_K_M`, or `safetensors`.
  */
-name: string, runtime: "llamacpp" | "vllm", 
+name: string, runtime: "llamacpp" | "vllm" | "ncm", 
 /**
  * The id the model will have in `models.local`.
  */

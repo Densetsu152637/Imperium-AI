@@ -9,7 +9,7 @@ import type { SelectOption } from "../components/Select";
 import { rowById, rowBySpecOrId } from "./spec.ts";
 import { chooserModels, type ModelGroup, type ModelMarks } from "./modelPrefs.ts";
 
-const RUNTIMES: Record<LocalModelRow["runtime"], string> = { llamacpp: "llama.cpp", vllm: "vLLM" };
+const RUNTIMES: Record<LocalModelRow["runtime"], string> = { llamacpp: "llama.cpp", vllm: "vLLM", ncm: "NCM" };
 
 /** The spec a local model is used by: `<runtime>:<id>`. */
 export const localSpec = (row: LocalModelRow): string => `${row.runtime}:${row.id}`;
