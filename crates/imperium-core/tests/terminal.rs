@@ -9,6 +9,7 @@
 //! Every wait is bounded. The daemon's log is captured at TRACE for the whole run, so a test can
 //! check that no terminal byte reaches it.
 
+#[path = "terminal/protocol.rs"]
 mod protocol;
 
 use std::ffi::OsString;
