@@ -68,6 +68,11 @@ EXCEPTIONS = {
     "pool.py": {"subprocess", "os"},
     "limits_macos.py": {"ctypes"},
     "landlock.py": {"ctypes", "os"},
+    "worker.py": {"os"},  # `os._exit` and `os.getpid` only (test_worker_uses_os_narrowly)
+}
+# Attributes starting with `_` that a module may use (R2), each a documented need.
+R2_EXCEPTIONS = {
+    "worker.py": {"_exit"},  # the audit hook and every exit: no interpreter shutdown runs
 }
 
 BASE_IMPORTS = {"re", "math", "dataclasses", "typing"}
@@ -77,6 +82,8 @@ EXTRA_IMPORTS = {
     "pool.py": {"subprocess", "os"},
     "limits_macos.py": {"ctypes"},
     "landlock.py": {"ctypes", "os", "sys"},
+    "framing.py": {"json"},
+    "worker.py": {"os", "sys", "time", "resource"},
 }
 # R4's list plus the sibling modules each pure module is built on. The plan's R4 names no sibling
 # imports, but `guard` needs `parse`'s tree types and every module needs the function table.
@@ -85,11 +92,12 @@ R4_ALLOWED = {
     "parse.py": BASE_IMPORTS | {"imperium_cas.functions"},
     "guard.py": BASE_IMPORTS | {"imperium_cas.functions", "imperium_cas.parse"},
     "build.py": BASE_IMPORTS
-    | {"imperium_cas.functions", "imperium_cas.parse", "imperium_cas.guard", "sympy"},
+    | {"types", "imperium_cas.functions", "imperium_cas.parse", "imperium_cas.guard", "sympy"},
 }
 # `build.py` may `from sympy import <name>` for these (stage 2a adds what its builder needs).
 SYMPY_NAMES = set(FUNCTIONS) | {"Symbol", "Integer", "Rational", "Matrix", "Eq", "Ne", "Lt", "Le"}
 SYMPY_NAMES |= {"Gt", "Ge", "Pow", "Add", "Mul", "I", "E", "pi", "oo"}
+SYMPY_NAMES |= {"Tuple", "true", "false", "sstr"}  # stage 2a: lists, isprime's result, printing
 
 
 def scan(source: str, module: str) -> list[str]:
@@ -106,7 +114,7 @@ def scan(source: str, module: str) -> list[str]:
         if isinstance(node, ast.Attribute):
             if node.attr in (FORBIDDEN | FORBIDDEN_ATTRIBUTES) - allowed_names:
                 problems.append(f"R1 line {line}: attribute {node.attr}")
-            if node.attr.startswith("_"):
+            if node.attr.startswith("_") and node.attr not in R2_EXCEPTIONS.get(module, set()):
                 problems.append(f"R2 line {line}: attribute {node.attr}")
         if isinstance(node, ast.Import | ast.ImportFrom):
             if in_function:
@@ -303,3 +311,31 @@ def test_ruff_runs_the_exec_and_eval_rules():
     assert not banned & set(config.get("ignore", []))
     for rules in config.get("per-file-ignores", {}).values():
         assert not banned & set(rules)
+
+
+def test_the_stage_2a_modules_exist():
+    names = {path.name for path in modules()}
+    assert {"build.py", "worker.py", "framing.py"} <= names
+
+
+def test_worker_uses_os_narrowly():
+    """The worker's `os` exception covers `os._exit` and `os.getpid`, nothing else."""
+    tree = ast.parse((PACKAGE / "worker.py").read_text(encoding="utf-8"))
+    used = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+    }
+    assert used == {"_exit", "getpid"}
+
+
+def test_the_r2_exception_is_per_module():
+    assert scan("import os\nos._exit(77)", "worker.py") == []
+    assert scan("import os\nos._exit(77)", "build.py") != []
+    assert scan("x._private", "worker.py") != []
+    assert scan("import json", "framing.py") == []
+    assert scan("import json", "build.py") != []
+    assert scan("from sympy import sstr, Tuple, true", "build.py") == []
+    assert scan("from sympy import sympify", "build.py") != []

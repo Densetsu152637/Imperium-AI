@@ -1,0 +1,66 @@
+[package]
+name = "imperium-script-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The sandboxed Monty worker behind run_script: one confined process per program"
+
+[lib]
+name = "imperium_script_worker"
+path = "src/lib.rs"
+
+# The shipped worker, bundled as the sidecar `imperium-script`.
+[[bin]]
+name = "imperium-script"
+path = "src/main.rs"
+
+# Test-only binaries. Built only with the `test-support` feature, so no release build has them.
+[[bin]]
+name = "confinement-probe"
+path = "src/bin/confinement_probe.rs"
+required-features = ["test-support"]
+
+[[bin]]
+name = "misbehaving-worker"
+path = "src/bin/misbehaving_worker.rs"
+required-features = ["test-support"]
+
+[features]
+# Test hooks: the `--force-confinement-failure` flag of the worker and the two test binaries.
+# Enabled only by this crate's own dev-dependency below and by `scripts/check-rust.sh`.
+test-support = []
+
+# Monty is pinned to one release, exactly, and recorded in runtimes/monty.env (checked by
+# scripts/ci/check-monty-pin.sh). Cargo verifies every crates.io checksum against Cargo.lock.
+[dependencies]
+monty = "=1.6.0"
+monty-alloc = { version = "=1.6.0", features = ["exit-code"] }
+monty-proto = { version = "=1.6.0", features = ["worker"] }
+monty-types = "=1.6.0"
+
+[target.'cfg(unix)'.dependencies]
+# Safe wrappers for the resource limit and the process-wide flags the confinement sets.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "process", "thread", "fs"] }
+# `close_range`, `close` and `getdtablesize` for the inherited-descriptor sweep (confine/fds.rs).
+libc = "0.2.191"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"
+seccompiler = { version = "0.5.0", default-features = false }
+
+[dev-dependencies]
+imperium-script = { path = "../imperium-script" }
+imperium-script-worker = { path = ".", features = ["test-support"] }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt", "macros", "time"] }
+
+# macOS needs the sandbox and Mach calls, which are C and unsafe. Only the modules that need
+# them opt in (`#[allow(unsafe_code)]`); the rest of the crate still denies it.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

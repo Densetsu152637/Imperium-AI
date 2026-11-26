@@ -6,11 +6,18 @@
 //! last lines) and the path, so the agent reads ranges with `read_file` or searches with
 //! `grep`. The preview is what the conversation holds, so a resumed session still has the path;
 //! the folder goes when the session is deleted, and stays when it is archived.
+//!
+//! The folder is created, empty, when the session spawns, whether or not a result is ever
+//! saved. It must be a real folder: one that is a link (a symbolic link, or a Windows junction)
+//! is refused, and is never written to, read or followed ([`is_link`]). A session's saved
+//! results are also capped in total size ([`MAX_SESSION_BYTES`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::artefacts::CHARS_PER_TOKEN;
+
+pub(crate) use imperium_tools::is_link;
 
 /// The window assumed when the agent's model has none in the table and no local runtime plans
 /// one.
@@ -31,6 +38,14 @@ pub const SPILL_MARKER: &str = "[spilled tool result]";
 /// The words in every notice that lead to the path (`<SAVED_TO> <path>; read ranges ...`): what
 /// stale clearing matches to leave a notice alone.
 pub const SAVED_TO: &str = "Full output saved to";
+/// The line the command tool puts between a command's stdout and its stderr.
+const STDERR_MARKER: &str = "--- stderr ---";
+/// The share of the preview (a fraction, 1/4) given to the start of the stderr section when it
+/// would otherwise fall in the omitted middle.
+const STDERR_DIVISOR: usize = 4;
+/// All the results a session may save, in bytes. Past it a result stays in the conversation
+/// (as when a write fails), so a runaway tool cannot fill the disk through the results folder.
+pub(crate) const MAX_SESSION_BYTES: u64 = 512 * 1024 * 1024;
 /// Most characters of the output's own first line kept ahead of the marker when the output
 /// began with an error.
 const ERROR_LINE_CHARS: usize = 200;
@@ -103,23 +118,106 @@ fn file_name(tool: &str) -> String {
     )
 }
 
-/// Saves `text` in `dir`, which is made when missing.
+/// Whether `text` is the notice that stands in for a saved result, by its structure: it opens
+/// with [`SPILL_MARKER`], or with a line that began with `error` and then the marker (the error
+/// line a failed result keeps ahead of it). Text that only mentions the marker or the words of a
+/// notice is not one.
+pub(crate) fn is_notice(text: &str) -> bool {
+    let mut lines = text.lines();
+    let first = lines.next().unwrap_or_default();
+    if first.starts_with(SPILL_MARKER) {
+        return true;
+    }
+    first
+        .get(..5)
+        .is_some_and(|start| start.eq_ignore_ascii_case("error"))
+        && lines
+            .next()
+            .is_some_and(|line| line.starts_with(SPILL_MARKER))
+}
+
+/// Saves `text` in `dir`, which is made when missing. Refuses a `dir` that is a link and a
+/// session whose saved results would pass [`MAX_SESSION_BYTES`].
 pub(crate) fn save(dir: &Path, tool: &str, text: &str) -> std::io::Result<PathBuf> {
+    save_within(dir, tool, text, MAX_SESSION_BYTES)
+}
+
+/// [`save`] with the session's total size limited to `cap` bytes.
+pub(crate) fn save_within(
+    dir: &Path,
+    tool: &str,
+    text: &str,
+    cap: u64,
+) -> std::io::Result<PathBuf> {
+    refuse_link(dir)?;
     std::fs::create_dir_all(dir)?;
+    // Looked at again after the folder exists: it may have been made as a link meanwhile.
+    refuse_link(dir)?;
+    if folder_bytes(dir).saturating_add(u64::try_from(text.len()).unwrap_or(u64::MAX)) > cap {
+        return Err(std::io::Error::other(format!(
+            "the session's saved tool results would pass {cap} bytes"
+        )));
+    }
     let path = dir.join(file_name(tool));
-    std::fs::write(&path, text)?;
+    // A new file only: a link planted under the name is never written through.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    std::io::Write::write_all(&mut file, text.as_bytes())?;
     Ok(path)
 }
 
+/// An error when `dir` is a link (never followed).
+pub(crate) fn refuse_link(dir: &Path) -> std::io::Result<()> {
+    if is_link(dir) {
+        return Err(std::io::Error::other(format!(
+            "the results folder {} is a link, which is never followed",
+            dir.display()
+        )));
+    }
+    Ok(())
+}
+
+/// The bytes of the regular files directly in `dir`.
+fn folder_bytes(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(std::fs::Metadata::is_file)
+        .map(|metadata| std::fs::Metadata::len(&metadata))
+        .sum()
+}
+
 /// The text the conversation keeps in place of a saved result: [`SPILL_MARKER`], what happened,
-/// where the whole result is and how to read it, then the first and last lines, bounded in
-/// characters. A result that began with an error keeps that line ahead of the marker.
+/// where the whole result is and how to read it, then the first and last lines (and the start of
+/// a command's stderr when it would fall in between), bounded in characters. A result that began with an error keeps that line ahead of the marker.
 pub(crate) fn notice(path: &Path, text: &str, threshold: usize) -> String {
     let budget = (threshold / PREVIEW_DIVISOR).min(MAX_PREVIEW_CHARS);
     let head_budget = budget * HEAD_PARTS / 3;
     let lines: Vec<&str> = text.lines().collect();
-    let (head, tail) = split(&lines, head_budget, budget - head_budget);
-    let omitted = lines.len() - head.len() - tail.len();
+    let (mut head, mut tail) = split(&lines, head_budget, budget - head_budget);
+    // A command's stderr follows its stdout, so a long stdout pushes the start of the stderr
+    // (where the error usually is) into the omitted middle. Keep its head too, from a share of
+    // the budget.
+    let mut stderr_head: Vec<String> = Vec::new();
+    let mut stderr_at = 0;
+    if let Some(marker) = lines.iter().position(|line| *line == STDERR_MARKER)
+        && marker >= head.len()
+        && marker < lines.len() - tail.len()
+    {
+        let share = budget / STDERR_DIVISOR;
+        let head_budget = (budget - share) * HEAD_PARTS / 3;
+        (head, tail) = split(&lines, head_budget, budget - share - head_budget);
+        let end = lines.len() - tail.len();
+        if marker >= head.len() && marker < end {
+            (stderr_head, _) = split(&lines[marker..end], share, 0);
+            stderr_at = marker;
+        }
+    }
+    let omitted = lines.len() - head.len() - tail.len() - stderr_head.len();
     let first = text.trim_start().lines().next().unwrap_or_default();
     let began_with_error = first
         .get(..5)
@@ -138,8 +236,21 @@ pub(crate) fn notice(path: &Path, text: &str, threshold: usize) -> String {
         path.display(),
         head.join("\n"),
     ));
-    if omitted > 0 {
-        out.push_str(&format!("\n--- {omitted} lines omitted ---"));
+    if stderr_head.is_empty() {
+        if omitted > 0 {
+            out.push_str(&format!("\n--- {omitted} lines omitted ---"));
+        }
+    } else {
+        let before = stderr_at - head.len();
+        let after = omitted - before;
+        if before > 0 {
+            out.push_str(&format!("\n--- {before} lines omitted ---"));
+        }
+        out.push('\n');
+        out.push_str(&stderr_head.join("\n"));
+        if after > 0 {
+            out.push_str(&format!("\n--- {after} lines omitted ---"));
+        }
     }
     if !tail.is_empty() {
         out.push_str("\n--- last lines ---\n");
@@ -320,5 +431,122 @@ mod tests {
             results_dir(Path::new("a/id.jsonl")),
             Path::new("a/id.results")
         );
+    }
+
+    #[test]
+    fn a_notice_is_recognised_by_its_structure() {
+        let plain = notice(Path::new("f.txt"), &"line\n".repeat(4_000), 4_000);
+        assert!(is_notice(&plain));
+        let failed = notice(
+            Path::new("f.txt"),
+            &format!("error: exit 2\n{}", "line\n".repeat(4_000)),
+            4_000,
+        );
+        assert!(is_notice(&failed), "{failed}");
+        // Words of a notice elsewhere in a result do not make it one.
+        assert!(!is_notice(&format!("see {SPILL_MARKER} in the log")));
+        assert!(!is_notice(&format!(
+            "output\n{SPILL_MARKER} on the second line"
+        )));
+        assert!(!is_notice(&format!("a line\nanother\n{SAVED_TO} x")));
+        assert!(!is_notice(""));
+    }
+
+    #[test]
+    fn the_head_of_stderr_stays_in_the_preview_when_stdout_is_long() {
+        let text = format!(
+            "exit code: 1\n--- stdout ---\n{}--- stderr ---\nerror[E0432]: unresolved import\n{}",
+            "out line\n".repeat(3_000),
+            "warning: later\n".repeat(3_000)
+        );
+        let shown = notice(Path::new("f.txt"), &text, 4_000);
+        assert!(
+            shown.contains("--- stderr ---\nerror[E0432]: unresolved import"),
+            "{shown}"
+        );
+        assert!(shown.contains("exit code: 1") && shown.contains("warning: later"));
+        assert!(shown.contains("lines omitted"));
+        assert!(shown.chars().count() < 2_700, "{}", shown.chars().count());
+    }
+
+    #[test]
+    fn stderr_already_in_view_is_not_repeated() {
+        let text = format!(
+            "exit code: 1\n--- stdout ---\nshort\n--- stderr ---\nboom\n{}",
+            "x\n".repeat(5_000)
+        );
+        let shown = notice(Path::new("f.txt"), &text, 4_000);
+        assert_eq!(shown.matches("--- stderr ---").count(), 1, "{shown}");
+        assert!(shown.contains("boom"));
+    }
+
+    #[cfg(unix)]
+    fn make_dir_link(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    /// A junction on Windows: made with `mklink /J`, which needs no privilege.
+    #[cfg(windows)]
+    fn make_dir_link(target: &Path, link: &Path) {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    #[test]
+    fn a_linked_results_folder_is_refused_and_nothing_is_written_through_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let linked = dir.path().join("s.results");
+        make_dir_link(&real, &linked);
+        assert!(is_link(&linked));
+        let error = save(&linked, "run_command", "secret").unwrap_err();
+        assert!(error.to_string().contains("link"), "{error}");
+        assert_eq!(std::fs::read_dir(&real).unwrap().count(), 0);
+        // A real folder is fine.
+        assert!(!is_link(&real));
+        assert!(save(&real, "run_command", "ok").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_symbolic_link_is_refused_too_where_the_account_may_make_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let linked = dir.path().join("s.results");
+        // Needs the symlink privilege; the junction test covers the platform without it.
+        if std::os::windows::fs::symlink_dir(&real, &linked).is_ok() {
+            assert!(is_link(&linked));
+            assert!(save(&linked, "grep", "x").is_err());
+        }
+    }
+
+    #[test]
+    fn a_name_that_is_taken_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taken.txt");
+        std::fs::write(&path, "old").unwrap();
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        assert!(options.open(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+    }
+
+    #[test]
+    fn a_session_past_its_cap_keeps_the_result_in_the_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let results = dir.path().join("s.results");
+        assert!(save_within(&results, "grep", "12345", 8).is_ok());
+        let error = save_within(&results, "grep", "6789", 8).unwrap_err();
+        assert!(error.to_string().contains("would pass"), "{error}");
+        // Exactly the cap is allowed.
+        assert!(save_within(&results, "grep", "678", 8).is_ok());
+        assert_eq!(std::fs::read_dir(&results).unwrap().count(), 2);
     }
 }

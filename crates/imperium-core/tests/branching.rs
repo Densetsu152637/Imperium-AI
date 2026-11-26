@@ -661,6 +661,8 @@ async fn a_branch_keeps_its_own_copy_of_the_tool_results_its_conversation_points
     let parent_results = sessions.join(format!("{id}.results"));
     std::fs::create_dir_all(&parent_results).unwrap();
     std::fs::write(parent_results.join("1-grep.txt"), "the whole output").unwrap();
+    // A result the conversation never names (saved after the branch point, say).
+    std::fs::write(parent_results.join("2-grep.txt"), "not in the branch").unwrap();
     // A message that names the saved file, as a tool result's notice does.
     session
         .send(format!(
@@ -682,6 +684,8 @@ async fn a_branch_keeps_its_own_copy_of_the_tool_results_its_conversation_points
         std::fs::read_to_string(child_results.join("1-grep.txt")).unwrap(),
         "the whole output"
     );
+    // Only the file the branch's conversation names is copied.
+    assert!(!child_results.join("2-grep.txt").exists());
     let messages = std::fs::read_to_string(imperium_engine::messages_path(
         &sessions.join(format!("{child}.jsonl")),
     ))

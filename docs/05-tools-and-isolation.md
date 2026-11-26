@@ -383,12 +383,15 @@ sampling is refused unless enabled (below). A remote server that wants an OAuth 
 reported as needing one, and the user signs in to it on purpose
 ([OAuth for remote servers](#oauth-for-remote-servers-implemented)).
 
-**Planned (roadmap item 62, stage 1 of the [CAS plan](plans/cas-mcp.md) in progress):** a built-in
+**Planned (roadmap item 62, stage 2 of the [CAS plan](plans/cas-mcp.md) in progress):** a built-in
 computer algebra server, `imperium_cas`, backed by SymPy and started per session like any stdio
 server. Agent text never reaches `sympify`, `parse_expr` or `eval`: a hand-written parser reads a
-small infix language and a size guard refuses runaway numbers before anything is computed. Only
-that front end exists so far, as the `sidecars/cas/` project and its `python-cas` CI job; the
-server, its sandbox and its setup are later stages of the plan.
+small infix language, a size guard refuses runaway numbers before anything is computed, and a
+fixed table builds the result into SymPy objects. Each call is meant to run in a fresh worker
+process that has already imported SymPy, answers one call and exits; an audit hook ends the
+worker if anything opens a file, starts a process, compiles code or imports a module. The parser,
+guard, builder and worker exist so far, as the `sidecars/cas/` project and its `python-cas` CI
+job; the per-call resource limits, the server, its sandbox and its setup are later stages.
 
 ### Resources, prompts, and sampling (implemented)
 
@@ -1246,6 +1249,33 @@ commands must not be able to turn into daemon calls. `crates/imperium-tools/test
 runs a real sandbox in CI (Linux and macOS) to show that the endpoint file is unreadable, the
 sockets cannot be opened, a hidden file cannot be renamed or linked out, and a workspace of the
 home folder cannot write `<config>` or `<data>`.
+
+### Programs (`run_script`): the interpreter worker (implemented in part)
+
+Code mode ([plan](plans/code-mode.md), roadmap item 65) is **not reachable yet**: there is no
+`run_script` tool and no setting. What exists is the worker that will run the programs and the
+daemon-side driver, built and tested but not wired into the engine.
+
+- **The worker** is `crates/imperium-script-worker` (binary `imperium-script`): the Monty
+  interpreter behind `monty-proto`'s worker loop, in a process of its own, one per program. The
+  Monty crates are pinned to one release, exactly, in `runtimes/monty.env` and Imperium's
+  `Cargo.lock`.
+- **Confinement is applied by the worker to itself before it reads any request**, and the worker
+  exits when any part cannot be applied (fail closed). First it closes every inherited file
+  descriptor above 2, and the driver starts it in an empty folder of its own. On Linux it sets `PR_SET_NO_NEW_PRIVS`,
+  `RLIMIT_DATA` (twice the program's memory budget), Landlock where the kernel has it (no file
+  access at all) and a seccomp allowlist: reads from stdin, writes to stdout and stderr, memory,
+  futexes, clocks, `getrandom`, signals, exit, `kill` of itself and `clone` for threads only. Every
+  other system call fails, `clone3` with `ENOSYS`; another architecture kills the process. On macOS
+  it calls `sandbox_init` with a profile that starts from `(deny default)` and allows reading its
+  own binary and the system libraries and a few `sysctl` keys, so there is no file access, network,
+  process creation or `mach-lookup` (no pasteboard). macOS has no enforced memory limit at the OS level (Monty's own limit and allocator ceiling apply while no escape has happened). The Windows launch (restricted token, job
+  object, labels) is stage 1b; until then the worker refuses to run there.
+- **The driver** is `crates/imperium-script`. It starts one worker per program with an empty
+  environment, accepts only the events of the plan's allowlist (anything else kills the worker),
+  answers every OS call with an error, counts every suspension against `script_suspensions` and
+  ends the program with `AbortFeed` past it, times out a worker that stops answering, and kills the
+  worker when the program ends.
 
 ### Environment runtimes (implemented)
 
